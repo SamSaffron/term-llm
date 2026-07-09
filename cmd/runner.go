@@ -286,6 +286,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		engine:              engine,
 		toolMgr:             toolMgr,
 		store:               runtimeStore,
+		goalStore:           store,
 		systemPrompt:        settings.SystemPrompt,
 		search:              settings.Search,
 		forceExternalSearch: forceExternalSearch,
@@ -308,6 +309,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	runtime.responseCompletedCB = req.OnResponseCompleted
 	runtime.turnCompletedCB = req.OnTurnCompleted
 	runtime.compactionCB = req.OnCompaction
+	runtime.syntheticUserCB = req.OnSyntheticUserMessage
 
 	var sess *session.Session
 	if store != nil && !req.DeferSession {

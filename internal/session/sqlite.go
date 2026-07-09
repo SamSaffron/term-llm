@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,7 @@ type SQLiteStore struct {
 	hasReasoningEffort       bool // true if sessions table has reasoning_effort column
 	hasApprovalMode          bool // true if sessions table has approval_mode column
 	hasWorktreeDir           bool // true if sessions table has worktree_dir column
+	hasGoal                  bool // true if sessions table has goal column
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
@@ -83,6 +85,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     message_count INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT,
+    goal TEXT,
     compaction_seq INTEGER DEFAULT -1,
     compaction_count INTEGER DEFAULT 0
 );
@@ -247,7 +250,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 34
+const schemaVersion = 35
 
 // migration represents a schema migration.
 type migration struct {
@@ -977,6 +980,18 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 35: Persist per-session /goal state.
+		version:     35,
+		description: "add session goal column",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN goal TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1329,6 +1344,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			worktreeDirPlaceholder = ", ?"
 			worktreeDirArgs = []any{nullString(sess.WorktreeDir)}
 		}
+		goalCol := ""
+		goalPlaceholder := ""
+		var goalArgs []any
+		if s.hasGoal {
+			goalCol = ", goal"
+			goalPlaceholder = ", ?"
+			goalArgs = []any{goalJSONString(sess.Goal)}
+		}
 		insertArgs := []any{
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode),
@@ -1344,13 +1367,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens,
 			sess.LastTotalTokens, sess.LastMessageCount, string(sess.Status), nullString(sess.Tags),
 		)
+		insertArgs = append(insertArgs, goalArgs...)
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-			                      last_total_tokens, last_message_count, status, tags`+reasoningEffortCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+reasoningEffortPlaceholder+`)`,
+				                      last_total_tokens, last_message_count, status, tags`+goalCol+reasoningEffortCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+reasoningEffortPlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1463,12 +1487,16 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasWorktreeDir {
 		worktreeDirClause = ", worktree_dir = ?"
 	}
+	goalClause := ""
+	if s.hasGoal {
+		goalClause = ", goal = ?"
+	}
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
 		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, cwd = ?` + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
-		       status = ?, tags = ?
+		       status = ?, tags = ?` + goalClause + `
 		WHERE id = ?`
 
 	args := []any{
@@ -1498,8 +1526,12 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	args = append(args,
 		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-		string(sess.Status), nullString(sess.Tags), sess.ID,
+		string(sess.Status), nullString(sess.Tags),
 	)
+	if s.hasGoal {
+		args = append(args, goalJSONString(sess.Goal))
+	}
+	args = append(args, sess.ID)
 
 	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -1508,6 +1540,31 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("session not found: %s", sess.ID)
+	}
+	return nil
+}
+
+// UpdateGoal updates only the persisted goal state for a session.
+func (s *SQLiteStore) UpdateGoal(ctx context.Context, id string, goal *Goal) error {
+	if !s.hasGoal {
+		return fmt.Errorf("goal column is unavailable")
+	}
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("session id is empty")
+	}
+	goal = goal.Clone()
+	if goal != nil {
+		goal.Normalize(time.Now())
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET goal = ?, updated_at = ?
+		WHERE id = ?`, goalJSONString(goal), time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("update goal: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("session not found %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
@@ -1729,6 +1786,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasLastMessageAt {
 		lastMessageAtCol = "s.last_message_at"
 	}
+	goalCol := "NULL"
+	if s.hasGoal {
+		goalCol = "s.goal"
+	}
 	messageCountCol := "COALESCE(s.message_count, 0)"
 	if !s.hasMessageCount {
 		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
@@ -1748,7 +1809,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `
 		` + fromClause + `
 		WHERE 1=1`
 	args := []any{}
@@ -1864,12 +1925,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir sql.NullString
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
 			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &worktreeDir)
+			&status, &tags, &worktreeDir, &goalRaw)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}
@@ -1904,6 +1965,9 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if worktreeDir.Valid {
 			sum.WorktreeDir = worktreeDir.String
+		}
+		if goal := parseGoalJSONString(goalRaw); goal != nil {
+			sum.Goal = goal
 		}
 		results = append(results, sum)
 	}
@@ -3130,6 +3194,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasReasoningEffort = true
 	s.hasApprovalMode = true
 	s.hasWorktreeDir = true
+	s.hasGoal = true
 	s.hasMessageCompactionTail = true
 }
 
@@ -3184,6 +3249,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasApprovalMode = true
 		case "worktree_dir":
 			s.hasWorktreeDir = true
+		case "goal":
+			s.hasGoal = true
 		}
 	}
 }
@@ -3264,6 +3331,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 		base += ", last_message_count"
 	}
 	base += ", status, tags"
+	if s.hasGoal {
+		base += ", goal"
+	} else {
+		base += ", NULL AS goal"
+	}
 	if s.hasCompactionSeq {
 		base += ", compaction_seq"
 	}
@@ -3281,7 +3353,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var name, summary, cwd, worktreeDir sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
-	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort sql.NullString
+	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, goalRaw sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -3307,7 +3379,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if hasLastMessageCount {
 		scanArgs = append(scanArgs, &sess.LastMessageCount)
 	}
-	scanArgs = append(scanArgs, &status, &tags)
+	scanArgs = append(scanArgs, &status, &tags, &goalRaw)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)
 	}
@@ -3394,7 +3466,38 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if tags.Valid {
 		sess.Tags = tags.String
 	}
+	if goal := parseGoalJSONString(goalRaw); goal != nil {
+		sess.Goal = goal
+	}
 	return &sess, nil
+}
+
+func goalJSONString(goal *Goal) sql.NullString {
+	if goal == nil || !goal.Exists() {
+		return sql.NullString{}
+	}
+	clone := goal.Clone()
+	clone.Normalize(time.Now())
+	data, err := json.Marshal(clone)
+	if err != nil || len(data) == 0 {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(data), Valid: true}
+}
+
+func parseGoalJSONString(raw sql.NullString) *Goal {
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return nil
+	}
+	var goal Goal
+	if err := json.Unmarshal([]byte(raw.String), &goal); err != nil {
+		return nil
+	}
+	goal.Normalize(time.Now())
+	if !goal.Exists() {
+		return nil
+	}
+	return &goal
 }
 
 // nullString converts an empty string to NULL for database storage.

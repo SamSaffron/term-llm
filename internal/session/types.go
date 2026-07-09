@@ -101,6 +101,7 @@ type Session struct {
 	LastMessageCount  int           `json:"last_message_count,omitempty"`  // Legacy checkpoint count; estimator uses structural delta
 	Status            SessionStatus `json:"status,omitempty"`              // Session status
 	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
+	Goal              *Goal         `json:"goal,omitempty"`                // Persistent objective state for /goal
 	CompactionSeq     int           `json:"compaction_seq,omitempty"`      // Sequence of first post-compaction message (-1 = none)
 	CompactionCount   int           `json:"compaction_count,omitempty"`    // Number of times this session has been compacted
 }
@@ -148,6 +149,7 @@ type SessionSummary struct {
 	Status              SessionStatus      `json:"status,omitempty"`
 	Tags                string             `json:"tags,omitempty"`
 	WorktreeDir         string             `json:"worktree_dir,omitempty"`
+	Goal                *Goal              `json:"goal,omitempty"`
 	CreatedAt           time.Time          `json:"created_at"`
 	UpdatedAt           time.Time          `json:"updated_at"`
 	LastMessageAt       time.Time          `json:"last_message_at,omitempty"`

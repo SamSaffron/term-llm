@@ -95,6 +95,37 @@ func UpdateGeneratedTitle(ctx context.Context, store Store, sess *Session, short
 	return store.Update(ctx, sess)
 }
 
+// GoalUpdater is an optional Store capability for updating only the persisted
+// session goal. It avoids full-session Update writes from runner callbacks where
+// a stale Session snapshot could clobber concurrently updated metadata.
+type GoalUpdater interface {
+	UpdateGoal(ctx context.Context, id string, goal *Goal) error
+}
+
+// UpdateGoal persists a session goal using a goal-only fast path when available,
+// and falls back to Store.Get + Store.Update for custom stores.
+func UpdateGoal(ctx context.Context, store Store, sessionID string, goal *Goal) error {
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	goal = goal.Clone()
+	if goal != nil {
+		goal.Normalize(time.Now())
+	}
+	if updater, ok := store.(GoalUpdater); ok {
+		return updater.UpdateGoal(ctx, sessionID, goal)
+	}
+	sess, err := store.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return ErrNotFound
+	}
+	sess.Goal = goal
+	return store.Update(ctx, sess)
+}
+
 // StreamingMessageUpdater is an optional Store capability for the hot streaming
 // assistant upsert path. Implementations may update role/parts/duration without
 // rewriting the FTS-backed text_content column until finalizeText is true.

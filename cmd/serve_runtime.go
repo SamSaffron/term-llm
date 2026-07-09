@@ -21,6 +21,7 @@ import (
 
 type serveRuntime struct {
 	mu                   sync.Mutex
+	goalMu               sync.Mutex
 	interruptMu          sync.Mutex
 	responseMu           sync.Mutex // guards lastResponseID and responseIDs
 	askUserMu            sync.Mutex
@@ -32,6 +33,8 @@ type serveRuntime struct {
 	toolMgr              *tools.ToolManager
 	mcpManager           *mcp.Manager
 	store                session.Store
+	goalStore            session.Store
+	syntheticUserCB      func(context.Context, llm.Message) error
 	systemPrompt         string
 	history              []llm.Message
 	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
@@ -563,6 +566,11 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 			}
 		}
 		if needsUpdate {
+			if goalStore := rt.goalStateStore(); goalStore != nil && strings.TrimSpace(sessionID) != "" {
+				if refreshed, refreshErr := goalStore.Get(dbCtx, sessionID); refreshErr == nil && refreshed != nil {
+					updated.Goal = refreshed.Goal.Clone()
+				}
+			}
 			if updateErr := rt.store.Update(dbCtx, &updated); updateErr != nil {
 				log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
 			} else {
@@ -804,18 +812,18 @@ var (
 )
 
 func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil, nil)
+	return rt.runWithGoal(ctx, stateful, replaceHistory, inputMessages, req, nil, nil)
 }
 
 func (rt *serveRuntime) RunWithEvents(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil, onEvent)
+	return rt.runWithGoal(ctx, stateful, replaceHistory, inputMessages, req, nil, onEvent)
 }
 
 func (rt *serveRuntime) RunWithEventsAndStart(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+	return rt.runWithGoal(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
 }
 
-func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}

@@ -3943,6 +3943,116 @@ async function testAddMenuAttachOptionTriggersFileInput() {
   pass(name);
 }
 
+async function testGoalStateResponseUpdatesChip() {
+  const name = 'goal state response updates goal chip';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed && parsed.pathname.endsWith('/state')) {
+        return new Response(JSON.stringify({
+          active_run: false,
+          goal: {
+            objective: 'ship the goal feature',
+            status: 'active',
+            token_budget: 100,
+            tokens_used: 25
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && parsed.pathname.endsWith('/messages')) {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = app.createSession();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  if (!session.goal || session.goal.objective !== 'ship the goal feature') {
+    fail(name, 'expected session goal to be stored from state response', JSON.stringify(session.goal));
+    return;
+  }
+  if (String(app.elements.goalChip.className || '').includes('hidden')) {
+    fail(name, 'expected goal chip to be visible', app.elements.goalChip.className);
+    return;
+  }
+  const chipText = String(app.elements.goalChip.textContent || '');
+  if (!chipText.includes('active') || !chipText.includes('25/100') || !chipText.includes('ship the goal feature')) {
+    fail(name, 'unexpected goal chip text', chipText);
+    return;
+  }
+  pass(name);
+}
+
+async function testGoalModalSavesGoal() {
+  const name = 'goal modal saves goal through runtime endpoint';
+  const posts = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      const parsed = parsedTestURL(url);
+      if (parsed && parsed.pathname.endsWith('/runtime/goal')) {
+        posts.push({ pathname: parsed.pathname, body: JSON.parse(String(options.body || '{}')) });
+        return new Response(JSON.stringify({
+          goal: {
+            objective: 'finish docs',
+            status: 'active',
+            token_budget: 123
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = app.createSession();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.elements.goalModal.classList.add('hidden');
+
+  app.elements.addGoalOption.click();
+  if (app.elements.goalModal.classList.contains('hidden')) {
+    fail(name, 'expected plus-menu goal option to open the modal');
+    return;
+  }
+  app.elements.goalObjectiveInput.value = 'finish docs';
+  app.elements.goalTokenBudgetInput.value = '123';
+  await app.saveGoalFromModal();
+
+  if (posts.length !== 1) {
+    fail(name, `goal POST count = ${posts.length}, want 1`, JSON.stringify(posts));
+    return;
+  }
+  if (posts[0].pathname !== `/ui/v1/sessions/${session.id}/runtime/goal`) {
+    fail(name, 'unexpected goal endpoint path', JSON.stringify(posts[0]));
+    return;
+  }
+  const wantBody = { action: 'set', objective: 'finish docs', token_budget: 123 };
+  if (JSON.stringify(posts[0].body) !== JSON.stringify(wantBody)) {
+    fail(name, 'unexpected goal POST body', JSON.stringify(posts[0].body));
+    return;
+  }
+  if (!session.goal || session.goal.objective !== 'finish docs' || session.goal.token_budget !== 123) {
+    fail(name, 'expected session goal to update from save response', JSON.stringify(session.goal));
+    return;
+  }
+  if (String(app.elements.goalChip.textContent || '').indexOf('finish docs') < 0) {
+    fail(name, 'expected chip to show saved objective', app.elements.goalChip.textContent);
+    return;
+  }
+  pass(name);
+}
+
 async function testOpenMCPFromDraftCreatesSessionBeforeFetch() {
   const name = 'opening MCP from draft creates local session before fetch';
   const fetchCalls = [];
@@ -4224,6 +4334,8 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
   await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
   await testAddMenuAttachOptionTriggersFileInput();
+  await testGoalStateResponseUpdatesChip();
+  await testGoalModalSavesGoal();
   await testOpenMCPFromDraftCreatesSessionBeforeFetch();
   await testMCPStateResponseUpdatesHeaderPill();
   await testMCPHeaderPillOpensServersModal();

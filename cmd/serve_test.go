@@ -2673,6 +2673,224 @@ func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) 
 	}
 }
 
+func TestHandleSessionRuntimeGoalMutatesPersistentGoal(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess-goal-runtime"
+	if err := store.Create(context.Background(), &session.Session{
+		ID:        sessionID,
+		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	rt := &serveRuntime{sessionMeta: &session.Session{ID: sessionID}}
+	putTestSession(mgr, sessionID, rt)
+
+	srv := &serveServer{sessionMgr: mgr, store: store}
+	postGoal := func(body string) *session.Goal {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/runtime/goal", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Goal *session.Goal `json:"goal"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return resp.Goal
+	}
+
+	goal := postGoal(`{"action":"set","objective":"ship web goal UX","token_budget":123}`)
+	if goal == nil || goal.Objective != "ship web goal UX" || goal.TokenBudget != 123 || goal.Status != session.GoalStatusActive {
+		t.Fatalf("set goal response = %+v", goal)
+	}
+	rt.mu.Lock()
+	runtimeGoal := rt.sessionMeta.Goal.Clone()
+	rt.mu.Unlock()
+	if runtimeGoal == nil || runtimeGoal.Objective != "ship web goal UX" {
+		t.Fatalf("runtime goal = %+v, want set goal", runtimeGoal)
+	}
+
+	goal = postGoal(`{"action":"pause"}`)
+	if goal == nil || goal.Status != session.GoalStatusPaused {
+		t.Fatalf("pause goal response = %+v", goal)
+	}
+	goal = postGoal(`{"action":"resume"}`)
+	if goal == nil || goal.Status != session.GoalStatusActive {
+		t.Fatalf("resume goal response = %+v", goal)
+	}
+	goal = postGoal(`{"action":"clear"}`)
+	if goal != nil {
+		t.Fatalf("clear goal response = %+v, want nil", goal)
+	}
+	persisted, err := store.Get(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.Goal != nil {
+		t.Fatalf("persisted goal after clear = %+v, want nil", persisted.Goal)
+	}
+	rt.mu.Lock()
+	runtimeGoal = rt.sessionMeta.Goal.Clone()
+	rt.mu.Unlock()
+	if runtimeGoal != nil {
+		t.Fatalf("runtime goal after clear = %+v, want nil", runtimeGoal)
+	}
+}
+
+func TestHandleSessionRuntimeGoalRejectsBudgetLimitedResume(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess-goal-budget-resume"
+	goal := session.NewGoal("spent", 10, time.Now())
+	goal.TokensUsed = 10
+	goal.Status = session.GoalStatusBudgetLimited
+	if err := store.Create(context.Background(), &session.Session{
+		ID:        sessionID,
+		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+		Goal:      goal,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/runtime/goal", strings.NewReader(`{"action":"resume"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	persisted, err := store.Get(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.Goal == nil || persisted.Goal.Status != session.GoalStatusBudgetLimited {
+		t.Fatalf("persisted goal = %+v, want budget_limited", persisted.Goal)
+	}
+}
+
+func TestHandleSessionRuntimeGoalDoesNotBlockWhenRuntimeBusy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess-goal-runtime-busy"
+	if err := store.Create(context.Background(), &session.Session{
+		ID:        sessionID,
+		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	rt := &serveRuntime{sessionMeta: &session.Session{ID: sessionID}}
+	putTestSession(mgr, sessionID, rt)
+	server := &serveServer{sessionMgr: mgr, store: store}
+
+	rt.mu.Lock()
+	locked := true
+	release := func() {
+		if locked {
+			locked = false
+			rt.mu.Unlock()
+		}
+	}
+	defer release()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/runtime/goal", strings.NewReader(`{"action":"set","objective":"do not block"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		server.handleSessionByID(rr, req)
+		done <- rr
+	}()
+
+	select {
+	case rr := <-done:
+		release()
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		release()
+		t.Fatal("handleSessionRuntimeGoal blocked while rt.mu was held by a run")
+	}
+	persisted, err := store.Get(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.Goal == nil || persisted.Goal.Objective != "do not block" {
+		t.Fatalf("persisted goal = %+v, want updated goal", persisted.Goal)
+	}
+}
+
+func TestHandleSessionRuntimeGoalCreatesDraftSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess-goal-draft"
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return &serveRuntime{store: store, providerKey: "mock", defaultModel: "mock-model"}, nil
+	})
+	defer mgr.Close()
+
+	srv := &serveServer{sessionMgr: mgr, store: store}
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/runtime/goal", strings.NewReader(`{"action":"set","objective":"draft goal"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	persisted, err := store.Get(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted == nil || persisted.Goal == nil || persisted.Goal.Objective != "draft goal" {
+		t.Fatalf("persisted draft goal = %+v", persisted)
+	}
+}
+
 func TestHandleSessionRuntimeEffortQueuesEngineSwitch(t *testing.T) {
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
@@ -6254,6 +6472,7 @@ func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
 		ReasoningEffort: "medium",
 		Mode:            session.ModeChat,
 		Origin:          session.OriginWeb,
+		Goal:            session.NewGoal("persisted objective", 500, time.Now()),
 	}
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -6280,6 +6499,9 @@ func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
 	}
 	if !strings.Contains(body, `"provider":"openai"`) {
 		t.Errorf("expected provider from DB fallback in state, got %s", body)
+	}
+	if !strings.Contains(body, `"goal"`) || !strings.Contains(body, `"objective":"persisted objective"`) {
+		t.Errorf("expected goal from DB fallback in state, got %s", body)
 	}
 }
 

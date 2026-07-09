@@ -649,6 +649,18 @@ func (m *Model) startStream(content string) tea.Cmd {
 		if m.runner == nil {
 			m.engine.SetCompactionCallback(compactionCB)
 		}
+		syntheticUserCB := func(cbCtx context.Context, msg llm.Message) error {
+			if streamSess == nil || m.store == nil || streamSess.ID == "" {
+				return nil
+			}
+			msg.Role = llm.RoleUser
+			m.contextEstimateMu.Lock()
+			m.streamingContextMessages = append(m.streamingContextMessages, msg)
+			m.streamingContextPendingAssistant = false
+			m.invalidateContextEstimateCacheLocked()
+			m.contextEstimateMu.Unlock()
+			return m.store.AddMessage(cbCtx, streamSess.ID, session.NewMessage(streamSess.ID, msg, -1))
+		}
 
 		// Start streaming in background - adapter handles all event conversion
 		m.streamDone = make(chan struct{})
@@ -685,6 +697,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					OnResponseCompleted:       responseCompletedCB,
 					OnTurnCompleted:           turnCompletedCB,
 					OnCompaction:              compactionCB,
+					OnSyntheticUserMessage:    syntheticUserCB,
 				}
 				runCtx, cancelRun := context.WithCancel(ctx)
 				defer cancelRun()

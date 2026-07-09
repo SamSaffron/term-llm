@@ -29,6 +29,7 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `show_image` | Show image file info |
 | `image_generate` | Generate images via configured provider |
 | `ask_user` | Prompt user for input |
+| `create_goal` / `get_goal` / `update_goal` | Create/read or complete/block a persistent `/goal` (goal tools are injected automatically while a goal is active) |
 | `spawn_agent` | Spawn child agents for parallel tasks |
 | `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |

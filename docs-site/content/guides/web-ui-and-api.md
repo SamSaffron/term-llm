@@ -86,6 +86,21 @@ File handling is provider-aware:
 
 Do not attach secrets unless you intend the selected provider to receive them. Native file forwarding and text fallback both send file contents upstream.
 
+## Persistent goals in the browser UI
+
+The browser UI exposes the same persistent goal state as terminal chat. Open the composer `+` menu and choose **Set goal…**, or click the `🎯` goal chip above the composer after a goal exists. Goals are stored on the session and survive page reloads; an active goal lets the shared runner automatically continue work until the model marks it complete/blocked, the user pauses or clears it, the run is stopped, or an optional token budget is exhausted.
+
+For API integrations, goal state is available from the session state endpoint and can be mutated with:
+
+```bash
+curl -X POST "$BASE/ui/v1/sessions/$SESSION_ID/runtime/goal" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"set","objective":"finish the migration and verify tests","token_budget":50000}'
+```
+
+Supported actions are `set`, `edit`, `pause`, `resume`, and `clear`. `GET /ui/v1/sessions/:id/state` includes `goal` (or `null`) so clients can render status and token usage.
+
 ## Authentication
 
 By default, serve mode uses bearer-token auth.
