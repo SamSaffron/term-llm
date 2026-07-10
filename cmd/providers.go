@@ -94,7 +94,7 @@ var builtinProviderMeta = map[string]struct {
 		credential:         "oauth",
 		envVar:             "",
 		requiresKey:        false,
-		supportsListModels: false,
+		supportsListModels: true,
 		description:        "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
 	},
 	"copilot": {

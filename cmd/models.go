@@ -27,6 +27,7 @@ are available. Useful for finding model names to configure.
 Examples:
   term-llm models                       # list models from current provider
   term-llm models --provider anthropic  # list models from Anthropic
+  term-llm models --provider chatgpt    # list models from ChatGPT/Codex
   term-llm models --provider openrouter # list models from OpenRouter
   term-llm models --provider nearai     # list models from NEAR AI Cloud
   term-llm models --provider sambanova  # list models from SambaNova
@@ -39,7 +40,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, nearai, sambanova, venice, xai, zen, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, chatgpt, copilot, openrouter, nearai, sambanova, venice, xai, zen, ollama, lmstudio, openai-compat)")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
@@ -52,6 +53,7 @@ type ModelLister interface {
 var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeAnthropic:    true,
 	config.ProviderTypeOpenAI:       true,
+	config.ProviderTypeChatGPT:      true,
 	config.ProviderTypeCopilot:      true,
 	config.ProviderTypeOpenRouter:   true,
 	config.ProviderTypeOpenAICompat: true,
@@ -131,6 +133,17 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")
 		}
 		lister = llm.NewOpenAIProvider(apiKey, providerCfg.Model)
+	case config.ProviderTypeChatGPT:
+		// ChatGPT uses native OAuth and lists the Codex model catalog.
+		model := ""
+		if ok {
+			model = providerCfg.Model
+		}
+		provider, err := llm.NewChatGPTProvider(model)
+		if err != nil {
+			return fmt.Errorf("chatgpt provider: %w", err)
+		}
+		lister = provider
 	case config.ProviderTypeCopilot:
 		// Copilot uses OAuth - create provider which will prompt for auth if needed
 		model := ""
@@ -255,6 +268,14 @@ func runModels(cmd *cobra.Command, args []string) error {
 				fmt.Printf(" [$%.2f/$%.2f per 1M tokens]", m.InputPrice, m.OutputPrice)
 			}
 		}
+
+		efforts := m.ReasoningEfforts
+		if len(efforts) == 0 {
+			efforts = llm.ReasoningEffortsForProviderModel(providerName, m.ID)
+		}
+		if len(efforts) > 0 {
+			fmt.Printf(" (effort: %s)", strings.Join(efforts, ", "))
+		}
 		fmt.Println()
 	}
 
@@ -269,14 +290,16 @@ func runModels(cmd *cobra.Command, args []string) error {
 func printStaticModels(providerName string, models []string) error {
 	if modelsJSON {
 		type staticModel struct {
-			ID         string `json:"id"`
-			InputLimit int    `json:"input_limit,omitempty"`
+			ID               string   `json:"id"`
+			InputLimit       int      `json:"input_limit,omitempty"`
+			ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 		}
 		var jsonModels []staticModel
 		for _, m := range models {
 			jsonModels = append(jsonModels, staticModel{
-				ID:         m,
-				InputLimit: llm.InputLimitForProviderModel(providerName, m),
+				ID:               m,
+				InputLimit:       llm.InputLimitForProviderModel(providerName, m),
+				ReasoningEfforts: llm.ReasoningEffortsForProviderModel(providerName, m),
 			})
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -290,7 +313,7 @@ func printStaticModels(providerName string, models []string) error {
 		if ctxStr := llm.FormatTokenCount(llm.InputLimitForProviderModel(providerName, m)); ctxStr != "" {
 			line += fmt.Sprintf(" [%s input]", ctxStr)
 		}
-		if variants := llm.EffortVariantsFor(m); len(variants) > 0 {
+		if variants := llm.ReasoningEffortsForProviderModel(providerName, m); len(variants) > 0 {
 			line += fmt.Sprintf(" (effort: %s)", strings.Join(variants, ", "))
 		}
 		fmt.Println(line)

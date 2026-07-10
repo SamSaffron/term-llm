@@ -6,6 +6,12 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestModelListSupportedTypesIncludesChatGPT(t *testing.T) {
+	if !modelListSupportedTypes[config.ProviderTypeChatGPT] {
+		t.Fatal("ChatGPT should be wired for dynamic Codex model listing")
+	}
+}
+
 func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
 	if !modelListSupportedTypes[config.ProviderTypeSambaNova] {
 		t.Fatal("SambaNova should be wired for dynamic model listing")
@@ -15,6 +21,19 @@ func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
 func TestModelListSupportedTypesIncludesNearAI(t *testing.T) {
 	if !modelListSupportedTypes[config.ProviderTypeNearAI] {
 		t.Fatal("NEAR AI should be wired for dynamic model listing")
+	}
+}
+
+func TestBuiltinProviderMetaChatGPTSupportsListModels(t *testing.T) {
+	meta, ok := builtinProviderMeta["chatgpt"]
+	if !ok {
+		t.Fatal("ChatGPT provider metadata missing")
+	}
+	if !meta.supportsListModels {
+		t.Fatal("ChatGPT should advertise Codex model listing support")
+	}
+	if meta.requiresKey || meta.credential != "oauth" {
+		t.Fatalf("ChatGPT metadata = %+v, want OAuth without required API key", meta)
 	}
 }
 
