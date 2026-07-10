@@ -21,6 +21,8 @@ func newGitRepoForBindingTest(t *testing.T) string {
 		t.Fatalf("MkdirAll repo: %v", err)
 	}
 	runGitForBindingTest(t, repo, "init", "-q")
+	runGitForBindingTest(t, repo, "config", "user.name", "Test User")
+	runGitForBindingTest(t, repo, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
