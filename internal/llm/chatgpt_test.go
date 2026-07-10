@@ -82,6 +82,57 @@ func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestChatGPTStream_MapsUltraReasoningEffortToMaxRequestEffort(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var captured ResponsesRequest
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, "gpt-5.6-sol-ultra")
+
+	if provider.model != "gpt-5.6-sol" {
+		t.Fatalf("provider model = %q, want gpt-5.6-sol", provider.model)
+	}
+	if provider.effort != "ultra" {
+		t.Fatalf("provider effort = %q, want ultra", provider.effort)
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if captured.Model != "gpt-5.6-sol" {
+		t.Fatalf("request model = %q, want gpt-5.6-sol", captured.Model)
+	}
+	if captured.Reasoning == nil {
+		t.Fatal("request reasoning missing")
+	}
+	if captured.Reasoning.Effort != "max" {
+		t.Fatalf("request reasoning effort = %q, want max", captured.Reasoning.Effort)
+	}
+}
+
 func TestChatGPTStream_IncludesNormalizedServiceTier(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() { chatGPTHTTPClient = origClient }()

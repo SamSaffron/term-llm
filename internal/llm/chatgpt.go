@@ -189,6 +189,18 @@ func runChatGPTBrowserFlow(ctx context.Context) (*oauth.ChatGPTCredentials, erro
 	return oauth.AuthenticateChatGPT(ctx)
 }
 
+// chatGPTReasoningEffortForRequest maps term-llm's user-facing ChatGPT/Codex
+// effort aliases to the values accepted by the backend responses endpoint.
+// Codex exposes "Ultra" in /codex/models and the UI, but sends it as the
+// backend-compatible max effort at inference time.
+func chatGPTReasoningEffortForRequest(effort string) string {
+	effort = strings.TrimSpace(effort)
+	if strings.EqualFold(effort, "ultra") {
+		return "max"
+	}
+	return effort
+}
+
 func (p *ChatGPTProvider) Name() string {
 	if p.effort != "" {
 		return fmt.Sprintf("ChatGPT (%s, effort=%s)", p.model, p.effort)
@@ -245,8 +257,9 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		return nil, err
 	}
 
-	// Build tools. ChatGPT Ultra remains an effort; no public-API Pro or
-	// multi-agent/PTC/cache controls are synthesized for the Codex backend.
+	// Build tools. ChatGPT's Codex backend exposes Ultra as a user-facing
+	// reasoning level, but the Responses request still uses max effort. term-llm
+	// does not synthesize Codex UI multi-agent/PTC/cache controls for ChatGPT.
 	tools := BuildResponsesTools(req.Tools)
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
@@ -290,8 +303,8 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		responsesReq.ParallelToolCalls = boolPtr(true)
 	}
 	responsesReq.Reasoning = &ResponsesReasoning{Summary: "auto"}
-	if effort != "" {
-		responsesReq.Reasoning.Effort = effort
+	if requestEffort := chatGPTReasoningEffortForRequest(effort); requestEffort != "" {
+		responsesReq.Reasoning.Effort = requestEffort
 	}
 
 	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
