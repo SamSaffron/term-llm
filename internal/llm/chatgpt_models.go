@@ -18,10 +18,14 @@ import (
 
 const (
 	chatGPTModelsBaseURL = "https://chatgpt.com/backend-api/codex/models"
+	// The Codex backend gates model availability using both originator and
+	// User-Agent. Use the current Codex protocol identity while retaining a
+	// term-llm suffix so preview models exposed to this account are routable.
+	chatGPTCodexClientVersion = "0.144.0"
+	chatGPTCodexOriginator    = "codex_cli_rs"
+	chatGPTCodexUserAgent     = "codex_cli_rs/" + chatGPTCodexClientVersion + " (term-llm)"
 	// The ChatGPT /codex/models endpoint validates client_version as semver.
-	// Codex sends its Cargo package version; term-llm builds can report "dev", so
-	// use a stable semver-shaped value here instead of the CLI version string.
-	chatGPTModelsClientVersion = "0.0.0"
+	chatGPTModelsClientVersion = chatGPTCodexClientVersion
 	chatGPTModelsCacheFile     = "chatgpt_models_cache.json"
 	chatGPTModelsCacheTTL      = 5 * time.Minute
 	chatGPTModelsTimeout       = 5 * time.Second
@@ -158,8 +162,9 @@ func (p *ChatGPTProvider) fetchChatGPTModels(ctx context.Context) ([]ModelInfo, 
 	if p.creds.AccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", p.creds.AccountID)
 	}
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("originator", "term-llm")
+	req.Header.Set("originator", chatGPTCodexOriginator)
+	req.Header.Set("User-Agent", chatGPTCodexUserAgent)
+	req.Header.Set("version", chatGPTCodexClientVersion)
 
 	client := chatGPTHTTPClient
 	if client == nil {

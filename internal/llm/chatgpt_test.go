@@ -61,12 +61,42 @@ func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
 	}
 }
 
+func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
+	t.Parallel()
+
+	client := NewChatGPTResponsesClient(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+	})
+	if got := client.ExtraHeaders["OpenAI-Beta"]; got != "" {
+		t.Fatalf("legacy OpenAI-Beta header = %q, want omitted", got)
+	}
+	if got := client.ExtraHeaders["originator"]; got != chatGPTCodexOriginator {
+		t.Fatalf("originator = %q, want %q", got, chatGPTCodexOriginator)
+	}
+	if got := client.ExtraHeaders["User-Agent"]; got != chatGPTCodexUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, chatGPTCodexUserAgent)
+	}
+	if got := client.ExtraHeaders["version"]; got != chatGPTCodexClientVersion {
+		t.Fatalf("version = %q, want %q", got, chatGPTCodexClientVersion)
+	}
+}
+
 func TestChatGPTStream_IncludesNormalizedServiceTier(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() { chatGPTHTTPClient = origClient }()
 
 	var captured ResponsesRequest
 	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("originator"); got != chatGPTCodexOriginator {
+			t.Fatalf("originator = %q, want %q", got, chatGPTCodexOriginator)
+		}
+		if got := req.Header.Get("User-Agent"); got != chatGPTCodexUserAgent {
+			t.Fatalf("User-Agent = %q, want %q", got, chatGPTCodexUserAgent)
+		}
+		if got := req.Header.Get("version"); got != chatGPTCodexClientVersion {
+			t.Fatalf("version = %q, want %q", got, chatGPTCodexClientVersion)
+		}
 		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}

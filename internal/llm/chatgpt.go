@@ -314,10 +314,14 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 		GetAuthHeader: func() string {
 			return "Bearer " + creds.AccessToken
 		},
+		// Do not add the legacy responses=experimental beta here. The current
+		// ChatGPT WebSocket endpoint closes requests carrying it with code 1011;
+		// ensureWebSocket adds the modern responses_websockets beta by itself.
 		ExtraHeaders: map[string]string{
 			"ChatGPT-Account-ID": creds.AccountID,
-			"OpenAI-Beta":        "responses=experimental",
-			"originator":         "term-llm",
+			"originator":         chatGPTCodexOriginator,
+			"User-Agent":         chatGPTCodexUserAgent,
+			"version":            chatGPTCodexClientVersion,
 		},
 		HTTPClient:         chatGPTHTTPClient,
 		DisableServerState: true,

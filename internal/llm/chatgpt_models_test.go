@@ -30,6 +30,15 @@ func TestChatGPTListModelsFetchesAndCachesServiceTiers(t *testing.T) {
 		if got := req.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
+		if got := req.Header.Get("originator"); got != chatGPTCodexOriginator {
+			t.Fatalf("originator = %q, want %q", got, chatGPTCodexOriginator)
+		}
+		if got := req.Header.Get("User-Agent"); got != chatGPTCodexUserAgent {
+			t.Fatalf("User-Agent = %q, want %q", got, chatGPTCodexUserAgent)
+		}
+		if got := req.Header.Get("version"); got != chatGPTCodexClientVersion {
+			t.Fatalf("version = %q, want %q", got, chatGPTCodexClientVersion)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"ETag": []string{"etag-1"}},
