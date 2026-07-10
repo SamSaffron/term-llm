@@ -31,6 +31,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
+	worktreesui "github.com/samsaffron/term-llm/internal/tui/worktrees"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
@@ -304,6 +305,12 @@ type Model struct {
 	// Resume browser mode
 	resumeBrowserMode  bool
 	resumeBrowserModel *sessionsui.Model
+
+	// Worktree browser mode
+	worktreeBrowserMode      bool
+	worktreeBrowserModel     *worktreesui.Model
+	worktreeBrowserRoot      string
+	worktreeBrowserOperation string
 
 	// Alt screen mode (full-screen rendering)
 	altScreen               bool
@@ -1624,6 +1631,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// browser, the child ignores it and the spinner never schedules its next tick,
 	// so it appears frozen after returning to chat.
 	_, isSpinnerTick := msg.(spinner.TickMsg)
+
+	// Handle worktree browser mode. Its operation completion messages must be
+	// routed back to the child rather than the normal slash-command handler.
+	if m.worktreeBrowserMode && !isSpinnerTick {
+		return m.updateWorktreeBrowserMode(msg)
+	}
 
 	// Handle resume browser mode
 	if m.resumeBrowserMode && !isSpinnerTick {

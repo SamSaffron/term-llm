@@ -38,6 +38,11 @@ func (m *Model) View() tea.View {
 		return m.inspectorModel.View()
 	}
 
+	// Worktree browser mode uses its dedicated full-screen view.
+	if m.worktreeBrowserMode && m.worktreeBrowserModel != nil {
+		return m.worktreeBrowserModel.View()
+	}
+
 	// Resume browser mode uses the dedicated sessions browser view
 	if m.resumeBrowserMode && m.resumeBrowserModel != nil {
 		return m.resumeBrowserModel.View()

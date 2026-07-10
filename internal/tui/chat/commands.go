@@ -168,10 +168,10 @@ func AllCommands() []Command {
 			Name:        "worktree",
 			Aliases:     []string{"wt"},
 			Description: "Manage git worktrees for this chat session",
-			Usage:       "/worktree [new|list|switch|root|pwd|diff|merge|promote|rm]",
+			Usage:       "/worktree [new|browse|switch|root|pwd|diff|merge|promote|rm]",
 			Subcommands: []Subcommand{
 				{Name: "new", Description: "Create and bind a new worktree"},
-				{Name: "list", Description: "List managed worktrees"},
+				{Name: "browse", Description: "Browse managed worktrees"},
 				{Name: "switch", Description: "Bind this session to a worktree"},
 				{Name: "root", Description: "Return to the root checkout"},
 				{Name: "pwd", Description: "Show current bound directory"},

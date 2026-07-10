@@ -36,12 +36,9 @@ type pendingWorktreeRecovery struct {
 
 func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		return m.showSystemMessage("Usage: /worktree [new|list|switch|root|pwd|diff|merge|promote|rm]")
+		return m.showSystemMessage("Usage: /worktree [new|browse|switch|root|pwd|diff|merge|promote|rm]")
 	}
 	sub := strings.ToLower(args[0])
-	if sub == "ls" {
-		sub = "list"
-	}
 	if sub == "remove" {
 		sub = "rm"
 	}
@@ -50,8 +47,8 @@ func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	case "pwd":
 		m.clearWorktreeCommandComposer()
 		return m.showSystemMessage(m.boundWorktreeDir())
-	case "list":
-		return m.cmdWorktreeList()
+	case "browse":
+		return m.openWorktreeBrowser()
 	case "new":
 		return m.cmdWorktreeNew(subArgs)
 	case "switch":
@@ -158,36 +155,6 @@ func (m *Model) resolveWorktreeTarget(target string) (string, error) {
 		return target, nil
 	}
 	return "", fmt.Errorf("unknown managed worktree %q", target)
-}
-
-func (m *Model) cmdWorktreeList() (tea.Model, tea.Cmd) {
-	root, err := m.repoRootForWorktree()
-	if err != nil {
-		return m.showFooterError(err.Error())
-	}
-	items, err := worktree.List(root)
-	if err != nil {
-		return m.showFooterError(err.Error())
-	}
-	if len(items) == 0 {
-		m.clearWorktreeCommandComposer()
-		return m.showFooterMuted("No managed worktrees.")
-	}
-	var b strings.Builder
-	b.WriteString("Managed worktrees:\n")
-	for _, wt := range items {
-		mark := " "
-		if m.sess != nil && filepath.Clean(m.sess.WorktreeDir) == filepath.Clean(wt.Dir) {
-			mark = "*"
-		}
-		ref := "detached@" + shortSHA(wt.HeadSHA)
-		if wt.Branch != "" {
-			ref = wt.Branch
-		}
-		fmt.Fprintf(&b, "%s %s  %s  dirty:%d  %s\n", mark, wt.Name, ref, wt.DirtyFiles, wt.Dir)
-	}
-	m.clearWorktreeCommandComposer()
-	return m.showSystemMessage(b.String())
 }
 
 func (m *Model) cmdWorktreeNew(args []string) (tea.Model, tea.Cmd) {
