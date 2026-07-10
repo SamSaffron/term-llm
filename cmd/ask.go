@@ -72,6 +72,20 @@ var (
 	askResume string
 
 	askRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
+
+	newAskProvider = func(cfg *config.Config, fast bool) (llm.Provider, error) {
+		if fast {
+			provider, err := llm.NewFastProvider(cfg, cfg.DefaultProvider)
+			if err != nil {
+				return nil, fmt.Errorf("fast provider: %w", err)
+			}
+			if provider == nil {
+				return nil, fmt.Errorf("no fast provider configured for %q", cfg.DefaultProvider)
+			}
+			return provider, nil
+		}
+		return llm.NewProvider(cfg)
+	}
 )
 
 var askCmd = &cobra.Command{
@@ -215,20 +229,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	initThemeFromConfig(cfg)
 
 	// Create LLM provider
-	var provider llm.Provider
-	if askFast {
-		provider, err = llm.NewFastProvider(cfg, cfg.DefaultProvider)
-		if err != nil {
-			return fmt.Errorf("fast provider: %w", err)
-		}
-		if provider == nil {
-			return fmt.Errorf("no fast provider configured for %q", cfg.DefaultProvider)
-		}
-	} else {
-		provider, err = llm.NewProvider(cfg)
-		if err != nil {
-			return err
-		}
+	provider, err := newAskProvider(cfg, askFast)
+	if err != nil {
+		return err
 	}
 	engine := newEngine(provider, cfg)
 
@@ -1004,12 +1007,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			runnerDone := make(chan struct{})
 			go func() {
 				result, runErr := askRunner.Run(streamCtx, baseRunReq, pipe)
-				pipe.CloseWithError(runErr)
 				runnerResultChan <- runnerStreamResult{result: result, err: runErr}
 				close(runnerDone)
+				pipe.CloseWithError(runErr)
 			}()
 			adapter.ProcessStream(streamCtx, pipe)
-			cancelStream()
+			select {
+			case <-runnerDone:
+				// The producer completed normally; do not turn a successful run
+				// into an interruption before the renderer drains its final events.
+			default:
+				cancelStream()
+			}
 			cleanupTimeout := askRunnerCleanupTimeout
 			if cleanupTimeout <= 0 {
 				cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
