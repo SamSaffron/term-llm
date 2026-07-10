@@ -675,6 +675,7 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
       term_llm_selected_provider: 'chatgpt',
       term_llm_selected_model: 'gpt-5.4',
       term_llm_selected_effort: 'xhigh',
+      term_llm_selected_reasoning_mode: 'standard',
     },
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
@@ -689,6 +690,7 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
     provider: 'chatgpt',
     activeModel: 'gpt-5.4-mini',
     activeEffort: '',
+    activeReasoningMode: 'pro',
     lastResponseId: 'resp_msg_1',
     activeResponseId: null,
     lastSequenceNumber: 0,
@@ -697,6 +699,7 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
   app.state.selectedProvider = 'chatgpt';
   app.state.selectedModel = 'gpt-5.4';
   app.state.selectedEffort = 'xhigh';
+  app.state.selectedReasoningMode = 'standard';
 
   await app.switchToSession(session.id, { sync: false });
 
@@ -712,12 +715,20 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
     fail(name, `selectedEffort = ${JSON.stringify(app.state.selectedEffort)}, want empty`);
     return;
   }
+  if (app.state.selectedReasoningMode !== 'pro') {
+    fail(name, `selectedReasoningMode = ${JSON.stringify(app.state.selectedReasoningMode)}, want pro`);
+    return;
+  }
   if (storage.get('term_llm_selected_model') !== 'gpt-5.4-mini') {
     fail(name, 'expected selected model to be persisted for the active session', storage.get('term_llm_selected_model'));
     return;
   }
   if (storage.has('term_llm_selected_effort')) {
     fail(name, 'expected stale selected effort to be cleared', storage.get('term_llm_selected_effort'));
+    return;
+  }
+  if (storage.get('term_llm_selected_reasoning_mode') !== 'pro') {
+    fail(name, 'expected selected reasoning mode to be persisted', storage.get('term_llm_selected_reasoning_mode'));
     return;
   }
   pass(name);

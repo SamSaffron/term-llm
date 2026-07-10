@@ -25,6 +25,25 @@ func TestProviderModelsIncludeGrokBin(t *testing.T) {
 func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 	t.Parallel()
 
+	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !containsModelID(ProviderModelIDs("openai"), id) {
+			t.Fatalf("openai models missing %s", id)
+		}
+		if got := InputLimitForProviderModel("openai", id); got != 922_000 {
+			t.Fatalf("openai %s input limit = %d, want 922000", id, got)
+		}
+		if got := OutputLimitForModel(id); got != 128_000 {
+			t.Fatalf("%s output limit = %d, want 128000", id, got)
+		}
+	}
+	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !containsModelID(ProviderModelIDs("chatgpt"), id) {
+			t.Fatalf("chatgpt models missing %s", id)
+		}
+		if got := InputLimitForProviderModel("chatgpt", id); got != 372_000 {
+			t.Fatalf("chatgpt %s input limit = %d, want 372000", id, got)
+		}
+	}
 	if !containsModelID(ProviderModelIDs("openai"), "gpt-5.5") {
 		t.Fatalf("openai models missing gpt-5.5")
 	}
@@ -48,14 +67,14 @@ func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 	}
 }
 
-func TestProviderFastModelsUseLatestGPT54LightweightModels(t *testing.T) {
+func TestProviderFastModelsUseGPT56Luna(t *testing.T) {
 	t.Parallel()
 
-	if got := ProviderFastModels["openai"]; got != "gpt-5.4-nano" {
-		t.Fatalf("ProviderFastModels[openai] = %q, want %q", got, "gpt-5.4-nano")
+	if got := ProviderFastModels["openai"]; got != "gpt-5.6-luna" {
+		t.Fatalf("ProviderFastModels[openai] = %q, want gpt-5.6-luna", got)
 	}
-	if got := ProviderFastModels["chatgpt"]; got != "gpt-5.4-mini" {
-		t.Fatalf("ProviderFastModels[chatgpt] = %q, want %q", got, "gpt-5.4-mini")
+	if got := ProviderFastModels["chatgpt"]; got != "gpt-5.6-luna" {
+		t.Fatalf("ProviderFastModels[chatgpt] = %q, want gpt-5.6-luna", got)
 	}
 }
 
@@ -228,7 +247,7 @@ func TestEffortVariantLimitsMatchBase(t *testing.T) {
 
 	for provider, entries := range ProviderModels {
 		for _, e := range entries {
-			variants := EffortVariantsFor(e.ID)
+			variants := ReasoningEffortsForProviderModel(provider, e.ID)
 			if len(variants) == 0 || e.InputLimit == 0 {
 				continue
 			}
@@ -265,7 +284,11 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 		{"claude-bin", "haiku", nil},
 		{"openai", "gpt-5.4", []string{"minimal", "low", "medium", "high", "xhigh"}},
 		{"openai", "gpt-5.4-high", []string{"minimal", "low", "medium", "high", "xhigh"}},
-		{"openai", "gpt-5.6", []string{"minimal", "low", "medium", "high", "xhigh"}},
+		{"openai", "gpt-5.6-sol", []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{"openai", "gpt-5.6-sol-max", []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{"chatgpt", "gpt-5.6-sol", []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+		{"chatgpt", "gpt-5.6-terra-ultra", []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+		{"chatgpt", "gpt-5.6-luna", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-opus-4-8", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-opus-4-8-max", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-sonnet-4-6", []string{"low", "medium", "high"}},

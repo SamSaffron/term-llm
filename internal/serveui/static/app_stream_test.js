@@ -197,6 +197,8 @@ function createHarness(options = {}) {
     providerSelect: makeNode(),
     modelSelect: makeNode(),
     effortSelect: makeNode(),
+    reasoningModeSelect: makeNode(),
+    reasoningModeField: makeNode(),
     chipProviderSelect: makeNode(),
     chipModelSelect: makeNode(),
     chipEffortSelect: makeNode(),
@@ -286,6 +288,8 @@ function createHarness(options = {}) {
     selectedModel: '',
     selectedProvider: '',
     selectedEffort: '',
+    selectedReasoningMode: 'standard',
+    modelInfoByID: {},
     showHiddenSessions: false,
     showWidgetsSidebar: true,
     providers: [],
@@ -312,6 +316,7 @@ function createHarness(options = {}) {
       selectedProvider: 'selectedProvider',
       selectedModel: 'selectedModel',
       selectedEffort: 'selectedEffort',
+      selectedReasoningMode: 'selectedReasoningMode',
       showHiddenSessions: 'showHiddenSessions',
       showWidgetsSidebar: 'showWidgetsSidebar',
       token: 'token',
@@ -2904,6 +2909,66 @@ async function testSendMessageOmitsModelSwapWhenTargetUnchanged() {
   pass(name);
 }
 
+async function testSendMessageGatesReasoningModeByModelMetadata() {
+  const supportedName = 'sendMessage sends Pro mode only for supporting models';
+  {
+    const { app, elements, state, fetchCalls, cleanup } = createHarness();
+    state.selectedProvider = 'openai';
+    state.selectedModel = 'gpt-5.6-sol';
+    state.selectedReasoningMode = 'pro';
+    state.modelInfoByID = {
+      'gpt-5.6-sol': { id: 'gpt-5.6-sol', reasoning_modes: ['standard', 'pro'] },
+    };
+    elements.promptInput.value = 'hello';
+
+    await app.sendMessage();
+    await cleanup();
+
+    const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+    const body = postCall?.body ? JSON.parse(postCall.body) : null;
+    if (!body || body.reasoning?.mode !== 'pro') {
+      fail(supportedName, 'expected reasoning.mode=pro', postCall?.body || 'missing request');
+      return;
+    }
+    if (elements.reasoningModeField.hidden) {
+      fail(supportedName, 'reasoning mode field should be visible');
+      return;
+    }
+    pass(supportedName);
+  }
+
+  const unsupportedName = 'sendMessage clears Pro mode for unsupported models';
+  {
+    const { app, elements, state, fetchCalls, localStorage, cleanup } = createHarness();
+    state.selectedProvider = 'chatgpt';
+    state.selectedModel = 'gpt-5.6-sol';
+    state.selectedReasoningMode = 'pro';
+    state.modelInfoByID = {
+      'gpt-5.6-sol': { id: 'gpt-5.6-sol', reasoning_modes: [] },
+    };
+    elements.promptInput.value = 'hello';
+
+    await app.sendMessage();
+    await cleanup();
+
+    const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+    const body = postCall?.body ? JSON.parse(postCall.body) : null;
+    if (!body || Object.prototype.hasOwnProperty.call(body, 'reasoning')) {
+      fail(unsupportedName, 'reasoning controls must be omitted', postCall?.body || 'missing request');
+      return;
+    }
+    if (state.selectedReasoningMode !== 'standard' || localStorage.getItem('selectedReasoningMode') !== 'standard') {
+      fail(unsupportedName, 'expected stale Pro selection to be reset');
+      return;
+    }
+    if (!elements.reasoningModeField.hidden) {
+      fail(unsupportedName, 'reasoning mode field should be hidden');
+      return;
+    }
+    pass(unsupportedName);
+  }
+}
+
 function testModelSwapProgressEventUpdatesTransientMarker() {
   const name = 'model swap progress event updates transient marker without assistant text';
   const harness = createHarness();
@@ -5084,6 +5149,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();
   await testSendMessageOmitsModelSwapWhenTargetUnchanged();
+  await testSendMessageGatesReasoningModeByModelMetadata();
   await testQueueEffortWhileStreamingPostsRuntimeEffortAndShowsPending();
   testResponseModelSwitchStabilizesEffortAndClearsPending();
   testCompletedResponseClearsUnappliedQueuedEffort();

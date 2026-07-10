@@ -346,6 +346,16 @@ func looksLikePlainText(raw []byte) bool {
 // Images exceeding 1 MB are resized/compressed only for the inline LLM payload
 // to avoid provider errors; the saved ImagePath always points at the original
 // uploaded bytes.
+func hasExplicitPromptCacheBreakpoint(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value struct {
+		Mode string `json:"mode"`
+	}
+	return json.Unmarshal(raw, &value) == nil && strings.EqualFold(strings.TrimSpace(value.Mode), "explicit")
+}
+
 func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 	var parts []map[string]json.RawMessage
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
@@ -353,11 +363,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 		fileCount := 0
 		for _, part := range parts {
 			partType := strings.ToLower(strings.TrimSpace(jsonString(part["type"])))
+			cacheBreakpoint := hasExplicitPromptCacheBreakpoint(part["prompt_cache_breakpoint"])
 			switch partType {
 			case "input_text", "text", "output_text":
 				text := jsonString(part["text"])
 				if text != "" {
-					llmParts = append(llmParts, llm.Part{Type: llm.PartText, Text: text})
+					llmParts = append(llmParts, llm.Part{Type: llm.PartText, Text: text, PromptCacheBreakpoint: cacheBreakpoint})
 				}
 			case "input_image", "image_url":
 				imageURL := jsonImageURL(part["image_url"])

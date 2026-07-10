@@ -19,13 +19,15 @@ type OpenAIProvider struct {
 	useWebSocket     bool              // Responses-over-WebSocket transport
 	serviceTier      string            // Optional Responses API service tier default
 	fileUploadPolicy *FileUploadPolicy // Provider-specific native file forwarding policy
-	responsesClient  *ResponsesClient  // Shared client for Responses API with server state
+	responsesOptions ResponsesOptions
+	responsesClient  *ResponsesClient // Shared client for Responses API with server state
 }
 
 type OpenAIProviderOptions struct {
 	UseWebSocket     bool
 	ServiceTier      string
 	FileUploadPolicy *FileUploadPolicy
+	Responses        ResponsesOptions
 }
 
 // ParseModelEffort extracts effort suffix from model name.
@@ -49,7 +51,7 @@ func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 }
 
 func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptions) *OpenAIProvider {
-	actualModel, effort := ParseModelEffort(model)
+	actualModel, effort := parseModelEffortForProvider("openai", model)
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
 		client:           &client,
@@ -59,6 +61,7 @@ func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptio
 		useWebSocket:     opts.UseWebSocket,
 		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
 		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
+		responsesOptions: opts.Responses,
 	}
 }
 
@@ -113,7 +116,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := ParseModelEffort(req.Model)
+	reqModel, reqEffort := parseModelEffortForProvider("openai", req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
 	if reqEffort != "" {
@@ -123,8 +126,14 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		effort = v
 	}
 
-	// Build tools - add web search tool first if requested
-	tools := BuildResponsesTools(req.Tools)
+	responsesOptions := mergeResponsesOptions(p.responsesOptions, req.Responses, req.Ephemeral)
+	responsesOptions, err := validateResponsesOptions("openai", model, &responsesOptions, req.Tools)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build tools - add web search tool first if requested.
+	tools := BuildResponsesToolsWithOptions(req.Tools, responsesOptions.ProgrammaticToolCalling)
 	if req.Search {
 		webSearchTool := ResponsesWebSearchTool{Type: "web_search_preview"}
 		tools = append([]any{webSearchTool}, tools...)
@@ -167,9 +176,27 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	if req.MaxOutputTokens > 0 {
 		responsesReq.MaxOutputTokens = req.MaxOutputTokens
 	}
-	responsesReq.Reasoning = &ResponsesReasoning{Summary: "auto"}
+	responsesReq.Reasoning = &ResponsesReasoning{}
+	if !responsesOptions.MultiAgent.Enabled {
+		responsesReq.Reasoning.Summary = "auto"
+	}
 	if effort != "" {
 		responsesReq.Reasoning.Effort = effort
+	}
+	responsesReq.Reasoning.Mode = responsesOptions.ReasoningMode
+	responsesReq.Reasoning.Context = responsesOptions.ReasoningContext
+	if responsesOptions.MultiAgent.Enabled {
+		responsesReq.MultiAgent = &ResponsesMultiAgent{
+			Enabled:                true,
+			MaxConcurrentSubagents: responsesOptions.MultiAgent.MaxConcurrentSubagents,
+		}
+		responsesReq.ExtraHeaders = map[string]string{"OpenAI-Beta": "responses_multi_agent=v1"}
+	}
+	if responsesOptions.PromptCache.Mode != "" || responsesOptions.PromptCache.TTL != "" {
+		responsesReq.PromptCacheOptions = &ResponsesPromptCacheOptions{Mode: responsesOptions.PromptCache.Mode, TTL: responsesOptions.PromptCache.TTL}
+	}
+	if responsesReq.Reasoning.Effort == "" && responsesReq.Reasoning.Summary == "" && responsesReq.Reasoning.Mode == "" && responsesReq.Reasoning.Context == "" {
+		responsesReq.Reasoning = nil
 	}
 
 	if req.Debug {

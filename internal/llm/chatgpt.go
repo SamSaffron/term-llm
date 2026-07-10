@@ -38,12 +38,14 @@ type ChatGPTProvider struct {
 	responsesClient  *ResponsesClient
 	serviceTier      string
 	fileUploadPolicy *FileUploadPolicy
+	responsesOptions ResponsesOptions
 }
 
 type ChatGPTProviderOptions struct {
 	UseWebSocket     bool
 	ServiceTier      string
 	FileUploadPolicy *FileUploadPolicy
+	Responses        ResponsesOptions
 }
 
 // NewChatGPTProvider creates a new ChatGPT provider.
@@ -58,7 +60,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
-	actualModel, effort := ParseModelEffort(model)
+	actualModel, effort := parseModelEffortForProvider("chatgpt", model)
 
 	// Try to load existing credentials
 	creds, err := credentials.GetChatGPTCredentials()
@@ -89,6 +91,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 		useWebSocket:     opts.UseWebSocket,
 		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
 		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
+		responsesOptions: opts.Responses,
 	}, nil
 }
 
@@ -102,7 +105,7 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
-	actualModel, effort := ParseModelEffort(model)
+	actualModel, effort := parseModelEffortForProvider("chatgpt", model)
 	return &ChatGPTProvider{
 		creds:            creds,
 		model:            actualModel,
@@ -110,6 +113,7 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 		useWebSocket:     opts.UseWebSocket,
 		serviceTier:      NormalizeServiceTier(opts.ServiceTier),
 		fileUploadPolicy: cloneFileUploadPolicy(opts.FileUploadPolicy),
+		responsesOptions: opts.Responses,
 	}
 }
 
@@ -226,7 +230,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := ParseModelEffort(req.Model)
+	reqModel, reqEffort := parseModelEffortForProvider("chatgpt", req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
 	if reqEffort != "" {
@@ -236,7 +240,13 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		effort = v
 	}
 
-	// Build tools
+	responsesOptions := mergeResponsesOptions(p.responsesOptions, req.Responses, req.Ephemeral)
+	if _, err := validateResponsesOptions("chatgpt", model, &responsesOptions, req.Tools); err != nil {
+		return nil, err
+	}
+
+	// Build tools. ChatGPT Ultra remains an effort; no public-API Pro or
+	// multi-agent/PTC/cache controls are synthesized for the Codex backend.
 	tools := BuildResponsesTools(req.Tools)
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)

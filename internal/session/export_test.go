@@ -349,3 +349,23 @@ func TestExportToMarkdownRawReasoningRequiresExplicitOption(t *testing.T) {
 		t.Fatalf("expected raw reasoning with explicit option, got %q", withRaw)
 	}
 }
+
+func TestExportToMarkdownNeverExportsProviderReplay(t *testing.T) {
+	sess := &Session{ID: "sess-replay", Provider: "openai", Model: "gpt-5.6-sol", CreatedAt: time.Now()}
+	messages := []Message{{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "Visible answer."},
+			{Type: llm.PartProviderReplay, ProviderReplay: &llm.ProviderReplayItem{Raw: json.RawMessage(`{"type":"reasoning","encrypted_content":"opaque-secret"}`)}},
+		},
+		TextContent: "Visible answer.",
+	}}
+
+	got := ExportToMarkdown(sess, messages, ExportOptions{IncludeReasoningSummaries: true, IncludeRawReasoning: true})
+	if !strings.Contains(got, "Visible answer.") {
+		t.Fatalf("visible answer missing from export: %q", got)
+	}
+	if strings.Contains(got, "opaque-secret") || strings.Contains(got, "provider_replay") {
+		t.Fatalf("provider replay leaked into export: %q", got)
+	}
+}

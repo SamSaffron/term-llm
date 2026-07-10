@@ -6379,13 +6379,14 @@ func TestHandleSessionState_ConsumesDeferredUIRunError(t *testing.T) {
 
 func TestHandleSessionState_ReturnsModelAndEffortFromRuntime(t *testing.T) {
 	rt := &serveRuntime{
-		providerKey:  "anthropic",
-		defaultModel: "claude-3-5-sonnet",
+		providerKey:  "openai",
+		defaultModel: "gpt-5.6-sol",
 	}
 	rt.mu.Lock()
 	rt.sessionMeta = &session.Session{
-		Model:           "claude-opus-4",
+		Model:           "gpt-5.6-terra",
 		ReasoningEffort: "high",
+		ReasoningMode:   "pro",
 	}
 	rt.mu.Unlock()
 
@@ -6405,13 +6406,16 @@ func TestHandleSessionState_ReturnsModelAndEffortFromRuntime(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, `"model":"claude-opus-4"`) {
+	if !strings.Contains(body, `"model":"gpt-5.6-terra"`) {
 		t.Errorf("expected model from sessionMeta in state, got %s", body)
 	}
 	if !strings.Contains(body, `"reasoning_effort":"high"`) {
 		t.Errorf("expected reasoning_effort from sessionMeta in state, got %s", body)
 	}
-	if !strings.Contains(body, `"provider":"anthropic"`) {
+	if !strings.Contains(body, `"reasoning_mode":"pro"`) {
+		t.Errorf("expected reasoning_mode from sessionMeta in state, got %s", body)
+	}
+	if !strings.Contains(body, `"provider":"openai"`) {
 		t.Errorf("expected provider in state, got %s", body)
 	}
 }
@@ -9391,7 +9395,7 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 	mgr := newServeSessionManager(time.Minute, 100, factory)
 	srv := &serveServer{sessionMgr: mgr}
 
-	body := `{"input":"hello","reasoning_effort":"high"}`
+	body := `{"input":"hello","reasoning":{"effort":"high","mode":"pro","context":"all_turns"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -9408,6 +9412,10 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 	}
 	if got := capturedProvider.Requests[0].ReasoningEffort; got != "high" {
 		t.Fatalf("ReasoningEffort = %q, want %q", got, "high")
+	}
+	responses := capturedProvider.Requests[0].Responses
+	if responses == nil || responses.ReasoningMode != "pro" || responses.ReasoningContext != "all_turns" {
+		t.Fatalf("Responses = %+v, want pro/all_turns", responses)
 	}
 }
 

@@ -137,7 +137,7 @@ func TestSyncPersistedSessionRuntimeBindsWorktreeDir(t *testing.T) {
 
 	srv := &serveServer{store: store}
 	rt := &serveRuntime{toolMgr: mgr, defaultModel: "tiny", providerKey: "mock"}
-	srv.syncPersistedSessionRuntime(ctx, "sess-sync-wt", rt, "tiny", "", worktreeDir)
+	srv.syncPersistedSessionRuntime(ctx, "sess-sync-wt", rt, "tiny", "", "", false, worktreeDir)
 
 	persisted, err := store.Get(ctx, "sess-sync-wt")
 	if err != nil {
@@ -204,7 +204,7 @@ func TestSyncPersistedSessionRuntimeDoesNotRetargetConflictingWorktree(t *testin
 
 	srv := &serveServer{store: store}
 	rt := &serveRuntime{toolMgr: mgr, defaultModel: "tiny", providerKey: "mock"}
-	srv.syncPersistedSessionRuntime(ctx, "sess-conflict", rt, "tiny", "", second)
+	srv.syncPersistedSessionRuntime(ctx, "sess-conflict", rt, "tiny", "", "", false, second)
 
 	persisted, err := store.Get(ctx, "sess-conflict")
 	if err != nil {

@@ -149,7 +149,10 @@ const normalizeModelMetadata = (items) => {
     const efforts = Array.isArray(m?.reasoning_efforts)
       ? m.reasoning_efforts.map((v) => String(v || '').trim()).filter(Boolean)
       : [];
-    byID[id] = { id, reasoning_efforts: efforts };
+    const modes = Array.isArray(m?.reasoning_modes)
+      ? m.reasoning_modes.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+    byID[id] = { id, reasoning_efforts: efforts, reasoning_modes: modes };
   });
   return { ids, byID };
 };
@@ -2253,6 +2256,11 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   if (elements.effortSelect) {
     elements.effortSelect.value = state.selectedEffort;
   }
+  if (elements.reasoningModeSelect) {
+    elements.reasoningModeSelect.value = state.selectedReasoningMode || 'standard';
+    const info = modelMetadataFor(state.selectedModel);
+    elements.reasoningModeField.hidden = !Array.isArray(info?.reasoning_modes) || !info.reasoning_modes.includes('pro');
+  }
   if (elements.showHiddenSessionsInput) {
     elements.showHiddenSessionsInput.checked = state.showHiddenSessions;
   }
@@ -2264,6 +2272,7 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.providerSelect.removeAttribute('tabindex');
   elements.modelSelect.removeAttribute('tabindex');
   elements.effortSelect?.removeAttribute('tabindex');
+  elements.reasoningModeSelect?.removeAttribute('tabindex');
   elements.authTokenInput.removeAttribute('tabindex');
   elements.showHiddenSessionsInput?.removeAttribute('tabindex');
   elements.showWidgetsSidebarInput?.removeAttribute('tabindex');
@@ -2283,6 +2292,7 @@ const closeAuthModal = () => {
   elements.providerSelect.setAttribute('tabindex', '-1');
   elements.modelSelect.setAttribute('tabindex', '-1');
   elements.effortSelect?.setAttribute('tabindex', '-1');
+  elements.reasoningModeSelect?.setAttribute('tabindex', '-1');
   elements.authTokenInput.setAttribute('tabindex', '-1');
   elements.showHiddenSessionsInput?.setAttribute('tabindex', '-1');
   elements.showWidgetsSidebarInput?.setAttribute('tabindex', '-1');
@@ -2310,9 +2320,12 @@ const connectToken = async () => {
   const persistedProvider = state.selectedProvider;
   const persistedModel = state.selectedModel;
   const newEffort = elements.effortSelect ? elements.effortSelect.value : '';
+  const newReasoningMode = elements.reasoningModeSelect ? elements.reasoningModeSelect.value : 'standard';
   state.selectedProvider = persistedProvider;
   state.selectedModel = persistedModel;
   state.selectedEffort = newEffort;
+  state.selectedReasoningMode = newReasoningMode === 'pro' ? 'pro' : 'standard';
+  localStorage.setItem(STORAGE_KEYS.selectedReasoningMode, state.selectedReasoningMode);
   canonicalizeSelectedModelEffort();
   persistRuntimeSelection();
   const showHiddenChanged = nextShowHiddenSessions !== state.showHiddenSessions;
@@ -2506,7 +2519,7 @@ const reasoningEffortsForModel = (model) => {
     : [];
 };
 
-const LEGACY_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const LEGACY_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const allowedReasoningEffortsForSelection = () => {
   const model = effectiveModelForEffort();
@@ -4143,6 +4156,22 @@ const sendMessage = async (options = {}) => {
       || (targetModel || '') !== (currentModel || '')
       || normalizeEffortForCompare(targetEffort) !== normalizeEffortForCompare(currentEffort)
     );
+
+    const modeInfo = modelMetadataFor(targetModel || currentModel);
+    const reasoningModes = Array.isArray(modeInfo?.reasoning_modes) ? modeInfo.reasoning_modes : [];
+    const supportsReasoningMode = reasoningModes.includes('pro');
+    if (elements.reasoningModeField) elements.reasoningModeField.hidden = !supportsReasoningMode;
+    if (supportsReasoningMode) {
+      const selectedMode = state.selectedReasoningMode === 'pro' ? 'pro' : 'standard';
+      body.reasoning = { mode: selectedMode };
+      session.activeReasoningMode = selectedMode;
+    } else {
+      session.activeReasoningMode = '';
+      if (state.selectedReasoningMode === 'pro') {
+        state.selectedReasoningMode = 'standard';
+        localStorage.setItem(STORAGE_KEYS.selectedReasoningMode, 'standard');
+      }
+    }
 
     if (targetModel) {
       body.model = targetModel;

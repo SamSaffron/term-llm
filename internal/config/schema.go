@@ -368,6 +368,14 @@ var providerFieldSpecs = []ProviderFieldSpec{
 	{Path: "env", Placeholder: map[string]any{}},
 	{Path: "enable_hooks", Placeholder: false},
 	{Path: "use_websocket", Placeholder: false},
+	{Path: "responses.reasoning_mode"},
+	{Path: "responses.reasoning_context"},
+	{Path: "responses.multi_agent.enabled", Placeholder: false},
+	{Path: "responses.multi_agent.max_concurrent_subagents", Placeholder: 0},
+	{Path: "responses.programmatic_tool_calling.enabled", Placeholder: false},
+	{Path: "responses.programmatic_tool_calling.tools", Placeholder: []string{}},
+	{Path: "responses.prompt_cache.mode"},
+	{Path: "responses.prompt_cache.ttl"},
 	{Path: "file_upload.native_mime_types", Placeholder: []string{}},
 	{Path: "file_upload.max_native_bytes", Placeholder: 0},
 	{Path: "file_upload.text_embed_mime_types", Placeholder: []string{}},
@@ -406,11 +414,11 @@ var providerSpecs = []ProviderSpec{
 	},
 	{
 		Name: "openai", Type: ProviderTypeOpenAI, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults: []DefaultField{{"model", "gpt-5.2"}, {"fast_model", "gpt-5.4-nano"}, {"use_websocket", false}},
+		Defaults: []DefaultField{{"model", "gpt-5.6-sol"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", false}},
 	},
 	{
 		Name: "chatgpt", Type: ProviderTypeChatGPT, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults: []DefaultField{{"model", "gpt-5.5-medium"}, {"fast_model", "gpt-5.4-mini"}, {"use_websocket", true}},
+		Defaults: []DefaultField{{"model", "gpt-5.6-sol-medium"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", true}},
 	},
 	{
 		Name: "gemini", Type: ProviderTypeGemini, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,

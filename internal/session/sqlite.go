@@ -34,6 +34,7 @@ type SQLiteStore struct {
 	hasLastMessageCount      bool // true if sessions table has last_message_count column
 	hasMessageCount          bool // true if sessions table has message_count column
 	hasReasoningEffort       bool // true if sessions table has reasoning_effort column
+	hasReasoningMode         bool // true if sessions table has reasoning_mode column
 	hasApprovalMode          bool // true if sessions table has approval_mode column
 	hasWorktreeDir           bool // true if sessions table has worktree_dir column
 	hasGoal                  bool // true if sessions table has goal column
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	provider_key TEXT,
 	model TEXT NOT NULL,
 	reasoning_effort TEXT,
+	reasoning_mode TEXT,
 	mode TEXT DEFAULT 'chat',
 	approval_mode TEXT,
 	origin TEXT DEFAULT 'tui',
@@ -250,7 +252,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 35
+const schemaVersion = 36
 
 // migration represents a schema migration.
 type migration struct {
@@ -992,6 +994,18 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 36: Persist the explicit GPT-5.6 reasoning mode override.
+		version:     36,
+		description: "add session reasoning_mode column",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN reasoning_mode TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1328,6 +1342,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			reasoningEffortPlaceholder = ", ?"
 			reasoningEffortArgs = []any{nullString(sess.ReasoningEffort)}
 		}
+		reasoningModeCol := ""
+		reasoningModePlaceholder := ""
+		var reasoningModeArgs []any
+		if s.hasReasoningMode {
+			reasoningModeCol = ", reasoning_mode"
+			reasoningModePlaceholder = ", ?"
+			reasoningModeArgs = []any{nullString(sess.ReasoningMode)}
+		}
 		approvalModeCol := ""
 		approvalModePlaceholder := ""
 		var approvalModeArgs []any
@@ -1369,12 +1391,13 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		)
 		insertArgs = append(insertArgs, goalArgs...)
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
+		insertArgs = append(insertArgs, reasoningModeArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-				                      last_total_tokens, last_message_count, status, tags`+goalCol+reasoningEffortCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+reasoningEffortPlaceholder+`)`,
+				                      last_total_tokens, last_message_count, status, tags`+goalCol+reasoningEffortCol+reasoningModeCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1479,6 +1502,10 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasReasoningEffort {
 		reasoningEffortClause = ", reasoning_effort = ?"
 	}
+	reasoningModeClause := ""
+	if s.hasReasoningMode {
+		reasoningModeClause = ", reasoning_mode = ?"
+	}
 	approvalModeClause := ""
 	if s.hasApprovalMode {
 		approvalModeClause = ", approval_mode = ?"
@@ -1494,7 +1521,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
-		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, cwd = ?` + worktreeDirClause + `,
+		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, cwd = ?` + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       status = ?, tags = ?` + goalClause + `
 		WHERE id = ?`
@@ -1510,6 +1537,9 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	)
 	if s.hasReasoningEffort {
 		args = append(args, nullString(sess.ReasoningEffort))
+	}
+	if s.hasReasoningMode {
+		args = append(args, nullString(sess.ReasoningMode))
 	}
 	args = append(args,
 		string(sess.Mode),
@@ -3192,6 +3222,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasLastMessageCount = true
 	s.hasMessageCount = true
 	s.hasReasoningEffort = true
+	s.hasReasoningMode = true
 	s.hasApprovalMode = true
 	s.hasWorktreeDir = true
 	s.hasGoal = true
@@ -3245,6 +3276,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasMessageCount = true
 		case "reasoning_effort":
 			s.hasReasoningEffort = true
+		case "reasoning_mode":
+			s.hasReasoningMode = true
 		case "approval_mode":
 			s.hasApprovalMode = true
 		case "worktree_dir":
@@ -3295,6 +3328,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 		base += ", reasoning_effort"
 	} else {
 		base += ", NULL AS reasoning_effort"
+	}
+	if s.hasReasoningMode {
+		base += ", reasoning_mode"
+	} else {
+		base += ", NULL AS reasoning_mode"
 	}
 	base += `, mode`
 	if s.hasApprovalMode {
@@ -3353,7 +3391,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var name, summary, cwd, worktreeDir sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
-	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, goalRaw sql.NullString
+	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -3364,7 +3402,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		}
 	}
 	scanArgs = append(scanArgs,
-		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &mode, &approvalMode, &origin, &sess.Pinned,
+		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &reasoningMode, &mode, &approvalMode, &origin, &sess.Pinned,
 		&agent, &cwd, &worktreeDir, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
@@ -3447,6 +3485,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if reasoningEffort.Valid {
 		sess.ReasoningEffort = reasoningEffort.String
+	}
+	if reasoningMode.Valid {
+		sess.ReasoningMode = reasoningMode.String
 	}
 	if agent.Valid {
 		sess.Agent = agent.String

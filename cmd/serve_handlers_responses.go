@@ -155,6 +155,12 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	persistedRuntime := requestedRuntime
 	if !freshConversation {
 		persistedRuntime = s.persistedRuntimeSettings(ctx, sessionID, defaultProvider)
+		if requestedRuntime.reasoningMode == "" && persistedRuntime.reasoningMode != "" {
+			if req.Reasoning == nil {
+				req.Reasoning = &responsesReasoningRequest{}
+			}
+			req.Reasoning.Mode = persistedRuntime.reasoningMode
+		}
 	}
 	swapPlan := responseModelSwapPlan{}
 	if !freshConversation {
@@ -264,7 +270,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 				providerForNormalization = runtimeProviderKey(runtime)
 			}
 			req.Model, req.ReasoningEffort = normalizeProviderModelEffort(providerForNormalization, req.Model, req.ReasoningEffort)
-			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, req.WorktreeDir)
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, requestedRuntime.reasoningMode, true, req.WorktreeDir)
 		}
 
 		// Enforce chaining from the latest in-memory response only for ephemeral
@@ -312,7 +318,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if !stateful {
 		runIdempotencyKey = ""
 	}
-	searchFromTools, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
+	searchFromTools, ptcRequested, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
 	search := runtime.search || searchFromTools
 	toolChoice := parseToolChoice(req.ToolChoice)
 	includeServerTools := req.IncludeServerTools || isFirstPartyUIResponseRequest(r)
@@ -326,10 +332,46 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		parallel = *req.ParallelToolCalls
 	}
 
+	reasoningEffort := normalizeReasoningEffort(req.ReasoningEffort)
+	responsesOptions := &llm.ResponsesOptions{}
+	if req.Reasoning != nil {
+		reasoningEffort = normalizeReasoningEffort(req.Reasoning.Effort)
+		responsesOptions.ReasoningMode = req.Reasoning.Mode
+		responsesOptions.ReasoningContext = req.Reasoning.Context
+	}
+	if req.MultiAgent != nil {
+		responsesOptions.MultiAgent = llm.MultiAgentOptions{Enabled: req.MultiAgent.Enabled, EnabledSet: true, MaxConcurrentSubagents: req.MultiAgent.MaxConcurrentSubagents}
+	}
+	if req.PromptCacheOptions != nil {
+		responsesOptions.PromptCache = llm.PromptCacheOptions{Mode: req.PromptCacheOptions.Mode, TTL: req.PromptCacheOptions.TTL}
+	}
+	if ptcRequested {
+		responsesOptions.ProgrammaticToolCalling.Enabled = true
+		responsesOptions.ProgrammaticToolCalling.EnabledSet = true
+		for _, tool := range tools {
+			for _, caller := range tool.AllowedCallers {
+				if caller == "programmatic" {
+					responsesOptions.ProgrammaticToolCalling.Tools = append(responsesOptions.ProgrammaticToolCalling.Tools, tool.Name)
+					break
+				}
+			}
+		}
+	}
+	if responsesOptions.IsZero() {
+		responsesOptions = nil
+	}
+	if !freshConversation && req.Reasoning != nil {
+		reasoningMode := strings.ToLower(strings.TrimSpace(req.Reasoning.Mode))
+		if (reasoningMode == "standard" || reasoningMode == "pro") && llm.SupportsReasoningMode(reqProvider, req.Model) {
+			s.syncPersistedSessionReasoningMode(ctx, sessionID, runtime, reasoningMode)
+		}
+	}
+
 	llmReq := llm.Request{
 		SessionID:           sessionID,
 		Model:               strings.TrimSpace(req.Model),
-		ReasoningEffort:     normalizeReasoningEffort(req.ReasoningEffort),
+		ReasoningEffort:     reasoningEffort,
+		Responses:           responsesOptions,
 		Tools:               tools,
 		ToolChoice:          toolChoice,
 		ParallelToolCalls:   parallel,

@@ -56,6 +56,7 @@ type ResponsesClient struct {
 	wsMu                    sync.Mutex
 	wsConn                  *websocket.Conn
 	wsConnSessionID         string
+	wsConnBetaHeader        string
 	wsLastRequest           *ResponsesRequest
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
@@ -74,28 +75,31 @@ type ResponsesClient struct {
 
 // ResponsesRequest follows the Open Responses spec
 type ResponsesRequest struct {
-	Model                           string                  `json:"model"`
-	Instructions                    string                  `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
-	Input                           []ResponsesInputItem    `json:"input"`
-	Messages                        []Message               `json:"-"`               // Optional raw transcript for lazy input materialization
-	ExtractInstructionsFromMessages bool                    `json:"-"`               // When lazily materializing Input from Messages, omit system messages because they are sent via Instructions.
-	Tools                           []any                   `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
-	ToolChoice                      any                     `json:"tool_choice,omitempty"`
-	ParallelToolCalls               *bool                   `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens                 int                     `json:"max_output_tokens,omitempty"`
-	Temperature                     *float64                `json:"temperature,omitempty"`
-	TopP                            *float64                `json:"top_p,omitempty"`
-	Reasoning                       *ResponsesReasoning     `json:"reasoning,omitempty"`
-	Include                         []string                `json:"include,omitempty"`
-	PromptCacheKey                  string                  `json:"prompt_cache_key,omitempty"`
-	Store                           *bool                   `json:"store,omitempty"`
-	Generate                        *bool                   `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
-	Stream                          bool                    `json:"stream"`
-	StreamOptions                   *ResponsesStreamOptions `json:"stream_options,omitempty"`
-	PreviousResponseID              string                  `json:"previous_response_id,omitempty"`
-	ServiceTier                     string                  `json:"service_tier,omitempty"`
-	SessionID                       string                  `json:"-"`
-	FileUploadPolicy                *FileUploadPolicy       `json:"-"`
+	Model                           string                       `json:"model"`
+	Instructions                    string                       `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
+	Input                           []ResponsesInputItem         `json:"input"`
+	Messages                        []Message                    `json:"-"`               // Optional raw transcript for lazy input materialization
+	ExtractInstructionsFromMessages bool                         `json:"-"`               // When lazily materializing Input from Messages, omit system messages because they are sent via Instructions.
+	Tools                           []any                        `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
+	ToolChoice                      any                          `json:"tool_choice,omitempty"`
+	ParallelToolCalls               *bool                        `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens                 int                          `json:"max_output_tokens,omitempty"`
+	Temperature                     *float64                     `json:"temperature,omitempty"`
+	TopP                            *float64                     `json:"top_p,omitempty"`
+	Reasoning                       *ResponsesReasoning          `json:"reasoning,omitempty"`
+	MultiAgent                      *ResponsesMultiAgent         `json:"multi_agent,omitempty"`
+	PromptCacheOptions              *ResponsesPromptCacheOptions `json:"prompt_cache_options,omitempty"`
+	Include                         []string                     `json:"include,omitempty"`
+	PromptCacheKey                  string                       `json:"prompt_cache_key,omitempty"`
+	Store                           *bool                        `json:"store,omitempty"`
+	Generate                        *bool                        `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
+	Stream                          bool                         `json:"stream"`
+	StreamOptions                   *ResponsesStreamOptions      `json:"stream_options,omitempty"`
+	PreviousResponseID              string                       `json:"previous_response_id,omitempty"`
+	ServiceTier                     string                       `json:"service_tier,omitempty"`
+	SessionID                       string                       `json:"-"`
+	ExtraHeaders                    map[string]string            `json:"-"` // Request-scoped headers (combined with client headers).
+	FileUploadPolicy                *FileUploadPolicy            `json:"-"`
 }
 
 // ResponsesStreamOptions contains streaming delivery options for the Responses API.
@@ -124,9 +128,16 @@ type ResponsesImageGenerationTool struct {
 
 // ResponsesInputItem represents an input item in the Open Responses format
 type ResponsesInputItem struct {
-	Type    string      `json:"type"`
-	Role    string      `json:"role,omitempty"`
-	Content interface{} `json:"content,omitempty"` // string or []ResponsesContentPart
+	Raw           json.RawMessage `json:"-"` // Exact provider output item for stateless replay.
+	Type          string          `json:"type"`
+	Role          string          `json:"role,omitempty"`
+	Content       interface{}     `json:"content,omitempty"` // string or []ResponsesContentPart
+	Phase         string          `json:"phase,omitempty"`
+	Agent         string          `json:"agent,omitempty"`
+	Caller        string          `json:"caller,omitempty"`
+	Program       string          `json:"program,omitempty"`
+	ProgramOutput string          `json:"program_output,omitempty"`
+	Fingerprint   string          `json:"fingerprint,omitempty"`
 	// For reasoning type
 	ID               string                     `json:"id,omitempty"`
 	EncryptedContent string                     `json:"encrypted_content,omitempty"`
@@ -139,29 +150,56 @@ type ResponsesInputItem struct {
 	Output string `json:"output,omitempty"`
 }
 
+func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
+	if len(i.Raw) > 0 {
+		return append([]byte(nil), i.Raw...), nil
+	}
+	type wire ResponsesInputItem
+	return json.Marshal(wire(i))
+}
+
 // ResponsesContentPart represents a content part (text, image, or file).
 type ResponsesContentPart struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	ImageURL string `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
-	Detail   string `json:"detail,omitempty"`
-	Filename string `json:"filename,omitempty"`
-	FileData string `json:"file_data,omitempty"`
+	Type                  string                          `json:"type"`
+	Text                  string                          `json:"text,omitempty"`
+	ImageURL              string                          `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
+	Detail                string                          `json:"detail,omitempty"`
+	Filename              string                          `json:"filename,omitempty"`
+	FileData              string                          `json:"file_data,omitempty"`
+	PromptCacheBreakpoint *ResponsesPromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+}
+
+type ResponsesPromptCacheBreakpoint struct {
+	Mode string `json:"mode"`
 }
 
 // ResponsesTool represents a tool definition in Open Responses format
 type ResponsesTool struct {
-	Type        string                 `json:"type"`
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Parameters  map[string]interface{} `json:"parameters"`
-	Strict      bool                   `json:"strict,omitempty"`
+	Type           string                 `json:"type"`
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description,omitempty"`
+	Parameters     map[string]interface{} `json:"parameters"`
+	Strict         bool                   `json:"strict,omitempty"`
+	AllowedCallers []string               `json:"allowed_callers,omitempty"`
+	OutputSchema   map[string]interface{} `json:"output_schema,omitempty"`
 }
 
-// ResponsesReasoning configures reasoning effort for models that support it
+// ResponsesReasoning configures GPT-5.6 reasoning execution.
 type ResponsesReasoning struct {
-	Effort  string `json:"effort,omitempty"`  // "low", "medium", "high", "xhigh"
-	Summary string `json:"summary,omitempty"` // "auto"
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Context string `json:"context,omitempty"`
+}
+
+type ResponsesMultiAgent struct {
+	Enabled                bool `json:"enabled"`
+	MaxConcurrentSubagents int  `json:"max_concurrent_subagents,omitempty"`
+}
+
+type ResponsesPromptCacheOptions struct {
+	Mode string `json:"mode,omitempty"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 // responsesAPIResponse is the response structure from the API
@@ -180,10 +218,16 @@ type responsesOutputItem struct {
 	EncryptedContent string                          `json:"encrypted_content,omitempty"`
 	Summary          []responsesReasoningSummaryPart `json:"summary,omitempty"`
 	// For function_call
-	ID        string `json:"id,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	ID            string `json:"id,omitempty"`
+	CallID        string `json:"call_id,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Arguments     string `json:"arguments,omitempty"`
+	Caller        string `json:"caller,omitempty"`
+	Phase         string `json:"phase,omitempty"`
+	Agent         string `json:"agent,omitempty"`
+	Program       string `json:"program,omitempty"`
+	ProgramOutput string `json:"program_output,omitempty"`
+	Fingerprint   string `json:"fingerprint,omitempty"`
 	// For image_generation_call
 	Result        string `json:"result,omitempty"`         // base64-encoded image payload
 	RevisedPrompt string `json:"revised_prompt,omitempty"` // model's revised prompt
@@ -206,7 +250,8 @@ type responsesUsage struct {
 	InputTokens        int `json:"input_tokens"`
 	OutputTokens       int `json:"output_tokens"`
 	InputTokensDetails struct {
-		CachedTokens int `json:"cached_tokens"`
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
 	} `json:"input_tokens_details"`
 	OutputTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
@@ -280,7 +325,7 @@ func buildResponsesInputItems(messages []Message, policy *FileUploadPolicy) []Re
 	var inputItems []ResponsesInputItem
 	for _, msg := range messages {
 		if msg.Role == RoleSystem || msg.Role == RoleDeveloper {
-			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts, policy)...)
+			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts, policy, msg.CacheAnchor)...)
 		} else {
 			inputItems = append(inputItems, buildResponsesInputForRole(msg, policy)...)
 		}
@@ -349,9 +394,9 @@ func BuildResponsesContinuationInputWithFilePolicy(messages []Message, policy *F
 func buildResponsesInputForRole(msg Message, policy *FileUploadPolicy) []ResponsesInputItem {
 	switch msg.Role {
 	case RoleUser:
-		return buildResponsesMessageItems("user", msg.Parts, policy)
+		return buildResponsesMessageItems("user", msg.Parts, policy, msg.CacheAnchor)
 	case RoleDeveloper:
-		return buildResponsesMessageItems("developer", msg.Parts, policy)
+		return buildResponsesMessageItems("developer", msg.Parts, policy, msg.CacheAnchor)
 	case RoleAssistant:
 		return buildResponsesAssistantItems(msg.Parts)
 	case RoleTool:
@@ -368,6 +413,7 @@ func buildResponsesInputForRole(msg Message, policy *FileUploadPolicy) []Respons
 				Type:   "function_call_output",
 				CallID: callID,
 				Output: toolResultTextContent(part.ToolResult),
+				Caller: part.ToolResult.Caller,
 			})
 			if richParts, hasImage := toolResultResponsesImageParts(part.ToolResult); hasImage {
 				items = append(items, ResponsesInputItem{
@@ -383,41 +429,57 @@ func buildResponsesInputForRole(msg Message, policy *FileUploadPolicy) []Respons
 	}
 }
 
-func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPolicy) []ResponsesInputItem {
+func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPolicy, cacheAnchor bool) []ResponsesInputItem {
 	var items []ResponsesInputItem
 	var textBuf strings.Builder
+	textBreakpoint := false
+	breakpoint := func(enabled bool) *ResponsesPromptCacheBreakpoint {
+		if !enabled {
+			return nil
+		}
+		return &ResponsesPromptCacheBreakpoint{Mode: "explicit"}
+	}
 
 	flushText := func() {
 		if textBuf.Len() == 0 {
 			return
 		}
-		items = append(items, ResponsesInputItem{
-			Type:    "message",
-			Role:    role,
-			Content: textBuf.String(),
-		})
+		content := any(textBuf.String())
+		if textBreakpoint {
+			content = []ResponsesContentPart{{Type: "input_text", Text: textBuf.String(), PromptCacheBreakpoint: breakpoint(true)}}
+		}
+		items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: content})
 		textBuf.Reset()
+		textBreakpoint = false
 	}
 
 	for _, part := range parts {
 		switch part.Type {
+		case PartProviderReplay:
+			flushText()
+			if part.ProviderReplay != nil && len(part.ProviderReplay.Raw) > 0 {
+				items = append(items, ResponsesInputItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)})
+			}
 		case PartText:
 			if part.Text != "" {
+				if part.PromptCacheBreakpoint {
+					flushText()
+					textBreakpoint = true
+				}
 				textBuf.WriteString(part.Text)
+				if part.PromptCacheBreakpoint {
+					flushText()
+				}
 			}
 		case PartImage:
 			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
 				flushText()
 				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(part.ImageData.Detail)}}
+				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(part.ImageData.Detail), PromptCacheBreakpoint: breakpoint(part.PromptCacheBreakpoint)}}
 				if part.ImagePath != "" {
 					imageParts = append(imageParts, ResponsesContentPart{Type: "input_text", Text: "[image saved at: " + part.ImagePath + "]"})
 				}
-				items = append(items, ResponsesInputItem{
-					Type:    "message",
-					Role:    role,
-					Content: imageParts,
-				})
+				items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: imageParts})
 			}
 		case PartFile:
 			if part.FileData != nil && part.FileData.Base64 != "" && responseNativeFileAllowed(part.FileData, policy) {
@@ -430,18 +492,17 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 				if mediaType == "" {
 					mediaType = "application/octet-stream"
 				}
-				fileParts := []ResponsesContentPart{{
-					Type:     "input_file",
-					Filename: filename,
-					FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64),
-				}}
-				items = append(items, ResponsesInputItem{
-					Type:    "message",
-					Role:    role,
-					Content: fileParts,
-				})
+				fileParts := []ResponsesContentPart{{Type: "input_file", Filename: filename, FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64), PromptCacheBreakpoint: breakpoint(part.PromptCacheBreakpoint)}}
+				items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: fileParts})
 			} else if text := responseFileTextFallback(part, policy); text != "" {
+				if part.PromptCacheBreakpoint {
+					flushText()
+					textBreakpoint = true
+				}
 				textBuf.WriteString(text)
+				if part.PromptCacheBreakpoint {
+					flushText()
+				}
 			}
 		case PartToolCall:
 			if part.ToolCall == nil {
@@ -456,16 +517,27 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 			if args == "" {
 				args = "{}"
 			}
-			items = append(items, ResponsesInputItem{
-				Type:      "function_call",
-				CallID:    callID,
-				Name:      part.ToolCall.Name,
-				Arguments: args,
-			})
+			items = append(items, ResponsesInputItem{Type: "function_call", CallID: callID, Name: part.ToolCall.Name, Arguments: args})
 		}
 	}
-
 	flushText()
+	if cacheAnchor {
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Type != "message" {
+				continue
+			}
+			switch content := items[i].Content.(type) {
+			case string:
+				items[i].Content = []ResponsesContentPart{{Type: "input_text", Text: content, PromptCacheBreakpoint: breakpoint(true)}}
+			case []ResponsesContentPart:
+				if len(content) > 0 {
+					content[len(content)-1].PromptCacheBreakpoint = breakpoint(true)
+					items[i].Content = content
+				}
+			}
+			break
+		}
+	}
 	return items
 }
 
@@ -507,6 +579,16 @@ func responseFileTextFallback(part Part, policy *FileUploadPolicy) string {
 }
 
 func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
+	var replay []ResponsesInputItem
+	for _, part := range parts {
+		if part.Type == PartProviderReplay && part.ProviderReplay != nil && len(part.ProviderReplay.Raw) > 0 {
+			replay = append(replay, ResponsesInputItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)})
+		}
+	}
+	if len(replay) > 0 {
+		return replay
+	}
+
 	var items []ResponsesInputItem
 	var textBuf strings.Builder
 
@@ -524,6 +606,11 @@ func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
 
 	for _, part := range parts {
 		switch part.Type {
+		case PartProviderReplay:
+			flushText()
+			if part.ProviderReplay != nil && len(part.ProviderReplay.Raw) > 0 {
+				items = append(items, ResponsesInputItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)})
+			}
 		case PartText:
 			if hasResponsesReasoningReplay(part) {
 				flushText()
@@ -599,24 +686,54 @@ func reasoningSummaryTexts(part Part) []string {
 	return nil
 }
 
-// BuildResponsesTools converts []ToolSpec to Open Responses format with schema normalization
+// BuildResponsesTools converts []ToolSpec to Open Responses format with schema normalization.
 func BuildResponsesTools(specs []ToolSpec) []any {
-	if len(specs) == 0 {
+	return BuildResponsesToolsWithOptions(specs, ProgrammaticToolCallingOptions{})
+}
+
+// BuildResponsesToolsWithOptions applies PTC eligibility only to explicitly
+// named tools and appends the hosted programmatic_tool_calling tool when enabled.
+func BuildResponsesToolsWithOptions(specs []ToolSpec, ptc ProgrammaticToolCallingOptions) []any {
+	if len(specs) == 0 && !ptc.Enabled {
 		return nil
 	}
-	tools := make([]any, 0, len(specs))
+	eligible := make(map[string]bool, len(ptc.Tools))
+	for _, name := range ptc.Tools {
+		if name = strings.TrimSpace(name); name != "" {
+			eligible[name] = true
+		}
+	}
+	tools := make([]any, 0, len(specs)+1)
 	for _, spec := range specs {
 		strict := spec.Strict
 		params := openAIParametersFromToolSchema(spec.Schema, strict)
+		allowed := append([]string(nil), spec.AllowedCallers...)
+		if ptc.Enabled && eligible[spec.Name] && !containsResponseString(allowed, "programmatic") {
+			allowed = append(allowed, "programmatic")
+		}
 		tools = append(tools, ResponsesTool{
-			Type:        "function",
-			Name:        spec.Name,
-			Description: spec.Description,
-			Parameters:  params,
-			Strict:      strict,
+			Type:           "function",
+			Name:           spec.Name,
+			Description:    spec.Description,
+			Parameters:     params,
+			Strict:         strict,
+			AllowedCallers: allowed,
+			OutputSchema:   deepCopyMap(spec.OutputSchema),
 		})
 	}
+	if ptc.Enabled {
+		tools = append(tools, map[string]any{"type": "programmatic_tool_calling"})
+	}
 	return tools
+}
+
+func containsResponseString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildResponsesToolChoice converts ToolChoice to Open Responses format
@@ -635,6 +752,19 @@ func BuildResponsesToolChoice(choice ToolChoice) interface{} {
 		}
 	default:
 		return nil
+	}
+}
+
+func applyResponsesHeaders(header http.Header, base, request map[string]string) {
+	for key, value := range base {
+		header.Set(key, value)
+	}
+	for key, value := range request {
+		if strings.EqualFold(key, "OpenAI-Beta") {
+			header.Set(key, composeBetaHeader(header.Get(key), value))
+		} else {
+			header.Set(key, value)
+		}
 	}
 }
 
@@ -873,9 +1003,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 	if httpPayload.SessionID != "" {
 		httpReq.Header.Set("session_id", httpPayload.SessionID)
 	}
-	for key, value := range c.ExtraHeaders {
-		httpReq.Header.Set(key, value)
-	}
+	applyResponsesHeaders(httpReq.Header, c.ExtraHeaders, httpPayload.ExtraHeaders)
 
 	httpClient := c.HTTPClient
 	if httpClient == nil {
@@ -941,9 +1069,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 			if retryPayload.SessionID != "" {
 				httpReq.Header.Set("session_id", retryPayload.SessionID)
 			}
-			for key, value := range c.ExtraHeaders {
-				httpReq.Header.Set(key, value)
-			}
+			applyResponsesHeaders(httpReq.Header, c.ExtraHeaders, retryPayload.ExtraHeaders)
 			resp, err = httpClient.Do(httpReq)
 			if err != nil {
 				return nil, fmt.Errorf("Responses API retry request failed: %w", err)
@@ -970,9 +1096,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 				if httpPayload.SessionID != "" {
 					httpReq.Header.Set("session_id", httpPayload.SessionID)
 				}
-				for key, value := range c.ExtraHeaders {
-					httpReq.Header.Set(key, value)
-				}
+				applyResponsesHeaders(httpReq.Header, c.ExtraHeaders, httpPayload.ExtraHeaders)
 				resp, err = httpClient.Do(httpReq)
 				if err != nil {
 					return nil, fmt.Errorf("Responses API auth retry request failed: %w", err)
@@ -1290,6 +1414,7 @@ type responsesToolCallState struct {
 	outputIndex int    // Output index - stable across added/delta/done events
 	callID      string // Actual call ID (call_xxx) - used in tool results
 	name        string
+	caller      string
 	args        strings.Builder
 	finished    bool
 }
@@ -1336,6 +1461,12 @@ func (s *responsesToolState) FinishCall(outputIndex int, callID, name, finalArgs
 		state.name = name
 	}
 	state.finished = true
+}
+
+func (s *responsesToolState) SetCaller(outputIndex int, caller string) {
+	if state, ok := s.calls[outputIndex]; ok {
+		state.caller = caller
+	}
 }
 
 func (s *responsesToolState) Validate() error {
@@ -1386,6 +1517,7 @@ func (s *responsesToolState) Calls() []ToolCall {
 			ID:        id,
 			Name:      state.name,
 			Arguments: json.RawMessage(args),
+			Caller:    state.caller,
 		})
 	}
 	return calls

@@ -39,22 +39,24 @@ func responsesWebSocketURL(baseURL string) (string, error) {
 type responsesWSRequest struct {
 	Type string `json:"type"`
 
-	Model              string                  `json:"model"`
-	Instructions       string                  `json:"instructions,omitempty"`
-	Input              []ResponsesInputItem    `json:"input"`
-	Tools              []any                   `json:"tools,omitempty"`
-	ToolChoice         any                     `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool                   `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    int                     `json:"max_output_tokens,omitempty"`
-	Temperature        *float64                `json:"temperature,omitempty"`
-	TopP               *float64                `json:"top_p,omitempty"`
-	Reasoning          *ResponsesReasoning     `json:"reasoning,omitempty"`
-	Include            []string                `json:"include,omitempty"`
-	PromptCacheKey     string                  `json:"prompt_cache_key,omitempty"`
-	Store              *bool                   `json:"store,omitempty"`
-	Generate           *bool                   `json:"generate,omitempty"`
-	StreamOptions      *ResponsesStreamOptions `json:"stream_options,omitempty"`
-	PreviousResponseID string                  `json:"previous_response_id,omitempty"`
+	Model              string                       `json:"model"`
+	Instructions       string                       `json:"instructions,omitempty"`
+	Input              []ResponsesInputItem         `json:"input"`
+	Tools              []any                        `json:"tools,omitempty"`
+	ToolChoice         any                          `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool                        `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens    int                          `json:"max_output_tokens,omitempty"`
+	Temperature        *float64                     `json:"temperature,omitempty"`
+	TopP               *float64                     `json:"top_p,omitempty"`
+	Reasoning          *ResponsesReasoning          `json:"reasoning,omitempty"`
+	MultiAgent         *ResponsesMultiAgent         `json:"multi_agent,omitempty"`
+	PromptCacheOptions *ResponsesPromptCacheOptions `json:"prompt_cache_options,omitempty"`
+	Include            []string                     `json:"include,omitempty"`
+	PromptCacheKey     string                       `json:"prompt_cache_key,omitempty"`
+	Store              *bool                        `json:"store,omitempty"`
+	Generate           *bool                        `json:"generate,omitempty"`
+	StreamOptions      *ResponsesStreamOptions      `json:"stream_options,omitempty"`
+	PreviousResponseID string                       `json:"previous_response_id,omitempty"`
 }
 
 func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
@@ -70,6 +72,8 @@ func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
 		Temperature:        req.Temperature,
 		TopP:               req.TopP,
 		Reasoning:          req.Reasoning,
+		MultiAgent:         req.MultiAgent,
+		PromptCacheOptions: req.PromptCacheOptions,
 		Include:            req.Include,
 		PromptCacheKey:     req.PromptCacheKey,
 		Store:              req.Store,
@@ -309,7 +313,10 @@ func responsesRequestNonInputEqual(prev, current ResponsesRequest) bool {
 		reflect.DeepEqual(prev.Temperature, current.Temperature) &&
 		reflect.DeepEqual(prev.TopP, current.TopP) &&
 		reflect.DeepEqual(prev.Reasoning, current.Reasoning) &&
+		reflect.DeepEqual(prev.MultiAgent, current.MultiAgent) &&
+		reflect.DeepEqual(prev.PromptCacheOptions, current.PromptCacheOptions) &&
 		reflect.DeepEqual(prev.Include, current.Include) &&
+		reflect.DeepEqual(prev.ExtraHeaders, current.ExtraHeaders) &&
 		prev.PromptCacheKey == current.PromptCacheKey &&
 		reflect.DeepEqual(prev.Store, current.Store) &&
 		reflect.DeepEqual(prev.Generate, current.Generate) &&
@@ -584,8 +591,16 @@ func jsonStringValueForCompare(v reflect.Value) (string, bool) {
 }
 
 func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*websocket.Conn, bool, error) {
+	betaHeader := ""
+	if c.ExtraHeaders != nil {
+		betaHeader = c.ExtraHeaders["OpenAI-Beta"]
+	}
+	if req.ExtraHeaders != nil {
+		betaHeader = composeBetaHeader(betaHeader, req.ExtraHeaders["OpenAI-Beta"])
+	}
+	betaHeader = composeBetaHeader(betaHeader, responsesWebSocketBetaHeader)
 	if c.wsConn != nil {
-		if c.wsConnSessionID == req.SessionID {
+		if c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader {
 			return c.wsConn, true, nil
 		}
 		// SessionID is sent as a WebSocket handshake header for providers that bind
@@ -610,12 +625,9 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	if req.SessionID != "" {
 		header.Set("session_id", req.SessionID)
 	}
-	for key, value := range c.ExtraHeaders {
-		header.Set(key, value)
-	}
-	// The Responses WebSocket beta header replaces provider HTTP beta values
-	// (notably ChatGPT's "responses=experimental") for the WS handshake.
-	header.Set("OpenAI-Beta", responsesWebSocketBetaHeader)
+	applyResponsesHeaders(header, c.ExtraHeaders, req.ExtraHeaders)
+	// WebSocket transport and request-scoped feature betas are additive.
+	header.Set("OpenAI-Beta", betaHeader)
 
 	connectTimeout := c.WebSocketConnectTimeout
 	if connectTimeout == 0 {
@@ -646,6 +658,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 					if retryErr == nil {
 						c.wsConn = conn
 						c.wsConnSessionID = req.SessionID
+						c.wsConnBetaHeader = betaHeader
 						return conn, false, nil
 					}
 					if retryResp != nil {
@@ -664,6 +677,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	}
 	c.wsConn = conn
 	c.wsConnSessionID = req.SessionID
+	c.wsConnBetaHeader = betaHeader
 	return conn, false, nil
 }
 
@@ -699,5 +713,6 @@ func (c *ResponsesClient) discardWebSocketLocked() {
 	_ = c.wsConn.Close()
 	c.wsConn = nil
 	c.wsConnSessionID = ""
+	c.wsConnBetaHeader = ""
 	c.wsLastRequest = nil
 }

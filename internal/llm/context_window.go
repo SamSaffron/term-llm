@@ -501,6 +501,9 @@ var inputLimitTable = []limitEntry{
 	{"anthropic.claude-sonnet-4", 180_000},
 
 	// OpenAI GPT-5 family
+	{"gpt-5.6-sol", 922_000},         // 1,050,000 ctx - 128,000 out
+	{"gpt-5.6-terra", 922_000},       // 1,050,000 ctx - 128,000 out
+	{"gpt-5.6-luna", 922_000},        // 1,050,000 ctx - 128,000 out
 	{"gpt-5.5", 922_000},             // 1,050,000 ctx - 128,000 out
 	{"gpt-5.4-mini", 272_000},        // 400K ctx - 128K out
 	{"gpt-5.4-nano", 272_000},        // 400K ctx - 128K out
@@ -559,6 +562,13 @@ var inputLimitTable = []limitEntry{
 // that differ from the model's canonical limits.
 // Values are effective input budgets for compaction/model-list display.
 var providerInputOverrides = map[string][]limitEntry{
+	// The ChatGPT Codex backend reports an account/rollout-specific 372K input
+	// budget for GPT-5.6, distinct from the public API's 922K effective input.
+	"chatgpt": {
+		{"gpt-5.6-sol", 372_000},
+		{"gpt-5.6-terra", 372_000},
+		{"gpt-5.6-luna", 372_000},
+	},
 	// Zen free tier imposes lower limits than canonical models
 	"zen": {
 		{"gpt-5-nano", 96_000}, // 128K context on Zen (not 400K like direct OpenAI)
@@ -665,6 +675,9 @@ var outputLimitTable = []limitEntry{
 	{"anthropic.claude-sonnet-4", 64_000},
 
 	// OpenAI GPT-5 family
+	{"gpt-5.6-sol", 128_000},
+	{"gpt-5.6-terra", 128_000},
+	{"gpt-5.6-luna", 128_000},
 	{"gpt-5.5", 128_000},
 	{"gpt-5.4-mini", 128_000},
 	{"gpt-5.4-nano", 128_000},

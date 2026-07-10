@@ -110,6 +110,41 @@ type Stream interface {
 	Close() error
 }
 
+// ResponsesOptions controls advanced OpenAI Responses API execution features.
+// A nil Request.Responses uses provider configuration; a non-nil value overlays
+// its explicitly populated fields on those defaults.
+type ResponsesOptions struct {
+	ReasoningMode           string
+	ReasoningContext        string
+	MultiAgent              MultiAgentOptions
+	ProgrammaticToolCalling ProgrammaticToolCallingOptions
+	PromptCache             PromptCacheOptions
+}
+
+type MultiAgentOptions struct {
+	Enabled                bool
+	EnabledSet             bool
+	MaxConcurrentSubagents int
+}
+
+type ProgrammaticToolCallingOptions struct {
+	Enabled    bool
+	EnabledSet bool
+	Tools      []string
+}
+
+type PromptCacheOptions struct {
+	Mode string
+	TTL  string
+}
+
+func (o ResponsesOptions) IsZero() bool {
+	return o.ReasoningMode == "" && o.ReasoningContext == "" &&
+		!o.MultiAgent.Enabled && !o.MultiAgent.EnabledSet && o.MultiAgent.MaxConcurrentSubagents == 0 &&
+		!o.ProgrammaticToolCalling.Enabled && !o.ProgrammaticToolCalling.EnabledSet && len(o.ProgrammaticToolCalling.Tools) == 0 &&
+		o.PromptCache.Mode == "" && o.PromptCache.TTL == ""
+}
+
 // Request represents a single model turn.
 type Request struct {
 	Model     string
@@ -129,6 +164,7 @@ type Request struct {
 	ForceExternalSearch      bool // If true, use external search even if provider supports native
 	DisableExternalWebFetch  bool // If true, do not inject external read_url even when provider lacks native fetch
 	ReasoningEffort          string
+	Responses                *ResponsesOptions // Advanced Responses API controls; nil uses provider defaults.
 	MaxOutputTokens          int
 	Temperature              float32
 	TemperatureSet           bool // If true, Temperature was explicitly provided, including zero
@@ -164,11 +200,12 @@ const (
 type PartType string
 
 const (
-	PartText       PartType = "text"
-	PartImage      PartType = "image"
-	PartFile       PartType = "file"
-	PartToolCall   PartType = "tool_call"
-	PartToolResult PartType = "tool_result"
+	PartText           PartType = "text"
+	PartImage          PartType = "image"
+	PartFile           PartType = "file"
+	PartToolCall       PartType = "tool_call"
+	PartToolResult     PartType = "tool_result"
+	PartProviderReplay PartType = "provider_replay" // Hidden provider protocol state; never rendered/exported.
 )
 
 // Message holds a role with structured parts.
@@ -272,8 +309,17 @@ type Part struct {
 	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
 	FileData                  *ToolFileData  // User-supplied file (base64-encoded)
 	FilePath                  string         // Local filesystem path to the file (when available)
+	PromptCacheBreakpoint     bool           // Emit an explicit GPT-5.6 prompt-cache breakpoint on this content block.
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
+	ProviderReplay            *ProviderReplayItem // Opaque Responses output item used only for stateless continuation.
+}
+
+// ProviderReplayItem preserves a completed Responses output item byte-for-byte.
+// Raw is persisted in session Parts JSON but deliberately omitted from render,
+// text extraction, approval transcripts, and exports.
+type ProviderReplayItem struct {
+	Raw json.RawMessage `json:"raw"`
 }
 
 // ToolSpec describes a callable tool.
@@ -289,7 +335,9 @@ type ToolSpec struct {
 	// Default is false to match Codex/OpenAI flagship behavior for broad MCP
 	// schemas. When enabled, all object properties are required and free-form maps
 	// are converted to strict-compatible key/value arrays.
-	Strict bool
+	Strict         bool
+	AllowedCallers []string               // Immutable caller allow-list (for example, "programmatic").
+	OutputSchema   map[string]interface{} // Optional structured output schema for PTC callers.
 }
 
 // ToolChoiceMode controls tool selection behavior.
@@ -313,6 +361,7 @@ type ToolCall struct {
 	ID         string
 	Name       string
 	Arguments  json.RawMessage
+	Caller     string `json:",omitempty"` // PTC caller provenance; copied to function_call_output.
 	ToolInfo   string `json:",omitempty"` // Persisted display text for TUI/history (already formatted, e.g. "(main.go)")
 	ThoughtSig []byte // Gemini 3 thought signature (must be passed back in result)
 }
@@ -402,6 +451,7 @@ type ToolResult struct {
 	Diffs        []DiffData        `json:"diffs,omitempty"`  // Structured diff data
 	Images       []string          `json:"images,omitempty"` // Image paths
 	IsError      bool              // True if this result represents a tool execution error
+	Caller       string            `json:",omitempty"` // PTC caller provenance.
 	ThoughtSig   []byte            // Gemini 3 thought signature (passed through from ToolCall)
 }
 
@@ -424,6 +474,7 @@ const (
 	EventInterjection   EventType = "interjection"    // User interjected a message mid-stream
 	EventModelSwitch    EventType = "model_switch"    // Request model changed at a provider-turn boundary
 	EventImageGenerated EventType = "image_generated" // Emitted when a built-in image_generation tool returns an image
+	EventProviderReplay EventType = "provider_replay" // Internal-only opaque Responses output item.
 )
 
 // WarningPhasePrefix is the prefix for warning-level phase events.
@@ -472,7 +523,8 @@ type Event struct {
 	RetryWaitSecs    float64
 	// ToolResponse is set when a provider needs synchronous bridged tool execution.
 	// The engine will execute the tool and send the result back on this channel.
-	ToolResponse chan<- ToolExecutionResponse
+	ToolResponse   chan<- ToolExecutionResponse
+	ProviderReplay *ProviderReplayItem // For EventProviderReplay; never forwarded to UI consumers.
 	// Image fields (for EventImageGenerated)
 	ImageData     []byte // Raw decoded image bytes
 	ImageMimeType string // e.g. "image/png"
@@ -554,15 +606,18 @@ type EditToolCall struct {
 
 // ModelInfo represents a model available from a provider.
 type ModelInfo struct {
-	ID                   string             `json:"id"`
-	DisplayName          string             `json:"display_name,omitempty"`
-	Created              int64              `json:"created,omitempty"`
-	OwnedBy              string             `json:"owned_by,omitempty"`
-	InputLimit           int                `json:"input_limit,omitempty"` // Max input tokens (0 = unknown)
-	InputPrice           float64            `json:"input_price"`           // Pricing per 1M tokens (0 = free, -1 = unknown)
-	OutputPrice          float64            `json:"output_price"`          // Pricing per 1M tokens (0 = free, -1 = unknown)
-	ServiceTiers         []ModelServiceTier `json:"service_tiers,omitempty"`
-	AdditionalSpeedTiers []string           `json:"additional_speed_tiers,omitempty"`
+	ID                     string             `json:"id"`
+	DisplayName            string             `json:"display_name,omitempty"`
+	Created                int64              `json:"created,omitempty"`
+	OwnedBy                string             `json:"owned_by,omitempty"`
+	InputLimit             int                `json:"input_limit,omitempty"` // Max input tokens (0 = unknown)
+	InputPrice             float64            `json:"input_price"`           // Pricing per 1M tokens (0 = free, -1 = unknown)
+	OutputPrice            float64            `json:"output_price"`          // Pricing per 1M tokens (0 = free, -1 = unknown)
+	ServiceTiers           []ModelServiceTier `json:"service_tiers,omitempty"`
+	AdditionalSpeedTiers   []string           `json:"additional_speed_tiers,omitempty"`
+	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
+	ReasoningModes         []string           `json:"reasoning_modes,omitempty"`
 }
 
 func SystemText(text string) Message {

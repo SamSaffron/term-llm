@@ -71,6 +71,7 @@ type Session struct {
 	ProviderKey     string              `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
 	Model           string              `json:"model"`
 	ReasoningEffort string              `json:"reasoning_effort,omitempty"` // Reasoning effort pinned at session creation (web only)
+	ReasoningMode   string              `json:"reasoning_mode,omitempty"`   // Explicit Responses reasoning mode override (standard/pro).
 	Mode            SessionMode         `json:"mode,omitempty"`             // Session mode (chat, ask, plan, exec)
 	ApprovalMode    SessionApprovalMode `json:"approval_mode,omitempty"`    // Tool approval mode for chat sessions (prompt, auto, yolo)
 	Origin          SessionOrigin       `json:"origin,omitempty"`           // Session surface/origin (tui, web, telegram)

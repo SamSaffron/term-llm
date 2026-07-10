@@ -79,6 +79,23 @@ providers:
 
 OpenAI-compatible providers remain HTTP/SSE by default. WebSocket defaults are not applied to `type: openai_compatible` entries.
 
+## GPT-5.6 on OpenAI and ChatGPT
+
+term-llm ships fallback metadata for the GPT-5.6 family:
+
+| Provider | Default model | Fast model | Effective input | Max output | Efforts |
+|---|---|---|---:|---:|---|
+| `openai` (API key) | `gpt-5.6-sol` | `gpt-5.6-luna` | 922K | 128K | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `chatgpt` (OAuth) | `gpt-5.6-sol-medium` | `gpt-5.6-luna` | 372K fallback | 128K | Sol/Terra: `low` through `max`, plus `ultra`; Luna: `low` through `max` |
+
+The OpenAI model IDs are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. ChatGPT exposes the same named variants through its live Codex catalog; live input limits and reasoning metadata take precedence over the static fallback. Luna keeps its upstream medium default unless you explicitly select another effort.
+
+**Pro and Ultra are different controls.** On the public OpenAI API, Pro sends `reasoning.mode: pro`; Standard sends `reasoning.mode: standard`. In terminal chat use `/pro on`, `/pro off`, or `/pro status`. The browser shows a Standard/Pro selector only when the selected model advertises it. ChatGPT OAuth does not receive public-API Pro mode: its `ultra` option is a distinct reasoning effort available only on Sol/Terra.
+
+OpenAI API GPT-5.6 also supports term-llm's advanced Responses controls: reasoning context, hosted multi-agent execution, programmatic tool calling, and prompt-cache options. These controls are model/provider gated. term-llm rejects them for older OpenAI models, OpenAI-compatible providers, and the ChatGPT OAuth backend rather than sending unverified fields. See [Configuration](/reference/configuration/#gpt-56-advanced-responses-controls) and [Web UI and API](/guides/web-ui-and-api/#gpt-56-responses-controls).
+
+Bundled OpenAI API prices per 1M tokens (uncached input / cache read / cache write / output) are Sol: `$5 / $0.50 / $6.25 / $30`; Terra: `$2.50 / $0.25 / $3.125 / $15`; Luna: `$1 / $0.10 / $1.25 / $6`. When total input (uncached + cache reads + cache writes) exceeds 272K, the entire request uses 2× input/read/write rates and 1.5× output rates. This is API-key billing metadata; ChatGPT subscription access is not billed from these static prices.
+
 ## SambaNova Cloud
 
 SambaNova is available as a built-in OpenAI-compatible provider:
@@ -324,11 +341,13 @@ Built-in `openai` and `chatgpt` text providers can send the Responses API `servi
 ```yaml
 providers:
   openai:
-    model: gpt-5.4
+    model: gpt-5.6-sol
+    fast_model: gpt-5.6-luna
     service_tier: fast      # alias for API value "priority"
 
   chatgpt:
-    model: gpt-5.5-medium
+    model: gpt-5.6-sol-medium
+    fast_model: gpt-5.6-luna
     service_tier: priority  # equivalent to "fast"
 ```
 
@@ -342,25 +361,31 @@ Model/provider suffixes control how much reasoning a provider is asked to do. Di
 
 ### OpenAI reasoning effort
 
-For OpenAI models, append `-low`, `-medium`, `-high`, or `-xhigh` to control reasoning effort.
+For GPT-5.6 on the OpenAI API, append `-none`, `-low`, `-medium`, `-high`, `-xhigh`, or `-max` to control reasoning effort. An explicit `reasoning_effort` API field wins over a model suffix, and a request suffix wins over a provider-level default.
 
 ```bash
-term-llm ask --provider openai:gpt-5.2-xhigh "complex question"
-term-llm exec --provider openai:gpt-5.2-low "quick task"
+term-llm ask --provider openai:gpt-5.6-sol-xhigh "complex question"
+term-llm exec --provider openai:gpt-5.6-luna-low "quick task"
 ```
 
 ```yaml
 providers:
   openai:
-    model: gpt-5.2-high
+    model: gpt-5.6-sol-high
 ```
 
 | Effort | Meaning |
 |---|---|
+| `none` | no reasoning effort on GPT-5.6 |
 | `low` | faster, cheaper, less thorough |
-| `medium` | balanced default |
+| `medium` | balanced upstream default |
 | `high` | more thorough reasoning |
-| `xhigh` | maximum reasoning on supported models |
+| `xhigh` | very high reasoning |
+| `max` | maximum GPT-5.6 reasoning |
+
+Older GPT-5 models retain their existing provider-specific effort sets. Natural model IDs ending in a suffix-like word are preserved when that suffix is not valid for the model; for example, `gpt-5.1-codex-max` remains a model ID rather than being split into model plus `max` effort.
+
+For ChatGPT OAuth, GPT-5.6 Sol and Terra additionally expose `ultra`; Luna does not. Ultra is an effort, not the public OpenAI API's Pro reasoning mode.
 
 ### vLLM thinking suffixes
 

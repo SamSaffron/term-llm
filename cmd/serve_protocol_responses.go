@@ -13,22 +13,41 @@ type responsesModelSwapRequest struct {
 	Fallback string `json:"fallback,omitempty"`
 }
 
+type responsesReasoningRequest struct {
+	Effort  string `json:"effort,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Context string `json:"context,omitempty"`
+}
+
+type responsesMultiAgentRequest struct {
+	Enabled                bool `json:"enabled"`
+	MaxConcurrentSubagents int  `json:"max_concurrent_subagents,omitempty"`
+}
+
+type responsesPromptCacheRequest struct {
+	Mode string `json:"mode,omitempty"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
 type responsesCreateRequest struct {
-	Model              string                     `json:"model"`
-	Provider           string                     `json:"provider"`
-	Input              json.RawMessage            `json:"input"`
-	Tools              []json.RawMessage          `json:"tools,omitempty"`
-	IncludeServerTools bool                       `json:"include_server_tools,omitempty"`
-	ToolChoice         json.RawMessage            `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool                      `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    int                        `json:"max_output_tokens,omitempty"`
-	Temperature        *float32                   `json:"temperature,omitempty"`
-	TopP               *float32                   `json:"top_p,omitempty"`
-	Stream             bool                       `json:"stream,omitempty"`
-	PreviousResponseID string                     `json:"previous_response_id,omitempty"`
-	ReasoningEffort    string                     `json:"reasoning_effort,omitempty"`
-	WorktreeDir        string                     `json:"worktree_dir,omitempty"`
-	ModelSwap          *responsesModelSwapRequest `json:"model_swap,omitempty"`
+	Model              string                       `json:"model"`
+	Provider           string                       `json:"provider"`
+	Input              json.RawMessage              `json:"input"`
+	Tools              []json.RawMessage            `json:"tools,omitempty"`
+	IncludeServerTools bool                         `json:"include_server_tools,omitempty"`
+	ToolChoice         json.RawMessage              `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool                        `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens    int                          `json:"max_output_tokens,omitempty"`
+	Temperature        *float32                     `json:"temperature,omitempty"`
+	TopP               *float32                     `json:"top_p,omitempty"`
+	Stream             bool                         `json:"stream,omitempty"`
+	PreviousResponseID string                       `json:"previous_response_id,omitempty"`
+	ReasoningEffort    string                       `json:"reasoning_effort,omitempty"`
+	Reasoning          *responsesReasoningRequest   `json:"reasoning,omitempty"`
+	MultiAgent         *responsesMultiAgentRequest  `json:"multi_agent,omitempty"`
+	PromptCacheOptions *responsesPromptCacheRequest `json:"prompt_cache_options,omitempty"`
+	WorktreeDir        string                       `json:"worktree_dir,omitempty"`
+	ModelSwap          *responsesModelSwapRequest   `json:"model_swap,omitempty"`
 }
 
 func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
@@ -155,8 +174,9 @@ func normalizeProviderModelEffort(provider, model, effort string) (string, strin
 	return base, effort
 }
 
-func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool, []llm.ToolSpec) {
+func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []llm.ToolSpec) {
 	search := false
+	ptc := false
 	toolNames := map[string]bool{}
 	passthrough := make([]llm.ToolSpec, 0, len(raw))
 
@@ -169,6 +189,8 @@ func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool, []llm.To
 		switch typeName {
 		case "web_search_preview", "web_search":
 			search = true
+		case "programmatic_tool_calling":
+			ptc = true
 		case "function":
 			spec, ok := parseRequestedFunctionTool(generic)
 			if !ok {
@@ -179,7 +201,7 @@ func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool, []llm.To
 		}
 	}
 
-	return search, toolNames, passthrough
+	return search, ptc, toolNames, passthrough
 }
 
 func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpec, bool) {
@@ -196,13 +218,21 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 			spec.Strict = strict
 		}
 	}
+	if rawCallers := generic["allowed_callers"]; len(rawCallers) > 0 {
+		_ = json.Unmarshal(rawCallers, &spec.AllowedCallers)
+	}
+	if rawOutput := generic["output_schema"]; len(rawOutput) > 0 {
+		_ = json.Unmarshal(rawOutput, &spec.OutputSchema)
+	}
 
 	if rawFunc := generic["function"]; len(rawFunc) > 0 {
 		var fn struct {
-			Name        string                 `json:"name"`
-			Description string                 `json:"description"`
-			Parameters  map[string]interface{} `json:"parameters"`
-			Strict      *bool                  `json:"strict"`
+			Name           string                 `json:"name"`
+			Description    string                 `json:"description"`
+			Parameters     map[string]interface{} `json:"parameters"`
+			Strict         *bool                  `json:"strict"`
+			AllowedCallers []string               `json:"allowed_callers"`
+			OutputSchema   map[string]interface{} `json:"output_schema"`
 		}
 		if err := json.Unmarshal(rawFunc, &fn); err == nil {
 			if spec.Name == "" {
@@ -216,6 +246,12 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 			}
 			if fn.Strict != nil {
 				spec.Strict = *fn.Strict
+			}
+			if spec.AllowedCallers == nil {
+				spec.AllowedCallers = append([]string(nil), fn.AllowedCallers...)
+			}
+			if spec.OutputSchema == nil {
+				spec.OutputSchema = fn.OutputSchema
 			}
 		}
 	}

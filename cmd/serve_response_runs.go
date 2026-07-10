@@ -1977,7 +1977,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		finalModel := streamState.appliedModel(model)
 		finalEffort, finalEffortSet := streamState.appliedReasoningEffort(llmReq.ReasoningEffort)
 		if options.uiSession && (finalModel != model || finalEffort != strings.TrimSpace(llmReq.ReasoningEffort) || finalEffortSet != (strings.TrimSpace(llmReq.ReasoningEffort) != "")) {
-			s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, finalModel, finalEffort, "")
+			s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, finalModel, finalEffort, "", false, "")
 		}
 		completeResponse := map[string]any{
 			"id":            completedID,

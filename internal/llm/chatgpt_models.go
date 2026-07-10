@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
@@ -30,17 +31,55 @@ type chatGPTModelsResponse struct {
 	Models []chatGPTModelInfo `json:"models"`
 }
 
+type chatGPTReasoningLevels []string
+
+func (l *chatGPTReasoningLevels) UnmarshalJSON(data []byte) error {
+	var values []json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(values))
+	levels := make([]string, 0, len(values))
+	for _, value := range values {
+		var level string
+		if err := json.Unmarshal(value, &level); err != nil {
+			var item struct {
+				Effort string `json:"effort"`
+				Level  string `json:"level"`
+				Value  string `json:"value"`
+				ID     string `json:"id"`
+				Name   string `json:"name"`
+			}
+			if err := json.Unmarshal(value, &item); err != nil {
+				return err
+			}
+			level = firstNonEmpty(item.Effort, item.Level, item.Value, item.ID, item.Name)
+		}
+		level = strings.ToLower(strings.TrimSpace(level))
+		if level == "" || seen[level] {
+			continue
+		}
+		seen[level] = true
+		levels = append(levels, level)
+	}
+	*l = levels
+	return nil
+}
+
 type chatGPTModelInfo struct {
-	Slug                 string             `json:"slug"`
-	ID                   string             `json:"id"`
-	Name                 string             `json:"name"`
-	Title                string             `json:"title"`
-	DisplayName          string             `json:"display_name"`
-	MaxInputTokens       int                `json:"max_input_tokens"`
-	InputTokenLimit      int                `json:"input_token_limit"`
-	ContextWindow        int                `json:"context_window"`
-	ServiceTiers         []ModelServiceTier `json:"service_tiers"`
-	AdditionalSpeedTiers []string           `json:"additional_speed_tiers"`
+	Slug                     string                 `json:"slug"`
+	ID                       string                 `json:"id"`
+	Name                     string                 `json:"name"`
+	Title                    string                 `json:"title"`
+	DisplayName              string                 `json:"display_name"`
+	MaxInputTokens           int                    `json:"max_input_tokens"`
+	InputTokenLimit          int                    `json:"input_token_limit"`
+	ContextWindow            int                    `json:"context_window"`
+	ServiceTiers             []ModelServiceTier     `json:"service_tiers"`
+	AdditionalSpeedTiers     []string               `json:"additional_speed_tiers"`
+	SupportedReasoningLevels chatGPTReasoningLevels `json:"supported_reasoning_levels"`
+	DefaultReasoningLevel    string                 `json:"default_reasoning_level"`
+	DefaultReasoningEffort   string                 `json:"default_reasoning_effort"`
 }
 
 type chatGPTModelsCache struct {
@@ -158,13 +197,15 @@ func (m chatGPTModelInfo) toModelInfo() ModelInfo {
 		inputLimit = InputLimitForModel(id)
 	}
 	return ModelInfo{
-		ID:                   id,
-		DisplayName:          firstNonEmpty(m.DisplayName, m.Title, m.Name),
-		InputLimit:           inputLimit,
-		InputPrice:           -1,
-		OutputPrice:          -1,
-		ServiceTiers:         m.ServiceTiers,
-		AdditionalSpeedTiers: m.AdditionalSpeedTiers,
+		ID:                     id,
+		DisplayName:            firstNonEmpty(m.DisplayName, m.Title, m.Name),
+		InputLimit:             inputLimit,
+		InputPrice:             -1,
+		OutputPrice:            -1,
+		ServiceTiers:           m.ServiceTiers,
+		AdditionalSpeedTiers:   m.AdditionalSpeedTiers,
+		ReasoningEfforts:       append([]string(nil), m.SupportedReasoningLevels...),
+		DefaultReasoningEffort: firstNonEmpty(m.DefaultReasoningEffort, m.DefaultReasoningLevel),
 	}
 }
 

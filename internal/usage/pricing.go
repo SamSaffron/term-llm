@@ -28,6 +28,12 @@ type ModelPricing struct {
 	OutputCostPerTokenAbove200k float64 `json:"output_cost_per_token_above_200k_tokens"`
 	CacheCreationCostAbove200k  float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
 	CacheReadCostAbove200k      float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
+
+	// TieredThreshold overrides the legacy 200K threshold. WholeRequestTier
+	// means crossing the threshold reprices every token in the request rather
+	// than only tokens above the threshold (the GPT-5.6 pricing contract).
+	TieredThreshold  int  `json:"-"`
+	WholeRequestTier bool `json:"-"`
 }
 
 // PricingFetcher fetches and caches model pricing from LiteLLM
@@ -65,6 +71,13 @@ var providerPrefixes = []string{
 }
 
 var bundledPricing = map[string]ModelPricing{
+	// GPT-5.6 official OpenAI API pricing, USD per token, published 2026-07-09.
+	// Requests above 272K total input use the long-context prices for the whole
+	// request: 2x input/read/write and 1.5x output.
+	"gpt-5.6-sol":   gpt56Pricing(5, 0.50, 6.25, 30),
+	"gpt-5.6-terra": gpt56Pricing(2.50, 0.25, 3.125, 15),
+	"gpt-5.6-luna":  gpt56Pricing(1, 0.10, 1.25, 6),
+
 	// SambaNova official pricing, USD per token. Synced from
 	// https://cloud.sambanova.ai/plans/pricing on 2026-05-21.
 	"sambanova/DeepSeek-R1-Distill-Llama-70B": {
@@ -94,6 +107,22 @@ var bundledPricing = map[string]ModelPricing{
 	"sambanova/MiniMax-M2.7": {
 		InputCostPerToken: 0.60 / 1_000_000, OutputCostPerToken: 2.40 / 1_000_000,
 	},
+}
+
+func gpt56Pricing(input, read, write, output float64) ModelPricing {
+	const perMillion = 1_000_000
+	return ModelPricing{
+		InputCostPerToken:           input / perMillion,
+		OutputCostPerToken:          output / perMillion,
+		CacheCreationInputTokenCost: write / perMillion,
+		CacheReadInputTokenCost:     read / perMillion,
+		InputCostPerTokenAbove200k:  input * 2 / perMillion,
+		OutputCostPerTokenAbove200k: output * 1.5 / perMillion,
+		CacheCreationCostAbove200k:  write * 2 / perMillion,
+		CacheReadCostAbove200k:      read * 2 / perMillion,
+		TieredThreshold:             272_000,
+		WholeRequestTier:            true,
+	}
 }
 
 // GetPricing returns pricing for a model, fetching if necessary
@@ -139,15 +168,32 @@ func (p *PricingFetcher) GetPricing(modelName string) (ModelPricing, error) {
 }
 
 func lookupBundledPricing(modelName string) (ModelPricing, bool) {
-	if pricing, ok := bundledPricing[modelName]; ok {
-		return pricing, true
+	candidates := []string{modelName}
+	trimmed := strings.TrimSpace(modelName)
+	if slash := strings.LastIndex(trimmed, "/"); slash >= 0 {
+		candidates = append(candidates, trimmed[slash+1:])
+	}
+	for _, candidate := range append([]string(nil), candidates...) {
+		for _, suffix := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
+			if strings.HasSuffix(candidate, "-"+suffix) {
+				candidates = append(candidates, strings.TrimSuffix(candidate, "-"+suffix))
+				break
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		if pricing, ok := bundledPricing[candidate]; ok {
+			return pricing, true
+		}
 	}
 	for _, prefix := range providerPrefixes {
 		if prefix == "" {
 			continue
 		}
-		if pricing, ok := bundledPricing[prefix+modelName]; ok {
-			return pricing, true
+		for _, candidate := range candidates {
+			if pricing, ok := bundledPricing[prefix+candidate]; ok {
+				return pricing, true
+			}
 		}
 	}
 	return ModelPricing{}, false
@@ -249,6 +295,25 @@ func (p *PricingFetcher) CalculateCost(entry UsageEntry) (float64, error) {
 	pricing, err := p.GetPricing(entry.Model)
 	if err != nil {
 		return 0, err
+	}
+
+	if pricing.WholeRequestTier {
+		threshold := pricing.TieredThreshold
+		if threshold <= 0 {
+			threshold = tieredThreshold
+		}
+		totalInput := entry.InputTokens + entry.CacheReadTokens + entry.CacheWriteTokens
+		longContext := totalInput > threshold
+		price := func(base, tiered float64) float64 {
+			if longContext && tiered > 0 {
+				return tiered
+			}
+			return base
+		}
+		return float64(entry.InputTokens)*price(pricing.InputCostPerToken, pricing.InputCostPerTokenAbove200k) +
+			float64(entry.OutputTokens)*price(pricing.OutputCostPerToken, pricing.OutputCostPerTokenAbove200k) +
+			float64(entry.CacheWriteTokens)*price(pricing.CacheCreationInputTokenCost, pricing.CacheCreationCostAbove200k) +
+			float64(entry.CacheReadTokens)*price(pricing.CacheReadInputTokenCost, pricing.CacheReadCostAbove200k), nil
 	}
 
 	var cost float64

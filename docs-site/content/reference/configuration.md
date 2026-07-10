@@ -44,7 +44,8 @@ providers:
     model: claude-sonnet-4-6
 
   openai:
-    model: gpt-5.2
+    model: gpt-5.6-sol
+    fast_model: gpt-5.6-luna
     credentials: codex
     # WebSocket transport is enabled by default for built-in OpenAI.
     # Set false to force HTTP/SSE.
@@ -171,7 +172,8 @@ providers:
   anthropic:
     model: claude-sonnet-4-6
   openai:
-    model: gpt-5.2
+    model: gpt-5.6-sol
+    fast_model: gpt-5.6-luna
   zen:
     model: glm-4.7-free
 
@@ -492,15 +494,50 @@ Built-in `openai` and `chatgpt` text providers support the Responses API `servic
 ```yaml
 providers:
   openai:
-    model: gpt-5.4
+    model: gpt-5.6-sol
     service_tier: fast
 
   chatgpt:
-    model: gpt-5.5-medium
+    model: gpt-5.6-sol-medium
     service_tier: priority
 ```
 
 In chat mode, `/fast` toggles this service tier for the current session. It does not rewrite your config file.
+
+## GPT-5.6 advanced Responses controls
+
+The `responses` provider block configures execution features specific to **OpenAI API GPT-5.6**. It is separate from the top-level `reasoning` block, which controls whether reasoning is displayed, persisted, or exported.
+
+```yaml
+providers:
+  openai:
+    model: gpt-5.6-sol
+    fast_model: gpt-5.6-luna
+    responses:
+      reasoning_mode: standard       # standard or pro
+      reasoning_context: auto        # auto, current_turn, or all_turns
+      multi_agent:
+        enabled: true
+        max_concurrent_subagents: 3  # defaults to 3 when enabled
+      programmatic_tool_calling:
+        enabled: true
+        tools: [read_file, grep]
+      prompt_cache:
+        mode: explicit               # implicit or explicit
+        ttl: 30m                     # currently the only supported TTL
+```
+
+Rules and caveats:
+
+- These controls are accepted only by the built-in `openai` provider with `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`. term-llm rejects them for older models, custom/OpenAI-compatible providers, and ChatGPT OAuth.
+- `reasoning_mode: pro` is public-API Pro mode. ChatGPT's `ultra` is a separate effort and is not configured here.
+- `reasoning_context` accepts only `auto`, `current_turn`, or `all_turns`.
+- Enabling multi-agent without a concurrency value uses `3`. Multi-agent requests omit the normal reasoning-summary request and send the required beta header.
+- Programmatic tool calling requires at least one listed tool, and every name must also be present in that request's tool definitions.
+- Prompt-cache `mode` accepts `implicit` or `explicit`; the only supported explicit TTL is `30m`. Explicit content breakpoints are available through the Responses API as `prompt_cache_breakpoint: {"mode":"explicit"}`.
+- Request-level options override populated provider defaults. Ephemeral internal requests, such as title and helper calls, do not inherit provider advanced defaults unless the caller explicitly supplies options.
+
+In terminal chat, `/pro on`, `/pro off`, and `/pro status` set the session's reasoning mode. The setting is persisted with the session and automatically disabled if you switch to a provider/model that does not support it.
 
 ## Provider file upload policy
 
@@ -517,7 +554,7 @@ Example custom policy:
 ```yaml
 providers:
   openai:
-    model: gpt-5.4
+    model: gpt-5.6-sol
     file_upload:
       native_mime_types:
         - application/pdf

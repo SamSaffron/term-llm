@@ -1008,6 +1008,9 @@ func (m *Model) renderStatusLine() string {
 	if model != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(model), 0, true))
 	}
+	if m.sess != nil && strings.EqualFold(m.sess.ReasoningMode, "pro") {
+		baseSegments = append(baseSegments, seg(successStyle.Render("pro"), 25, false))
+	}
 	if worktreeLabel := m.statusLineWorktreePart(); worktreeLabel != "" {
 		baseSegments = append(baseSegments, seg(successStyle.Render(worktreeLabel), 0, true))
 	}

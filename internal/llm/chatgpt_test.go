@@ -44,7 +44,7 @@ func TestChatGPTHTTPClient_DoesNotUseClientTimeout(t *testing.T) {
 	}
 }
 
-func TestNewChatGPTProviderWithCredsDefaultsToGPT55Medium(t *testing.T) {
+func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
 	t.Parallel()
 
 	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
@@ -53,8 +53,8 @@ func TestNewChatGPTProviderWithCredsDefaultsToGPT55Medium(t *testing.T) {
 		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
 	}, "")
 
-	if provider.model != "gpt-5.5" {
-		t.Fatalf("model = %q, want %q", provider.model, "gpt-5.5")
+	if provider.model != "gpt-5.6-sol" {
+		t.Fatalf("model = %q, want %q", provider.model, "gpt-5.6-sol")
 	}
 	if provider.effort != "medium" {
 		t.Fatalf("effort = %q, want %q", provider.effort, "medium")

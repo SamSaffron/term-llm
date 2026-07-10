@@ -92,7 +92,12 @@ func AllCommands() []Command {
 		{
 			Name:        "effort",
 			Description: "Switch reasoning effort for current model (Ctrl+R cycles)",
-			Usage:       "/effort [minimal|low|medium|high|xhigh|max|default]",
+			Usage:       "/effort [none|minimal|low|medium|high|xhigh|max|ultra|default]",
+		},
+		{
+			Name:        "pro",
+			Description: "Toggle GPT-5.6 Pro reasoning mode (OpenAI API only)",
+			Usage:       "/pro [on|off|status]",
 		},
 		{
 			Name:        "search",
@@ -363,6 +368,7 @@ func isStreamingLocalSlashCommand(input string) bool {
 		"stats":     true,
 		"st":        true,
 		"effort":    true,
+		"pro":       true,
 		"title":     true,
 		"autotitle": true,
 	}
@@ -459,6 +465,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdModel(args)
 	case "effort":
 		return m.cmdEffort(args)
+	case "pro":
+		return m.cmdPro(args)
 	case "search":
 		return m.cmdSearch()
 	case "fast":
@@ -1062,6 +1070,12 @@ func (m *Model) reasoningEffortsForModel(provider, model string) []string {
 	if _, _, efforts, ok := m.configuredModelEffort(provider, model); ok {
 		return efforts
 	}
+	base, _ := m.baseModelAndEffort(provider, model)
+	for _, metadata := range m.modelMetadata {
+		if strings.EqualFold(strings.TrimSpace(metadata.ID), strings.TrimSpace(base)) && len(metadata.ReasoningEfforts) > 0 {
+			return normalizedModelReasoningEfforts(metadata.ReasoningEfforts)
+		}
+	}
 	return llm.ReasoningEffortsForProviderModel(provider, model)
 }
 
@@ -1169,6 +1183,48 @@ func (m *Model) queuePendingStreamModelSwitch(provider, model string) {
 	if m.engine != nil && provider == currentProvider {
 		m.engine.QueueRequestModelSwitch(model)
 	}
+}
+
+func (m *Model) cmdPro(args []string) (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	provider, model := m.currentProviderAndModel()
+	supported := llm.SupportsReasoningMode(provider, model)
+	current := "off"
+	if m.sess != nil && strings.EqualFold(m.sess.ReasoningMode, "pro") {
+		current = "on"
+	}
+	requested := "status"
+	if len(args) > 0 {
+		requested = strings.ToLower(strings.TrimSpace(args[0]))
+	}
+	if requested == "status" {
+		if !supported && current == "on" {
+			m.sess.ReasoningMode = ""
+			if m.store != nil {
+				_ = m.store.Update(context.Background(), m.sess)
+			}
+			return m.showFooterWarning("Pro mode was disabled because the current provider/model does not support it.")
+		}
+		return m.showFooterMuted(fmt.Sprintf("Pro mode: %s (OpenAI API GPT-5.6 only)", current))
+	}
+	if requested != "on" && requested != "off" {
+		return m.showFooterWarning("Usage: /pro [on|off|status]")
+	}
+	if requested == "on" && !supported {
+		return m.showFooterWarning(fmt.Sprintf("Pro mode is not supported by %s:%s; use ChatGPT /effort ultra where available.", provider, model))
+	}
+	if m.sess == nil {
+		return m.showFooterWarning("Cannot change Pro mode: no active session.")
+	}
+	if requested == "on" {
+		m.sess.ReasoningMode = "pro"
+	} else {
+		m.sess.ReasoningMode = ""
+	}
+	if m.store != nil {
+		_ = m.store.Update(context.Background(), m.sess)
+	}
+	return m.showFooterMuted("Pro mode: " + requested)
 }
 
 func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {

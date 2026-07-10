@@ -17,6 +17,8 @@ type responsesStreamEventHandler struct {
 	reasoningState                 *responsesReasoningState
 	lastUsage                      *Usage
 	outputItems                    []ResponsesInputItem
+	replayItems                    []ProviderReplayItem
+	visibleMessageByOutputIndex    map[int]bool
 	sawTextDelta                   bool
 	allowResponseState             bool
 	stateSessionID                 string
@@ -35,6 +37,7 @@ func newResponsesStreamEventHandler(client *ResponsesClient, responseStateGenera
 		suppressReasoningSummaryDeltas: suppressReasoningSummaryDeltas,
 		toolState:                      newResponsesToolState(),
 		reasoningState:                 newResponsesReasoningState(),
+		visibleMessageByOutputIndex:    make(map[int]bool),
 	}
 }
 
@@ -75,6 +78,7 @@ func knownResponsesEventType(typ string) bool {
 		"response.reasoning_summary_text.delta",
 		"response.reasoning_summary_text.done",
 		"response.completed",
+		"response.incomplete",
 		"response.failed",
 		"error":
 		return true
@@ -183,10 +187,14 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 	switch eventType {
 	case "response.output_text.delta":
 		var deltaEvent struct {
-			Delta string `json:"delta"`
+			Delta       string `json:"delta"`
+			OutputIndex int    `json:"output_index"`
 		}
 		if err := unmarshalEvent(&deltaEvent); err != nil {
 			return false, err
+		}
+		if visible, known := h.visibleMessageByOutputIndex[deltaEvent.OutputIndex]; known && !visible {
+			break
 		}
 		if deltaEvent.Delta != "" {
 			h.sawTextDelta = true
@@ -207,6 +215,9 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			h.toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
 		} else if itemEvent.Item.Type == "reasoning" {
 			h.reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
+		} else if itemEvent.Item.Type == "message" {
+			agent := strings.TrimSpace(itemEvent.Item.Agent)
+			h.visibleMessageByOutputIndex[itemEvent.OutputIndex] = agent == "" || agent == "/root"
 		}
 
 	case "response.function_call_arguments.delta":
@@ -220,16 +231,28 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		h.toolState.AppendArguments(argEvent.OutputIndex, argEvent.Delta)
 
 	case "response.output_item.done":
-		var doneEvent struct {
-			Item        responsesOutputItem `json:"item"`
-			OutputIndex int                 `json:"output_index"`
+		var doneEnvelope struct {
+			Item        json.RawMessage `json:"item"`
+			OutputIndex int             `json:"output_index"`
 		}
-		if err := unmarshalEvent(&doneEvent); err != nil {
+		if err := unmarshalEvent(&doneEnvelope); err != nil {
 			return false, err
+		}
+		var doneEvent struct {
+			Item        responsesOutputItem
+			OutputIndex int
+		}
+		doneEvent.OutputIndex = doneEnvelope.OutputIndex
+		if err := json.Unmarshal(doneEnvelope.Item, &doneEvent.Item); err != nil {
+			return false, fmt.Errorf("decode Responses API output item: %w", err)
+		}
+		if len(doneEnvelope.Item) > 0 {
+			h.replayItems = append(h.replayItems, ProviderReplayItem{Raw: append(json.RawMessage(nil), doneEnvelope.Item...)})
 		}
 		if doneEvent.Item.Type == "function_call" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
 			h.toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
+			h.toolState.SetCaller(doneEvent.OutputIndex, doneEvent.Item.Caller)
 		} else if doneEvent.Item.Type == "reasoning" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
 			h.reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
@@ -250,6 +273,11 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			}
 		} else if doneEvent.Item.Type == "message" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
+			agent := strings.TrimSpace(doneEvent.Item.Agent)
+			visible := agent == "" || agent == "/root"
+			if !visible {
+				break
+			}
 			for _, content := range doneEvent.Item.Content {
 				if content.Type == "output_text" && content.Text != "" && !h.sawTextDelta {
 					if err := sendEvent(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
@@ -348,7 +376,7 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			h.reasoningState.MarkEmitted(summaryDoneEvent.OutputIndex)
 		}
 
-	case "response.completed":
+	case "response.completed", "response.incomplete":
 		var completedEvent struct {
 			Response struct {
 				ID    string          `json:"id"`
@@ -363,10 +391,16 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		}
 		if completedEvent.Response.Usage != nil {
 			cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens
+			cacheWrite := completedEvent.Response.Usage.InputTokensDetails.CacheWriteTokens
+			uncached := completedEvent.Response.Usage.InputTokens - cached - cacheWrite
+			if uncached < 0 {
+				uncached = 0
+			}
 			h.lastUsage = &Usage{
-				InputTokens:            completedEvent.Response.Usage.InputTokens - cached,
+				InputTokens:            uncached,
 				OutputTokens:           completedEvent.Response.Usage.OutputTokens,
 				CachedInputTokens:      cached,
+				CacheWriteTokens:       cacheWrite,
 				ProviderRawInputTokens: completedEvent.Response.Usage.InputTokens,
 				ProviderTotalTokens:    completedEvent.Response.Usage.TotalTokens,
 				ReasoningTokens:        completedEvent.Response.Usage.OutputTokensDetails.ReasoningTokens,
@@ -408,7 +442,7 @@ func responsesOutputItemToInputItem(item responsesOutputItem) []ResponsesInputIt
 		if args == "" {
 			args = "{}"
 		}
-		return []ResponsesInputItem{{Type: "function_call", CallID: callID, Name: item.Name, Arguments: args}}
+		return []ResponsesInputItem{{Type: "function_call", CallID: callID, Name: item.Name, Arguments: args, Caller: item.Caller}}
 	case "reasoning":
 		summary := responsesReasoningSummary(item.Summary)
 		return []ResponsesInputItem{{Type: "reasoning", ID: item.ID, EncryptedContent: item.EncryptedContent, Summary: &summary}}
@@ -439,6 +473,12 @@ func (h *responsesStreamEventHandler) emitFinalItems(send eventSender) error {
 			return err
 		}
 	}
+	for i := range h.replayItems {
+		replay := h.replayItems[i]
+		if err := send.Send(Event{Type: EventProviderReplay, ProviderReplay: &replay}); err != nil {
+			return err
+		}
+	}
 	if h.lastUsage != nil {
 		if err := send.Send(Event{Type: EventUsage, Use: h.lastUsage}); err != nil {
 			return err
@@ -448,7 +488,14 @@ func (h *responsesStreamEventHandler) emitFinalItems(send eventSender) error {
 }
 
 func (h *responsesStreamEventHandler) FinishIncomplete(send eventSender) error {
-	return h.emitFinalItems(send)
+	// Do not interpose hidden replay events before the transport's incomplete
+	// error. Committed function calls are already emitted first and the engine's
+	// recovery journal preserves them.
+	replay := h.replayItems
+	h.replayItems = nil
+	err := h.emitFinalItems(send)
+	h.replayItems = replay
+	return err
 }
 
 func (h *responsesStreamEventHandler) Finish(send eventSender) error {

@@ -938,18 +938,23 @@ func TestGetDefaultsEnableWebSocketForChatGPTOnly(t *testing.T) {
 	}
 }
 
-func TestGetDefaultsIncludeChatGPTProviderModel(t *testing.T) {
+func TestGetDefaultsIncludeGPT56ProviderModels(t *testing.T) {
 	defaults := GetDefaults()
 
-	got, ok := defaults["providers.chatgpt.model"].(string)
-	if !ok {
-		t.Fatalf("providers.chatgpt.model default has unexpected type %T", defaults["providers.chatgpt.model"])
+	checks := map[string]string{
+		"providers.openai.model":       "gpt-5.6-sol",
+		"providers.openai.fast_model":  "gpt-5.6-luna",
+		"providers.chatgpt.model":      "gpt-5.6-sol-medium",
+		"providers.chatgpt.fast_model": "gpt-5.6-luna",
 	}
-	if got != "gpt-5.5-medium" {
-		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-5.5-medium")
-	}
-	if !IsKnownKey("providers.chatgpt.model") {
-		t.Fatal("providers.chatgpt.model should be a known key")
+	for key, want := range checks {
+		got, ok := defaults[key].(string)
+		if !ok || got != want {
+			t.Fatalf("%s = %#v, want %q", key, defaults[key], want)
+		}
+		if !IsKnownKey(key) {
+			t.Fatalf("%s should be a known key", key)
+		}
 	}
 }
 
@@ -1035,8 +1040,8 @@ providers:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.Providers["chatgpt"].Model; got != "gpt-5.5-medium" {
-		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-5.5-medium")
+	if got := cfg.Providers["chatgpt"].Model; got != "gpt-5.6-sol-medium" {
+		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-5.6-sol-medium")
 	}
 }
 

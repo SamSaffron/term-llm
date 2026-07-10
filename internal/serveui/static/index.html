@@ -240,12 +240,14 @@
                 </button>
                 <select class="chip-select-hidden" id="chipEffortSelect" aria-hidden="true" tabindex="-1">
                   <option value="">Auto (server default)</option>
+                  <option value="none">none</option>
                   <option value="minimal">minimal</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
                   <option value="high">high</option>
                   <option value="xhigh">xhigh</option>
                   <option value="max">max</option>
+                  <option value="ultra">ultra</option>
                 </select>
               </div>
               <span class="chip-sep" id="chipSepEffortWorktree" data-sep="effort-worktree" hidden>·</span>
@@ -352,12 +354,21 @@
         <label class="settings-label" for="effortSelect">Effort</label>
         <select class="settings-select" id="effortSelect" title="Reasoning effort" tabindex="-1">
           <option value="">Auto (server default)</option>
+          <option value="none">none</option>
           <option value="minimal">minimal</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
           <option value="xhigh">xhigh</option>
           <option value="max">max</option>
+          <option value="ultra">ultra</option>
+        </select>
+      </div>
+      <div class="settings-field" id="reasoningModeField" hidden>
+        <label class="settings-label" for="reasoningModeSelect">Reasoning mode</label>
+        <select class="settings-select" id="reasoningModeSelect" title="GPT-5.6 reasoning mode" tabindex="-1">
+          <option value="standard">Standard</option>
+          <option value="pro">Pro</option>
         </select>
       </div>
       <div class="settings-field">

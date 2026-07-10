@@ -66,13 +66,26 @@ export EXA_API_KEY=your-key
 export PERPLEXITY_API_KEY=your-key
 ```
 
+OpenAI API-key installs default to `gpt-5.6-sol`, with `gpt-5.6-luna` as the lightweight control-plane model:
+
+```yaml
+default_provider: openai
+providers:
+  openai:
+    model: gpt-5.6-sol
+    fast_model: gpt-5.6-luna
+```
+
+GPT-5.6 has a 922K effective input budget and a 128K output cap through the OpenAI provider. Its API efforts are `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Public-API Pro mode and the advanced Responses controls are documented under [Providers and models](/reference/providers-and-models/#gpt-56-on-openai-and-chatgpt).
+
 ### Option 3: Use ChatGPT (Plus/Pro subscription)
 
 If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provider with native OAuth authentication for both text and image workflows:
 
 ```bash
 term-llm ask --provider chatgpt "explain this code"
-term-llm ask --provider chatgpt:gpt-5.2-codex "code question"
+term-llm ask --provider chatgpt:gpt-5.6-sol-ultra "hard code question"
+term-llm ask --provider chatgpt:gpt-5.6-luna-medium "quick code question"
 term-llm image --provider chatgpt:gpt-5.4 "storybook fox in the snow"
 ```
 
@@ -84,13 +97,18 @@ default_provider: chatgpt
 
 providers:
   chatgpt:
-    model: gpt-5.2-codex
+    model: gpt-5.6-sol-medium
+    fast_model: gpt-5.6-luna
     # Request fast/priority service tier for supported ChatGPT models/accounts.
     # Omit this field to send no service_tier.
     service_tier: fast
     # Enabled by default for ChatGPT text requests; set false to force HTTP/SSE.
     use_websocket: true
 ```
+
+The ChatGPT default pins Sol to medium effort. Its live model catalog supplies current limits and supported efforts; the static GPT-5.6 fallback is 372K effective input and 128K output. Sol and Terra support `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; Luna supports the same set without `ultra` and keeps its upstream medium default.
+
+ChatGPT `ultra` is an effort, not OpenAI public-API `reasoning.mode: pro`. The ChatGPT OAuth backend does not receive the public API's Pro, hosted multi-agent, programmatic-tool-calling, or prompt-cache control fields. `service_tier: fast` is a user-facing alias for the upstream `priority` tier; omit it to send no tier.
 
 ### Option 4: Use xAI (Grok)
 

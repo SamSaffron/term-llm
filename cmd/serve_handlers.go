@@ -2272,8 +2272,20 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 			item["input_price"] = m.InputPrice
 			item["output_price"] = m.OutputPrice
 		}
-		if efforts := llm.ReasoningEffortsForProviderModel(effectiveName, id); len(efforts) > 0 {
+		if len(m.ReasoningEfforts) > 0 {
+			item["reasoning_efforts"] = append([]string(nil), m.ReasoningEfforts...)
+		} else if efforts := llm.ReasoningEffortsForProviderModel(effectiveName, id); len(efforts) > 0 {
 			item["reasoning_efforts"] = efforts
+		}
+		if m.DefaultReasoningEffort != "" {
+			item["default_reasoning_effort"] = m.DefaultReasoningEffort
+		}
+		reasoningModes := m.ReasoningModes
+		if len(reasoningModes) == 0 && llm.SupportsReasoningMode(effectiveName, id) {
+			reasoningModes = []string{"standard", "pro"}
+		}
+		if len(reasoningModes) > 0 {
+			item["reasoning_modes"] = reasoningModes
 		}
 		items = append(items, item)
 	}
@@ -2614,15 +2626,15 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 	return rt, true, nil
 }
 
-// syncPersistedSessionRuntime pins the provider, model, and reasoning_effort
-// for the current fresh web conversation. A client may start a fresh
+// syncPersistedSessionRuntime pins the provider, model, reasoning_effort, and
+// explicit GPT-5.6 reasoning mode for the current fresh web conversation. A client may start a fresh
 // conversation while reusing an existing session ID, so the persisted session
 // row must be updated to match the replacement runtime instead of leaving
 // stale provider/model metadata behind from the prior conversation. If the row
 // does not yet exist, it is created here so the client-supplied model and
 // effort are persisted (rather than the runtime defaults that rt would
 // otherwise use when Run creates the row).
-func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, clientEffort, worktreeDir string) {
+func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, clientEffort, reasoningMode string, syncReasoningMode bool, worktreeDir string) {
 	if s.store == nil || sessionID == "" || rt == nil {
 		return
 	}
@@ -2642,6 +2654,7 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	}
 	effort := strings.TrimSpace(clientEffort)
 	modelName, effort = normalizeProviderModelEffort(providerKey, modelName, effort)
+	reasoningMode = strings.ToLower(strings.TrimSpace(reasoningMode))
 
 	requestedWorktree := strings.TrimSpace(worktreeDir)
 	if requestedWorktree != "" {
@@ -2675,6 +2688,9 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		}
 		if effort != "" {
 			sess.ReasoningEffort = effort
+		}
+		if syncReasoningMode && reasoningMode != "" {
+			sess.ReasoningMode = reasoningMode
 		}
 		if requestedWorktree != "" {
 			sess.WorktreeDir = requestedWorktree
@@ -2715,6 +2731,10 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		sess.ReasoningEffort = effort
 		changed = true
 	}
+	if syncReasoningMode && strings.ToLower(strings.TrimSpace(sess.ReasoningMode)) != reasoningMode {
+		sess.ReasoningMode = reasoningMode
+		changed = true
+	}
 	acceptedWorktree := strings.TrimSpace(sess.WorktreeDir)
 	if requestedWorktree != "" {
 		switch {
@@ -2747,6 +2767,27 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	rt.mu.Lock()
 	rt.sessionMeta = sess
 	rt.mu.Unlock()
+}
+
+func (s *serveServer) syncPersistedSessionReasoningMode(ctx context.Context, sessionID string, rt *serveRuntime, reasoningMode string) {
+	if s.store == nil || sessionID == "" {
+		return
+	}
+	reasoningMode = strings.ToLower(strings.TrimSpace(reasoningMode))
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil || strings.ToLower(strings.TrimSpace(sess.ReasoningMode)) == reasoningMode {
+		return
+	}
+	sess.ReasoningMode = reasoningMode
+	if err := s.store.Update(ctx, sess); err != nil {
+		log.Printf("[serve] session reasoning mode update failed for %s: %v", sessionID, err)
+		return
+	}
+	if rt != nil {
+		rt.mu.Lock()
+		rt.sessionMeta = sess
+		rt.mu.Unlock()
+	}
 }
 
 func applyRuntimeWorktreeBaseDir(sessionID string, rt *serveRuntime, dir string) {

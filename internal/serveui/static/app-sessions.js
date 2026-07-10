@@ -266,6 +266,7 @@ const syncSelectedRuntimeFromSession = (session) => {
   const provider = String(session.provider || '').trim();
   let model = String(session.activeModel || '').trim();
   let effort = String(session.activeEffort || '').trim();
+  const reasoningMode = String(session.activeReasoningMode || '').trim().toLowerCase();
   const split = splitHeaderModelEffort(model, effort, state.models);
   model = split.model;
   effort = split.effort;
@@ -286,6 +287,11 @@ const syncSelectedRuntimeFromSession = (session) => {
     state.selectedEffort = effort;
     changed = true;
   }
+  const selectedReasoningMode = reasoningMode === 'pro' ? 'pro' : 'standard';
+  if (state.selectedReasoningMode !== selectedReasoningMode) {
+    state.selectedReasoningMode = selectedReasoningMode;
+    changed = true;
+  }
   if (!changed) return false;
 
   const persistValue = (key, value) => {
@@ -298,10 +304,12 @@ const syncSelectedRuntimeFromSession = (session) => {
   persistValue(STORAGE_KEYS.selectedProvider, state.selectedProvider);
   persistValue(STORAGE_KEYS.selectedModel, state.selectedModel);
   persistValue(STORAGE_KEYS.selectedEffort, state.selectedEffort);
+  persistValue(STORAGE_KEYS.selectedReasoningMode, state.selectedReasoningMode);
 
   if (elements.providerSelect) elements.providerSelect.value = state.selectedProvider || '';
   if (elements.modelSelect) elements.modelSelect.value = state.selectedModel || '';
   if (elements.effortSelect) elements.effortSelect.value = state.selectedEffort || '';
+  if (elements.reasoningModeSelect) elements.reasoningModeSelect.value = state.selectedReasoningMode || 'standard';
   if (elements.chipProviderSelect) elements.chipProviderSelect.value = state.selectedProvider || '';
   if (elements.chipModelSelect) elements.chipModelSelect.value = state.selectedModel || '';
   if (elements.chipEffortSelect) elements.chipEffortSelect.value = state.selectedEffort || '';
@@ -1657,6 +1665,13 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     const effort = String(runtimeSplit.effort || '');
     if (effort !== (session.activeEffort || '')) {
       session.activeEffort = effort;
+      sessionChanged = true;
+    }
+  }
+  if (runtimeState.reasoning_mode !== undefined) {
+    const reasoningMode = String(runtimeState.reasoning_mode || '').trim().toLowerCase();
+    if (reasoningMode !== (session.activeReasoningMode || '')) {
+      session.activeReasoningMode = reasoningMode;
       sessionChanged = true;
     }
   }

@@ -395,3 +395,90 @@ func TestOpenAIProviderStreamServiceTierOmittedByDefaultAndClearOverride(t *test
 		t.Fatalf("service_tier = %q, want omitted", got.ServiceTier)
 	}
 }
+
+func TestOpenAIProviderStreamMapsGPT56AdvancedResponsesControls(t *testing.T) {
+	var got ResponsesRequest
+	var beta string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		beta = r.Header.Get("OpenAI-Beta")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := &OpenAIProvider{
+		apiKey: "test-key",
+		model:  "gpt-5.6-sol",
+		responsesOptions: ResponsesOptions{
+			ReasoningMode:    "standard",
+			ReasoningContext: "all_turns",
+			MultiAgent: MultiAgentOptions{
+				Enabled:                true,
+				EnabledSet:             true,
+				MaxConcurrentSubagents: 6,
+			},
+			ProgrammaticToolCalling: ProgrammaticToolCallingOptions{
+				Enabled:    true,
+				EnabledSet: true,
+				Tools:      []string{"shell"},
+			},
+			PromptCache: PromptCacheOptions{Mode: "implicit", TTL: "30m"},
+		},
+		responsesClient: &ResponsesClient{
+			BaseURL:       ts.URL,
+			GetAuthHeader: func() string { return "Bearer test-key" },
+			HTTPClient:    ts.Client(),
+		},
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+		Tools: []ToolSpec{{
+			Name:   "shell",
+			Schema: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		Responses: &ResponsesOptions{
+			ReasoningMode:    "pro",
+			ReasoningContext: "current_turn",
+			MultiAgent:       MultiAgentOptions{MaxConcurrentSubagents: 2},
+			PromptCache:      PromptCacheOptions{Mode: "explicit"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if got.Reasoning == nil || got.Reasoning.Mode != "pro" || got.Reasoning.Context != "current_turn" || got.Reasoning.Summary != "" {
+		t.Fatalf("reasoning = %+v", got.Reasoning)
+	}
+	if got.MultiAgent == nil || !got.MultiAgent.Enabled || got.MultiAgent.MaxConcurrentSubagents != 2 {
+		t.Fatalf("multi_agent = %+v", got.MultiAgent)
+	}
+	if got.PromptCacheOptions == nil || got.PromptCacheOptions.Mode != "explicit" || got.PromptCacheOptions.TTL != "30m" {
+		t.Fatalf("prompt_cache_options = %+v", got.PromptCacheOptions)
+	}
+	if beta != "responses_multi_agent=v1" {
+		t.Fatalf("OpenAI-Beta = %q", beta)
+	}
+	if len(got.Tools) != 2 {
+		t.Fatalf("tools = %#v", got.Tools)
+	}
+	tool, ok := got.Tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool = %#v", got.Tools[0])
+	}
+	callers, ok := tool["allowed_callers"].([]any)
+	if !ok || len(callers) != 1 || callers[0] != "programmatic" {
+		t.Fatalf("allowed_callers = %#v", tool["allowed_callers"])
+	}
+	marker, ok := got.Tools[1].(map[string]any)
+	if !ok || marker["type"] != "programmatic_tool_calling" {
+		t.Fatalf("PTC marker tool = %#v", got.Tools[1])
+	}
+}

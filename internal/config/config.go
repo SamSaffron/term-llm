@@ -83,6 +83,31 @@ type FileUploadConfig struct {
 	MaxTextEmbedBytes  int64    `mapstructure:"max_text_embed_bytes" yaml:"max_text_embed_bytes,omitempty"`
 }
 
+// ResponsesConfig controls advanced OpenAI Responses API execution features.
+// It is separate from ReasoningConfig, which only governs display/export.
+type ResponsesConfig struct {
+	ReasoningMode           string                           `mapstructure:"reasoning_mode" yaml:"reasoning_mode,omitempty"`
+	ReasoningContext        string                           `mapstructure:"reasoning_context" yaml:"reasoning_context,omitempty"`
+	MultiAgent              ResponsesMultiAgentConfig        `mapstructure:"multi_agent" yaml:"multi_agent,omitempty"`
+	ProgrammaticToolCalling ResponsesProgrammaticToolsConfig `mapstructure:"programmatic_tool_calling" yaml:"programmatic_tool_calling,omitempty"`
+	PromptCache             ResponsesPromptCacheConfig       `mapstructure:"prompt_cache" yaml:"prompt_cache,omitempty"`
+}
+
+type ResponsesMultiAgentConfig struct {
+	Enabled                bool `mapstructure:"enabled" yaml:"enabled,omitempty"`
+	MaxConcurrentSubagents int  `mapstructure:"max_concurrent_subagents" yaml:"max_concurrent_subagents,omitempty"`
+}
+
+type ResponsesProgrammaticToolsConfig struct {
+	Enabled bool     `mapstructure:"enabled" yaml:"enabled,omitempty"`
+	Tools   []string `mapstructure:"tools" yaml:"tools,omitempty"`
+}
+
+type ResponsesPromptCacheConfig struct {
+	Mode string `mapstructure:"mode" yaml:"mode,omitempty"`
+	TTL  string `mapstructure:"ttl" yaml:"ttl,omitempty"`
+}
+
 // ProviderModelConfig describes a configured model entry. A model can be a
 // simple string in YAML (stored in ProviderConfig.Models) or an object with
 // metadata here. Alias is the friendly name exposed in pickers/completions;
@@ -124,6 +149,7 @@ type ProviderConfig struct {
 	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
+	Responses    ResponsesConfig       `mapstructure:"responses"`     // Advanced Responses API execution controls
 	FileUpload   *FileUploadConfig     `mapstructure:"file_upload"`   // Optional upload/native-file support overrides
 	VisionVia    string                `mapstructure:"vision_via"`    // Optional provider:model route for indirect image understanding
 
@@ -2277,6 +2303,7 @@ func Save(cfg *Config) error {
 		FastModel    string            `yaml:"fast_model,omitempty"`
 		FastProvider string            `yaml:"fast_provider,omitempty"`
 		ServiceTier  string            `yaml:"service_tier,omitempty"`
+		Responses    ResponsesConfig   `yaml:"responses,omitempty"`
 		FileUpload   *FileUploadConfig `yaml:"file_upload,omitempty"`
 		BaseURL      string            `yaml:"base_url,omitempty"`
 		AppURL       string            `yaml:"app_url,omitempty"`
@@ -2310,6 +2337,7 @@ func Save(cfg *Config) error {
 			FastModel:    p.FastModel,
 			FastProvider: p.FastProvider,
 			ServiceTier:  p.ServiceTier,
+			Responses:    p.Responses,
 			FileUpload:   p.FileUpload,
 			BaseURL:      p.BaseURL,
 			AppURL:       p.AppURL,

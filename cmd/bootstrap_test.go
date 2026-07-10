@@ -22,8 +22,8 @@ func TestApplyProviderOverridesWithAgentResolvesFastModelAlias(t *testing.T) {
 	if cfg.DefaultProvider != "openai" {
 		t.Fatalf("DefaultProvider = %q, want openai", cfg.DefaultProvider)
 	}
-	if got := cfg.Providers["openai"].Model; got != "gpt-5.4-nano" {
-		t.Fatalf("openai model = %q, want gpt-5.4-nano", got)
+	if got := cfg.Providers["openai"].Model; got != "gpt-5.6-luna" {
+		t.Fatalf("openai model = %q, want gpt-5.6-luna", got)
 	}
 }
 

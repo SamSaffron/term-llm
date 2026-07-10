@@ -86,6 +86,65 @@ File handling is provider-aware:
 
 Do not attach secrets unless you intend the selected provider to receive them. Native file forwarding and text fallback both send file contents upstream.
 
+## GPT-5.6 Responses controls
+
+The browser model picker reads `reasoning_efforts` and `reasoning_modes` from `GET /ui/v1/models`. For OpenAI API GPT-5.6 models it shows a **Standard / Pro** selector and sends the selection as `reasoning.mode`. The selector is hidden for unsupported models; switching to one clears a stale Pro selection. ChatGPT's `ultra` remains an effort in the effort picker and is not presented as Pro mode.
+
+API clients can send GPT-5.6 advanced controls to `POST /ui/v1/responses`:
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-5.6-terra",
+  "input": "Investigate the failures and propose a fix",
+  "reasoning": {
+    "effort": "high",
+    "mode": "pro",
+    "context": "all_turns"
+  },
+  "multi_agent": {
+    "enabled": true,
+    "max_concurrent_subagents": 3
+  },
+  "prompt_cache_options": {
+    "mode": "explicit",
+    "ttl": "30m"
+  },
+  "stream": true
+}
+```
+
+Accepted values are:
+
+- `reasoning.effort`: OpenAI GPT-5.6 supports `none`, `low`, `medium`, `high`, `xhigh`, and `max`.
+- `reasoning.mode`: `standard` or `pro`.
+- `reasoning.context`: `auto`, `current_turn`, or `all_turns`.
+- `prompt_cache_options.mode`: `implicit` or `explicit`; `ttl` currently supports only `30m`.
+- `multi_agent.max_concurrent_subagents`: defaults to `3` when multi-agent is enabled and the value is omitted.
+
+Programmatic tool calling is requested with an eligible function tool plus the PTC marker tool:
+
+```json
+{
+  "tools": [
+    {
+      "type": "function",
+      "name": "read_file",
+      "description": "Read a file",
+      "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+      "allowed_callers": ["programmatic"]
+    },
+    {"type": "programmatic_tool_calling"}
+  ]
+}
+```
+
+Every programmatic tool must be present in the request. Optional `output_schema` metadata is preserved for tool definitions. To mark an explicit cache boundary, add `"prompt_cache_breakpoint":{"mode":"explicit"}` to an `input_text`, `input_image`, or `input_file` content block.
+
+These fields are deliberately gated to the built-in `openai` provider's GPT-5.6 family. Requests using older OpenAI models, custom OpenAI-compatible providers, or ChatGPT OAuth fail validation instead of forwarding unsupported controls. OpenAI Pro and ChatGPT Ultra are distinct: do not send `reasoning.mode: pro` merely because a ChatGPT account has Pro subscription access or a model supports the `ultra` effort.
+
+Opaque provider replay items used to continue stateless Responses turns are persisted internally but never rendered in the browser or included in session exports.
+
 ## Persistent goals in the browser UI
 
 The browser UI exposes the same persistent goal state as terminal chat. Open the composer `+` menu and choose **Set goal…**, or click the `🎯` goal chip above the composer after a goal exists. Goals are stored on the session and survive page reloads; an active goal lets the shared runner automatically continue work until the model marks it complete/blocked, the user pauses or clears it, the run is stopped, or an optional token budget is exhausted.

@@ -630,6 +630,16 @@ func (m *Model) startStream(content string) tea.Cmd {
 			ServiceTierSet:          serviceTierSet,
 			MaxTurns:                m.maxTurns,
 		}
+		if m.sess != nil && strings.EqualFold(m.sess.ReasoningMode, "pro") {
+			if llm.SupportsReasoningMode(m.providerKey, m.modelName) {
+				req.Responses = &llm.ResponsesOptions{ReasoningMode: "pro"}
+			} else {
+				m.sess.ReasoningMode = ""
+				if m.store != nil {
+					_ = m.store.Update(context.Background(), m.sess)
+				}
+			}
+		}
 
 		assistantSnapshotCB, responseCompletedCB, turnCompletedCB := m.streamPersistenceCallbacks(m.streamStartTime)
 		if m.runner == nil {

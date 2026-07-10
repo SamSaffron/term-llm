@@ -13,7 +13,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		"active_run": false,
 	}
 
-	var persistedProvider, persistedModel, persistedEffort string
+	var persistedProvider, persistedModel, persistedEffort, persistedReasoningMode string
 	var persistedGoal *session.Goal
 	persistedGoalRead := false
 	var runtimeDefaultModel string
@@ -72,6 +72,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				if rt.sessionMeta != nil {
 					persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
 					persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
+					persistedReasoningMode = strings.ToLower(strings.TrimSpace(rt.sessionMeta.ReasoningMode))
 					persistedGoal = rt.sessionMeta.Goal.Clone()
 					persistedGoalRead = true
 				}
@@ -116,6 +117,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			if persistedEffort == "" {
 				persistedEffort = strings.TrimSpace(sess.ReasoningEffort)
 			}
+			if persistedReasoningMode == "" {
+				persistedReasoningMode = strings.ToLower(strings.TrimSpace(sess.ReasoningMode))
+			}
 		}
 	}
 
@@ -132,6 +136,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	}
 	if persistedEffort != "" {
 		resp["reasoning_effort"] = persistedEffort
+	}
+	if persistedReasoningMode != "" {
+		resp["reasoning_mode"] = persistedReasoningMode
 	}
 	if persistedGoal != nil && persistedGoal.Exists() {
 		resp["goal"] = persistedGoal

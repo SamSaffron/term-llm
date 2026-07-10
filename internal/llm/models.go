@@ -45,6 +45,9 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "claude-haiku-4", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"openai": {
+		{ID: "gpt-5.6-sol", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
+		{ID: "gpt-5.6-terra", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
+		{ID: "gpt-5.6-luna", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
 		{ID: "gpt-5.5", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
@@ -59,7 +62,11 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "o3-mini", InputLimit: 100_000, OutputLimit: 100_000},
 	},
 	"chatgpt": {
-		// Uses ChatGPT backend API with native OAuth
+		// Uses ChatGPT backend API with native OAuth. These are static fallback
+		// capabilities; live /codex/models metadata takes precedence in clients.
+		{ID: "gpt-5.6-sol", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTSolTerraEffortVariants},
+		{ID: "gpt-5.6-terra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTSolTerraEffortVariants},
+		{ID: "gpt-5.6-luna", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTLunaEffortVariants},
 		{ID: "gpt-5.5", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
@@ -306,10 +313,13 @@ var ImageProviderModels = map[string][]string{
 	"openrouter": {"google/gemini-2.5-flash-image", "google/gemini-3-pro-image-preview", "openai/gpt-5-image", "openai/gpt-5-image-mini", "bytedance-seed/seedream-4.5", "black-forest-labs/flux.2-pro"},
 }
 
-// defaultEffortVariants are the standard effort levels for GPT-5-family
-// suffix aliases. This is deliberately not the union of all known suffixes:
-// GPT-5 models do not support "max".
+// defaultEffortVariants are the legacy standard effort levels for GPT-5-family
+// suffix aliases. GPT-5.6 has provider-specific sets declared separately.
 var defaultEffortVariants = []string{"minimal", "low", "medium", "high", "xhigh"}
+
+var gpt56OpenAIEffortVariants = []string{"none", "low", "medium", "high", "xhigh", "max"}
+var gpt56ChatGPTSolTerraEffortVariants = []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+var gpt56ChatGPTLunaEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 
 var claudeBinOpusEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeBinSonnetEffortVariants = []string{"low", "medium", "high"}
@@ -381,7 +391,24 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 	nameLower := strings.ToLower(name)
 
 	switch providerType {
-	case "openai", "chatgpt", "copilot":
+	case "openai":
+		if isGPT56Model(nameLower) {
+			return cloneEfforts(gpt56OpenAIEffortVariants)
+		}
+		if strings.HasPrefix(nameLower, "gpt-5") && !strings.HasSuffix(nameLower, "-codex-max") {
+			return cloneEfforts(defaultEffortVariants)
+		}
+	case "chatgpt":
+		if nameLower == "gpt-5.6-sol" || nameLower == "gpt-5.6-terra" {
+			return cloneEfforts(gpt56ChatGPTSolTerraEffortVariants)
+		}
+		if nameLower == "gpt-5.6-luna" {
+			return cloneEfforts(gpt56ChatGPTLunaEffortVariants)
+		}
+		if strings.HasPrefix(nameLower, "gpt-5") && !strings.HasSuffix(nameLower, "-codex-max") {
+			return cloneEfforts(defaultEffortVariants)
+		}
+	case "copilot":
 		if strings.HasPrefix(nameLower, "gpt-5") && !strings.HasSuffix(nameLower, "-codex-max") {
 			return cloneEfforts(defaultEffortVariants)
 		}
@@ -417,6 +444,27 @@ func isClaudeSonnetModelName(name string) bool {
 
 func isClaudeFableModelName(name string) bool {
 	return strings.HasPrefix(name, "claude-fable-5")
+}
+
+func isGPT56Model(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+		return true
+	default:
+		return false
+	}
+}
+
+// SupportsReasoningMode reports whether a provider/model accepts the public
+// Responses API reasoning.mode control. ChatGPT OAuth intentionally returns
+// false: its Codex backend exposes Ultra as an effort and rejects Pro mode.
+func SupportsReasoningMode(provider, model string) bool {
+	providerType := resolveProviderType(strings.ToLower(strings.TrimSpace(provider)))
+	if providerType != "openai" {
+		return false
+	}
+	base, _ := BaseModelAndEffortForProvider(provider, model)
+	return isGPT56Model(base)
 }
 
 func cloneEfforts(efforts []string) []string {
@@ -573,7 +621,7 @@ func trimKnownEffortSuffix(model string) (string, bool) {
 // across providers. It is a parser/legacy-dedup helper, not a capability list
 // for every model. Provider-aware callers should use
 // BaseModelAndEffortForProvider / ReasoningEffortsForProviderModel instead.
-var knownEffortSuffixes = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+var knownEffortSuffixes = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 
 // DedupeEffortVariants removes effort-suffixed aliases (e.g. "opus-high",
 // "gpt-5.4-medium") when the base model is also present in the list.

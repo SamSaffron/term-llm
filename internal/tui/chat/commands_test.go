@@ -143,7 +143,7 @@ func TestAllCommandsRemovesLoadAndKeepsResume(t *testing.T) {
 func TestAllCommandsIncludesEffort(t *testing.T) {
 	for _, cmd := range AllCommands() {
 		if cmd.Name == "effort" {
-			if cmd.Usage != "/effort [minimal|low|medium|high|xhigh|max|default]" {
+			if cmd.Usage != "/effort [none|minimal|low|medium|high|xhigh|max|ultra|default]" {
 				t.Fatalf("effort usage = %q", cmd.Usage)
 			}
 			return

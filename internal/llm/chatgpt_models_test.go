@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -105,5 +106,61 @@ func TestChatGPTListModelsFallsBackToStaleCache(t *testing.T) {
 	}
 	if len(models) != 1 || models[0].ID != "gpt-5.5" {
 		t.Fatalf("unexpected stale models: %#v", models)
+	}
+}
+
+func TestChatGPTModelInfoDecodesReasoningMetadata(t *testing.T) {
+	var response chatGPTModelsResponse
+	if err := json.Unmarshal([]byte(`{
+		"models": [
+			{
+				"slug": "gpt-5.6-sol",
+				"display_name": "GPT-5.6 Sol",
+				"input_token_limit": 372000,
+				"supported_reasoning_levels": [
+					{"effort": "low", "description": "Fast"},
+					{"level": "medium"},
+					"ultra"
+				],
+				"default_reasoning_level": "medium"
+			}
+		]
+	}`), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(response.Models) != 1 {
+		t.Fatalf("models = %#v", response.Models)
+	}
+	got := response.Models[0].toModelInfo()
+	if got.ID != "gpt-5.6-sol" || got.DisplayName != "GPT-5.6 Sol" || got.InputLimit != 372_000 {
+		t.Fatalf("model identity/limit = %#v", got)
+	}
+	wantEfforts := []string{"low", "medium", "ultra"}
+	if !equalSlice(got.ReasoningEfforts, wantEfforts) {
+		t.Fatalf("ReasoningEfforts = %v, want %v", got.ReasoningEfforts, wantEfforts)
+	}
+	if got.DefaultReasoningEffort != "medium" {
+		t.Fatalf("DefaultReasoningEffort = %q, want medium", got.DefaultReasoningEffort)
+	}
+}
+
+func TestChatGPTModelInfoPrefersExplicitMetadata(t *testing.T) {
+	got := (chatGPTModelInfo{
+		Slug:                     "gpt-5.6-luna",
+		ID:                       "ignored-id",
+		Title:                    "Luna title",
+		Name:                     "Luna name",
+		MaxInputTokens:           400,
+		InputTokenLimit:          300,
+		ContextWindow:            200,
+		SupportedReasoningLevels: chatGPTReasoningLevels{"low", "medium", "max"},
+		DefaultReasoningLevel:    "low",
+		DefaultReasoningEffort:   "medium",
+	}).toModelInfo()
+	if got.ID != "gpt-5.6-luna" || got.DisplayName != "Luna title" || got.InputLimit != 400 {
+		t.Fatalf("toModelInfo() = %#v", got)
+	}
+	if got.DefaultReasoningEffort != "medium" {
+		t.Fatalf("DefaultReasoningEffort = %q, want explicit medium", got.DefaultReasoningEffort)
 	}
 }

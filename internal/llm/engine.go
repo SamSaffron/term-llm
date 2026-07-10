@@ -1553,6 +1553,25 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 	}
 }
 
+func attachProviderReplayParts(msg Message, parts []Part) Message {
+	msg.Parts = append(msg.Parts, cloneProviderReplayParts(parts)...)
+	return msg
+}
+
+func cloneProviderReplayParts(parts []Part) []Part {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]Part, 0, len(parts))
+	for _, part := range parts {
+		if part.Type != PartProviderReplay || part.ProviderReplay == nil || len(part.ProviderReplay.Raw) == 0 {
+			continue
+		}
+		out = append(out, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)}})
+	}
+	return out
+}
+
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
@@ -1910,6 +1929,7 @@ turnLoop:
 		var reasoningEncryptedContent string
 		var reasoningSummaryParts []string
 		var reasoningKind ReasoningKind
+		var providerReplayParts []Part
 		var turnMetrics TurnMetrics
 		var syncToolsExecuted bool     // Track if tools were executed via sync path (MCP)
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
@@ -1947,6 +1967,7 @@ turnLoop:
 				reasoningEncryptedContent,
 				reasoningKind,
 			)
+			msg = attachProviderReplayParts(msg, providerReplayParts)
 			if len(msg.Parts) == 0 {
 				return
 			}
@@ -2004,6 +2025,7 @@ turnLoop:
 					reasoningEncryptedContent,
 					reasoningKind,
 				)
+				assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 				req.Messages = append(req.Messages, assistantMsg)
 				req.Messages = append(req.Messages, syncToolResults...)
@@ -2060,6 +2082,7 @@ turnLoop:
 					reasoningEncryptedContent,
 					reasoningKind,
 				)
+				assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 				if len(assistantMsg.Parts) > 0 {
 					maybeCompactAfterLLMCall([]Message{assistantMsg})
 					req.Messages = append(req.Messages, assistantMsg)
@@ -2082,6 +2105,7 @@ turnLoop:
 				reasoningEncryptedContent,
 				reasoningKind,
 			)
+			assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 			maybeCompactAfterLLMCall([]Message{assistantMsg})
 			responseHandled := callResponseCompletedCallback(ctx, responseCallback, attempt, assistantMsg, turnMetrics)
 
@@ -2314,6 +2338,7 @@ turnLoop:
 				reasoningEncryptedContent = ""
 				reasoningSummaryParts = nil
 				reasoningKind = ""
+				providerReplayParts = nil
 				turnMetrics = TurnMetrics{}
 				if softCheckpointInProgress {
 					softCompactionUsage = Usage{}
@@ -2321,6 +2346,12 @@ turnLoop:
 				}
 				if err := stageOrSendModelEvent(event); err != nil {
 					return err
+				}
+				continue
+			}
+			if event.Type == EventProviderReplay {
+				if event.ProviderReplay != nil && len(event.ProviderReplay.Raw) > 0 {
+					providerReplayParts = append(providerReplayParts, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: append(json.RawMessage(nil), event.ProviderReplay.Raw...)}})
 				}
 				continue
 			}
@@ -2528,7 +2559,7 @@ turnLoop:
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
 			var finalMsg Message
-			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" || len(providerReplayParts) > 0 {
 				finalMsg = buildAssistantMessageWithReasoningMetadata(
 					textBuilder.String(),
 					nil,
@@ -2538,6 +2569,7 @@ turnLoop:
 					reasoningEncryptedContent,
 					reasoningKind,
 				)
+				finalMsg = attachProviderReplayParts(finalMsg, providerReplayParts)
 				if softCheckpointInProgress {
 					brief := continuationBriefFromAssistantMessage(finalMsg)
 					if brief != "" && compactionConfig != nil && softCheckpointOriginalCount > 0 {
@@ -2562,6 +2594,18 @@ turnLoop:
 					}
 					restoreAfterSoftCompactionFailure()
 					attempt-- // retry the task without treating the internal brief as a user-visible response
+					continue
+				}
+				if textBuilder.Len() == 0 && len(providerReplayParts) > 0 && attempt < maxTurns-1 {
+					req.Messages = append(req.Messages, finalMsg)
+					if turnCallback != nil {
+						cbCtx, cancel := callbackContext(ctx)
+						_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+						cancel()
+					}
+					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+						return err
+					}
 					continue
 				}
 				maybeCompactAfterLLMCall([]Message{finalMsg})
@@ -2620,6 +2664,7 @@ turnLoop:
 				reasoningEncryptedContent,
 				reasoningKind,
 			)
+			assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
@@ -2735,6 +2780,7 @@ turnLoop:
 				reasoningEncryptedContent,
 				reasoningKind,
 			)
+			finalMsg = attachProviderReplayParts(finalMsg, providerReplayParts)
 			if len(finalMsg.Parts) > 0 {
 				maybeCompactAfterLLMCall([]Message{finalMsg})
 				if turnCallback != nil {
@@ -2771,6 +2817,7 @@ turnLoop:
 			reasoningEncryptedContent,
 			reasoningKind,
 		)
+		assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 
 		maybeCompactAfterLLMCall([]Message{assistantMsg})
 
