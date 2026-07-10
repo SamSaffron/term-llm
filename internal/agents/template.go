@@ -88,18 +88,26 @@ type TemplateContext struct {
 // Deprecated: Use NewTemplateContextForTemplate instead to avoid expensive operations
 // when template variables are not used.
 func NewTemplateContext() TemplateContext {
-	return newTemplateContext(true, true, true, false)
+	cwd, _ := os.Getwd()
+	return newTemplateContextInDir(cwd, true, true, true, false)
 }
 
 // NewTemplateContextForTemplate creates a context, only computing expensive values
 // (like git fields, git_diff_stat, agents, handover_dir) if they are actually used in the template.
 func NewTemplateContextForTemplate(template string) TemplateContext {
+	cwd, _ := os.Getwd()
+	return NewTemplateContextForTemplateInDir(template, cwd)
+}
+
+// NewTemplateContextForTemplateInDir creates a template context whose project
+// and Git values are resolved relative to dir. It never changes process CWD.
+func NewTemplateContextForTemplateInDir(template, dir string) TemplateContext {
 	vars := templateVariables(template)
 	needsGitInfo := vars["git_branch"] || vars["git_repo"]
 	needsGitDiffStat := vars["git_diff_stat"]
 	needsAgents := vars["agents"]
 	needsHandoverDir := vars["handover_dir"] || vars["handover_path"]
-	return newTemplateContext(needsGitInfo, needsGitDiffStat, needsAgents, needsHandoverDir)
+	return newTemplateContextInDir(dir, needsGitInfo, needsGitDiffStat, needsAgents, needsHandoverDir)
 }
 
 func templateVariables(template string) map[string]bool {
@@ -112,8 +120,8 @@ func templateVariables(template string) map[string]bool {
 	return vars
 }
 
-// newTemplateContext creates a context with optional expensive computations.
-func newTemplateContext(computeGitInfo, computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
+// newTemplateContextInDir creates a context with optional expensive computations.
+func newTemplateContextInDir(dir string, computeGitInfo, computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
 	now := time.Now()
 	utcNow := now.UTC()
 	zoneAbbr, zoneOffsetSeconds := now.Zone()
@@ -134,9 +142,12 @@ func newTemplateContext(computeGitInfo, computeGitDiffStat, computeAgents, compu
 	}
 
 	// Working directory
-	if cwd, err := os.Getwd(); err == nil {
-		ctx.Cwd = cwd
-		ctx.CwdName = filepath.Base(cwd)
+	if strings.TrimSpace(dir) != "" {
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		ctx.Cwd = filepath.Clean(dir)
+		ctx.CwdName = filepath.Base(ctx.Cwd)
 	}
 
 	// Home directory
@@ -151,17 +162,17 @@ func newTemplateContext(computeGitInfo, computeGitDiffStat, computeAgents, compu
 
 	// Git info
 	if computeGitInfo {
-		ctx.GitBranch, ctx.GitRepo = getGitInfo()
+		ctx.GitBranch, ctx.GitRepo = getGitInfo(dir)
 	}
 
 	// Only compute git diff stat if needed (expensive: runs two git commands)
 	if computeGitDiffStat {
-		ctx.GitDiffStat = getGitDiffStat()
+		ctx.GitDiffStat = getGitDiffStat(dir)
 	}
 
 	// Only load project instructions if needed (reads files from disk)
 	if computeAgents {
-		ctx.Agents = loadProjectInstructions()
+		ctx.Agents = loadProjectInstructions(dir)
 	}
 
 	// Compute handover directory and path if needed
@@ -356,8 +367,8 @@ func envTemplateName(expr string) (string, bool) {
 var gitProbeTimeout = 2 * time.Second
 
 // getGitInfo returns the current git branch and repository name, or empty strings if not in a git repo.
-func getGitInfo() (string, string) {
-	output, err := runGitOutput("", "rev-parse", "--abbrev-ref", "HEAD", "--show-toplevel")
+func getGitInfo(dir string) (string, string) {
+	output, err := runGitOutput(dir, "rev-parse", "--abbrev-ref", "HEAD", "--show-toplevel")
 	if err != nil {
 		return "", ""
 	}
@@ -374,12 +385,12 @@ func getGitInfo() (string, string) {
 
 // getGitDiffStat returns a summary of changed files and line counts.
 // Combines both staged and unstaged changes.
-func getGitDiffStat() string {
+func getGitDiffStat(dir string) string {
 	// Get unstaged changes (--no-color prevents ANSI codes from leaking into prompts)
-	unstaged, _ := runGitOutput("", "diff", "--stat", "--stat-width=80", "--no-color")
+	unstaged, _ := runGitOutput(dir, "diff", "--stat", "--stat-width=80", "--no-color")
 
 	// Get staged changes
-	staged, _ := runGitOutput("", "diff", "--cached", "--stat", "--stat-width=80", "--no-color")
+	staged, _ := runGitOutput(dir, "diff", "--cached", "--stat", "--stat-width=80", "--no-color")
 
 	var result strings.Builder
 	if len(staged) > 0 {
@@ -487,11 +498,23 @@ var fallbackInstructionFiles = []string{
 // All found parts are joined with "\n\n---\n\n".
 // Returns empty string if nothing is found.
 func DiscoverProjectInstructions() string {
-	return loadProjectInstructions()
+	cwd, _ := os.Getwd()
+	return DiscoverProjectInstructionsInDir(cwd)
+}
+
+// DiscoverProjectInstructionsInDir loads project instructions relative to dir.
+func DiscoverProjectInstructionsInDir(dir string) string {
+	return loadProjectInstructions(dir)
 }
 
 // loadProjectInstructions implements the unified project instructions loading.
-func loadProjectInstructions() string {
+func loadProjectInstructions(runtimeDirs ...string) string {
+	cwd := ""
+	if len(runtimeDirs) > 0 {
+		cwd = runtimeDirs[0]
+	} else {
+		cwd, _ = os.Getwd()
+	}
 	var parts []string
 
 	// 1. User-level AGENTS.md (~/.config/term-llm/AGENTS.md)
@@ -502,9 +525,11 @@ func loadProjectInstructions() string {
 		}
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
+	if strings.TrimSpace(cwd) == "" {
 		return strings.Join(parts, "\n\n---\n\n")
+	}
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
 	}
 
 	// 2. Project-level: hierarchical AGENTS.md from repo root → cwd

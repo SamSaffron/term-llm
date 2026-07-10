@@ -42,6 +42,7 @@ func TestExpandTemplate(t *testing.T) {
 		HandoverDir:     "/home/user/.local/share/term-llm/handover/project-abc123",
 		HandoverPath:    "/home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
 	}
+
 	t.Setenv("TERM_LLM_TEMPLATE_TEST", "from-env")
 	t.Setenv("TERM_LLM_TEMPLATE_TEST_EMPTY", "")
 	t.Setenv("TERM_LLM_TEMPLATE_TEST.DOTTED", "dotted-env")
@@ -633,4 +634,35 @@ func TestLoadProjectInstructions_Hierarchy(t *testing.T) {
 		os.Remove(filepath.Join(root, "AGENTS.md"))
 		os.Remove(filepath.Join(root, "CLAUDE.md"))
 	})
+}
+
+func TestNewTemplateContextForTemplateInDirUsesExplicitDirectory(t *testing.T) {
+	processCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte("worktree instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gitDir string
+	restore := SetGitOutputRunnerForTest(func(_ context.Context, dir string, args ...string) ([]byte, error) {
+		gitDir = dir
+		if len(args) == 2 && args[0] == "rev-parse" && args[1] == "--show-toplevel" {
+			return []byte(projectDir + "\n"), nil
+		}
+		return []byte("feature/worktree\n" + projectDir + "\n"), nil
+	})
+	defer restore()
+
+	ctx := NewTemplateContextForTemplateInDir("{{cwd}} {{git_branch}} {{agents}} {{handover_dir}}", projectDir)
+	if ctx.Cwd != projectDir || ctx.GitBranch != "feature/worktree" || !strings.Contains(ctx.Agents, "worktree instructions") {
+		t.Fatalf("context = %#v, want explicit project context", ctx)
+	}
+	if gitDir != projectDir {
+		t.Fatalf("git dir = %q, want %q", gitDir, projectDir)
+	}
+	if got, _ := os.Getwd(); got != processCWD {
+		t.Fatalf("process CWD changed from %q to %q", processCWD, got)
+	}
 }

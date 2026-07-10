@@ -159,6 +159,19 @@ func ListAgentNames(cfg *config.Config) ([]string, error) {
 // ResolveSettings merges config, agent, and CLI flags into final settings.
 // Priority: CLI > agent > config
 func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {
+	return ResolveSettingsInDir(cfg, agent, cli, configProvider, configModel, configInstructions, configMaxTurns, defaultMaxTurns, "")
+}
+
+// ResolveSettingsInDir resolves settings using runtimeDir for project-sensitive
+// template values and instruction discovery without changing process CWD.
+func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int, runtimeDir string) (SessionSettings, error) {
+	if strings.TrimSpace(runtimeDir) == "" {
+		var err error
+		runtimeDir, err = systemPromptCWDBaseDir()
+		if err != nil {
+			return SessionSettings{}, err
+		}
+	}
 	s := SessionSettings{}
 	if agent != nil {
 		s.AgentName = agent.Name
@@ -243,12 +256,8 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
-		cwd, err := systemPromptCWDBaseDir()
-		if err != nil {
-			return s, err
-		}
-		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, cwd)
+		templateCtx := agents.NewTemplateContextForTemplateInDir(cli.SystemMessage, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, runtimeDir, runtimeDir)
 		if err != nil {
 			return s, fmt.Errorf("expand --system prompt: %w", err)
 		}
@@ -258,7 +267,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		if agent != nil {
 			projectInstructions := ""
 			if agent.ShouldLoadProjectInstructions() {
-				projectInstructions = agents.DiscoverProjectInstructions()
+				projectInstructions = agents.DiscoverProjectInstructionsInDir(runtimeDir)
 			}
 
 			// Use the agent branch only when it can actually produce a prompt. This
@@ -268,12 +277,12 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			if strings.TrimSpace(agent.SystemPrompt) != "" || projectInstructions != "" {
 				usedAgentPrompt = true
 				if strings.TrimSpace(agent.SystemPrompt) != "" {
-					templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, cli.Files)
+					templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDirInDir(agent, cli.Files, runtimeDir)
 					if err != nil {
 						return s, fmt.Errorf("prepare agent system prompt context: %w", err)
 					}
 					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
-					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
+					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir, runtimeDir)
 					if err != nil {
 						return s, fmt.Errorf("expand agent system prompt: %w", err)
 					}
@@ -291,12 +300,8 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		}
 
 		if !usedAgentPrompt {
-			templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
-			cwd, err := systemPromptCWDBaseDir()
-			if err != nil {
-				return s, err
-			}
-			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, cwd)
+			templateCtx := agents.NewTemplateContextForTemplateInDir(configInstructions, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, runtimeDir, runtimeDir)
 			if err != nil {
 				return s, fmt.Errorf("expand config system prompt: %w", err)
 			}
@@ -374,7 +379,7 @@ func splitTrailingInsightsBlock(instructions string) (head, insights string) {
 	return strings.TrimRight(instructions[:idx], "\n"), candidate[:end]
 }
 
-func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateContext, baseDir string) (string, error) {
+func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateContext, baseDir string, runtimeDirs ...string) (string, error) {
 	withIncludes, err := agents.ExpandFileIncludes(prompt, agents.IncludeOptions{
 		BaseDir:       baseDir,
 		MaxDepth:      agents.DefaultIncludeMaxDepth,
@@ -383,12 +388,25 @@ func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateCo
 	if err != nil {
 		return "", err
 	}
-	templateCtx = templateContextForExpandedPrompt(withIncludes, templateCtx)
+	runtimeDir := ""
+	if len(runtimeDirs) > 0 {
+		runtimeDir = runtimeDirs[0]
+	}
+	templateCtx = templateContextForExpandedPrompt(withIncludes, templateCtx, runtimeDir)
 	return agents.ExpandTemplate(withIncludes, templateCtx), nil
 }
 
-func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext) agents.TemplateContext {
-	ctx := agents.NewTemplateContextForTemplate(prompt)
+func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext, runtimeDirs ...string) agents.TemplateContext {
+	runtimeDir := ""
+	if len(runtimeDirs) > 0 {
+		runtimeDir = runtimeDirs[0]
+	}
+	var ctx agents.TemplateContext
+	if strings.TrimSpace(runtimeDir) == "" {
+		ctx = agents.NewTemplateContextForTemplate(prompt)
+	} else {
+		ctx = agents.NewTemplateContextForTemplateInDir(prompt, runtimeDir)
+	}
 	ctx.Files = base.Files
 	ctx.FileCount = base.FileCount
 	ctx.ResourceDir = base.ResourceDir
@@ -412,15 +430,19 @@ func builtinAgentPromptNeedsExtractedResources(prompt string) bool {
 }
 
 func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (agents.TemplateContext, string, error) {
-	templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(files)
+	cwd, err := systemPromptCWDBaseDir()
+	if err != nil {
+		return agents.TemplateContext{}, "", err
+	}
+	return agentPromptTemplateContextAndBaseDirInDir(agent, files, cwd)
+}
+
+func agentPromptTemplateContextAndBaseDirInDir(agent *agents.Agent, files []string, runtimeDir string) (agents.TemplateContext, string, error) {
+	templateCtx := agents.NewTemplateContextForTemplateInDir(agent.SystemPrompt, runtimeDir).WithFiles(files)
 
 	if agent.Source == agents.SourceBuiltin {
 		if !builtinAgentPromptNeedsExtractedResources(agent.SystemPrompt) {
-			cwd, err := systemPromptCWDBaseDir()
-			if err != nil {
-				return agents.TemplateContext{}, "", err
-			}
-			return templateCtx, cwd, nil
+			return templateCtx, runtimeDir, nil
 		}
 
 		resourceDir, err := agents.ExtractBuiltinResources(agent.Name)
@@ -432,11 +454,7 @@ func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (
 
 	baseDir := strings.TrimSpace(agent.SourcePath)
 	if baseDir == "" {
-		cwd, err := systemPromptCWDBaseDir()
-		if err != nil {
-			return agents.TemplateContext{}, "", err
-		}
-		return templateCtx, cwd, nil
+		return templateCtx, runtimeDir, nil
 	}
 
 	absBase, err := filepath.Abs(baseDir)
@@ -797,6 +815,11 @@ func resetSessionDatabase(pathOverride string) error {
 // Returns the setup (may be nil) and logs warnings to errWriter on errors.
 // Precedence: CLI --skills flag > agent skills config > global config.
 func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, agentSkills string, errWriter io.Writer) *skills.Setup {
+	return SetupSkillsInDir(cfg, skillsFlag, agentSkills, errWriter, "")
+}
+
+// SetupSkillsInDir initializes skills relative to projectDir without changing CWD.
+func SetupSkillsInDir(cfg *config.SkillsConfig, skillsFlag string, agentSkills string, errWriter io.Writer, projectDir string) *skills.Setup {
 	effectiveFlag := skillsFlag
 	if effectiveFlag == "" {
 		effectiveFlag = agentSkills
@@ -806,10 +829,14 @@ func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, agentSkills string
 		return nil
 	}
 
-	promptMetadataSuppressed := skills.CheckAgentsMdForSkills()
+	promptMetadataSuppressed := skills.CheckAgentsMdForSkillsInDir(projectDir)
+	if strings.TrimSpace(projectDir) == "" {
+		promptMetadataSuppressed = skills.CheckAgentsMdForSkills()
+	}
 	setup, err := skills.NewSetupWithOptions(skillsCfg, skills.SetupOptions{
 		PromptMetadataSuppressed:       promptMetadataSuppressed,
 		PromptMetadataSuppressionKnown: true,
+		ProjectDir:                     projectDir,
 	})
 	if err != nil {
 		fmt.Fprintf(errWriter, "warning: skills initialization failed: %v\n", err)

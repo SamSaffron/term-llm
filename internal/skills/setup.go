@@ -42,6 +42,9 @@ type SetupOptions struct {
 	// from an actual check. It lets callers avoid repeating the same AGENTS.md read
 	// before deciding whether to inject metadata.
 	PromptMetadataSuppressionKnown bool
+
+	// ProjectDir is the per-session directory for project skill and AGENTS checks.
+	ProjectDir string
 }
 
 // NewSetup initializes the skills system from config.
@@ -65,6 +68,7 @@ func NewSetupWithOptions(cfg *config.SkillsConfig, opts SetupOptions) (*Setup, e
 		IncludeEcosystemPaths: cfg.IncludeEcosystemPaths,
 		AlwaysEnabled:         cfg.AlwaysEnabled,
 		NeverAuto:             cfg.NeverAuto,
+		ProjectDir:            opts.ProjectDir,
 	})
 	if err != nil {
 		return nil, err
@@ -185,6 +189,17 @@ func CheckAgentsMdForSkills() bool {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return false
+	}
+	return CheckAgentsMdForSkillsInDir(cwd)
+}
+
+// CheckAgentsMdForSkillsInDir checks project instruction files relative to dir.
+func CheckAgentsMdForSkillsInDir(cwd string) bool {
+	if strings.TrimSpace(cwd) == "" {
+		return false
+	}
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
 	}
 
 	// Bound the search to the repository root. Walking past the repo can pick up

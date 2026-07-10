@@ -175,26 +175,28 @@ func TestStreamingLocalSlashCommandIncludesEffort(t *testing.T) {
 // mockStore implements session.Store for testing resume behavior.
 type mockStore struct {
 	session.NoopStore
-	sessions        map[string]*session.Session
-	getErr          error
-	messages        map[string][]session.Message
-	summaries       []session.SessionSummary
-	msgErr          error
-	updated         *session.Session
-	updateErr       error
-	created         []*session.Session
-	createErr       error
-	added           []session.Message
-	addErr          error
-	currentID       string
-	setCurrentErr   error
-	deleted         []string
-	deleteErr       error
-	statusUpdates   []statusUpdate
-	updateStatusErr error
-	compacted       []session.Message
-	compactSession  string
-	compactErr      error
+	sessions         map[string]*session.Session
+	getErr           error
+	messages         map[string][]session.Message
+	summaries        []session.SessionSummary
+	msgErr           error
+	updated          *session.Session
+	updateErr        error
+	created          []*session.Session
+	createErr        error
+	added            []session.Message
+	addErr           error
+	messageUpdates   []session.Message
+	updateMessageErr error
+	currentID        string
+	setCurrentErr    error
+	deleted          []string
+	deleteErr        error
+	statusUpdates    []statusUpdate
+	updateStatusErr  error
+	compacted        []session.Message
+	compactSession   string
+	compactErr       error
 }
 
 type statusUpdate struct {
@@ -289,6 +291,21 @@ func (s *mockStore) AddMessage(_ context.Context, sessionID string, msg *session
 	s.added = append(s.added, cp)
 	s.messages[sessionID] = append(s.messages[sessionID], cp)
 	return nil
+}
+
+func (s *mockStore) UpdateMessage(_ context.Context, sessionID string, msg *session.Message) error {
+	if s.updateMessageErr != nil {
+		return s.updateMessageErr
+	}
+	s.ensureMessages()
+	s.messageUpdates = append(s.messageUpdates, *msg)
+	for i := range s.messages[sessionID] {
+		if s.messages[sessionID][i].ID == msg.ID {
+			s.messages[sessionID][i] = *msg
+			return nil
+		}
+	}
+	return session.ErrNotFound
 }
 
 func (s *mockStore) SetCurrent(_ context.Context, sessionID string) error {
@@ -3756,5 +3773,159 @@ func TestWorktreeOperationBlocksSend(t *testing.T) {
 	}
 	if !strings.Contains(got.footerMessage, "worktree operation") {
 		t.Fatalf("footerMessage = %q, want worktree operation warning", got.footerMessage)
+	}
+}
+
+func TestApplyRuntimeDirectoryRefreshesExistingSystemMessage(t *testing.T) {
+	store := &mockStore{messages: map[string][]session.Message{}}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "runtime-dir", CWD: "/old"}
+	m.messages = []session.Message{{ID: 42, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old"}}, TextContent: "old", Sequence: 0}}
+	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
+	m.viewCache.historyValid = true
+	m.contextEstimateCachedValid = true
+	var resolvedDir string
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, dir string) (RuntimeSystemContext, error) {
+		resolvedDir = dir
+		return RuntimeSystemContext{SystemPrompt: "cwd=" + dir}, nil
+	}
+
+	if err := m.applyRuntimeDirectory("/new", "/new"); err != nil {
+		t.Fatalf("applyRuntimeDirectory: %v", err)
+	}
+	if resolvedDir != "/new" {
+		t.Fatalf("resolver dir = %q, want /new", resolvedDir)
+	}
+	if len(m.messages) != 1 || m.messages[0].ID != 42 || m.messages[0].TextContent != "cwd=/new" {
+		t.Fatalf("messages = %#v, want same refreshed system row", m.messages)
+	}
+	if len(store.messageUpdates) != 1 || store.messageUpdates[0].ID != 42 {
+		t.Fatalf("message updates = %#v, want one update for ID 42", store.messageUpdates)
+	}
+	if m.sess.CWD != "/new" || m.sess.WorktreeDir != "/new" {
+		t.Fatalf("session binding = %q/%q", m.sess.CWD, m.sess.WorktreeDir)
+	}
+	if m.viewCache.historyValid || m.contextEstimateCachedValid {
+		t.Fatal("runtime refresh left history/context estimate caches valid")
+	}
+}
+
+func TestApplyRuntimeDirectoryClearsStaleSystemMessageWhenPromptResolvesEmpty(t *testing.T) {
+	store := &mockStore{messages: map[string][]session.Message{}}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "empty-prompt", CWD: "/old"}
+	m.messages = []session.Message{{ID: 6, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old cwd"}}, TextContent: "old cwd", Sequence: 0}}
+	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
+		return RuntimeSystemContext{}, nil
+	}
+
+	if err := m.applyRuntimeDirectory("/new", "/new"); err != nil {
+		t.Fatalf("applyRuntimeDirectory: %v", err)
+	}
+	if len(m.messages) != 1 || m.messages[0].ID != 6 || m.messages[0].TextContent != "" {
+		t.Fatalf("messages = %#v, want existing system row cleared", m.messages)
+	}
+	if len(store.messageUpdates) != 1 || store.messageUpdates[0].TextContent != "" {
+		t.Fatalf("message updates = %#v, want persisted prompt cleared", store.messageUpdates)
+	}
+	if m.config.Chat.Instructions != "" {
+		t.Fatalf("config instructions = %q, want empty", m.config.Chat.Instructions)
+	}
+}
+
+func TestRuntimeRollbackBaseUsesEffectivePriorDirectory(t *testing.T) {
+	if got := runtimeRollbackBase("/configured", "/session"); got != "/configured" {
+		t.Fatalf("configured rollback base = %q", got)
+	}
+	if got := runtimeRollbackBase("", "/session"); got != "/session" {
+		t.Fatalf("session rollback base = %q", got)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtimeRollbackBase("", ""); got != cwd {
+		t.Fatalf("process rollback base = %q, want %q", got, cwd)
+	}
+}
+
+func TestApplyRuntimeDirectoryPreservesExplicitSystemOverride(t *testing.T) {
+	store := &mockStore{messages: map[string][]session.Message{}}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "override", CWD: "/old"}
+	m.messages = []session.Message{{ID: 7, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old default"}}, TextContent: "old default", Sequence: 0}}
+	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
+	_, _ = m.cmdSystem([]string{"custom"})
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
+		return RuntimeSystemContext{SystemPrompt: "agent default"}, nil
+	}
+
+	if err := m.applyRuntimeDirectory("/new", "/new"); err != nil {
+		t.Fatalf("applyRuntimeDirectory: %v", err)
+	}
+	if got := m.messages[0].TextContent; got != "custom" {
+		t.Fatalf("system prompt = %q, want explicit override", got)
+	}
+}
+
+func TestApplyRuntimeDirectoryResolutionFailureLeavesStateUntouched(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "failure", CWD: "/old"}
+	m.messages = []session.Message{{ID: 1, Role: llm.RoleSystem, TextContent: "old"}}
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
+		return RuntimeSystemContext{}, errors.New("boom")
+	}
+	if err := m.applyRuntimeDirectory("/new", "/new"); err == nil {
+		t.Fatal("applyRuntimeDirectory succeeded, want resolver error")
+	}
+	if m.sess.CWD != "/old" || m.sess.WorktreeDir != "" || m.messages[0].TextContent != "old" {
+		t.Fatalf("state changed after resolution failure: session=%#v messages=%#v", m.sess, m.messages)
+	}
+}
+
+func TestApplyRuntimeDirectoryMessageFailureRollsBackBindingAndPrompt(t *testing.T) {
+	store := &mockStore{messages: map[string][]session.Message{}, updateMessageErr: errors.New("write failed")}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "rollback", CWD: "/old"}
+	m.messages = []session.Message{{ID: 9, SessionID: m.sess.ID, Role: llm.RoleSystem, Parts: []llm.Part{{Type: llm.PartText, Text: "old"}}, TextContent: "old", Sequence: 0}}
+	store.messages[m.sess.ID] = append([]session.Message(nil), m.messages...)
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, _ string) (RuntimeSystemContext, error) {
+		return RuntimeSystemContext{SystemPrompt: "new"}, nil
+	}
+
+	if err := m.applyRuntimeDirectory("/new", "/new"); err == nil {
+		t.Fatal("applyRuntimeDirectory succeeded, want message persistence error")
+	}
+	if m.sess.CWD != "/old" || m.sess.WorktreeDir != "" || m.messages[0].TextContent != "old" {
+		t.Fatalf("rollback state = session %#v messages %#v", m.sess, m.messages)
+	}
+}
+
+func TestSwitchEffortRefreshesGuardianAndFailsClosed(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.config = &config.Config{}
+	m.providerKey = "openai"
+	m.modelName = "old"
+	m.approvalMgr = tools.NewApprovalManager(tools.NewToolPermissions())
+	m.approvalMgr.SetApprovalMode(tools.ModeAuto)
+	m.approvalMgr.PolicyReviewFunc = func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+		return tools.PolicyDecision{Allowed: true}, nil
+	}
+	var gotProvider, gotModel string
+	m.guardianReviewerRefresh = func(provider, model string) error {
+		gotProvider, gotModel = provider, model
+		return errors.New("unavailable")
+	}
+
+	result, _ := m.switchEffortStateOnly(effortSwitchResolution{provider: "openai", targetModel: "new", label: "high", ok: true}, false)
+	got := result.(*Model)
+	if gotProvider != "openai" || gotModel != "new" {
+		t.Fatalf("guardian refresh = %q/%q, want openai/new", gotProvider, gotModel)
+	}
+	if got.approvalMgr.PolicyReviewFunc != nil || got.approvalMgr.ApprovalMode() != tools.ModePrompt {
+		t.Fatal("guardian refresh failure retained stale reviewer or auto mode")
 	}
 }

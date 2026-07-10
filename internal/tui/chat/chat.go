@@ -63,6 +63,11 @@ type promptHistoryState struct {
 	recalledText    string
 }
 
+type RuntimeSystemContext struct {
+	SystemPrompt string
+	ApplySkills  func(engine *llm.Engine, toolMgr *tools.ToolManager)
+}
+
 type Model struct {
 	// Dimensions
 	width  int
@@ -182,6 +187,11 @@ type Model struct {
 	agentResolver                func(name string, cfg *config.Config) (*agents.Agent, error)
 	agentLister                  func(cfg *config.Config) ([]string, error) // Lists available agent names
 	handoverSystemPromptResolver func(agent *agents.Agent, providerKey, modelName string) (string, error)
+	runtimeSystemContextResolver func(agent *agents.Agent, providerKey, modelName, dir string) (RuntimeSystemContext, error)
+	runtimeSystemContext         RuntimeSystemContext
+	systemPromptOverridden       bool
+	systemPromptOverride         string
+	guardianReviewerRefresh      func(providerKey, modelName string) error
 	pendingHandover              *handoverDoneMsg       // Non-nil while awaiting confirmation
 	handoverPreview              *handoverPreviewModel  // Inline confirmation UI (alt screen)
 	currentAgent                 *agents.Agent          // Current agent config (for enable_handover)
@@ -1370,6 +1380,18 @@ func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) 
 // pipeline used to resolve the target agent's persisted handover system prompt.
 func (m *Model) SetHandoverSystemPromptResolver(resolver func(agent *agents.Agent, providerKey, modelName string) (string, error)) {
 	m.handoverSystemPromptResolver = resolver
+}
+
+// SetRuntimeSystemContextResolver configures directory-aware prompt and skill
+// resolution for live worktree changes and handovers.
+func (m *Model) SetRuntimeSystemContextResolver(resolver func(agent *agents.Agent, providerKey, modelName, dir string) (RuntimeSystemContext, error), current RuntimeSystemContext) {
+	m.runtimeSystemContextResolver = resolver
+	m.runtimeSystemContext = current
+}
+
+// SetGuardianReviewerRefresh configures reviewer replacement after model changes.
+func (m *Model) SetGuardianReviewerRefresh(refresh func(providerKey, modelName string) error) {
+	m.guardianReviewerRefresh = refresh
 }
 
 // SetAgentLister configures the function used to list available agent names

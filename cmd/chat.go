@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
@@ -323,6 +324,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if err != nil {
 		return "", "", err
 	}
+	rawConfigInstructions := cfg.Chat.Instructions
 
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
@@ -354,7 +356,14 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			return "", "", err
 		}
 		_ = store.SetCurrent(context.Background(), sess.ID)
+		// Normalize persisted directory metadata before resolving any prompt,
+		// project instructions, or skills. A missing worktree falls back to the
+		// root/process directory through the same path used for tool binding.
+		if err := RestoreWorktreeBinding(context.Background(), store, sess, nil); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
+		}
 	}
+	runtimeDir := effectiveSessionDirectory(sess)
 
 	// Saved session agent wins on resume.
 	effectiveAgent := strings.TrimSpace(cliAgent)
@@ -368,7 +377,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
-	settings, err := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
 		Provider:      chatProvider,
 		Tools:         chatTools,
 		ReadDirs:      chatReadDirs,
@@ -381,7 +390,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		Search:        chatSearch,
 		NoSearch:      chatNoSearch,
 		Platform:      "chat",
-	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	}, cfg.Chat.Provider, cfg.Chat.Model, rawConfigInstructions, cfg.Chat.MaxTurns, 200, runtimeDir)
 	if err != nil {
 		return "", "", err
 	}
@@ -393,11 +402,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		settings.Tools = sess.Tools
 		settings.MCP = sess.MCP
 		settings.SessionID = sess.ID
-		if strings.TrimSpace(sess.WorktreeDir) != "" {
-			settings.BaseDir = sess.WorktreeDir
-			settings.ReadDirs = append(settings.ReadDirs, sess.WorktreeDir)
-			settings.WriteDirs = append(settings.WriteDirs, sess.WorktreeDir)
-			settings.ShellWorkingDir = sess.WorktreeDir
+		if dir := effectiveSessionDirectory(sess); dir != "" {
+			settings.BaseDir = dir
+			settings.ReadDirs = append(settings.ReadDirs, dir)
+			settings.WriteDirs = append(settings.WriteDirs, dir)
+			settings.ShellWorkingDir = dir
 		}
 	}
 
@@ -542,7 +551,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if agent != nil {
 		agentSkills = agent.Skills
 	}
-	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, agentSkills, cmd.ErrOrStderr())
+	skillsSetup := SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, cmd.ErrOrStderr(), runtimeDir)
 
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
@@ -658,8 +667,22 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Wire agent resolver, lister, and current agent for /handover support
 	model.SetAgentResolver(LoadAgent)
+	currentRuntimeContext := chat.RuntimeSystemContext{
+		SystemPrompt: cfg.Chat.Instructions,
+		ApplySkills:  skillContextApplier(skillsSetup),
+	}
+	model.SetRuntimeSystemContextResolver(func(targetAgent *agents.Agent, providerKey, modelName, dir string) (chat.RuntimeSystemContext, error) {
+		systemMessage := chatSystemMessage
+		if targetAgent != agent {
+			systemMessage = ""
+		}
+		return resolveChatRuntimeSystemContextWithConfig(cmd, cfg, targetAgent, providerKey, modelName, dir, rawConfigInstructions, systemMessage)
+	}, currentRuntimeContext)
 	model.SetHandoverSystemPromptResolver(func(targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
 		return resolveChatHandoverSystemPrompt(cmd, targetAgent, providerKey, modelName)
+	})
+	model.SetGuardianReviewerRefresh(func(providerKey, modelName string) error {
+		return installGuardianReviewerCallbacks(cfg, approvalMgr, providerKey, modelName, false)
 	})
 	model.SetAgentLister(ListAgentNames)
 	if agent != nil {
@@ -886,17 +909,24 @@ func resolveChatHandoverSystemPromptWithConfig(cmd *cobra.Command, cfg *config.C
 	if targetAgent == nil {
 		return "", nil
 	}
+	resolved, err := resolveChatRuntimeSystemContextWithConfig(cmd, cfg, targetAgent, providerKey, modelName, "", cfg.Chat.Instructions, "")
+	return resolved.SystemPrompt, err
+}
+
+func resolveChatRuntimeSystemContextWithConfig(cmd *cobra.Command, cfg *config.Config, targetAgent *agents.Agent, providerKey, modelName, runtimeDir, rawConfigInstructions, systemMessage string) (chat.RuntimeSystemContext, error) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
 
-	// Handover starts a new conversation for the target agent. Resolve its prompt
-	// through the same chat-startup settings path (agent prompt/includes/templates,
-	// AGENTS.md, memory insights, and skills metadata), with the provider/model that
-	// will be stored on the new session.
-	promptAgent := *targetAgent
-	promptAgent.Provider = strings.TrimSpace(providerKey)
-	promptAgent.Model = strings.TrimSpace(modelName)
+	var promptAgent *agents.Agent
+	agentSkills := ""
+	if targetAgent != nil {
+		copyAgent := *targetAgent
+		copyAgent.Provider = strings.TrimSpace(providerKey)
+		copyAgent.Model = strings.TrimSpace(modelName)
+		promptAgent = &copyAgent
+		agentSkills = copyAgent.Skills
+	}
 
 	maxTurnsSet := false
 	errWriter := io.Discard
@@ -905,27 +935,54 @@ func resolveChatHandoverSystemPromptWithConfig(cmd *cobra.Command, cfg *config.C
 		errWriter = cmd.ErrOrStderr()
 	}
 
-	settings, err := ResolveSettings(cfg, &promptAgent, CLIFlags{
+	settings, err := ResolveSettingsInDir(cfg, promptAgent, CLIFlags{
 		Provider:        "",
 		Tools:           chatTools,
 		ReadDirs:        chatReadDirs,
 		WriteDirs:       chatWriteDirs,
 		ShellAllow:      chatShellAllow,
 		MCP:             chatMCP,
-		SystemMessage:   "",
+		SystemMessage:   systemMessage,
 		MaxTurns:        chatMaxTurns,
 		MaxTurnsSet:     maxTurnsSet,
 		Search:          chatSearch,
 		NoSearch:        chatNoSearch,
 		MaxOutputTokens: 0,
 		Platform:        "chat",
-	}, providerKey, modelName, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	}, providerKey, modelName, rawConfigInstructions, cfg.Chat.MaxTurns, 200, runtimeDir)
 	if err != nil {
-		return "", err
+		return chat.RuntimeSystemContext{}, err
 	}
 
-	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, promptAgent.Skills, errWriter)
-	return InjectSkillsMetadata(settings.SystemPrompt, skillsSetup), nil
+	skillsSetup := SetupSkillsInDir(&cfg.Skills, chatSkills, agentSkills, errWriter, runtimeDir)
+	return chat.RuntimeSystemContext{
+		SystemPrompt: InjectSkillsMetadata(settings.SystemPrompt, skillsSetup),
+		ApplySkills:  skillContextApplier(skillsSetup),
+	}, nil
+}
+
+func skillContextApplier(setup *skills.Setup) func(*llm.Engine, *tools.ToolManager) {
+	return func(engine *llm.Engine, toolMgr *tools.ToolManager) {
+		if engine == nil {
+			return
+		}
+		engine.UnregisterTool(tools.ActivateSkillToolName)
+		engine.UnregisterTool(tools.SearchSkillsToolName)
+		RegisterSkillToolWithEngine(engine, toolMgr, setup)
+	}
+}
+
+func effectiveSessionDirectory(sess *session.Session) string {
+	if sess != nil {
+		if dir := strings.TrimSpace(sess.WorktreeDir); dir != "" {
+			return dir
+		}
+		if dir := strings.TrimSpace(sess.CWD); dir != "" {
+			return dir
+		}
+	}
+	cwd, _ := os.Getwd()
+	return cwd
 }
 
 func chatResumeCommand(sess *session.Session) string {

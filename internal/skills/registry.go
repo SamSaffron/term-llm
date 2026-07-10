@@ -58,6 +58,10 @@ type RegistryConfig struct {
 	IncludeProjectSkills  bool // Discover from project-local paths
 	IncludeEcosystemPaths bool // Include ~/.agents/skills, ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
 
+	// ProjectDir is the per-session project directory used for local discovery.
+	// Empty preserves the historical process-CWD behavior.
+	ProjectDir string
+
 	// Skill lists
 	AlwaysEnabled []string // Always include in metadata
 	NeverAuto     []string // Must be explicit
@@ -103,9 +107,15 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 
 // buildSearchPaths constructs the ordered list of search paths.
 func (r *Registry) buildSearchPaths() error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
+	cwd := strings.TrimSpace(r.config.ProjectDir)
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			cwd = "."
+		}
+	} else if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
 	}
 
 	home, _ := os.UserHomeDir()

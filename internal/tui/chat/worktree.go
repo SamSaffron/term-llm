@@ -10,6 +10,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
@@ -124,23 +126,8 @@ func (m *Model) bindWorktreeDir(dir string) error {
 		return err
 	}
 	abs = wt.Dir
-	if m.toolMgr != nil {
-		if err := m.toolMgr.SetBaseDir(abs); err != nil {
-			return err
-		}
-	}
-	if m.approvedDirs != nil {
-		_ = m.approvedDirs.AddDirectory(abs)
-	}
-	if m.sess != nil {
-		changed := filepath.Clean(m.sess.WorktreeDir) != filepath.Clean(abs) || filepath.Clean(m.sess.CWD) != filepath.Clean(abs)
-		m.sess.WorktreeDir = abs
-		m.sess.CWD = abs
-		if m.store != nil && changed {
-			if err := m.store.Update(context.Background(), m.sess); err != nil {
-				return err
-			}
-		}
+	if err := m.applyRuntimeDirectory(abs, abs); err != nil {
+		return err
 	}
 	_ = worktree.TouchLastBound(abs)
 	return nil
@@ -296,25 +283,121 @@ func (m *Model) bindRootDir(root string) error {
 	if resolved, err := worktree.MainRepoRoot(root); err == nil {
 		root = resolved
 	}
+	return m.applyRuntimeDirectory(root, "")
+}
+
+func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if dir == "." || dir == "" {
+		return fmt.Errorf("session directory is required")
+	}
+	if m.sess != nil && filepath.Clean(m.sess.CWD) == dir && filepath.Clean(m.sess.WorktreeDir) == filepath.Clean(worktreeDir) {
+		return nil
+	}
+
+	candidate := m.runtimeSystemContext
+	var err error
+	if m.runtimeSystemContextResolver != nil {
+		candidate, err = m.runtimeSystemContextResolver(m.currentAgent, m.providerKey, m.modelName, dir)
+		if err != nil {
+			return fmt.Errorf("resolve session context for %s: %w", dir, err)
+		}
+	}
+
+	oldCWD, oldWorktree := "", ""
+	if m.sess != nil {
+		oldCWD, oldWorktree = m.sess.CWD, m.sess.WorktreeDir
+	}
+	rollbackBase := ""
 	if m.toolMgr != nil {
-		if err := m.toolMgr.SetBaseDir(root); err != nil {
+		rollbackBase = runtimeRollbackBase(m.toolMgr.BaseDir(), oldCWD)
+		if err := m.toolMgr.SetBaseDir(dir); err != nil {
 			return err
 		}
 	}
-	if m.approvedDirs != nil {
-		_ = m.approvedDirs.AddDirectory(root)
-	}
 	if m.sess != nil {
-		changed := strings.TrimSpace(m.sess.WorktreeDir) != "" || filepath.Clean(m.sess.CWD) != filepath.Clean(root)
-		m.sess.WorktreeDir = ""
-		m.sess.CWD = root
-		if m.store != nil && changed {
+		m.sess.CWD, m.sess.WorktreeDir = dir, worktreeDir
+		if m.store != nil {
 			if err := m.store.Update(context.Background(), m.sess); err != nil {
-				return err
+				m.sess.CWD, m.sess.WorktreeDir = oldCWD, oldWorktree
+				if m.toolMgr != nil && rollbackBase != "" {
+					_ = m.toolMgr.SetBaseDir(rollbackBase)
+				}
+				return fmt.Errorf("persist session directory: %w", err)
 			}
 		}
 	}
+
+	prompt := candidate.SystemPrompt
+	if m.systemPromptOverridden {
+		prompt = m.systemPromptOverride
+	}
+	oldContext := m.runtimeSystemContext
+	var oldMessage *session.Message
+	m.messagesMu.Lock()
+	for i := range m.messages {
+		if m.messages[i].Role == llm.RoleSystem {
+			copyMsg := m.messages[i]
+			oldMessage = &copyMsg
+			updated := copyMsg
+			updated.Parts = []llm.Part{{Type: llm.PartText, Text: prompt}}
+			updated.TextContent = prompt
+			if m.store != nil && m.sess != nil && updated.ID != 0 {
+				if err := m.store.UpdateMessage(context.Background(), m.sess.ID, &updated); err != nil {
+					m.messagesMu.Unlock()
+					m.rollbackRuntimeDirectory(rollbackBase, oldCWD, oldWorktree, oldMessage, oldContext)
+					return fmt.Errorf("persist refreshed system prompt: %w", err)
+				}
+			}
+			m.messages[i] = updated
+			break
+		}
+	}
+	m.messagesMu.Unlock()
+	if candidate.ApplySkills != nil {
+		candidate.ApplySkills(m.engine, m.toolMgr)
+	}
+	m.runtimeSystemContext = candidate
+	if m.config != nil && !m.systemPromptOverridden {
+		m.config.Chat.Instructions = prompt
+	}
+	if m.approvedDirs != nil {
+		_ = m.approvedDirs.AddDirectory(dir)
+	}
+	m.invalidateHistoryCache()
+	m.resetContextEstimateBaseline(context.Background())
 	return nil
+}
+
+func runtimeRollbackBase(baseDir, sessionCWD string) string {
+	if baseDir = strings.TrimSpace(baseDir); baseDir != "" {
+		return baseDir
+	}
+	if sessionCWD = strings.TrimSpace(sessionCWD); sessionCWD != "" {
+		return sessionCWD
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+func (m *Model) rollbackRuntimeDirectory(rollbackBase, oldCWD, oldWorktree string, oldMessage *session.Message, oldContext RuntimeSystemContext) {
+	if m.toolMgr != nil && rollbackBase != "" {
+		_ = m.toolMgr.SetBaseDir(rollbackBase)
+	}
+	if m.sess != nil {
+		m.sess.CWD, m.sess.WorktreeDir = oldCWD, oldWorktree
+		if m.store != nil {
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
+	if oldMessage != nil {
+		if m.store != nil && m.sess != nil && oldMessage.ID != 0 {
+			_ = m.store.UpdateMessage(context.Background(), m.sess.ID, oldMessage)
+		}
+	}
+	if oldContext.ApplySkills != nil {
+		oldContext.ApplySkills(m.engine, m.toolMgr)
+	}
 }
 
 func (m *Model) cmdWorktreeDiff(args []string) (tea.Model, tea.Cmd) {
@@ -593,14 +676,9 @@ func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.M
 		}
 		return m.showSystemMessage(formatWorktreePromoteSuccessMessage(msg.promote))
 	case "remove":
-		if msg.bound && msg.root != "" && m.sess != nil {
-			if m.toolMgr != nil {
-				_ = m.toolMgr.SetBaseDir(msg.root)
-			}
-			m.sess.WorktreeDir = ""
-			m.sess.CWD = msg.root
-			if m.store != nil {
-				_ = m.store.Update(context.Background(), m.sess)
+		if msg.bound && msg.root != "" {
+			if err := m.bindRootDir(msg.root); err != nil {
+				return m.showFooterError(err.Error())
 			}
 		}
 		return m.showFooterSuccess("Removed worktree.")

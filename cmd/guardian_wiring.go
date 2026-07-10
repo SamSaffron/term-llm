@@ -37,17 +37,33 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		guardianName = strings.TrimSpace(cfg.DefaultProvider)
 	}
 	if guardianName == "" {
+		approvalMgr.PolicyReviewFunc = nil
+		if approvalMgr.ApprovalMode() == tools.ModeAuto {
+			approvalMgr.SetApprovalMode(tools.ModePrompt)
+		}
 		return fmt.Errorf("auto approval requires an LLM provider")
 	}
 	reviewProvider, err := newGuardianProviderByName(cfg, guardianName, model)
 	if err != nil {
+		approvalMgr.PolicyReviewFunc = nil
+		if approvalMgr.ApprovalMode() == tools.ModeAuto {
+			approvalMgr.SetApprovalMode(tools.ModePrompt)
+		}
 		return fmt.Errorf("guardian provider: %w", err)
 	}
 	if reviewProvider == nil {
+		approvalMgr.PolicyReviewFunc = nil
+		if approvalMgr.ApprovalMode() == tools.ModeAuto {
+			approvalMgr.SetApprovalMode(tools.ModePrompt)
+		}
 		return fmt.Errorf("auto approval requires an LLM provider")
 	}
 	policy, err := guardian.LoadPolicy(cfg.Guardian.PolicyPath)
 	if err != nil {
+		approvalMgr.PolicyReviewFunc = nil
+		if approvalMgr.ApprovalMode() == tools.ModeAuto {
+			approvalMgr.SetApprovalMode(tools.ModePrompt)
+		}
 		return fmt.Errorf("load guardian policy: %w", err)
 	}
 	reviewer := &guardian.Reviewer{Provider: reviewProvider, Model: model, Policy: policy}

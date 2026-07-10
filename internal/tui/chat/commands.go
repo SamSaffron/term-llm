@@ -1435,6 +1435,7 @@ func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMark
 
 	m.recordCurrentModelUse()
 	m.setTextareaValue("")
+	guardianErr := m.refreshGuardianReviewer(resolved.provider, resolved.targetModel)
 
 	if m.sess != nil && len(m.messages) > 0 {
 		marker := llm.ModelSwapMarker{
@@ -1451,7 +1452,26 @@ func (m *Model) switchEffortStateOnly(resolved effortSwitchResolution, deferMark
 		}
 	}
 
+	if guardianErr != nil {
+		return m.showFooterWarning(fmt.Sprintf("Switched effort to %s, but guardian auto-approval was disabled: %v", resolved.label, guardianErr))
+	}
 	return m.showFooterMuted(fmt.Sprintf("Switched effort to %s for %s:%s. Next response will use the selected reasoning effort.", resolved.label, resolved.provider, resolved.targetModel))
+}
+
+func (m *Model) refreshGuardianReviewer(providerKey, modelName string) error {
+	if m.guardianReviewerRefresh == nil {
+		return nil
+	}
+	if err := m.guardianReviewerRefresh(providerKey, modelName); err != nil {
+		if m.approvalMgr != nil {
+			m.approvalMgr.PolicyReviewFunc = nil
+			if m.approvalMgr.ApprovalMode() == tools.ModeAuto {
+				m.approvalMgr.SetApprovalMode(tools.ModePrompt)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func cloneStrings(values []string) []string {
@@ -2187,6 +2207,8 @@ func (m *Model) cmdSystem(args []string) (tea.Model, tea.Cmd) {
 	// Set custom system prompt (session-only, doesn't persist to config)
 	prompt := strings.Join(args, " ")
 	m.config.Chat.Instructions = prompt
+	m.systemPromptOverridden = true
+	m.systemPromptOverride = prompt
 	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("System prompt set for this session:\n\n%s", prompt))
 }
@@ -2907,6 +2929,7 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	// Record model usage for MRU ordering in the picker
 	m.recordCurrentModelUse()
 	m.setTextareaValue("")
+	guardianErr := m.refreshGuardianReviewer(providerName, modelName)
 
 	if m.sess != nil && len(m.messages) > 0 {
 		marker := llm.ModelSwapMarker{
@@ -2924,6 +2947,14 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	}
 
 	msg := fmt.Sprintf("Switched model to %s:%s. Next response will try the existing context; if incompatible, use /handover to prepare a compact handoff.", providerName, modelName)
+	if guardianErr != nil {
+		msg += fmt.Sprintf(" Guardian auto-approval was disabled: %v", guardianErr)
+		if fastMetadataCmd != nil {
+			_, footerCmd := m.showFooterWarning(msg)
+			return m, tea.Batch(footerCmd, fastMetadataCmd)
+		}
+		return m.showFooterWarning(msg)
+	}
 	if fastMetadataCmd != nil {
 		_, footerCmd := m.showFooterMuted(msg)
 		return m, tea.Batch(footerCmd, fastMetadataCmd)
@@ -3588,11 +3619,22 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// only the reconstructed handover context.
 	newSess := m.buildHandoverSession(pending, targetAgent)
 
-	if m.handoverSystemPromptResolver == nil {
+	var targetSystemPrompt string
+	var err error
+	targetDir := strings.TrimSpace(newSess.WorktreeDir)
+	if targetDir == "" {
+		targetDir = strings.TrimSpace(newSess.CWD)
+	}
+	if m.runtimeSystemContextResolver != nil {
+		resolved, resolveErr := m.runtimeSystemContextResolver(targetAgent, newSess.ProviderKey, newSess.Model, targetDir)
+		err = resolveErr
+		targetSystemPrompt = resolved.SystemPrompt
+	} else if m.handoverSystemPromptResolver != nil {
+		targetSystemPrompt, err = m.handoverSystemPromptResolver(targetAgent, newSess.ProviderKey, newSess.Model)
+	} else {
 		m.cancelHandoverTool()
 		return m.showFooterError("Handover failed to resolve target system prompt: resolver is not configured")
 	}
-	targetSystemPrompt, err := m.handoverSystemPromptResolver(targetAgent, newSess.ProviderKey, newSess.Model)
 	if err != nil {
 		m.cancelHandoverTool()
 		return m.showFooterError(fmt.Sprintf("Handover failed to resolve target system prompt: %v", err))

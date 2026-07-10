@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
@@ -94,6 +95,44 @@ Use this demo skill when appropriate.
 	}
 	if !strings.Contains(got, "<available_skills>") || !strings.Contains(got, "demo") {
 		t.Fatalf("resolved prompt missing skills metadata: %q", got)
+	}
+}
+
+func TestResolveChatRuntimeSystemContextUsesExplicitDirectoryWithoutChdir(t *testing.T) {
+	processCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte("worktree project instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(projectDir, ".skills", "worktree-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: worktree-skill\ndescription: Worktree skill\n---\nUse it."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.Skills = config.SkillsConfig{Enabled: true, AutoInvoke: true, MetadataBudgetTokens: 8000, MaxVisibleSkills: 8, IncludeProjectSkills: true, IncludeEcosystemPaths: false}
+	agent := &agents.Agent{Name: "target", SystemPrompt: "cwd={{cwd}}\n{{agents}}"}
+	resolved, err := resolveChatRuntimeSystemContextWithConfig(&cobra.Command{Use: "test"}, cfg, agent, "openai", "model", projectDir, "", "")
+	if err != nil {
+		t.Fatalf("resolve runtime context: %v", err)
+	}
+	for _, want := range []string{projectDir, "worktree project instructions", "worktree-skill"} {
+		if !strings.Contains(resolved.SystemPrompt, want) {
+			t.Fatalf("resolved prompt missing %q: %s", want, resolved.SystemPrompt)
+		}
+	}
+	engine := llm.NewEngine(llm.NewMockProvider("test"), nil)
+	resolved.ApplySkills(engine, nil)
+	if _, ok := engine.Tools().Get(tools.ActivateSkillToolName); !ok {
+		t.Fatal("runtime context did not install activate_skill registry")
+	}
+	if got, _ := os.Getwd(); got != processCWD {
+		t.Fatalf("process CWD changed from %q to %q", processCWD, got)
 	}
 }
 
