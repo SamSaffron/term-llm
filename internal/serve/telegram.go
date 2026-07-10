@@ -43,6 +43,8 @@ const telegramUpdateLongPollSeconds = 60
 const telegramBotAPILongPollTimeout = (telegramUpdateLongPollSeconds * time.Second) + 10*time.Second
 const telegramSessionShutdownFallbackTimeout = 5 * time.Second
 
+var telegramRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
+
 var telegramDownloadHTTPClient = &http.Client{Timeout: telegramDownloadTimeout}
 
 // telegramBotHTTPClient applies per-request deadlines to the Telegram Bot API
@@ -129,6 +131,11 @@ type botSender interface {
 type botFileGetter interface {
 	GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error)
 	GetFileDirectURL(fileID string) (string, error)
+}
+
+type telegramBot interface {
+	botSender
+	botFileGetter
 }
 
 // downloadTelegramPhoto downloads the largest photo from a Telegram photo array.
@@ -515,18 +522,23 @@ func (m *telegramSessionMgr) releaseMessageSlot() {
 // telegramSession holds per-chat conversation state.
 type telegramSession struct {
 	mu                    sync.Mutex
+	activityMu            sync.Mutex // protects lastActivity without blocking behind an active stream
 	runtime               *SessionRuntime
 	history               []llm.Message
 	systemPromptPersisted bool
+	runtimeStale          atomic.Bool // a detached runner may still own runtime; reset before reuse
+	cleanupOnce           sync.Once
 	carryoverContext      string // one-time context carried from the previous replaced session
 	carryoverContextLabel string
 	carryoverMessageCount int // number of restored prior-session messages at the start of history; not persisted to this session
 	meta                  *session.Session
 	lastActivity          time.Time
 
-	cancelMu      sync.Mutex         // protects streamCancel, replyDone, streamEngine and task/tool tracking
+	cancelMu      sync.Mutex         // protects active stream state and task/tool tracking
 	streamCancel  context.CancelFunc // cancels the active stream's context
 	streamEngine  *llm.Engine        // active runner engine for mid-stream interjections
+	streamToken   chan struct{}      // identifies callbacks owned by the active stream
+	runnerDone    <-chan struct{}    // closes when a detached runner no longer owns runtime
 	replyDone     chan struct{}      // closed when streamReply exits
 	currentTask   string             // text from the user message that started the active stream
 	toolsRanNames []string           // tool names executed during the active stream
@@ -939,22 +951,42 @@ func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) 
 	sess.cancelMu.Lock()
 	cancelFn := sess.streamCancel
 	doneCh := sess.replyDone
+	runnerDone := sess.runnerDone
 	sess.cancelMu.Unlock()
 
 	if cancelFn != nil {
 		cancelFn()
-		if doneCh != nil {
-			select {
-			case <-doneCh:
-			case <-time.After(wait):
-				log.Printf("[telegram] stream did not stop within %s during session shutdown; continuing cleanup", wait)
-			}
+	}
+	if doneCh != nil {
+		select {
+		case <-doneCh:
+		case <-time.After(wait):
+			log.Printf("[telegram] stream did not stop within %s during session shutdown; deferring runtime cleanup", wait)
 		}
 	}
 
-	if sess.runtime != nil && sess.runtime.Cleanup != nil {
-		sess.runtime.Cleanup()
+	cleanup := func() {
+		sess.cleanupOnce.Do(func() {
+			if sess.runtime != nil && sess.runtime.Cleanup != nil {
+				sess.runtime.Cleanup()
+			}
+		})
 	}
+	if runnerDone != nil {
+		select {
+		case <-runnerDone:
+			cleanup()
+		default:
+			// The runner still owns the runtime. Cleaning it now would race with
+			// provider/tool activity, so transfer cleanup to runner completion.
+			go func() {
+				<-runnerDone
+				cleanup()
+			}()
+		}
+		return
+	}
+	cleanup()
 }
 
 func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
@@ -1173,7 +1205,7 @@ func (m *telegramSessionMgr) persistedAssistantTextMatches(ctx context.Context, 
 	return false
 }
 
-func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot telegramBot, msg *tgbotapi.Message) {
 	if msg.From == nil {
 		log.Printf("[telegram] ignoring message with no sender")
 		return
@@ -1211,8 +1243,10 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			}
 			sess.mu.Lock()
 			msgCount := len(sess.history)
-			lastAct := sess.lastActivity
 			sess.mu.Unlock()
+			sess.activityMu.Lock()
+			lastAct := sess.lastActivity
+			sess.activityMu.Unlock()
 			status := fmt.Sprintf("Session active\nMessages in history: %d\nLast activity: %s",
 				msgCount, lastAct.Format(time.RFC3339))
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, status))
@@ -1279,14 +1313,26 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		return
 	}
 
-	// Check idle timeout and replace the whole session if expired.
-	sess.mu.Lock()
-	expired := time.Since(sess.lastActivity) > m.idleTimeout
+	// Snapshot interrupt state before touching session activity. streamReply holds
+	// sess.mu for its full lifetime, but cancelMu remains available to new
+	// messages specifically so they can interrupt it.
+	sess.cancelMu.Lock()
+	doneCh := sess.replyDone
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+
+	// lastActivity has its own lock so this check does not wait behind the
+	// session mutex held for the full active stream. Active streams are not
+	// expired out from under their runtime; the interrupt policy below decides
+	// whether the incoming message cancels or interjects.
+	sess.activityMu.Lock()
+	expired := cancelFn == nil && time.Since(sess.lastActivity) > m.idleTimeout
 	if !expired {
 		sess.lastActivity = time.Now()
 	}
-	sess.mu.Unlock()
-	if expired {
+	sess.activityMu.Unlock()
+	runtimeStale := sess.runtimeStale.Load()
+	if expired || runtimeStale {
 		sess, _, err = m.resetSessionIfCurrent(ctx, chatID, sess)
 		if err != nil {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
@@ -1295,11 +1341,6 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 	}
 
 	// If a stream is active, decide whether to cancel, interject, or queue.
-	sess.cancelMu.Lock()
-	doneCh := sess.replyDone
-	cancelFn := sess.streamCancel
-	sess.cancelMu.Unlock()
-
 	if cancelFn != nil && doneCh != nil {
 		newMsgText := strings.TrimSpace(extractPlainTextFromMsg(msg))
 		if newMsgText == "" {
@@ -1431,19 +1472,25 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	defer streamCancel()
 
 	replyDone := make(chan struct{})
+	streamToken := make(chan struct{})
 	sess.cancelMu.Lock()
 	sess.streamCancel = streamCancel
 	sess.replyDone = replyDone
+	sess.streamToken = streamToken
 	sess.cancelMu.Unlock()
 	defer func() {
 		sess.cancelMu.Lock()
-		sess.streamCancel = nil
-		sess.replyDone = nil
-		sess.currentTask = ""
-		sess.toolsRanNames = nil
-		sess.streamProseLen.Store(0)
-		sess.streamToolCnt.Store(0)
-		sess.streamToolName.Store("")
+		if sess.streamToken == streamToken {
+			sess.streamCancel = nil
+			sess.replyDone = nil
+			sess.streamEngine = nil
+			sess.streamToken = nil
+			sess.currentTask = ""
+			sess.toolsRanNames = nil
+			sess.streamProseLen.Store(0)
+			sess.streamToolCnt.Store(0)
+			sess.streamToolName.Store("")
+		}
 		sess.cancelMu.Unlock()
 		close(replyDone)
 	}()
@@ -1605,13 +1652,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		if runnerDone == nil {
 			return
 		}
-		select {
-		case <-runnerDone:
-			return
-		case <-time.After(5 * time.Second):
-			log.Printf("[telegram] runner for chat %d still shutting down after cleanup timeout; waiting to avoid overlapping the shared engine", chatID)
+		cleanupTimeout := telegramRunnerCleanupTimeout
+		if cleanupTimeout <= 0 {
+			cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
 		}
-		<-runnerDone
+		if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, cleanupTimeout) {
+			sess.runtimeStale.Store(true)
+			log.Printf("[telegram] runner for chat %d did not stop within %s after stream cancellation; detaching and resetting runtime before reuse", chatID, cleanupTimeout)
+		}
 	}
 	defer waitForRunnerDone()
 	if m.settings.Runner != nil {
@@ -1619,6 +1667,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		stream = pipe
 		done := make(chan struct{})
 		runnerDone = done
+		sess.cancelMu.Lock()
+		if sess.streamToken == streamToken {
+			sess.runnerDone = done
+		}
+		sess.cancelMu.Unlock()
 		search := m.settings.Search
 		forceExternalSearch := m.settings.ForceExternalSearch
 		go func() {
@@ -1644,12 +1697,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				OnTurnCompleted:           turnCompletedCB,
 				OnEngineReady: func(engine *llm.Engine) {
 					sess.cancelMu.Lock()
-					sess.streamEngine = engine
+					if sess.streamToken == streamToken {
+						sess.streamEngine = engine
+					}
 					sess.cancelMu.Unlock()
 				},
 				OnEngineDone: func(engine *llm.Engine) {
 					sess.cancelMu.Lock()
-					if sess.streamEngine == engine {
+					if sess.streamToken == streamToken && sess.streamEngine == engine {
 						sess.streamEngine = nil
 					}
 					sess.cancelMu.Unlock()
@@ -1966,7 +2021,9 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			}
 		}
 		sess.history = newHistory
+		sess.activityMu.Lock()
 		sess.lastActivity = time.Now()
+		sess.activityMu.Unlock()
 	}
 
 	var streamErr error
@@ -2217,7 +2274,9 @@ loop:
 		newHistory = append(newHistory, llm.AssistantText(full))
 	}
 	sess.history = newHistory
+	sess.activityMu.Lock()
 	sess.lastActivity = time.Now()
+	sess.activityMu.Unlock()
 	if callbackStoreQueue != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		callbackStoreQueue.closeAndWait(drainCtx)

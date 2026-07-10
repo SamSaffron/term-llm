@@ -221,6 +221,10 @@ func (rt *serveRuntime) configureContextManagementForRequest(req llm.Request) {
 }
 
 func (rt *serveRuntime) Close() {
+	rt.CloseContext(context.Background())
+}
+
+func (rt *serveRuntime) CloseContext(ctx context.Context) {
 	rt.interruptMu.Lock()
 	state := rt.activeInterrupt
 	rt.interruptMu.Unlock()
@@ -228,8 +232,60 @@ func (rt *serveRuntime) Close() {
 		state.cancel()
 	}
 
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
+	if !rt.lockForClose(ctx) {
+		return
+	}
+	if ctx == nil || ctx.Done() == nil {
+		defer rt.mu.Unlock()
+		rt.closeLocked()
+		return
+	}
+
+	// Cleanup hooks are third-party code and may block independently of the
+	// active run. Keep ownership of rt.mu in the cleanup goroutine so a bounded
+	// shutdown can return without permitting concurrent runtime reuse.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer rt.mu.Unlock()
+		rt.closeLocked()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+// lockForClose waits for the runtime mutex, but lets CloseContext abandon the
+// wait when a provider/tool run keeps holding rt.mu after cancellation.
+func (rt *serveRuntime) lockForClose(ctx context.Context) bool {
+	if ctx == nil {
+		rt.mu.Lock()
+		return true
+	}
+	if rt.mu.TryLock() {
+		return true
+	}
+	done := ctx.Done()
+	if done == nil {
+		rt.mu.Lock()
+		return true
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return false
+		case <-ticker.C:
+			if rt.mu.TryLock() {
+				return true
+			}
+		}
+	}
+}
+
+func (rt *serveRuntime) closeLocked() {
 	rt.clearPendingAskUsers()
 	rt.clearPendingApprovals()
 	if rt.mcpManager != nil {

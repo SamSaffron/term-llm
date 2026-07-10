@@ -70,6 +70,8 @@ var (
 	askSkills string
 	// Session resume flag
 	askResume string
+
+	askRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
 )
 
 var askCmd = &cobra.Command{
@@ -990,29 +992,53 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		stats = adapter.Stats()
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		defer cancelStream()
-		var runnerResult runpkg.Result
-		errChan := make(chan error, 1)
+		type runnerStreamResult struct {
+			result   runpkg.Result
+			err      error
+			detached bool
+		}
+		streamResultChan := make(chan runnerStreamResult, 1)
 		go func() {
 			pipe := runpkg.NewEventPipe(streamCtx, ui.DefaultStreamBufferSize)
-			var runErr error
-			done := make(chan struct{})
+			runnerResultChan := make(chan runnerStreamResult, 1)
+			runnerDone := make(chan struct{})
 			go func() {
-				runnerResult, runErr = askRunner.Run(streamCtx, baseRunReq, pipe)
+				result, runErr := askRunner.Run(streamCtx, baseRunReq, pipe)
 				pipe.CloseWithError(runErr)
-				close(done)
+				runnerResultChan <- runnerStreamResult{result: result, err: runErr}
+				close(runnerDone)
 			}()
 			adapter.ProcessStream(streamCtx, pipe)
-			<-done
-			errChan <- runErr
+			cancelStream()
+			cleanupTimeout := askRunnerCleanupTimeout
+			if cleanupTimeout <= 0 {
+				cleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
+			}
+			if !runpkg.WaitForRunnerDone(context.Background(), runnerDone, cleanupTimeout) {
+				detachErr := streamCtx.Err()
+				if detachErr == nil {
+					detachErr = context.Canceled
+				}
+				streamResultChan <- runnerStreamResult{err: detachErr, detached: true}
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: runner did not stop within %s after stream cancellation; detaching\n", cleanupTimeout)
+				return
+			}
+			streamResultChan <- <-runnerResultChan
 		}()
+		waitStreamResult := func() runnerStreamResult {
+			streamResult := <-streamResultChan
+			if !streamResult.detached {
+				applyRunResult(streamResult.result)
+			}
+			return streamResult
+		}
 
 		var jsonStreamErr error
 		switch {
 		case askJSON:
 			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
 				cancelStream()
-				<-errChan
-				applyRunResult(runnerResult)
+				waitStreamResult()
 				return err
 			}
 			var writeErr error
@@ -1053,8 +1079,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		streamDone := false
 		if err != nil {
 			cancelStream()
-			streamErr = <-errChan
-			applyRunResult(runnerResult)
+			streamErr = waitStreamResult().err
 			streamDone = true
 			if isInterruptedErr(err) || isInterruptedErr(streamErr) {
 				return finishInterrupted()
@@ -1068,8 +1093,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if askJSON && jsonStreamErr != nil {
 			cancelStream()
 			if !streamDone {
-				streamErr = <-errChan
-				applyRunResult(runnerResult)
+				streamErr = waitStreamResult().err
 				streamDone = true
 			}
 			if isInterruptedErr(jsonStreamErr) {
@@ -1083,8 +1107,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		if !streamDone {
-			streamErr = <-errChan
-			applyRunResult(runnerResult)
+			streamErr = waitStreamResult().err
 		}
 		if streamErr != nil {
 			// Update session status based on error type
