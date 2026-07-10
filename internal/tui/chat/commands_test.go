@@ -3588,6 +3588,86 @@ func TestWorktreeMergeConflictMessageWarnsWhenCleanupFailed(t *testing.T) {
 	}
 }
 
+func TestWorktreeRichOutputUsesDialogsWithoutPrintCommands(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  worktreeOperationDoneMsg
+		want string
+	}{
+		{name: "diff", msg: worktreeOperationDoneMsg{op: "diff", diff: "diff --git a/file b/file\n+changed"}, want: "diff --git"},
+		{name: "merge", msg: worktreeOperationDoneMsg{op: "merge", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/goal", RootDir: "/repo"}}, want: "Merged worktree"},
+		{name: "promote dirty root", msg: worktreeOperationDoneMsg{op: "promote", promote: worktree.PromoteResult{WorktreeName: "goal", WorktreeDir: "/tmp/goal", RootDir: "/repo", Branch: "goal", RootStatus: " M file"}, err: worktree.ErrRootDirty}, want: "root checkout has uncommitted changes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			model, cmd := m.handleWorktreeOperationDone(tt.msg)
+			got := model.(*Model)
+			if cmd != nil {
+				t.Fatal("rich worktree output returned a command; expected managed dialog only")
+			}
+			if !got.dialog.IsOpen() || got.dialog.Type() != DialogContent {
+				t.Fatalf("dialog open/type = %v/%v, want content", got.dialog.IsOpen(), got.dialog.Type())
+			}
+			if !strings.Contains(got.dialog.Content(), tt.want) {
+				t.Fatalf("dialog content missing %q:\n%s", tt.want, got.dialog.Content())
+			}
+		})
+	}
+}
+
+func TestWorktreeUsageUsesContentDialog(t *testing.T) {
+	m := newTestChatModel(false)
+	model, cmd := m.ExecuteCommand("/worktree")
+	got := model.(*Model)
+	if cmd != nil {
+		t.Fatal("worktree usage returned unmanaged output command")
+	}
+	if !got.dialog.IsOpen() || got.dialog.Type() != DialogContent || !strings.Contains(got.dialog.Content(), "Usage: /worktree") {
+		t.Fatalf("worktree usage dialog = open:%v type:%v content:%q", got.dialog.IsOpen(), got.dialog.Type(), got.dialog.Content())
+	}
+}
+
+func TestCmdWorktreeMergeValidationRunsAsynchronously(t *testing.T) {
+	m := newTestChatModel(false)
+	invalid := filepath.Join(t.TempDir(), "missing")
+	m.sess = &session.Session{ID: "async-merge", CWD: invalid, WorktreeDir: invalid}
+	m.setTextareaValue("/worktree merge")
+
+	model, cmd := m.ExecuteCommand("/worktree merge")
+	got := model.(*Model)
+	if cmd == nil || got.worktreeOperation != "merge" {
+		t.Fatalf("merge did not start asynchronously: cmd=%v operation=%q footer=%q", cmd != nil, got.worktreeOperation, got.footerMessage)
+	}
+	if got.textarea.Value() != "" {
+		t.Fatalf("textarea = %q, want cleared", got.textarea.Value())
+	}
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err == nil {
+		t.Fatal("async merge validation unexpectedly succeeded")
+	}
+	model, _ = got.handleWorktreeOperationDone(msg)
+	if model.(*Model).worktreeOperation != "" {
+		t.Fatal("async validation failure did not clear operation state")
+	}
+}
+
+func TestCmdWorktreeMergeExplicitTargetResolutionRunsAsynchronously(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "async-merge-target", CWD: repo}
+
+	model, cmd := m.ExecuteCommand("/worktree merge does-not-exist")
+	got := model.(*Model)
+	if cmd == nil || got.worktreeOperation != "merge" {
+		t.Fatalf("explicit merge did not start asynchronously: cmd=%v operation=%q", cmd != nil, got.worktreeOperation)
+	}
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err == nil || !strings.Contains(msg.err.Error(), "unknown managed worktree") {
+		t.Fatalf("async target resolution error = %v", msg.err)
+	}
+}
+
 func TestWorktreeOperationDoneStaleMessageDoesNotClearCurrentOperation(t *testing.T) {
 	m := newTestChatModel(false)
 	m.worktreeOperation = "assist-merge"
@@ -3621,11 +3701,19 @@ func TestAssistedMergeNothingToApplyMessageDoesNotMentionBranch(t *testing.T) {
 
 func TestWorktreeRecoveryPromptOpensOnMergeConflict(t *testing.T) {
 	m := newTestChatModel(false)
-	model, _ := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{
-		op:    "merge",
-		merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal", RootDir: "/repo/root"},
-		err:   worktree.ErrConflict,
+	model, cmd := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{
+		op: "merge",
+		merge: worktree.MergeResult{
+			WorktreeName: "goal",
+			WorktreeDir:  "/tmp/wt/goal",
+			RootDir:      "/repo/root",
+			Conflicts:    []string{"first.txt", "second.txt"},
+		},
+		err: worktree.ErrConflict,
 	})
+	if cmd != nil {
+		t.Fatal("merge conflict scheduled unmanaged output alongside recovery dialog")
+	}
 	got := model.(*Model)
 	if got.pendingWorktreeRecovery == nil {
 		t.Fatal("expected pending recovery after merge conflict")
@@ -3634,7 +3722,7 @@ func TestWorktreeRecoveryPromptOpensOnMergeConflict(t *testing.T) {
 		t.Fatalf("expected worktree recovery dialog, got open=%v type=%v", got.dialog.IsOpen(), got.dialog.Type())
 	}
 	view := ui.StripANSI(got.dialog.View())
-	for _, want := range []string{"does not merge cleanly", "Yes", "No"} {
+	for _, want := range []string{"does not merge cleanly", "/tmp/wt/goal", "/repo/root", "first.txt", "Yes", "No"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("recovery dialog missing %q:\n%s", want, view)
 		}

@@ -36,7 +36,7 @@ type pendingWorktreeRecovery struct {
 
 func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		return m.showSystemMessage("Usage: /worktree [new|browse|switch|root|pwd|diff|merge|promote|rm]")
+		return m.showWorktreeContent("Worktree Commands", "Usage: /worktree [new|browse|switch|root|pwd|diff|merge|promote|rm]")
 	}
 	sub := strings.ToLower(args[0])
 	if sub == "remove" {
@@ -96,6 +96,16 @@ func (m *Model) clearWorktreeCommandComposer() {
 	}
 }
 
+func (m *Model) showWorktreeContent(title, content string) (tea.Model, tea.Cmd) {
+	m.clearWorktreeCommandComposer()
+	m.clearFooterMessage()
+	if m.dialog != nil {
+		m.dialog.ShowContent(title, content)
+		m.scrollToBottom = true
+	}
+	return m, nil
+}
+
 func (m *Model) repoRootForWorktree() (string, error) {
 	start := m.boundWorktreeDir()
 	if start == "" {
@@ -131,6 +141,10 @@ func (m *Model) bindWorktreeDir(dir string) error {
 }
 
 func (m *Model) resolveWorktreeTarget(target string) (string, error) {
+	return resolveWorktreeTargetFrom(m.boundWorktreeDir(), target)
+}
+
+func resolveWorktreeTargetFrom(start, target string) (string, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return "", fmt.Errorf("worktree target is required")
@@ -138,7 +152,14 @@ func (m *Model) resolveWorktreeTarget(target string) (string, error) {
 	if filepath.IsAbs(target) {
 		return target, nil
 	}
-	root, err := m.repoRootForWorktree()
+	if strings.TrimSpace(start) == "" {
+		var err error
+		start, err = os.Getwd()
+		if err != nil {
+			return "", err
+		}
+	}
+	root, err := worktree.MainRepoRoot(start)
 	if err != nil {
 		return "", err
 	}
@@ -424,29 +445,25 @@ func (m *Model) cmdWorktreeMerge(args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 	usingBound := target == ""
-	if target != "" {
-		resolved, err := m.resolveWorktreeTarget(target)
-		if err != nil {
-			return m.showFooterError(err.Error())
-		}
-		dir = resolved
-	}
-	if dir == "" {
+	if usingBound && dir == "" {
 		m.clearWorktreeCommandComposer()
 		return m.showFooterMuted("No worktree is bound.")
 	}
-	wt, err := worktree.Get(dir)
-	if err != nil {
-		return m.showFooterError(err.Error())
-	}
-	dir = wt.Dir
+	start := m.boundWorktreeDir()
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "merge"
-	preflight := formatWorktreeMergePreflight(wt, usingBound, opts)
 	m.clearWorktreeCommandComposer()
-	return m.showSystemMessageWithCmd(preflight, func() tea.Msg {
-		res, err := worktree.MergeBack(parentCtx, dir, opts)
-		return worktreeOperationDoneMsg{op: "merge", dir: dir, merge: res, err: err}
+	return m.showFooterMutedWithCmd("Merging worktree…", func() tea.Msg {
+		resolvedDir := dir
+		if target != "" {
+			var err error
+			resolvedDir, err = resolveWorktreeTargetFrom(start, target)
+			if err != nil {
+				return worktreeOperationDoneMsg{op: "merge", err: err}
+			}
+		}
+		res, err := worktree.MergeBack(parentCtx, resolvedDir, opts)
+		return worktreeOperationDoneMsg{op: "merge", dir: resolvedDir, merge: res, err: err}
 	})
 }
 
@@ -462,6 +479,7 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 		dir = strings.TrimSpace(m.sess.WorktreeDir)
 	}
 	branch := ""
+	target := ""
 	nonFlagArgs := make([]string, 0, len(args))
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
@@ -477,42 +495,31 @@ func (m *Model) cmdWorktreePromote(args []string) (tea.Model, tea.Cmd) {
 		}
 	case 1:
 		if dir == "" {
-			resolved, err := m.resolveWorktreeTarget(nonFlagArgs[0])
-			if err != nil {
-				return m.showFooterError(err.Error())
-			}
-			dir = resolved
+			target = nonFlagArgs[0]
 		} else {
 			branch = nonFlagArgs[0]
 		}
 	case 2:
-		resolved, err := m.resolveWorktreeTarget(nonFlagArgs[0])
-		if err != nil {
-			return m.showFooterError(err.Error())
-		}
-		dir = resolved
+		target = nonFlagArgs[0]
 		branch = nonFlagArgs[1]
 	default:
 		return m.showFooterError("Usage: /worktree promote [name-or-dir] [branch]")
 	}
-	wt, err := worktree.Get(dir)
-	if err != nil {
-		return m.showFooterError(err.Error())
-	}
-	dir = wt.Dir
-	if strings.TrimSpace(branch) == "" {
-		branch = defaultWorktreePromoteBranch(wt)
-	}
-	if branch == "" {
-		return m.showFooterError("Usage: /worktree promote [name-or-dir] [branch]")
-	}
+	start := m.boundWorktreeDir()
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "promote"
-	preflight := formatWorktreePromotePreflight(wt, branch)
 	m.clearWorktreeCommandComposer()
-	return m.showSystemMessageWithCmd(preflight, func() tea.Msg {
-		res, err := worktree.PromoteToRoot(parentCtx, dir, branch, worktree.PromoteOptions{})
-		return worktreeOperationDoneMsg{op: "promote", dir: dir, branch: branch, promote: res, err: err}
+	return m.showFooterMutedWithCmd("Promoting worktree…", func() tea.Msg {
+		resolvedDir := dir
+		if target != "" {
+			var err error
+			resolvedDir, err = resolveWorktreeTargetFrom(start, target)
+			if err != nil {
+				return worktreeOperationDoneMsg{op: "promote", branch: branch, err: err}
+			}
+		}
+		res, err := worktree.PromoteToRoot(parentCtx, resolvedDir, branch, worktree.PromoteOptions{})
+		return worktreeOperationDoneMsg{op: "promote", dir: resolvedDir, branch: res.Branch, promote: res, err: err}
 	})
 }
 
@@ -594,16 +601,16 @@ func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.M
 			pending := pendingWorktreeRecovery{kind: "conflict", merge: msg.merge}
 			m.pendingWorktreeRecovery = &pending
 			m.openWorktreeRecoveryPrompt(pending)
-			return m.showSystemMessage(formatWorktreeMergeConflictMessage(msg.merge))
+			return m, nil
 		case msg.op == "merge" && errors.Is(msg.err, worktree.ErrRootDirty):
 			pending := pendingWorktreeRecovery{kind: "dirty-root", merge: msg.merge}
 			m.pendingWorktreeRecovery = &pending
 			m.openWorktreeRecoveryPrompt(pending)
-			return m.showSystemMessage(formatWorktreeMergeDirtyRootMessage(msg.merge))
+			return m, nil
 		case msg.op == "promote" && errors.Is(msg.err, worktree.ErrRootDirty):
-			return m.showSystemMessage(formatWorktreePromoteDirtyRootMessage(msg.promote))
+			return m.showWorktreeContent("Worktree Promote", formatWorktreePromoteDirtyRootMessage(msg.promote))
 		case msg.op == "assist-merge" && errors.Is(msg.err, worktree.ErrRootDirty):
-			return m.showSystemMessage(formatAssistedMergeRootDirtyMessage(msg.assist))
+			return m.showWorktreeContent("Assisted Worktree Recovery", formatAssistedMergeRootDirtyMessage(msg.assist))
 		case msg.op == "remove" && errors.Is(msg.err, worktree.ErrDirty):
 			return m.showFooterWarning("Worktree has changes; use /worktree rm --force to remove it.")
 		default:
@@ -623,10 +630,10 @@ func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.M
 		if strings.TrimSpace(msg.diff) == "" {
 			return m.showFooterMuted("Worktree is clean.")
 		}
-		return m.showSystemMessage("```diff\n" + msg.diff + "\n```")
+		return m.showWorktreeContent("Worktree Diff", msg.diff)
 	case "merge":
 		m.pendingWorktreeRecovery = nil
-		return m.showSystemMessage(formatWorktreeMergeSuccessMessage(msg.merge))
+		return m.showWorktreeContent("Worktree Merge", formatWorktreeMergeSuccessMessage(msg.merge))
 	case "assist-merge":
 		m.pendingWorktreeRecovery = nil
 		if msg.assist.RootDir != "" {
@@ -641,7 +648,7 @@ func (m *Model) handleWorktreeOperationDone(msg worktreeOperationDoneMsg) (tea.M
 				return m.showFooterError(err.Error())
 			}
 		}
-		return m.showSystemMessage(formatWorktreePromoteSuccessMessage(msg.promote))
+		return m.showWorktreeContent("Worktree Promote", formatWorktreePromoteSuccessMessage(msg.promote))
 	case "remove":
 		if msg.bound && msg.root != "" {
 			if err := m.bindRootDir(msg.root); err != nil {
@@ -830,14 +837,44 @@ func (m *Model) openWorktreeRecoveryPrompt(pending pendingWorktreeRecovery) {
 }
 
 func worktreeRecoveryPromptText(pending pendingWorktreeRecovery) (string, string) {
+	res := pending.merge
+	var details strings.Builder
+	if res.WorktreeDir != "" {
+		fmt.Fprintf(&details, "\n\nSource: %s\n", res.WorktreeDir)
+	}
+	if res.RootDir != "" {
+		fmt.Fprintf(&details, "Root: %s\n", res.RootDir)
+	}
+	if pending.kind == "conflict" && len(res.Conflicts) > 0 {
+		details.WriteString("Conflicts: ")
+		details.WriteString(strings.Join(res.Conflicts[:min(8, len(res.Conflicts))], ", "))
+		if len(res.Conflicts) > 8 {
+			fmt.Fprintf(&details, " (+%d more)", len(res.Conflicts)-8)
+		}
+	}
+	if pending.kind == "dirty-root" && strings.TrimSpace(res.RootStatus) != "" {
+		lines := statusLinesForRecovery(res.RootStatus, 8)
+		details.WriteString("Root status:\n")
+		details.WriteString(strings.Join(lines, "\n"))
+	}
+	suffix := strings.TrimRight(details.String(), "\n")
 	switch pending.kind {
 	case "conflict":
-		return "Assisted Worktree Recovery", "This worktree does not merge cleanly. Would you like me to merge this for you on a safe recovery branch?"
+		return "Assisted Worktree Recovery", "This worktree does not merge cleanly. Would you like me to merge this for you on a safe recovery branch?" + suffix
 	case "dirty-root":
-		return "Assisted Worktree Recovery", "The root checkout is dirty. Would you like me to inspect the dirty root/worktree state and help sort it out before retrying?"
+		return "Assisted Worktree Recovery", "The root checkout is dirty. Would you like me to inspect the dirty root/worktree state and help sort it out before retrying?" + suffix
 	default:
-		return "Assisted Worktree Recovery", "Would you like assisted worktree merge recovery?"
+		return "Assisted Worktree Recovery", "Would you like assisted worktree merge recovery?" + suffix
 	}
+}
+
+func statusLinesForRecovery(status string, limit int) []string {
+	lines := strings.Split(strings.TrimSpace(status), "\n")
+	if len(lines) > limit {
+		remaining := len(lines) - limit
+		lines = append(lines[:limit], fmt.Sprintf("… and %d more", remaining))
+	}
+	return lines
 }
 
 func (m *Model) resolveWorktreeRecoveryPrompt(proceed bool) (tea.Model, tea.Cmd) {
@@ -889,12 +926,11 @@ func (m *Model) startAssistedMergeLLM(res worktree.AssistedMergeResult) (tea.Mod
 		return m.showFooterError("assisted merge failed: missing root checkout")
 	}
 	if len(res.ChangedFiles) == 0 {
-		return m.showSystemMessage(formatAssistedMergeNothingToApplyMessage(res))
+		return m.showWorktreeContent("Assisted Worktree Recovery", formatAssistedMergeNothingToApplyMessage(res))
 	}
 	prompt := formatAssistedMergeLLMPrompt(res)
-	_, systemCmd := m.showSystemMessage(formatAssistedMergeReadyMessage(res))
-	model, streamCmd := m.sendMessage(prompt)
-	return model, tea.Sequence(systemCmd, streamCmd)
+	m.showWorktreeContent("Assisted Worktree Recovery", formatAssistedMergeReadyMessage(res))
+	return m.sendMessage(prompt)
 }
 
 func formatAssistedMergeRootDirtyMessage(res worktree.AssistedMergeResult) string {

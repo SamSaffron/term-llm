@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/muesli/reflow/wrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -504,8 +505,23 @@ func (d *DialogModel) viewModelPicker() string {
 	return borderStyle.Render(b.String())
 }
 
+func (d *DialogModel) contentWidth() int {
+	if d.width <= 0 {
+		return 100
+	}
+	return min(100, max(8, d.width-4))
+}
+
+func (d *DialogModel) renderedContentLines() []string {
+	wrapped := strings.TrimRight(wrap.String(d.Content(), d.contentWidth()-4), "\n")
+	if wrapped == "" {
+		return []string{""}
+	}
+	return strings.Split(wrapped, "\n")
+}
+
 func (d *DialogModel) maxContentScroll() int {
-	return max(0, len(d.contentLines)-d.contentVisibleLines())
+	return max(0, len(d.renderedContentLines())-d.contentVisibleLines())
 }
 
 func (d *DialogModel) scrollContentBy(delta int) {
@@ -526,21 +542,16 @@ func (d *DialogModel) contentVisibleLines() int {
 // viewContentDialog renders a centered-style static content modal.
 func (d *DialogModel) viewContentDialog() string {
 	theme := d.styles.Theme()
-	width := d.width - 4
-	if width <= 0 || width > 100 {
-		width = 100
-	}
-	if width < 40 {
-		width = 40
-	}
+	width := d.contentWidth()
 	bodyWidth := width - 4
 	visible := d.contentVisibleLines()
-	maxScroll := max(0, len(d.contentLines)-visible)
+	contentLines := d.renderedContentLines()
+	maxScroll := max(0, len(contentLines)-visible)
 	if d.contentScroll > maxScroll {
 		d.contentScroll = maxScroll
 	}
-	end := min(len(d.contentLines), d.contentScroll+visible)
-	lines := d.contentLines[d.contentScroll:end]
+	end := min(len(contentLines), d.contentScroll+visible)
+	lines := contentLines[d.contentScroll:end]
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
 	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
@@ -623,8 +634,9 @@ func (d *DialogModel) viewStandardDialog() string {
 	// Worktree recovery asks an explicit yes/no question.
 	if d.dialogType == DialogWorktreeRecovery && d.worktreeRecoveryQuestion != "" {
 		b.WriteString("\n")
-		questionStyle := lipgloss.NewStyle().Width(max(20, dialogWidth-6))
-		b.WriteString(questionStyle.Render(d.worktreeRecoveryQuestion))
+		questionWidth := max(20, dialogWidth-6)
+		questionStyle := lipgloss.NewStyle().Width(questionWidth)
+		b.WriteString(questionStyle.Render(wrap.String(d.worktreeRecoveryQuestion, questionWidth)))
 		b.WriteString("\n\n")
 	}
 

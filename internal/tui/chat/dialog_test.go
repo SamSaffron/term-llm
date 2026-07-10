@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func TestShowContentInitializesContentDialog(t *testing.T) {
@@ -70,6 +71,49 @@ func TestContentDialogViewIncludesTitleAndFooter(t *testing.T) {
 	view := d.View()
 	if !strings.Contains(view, "Help") || !strings.Contains(view, "body") || !strings.Contains(view, "esc close") {
 		t.Fatalf("content dialog view missing title/body/footer:\n%s", view)
+	}
+}
+
+func TestContentDialogWrapsLongLinesAndReflowsOnResize(t *testing.T) {
+	d := NewDialogModel(nil)
+	content := strings.Repeat("x", 120)
+	d.SetSize(60, 12)
+	d.ShowContent("Diff", content)
+	if got := len(d.renderedContentLines()); got < 3 {
+		t.Fatalf("narrow rendered lines = %d, want at least 3", got)
+	}
+	narrowScroll := d.maxContentScroll()
+	d.SetSize(100, 12)
+	if got := len(d.renderedContentLines()); got >= 3 {
+		t.Fatalf("wide rendered lines = %d, want fewer than 3", got)
+	}
+	if d.maxContentScroll() > narrowScroll {
+		t.Fatalf("wide max scroll = %d, narrow = %d", d.maxContentScroll(), narrowScroll)
+	}
+	if d.Content() != content {
+		t.Fatal("render wrapping changed raw dialog content")
+	}
+}
+
+func TestContentDialogStaysWithinAvailableWidth(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.SetSize(30, 20)
+	d.ShowContent("Diff", strings.Repeat("x", 100))
+	if got := lipgloss.Width(d.View()); got > 30 {
+		t.Fatalf("dialog width = %d, available = 30", got)
+	}
+}
+
+func TestContentDialogScrollUsesWrappedLines(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.SetSize(44, 12)
+	d.ShowContent("Diff", strings.Repeat("long-path/", 30))
+	if d.maxContentScroll() == 0 {
+		t.Fatal("expected wrapped content to have a scroll range")
+	}
+	d.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if d.contentScroll != d.maxContentScroll() {
+		t.Fatalf("end scroll = %d, want %d", d.contentScroll, d.maxContentScroll())
 	}
 }
 

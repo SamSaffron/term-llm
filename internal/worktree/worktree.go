@@ -402,7 +402,7 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 		if !strings.HasPrefix(filepath.Clean(dir), filepath.Clean(bucket)+string(filepath.Separator)) {
 			continue
 		}
-		wt, err := describeWorktree(dir)
+		wt, err := describeWorktree(dir, true)
 		if err != nil {
 			continue
 		}
@@ -437,6 +437,16 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 
 // Get describes a worktree by directory.
 func Get(dir string) (*Worktree, error) {
+	return getWorktree(dir, true)
+}
+
+// getWorktreeForOperation resolves the metadata needed by mutating operations
+// without running a redundant source-worktree status scan.
+func getWorktreeForOperation(dir string) (*Worktree, error) {
+	return getWorktree(dir, false)
+}
+
+func getWorktree(dir string, includeDirty bool) (*Worktree, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -444,7 +454,7 @@ func Get(dir string) (*Worktree, error) {
 	if !IsGitRepo(abs) {
 		return nil, fmt.Errorf("worktree: %q is not a git repository", dir)
 	}
-	wt, err := describeWorktree(abs)
+	wt, err := describeWorktree(abs, includeDirty)
 	if err != nil {
 		return nil, err
 	}
@@ -542,12 +552,19 @@ func Promote(ctx context.Context, dir, branch string) error {
 func PromoteToRoot(ctx context.Context, dir, branch string, opts PromoteOptions) (PromoteResult, error) {
 	branch = strings.TrimSpace(branch)
 	res := PromoteResult{Branch: branch}
-	if branch == "" {
-		return res, fmt.Errorf("branch is required")
-	}
-	wt, err := Get(dir)
+	wt, err := getWorktreeForOperation(dir)
 	if err != nil {
 		return res, err
+	}
+	if branch == "" {
+		branch = strings.TrimSpace(wt.Name)
+		if branch == "" {
+			branch = filepath.Base(wt.Dir)
+		}
+		res.Branch = branch
+	}
+	if branch == "" {
+		return res, fmt.Errorf("branch is required")
 	}
 	root := wt.RepoRoot
 	worktreeHead := strings.TrimSpace(wt.HeadSHA)
@@ -652,7 +669,7 @@ func runPromoteToRootHook(stage string) error {
 // resolution. It applies the worktree snapshot with cherry-pick -n and leaves
 // conflicts in place on the recovery branch when they occur.
 func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptions) (AssistedMergeResult, error) {
-	wt, err := Get(dir)
+	wt, err := getWorktreeForOperation(dir)
 	if err != nil {
 		return AssistedMergeResult{}, err
 	}
@@ -806,7 +823,7 @@ func Remove(ctx context.Context, dir string, opts RemoveOptions) error {
 
 // MergeBack snapshots the worktree and cherry-picks it into the root checkout staged and uncommitted by default.
 func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult, error) {
-	wt, err := Get(dir)
+	wt, err := getWorktreeForOperation(dir)
 	if err != nil {
 		return MergeResult{}, err
 	}
@@ -899,7 +916,7 @@ func InUse(ctx context.Context, store session.Store, dir string) ([]InUseSession
 	return out, nil
 }
 
-func describeWorktree(dir string) (*Worktree, error) {
+func describeWorktree(dir string, includeDirty bool) (*Worktree, error) {
 	abs, _ := filepath.Abs(dir)
 	root, err := canonicalRepoRoot(abs)
 	if err != nil {
@@ -909,17 +926,20 @@ func describeWorktree(dir string) (*Worktree, error) {
 	branchOut, _ := runGit(abs, "symbolic-ref", "--short", "-q", "HEAD")
 	branch := strings.TrimSpace(branchOut)
 	base, _ := mergeBase(abs, "HEAD")
-	return &Worktree{
-		Name:       slug(filepath.Base(abs)),
-		Dir:        abs,
-		RepoRoot:   root,
-		Branch:     branch,
-		Base:       base,
-		Detached:   branch == "",
-		Status:     StatusReady,
-		DirtyFiles: dirtyCount(abs),
-		HeadSHA:    head,
-	}, nil
+	wt := &Worktree{
+		Name:     slug(filepath.Base(abs)),
+		Dir:      abs,
+		RepoRoot: root,
+		Branch:   branch,
+		Base:     base,
+		Detached: branch == "",
+		Status:   StatusReady,
+		HeadSHA:  head,
+	}
+	if includeDirty {
+		wt.DirtyFiles = dirtyCount(abs)
+	}
+	return wt, nil
 }
 
 func snapshotCommit(ctx context.Context, dir, base, message string) (string, error) {
