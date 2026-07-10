@@ -106,7 +106,7 @@ type AskUserModel struct {
 
 // askInputWidth returns the width used for the custom-answer text input.
 func askInputWidth(width int) int {
-	return max(10, min(50, width-10))
+	return max(10, width-10)
 }
 
 // IsDone returns true if the user has completed all questions.

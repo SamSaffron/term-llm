@@ -21,6 +21,39 @@ func testAskQuestion(header string, multiSelect bool) []AskUserQuestion {
 	}
 }
 
+func TestAskInputWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		width int
+		want  int
+	}{
+		{name: "wide terminal", width: 120, want: 110},
+		{name: "default terminal", width: 80, want: 70},
+		{name: "narrow terminal", width: 15, want: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := askInputWidth(tt.width); got != tt.want {
+				t.Fatalf("askInputWidth(%d) = %d, want %d", tt.width, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAskUserUI_SetWidthUpdatesCustomInputWidth(t *testing.T) {
+	m := NewEmbeddedAskUserModel(testAskQuestion("Q1", false), 80)
+	if got, want := m.textInput.Width(), 70; got != want {
+		t.Fatalf("initial text input width = %d, want %d", got, want)
+	}
+
+	m.SetWidth(120)
+
+	if got, want := m.textInput.Width(), 110; got != want {
+		t.Fatalf("resized text input width = %d, want %d", got, want)
+	}
+}
+
 func TestAskUserUI_SingleMultiSelect_EnterSubmitsWhenAnswered_Standalone(t *testing.T) {
 	m := newAskModel(testAskQuestion("Q1", true))
 
