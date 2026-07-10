@@ -124,6 +124,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
         if (!res.ok && res.status !== 409) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const data = await res.json().catch(() => ({}));
         const result = data.result || {};
+        const mergeOutcome = result.committed ? 'committed' : (result.applied ? 'staged, uncommitted' : 'no changes to apply');
         if (res.status === 409) {
           if (data.error === 'root_dirty') {
             window.alert(`Merge not attempted: root checkout is dirty.\n\nRoot: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''} ${result.worktree_dir || ''}\n\nRoot status:\n${result.root_status || '(dirty)'}\n\nNext: inspect/commit/stash root changes, then retry merge.`);
@@ -131,7 +132,27 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
             window.alert(`Merge conflicts; root was reset cleanly.\n\nRoot: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''} ${result.worktree_dir || ''}\n\nConflicts:\n${(result.conflicts || []).join('\n')}\n\nNext: consider promoting the worktree or ask the LLM for a recovery plan.`);
           }
         } else {
-          window.alert(`Merged back to root: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''} ${result.worktree_dir || ''}\nResult: ${result.committed ? 'committed' : 'staged, uncommitted'}\n\nNext: open root, run git status, commit, then remove the worktree when ready.`);
+          const cleanup = data.cleanup || {};
+          if (cleanup.removed) {
+            const session = activeSession();
+            if (session && session.worktreeDir === dir) session.worktreeRemoved = true;
+            window.alert(`Merged back to root and removed the worktree: ${result.root_dir || ''}\nSource: ${result.worktree_name || ''}\nResult: ${mergeOutcome}${result.snapshot_commit ? `\nRecovery snapshot: ${result.snapshot_commit.slice(0, 12)}` : ''}`);
+          } else if (Array.isArray(cleanup.in_use) && cleanup.in_use.length > 0) {
+            const remove = window.confirm(`Merge succeeded, but the worktree is used by ${cleanup.in_use.length} session(s). Remove it anyway?`);
+            if (remove) {
+              const deleteRes = await fetch(`${UI_PREFIX}/v1/worktrees?dir=${encodeURIComponent(dir)}&force=1`, { method: 'DELETE', headers: authHeaders() });
+              if (!deleteRes.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(deleteRes) : deleteRes.text());
+              const session = activeSession();
+              if (session && session.worktreeDir === dir) session.worktreeRemoved = true;
+              window.alert(`Merged back to root and removed the worktree.\nResult: ${mergeOutcome}${result.snapshot_commit ? `\nRecovery snapshot: ${result.snapshot_commit.slice(0, 12)}` : ''}`);
+            } else {
+              window.alert(`Merged back to root; the worktree was kept.\nResult: ${mergeOutcome}`);
+            }
+          } else {
+            window.alert(`Merged back to root; the worktree was kept.\nResult: ${mergeOutcome}`);
+          }
+          await loadWorktrees();
+          renderWorktreeChip();
         }
       } else if (value === 'promote') {
         const branch = window.prompt('Branch name:', '');

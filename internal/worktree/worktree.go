@@ -98,6 +98,12 @@ type MergeResult struct {
 	ConflictCleanupError string   `json:"conflict_cleanup_error,omitempty"`
 }
 
+// CleanupResult describes post-merge worktree removal.
+type CleanupResult struct {
+	Removed bool           `json:"removed"`
+	InUse   []InUseSession `json:"in_use,omitempty"`
+}
+
 // PromoteOptions configures PromoteToRoot.
 type PromoteOptions struct {
 	Message string
@@ -166,10 +172,11 @@ type metadata struct {
 }
 
 var (
-	ErrDirty     = errors.New("worktree has uncommitted changes")
-	ErrExists    = errors.New("worktree already exists")
-	ErrConflict  = errors.New("merge back has conflicts")
-	ErrRootDirty = errors.New("root checkout has uncommitted changes")
+	ErrDirty              = errors.New("worktree has uncommitted changes")
+	ErrExists             = errors.New("worktree already exists")
+	ErrConflict           = errors.New("merge back has conflicts")
+	ErrRootDirty          = errors.New("root checkout has uncommitted changes")
+	ErrMergeCleanupFailed = errors.New("merge succeeded but worktree cleanup failed")
 )
 
 func (o *CreateOptions) progress(msg string) {
@@ -889,6 +896,38 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 		res.RootStatus = statusPorcelain(root)
 	}
 	return res, nil
+}
+
+// MergeBackAndCleanup merges a worktree into root and removes it when no other
+// sessions are bound to it. The excluded session is normally the caller's own
+// session, which will be rebound to root after cleanup.
+func MergeBackAndCleanup(ctx context.Context, dir string, opts MergeOptions, store session.Store, excludeSessionID string) (MergeResult, CleanupResult, error) {
+	res, err := MergeBack(ctx, dir, opts)
+	if err != nil {
+		return res, CleanupResult{}, err
+	}
+
+	inUse, err := InUse(ctx, store, dir)
+	if err != nil {
+		return res, CleanupResult{}, fmt.Errorf("%w: check session usage: %w", ErrMergeCleanupFailed, err)
+	}
+	excludeSessionID = strings.TrimSpace(excludeSessionID)
+	if excludeSessionID != "" {
+		filtered := inUse[:0]
+		for _, item := range inUse {
+			if strings.TrimSpace(item.ID) != excludeSessionID {
+				filtered = append(filtered, item)
+			}
+		}
+		inUse = filtered
+	}
+	if len(inUse) > 0 {
+		return res, CleanupResult{InUse: inUse}, nil
+	}
+	if err := Remove(ctx, dir, RemoveOptions{Force: true}); err != nil {
+		return res, CleanupResult{}, fmt.Errorf("%w: %w", ErrMergeCleanupFailed, err)
+	}
+	return res, CleanupResult{Removed: true}, nil
 }
 
 // InUse returns non-archived sessions currently bound to dir when the store exposes worktree summaries.

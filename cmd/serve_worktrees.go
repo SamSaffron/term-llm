@@ -24,6 +24,7 @@ type worktreeMergeRequest struct {
 	Dir     string `json:"dir"`
 	Commit  bool   `json:"commit"`
 	Message string `json:"message"`
+	Keep    bool   `json:"keep"`
 }
 
 type worktreePromoteRequest struct {
@@ -228,7 +229,14 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(activeRootSessions, ", ")))
 		return
 	}
-	res, err := worktree.MergeBack(r.Context(), wt.Dir, worktree.MergeOptions{Commit: req.Commit, Message: req.Message})
+	opts := worktree.MergeOptions{Commit: req.Commit, Message: req.Message}
+	var res worktree.MergeResult
+	var cleanup worktree.CleanupResult
+	if req.Keep {
+		res, err = worktree.MergeBack(r.Context(), wt.Dir, opts)
+	} else {
+		res, cleanup, err = worktree.MergeBackAndCleanup(r.Context(), wt.Dir, opts, s.store, "")
+	}
 	if errors.Is(err, worktree.ErrConflict) {
 		message := "root checkout was reset cleanly after conflicts"
 		if !res.ConflictReset {
@@ -245,7 +253,7 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"result": res})
+	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup})
 }
 
 func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root string) []string {

@@ -66,15 +66,15 @@ Chat sessions can bind their tools to a git worktree without changing the term-l
 /worktree list
 /worktree switch <name-or-dir>
 /worktree diff
-/worktree merge [--commit] [-m message]
+/worktree merge [--commit] [-m message] [--keep]
 /worktree promote <branch>
 /worktree root
 /worktree rm [name-or-dir] [--force]
 ```
 
-A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_file`, `edit_file`, `grep`, `glob`, shell working directories, image paths, and spawned agents resolve there. The binding is saved as `worktree_dir` in SQLite and is restored on resume. `/worktree merge` applies worktree changes back to the root checkout staged and uncommitted by default so you can review and commit them yourself.
+A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_file`, `edit_file`, `grep`, `glob`, shell working directories, image paths, and spawned agents resolve there. The binding is saved as `worktree_dir` in SQLite and is restored on resume. `/worktree merge` applies worktree changes back to the root checkout staged and uncommitted by default, removes the source worktree, and rebinds the current session to root. The merge success message includes the snapshot commit as a recovery pointer. Use `--keep` to retain the worktree and its session binding after merging. If another session is bound to the worktree, term-llm asks before removing it; failed or conflicting merges always preserve it.
 
-In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request.
+In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request. The merge action also removes the worktree by default and asks for confirmation before forcing removal when sessions still use it.
 
 ## File change history
 

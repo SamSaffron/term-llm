@@ -80,6 +80,96 @@ type worktreeAPIResponse struct {
 	Dir  string `json:"dir"`
 }
 
+func TestServeWorktreeMergeCleanupSemantics(t *testing.T) {
+	tests := []struct {
+		name        string
+		bodyKeep    bool
+		wantRemoved bool
+	}{
+		{name: "default removes", wantRemoved: true},
+		{name: "keep preserves", bodyKeep: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newGitRepoForBindingTest(t)
+			wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "serve-" + strings.ReplaceAll(tt.name, " ", "-")})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+			if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("serve merge\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(worktreeMergeRequest{Dir: wt.Dir, Keep: tt.bodyKeep})
+			srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
+			req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			srv.handleWorktreeMerge(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var resp struct {
+				Result  worktree.MergeResult   `json:"result"`
+				Cleanup worktree.CleanupResult `json:"cleanup"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Cleanup.Removed != tt.wantRemoved || !resp.Result.Applied {
+				t.Fatalf("response = %+v, want removed=%v", resp, tt.wantRemoved)
+			}
+			_, statErr := os.Stat(wt.Dir)
+			if tt.wantRemoved && !os.IsNotExist(statErr) {
+				t.Fatalf("worktree stat = %v, want removed", statErr)
+			}
+			if !tt.wantRemoved && statErr != nil {
+				t.Fatalf("kept worktree missing: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestServeWorktreeMergeInUseReturnsCleanup(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "serve-in-use"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("serve merge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now()
+	if err := store.Create(context.Background(), &session.Session{ID: "bound", Provider: "mock", Model: "tiny", Mode: session.ModeChat, CWD: wt.Dir, WorktreeDir: wt.Dir, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &serveServer{store: store, worktreeRootFn: worktreeRootForTest(repo)}
+	req := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`"}`))
+	rec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Cleanup worktree.CleanupResult `json:"cleanup"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Cleanup.Removed || len(resp.Cleanup.InUse) != 1 || resp.Cleanup.InUse[0].ID != "bound" {
+		t.Fatalf("cleanup = %+v, want bound session", resp.Cleanup)
+	}
+	if _, err := os.Stat(wt.Dir); err != nil {
+		t.Fatalf("worktree should remain: %v", err)
+	}
+}
+
 func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	t.Parallel()
 

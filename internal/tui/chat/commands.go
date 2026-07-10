@@ -176,7 +176,7 @@ func AllCommands() []Command {
 				{Name: "root", Description: "Return to the root checkout"},
 				{Name: "pwd", Description: "Show current bound directory"},
 				{Name: "diff", Description: "Show worktree diff including untracked files"},
-				{Name: "merge", Description: "Stage worktree changes onto the root checkout with guided recovery"},
+				{Name: "merge", Description: "Merge into root, remove the worktree, and rebind the session"},
 				{Name: "promote", Description: "Check out a new worktree branch in the root checkout"},
 				{Name: "rm", Description: "Remove a worktree"},
 			},

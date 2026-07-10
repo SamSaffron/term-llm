@@ -206,10 +206,18 @@ func (d *DialogModel) ShowDirApproval(filePath string, options []string) {
 
 // ShowWorktreeRecovery opens a yes/no confirmation dialog for assisted recovery.
 func (d *DialogModel) ShowWorktreeRecovery(title, question string) {
+	if strings.TrimSpace(title) == "" {
+		title = "Assisted Worktree Recovery"
+	}
+	d.ShowWorktreeConfirmation(title, question, "Yes — start assisted recovery", "No — leave everything unchanged")
+}
+
+// ShowWorktreeConfirmation opens a yes/no worktree confirmation dialog.
+func (d *DialogModel) ShowWorktreeConfirmation(title, question, yesLabel, noLabel string) {
 	d.dialogType = DialogWorktreeRecovery
 	d.title = strings.TrimSpace(title)
 	if d.title == "" {
-		d.title = "Assisted Worktree Recovery"
+		d.title = "Worktree Confirmation"
 	}
 	d.cursor = 0
 	d.query = ""
@@ -218,8 +226,8 @@ func (d *DialogModel) ShowWorktreeRecovery(title, question string) {
 	d.contentFooter = ""
 	d.worktreeRecoveryQuestion = strings.TrimSpace(question)
 	d.items = []DialogItem{
-		{ID: "yes", Label: "Yes — start assisted recovery"},
-		{ID: "no", Label: "No — leave everything unchanged"},
+		{ID: "yes", Label: yesLabel},
+		{ID: "no", Label: noLabel},
 	}
 	d.filtered = d.items
 }

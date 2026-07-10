@@ -3348,6 +3348,14 @@ func TestUpdateCompletions_WorktreeOptionCommands(t *testing.T) {
 	if !containsString(got, "worktree merge --commit") {
 		t.Fatalf("merge option completions = %v, want --commit", got)
 	}
+
+	m.completions.Show()
+	m.setTextareaValue("/worktree merge --k")
+	m.updateCompletions()
+	got = completionNames(m.completions.filtered)
+	if !containsString(got, "worktree merge --keep") {
+		t.Fatalf("merge option completions = %v, want --keep", got)
+	}
 }
 
 func TestResolveWorktreeTargetRejectsUnknownManagedName(t *testing.T) {
@@ -3625,6 +3633,122 @@ func TestWorktreeUsageUsesContentDialog(t *testing.T) {
 	}
 	if !got.dialog.IsOpen() || got.dialog.Type() != DialogContent || !strings.Contains(got.dialog.Content(), "Usage: /worktree") {
 		t.Fatalf("worktree usage dialog = open:%v type:%v content:%q", got.dialog.IsOpen(), got.dialog.Type(), got.dialog.Content())
+	}
+}
+
+func TestCmdWorktreeMergeDefaultRemovesAndRebinds(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-cleanup-tui"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("merged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "merge-cleanup", WorktreeDir: wt.Dir, CWD: wt.Dir}
+	model, cmd := m.ExecuteCommand("/worktree merge")
+	m = model.(*Model)
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil || !msg.cleanup.Removed {
+		t.Fatalf("merge message = %+v, want successful cleanup", msg)
+	}
+	model, _ = m.handleWorktreeOperationDone(msg)
+	m = model.(*Model)
+	rootInfo, rootErr := os.Stat(repo)
+	cwdInfo, cwdErr := os.Stat(m.sess.CWD)
+	if m.sess.WorktreeDir != "" || rootErr != nil || cwdErr != nil || !os.SameFile(rootInfo, cwdInfo) {
+		t.Fatalf("session cwd/worktree = %q/%q, want root/%q", m.sess.CWD, m.sess.WorktreeDir, repo)
+	}
+	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
+		t.Fatalf("worktree stat = %v, want removed", err)
+	}
+}
+
+func TestCmdWorktreeMergeKeepPreservesBinding(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-keep-tui"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(wt.Dir, "kept.txt"), []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "merge-keep", WorktreeDir: wt.Dir, CWD: wt.Dir}
+	model, cmd := m.ExecuteCommand("/worktree merge --keep")
+	m = model.(*Model)
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil || !msg.keep || msg.cleanup.Removed {
+		t.Fatalf("merge message = %+v, want kept worktree", msg)
+	}
+	model, _ = m.handleWorktreeOperationDone(msg)
+	m = model.(*Model)
+	if !sameWorktreePath(m.sess.WorktreeDir, wt.Dir) {
+		t.Fatalf("binding = %q, want %q", m.sess.WorktreeDir, wt.Dir)
+	}
+	if _, err := os.Stat(wt.Dir); err != nil {
+		t.Fatalf("kept worktree missing: %v", err)
+	}
+}
+
+func TestWorktreeMergeInUsePromptNoKeepsWorktree(t *testing.T) {
+	m := newTestChatModel(false)
+	msg := worktreeOperationDoneMsg{
+		op:      "merge",
+		bound:   true,
+		merge:   worktree.MergeResult{WorktreeName: "shared", WorktreeDir: "/tmp/shared", RootDir: "/repo"},
+		cleanup: worktree.CleanupResult{InUse: []worktree.InUseSession{{ID: "other"}}},
+	}
+	model, _ := m.handleWorktreeOperationDone(msg)
+	m = model.(*Model)
+	if m.pendingWorktreeRecovery == nil || !m.dialog.IsOpen() || m.dialog.Type() != DialogWorktreeRecovery {
+		t.Fatal("expected remove-in-use confirmation prompt")
+	}
+	view := ui.StripANSI(m.dialog.View())
+	if !strings.Contains(view, "used by 1 ot") || !strings.Contains(view, "remove it anyway") {
+		t.Fatalf("prompt missing in-use warning:\n%s", view)
+	}
+	model, _ = m.resolveWorktreeRecoveryPrompt(false)
+	m = model.(*Model)
+	if m.pendingWorktreeRecovery != nil || m.worktreeOperation != "" {
+		t.Fatalf("decline state: pending=%v op=%q", m.pendingWorktreeRecovery, m.worktreeOperation)
+	}
+}
+
+func TestPendingWorktreeMergeInUseYesRemoves(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-in-use-yes"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "current", WorktreeDir: wt.Dir, CWD: wt.Dir}
+	pending := pendingWorktreeRecovery{kind: "remove-in-use", bound: true, merge: worktree.MergeResult{WorktreeName: wt.Name, WorktreeDir: wt.Dir, RootDir: repo}}
+	m.pendingWorktreeRecovery = &pending
+	m.openWorktreeRecoveryPrompt(pending)
+
+	model, cmd := m.resolveWorktreeRecoveryPrompt(true)
+	m = model.(*Model)
+	if cmd == nil || m.worktreeOperation != "remove" {
+		t.Fatalf("yes did not start removal: cmd=%v op=%q", cmd != nil, m.worktreeOperation)
+	}
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil {
+		t.Fatalf("remove: %v", msg.err)
+	}
+	model, _ = m.handleWorktreeOperationDone(msg)
+	m = model.(*Model)
+	rootInfo, rootErr := os.Stat(repo)
+	cwdInfo, cwdErr := os.Stat(m.sess.CWD)
+	if m.sess.WorktreeDir != "" || rootErr != nil || cwdErr != nil || !os.SameFile(rootInfo, cwdInfo) {
+		t.Fatalf("session cwd/worktree = %q/%q, want root", m.sess.CWD, m.sess.WorktreeDir)
+	}
+	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
+		t.Fatalf("worktree stat = %v, want removed", err)
 	}
 }
 
