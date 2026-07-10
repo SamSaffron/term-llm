@@ -47,6 +47,7 @@ type widgetEntry struct {
 	procDone chan struct{}
 	proxy    *httputil.ReverseProxy
 	lastReq  time.Time
+	inFlight int
 	port     int
 }
 
@@ -219,12 +220,21 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 	e.mu.Lock()
 	e.lastReq = time.Now()
 	proxy := e.proxy
+	if proxy != nil {
+		e.inFlight++
+	}
 	e.mu.Unlock()
 
 	if proxy == nil {
 		http.Error(w, "widget proxy not initialized", http.StatusBadGateway)
 		return
 	}
+	defer func() {
+		e.mu.Lock()
+		e.inFlight--
+		e.lastReq = time.Now()
+		e.mu.Unlock()
+	}()
 
 	// Clone request and strip sensitive headers before forwarding.
 	r2 := r.Clone(r.Context())
@@ -570,7 +580,7 @@ func (m *Manager) reapIdle() {
 	var toStop []*widgetEntry
 	for _, e := range m.entries {
 		e.mu.Lock()
-		if e.state == stateRunning && time.Since(e.lastReq) > idleTimeout {
+		if e.state == stateRunning && e.inFlight == 0 && time.Since(e.lastReq) > idleTimeout {
 			toStop = append(toStop, e)
 		}
 		e.mu.Unlock()

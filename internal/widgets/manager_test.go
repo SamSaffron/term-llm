@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -128,6 +132,128 @@ func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	}
 	if state != stateStopped {
 		t.Fatalf("widget state = %v, want stopped", state)
+	}
+}
+
+func TestManagerReapIdleKeepsActiveProxyRequest(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	defer releaseOnce.Do(func() { close(release) })
+
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	m := &Manager{
+		basePath: "/chat",
+		entries:  make(map[string]*widgetEntry),
+	}
+	e := &widgetEntry{
+		manifest: &Manifest{
+			ID:    "slow-widget",
+			Title: "Slow Widget",
+			Mount: "slow-widget",
+		},
+		state:   stateRunning,
+		proxy:   httputil.NewSingleHostReverseProxy(targetURL),
+		lastReq: time.Now().Add(-idleTimeout - time.Minute),
+	}
+	m.entries[e.manifest.Mount] = e
+
+	errCh := make(chan error, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/widgets/slow-widget/stream", nil)
+		m.Proxy("slow-widget", rr, req)
+		if rr.Code != http.StatusOK {
+			errCh <- fmt.Errorf("proxy status = %d, want %d: %q", rr.Code, http.StatusOK, rr.Body.String())
+			return
+		}
+		if got := rr.Body.String(); got != "ok" {
+			errCh <- fmt.Errorf("proxy body = %q, want %q", got, "ok")
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		releaseOnce.Do(func() { close(release) })
+		t.Fatal("proxy request did not reach upstream")
+	}
+
+	e.mu.Lock()
+	e.lastReq = time.Now().Add(-idleTimeout - time.Minute)
+	inFlight := e.inFlight
+	e.mu.Unlock()
+	if inFlight != 1 {
+		releaseOnce.Do(func() { close(release) })
+		t.Fatalf("inFlight = %d, want 1 while proxy request is active", inFlight)
+	}
+
+	m.reapIdle()
+
+	e.mu.Lock()
+	state := e.state
+	proxy := e.proxy
+	inFlight = e.inFlight
+	e.mu.Unlock()
+	if state != stateRunning {
+		releaseOnce.Do(func() { close(release) })
+		t.Fatalf("state = %v, want running while proxy request is active", state)
+	}
+	if proxy == nil {
+		releaseOnce.Do(func() { close(release) })
+		t.Fatal("proxy was cleared while request was active")
+	}
+	if inFlight != 1 {
+		releaseOnce.Do(func() { close(release) })
+		t.Fatalf("inFlight = %d, want 1 while proxy request is active", inFlight)
+	}
+
+	beforeRelease := time.Now()
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy request did not finish")
+	}
+
+	e.mu.Lock()
+	inFlight = e.inFlight
+	lastReq := e.lastReq
+	e.mu.Unlock()
+	if inFlight != 0 {
+		t.Fatalf("inFlight = %d, want 0 after proxy request finishes", inFlight)
+	}
+	if lastReq.Before(beforeRelease) {
+		t.Fatalf("lastReq = %v, want refresh after request completion at %v", lastReq, beforeRelease)
+	}
+
+	e.mu.Lock()
+	e.lastReq = time.Now().Add(-idleTimeout - time.Minute)
+	e.mu.Unlock()
+	m.reapIdle()
+
+	e.mu.Lock()
+	state = e.state
+	e.mu.Unlock()
+	if state != stateStopped {
+		t.Fatalf("state = %v, want stopped after idle request completes", state)
 	}
 }
 
