@@ -57,3 +57,40 @@ func TestExtractHandoverPath(t *testing.T) {
 		t.Fatalf("expected no match for empty dir, got %q", got)
 	}
 }
+
+func TestResolvePinnedHandoverPathAnchoredAssignmentIgnoresForeignReference(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	rootDir, err := GetHandoverDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("GetHandoverDir root: %v", err)
+	}
+	worktreeDir, err := GetHandoverDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("GetHandoverDir worktree: %v", err)
+	}
+	foreign := filepath.Join(rootDir, "2026-07-02-foreign-plan-reference.md")
+	assigned := filepath.Join(worktreeDir, "2026-07-02-amber-creek-bloom.md")
+	prompt := "Earlier context mentioned " + foreign + ".\n\n" +
+		"Your plan lives at exactly this path, decided upfront and fixed for this session:\n\n`" + assigned + "`"
+
+	got, pinned := ResolvePinnedHandoverPath(prompt, rootDir)
+	if !pinned || got != assigned {
+		t.Fatalf("ResolvePinnedHandoverPath = (%q, %v), want (%q, true)", got, pinned, assigned)
+	}
+}
+
+func TestResolvePinnedHandoverPathAmbiguousAssignmentPreventsFallback(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	firstDir, _ := GetHandoverDir(t.TempDir())
+	secondDir, _ := GetHandoverDir(t.TempDir())
+	first := filepath.Join(firstDir, "2026-07-02-amber-creek-bloom.md")
+	second := filepath.Join(secondDir, "2026-07-02-coral-delta-ember.md")
+	prompt := "Your plan lives at exactly this path:\n`" + first + "`\n" +
+		"Your plan lives at exactly this path:\n`" + second + "`"
+
+	got, pinned := ResolvePinnedHandoverPath(prompt)
+	if !pinned || got != "" {
+		t.Fatalf("ResolvePinnedHandoverPath = (%q, %v), want ambiguous pinned result", got, pinned)
+	}
+}

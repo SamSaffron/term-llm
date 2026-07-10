@@ -37,6 +37,13 @@ func TestMaybeRenameHandoverUsesRootContextCancellation(t *testing.T) {
 	if err := os.Chdir(tmp); err != nil {
 		t.Fatalf("Chdir: %v", err)
 	}
+	effectiveWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd after Chdir: %v", err)
+	}
+	m.sess.CWD = effectiveWD
+	m.sess.WorktreeDir = ""
+	m.messages = nil
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, "xdg-data"))
 
@@ -55,6 +62,9 @@ func TestMaybeRenameHandoverUsesRootContextCancellation(t *testing.T) {
 	cmd := m.maybeRenameHandoverCmd()
 	if cmd == nil {
 		t.Fatal("expected handover rename command")
+	}
+	if got, handoverDir, pinned, err := m.resolveHandoverPath(m.currentSystemPromptText()); err != nil || got != "" || pinned || handoverDir != dir {
+		t.Fatalf("resolveHandoverPath = (%q, %q, %v, %v), want legacy dir %q", got, handoverDir, pinned, err, dir)
 	}
 
 	resultCh := make(chan tea.Msg, 1)

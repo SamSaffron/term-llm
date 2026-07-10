@@ -3144,26 +3144,28 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		return m.startHandoverScriptHandover(m.currentAgent, sourceAgent, targetAgent, providerStr, false, "")
 	}
 
-	// File mode: scan handover directory for latest .md file
+	// File mode: use this session's pinned handover document. Legacy prompts
+	// without a pinned assignment retain the latest-file fallback.
 	if mode == "file" || (mode == "" && m.currentAgent != nil && m.currentAgent.EnableHandover) {
 		handoverDir := ""
+		pinnedPath := ""
+		pathPinned := false
 		if m.currentAgent != nil && m.currentAgent.EnableHandover {
-			if dir, err := session.GetHandoverDir("."); err == nil {
-				handoverDir = dir
+			if path, dir, pinned, err := m.resolveHandoverPath(m.currentSystemPromptText()); err == nil {
+				pinnedPath, handoverDir, pathPinned = path, dir, pinned
 			}
 		}
 		if handoverDir != "" {
-			// Prefer the exact file this session's agent was told about via
-			// {{handover_path}}. When the prompt names a path, never fall back
-			// to scanning — a newer .md from a concurrent session must not
-			// shadow this session's plan, even while ours is empty or unwritten.
-			// Scanning for the latest .md remains only for legacy prompts that
-			// name no handover file.
+			// When the prompt assigns a path, never fall back to scanning — a
+			// newer .md from a concurrent session must not shadow this session's
+			// plan, even while ours is empty, missing, or ambiguous.
 			var latestFile string
 			var latestInfo os.FileInfo
-			if pinned := session.ExtractHandoverPath(m.currentSystemPromptText(), handoverDir); pinned != "" {
-				if info, err := os.Stat(pinned); err == nil {
-					latestFile, latestInfo = pinned, info
+			if pathPinned {
+				if pinnedPath != "" {
+					if info, err := os.Stat(pinnedPath); err == nil {
+						latestFile, latestInfo = pinnedPath, info
+					}
 				}
 			} else {
 				latestFile, latestInfo = findLatestHandoverFile(handoverDir)

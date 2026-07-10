@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -140,5 +141,67 @@ func TestPrettifyHandoverNameSkipsNonRandomNames(t *testing.T) {
 	fi, err := os.Lstat(path)
 	if err != nil || fi.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("descriptively named file must stay a regular file (err %v)", err)
+	}
+}
+
+func TestPrettifyHandoverNameConcurrentSourcesDoNotConverge(t *testing.T) {
+	requireSymlinks(t)
+	for _, written := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unwritten", true: "written"}[written], func(t *testing.T) {
+			dir := t.TempDir()
+			paths := []string{
+				filepath.Join(dir, "2026-07-02-amber-creek-bloom.md"),
+				filepath.Join(dir, "2026-07-02-frost-cedar-oak.md"),
+			}
+			contents := []string{"first session plan", "second session plan"}
+			if written {
+				for i, path := range paths {
+					if err := os.WriteFile(path, []byte(contents[i]), 0o644); err != nil {
+						t.Fatalf("WriteFile: %v", err)
+					}
+				}
+			}
+
+			start := make(chan struct{})
+			errs := make(chan error, len(paths))
+			var wg sync.WaitGroup
+			for _, path := range paths {
+				wg.Add(1)
+				go func(path string) {
+					defer wg.Done()
+					<-start
+					errs <- PrettifyHandoverName(context.Background(), path, "same task", staticSlugGen("shared plan"))
+				}(path)
+			}
+			close(start)
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatalf("PrettifyHandoverName: %v", err)
+				}
+			}
+
+			targets := make(map[string]struct{}, len(paths))
+			for i, path := range paths {
+				target, err := os.Readlink(path)
+				if err != nil {
+					t.Fatalf("Readlink(%s): %v", path, err)
+				}
+				if _, exists := targets[target]; exists {
+					t.Fatalf("concurrent sources converged on %q", target)
+				}
+				targets[target] = struct{}{}
+				if !written {
+					if err := os.WriteFile(path, []byte(contents[i]), 0o644); err != nil {
+						t.Fatalf("write through symlink: %v", err)
+					}
+				}
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != contents[i] {
+					t.Fatalf("content via %s = %q, err %v", path, data, err)
+				}
+			}
+		})
 	}
 }

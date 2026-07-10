@@ -2,11 +2,13 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // handoverRandomPattern matches filenames like "2026-04-03-amber-creek-bloom.md"
@@ -114,12 +116,14 @@ func MaybeRenameHandover(ctx context.Context, path string, slugGen HandoverSlugG
 	return nil
 }
 
+var handoverPrettifyMu sync.Mutex
+
 // PrettifyHandoverName renames a random-named handover file to a short
 // descriptive name derived from the session's first user message, so the file
 // has a nice name from the start. The original random path — baked into the
-// session's system prompt — keeps working via a symlink; when the agent has
-// not written the file yet, the symlink dangles until the first write lands
-// in the descriptive file (write tools follow symlinks).
+// session's system prompt — keeps working via a symlink. When the agent has
+// not written the file yet, an empty descriptive target is atomically reserved
+// before the symlink is created so concurrent sessions cannot share a target.
 //
 // slugGen receives the description and should return roughly two words; the
 // result is sanitized and capped at two dash-separated words. Errors from
@@ -147,39 +151,94 @@ func PrettifyHandoverName(ctx context.Context, path, description string, slugGen
 
 	datePrefix := base[:10] // "2026-04-03"
 	dir := filepath.Dir(path)
-	newName := datePrefix + "-" + slug + ".md"
-	newPath := filepath.Join(dir, newName)
-	if _, err := os.Lstat(newPath); err == nil {
-		// A concurrent session got the same description: keep one random word
-		// from the original name for uniqueness.
-		words := handoverRandomPattern.FindStringSubmatch(base)
-		if words == nil {
-			return nil
-		}
-		newName = datePrefix + "-" + slug + "-" + words[1] + ".md"
-		newPath = filepath.Join(dir, newName)
-		if _, err := os.Lstat(newPath); err == nil {
-			return nil
-		}
-	}
-
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("handover prettify mkdir: %w", err)
 	}
-	// If the agent already wrote the file, carry the content over; otherwise
-	// the symlink dangles until the first write creates the target.
-	renamed := false
-	if _, err := os.Stat(path); err == nil {
-		if err := os.Rename(path, newPath); err != nil {
-			return fmt.Errorf("handover prettify rename: %w", err)
+
+	// Candidate reservation and replacement of the source path must be one
+	// in-process transaction. Atomic O_EXCL creation (unwritten source) or hard
+	// linking (written source) also prevents another process from overwriting a
+	// destination between an existence check and rename.
+	handoverPrettifyMu.Lock()
+	defer handoverPrettifyMu.Unlock()
+
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+
+	words := handoverRandomPattern.FindStringSubmatch(base)
+	if words == nil {
+		return nil
+	}
+	candidates := []string{
+		datePrefix + "-" + slug + ".md",
+		datePrefix + "-" + slug + "-" + words[1] + ".md",
+		datePrefix + "-" + slug + "-" + words[1] + "-" + words[2] + ".md",
+		datePrefix + "-" + slug + "-" + words[1] + "-" + words[2] + "-" + words[3] + ".md",
+	}
+
+	sourceInfo, sourceErr := os.Lstat(path)
+	sourceExists := sourceErr == nil
+	if sourceErr != nil && !errors.Is(sourceErr, os.ErrNotExist) {
+		return fmt.Errorf("handover prettify source: %w", sourceErr)
+	}
+	if sourceExists && !sourceInfo.Mode().IsRegular() {
+		return nil
+	}
+
+	var newName, newPath string
+	for _, candidate := range candidates {
+		candidatePath := filepath.Join(dir, candidate)
+		err := reserveHandoverDestination(path, candidatePath, sourceExists)
+		if errors.Is(err, os.ErrExist) {
+			continue
 		}
-		renamed = true
+		if err != nil {
+			return fmt.Errorf("handover prettify reserve: %w", err)
+		}
+		newName, newPath = candidate, candidatePath
+		break
+	}
+	if newPath == "" {
+		return nil
+	}
+
+	if sourceExists {
+		if err := os.Remove(path); err != nil {
+			_ = os.Remove(newPath)
+			return fmt.Errorf("handover prettify remove source: %w", err)
+		}
 	}
 	if err := os.Symlink(newName, path); err != nil {
-		if renamed {
-			_ = os.Rename(newPath, path)
+		if sourceExists {
+			// Keep the reserved destination if another process occupied the
+			// source path before it could be restored; it is then the only link
+			// that still preserves this session's plan.
+			if restoreErr := os.Link(newPath, path); restoreErr == nil {
+				_ = os.Remove(newPath)
+			}
+		} else {
+			_ = os.Remove(newPath)
 		}
 		return fmt.Errorf("handover prettify symlink: %w", err)
+	}
+	return nil
+}
+
+// reserveHandoverDestination claims dst without ever replacing it. A hard link
+// carries an existing source's inode and content; O_EXCL reserves an empty file
+// before an unwritten source is redirected through its symlink.
+func reserveHandoverDestination(src, dst string, sourceExists bool) error {
+	if sourceExists {
+		return os.Link(src, dst)
+	}
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
 	}
 	return nil
 }

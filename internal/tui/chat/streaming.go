@@ -995,18 +995,17 @@ func (m *Model) maybeNameHandoverCmd(firstMessage string) tea.Cmd {
 		return nil
 	}
 	promptText := m.currentSystemPromptText()
+	path, _, pinned, resolveErr := m.resolveHandoverPath(promptText)
 	rootCtx := m.rootContext()
 	return func() tea.Msg {
-		dir, err := session.GetHandoverDir(".")
-		if err != nil {
-			return handoverRenameDoneMsg{err: err}
+		if resolveErr != nil {
+			return handoverRenameDoneMsg{err: resolveErr}
 		}
-		path := session.ExtractHandoverPath(promptText, dir)
-		if path == "" {
+		if !pinned || path == "" {
 			return handoverRenameDoneMsg{}
 		}
 		slugGen := fastSlugGen(provider, "Generate exactly two lowercase dash-separated words that describe this task, e.g. auth-refactor. Reply with ONLY the two words, nothing else.\n\n%s")
-		err = session.PrettifyHandoverName(rootCtx, path, firstMessage, slugGen)
+		err := session.PrettifyHandoverName(rootCtx, path, firstMessage, slugGen)
 		return handoverRenameDoneMsg{err: err}
 	}
 }
@@ -1025,25 +1024,25 @@ func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 	if provider == nil {
 		return nil
 	}
-	// Snapshot the prompt before the async command to avoid racing on m.messages.
+	// Snapshot the prompt and directory-derived path before the async command to
+	// avoid racing on m.messages or a later worktree switch.
 	promptText := m.currentSystemPromptText()
+	path, dir, pinned, resolveErr := m.resolveHandoverPath(promptText)
 	rootCtx := m.rootContext()
 	return func() tea.Msg {
-		dir, err := session.GetHandoverDir(".")
-		if err != nil {
-			return handoverRenameDoneMsg{err: err}
+		if resolveErr != nil {
+			return handoverRenameDoneMsg{err: resolveErr}
 		}
 		// Rename the file this session's agent writes to; only fall back to
-		// the latest-.md scan when the prompt names no handover file.
-		path := session.ExtractHandoverPath(promptText, dir)
-		if path == "" {
+		// the effective directory's latest .md for genuinely legacy prompts.
+		if path == "" && !pinned {
 			path, _ = findLatestHandoverFile(dir)
 		}
 		if path == "" {
 			return handoverRenameDoneMsg{}
 		}
 		slugGen := fastSlugGen(provider, "Generate a short filesystem-safe slug (2-5 words, lowercase, dash-separated) that describes this document. Reply with ONLY the slug, nothing else.\n\n%s")
-		err = session.MaybeRenameHandover(rootCtx, path, slugGen)
+		err := session.MaybeRenameHandover(rootCtx, path, slugGen)
 		return handoverRenameDoneMsg{err: err}
 	}
 }

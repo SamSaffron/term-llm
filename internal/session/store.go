@@ -258,7 +258,7 @@ func GetHandoverPath(cwd, date string) (string, error) {
 	return filepath.Join(dir, date+"-"+slug+".md"), nil
 }
 
-// ExtractHandoverPath recovers the handover file path embedded in a system
+// ExtractHandoverPath recovers a handover file path embedded in a system
 // prompt via {{handover_path}}. It matches the first path under dir with the
 // "<date>-<slug>.md" shape. Returns "" when the prompt names no such file.
 func ExtractHandoverPath(prompt, dir string) string {
@@ -267,6 +267,104 @@ func ExtractHandoverPath(prompt, dir string) string {
 	}
 	re := regexp.MustCompile(regexp.QuoteMeta(dir) + `[\\/]\d{4}-\d{2}-\d{2}-[a-zA-Z0-9-]+\.md`)
 	return re.FindString(prompt)
+}
+
+// ResolvePinnedHandoverPath recovers the handover path assigned by the system
+// prompt. Candidate directories support sessions whose effective directory and
+// process working directory differ. The planner's assignment is also recovered
+// across directory changes, but only when exactly one assignment points under
+// term-llm's global handover root.
+//
+// pinned is true when an assignment was found even if it was ambiguous. Callers
+// must not fall back to scanning another file when pinned is true.
+func ResolvePinnedHandoverPath(prompt string, candidateDirs ...string) (path string, pinned bool) {
+	if prompt == "" {
+		return "", false
+	}
+
+	assigned := assignedHandoverPaths(prompt)
+	for _, dir := range candidateDirs {
+		for _, path := range assigned {
+			if handoverPathInDir(path, dir) {
+				return path, true
+			}
+		}
+	}
+	if len(assigned) == 1 {
+		return assigned[0], true
+	}
+	if len(assigned) > 1 {
+		return "", true
+	}
+
+	seen := make(map[string]struct{}, len(candidateDirs))
+	for _, dir := range candidateDirs {
+		if dir == "" {
+			continue
+		}
+		clean := filepath.Clean(dir)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		if path := ExtractHandoverPath(prompt, clean); path != "" {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func assignedHandoverPaths(prompt string) []string {
+	// This wording is part of the built-in planner prompt and anchors the path
+	// to the actual assignment rather than unrelated handover references that
+	// may also appear in resumed or injected context.
+	re := regexp.MustCompile(`(?is)your plan lives at exactly this path[^\r\n:]*:\s*` + "`?" + `([^` + "`" + `\r\n]+\.md)`)
+	matches := re.FindAllStringSubmatch(prompt, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	dataDir, err := GetDataDir()
+	if err != nil {
+		return nil
+	}
+	root := filepath.Join(dataDir, "handover")
+	seen := make(map[string]struct{}, len(matches))
+	paths := make([]string, 0, len(matches))
+	for _, match := range matches {
+		path := strings.TrimSpace(match[1])
+		if !validHandoverPathUnderRoot(path, root) {
+			continue
+		}
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func validHandoverPathUnderRoot(path, root string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if filepath.Dir(rel) == "." || strings.Contains(filepath.Dir(rel), string(filepath.Separator)) {
+		return false
+	}
+	matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}-[a-zA-Z0-9-]+\.md$`, filepath.Base(path))
+	return matched
+}
+
+func handoverPathInDir(path, dir string) bool {
+	if path == "" || dir == "" {
+		return false
+	}
+	return filepath.Clean(filepath.Dir(path)) == filepath.Clean(dir)
 }
 
 // ResolveDBPath resolves an optional DB path override.

@@ -81,6 +81,24 @@ func (m *Model) boundWorktreeDir() string {
 	return ""
 }
 
+// resolveHandoverPath returns the path pinned in the system prompt and the
+// effective session's handover directory. The process-CWD directory is also a
+// candidate for prompts created before a worktree switch or by older versions.
+func (m *Model) resolveHandoverPath(prompt string) (path, handoverDir string, pinned bool, err error) {
+	handoverDir, err = session.GetHandoverDir(m.boundWorktreeDir())
+	if err != nil {
+		return "", "", false, err
+	}
+	candidateDirs := []string{handoverDir}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		if processDir, dirErr := session.GetHandoverDir(cwd); dirErr == nil && filepath.Clean(processDir) != filepath.Clean(handoverDir) {
+			candidateDirs = append(candidateDirs, processDir)
+		}
+	}
+	path, pinned = session.ResolvePinnedHandoverPath(prompt, candidateDirs...)
+	return path, handoverDir, pinned, nil
+}
+
 func (m *Model) worktreeOperationBusy() bool {
 	return m != nil && strings.TrimSpace(m.worktreeOperation) != ""
 }
