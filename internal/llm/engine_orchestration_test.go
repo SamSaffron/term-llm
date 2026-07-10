@@ -39,6 +39,260 @@ func eventTypes(events []Event) []EventType {
 	return types
 }
 
+type inlineSyncToolProvider struct {
+	inline bool
+	calls  int
+	models []string
+}
+
+func (p *inlineSyncToolProvider) Name() string       { return "inline-sync-test" }
+func (p *inlineSyncToolProvider) Credential() string { return "test" }
+func (p *inlineSyncToolProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true, InlineToolLoop: p.inline}
+}
+func (p *inlineSyncToolProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls++
+	p.models = append(p.models, req.Model)
+	call := p.calls
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		if len(req.Tools) == 0 {
+			if err := send.Send(Event{Type: EventTextDelta, Text: "pure text"}); err != nil {
+				return err
+			}
+			return send.Send(Event{Type: EventDone})
+		}
+		if call == 1 {
+			response := make(chan ToolExecutionResponse, 1)
+			if err := send.Send(Event{
+				Type:         EventToolCall,
+				ToolCallID:   "sync-1",
+				ToolName:     "test_tool",
+				Tool:         &ToolCall{ID: "sync-1", Name: "test_tool", Arguments: json.RawMessage(`{}`)},
+				ToolResponse: response,
+			}); err != nil {
+				return err
+			}
+			select {
+			case <-response:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if p.inline {
+				if err := send.Send(Event{Type: EventTextDelta, Text: "inline final"}); err != nil {
+					return err
+				}
+			}
+		} else {
+			if err := send.Send(Event{Type: EventTextDelta, Text: "continued final"}); err != nil {
+				return err
+			}
+		}
+		return send.Send(Event{Type: EventDone})
+	}), nil
+}
+
+func TestEngineOrchestration_InlineProviderPureTextCompletesOnce(t *testing.T) {
+	provider := &inlineSyncToolProvider{inline: true}
+	engine := NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	done := 0
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventDone {
+			done++
+		}
+	}
+	if provider.calls != 1 || done != 1 {
+		t.Fatalf("provider calls/EventDone = %d/%d, want 1/1", provider.calls, done)
+	}
+}
+
+func TestEngineOrchestration_InlineSyncToolLoopDoesNotReinvokeProvider(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{inline: true}
+	engine := NewEngine(provider, registry)
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	done := 0
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("unexpected error: %v", event.Err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+		if event.Type == EventDone {
+			done++
+		}
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls)
+	}
+	if done != 1 {
+		t.Fatalf("EventDone count = %d, want 1", done)
+	}
+	if text.String() != "inline final" {
+		t.Fatalf("text = %q, want inline final", text.String())
+	}
+}
+
+func TestEngineOrchestration_InlineSyncToolLoopDrainsInterjectionsBeforeDone(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{inline: true}
+	engine := NewEngine(provider, registry)
+	var persisted []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+		persisted = append(persisted, messages...)
+		return nil
+	})
+	engine.Interject("follow-up instruction")
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	interjectionIndex, doneIndex, index := -1, -1, 0
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventInterjection {
+			interjectionIndex = index
+		}
+		if event.Type == EventDone {
+			doneIndex = index
+		}
+		index++
+	}
+	if interjectionIndex < 0 || doneIndex < 0 || interjectionIndex >= doneIndex {
+		t.Fatalf("interjection/done indexes = %d/%d", interjectionIndex, doneIndex)
+	}
+	if len(persisted) == 0 || persisted[len(persisted)-1].Role != RoleUser || MessageText(persisted[len(persisted)-1]) != "follow-up instruction" {
+		t.Fatalf("persisted messages did not end with interjection: %+v", persisted)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider calls = %d, want 1", provider.calls)
+	}
+}
+
+func TestEngineOrchestration_InlineLoopLeavesModelSwitchForNextStream(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{inline: true}
+	engine := NewEngine(provider, registry)
+	req := Request{Messages: []Message{UserText("use tool")}, Tools: []ToolSpec{{Name: "test_tool"}}}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawSwitch := false
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventToolExecStart {
+			engine.QueueRequestModelSwitch("grok-4.5-xhigh")
+		}
+		if event.Type == EventModelSwitch {
+			sawSwitch = true
+		}
+	}
+	stream.Close()
+	if sawSwitch {
+		t.Fatal("inline return consumed model switch in the completed stream")
+	}
+
+	stream, err = engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	stream.Close()
+	if len(provider.models) < 2 || provider.models[1] != "grok-4.5-xhigh" {
+		t.Fatalf("provider models = %v, want queued switch on second stream", provider.models)
+	}
+}
+
+func TestEngineOrchestration_NonInlineSyncToolLoopContinues(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{}
+	engine := NewEngine(provider, registry)
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("unexpected error: %v", event.Err)
+		}
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
+}
+
 func TestEngineOrchestration_BasicToolLoop(t *testing.T) {
 	ctx := context.Background()
 	registry := NewToolRegistry()

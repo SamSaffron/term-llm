@@ -428,6 +428,8 @@ func TestInferProviderType(t *testing.T) {
 		{"openrouter", "", ProviderTypeOpenRouter},
 		{"nearai", "", ProviderTypeNearAI},
 		{"zen", "", ProviderTypeZen},
+		{"claude-bin", "", ProviderTypeClaudeBin},
+		{"grok-bin", "", ProviderTypeGrokBin},
 		{"vllm", "", ProviderTypeVLLM},
 		{"cerebras", "", ProviderTypeOpenAICompat},
 		{"groq", "", ProviderTypeOpenAICompat},
@@ -516,6 +518,26 @@ func TestDescribeCredentialSource_ClaudeBin(t *testing.T) {
 	}
 	if !strings.Contains(source, "no key needed") {
 		t.Fatalf("source=%q, expected to mention no key needed", source)
+	}
+}
+
+func TestDescribeCredentialSource_GrokBin(t *testing.T) {
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("grok-bin", cfg)
+	if !found {
+		t.Fatal("expected credential to be found")
+	}
+	if source != "grok CLI login (no key needed)" {
+		t.Fatalf("source=%q, want grok CLI login description", source)
+	}
+}
+
+func TestGrokBinSchemaDefaults(t *testing.T) {
+	if got := DefaultProviderModel("grok-bin"); got != "grok-4.5" {
+		t.Fatalf("DefaultProviderModel(grok-bin) = %q, want grok-4.5", got)
+	}
+	if got := DefaultProviderFastModels()["grok-bin"]; got != "grok-composer-2.5-fast" {
+		t.Fatalf("grok-bin fast model = %q, want grok-composer-2.5-fast", got)
 	}
 }
 

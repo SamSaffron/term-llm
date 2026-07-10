@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,7 +33,7 @@ const claudeStdoutTailMaxLines = 40
 
 // claudeDiagnosticLineMaxBytes caps any single captured stdout/stderr line so
 // a single huge JSON event cannot make the debug log unparsable.
-const claudeDiagnosticLineMaxBytes = 4 * 1024
+const claudeDiagnosticLineMaxBytes = cliDiagnosticLineMaxBytes
 
 // claudeDiagnosticStdinMaxBytes is the maximum stdin payload embedded directly
 // in a failure event. The full length and SHA-256 are always logged.
@@ -57,9 +56,6 @@ var forcedClaudeCodeIsolationEnv = map[string]string{
 	"CLAUDE_CODE_DISABLE_ADVISOR_TOOL":         "1",
 	"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":   "1",
 }
-
-// mcpCallCounter generates unique IDs for MCP tool calls
-var mcpCallCounter atomic.Int64
 
 // getEuid returns the effective user ID. Overridable in tests.
 var getEuid = os.Geteuid
@@ -89,173 +85,27 @@ type ClaudeBinProvider struct {
 	mcpServer     *mcphttp.Server
 	mcpConfigPath string
 
-	// currentEvents holds the events channel for the current turn.
-	// currentBridge is updated at the start of each turn so the MCP executor
-	// can route tool execution requests to the correct active stream.
-	currentBridge *claudeTurnBridge
-	// currentEvents is kept for fallback/direct execution paths.
-	currentEvents chan<- Event
-	eventsMu      sync.Mutex
+	// currentEvents/currentBridge route persistent MCP requests to this turn.
+	cliToolBridgeState
 
-	// tempFiles tracks image files materialised for Claude CLI prompts/tool results
-	// so they can be removed when the current turn finishes.
-	tempFiles   []string
-	tempFilesMu sync.Mutex
+	// tempFileTracker owns per-turn image files.
+	tempFileTracker
 
 	activeStream atomic.Bool
-	activeRuns   atomic.Int32
 }
 
-// ClaudeCommandError carries enough diagnostics for debug logs to reproduce or
-// inspect a failed claude CLI invocation without dumping the whole process
-// environment (which may contain secrets).
-type ClaudeCommandError struct {
-	ExitCode       int
-	Err            error
-	Args           []string
-	CommandLine    string
-	Cwd            string
-	Effort         string
-	ToolsExecuted  bool
-	PreferOAuth    bool
-	Env            map[string]string
-	RemovedEnv     []string
-	Stdin          string
-	StdinLen       int
-	StdinSHA256    string
-	StdinTruncated bool
-	StdoutTail     string
-	StderrTail     string
-}
+// ClaudeCommandError is retained as a compatibility alias for callers and tests.
+type ClaudeCommandError = CLICommandError
 
-type UserFacingProviderError struct {
-	Summary string
-	Detail  string
-	Cause   error
-}
-
-func (e *UserFacingProviderError) Error() string {
-	if e == nil {
-		return "provider error"
-	}
-	if e.Detail != "" {
-		return e.Summary + ": " + e.Detail
-	}
-	return e.Summary
-}
-
-func (e *UserFacingProviderError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Cause
-}
-
-func (e *UserFacingProviderError) DebugFields() map[string]any {
-	if e == nil || e.Cause == nil {
-		return nil
-	}
-	fieldsErr, ok := e.Cause.(interface{ DebugFields() map[string]any })
-	if !ok {
-		return nil
-	}
-	return fieldsErr.DebugFields()
-}
-
-func (e *ClaudeCommandError) Error() string {
-	if e == nil {
-		return "claude command failed"
-	}
-	msg := fmt.Sprintf("claude command failed (exit %d): %v", e.ExitCode, e.Err)
-	if e.StderrTail != "" {
-		msg += "\nstderr:\n" + e.StderrTail
-	}
-	return msg
-}
-
-func (e *ClaudeCommandError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-// DebugFields is consumed by DebugLogger when this error is emitted as an
-// EventError. Keep field values JSON-friendly.
-func (e *ClaudeCommandError) DebugFields() map[string]any {
-	if e == nil {
-		return nil
-	}
-	fields := map[string]any{
-		"provider_error_type": "claude_cli_command",
-		"exit_code":           e.ExitCode,
-		"command":             "claude",
-		"args":                e.Args,
-		"command_line":        e.CommandLine,
-		"cwd":                 e.Cwd,
-		"tools_executed":      e.ToolsExecuted,
-		"prefer_oauth":        e.PreferOAuth,
-		"stdin_len":           e.StdinLen,
-		"stdin_sha256":        e.StdinSHA256,
-		"stdin_truncated":     e.StdinTruncated,
-		"stdin":               e.Stdin,
-	}
-	if e.Effort != "" {
-		fields["effort"] = e.Effort
-	}
-	if len(e.Env) > 0 {
-		fields["env"] = e.Env
-	}
-	if len(e.RemovedEnv) > 0 {
-		fields["removed_env"] = e.RemovedEnv
-	}
-	if e.StdoutTail != "" {
-		fields["stdout_tail"] = e.StdoutTail
-	}
-	if e.StderrTail != "" {
-		fields["stderr_tail"] = e.StderrTail
-	}
-	return fields
-}
-
-type claudeToolRequest struct {
-	ctx    context.Context
-	callID string
-	name   string
-	args   json.RawMessage
-	// response is completed by engine tool execution once EventToolCall is handled.
-	response chan<- ToolExecutionResponse
-	// ack is completed by the turn dispatcher after the request is either forwarded
-	// to the stream events channel or rejected (stream closed/cancelled).
-	ack chan error
-}
-
-type claudeTurnBridge struct {
-	// toolReqCh routes wrapped MCP tool requests through the active turn dispatcher,
-	// ensuring deterministic ordering relative to streamed stdout lines.
-	toolReqCh chan claudeToolRequest
-	// done closes when the active runClaudeCommand turn exits.
-	done chan struct{}
-}
+type claudeToolRequest = cliToolRequest
+type claudeTurnBridge = cliTurnBridge
 
 const (
 	claudeToolLineDrainGraceDefault = 75 * time.Millisecond
 	claudeToolLineDrainGraceEnv     = "TERM_LLM_CLAUDE_TOOL_LINE_GRACE_MS"
 )
 
-var claudeToolLineDrainGrace = loadClaudeToolLineDrainGrace()
-
-func loadClaudeToolLineDrainGrace() time.Duration {
-	v := strings.TrimSpace(os.Getenv(claudeToolLineDrainGraceEnv))
-	if v == "" {
-		return claudeToolLineDrainGraceDefault
-	}
-	ms, err := strconv.Atoi(v)
-	if err != nil || ms < 0 {
-		return claudeToolLineDrainGraceDefault
-	}
-	return time.Duration(ms) * time.Millisecond
-}
+var claudeToolLineDrainGrace = loadCLIToolLineDrainGrace(claudeToolLineDrainGraceEnv, claudeToolLineDrainGraceDefault)
 
 // claudeEffortLevels lists the reasoning-effort suffixes recognised on
 // opus/sonnet/fable model names (e.g. "opus-max", "sonnet-high"). "max" and
@@ -312,6 +162,7 @@ func NewClaudeBinProvider(model string, env map[string]string) *ClaudeBinProvide
 		effort:      effort,
 		preferOAuth: true, // Default to OAuth to avoid API key limits
 	}
+	provider.tempFileTracker.logName = "claude-bin"
 	if len(env) > 0 {
 		provider.extraEnv = make(map[string]string, len(env))
 		for k, v := range env {
@@ -619,10 +470,12 @@ func envHasTruthy(env []string, key string) bool {
 
 func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, args []string, effort, userPrompt string, toolsExecuted bool, stdoutTail, stderrTail []string) *ClaudeCommandError {
 	cwd, _ := os.Getwd()
-	stdin, stdinTruncated := truncateClaudeDiagnosticString(userPrompt, claudeDiagnosticStdinMaxBytes)
+	stdin, stdinTruncated := truncateCLIDiagnosticString(userPrompt, claudeDiagnosticStdinMaxBytes)
 	sum := sha256.Sum256([]byte(userPrompt))
 	env, removedEnv := p.commandEnvDebugFields(effort)
 	return &ClaudeCommandError{
+		BinName:        "claude",
+		ErrorType:      "claude_cli_command",
 		ExitCode:       exitCode,
 		Err:            cmdErr,
 		Args:           append([]string(nil), args...),
@@ -637,8 +490,8 @@ func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, ar
 		StdinLen:       len(userPrompt),
 		StdinSHA256:    hex.EncodeToString(sum[:]),
 		StdinTruncated: stdinTruncated,
-		StdoutTail:     strings.Join(normalizeClaudeTail(stdoutTail), "\n"),
-		StderrTail:     strings.Join(normalizeClaudeTail(stderrTail), "\n"),
+		StdoutTail:     strings.Join(normalizeCLITail(stdoutTail), "\n"),
+		StderrTail:     strings.Join(normalizeCLITail(stderrTail), "\n"),
 	}
 }
 
@@ -646,9 +499,9 @@ func (p *ClaudeBinProvider) userFacingClaudeCommandError(err *ClaudeCommandError
 	if err == nil {
 		return nil
 	}
-	detail := firstUsefulClaudeDiagnosticLine(err.StderrTail)
+	detail := firstUsefulCLIDiagnosticLine(err.StderrTail)
 	if detail == "" {
-		detail = firstUsefulClaudeDiagnosticLine(err.StdoutTail)
+		detail = firstUsefulCLIDiagnosticLine(err.StdoutTail)
 	}
 	if detail == "" && err.Err != nil {
 		detail = err.Err.Error()
@@ -677,17 +530,6 @@ func (p *ClaudeBinProvider) userFacingClaudeCommandError(err *ClaudeCommandError
 		Detail:  detail,
 		Cause:   err,
 	}
-}
-
-func firstUsefulClaudeDiagnosticLine(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "{") {
-			continue
-		}
-		return truncateOneLine(line, 240)
-	}
-	return ""
 }
 
 func truncateOneLine(text string, maxRunes int) string {
@@ -750,37 +592,6 @@ func redactEnvValue(key, value string) string {
 		}
 	}
 	return value
-}
-
-func recordClaudeTailLine(mu *sync.Mutex, tail *[]string, line string, maxLines int) {
-	line, _ = truncateClaudeDiagnosticString(line, claudeDiagnosticLineMaxBytes)
-	mu.Lock()
-	defer mu.Unlock()
-	*tail = append(*tail, line)
-	if len(*tail) > maxLines {
-		*tail = (*tail)[len(*tail)-maxLines:]
-	}
-}
-
-func snapshotClaudeTail(mu *sync.Mutex, tail []string) []string {
-	mu.Lock()
-	defer mu.Unlock()
-	return append([]string(nil), tail...)
-}
-
-func normalizeClaudeTail(tail []string) []string {
-	out := make([]string, len(tail))
-	for i, line := range tail {
-		out[i], _ = truncateClaudeDiagnosticString(line, claudeDiagnosticLineMaxBytes)
-	}
-	return out
-}
-
-func truncateClaudeDiagnosticString(s string, maxBytes int) (string, bool) {
-	if maxBytes <= 0 || len(s) <= maxBytes {
-		return s, false
-	}
-	return s[:maxBytes] + fmt.Sprintf("\n...[truncated %d bytes]", len(s)-maxBytes), true
 }
 
 func shellJoin(args []string) string {
@@ -915,7 +726,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 			if debug {
 				fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
 			}
-			recordClaudeTailLine(&stderrMu, &stderrTail, line, claudeStderrTailMaxLines)
+			recordCLITailLine(&stderrMu, &stderrTail, line, claudeStderrTailMaxLines)
 		}
 	}()
 
@@ -937,7 +748,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
-			recordClaudeTailLine(&stdoutMu, &stdoutTail, line, claudeStdoutTailMaxLines)
+			recordCLITailLine(&stdoutMu, &stdoutTail, line, claudeStdoutTailMaxLines)
 			if line != "" {
 				select {
 				case lineCh <- line:
@@ -994,8 +805,8 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		if errors.As(cmdErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
-		stderrSnapshot := snapshotClaudeTail(&stderrMu, stderrTail)
-		stdoutSnapshot := snapshotClaudeTail(&stdoutMu, stdoutTail)
+		stderrSnapshot := snapshotCLITail(&stderrMu, stderrTail)
+		stdoutSnapshot := snapshotCLITail(&stdoutMu, stdoutTail)
 
 		// When MCP tools were executed, the CLI exits with code 1 because
 		// --max-turns 1 is exhausted after the tool call. This is expected;
@@ -1225,19 +1036,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 }
 
 func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, send eventSender) {
-	event := Event{
-		Type:         EventToolCall,
-		ToolCallID:   req.callID,
-		ToolName:     req.name,
-		Tool:         &ToolCall{ID: req.callID, Name: req.name, Arguments: req.args},
-		ToolResponse: req.response,
-	}
-
-	if err := send.Send(event); err != nil {
-		req.ack <- err
-		return
-	}
-	req.ack <- nil
+	handleCLIToolRequest(req, send)
 }
 
 func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
@@ -1251,47 +1050,9 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	handledTerminalResult *bool,
 	ephemeral bool,
 ) error {
-	// First, drain any already-buffered lines.
-	for {
-		select {
-		case line, ok := <-lineCh:
-			if !ok {
-				return nil
-			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, ephemeral); err != nil {
-				return err
-			}
-		default:
-			goto wait
-		}
-	}
-
-wait:
-	timer := time.NewTimer(claudeToolLineDrainGrace)
-	defer timer.Stop()
-
-	for {
-		select {
-		case line, ok := <-lineCh:
-			if !ok {
-				return nil
-			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, ephemeral); err != nil {
-				return err
-			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(claudeToolLineDrainGrace)
-		case <-timer.C:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	return drainCLILinesWithGrace(ctx, lineCh, claudeToolLineDrainGrace, func(line string) error {
+		return p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, ephemeral)
+	})
 }
 
 // buildArgs constructs the command line arguments for the claude binary.
@@ -1435,80 +1196,14 @@ func (p *ClaudeBinProvider) CleanupTurn() {
 // Tool execution events are routed through p.currentEvents (set by getOrCreateMCPConfig).
 func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []ToolSpec, debug bool) string {
 	// Convert llm.ToolSpec to mcphttp.ToolSpec
-	mcpTools := make([]mcphttp.ToolSpec, len(tools))
-	for i, t := range tools {
-		mcpTools[i] = mcphttp.ToolSpec{
-			Name:        t.Name,
-			Description: t.Description,
-			Schema:      t.Schema,
-		}
-		if debug {
-			fmt.Fprintf(os.Stderr, "[claude-bin] Registering tool: %s\n", t.Name)
+	mcpTools := mcpToolSpecs(tools)
+	if debug {
+		for _, tool := range tools {
+			fmt.Fprintf(os.Stderr, "[claude-bin] Registering tool: %s\n", tool.Name)
 		}
 	}
 
-	// Create a wrapper executor that routes tool calls through the engine
-	// by emitting EventToolCall with a response channel and waiting for the result.
-	// NOTE: We read p.currentBridge/currentEvents under mutex each time to get the
-	// current turn's stream sink. This is critical because the MCP server persists
-	// across turns but the stream channels change every turn.
-	wrappedExecutor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		// Get the current bridge/events for this turn.
-		p.eventsMu.Lock()
-		bridge := p.currentBridge
-		events := p.currentEvents
-		p.eventsMu.Unlock()
-
-		// If no active stream bridge/events channel, reject execution.
-		// Falling back to direct execution here would bypass stream-level sequencing
-		// and could skip expected UI/event handling semantics.
-		if bridge == nil || events == nil {
-			return "", fmt.Errorf("tool execution rejected: no active stream bridge for tool call %q", name)
-		}
-
-		// Generate a unique call ID for this execution
-		callID := fmt.Sprintf("mcp-%s-%d", name, mcpCallCounter.Add(1))
-
-		// Create response channel for synchronous execution
-		responseChan := make(chan ToolExecutionResponse, 1)
-
-		req := claudeToolRequest{
-			ctx:      ctx,
-			callID:   callID,
-			name:     name,
-			args:     args,
-			response: responseChan,
-			ack:      make(chan error, 1),
-		}
-
-		// Route tool request through the turn bridge so ordering is handled centrally.
-		select {
-		case bridge.toolReqCh <- req:
-		case <-bridge.done:
-			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-
-		select {
-		case err := <-req.ack:
-			if err != nil {
-				return "", err
-			}
-		case <-bridge.done:
-			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-
-		// Wait for engine to execute and return result
-		select {
-		case response := <-responseChan:
-			return p.formatToolOutputForClaude(response.Result), response.Err
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
+	wrappedExecutor := p.cliToolBridgeState.wrappedExecutor(p.formatToolOutputForClaude)
 
 	// Create and start HTTP server
 	server := mcphttp.NewServer(wrappedExecutor)
@@ -1572,13 +1267,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 
 // extractSystemPrompt joins all RoleSystem message parts into a single string.
 func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
-	var systemParts []string
-	for _, msg := range messages {
-		if msg.Role == RoleSystem {
-			systemParts = append(systemParts, collectTextParts(msg.Parts))
-		}
-	}
-	return strings.TrimSpace(strings.Join(systemParts, "\n\n"))
+	return extractSystemPrompt(messages)
 }
 
 // systemPromptForTurn returns the system prompt to pass to Claude CLI for
@@ -1607,71 +1296,11 @@ func (p *ClaudeBinProvider) systemPromptForTurn(messages []Message, ephemeral bo
 // server restart, when --resume state is gone — receives the whole transcript
 // as a single pasted user turn and re-answers it from the very beginning.
 func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
-	finalTurnStart := conversationFinalTurnStart(messages)
-	if finalTurnStart <= 0 || !messagesContainPriorAssistantTurn(messages[:finalTurnStart]) {
-		return strings.TrimSpace(strings.Join(p.renderConversationParts(messages), "\n\n"))
-	}
-
-	historyText := strings.TrimSpace(strings.Join(p.renderConversationParts(messages[:finalTurnStart]), "\n\n"))
-	finalText := strings.TrimSpace(strings.Join(p.renderConversationParts(messages[finalTurnStart:]), "\n\n"))
-	switch {
-	case historyText == "":
-		return finalText
-	case finalText == "":
-		return historyText
-	}
-
-	var b strings.Builder
-	b.WriteString("<conversation_history>\n")
-	b.WriteString(historyText)
-	b.WriteString("\n</conversation_history>\n\n")
-	b.WriteString(claudeBinResumeReplayInstruction)
-	b.WriteString("\n\n")
-	b.WriteString(finalText)
-	return b.String()
+	return buildCLIConversationPrompt(messages, p.renderConversationParts)
 }
 
-// claudeBinResumeReplayInstruction is injected between the replayed history and
-// the latest user turn so Claude Code does not re-answer already-handled turns.
-const claudeBinResumeReplayInstruction = "The block above is the earlier part of this same conversation, included only so you have the full context. You have already written those assistant replies and already performed any actions shown there — do not repeat them and do not re-answer earlier user messages. Continue the conversation naturally, responding only to the user's most recent message below."
-
-// conversationFinalTurnStart returns the index in messages where the latest user
-// turn begins (including an immediately preceding developer message, which is
-// buffered into that user turn). It returns 0 when there is no user message or
-// the latest user turn is already at the start, signalling that no history/final
-// split is needed.
-func conversationFinalTurnStart(messages []Message) int {
-	lastUser := -1
-	for i, msg := range messages {
-		if msg.Role == RoleUser {
-			lastUser = i
-		}
-	}
-	if lastUser <= 0 {
-		return 0
-	}
-	if messages[lastUser-1].Role == RoleDeveloper {
-		return lastUser - 1
-	}
-	return lastUser
-}
-
-// messagesContainPriorAssistantTurn reports whether the slice holds a completed
-// prior assistant reply, i.e. genuine already-answered conversation history that
-// should be framed as replayed context. A lone tool result (with no preceding
-// assistant turn) is deliberately excluded: that is fresh tool output feeding the
-// current question — notably the synthetic tool-result image replay — and must
-// still be emitted as a live stream-json vision turn, not flattened to text.
-// Tools are always invoked by the assistant, so any real multi-turn history
-// carries an assistant turn; this predicate never misses a genuine transcript.
-func messagesContainPriorAssistantTurn(messages []Message) bool {
-	for _, msg := range messages {
-		if msg.Role == RoleAssistant {
-			return true
-		}
-	}
-	return false
-}
+// Compatibility name retained for Claude stream-json replay fixtures.
+const claudeBinResumeReplayInstruction = cliBinResumeReplayInstruction
 
 // renderConversationParts converts messages into Claude CLI stdin transcript
 // lines ("User: ...", "Assistant: ...", "Tool result (...): ..."). System
@@ -1805,61 +1434,6 @@ func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string 
 		return toolResultTextContent(result)
 	}
 	return strings.Join(parts, "\n")
-}
-
-// imageDataToTempFile decodes base64 image data, writes it to a temporary file,
-// tracks it for cleanup, and returns the file path. Returns empty string on any error.
-func (p *ClaudeBinProvider) imageDataToTempFile(mediaType, base64Data string) string {
-	raw, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return ""
-	}
-	ext := mediaTypeToExt(mediaType)
-	f, err := os.CreateTemp("", "term-llm-img-*."+ext)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	if _, err := f.Write(raw); err != nil {
-		os.Remove(f.Name())
-		return ""
-	}
-	return p.trackTempFile(f.Name())
-}
-
-func (p *ClaudeBinProvider) trackTempFile(path string) string {
-	if path == "" {
-		return ""
-	}
-	p.tempFilesMu.Lock()
-	p.tempFiles = append(p.tempFiles, path)
-	p.tempFilesMu.Unlock()
-	return path
-}
-
-func (p *ClaudeBinProvider) finishStreamCleanup() {
-	if p.activeRuns.Add(-1) == 0 {
-		p.cleanupTempFiles()
-	}
-}
-
-func (p *ClaudeBinProvider) cleanupTempFilesIfIdle() {
-	if p.activeRuns.Load() == 0 {
-		p.cleanupTempFiles()
-	}
-}
-
-func (p *ClaudeBinProvider) cleanupTempFiles() {
-	p.tempFilesMu.Lock()
-	paths := p.tempFiles
-	p.tempFiles = nil
-	p.tempFilesMu.Unlock()
-
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			slog.Warn("claude-bin failed to remove temp image file", "path", path, "err", err)
-		}
-	}
 }
 
 // mediaTypeToExt maps an image MIME type to a file extension.

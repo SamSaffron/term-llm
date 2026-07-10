@@ -122,6 +122,14 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "fable-max"},
 		{ID: "haiku"},
 	},
+	"grok-bin": {
+		{ID: "grok-4.5", ReasoningEfforts: grokBinEffortVariants},
+		{ID: "grok-4.5-low"},
+		{ID: "grok-4.5-medium"},
+		{ID: "grok-4.5-high"},
+		{ID: "grok-4.5-xhigh"},
+		{ID: "grok-composer-2.5-fast"},
+	},
 	"xai": {
 		// Grok 4.1 (latest, 2M context)
 		{ID: "grok-4-1-fast", InputLimit: 1_970_000, OutputLimit: 32_000},
@@ -305,6 +313,7 @@ var defaultEffortVariants = []string{"minimal", "low", "medium", "high", "xhigh"
 
 var claudeBinOpusEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeBinSonnetEffortVariants = []string{"low", "medium", "high"}
+var grokBinEffortVariants = []string{"low", "medium", "high", "xhigh"}
 
 // Fable 5 supports the same effort levels as Opus.
 var claudeBinFableEffortVariants = claudeBinOpusEffortVariants
@@ -382,6 +391,10 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 		}
 		if isClaudeSonnetModelName(nameLower) {
 			return cloneEfforts(claudeBinSonnetEffortVariants)
+		}
+	case "grok-bin":
+		if base, hasSuffix := trimKnownEffortSuffix(nameLower); strings.HasPrefix(base, "grok-4") && !hasSuffix {
+			return cloneEfforts(grokBinEffortVariants)
 		}
 	case "claude-bin":
 		if nameLower == "opus" || nameLower == "fable" {
@@ -560,7 +573,7 @@ func trimKnownEffortSuffix(model string) (string, bool) {
 // across providers. It is a parser/legacy-dedup helper, not a capability list
 // for every model. Provider-aware callers should use
 // BaseModelAndEffortForProvider / ReasoningEffortsForProviderModel instead.
-var knownEffortSuffixes = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+var knownEffortSuffixes = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // DedupeEffortVariants removes effort-suffixed aliases (e.g. "opus-high",
 // "gpt-5.4-medium") when the base model is also present in the list.
@@ -678,7 +691,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "grok-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

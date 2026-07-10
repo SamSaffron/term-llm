@@ -1033,6 +1033,8 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 		return "copilot"
 	case strings.HasPrefix(lower, "claude cli ("):
 		return "claude-bin"
+	case strings.HasPrefix(lower, "grok cli ("):
+		return "grok-bin"
 	case strings.HasPrefix(lower, "debug"):
 		return "debug"
 	default:

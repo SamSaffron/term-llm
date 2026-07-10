@@ -162,13 +162,13 @@ type Engine struct {
 }
 
 // ToolExecutorSetter is an optional interface for providers that need
-// tool execution wired up externally (e.g., claude-bin with HTTP MCP).
+// tool execution wired up externally (for example, local CLI providers with HTTP MCP).
 type ToolExecutorSetter interface {
 	SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error))
 }
 
 // ProviderCleaner is an optional interface for providers that need cleanup
-// after a conversation ends (e.g., claude-bin's persistent MCP server).
+// after a conversation ends (for example, a local CLI provider's persistent MCP server).
 // Call sites: runtime eviction, server shutdown. Do NOT call per-turn.
 type ProviderCleaner interface {
 	CleanupMCP()
@@ -216,7 +216,7 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 		tools:    tools,
 	}
 
-	// Wire up tool executor for providers that need it (e.g., claude-bin HTTP MCP)
+	// Wire up tool executors for providers that expose term-llm tools over an external bridge.
 	if setter, ok := provider.(ToolExecutorSetter); ok {
 		setter.SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error) {
 			tool, ok := e.tools.Get(name)
@@ -1196,9 +1196,9 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
 		stream = e.wrapDebugLoggingStream(stream)
 
-		// Wrap with per-turn cleanup for providers that need it (e.g. claude-bin
-		// temp image files). Conversation-scoped cleanup (CleanupMCP) is NOT
-		// invoked here — it runs on runtime eviction / server shutdown.
+		// Wrap with per-turn cleanup for providers that materialize temporary
+		// prompt/image files. Conversation-scoped CleanupMCP is not invoked here;
+		// it runs on runtime eviction or server shutdown.
 		if cleaner, ok := e.provider.(ProviderTurnCleaner); ok {
 			stream = &cleanupStream{inner: stream, cleanup: cleaner.CleanupTurn}
 		}
@@ -2408,7 +2408,7 @@ turnLoop:
 				if err := flushScratchpad(); err != nil {
 					return err
 				}
-				// Check if this is a synchronous tool execution request (from claude_bin MCP)
+				// Check if this is a synchronous tool execution request from a provider bridge.
 				if event.ToolResponse != nil {
 					// Normalize Tool.ID from ToolCallID if the provider didn't set it.
 					if event.Tool.ID == "" && event.ToolCallID != "" {
@@ -2610,7 +2610,7 @@ turnLoop:
 		// If only sync tools were executed (MCP path), decide whether to continue
 		if len(toolCalls) == 0 && syncToolsExecuted {
 			// Build assistant message with text and sync tool calls
-			// This is needed so claude-bin gets proper context when resuming
+			// This persists bridged CLI tool context for resume/rehydration.
 			assistantMsg := buildAssistantMessageWithReasoningMetadata(
 				textBuilder.String(),
 				e.withToolPreview(syncToolCalls),
@@ -2623,8 +2623,10 @@ turnLoop:
 			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
-			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-				return err
+			if !e.provider.Capabilities().InlineToolLoop {
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return err
+				}
 			}
 
 			// For MCP path, tools already executed synchronously during streaming,
@@ -2662,13 +2664,25 @@ turnLoop:
 						return err
 					}
 				}
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-					return err
+				if !e.provider.Capabilities().InlineToolLoop {
+					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+						return err
+					}
 				}
 			}
 
 			// If a finishing tool was executed, we're done (agent completed its task)
 			if finishingToolExecuted {
+				if err := send.Send(Event{Type: EventDone}); err != nil {
+					return err
+				}
+				return nil
+			}
+
+			// Inline-loop providers have already consumed tool results and streamed
+			// their final answer in this invocation. Persisted interjections are
+			// intentionally delivered on the next user turn.
+			if e.provider.Capabilities().InlineToolLoop {
 				if err := send.Send(Event{Type: EventDone}); err != nil {
 					return err
 				}
@@ -3159,7 +3173,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
 
-// handleSyncToolExecution handles synchronous tool execution for providers like claude_bin.
+// handleSyncToolExecution handles synchronous tool execution for bridged providers.
 // It emits EventToolExecStart/End to the outer channel (for TUI) and sends the result
 // back to the provider via the response channel.
 // Returns the tool call, result content string, and any error that occurred during execution.
@@ -3237,7 +3251,7 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		ToolImages:      result.Images,
 	})
 
-	// Send result back to provider (claude_bin MCP handler)
+	// Send the result back to the provider bridge.
 	// Use select to avoid blocking if context is canceled and receiver has exited
 	select {
 	case event.ToolResponse <- ToolExecutionResponse{Result: result, Err: err}:
@@ -3517,7 +3531,7 @@ func (s *debugLoggingStream) Close() error {
 
 // cleanupStream wraps a stream to call provider per-turn cleanup on terminal
 // conditions (io.EOF, EventDone, or Close). Used for per-turn resources such
-// as claude-bin's per-turn temp image files. MCP servers and other
+// as CLI-provider prompt/image files. MCP servers and other
 // conversation-scoped state are cleaned up elsewhere (runtime eviction).
 type cleanupStream struct {
 	inner     Stream

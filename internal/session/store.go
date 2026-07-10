@@ -145,7 +145,7 @@ func UpdateStreamingMessage(ctx context.Context, store Store, sessionID string, 
 
 // ProviderStateStore is an optional Store capability for provider-specific
 // resume state. It stores opaque JSON/blob payloads keyed by term-llm session
-// and provider key, allowing providers such as claude-bin to survive runtime
+// and provider key, allowing stateful CLI providers to survive runtime
 // eviction without leaking that state into the user-visible transcript.
 type ProviderStateStore interface {
 	SaveProviderState(ctx context.Context, sessionID, providerKey string, state []byte) error

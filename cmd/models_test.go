@@ -18,6 +18,15 @@ func TestModelListSupportedTypesIncludesNearAI(t *testing.T) {
 	}
 }
 
+func TestBuiltinProviderMetaGrokBin(t *testing.T) {
+	meta, ok := builtinProviderMeta["grok-bin"]
+	if !ok {
+		t.Fatal("grok-bin provider metadata missing")
+	}
+	if meta.requiresKey || meta.credential != "oauth" {
+		t.Fatalf("grok-bin metadata = %+v, want OAuth without required API key", meta)
+	}
+}
 func TestBuiltinProviderMetaSambaNovaSupportsListModels(t *testing.T) {
 	meta, ok := builtinProviderMeta["sambanova"]
 	if !ok {

@@ -28,6 +28,7 @@ const (
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
 	ProviderTypeZen          ProviderType = "zen"
 	ProviderTypeClaudeBin    ProviderType = "claude-bin"
+	ProviderTypeGrokBin      ProviderType = "grok-bin"
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
 	ProviderTypeVLLM         ProviderType = "vllm"
 	ProviderTypeXAI          ProviderType = "xai"
@@ -49,6 +50,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"openrouter": ProviderTypeOpenRouter,
 	"zen":        ProviderTypeZen,
 	"claude-bin": ProviderTypeClaudeBin,
+	"grok-bin":   ProviderTypeGrokBin,
 	"vllm":       ProviderTypeVLLM,
 	"xai":        ProviderTypeXAI,
 	"venice":     ProviderTypeVenice,
@@ -1882,6 +1884,8 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return describeEnvKeyCredential(cfg, "SAMBANOVA_API_KEY")
 	case ProviderTypeClaudeBin:
 		return "claude-bin CLI (no key needed)", true
+	case ProviderTypeGrokBin:
+		return "grok CLI login (no key needed)", true
 	case ProviderTypeChatGPT:
 		return "ChatGPT OAuth (interactive)", true
 	case ProviderTypeCopilot:

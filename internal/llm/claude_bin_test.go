@@ -103,6 +103,35 @@ func TestRetryProvider_ForwardsProviderTurnCleaner(t *testing.T) {
 	}
 }
 
+func TestRetryProvider_ForwardsProviderState(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	provider.sessionID = "session-1"
+	provider.messagesSent = 4
+	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+
+	exporter, ok := wrapped.(ProviderStateExporter)
+	if !ok {
+		t.Fatal("RetryProvider does not implement ProviderStateExporter")
+	}
+	state, ok := exporter.ExportProviderState()
+	if !ok {
+		t.Fatal("RetryProvider did not export inner provider state")
+	}
+
+	restored := NewClaudeBinProvider("sonnet", nil)
+	restoredWrapped := WrapWithRetry(restored, DefaultRetryConfig())
+	importer, ok := restoredWrapped.(ProviderStateImporter)
+	if !ok {
+		t.Fatal("RetryProvider does not implement ProviderStateImporter")
+	}
+	if err := importer.ImportProviderState(state); err != nil {
+		t.Fatalf("ImportProviderState: %v", err)
+	}
+	if restored.sessionID != "session-1" || restored.messagesSent != 4 {
+		t.Fatalf("restored state = (%q, %d), want (%q, %d)", restored.sessionID, restored.messagesSent, "session-1", 4)
+	}
+}
+
 func TestClaudeBinProvider_CleanupTurn_RemovesTrackedTempFiles(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet", nil)
 

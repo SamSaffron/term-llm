@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -25,6 +26,17 @@ func builtinHasOAuthCredentials(name string) bool {
 		return credentials.CopilotCredentialsExist()
 	case "gemini-cli":
 		_, err := credentials.GetGeminiOAuthCredentials()
+		return err == nil
+	case "grok-bin":
+		authPath := strings.TrimSpace(os.Getenv("GROK_AUTH_PATH"))
+		if authPath == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return false
+			}
+			authPath = filepath.Join(home, ".grok", "auth.json")
+		}
+		_, err := os.Stat(authPath)
 		return err == nil
 	}
 	return false
@@ -126,6 +138,13 @@ var builtinProviderMeta = map[string]struct {
 		requiresKey:        false,
 		supportsListModels: false,
 		description:        "Local Claude Code credentials (claude-bin CLI)",
+	},
+	"grok-bin": {
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
+		supportsListModels: false,
+		description:        "Grok Build CLI via local grok.com OAuth login",
 	},
 	"vllm": {
 		credential:         "api_key",

@@ -118,8 +118,26 @@ func (r *RetryProvider) ResetConversation() {
 	}
 }
 
+// ExportProviderState forwards opaque conversation transport state when the
+// wrapped provider supports persistence.
+func (r *RetryProvider) ExportProviderState() ([]byte, bool) {
+	if exporter, ok := r.inner.(ProviderStateExporter); ok {
+		return exporter.ExportProviderState()
+	}
+	return nil, false
+}
+
+// ImportProviderState restores opaque conversation transport state on the
+// wrapped provider.
+func (r *RetryProvider) ImportProviderState(data []byte) error {
+	if importer, ok := r.inner.(ProviderStateImporter); ok {
+		return importer.ImportProviderState(data)
+	}
+	return fmt.Errorf("provider %q does not support provider state import", r.inner.Name())
+}
+
 // SetToolExecutor forwards to the inner provider if it implements ToolExecutorSetter.
-// This ensures providers like ClaudeBinProvider can receive their tool executor
+// This ensures CLI bridge providers can receive their tool executor
 // even when wrapped with retry logic.
 func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error)) {
 	if setter, ok := r.inner.(ToolExecutorSetter); ok {
@@ -128,7 +146,7 @@ func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name 
 }
 
 // CleanupMCP forwards to the inner provider if it implements ProviderCleaner.
-// This ensures providers like ClaudeBinProvider get cleaned up properly
+// This ensures stateful providers get cleaned up properly
 // even when wrapped with retry logic.
 func (r *RetryProvider) CleanupMCP() {
 	if cleaner, ok := r.inner.(ProviderCleaner); ok {

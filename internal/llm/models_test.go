@@ -2,6 +2,26 @@ package llm
 
 import "testing"
 
+func TestProviderModelsIncludeGrokBin(t *testing.T) {
+	ids := ProviderModelIDs("grok-bin")
+	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.5-xhigh", "grok-composer-2.5-fast"} {
+		if !containsModelID(ids, want) {
+			t.Fatalf("grok-bin models missing %q: %v", want, ids)
+		}
+	}
+	if !containsModelID(GetBuiltInProviderNames(), "grok-bin") {
+		t.Fatal("GetBuiltInProviderNames missing grok-bin")
+	}
+	wantEfforts := []string{"low", "medium", "high", "xhigh"}
+	if got := ReasoningEffortsForProviderModel("grok-bin", "grok-4.5-high"); !equalSlice(got, wantEfforts) {
+		t.Fatalf("grok-bin efforts = %v, want %v", got, wantEfforts)
+	}
+	base, effort := BaseModelAndEffortForProvider("grok-bin", "grok-4.5-xhigh")
+	if base != "grok-4.5" || effort != "xhigh" {
+		t.Fatalf("grok-bin base/effort = (%q, %q)", base, effort)
+	}
+}
+
 func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 	if !containsModelID(ProviderModelIDs("openai"), "gpt-5.5") {
 		t.Fatalf("openai models missing gpt-5.5")
@@ -122,6 +142,9 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		"sonnet": true, "sonnet-low": true, "sonnet-medium": true, "sonnet-high": true,
 		"fable": true, "fable-low": true, "fable-medium": true, "fable-high": true, "fable-xhigh": true, "fable-max": true,
 		"haiku": true,
+		// grok-bin CLI aliases have subscription-dependent context limits.
+		"grok-4.5": true, "grok-4.5-low": true, "grok-4.5-medium": true, "grok-4.5-high": true, "grok-4.5-xhigh": true,
+		"grok-composer-2.5-fast": true,
 		// OpenRouter (slash in name, resolved via API cache)
 		"x-ai/grok-code-fast-1": true,
 		// Copilot models with no known limits

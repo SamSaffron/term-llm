@@ -33,7 +33,7 @@ type ToolSpec struct {
 }
 
 // Server runs an MCP server over HTTP with token-based authentication.
-// It exposes tools to Claude CLI and executes them using the provided executor.
+// It exposes tools to local CLI transports and executes them using the provided executor.
 type Server struct {
 	server    *http.Server
 	listener  net.Listener

@@ -41,6 +41,12 @@ func detectAvailableProviders() []providerOption {
 			hint:      "install Claude Code CLI",
 		},
 		{
+			name:      "Grok Build CLI - grok.com OAuth",
+			value:     "grok-bin",
+			available: isGrokBinaryAvailable(),
+			hint:      "install and log in with the Grok Build CLI",
+		},
+		{
 			name:      "OpenAI - OPENAI_API_KEY",
 			value:     "openai",
 			available: os.Getenv("OPENAI_API_KEY") != "",
@@ -107,6 +113,11 @@ func isAnthropicAvailable() bool {
 // isClaudeBinaryAvailable checks if the claude CLI is in PATH
 func isClaudeBinaryAvailable() bool {
 	_, err := exec.LookPath("claude")
+	return err == nil
+}
+
+func isGrokBinaryAvailable() bool {
+	_, err := exec.LookPath("grok")
 	return err == nil
 }
 
@@ -239,6 +250,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 			"anthropic":  {Model: config.DefaultProviderModel("anthropic")},
 			"openai":     {Model: config.DefaultProviderModel("openai")},
 			"claude-bin": {Model: config.DefaultProviderModel("claude-bin")},
+			"grok-bin":   {Model: config.DefaultProviderModel("grok-bin")},
 			"openrouter": {Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
 			"gemini":     {Model: config.DefaultProviderModel("gemini")},
 			"codeassist": {Model: "gemini-3.1-pro"},
@@ -415,6 +427,9 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"claude-bin": {
 				Model: config.DefaultProviderModel("claude-bin"),
+			},
+			"grok-bin": {
+				Model: config.DefaultProviderModel("grok-bin"),
 			},
 			"openrouter": {
 				Model:    config.DefaultProviderModel("openrouter"),

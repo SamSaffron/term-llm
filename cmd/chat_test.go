@@ -217,6 +217,7 @@ func TestExtractModelFromProviderName(t *testing.T) {
 	}{
 		{"Claude CLI (sonnet)", "sonnet"},
 		{"Claude CLI (sonnet, effort=high)", "sonnet"},
+		{"Grok CLI (grok-4.5, effort=xhigh)", "grok-4.5"},
 		{"OpenAI (gpt-5)", "gpt-5"},
 		{"OpenAI (gpt-5, effort=high)", "gpt-5"},
 		{"Anthropic (claude-sonnet-4, thinking=8k)", "claude-sonnet-4"},

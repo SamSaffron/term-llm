@@ -101,6 +101,7 @@ type Capabilities struct {
 	ToolCalls          bool
 	SupportsToolChoice bool // Provider supports tool_choice to force specific tool use
 	ManagesOwnContext  bool // Provider manages its own context window (skip compaction)
+	InlineToolLoop     bool // Provider completes its MCP/tool loop inside one Stream invocation
 }
 
 // Stream yields events until io.EOF.
@@ -431,7 +432,7 @@ const (
 const WarningPhasePrefix = "WARNING: "
 
 // ToolExecutionResponse holds the result of a synchronous tool execution.
-// Used by claude_bin provider to receive results from the engine.
+// Used by CLI bridge providers to receive synchronous tool results from the engine.
 type ToolExecutionResponse struct {
 	Result ToolOutput
 	Err    error
@@ -469,7 +470,7 @@ type Event struct {
 	RetryAttempt     int
 	RetryMaxAttempts int
 	RetryWaitSecs    float64
-	// ToolResponse is set when a provider needs synchronous tool execution (claude_bin MCP).
+	// ToolResponse is set when a provider needs synchronous bridged tool execution.
 	// The engine will execute the tool and send the result back on this channel.
 	ToolResponse chan<- ToolExecutionResponse
 	// Image fields (for EventImageGenerated)

@@ -453,6 +453,10 @@ var providerSpecs = []ProviderSpec{
 		Defaults: []DefaultField{{"model", "sonnet"}, {"fast_model", "haiku"}},
 	},
 	{
+		Name: "grok-bin", Type: ProviderTypeGrokBin,
+		Defaults: []DefaultField{{"model", "grok-4.5"}, {"fast_model", "grok-composer-2.5-fast"}},
+	},
+	{
 		Name: "ollama", Type: ProviderTypeOllama,
 		Defaults: []DefaultField{{"model", "qwen2.5-coder:7b"}, {"fast_model", "qwen2.5-coder:7b"}, {"base_url", DefaultOllamaBaseURL}},
 	},

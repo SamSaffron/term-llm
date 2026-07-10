@@ -98,6 +98,12 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewClaudeBinProvider(model, nil)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeGrokBin:
+			if err := ValidateGrokBinModel(model); err != nil {
+				return nil, err
+			}
+			provider := NewGrokBinProvider(model, nil)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			provider := NewZenProvider("", model)
@@ -244,6 +250,8 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
 			return NewClaudeBinProvider("", nil), nil
+		case config.ProviderTypeGrokBin:
+			return NewGrokBinProvider("", nil), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			return NewZenProvider("", ""), nil
@@ -406,6 +414,12 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		provider := NewClaudeBinProvider(cfg.Model, cfg.Env)
 		provider.SetEnableHooks(cfg.EnableHooks)
 		return provider, nil
+
+	case config.ProviderTypeGrokBin:
+		if err := ValidateGrokBinModel(cfg.Model); err != nil {
+			return nil, err
+		}
+		return NewGrokBinProvider(cfg.Model, cfg.Env), nil
 
 	case config.ProviderTypeOllama:
 		opts := OllamaOptions{
