@@ -82,6 +82,54 @@ func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestChatGPTStream_CompactionAnchorDoesNotEmitPromptCacheBreakpoint(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var body []byte
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "gpt-5.6-sol-medium")
+	messages := []Message{{
+		Role:        RoleUser,
+		CacheAnchor: true,
+		Parts:       []Part{{Type: PartText, Text: "[Context Compaction]\nsummary"}},
+	}}
+
+	stream, err := provider.Stream(context.Background(), Request{Messages: messages})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if strings.Contains(string(body), "prompt_cache_breakpoint") {
+		t.Fatalf("ChatGPT request contains unsupported prompt_cache_breakpoint: %s", body)
+	}
+	if !messages[0].CacheAnchor {
+		t.Fatal("Stream mutated the caller's cache anchor")
+	}
+}
+
 func TestChatGPTStream_IncludesNormalizedServiceTier(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() { chatGPTHTTPClient = origClient }()

@@ -139,7 +139,7 @@ Programmatic tool calling is requested with an eligible function tool plus the P
 }
 ```
 
-Every programmatic tool must be present in the request. Optional `output_schema` metadata is preserved for tool definitions. To mark an explicit cache boundary, add `"prompt_cache_breakpoint":{"mode":"explicit"}` to an `input_text`, `input_image`, or `input_file` content block.
+Every programmatic tool must be present in the request. Optional `output_schema` metadata is preserved for tool definitions.
 
 These fields are deliberately gated to the built-in `openai` provider's GPT-5.6 family. Requests using older OpenAI models, custom OpenAI-compatible providers, or ChatGPT OAuth fail validation instead of forwarding unsupported controls. OpenAI Pro and ChatGPT Ultra are distinct: do not send `reasoning.mode: pro` merely because a ChatGPT account has Pro subscription access or a model supports the `ultra` effort.
 
