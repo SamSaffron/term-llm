@@ -25,6 +25,7 @@ const (
 	DialogDirApproval
 	DialogMCPPicker
 	DialogWorktreeRecovery
+	DialogShareChoice
 	DialogContent
 )
 
@@ -228,6 +229,20 @@ func (d *DialogModel) ShowWorktreeConfirmation(title, question, yesLabel, noLabe
 	d.items = []DialogItem{
 		{ID: "yes", Label: yesLabel},
 		{ID: "no", Label: noLabel},
+	}
+	d.filtered = d.items
+}
+
+// ShowShareChoice asks how an already-shared session should be shared.
+func (d *DialogModel) ShowShareChoice() {
+	d.dialogType = DialogShareChoice
+	d.title = "Share session"
+	d.cursor = 0
+	d.query = ""
+	d.items = []DialogItem{
+		{ID: "update", Label: "Update existing gist"},
+		{ID: "new", Label: "Create new gist"},
+		{ID: "cancel", Label: "Cancel"},
 	}
 	d.filtered = d.items
 }

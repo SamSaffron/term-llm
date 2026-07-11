@@ -18,6 +18,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/agents/gist"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -102,6 +103,15 @@ func TestAllCommandsIncludesStats(t *testing.T) {
 		}
 	}
 	t.Fatal("AllCommands() should include 'stats' command")
+}
+
+func TestFilterCommandsShortAliasAlsoShowsPrefixMatches(t *testing.T) {
+	results := FilterCommands("/sh")
+	for _, want := range []string{"share", "shell"} {
+		if !slices.ContainsFunc(results, func(cmd Command) bool { return cmd.Name == want }) {
+			t.Fatalf("FilterCommands(/sh) missing %q: %+v", want, results)
+		}
+	}
 }
 
 func TestFilterCommandsMatchesStats(t *testing.T) {
@@ -4145,5 +4155,119 @@ func TestSwitchEffortRefreshesGuardianAndFailsClosed(t *testing.T) {
 	}
 	if got.approvalMgr.PolicyReviewFunc != nil || got.approvalMgr.ApprovalMode() != tools.ModePrompt {
 		t.Fatal("guardian refresh failure retained stale reviewer or auto mode")
+	}
+}
+
+func TestCmdShareRejectsUnknownArgument(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "share-test"}
+	result, cmd := m.ExecuteCommand("/share banana")
+	m = result.(*Model)
+	if cmd == nil || !strings.Contains(m.footerMessage, "Usage: /share [new] [public]") {
+		t.Fatalf("footer = %q, cmd nil = %v", m.footerMessage, cmd == nil)
+	}
+}
+
+func TestCmdShareExistingGistOpensChoice(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "share-test", Share: &session.ShareState{GistID: "abc123"}}
+	result, cmd := m.ExecuteCommand("/share")
+	m = result.(*Model)
+	if cmd != nil || m.dialog.Type() != DialogShareChoice || m.pendingShare == nil {
+		t.Fatalf("dialog=%v pending=%v cmd nil=%v", m.dialog.Type(), m.pendingShare, cmd == nil)
+	}
+}
+
+func TestShareCommandRegistered(t *testing.T) {
+	for _, command := range AllCommands() {
+		if command.Name == "share" {
+			if command.Usage != "/share [new] [public]" || len(command.Subcommands) != 2 {
+				t.Fatalf("share command = %+v", command)
+			}
+			return
+		}
+	}
+	t.Fatal("share command not registered")
+}
+
+func TestCmdShareNewSkipsExistingChoice(t *testing.T) {
+	store := &mockStore{sessions: map[string]*session.Session{}, messages: map[string][]session.Message{}}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "share-new", Share: &session.ShareState{GistID: "abc123"}}
+	store.sessions[m.sess.ID] = m.sess
+	result, cmd := m.ExecuteCommand("/share new")
+	m = result.(*Model)
+	if cmd == nil || m.dialog.Type() == DialogShareChoice || !m.shareInFlight {
+		t.Fatalf("dialog=%v inFlight=%v cmd nil=%v", m.dialog.Type(), m.shareInFlight, cmd == nil)
+	}
+}
+
+func TestCmdShareRejectsWhileStreamingOrInFlight(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "share-busy"}
+	m.streaming = true
+	result, _ := m.ExecuteCommand("/share")
+	m = result.(*Model)
+	if !strings.Contains(m.footerMessage, "Cannot share while streaming") {
+		t.Fatalf("streaming footer = %q", m.footerMessage)
+	}
+	m.streaming = false
+	m.shareInFlight = true
+	result, _ = m.ExecuteCommand("/share")
+	m = result.(*Model)
+	if !strings.Contains(m.footerMessage, "already in progress") {
+		t.Fatalf("in-flight footer = %q", m.footerMessage)
+	}
+}
+
+func TestHandleShareDonePersistsOriginatingSession(t *testing.T) {
+	origin := &session.Session{ID: "origin"}
+	current := &session.Session{ID: "current"}
+	store := &mockStore{sessions: map[string]*session.Session{"origin": origin, "current": current}}
+	m := newCmdTestModel(store)
+	m.sess = current
+	m.shareInFlight = true
+	beforeMessages := len(m.messages)
+
+	result, _ := m.handleShareDone(shareDoneMsg{
+		store:     store,
+		sessionID: origin.ID,
+		gist:      &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"},
+		preview:   session.GistPreviewURL("abc123"),
+	})
+	m = result.(*Model)
+	if m.shareInFlight {
+		t.Fatal("share remained in flight")
+	}
+	if store.updated == nil || store.updated.ID != origin.ID || store.updated.Share == nil {
+		t.Fatalf("updated session = %+v", store.updated)
+	}
+	if current.Share != nil {
+		t.Fatalf("current session was poisoned: %+v", current.Share)
+	}
+	if m.dialog.Type() != DialogContent || !strings.Contains(m.dialog.Content(), "abc123") {
+		t.Fatalf("result dialog type=%v content=%q", m.dialog.Type(), m.dialog.Content())
+	}
+	if len(m.messages) != beforeMessages {
+		t.Fatalf("share result added scrollback: before=%d after=%d", beforeMessages, len(m.messages))
+	}
+}
+
+func TestHandleShareDonePublicUpdateExplainsVisibility(t *testing.T) {
+	sess := &session.Session{ID: "origin"}
+	store := &mockStore{sessions: map[string]*session.Session{"origin": sess}}
+	m := newCmdTestModel(store)
+	m.sess = sess
+	result, _ := m.handleShareDone(shareDoneMsg{
+		store:           store,
+		sessionID:       sess.ID,
+		gist:            &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"},
+		preview:         session.GistPreviewURL("abc123"),
+		updated:         true,
+		requestedPublic: true,
+	})
+	m = result.(*Model)
+	if !strings.Contains(m.dialog.Content(), "cannot make it public") {
+		t.Fatalf("dialog did not explain visibility: %q", m.dialog.Content())
 	}
 }

@@ -126,6 +126,31 @@ func UpdateGoal(ctx context.Context, store Store, sessionID string, goal *Goal) 
 	return store.Update(ctx, sess)
 }
 
+// ShareUpdater is an optional Store capability for updating only share metadata.
+type ShareUpdater interface {
+	UpdateShare(ctx context.Context, id string, share *ShareState) error
+}
+
+// UpdateShare persists share metadata using a narrow update when available.
+func UpdateShare(ctx context.Context, store Store, sessionID string, share *ShareState) error {
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	share = share.Clone()
+	if updater, ok := store.(ShareUpdater); ok {
+		return updater.UpdateShare(ctx, sessionID, share)
+	}
+	sess, err := store.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return ErrNotFound
+	}
+	sess.Share = share
+	return store.Update(ctx, sess)
+}
+
 // StreamingMessageUpdater is an optional Store capability for the hot streaming
 // assistant upsert path. Implementations may update role/parts/duration without
 // rewriting the FTS-backed text_content column until finalizeText is true.

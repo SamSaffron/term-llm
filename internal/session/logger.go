@@ -77,6 +77,23 @@ func (s *LoggingStore) UpdateGoal(ctx context.Context, id string, goal *Goal) er
 	return err
 }
 
+// UpdateShare wraps the optional share-only update path with error logging.
+func (s *LoggingStore) UpdateShare(ctx context.Context, id string, share *ShareState) error {
+	updater, ok := s.Store.(ShareUpdater)
+	if !ok {
+		err := UpdateShare(ctx, s.Store, id, share)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			s.logOnce("UpdateShare", err)
+		}
+		return err
+	}
+	err := updater.UpdateShare(ctx, id, share)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("UpdateShare", err)
+	}
+	return err
+}
+
 // AddMessage wraps Store.AddMessage with error logging.
 func (s *LoggingStore) AddMessage(ctx context.Context, sessionID string, msg *Message) error {
 	err := s.Store.AddMessage(ctx, sessionID, msg)

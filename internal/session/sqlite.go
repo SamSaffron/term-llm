@@ -38,6 +38,7 @@ type SQLiteStore struct {
 	hasApprovalMode          bool // true if sessions table has approval_mode column
 	hasWorktreeDir           bool // true if sessions table has worktree_dir column
 	hasGoal                  bool // true if sessions table has goal column
+	hasShare                 bool // true if sessions table has share column
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT DEFAULT 'active',
     tags TEXT,
     goal TEXT,
+    share TEXT,
     compaction_seq INTEGER DEFAULT -1,
     compaction_count INTEGER DEFAULT 0
 );
@@ -252,7 +254,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 36
+const schemaVersion = 37
 
 // migration represents a schema migration.
 type migration struct {
@@ -1006,6 +1008,17 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		version:     37,
+		description: "add session share column",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN share TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1374,6 +1387,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			goalPlaceholder = ", ?"
 			goalArgs = []any{goalJSONString(sess.Goal)}
 		}
+		shareCol := ""
+		sharePlaceholder := ""
+		var shareArgs []any
+		if s.hasShare {
+			shareCol = ", share"
+			sharePlaceholder = ", ?"
+			shareArgs = []any{shareJSONString(sess.Share)}
+		}
 		insertArgs := []any{
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode),
@@ -1390,14 +1411,15 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			sess.LastTotalTokens, sess.LastMessageCount, string(sess.Status), nullString(sess.Tags),
 		)
 		insertArgs = append(insertArgs, goalArgs...)
+		insertArgs = append(insertArgs, shareArgs...)
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
 		insertArgs = append(insertArgs, reasoningModeArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-				                      last_total_tokens, last_message_count, status, tags`+goalCol+reasoningEffortCol+reasoningModeCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
+				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1518,12 +1540,16 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasGoal {
 		goalClause = ", goal = ?"
 	}
+	shareClause := ""
+	if s.hasShare {
+		shareClause = ", share = ?"
+	}
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
 		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, cwd = ?` + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
-		       status = ?, tags = ?` + goalClause + `
+		       status = ?, tags = ?` + goalClause + shareClause + `
 		WHERE id = ?`
 
 	args := []any{
@@ -1561,6 +1587,9 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasGoal {
 		args = append(args, goalJSONString(sess.Goal))
 	}
+	if s.hasShare {
+		args = append(args, shareJSONString(sess.Share))
+	}
 	args = append(args, sess.ID)
 
 	result, err := s.db.ExecContext(ctx, query, args...)
@@ -1591,6 +1620,25 @@ func (s *SQLiteStore) UpdateGoal(ctx context.Context, id string, goal *Goal) err
 		WHERE id = ?`, goalJSONString(goal), time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("update goal: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("session not found %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+// UpdateShare updates only persisted share metadata for a session.
+func (s *SQLiteStore) UpdateShare(ctx context.Context, id string, share *ShareState) error {
+	if !s.hasShare {
+		return fmt.Errorf("share column is unavailable")
+	}
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("session id is empty")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET share = ?, updated_at = ? WHERE id = ?`, shareJSONString(share), time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("update share: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
@@ -1820,6 +1868,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasGoal {
 		goalCol = "s.goal"
 	}
+	shareCol := "NULL"
+	if s.hasShare {
+		shareCol = "s.share"
+	}
 	messageCountCol := "COALESCE(s.message_count, 0)"
 	if !s.hasMessageCount {
 		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
@@ -1839,7 +1891,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + `
 		WHERE 1=1`
 	args := []any{}
@@ -1955,12 +2007,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw sql.NullString
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw, shareRaw sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
 			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &worktreeDir, &goalRaw)
+			&status, &tags, &worktreeDir, &goalRaw, &shareRaw)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}
@@ -1998,6 +2050,9 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if goal := parseGoalJSONString(goalRaw); goal != nil {
 			sum.Goal = goal
+		}
+		if share := parseShareJSONString(shareRaw); share != nil {
+			sum.Share = share
 		}
 		results = append(results, sum)
 	}
@@ -3226,6 +3281,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasApprovalMode = true
 	s.hasWorktreeDir = true
 	s.hasGoal = true
+	s.hasShare = true
 	s.hasMessageCompactionTail = true
 }
 
@@ -3284,6 +3340,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasWorktreeDir = true
 		case "goal":
 			s.hasGoal = true
+		case "share":
+			s.hasShare = true
 		}
 	}
 }
@@ -3374,6 +3432,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	} else {
 		base += ", NULL AS goal"
 	}
+	if s.hasShare {
+		base += ", share"
+	} else {
+		base += ", NULL AS share"
+	}
 	if s.hasCompactionSeq {
 		base += ", compaction_seq"
 	}
@@ -3391,7 +3454,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	var name, summary, cwd, worktreeDir sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
-	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw sql.NullString
+	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw, shareRaw sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
@@ -3417,7 +3480,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if hasLastMessageCount {
 		scanArgs = append(scanArgs, &sess.LastMessageCount)
 	}
-	scanArgs = append(scanArgs, &status, &tags, &goalRaw)
+	scanArgs = append(scanArgs, &status, &tags, &goalRaw, &shareRaw)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)
 	}
@@ -3510,6 +3573,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if goal := parseGoalJSONString(goalRaw); goal != nil {
 		sess.Goal = goal
 	}
+	if share := parseShareJSONString(shareRaw); share != nil {
+		sess.Share = share
+	}
 	return &sess, nil
 }
 
@@ -3539,6 +3605,28 @@ func parseGoalJSONString(raw sql.NullString) *Goal {
 		return nil
 	}
 	return &goal
+}
+
+func shareJSONString(share *ShareState) sql.NullString {
+	if share == nil || !share.Exists() {
+		return sql.NullString{}
+	}
+	data, err := json.Marshal(share.Clone())
+	if err != nil || len(data) == 0 {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(data), Valid: true}
+}
+
+func parseShareJSONString(raw sql.NullString) *ShareState {
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return nil
+	}
+	var share ShareState
+	if err := json.Unmarshal([]byte(raw.String), &share); err != nil || !share.Exists() {
+		return nil
+	}
+	return &share
 }
 
 // nullString converts an empty string to NULL for database storage.

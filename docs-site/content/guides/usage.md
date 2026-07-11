@@ -94,6 +94,7 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 | `/fast` | Toggle fast/priority service tier for supported OpenAI/ChatGPT models |
 | `/mcp` | Manage MCP servers |
 | `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
+| `/share [new] [public]` | Share the session as a GitHub Gist; repeat to update or create a new gist |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.

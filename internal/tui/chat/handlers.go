@@ -629,6 +629,18 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				case DialogSessionList:
 					m.dialog.Close()
 					return m.cmdResume([]string{selected.ID})
+				case DialogShareChoice:
+					req := m.pendingShare
+					m.pendingShare = nil
+					m.dialog.Close()
+					if req == nil || selected.ID == "cancel" {
+						return m, nil
+					}
+					if selected.ID == "new" {
+						req.forceNew = true
+						return m.startShare(*req, false)
+					}
+					return m.startShare(*req, true)
 				case DialogDirApproval:
 					if selected.ID == "__deny__" {
 						m.pendingFilePath = ""
@@ -651,6 +663,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
 			m.pendingFilePath = ""
+			m.pendingShare = nil
 			if m.dialog.Type() == DialogWorktreeRecovery {
 				return m.resolveWorktreeRecoveryPrompt(false)
 			}

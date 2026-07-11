@@ -90,6 +90,8 @@ type Model struct {
 	olderScrollbackLoaded bool
 	messagesMu            sync.Mutex // Protects messages from concurrent compaction callback
 	streaming             bool
+	shareInFlight         bool
+	pendingShare          *shareRequest
 	phase                 string // "Thinking", "Searching", "Reading", "Responding"
 
 	// Reasoning display/status state. Provider replay metadata is persisted in
@@ -1764,6 +1766,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case worktreeOperationDoneMsg:
 		return m.handleWorktreeOperationDone(msg)
+
+	case shareDoneMsg:
+		return m.handleShareDone(msg)
 
 	case chatGPTModelsLoadedMsg:
 		return m.applyChatGPTModelsLoaded(msg)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -895,7 +894,7 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 		sessionsGistIncludeReasoning,
 		sessionsGistIncludeRawReasoning,
 	)
-	files, err := buildSessionGistFiles(sess, messages, opts)
+	files, err := session.GistFiles(sess, messages, opts)
 	if err != nil {
 		return err
 	}
@@ -917,7 +916,7 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create gist: %w", err)
 	}
-	preview := gistPreviewURL(g.ID)
+	preview := session.GistPreviewURL(g.ID)
 	if preview == "" {
 		return fmt.Errorf("created Gist returned an invalid ID %q", g.ID)
 	}
@@ -928,23 +927,9 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// Compatibility wrappers retained for package-local callers and tests.
 func buildSessionGistFiles(sess *session.Session, messages []session.Message, opts session.ExportOptions) (map[string]string, error) {
-	markdown := session.ExportToMarkdown(sess, messages, opts)
-	html, err := session.ExportToHTML(sess, messages, opts)
-	if err != nil {
-		return nil, fmt.Errorf("render HTML transcript: %w", err)
-	}
-	return map[string]string{
-		"index.html": html,
-		"session.md": markdown,
-	}, nil
+	return session.GistFiles(sess, messages, opts)
 }
 
-var gistIDPattern = regexp.MustCompile(`^[a-f0-9]+$`)
-
-func gistPreviewURL(id string) string {
-	if !gistIDPattern.MatchString(id) {
-		return ""
-	}
-	return "https://gisthost.github.io/?" + id + "/index.html"
-}
+func gistPreviewURL(id string) string { return session.GistPreviewURL(id) }

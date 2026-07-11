@@ -72,6 +72,15 @@ func AllCommands() []Command {
 			},
 		},
 		{
+			Name:        "share",
+			Description: "Share this session as a GitHub Gist",
+			Usage:       "/share [new] [public]",
+			Subcommands: []Subcommand{
+				{Name: "new", Description: "Create a new gist"},
+				{Name: "public", Description: "Make a new gist public"},
+			},
+		},
+		{
 			Name:        "clear",
 			Aliases:     []string{"c"},
 			Description: "Clear conversation history",
@@ -284,38 +293,46 @@ func FilterCommands(query string) []Command {
 		return nil
 	}
 
-	// First check for exact name/alias matches, but only short-circuit
-	// for multi-character queries (so "/m" shows both "model" and "mcp")
+	// Exact command names are definitive. Aliases are not: a short alias may
+	// also be a useful prefix for another command (for example, /sh should show
+	// both /shell and /share).
 	queryLower := strings.ToLower(query)
 	if len(query) > 1 {
 		for _, cmd := range commands {
 			if cmd.Name == queryLower {
 				return []Command{cmd}
 			}
-			for _, alias := range cmd.Aliases {
-				if alias == queryLower {
-					return []Command{cmd}
-				}
-			}
 		}
 	}
-
-	// Fuzzy search on command names
-	source := CommandSource(commands)
-	matches := fuzzy.FindFrom(query, source)
 
 	var result []Command
-	for _, match := range matches {
-		result = append(result, commands[match.Index])
+	seen := make(map[string]bool)
+	appendCommand := func(cmd Command) {
+		if !seen[cmd.Name] {
+			seen[cmd.Name] = true
+			result = append(result, cmd)
+		}
 	}
 
-	// If no fuzzy matches, also check if query is prefix of any command
-	if len(result) == 0 {
+	// Put direct name-prefix matches first, followed by exact aliases and fuzzy
+	// matches. This keeps likely completions visible without an alias hiding a
+	// longer command.
+	for _, cmd := range commands {
+		if strings.HasPrefix(cmd.Name, queryLower) {
+			appendCommand(cmd)
+		}
+	}
+	if len(query) > 1 {
 		for _, cmd := range commands {
-			if strings.HasPrefix(cmd.Name, queryLower) {
-				result = append(result, cmd)
+			if slices.Contains(cmd.Aliases, queryLower) {
+				appendCommand(cmd)
 			}
 		}
+	}
+
+	source := CommandSource(commands)
+	for _, match := range fuzzy.FindFrom(query, source) {
+		appendCommand(commands[match.Index])
 	}
 
 	return result
@@ -481,6 +498,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdAutotitle()
 	case "export":
 		return m.cmdExport(args)
+	case "share":
+		return m.cmdShare(args)
 	case "thinking":
 		return m.cmdThinking(args)
 	case "system":
