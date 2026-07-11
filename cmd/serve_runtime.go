@@ -479,11 +479,37 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 	return sess.Number
 }
 
+func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *session.Session) bool {
+	if sess == nil || len(rt.history) > 0 || rt.historyPersisted {
+		return true
+	}
+	msgs, err := session.LoadActiveMessages(ctx, rt.store, sess)
+	if err != nil {
+		log.Printf("[serve] session history restore failed for %s: %v", sess.ID, err)
+		return false
+	}
+	llmMsgs := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		llmMsgs = append(llmMsgs, m.ToLLMMessage())
+	}
+	rt.history = llmMsgs
+	rt.historyPersisted = true
+	return true
+}
+
 func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID string, inputMessages []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
 	}
 	if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
+		// Metadata-only setup (for example restoring a worktree BaseDir or
+		// updating reasoning settings) can populate sessionMeta before the first
+		// post-restart run. Never treat metadata as proof that the transcript is
+		// hydrated: persisting an empty runtime snapshot would truncate the stored
+		// conversation to the new input.
+		if !rt.restorePersistedHistory(ctx, rt.sessionMeta) {
+			return false
+		}
 		rt.restorePlatformInjectionStateFromHistory()
 		return true
 	}
@@ -491,17 +517,10 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	// Check DB first — ensureSessionInStore may have already created the record.
 	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
 		rt.sessionMeta = existing
-		if len(rt.history) == 0 {
-			if msgs, loadErr := session.LoadActiveMessages(ctx, rt.store, existing); loadErr == nil {
-				llmMsgs := make([]llm.Message, 0, len(msgs))
-				for _, m := range msgs {
-					llmMsgs = append(llmMsgs, m.ToLLMMessage())
-				}
-				rt.history = llmMsgs
-				rt.historyPersisted = true
-				rt.restorePlatformInjectionStateFromHistory()
-			}
+		if !rt.restorePersistedHistory(ctx, existing) {
+			return false
 		}
+		rt.restorePlatformInjectionStateFromHistory()
 		return true
 	}
 
@@ -551,17 +570,10 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 			return false
 		}
 		rt.sessionMeta = existing
-		if len(rt.history) == 0 {
-			if msgs, loadErr := session.LoadActiveMessages(ctx, rt.store, existing); loadErr == nil {
-				llmMsgs := make([]llm.Message, 0, len(msgs))
-				for _, m := range msgs {
-					llmMsgs = append(llmMsgs, m.ToLLMMessage())
-				}
-				rt.history = llmMsgs
-				rt.historyPersisted = true
-				rt.restorePlatformInjectionStateFromHistory()
-			}
+		if !rt.restorePersistedHistory(ctx, existing) {
+			return false
 		}
+		rt.restorePlatformInjectionStateFromHistory()
 		if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
 			log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
 		}

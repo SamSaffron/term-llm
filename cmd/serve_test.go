@@ -3706,12 +3706,22 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 	}
 
 	provider := llm.NewMockProvider("mock").AddTextResponse("new answer")
+	// A fresh post-restart web runtime still has a tool manager. Restoring its
+	// persisted BaseDir loads session metadata before Run; that metadata must not
+	// make Run mistake the otherwise empty runtime for a hydrated conversation.
+	toolCfg := tools.DefaultToolConfig()
+	toolCfg.Enabled = []string{tools.ReadFileToolName}
+	toolMgr, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatalf("NewToolManager: %v", err)
+	}
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
 		engine := llm.NewEngine(provider, nil)
 		rt := &serveRuntime{
 			provider:     provider,
 			engine:       engine,
 			store:        store,
+			toolMgr:      toolMgr,
 			defaultModel: "mock-model",
 		}
 		rt.Touch()
@@ -6093,6 +6103,52 @@ func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
 	}
 	if rt.history[1].Parts[0].Text != "hi there" {
 		t.Fatalf("history[1].text = %q, want %q", rt.history[1].Parts[0].Text, "hi there")
+	}
+}
+
+func TestEnsurePersistedSession_RestoresHistoryWhenMetadataAlreadyLoaded(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "metadata-before-history",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, []session.Message{
+		*session.NewMessage(sess.ID, llm.UserText("persisted question"), -1),
+		*session.NewMessage(sess.ID, llm.AssistantText("persisted answer"), -1),
+	}); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	// Metadata-only request setup can run before the first post-restart turn.
+	rt := &serveRuntime{
+		store:        store,
+		defaultModel: "mock-model",
+		provider:     llm.NewMockProvider("mock"),
+		sessionMeta:  sess,
+	}
+	if ok := rt.ensurePersistedSession(ctx, sess.ID, nil); !ok {
+		t.Fatal("ensurePersistedSession returned false")
+	}
+	if !rt.historyPersisted {
+		t.Fatal("historyPersisted = false, want true after restore")
+	}
+	if len(rt.history) != 2 || rt.history[0].Parts[0].Text != "persisted question" || rt.history[1].Parts[0].Text != "persisted answer" {
+		t.Fatalf("restored history = %#v, want persisted conversation", rt.history)
 	}
 }
 
