@@ -3389,6 +3389,8 @@ func newGitRepoForChatWorktreeTest(t *testing.T) string {
 		t.Fatalf("MkdirAll repo: %v", err)
 	}
 	runGitForChatWorktreeTest(t, repo, "init", "-q")
+	runGitForChatWorktreeTest(t, repo, "config", "user.name", "Test User")
+	runGitForChatWorktreeTest(t, repo, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile README: %v", err)
 	}
