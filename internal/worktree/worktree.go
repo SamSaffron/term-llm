@@ -930,7 +930,7 @@ func MergeBackAndCleanup(ctx context.Context, dir string, opts MergeOptions, sto
 	return res, CleanupResult{Removed: true}, nil
 }
 
-// InUse returns non-archived sessions currently bound to dir when the store exposes worktree summaries.
+// InUse returns active, non-archived sessions currently bound to dir when the store exposes worktree summaries.
 func InUse(ctx context.Context, store session.Store, dir string) ([]InUseSession, error) {
 	if store == nil {
 		return nil, nil
@@ -939,7 +939,7 @@ func InUse(ctx context.Context, store session.Store, dir string) ([]InUseSession
 	if err != nil {
 		return nil, err
 	}
-	list, err := store.List(ctx, session.ListOptions{Archived: false, Limit: 10000})
+	list, err := store.List(ctx, session.ListOptions{Status: session.StatusActive, Archived: false, Limit: 10000})
 	if err != nil {
 		return nil, err
 	}

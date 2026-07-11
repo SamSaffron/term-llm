@@ -16,8 +16,15 @@ type cleanupTestStore struct {
 	summaries []session.SessionSummary
 }
 
-func (s *cleanupTestStore) List(context.Context, session.ListOptions) ([]session.SessionSummary, error) {
-	return s.summaries, nil
+func (s *cleanupTestStore) List(_ context.Context, opts session.ListOptions) ([]session.SessionSummary, error) {
+	var summaries []session.SessionSummary
+	for _, summary := range s.summaries {
+		if opts.Status != "" && summary.Status != opts.Status {
+			continue
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
 }
 
 func TestMergeBackAndCleanup(t *testing.T) {
@@ -35,6 +42,13 @@ func TestMergeBackAndCleanup(t *testing.T) {
 				return &cleanupTestStore{summaries: []session.SessionSummary{{ID: "other", Number: 7, Name: "other session", WorktreeDir: dir, Status: session.StatusActive}}}
 			},
 			wantInUse: 1,
+		},
+		{
+			name: "completed session does not keep worktree",
+			store: func(dir string) session.Store {
+				return &cleanupTestStore{summaries: []session.SessionSummary{{ID: "completed", WorktreeDir: dir, Status: session.StatusComplete}}}
+			},
+			wantRemove: true,
 		},
 		{
 			name: "current session is excluded",
