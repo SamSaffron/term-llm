@@ -290,10 +290,12 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 	message := strings.TrimSpace(seg.Guardian.Message)
 	message = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(message, "guardian:"), "Guardian:"))
 	prefix := "  Guardian: "
+	prefixWidth := runewidth.StringWidth(prefix)
 	line := prefix + message
-	if width > len(prefix) {
-		wrapped := wordwrap.String(message, width-len(prefix))
-		line = prefix + strings.ReplaceAll(wrapped, "\n", "\n"+prefix)
+	if width > prefixWidth {
+		wrapped := wordwrap.String(message, width-prefixWidth)
+		indent := strings.Repeat(" ", prefixWidth)
+		line = prefix + strings.ReplaceAll(wrapped, "\n", "\n"+indent)
 	}
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	if seg.Guardian.Outcome == tools.GuardianApproved {

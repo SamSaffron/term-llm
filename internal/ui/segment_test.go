@@ -8,6 +8,7 @@ import (
 
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestSafeANSISlice(t *testing.T) {
@@ -210,6 +211,73 @@ func TestRenderToolCallFromPart_FallsBackToExtractedArgsWhenToolInfoMissing(t *t
 	}
 	if !strings.Contains(rendered, "path:main.go") {
 		t.Fatalf("expected fallback raw arg path in rendered output, got %q", rendered)
+	}
+}
+
+func TestRenderToolSegmentGuardianLabelsOnlyFirstLine(t *testing.T) {
+	const (
+		width  = 36
+		prefix = "  Guardian: "
+	)
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{
+			name:    "word wrapped",
+			message: "denied: the planned command reads sensitive credentials outside the repository and requires explicit approval",
+		},
+		{
+			name:    "explicit multiline",
+			message: "denied: unsafe command\nthe second explanation line must align with the first",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seg := &Segment{
+				Type:       SegmentTool,
+				ToolName:   "shell",
+				ToolInfo:   "command",
+				ToolStatus: ToolError,
+				Guardian: &tools.GuardianEvent{
+					Message: tt.message,
+					Outcome: tools.GuardianDenied,
+				},
+			}
+
+			rendered := StripANSI(RenderToolSegment(seg, -1, width, false))
+			lines := strings.Split(rendered, "\n")
+			if strings.Count(rendered, "Guardian:") != 1 {
+				t.Fatalf("expected Guardian label exactly once, got:\n%s", rendered)
+			}
+
+			annotationStart := -1
+			for i, line := range lines {
+				if strings.HasPrefix(line, prefix) {
+					annotationStart = i
+					break
+				}
+			}
+			if annotationStart == -1 {
+				t.Fatalf("first annotation line does not begin with %q:\n%s", prefix, rendered)
+			}
+			annotationLines := lines[annotationStart:]
+			if len(annotationLines) < 2 {
+				t.Fatalf("expected annotation to wrap to multiple lines, got:\n%s", rendered)
+			}
+			indent := strings.Repeat(" ", xansi.StringWidth(prefix))
+			for i, line := range annotationLines[1:] {
+				if !strings.HasPrefix(line, indent) {
+					t.Errorf("continuation line %d does not begin with aligned indent %q: %q", i+1, indent, line)
+				}
+			}
+			for i, line := range lines {
+				if got := xansi.StringWidth(line); got > width {
+					t.Errorf("line %d exceeds width %d (got %d): %q", i, width, got, line)
+				}
+			}
+		})
 	}
 }
 
