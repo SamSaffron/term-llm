@@ -63,6 +63,12 @@ type responseFrame struct {
 	Status  int               `json:"status,omitempty"`  // HTTP status; for "headers" and "done"
 }
 
+type dataChannelConn interface {
+	ReadDataChannel([]byte) (int, bool, error)
+	WriteDataChannel([]byte, bool) (int, error)
+	Close() error
+}
+
 const maxChunkDataBytes = 16 * 1024
 
 // peer is the home-side WebRTC peer.
@@ -506,10 +512,12 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	}
 	defer dc.Close()
 
-	p.runDataChannel(ctx, dc)
+	p.runDataChannel(ctx, dc, func() {
+		_ = sctpAssoc.Close()
+	})
 }
 
-func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) {
+func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTransport func()) {
 	dataChannelCtx, cancelDataChannelRequests := context.WithCancel(ctx)
 	defer cancelDataChannelRequests()
 
@@ -529,6 +537,12 @@ func (p *peer) runDataChannel(ctx context.Context, dc *datachannel.DataChannel) 
 			cancelDataChannelRequests()
 			close(stop)
 			_ = dc.Close()
+			// DataChannel.Close only resets the SCTP stream's write direction and
+			// does not wake a goroutine blocked in ReadDataChannel. Close the
+			// underlying association before waiting for the reader to finish.
+			if closeTransport != nil {
+				closeTransport()
+			}
 		})
 	}
 	send := func(text string) error {

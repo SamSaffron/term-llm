@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -51,6 +52,63 @@ func encodeRequest(id, method, path string, headers map[string]string, body stri
 	}
 	data, _ := json.Marshal(f)
 	return data
+}
+
+type blockingReadDataChannel struct {
+	readUnblock <-chan struct{}
+	closed      chan struct{}
+}
+
+func (d *blockingReadDataChannel) ReadDataChannel([]byte) (int, bool, error) {
+	<-d.readUnblock
+	return 0, false, io.EOF
+}
+
+func (d *blockingReadDataChannel) WriteDataChannel(data []byte, _ bool) (int, error) {
+	return len(data), nil
+}
+
+func (d *blockingReadDataChannel) Close() error {
+	close(d.closed)
+	return nil
+}
+
+func TestRunDataChannel_IdleTimeoutClosesTransportToWakeReader(t *testing.T) {
+	p := newTestPeer("/ui", http.NotFoundHandler())
+	p.cfg.IdleTimeout = 10 * time.Millisecond
+
+	readUnblock := make(chan struct{})
+	transportClosed := make(chan struct{})
+	dc := &blockingReadDataChannel{
+		readUnblock: readUnblock,
+		closed:      make(chan struct{}),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.runDataChannel(context.Background(), dc, func() {
+			close(transportClosed)
+			close(readUnblock)
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runDataChannel remained blocked waiting for ReadDataChannel after idle timeout")
+	}
+
+	select {
+	case <-dc.closed:
+	default:
+		t.Fatal("idle timeout did not close the data channel")
+	}
+	select {
+	case <-transportClosed:
+	default:
+		t.Fatal("idle timeout did not close the underlying transport")
+	}
 }
 
 func TestTryAcquireDataChannelRequestSlot_ReturnsFalseWhenFull(t *testing.T) {
