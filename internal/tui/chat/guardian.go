@@ -2,17 +2,6 @@ package chat
 
 import "strings"
 
-func (m *Model) addGuardianReviewBeforeApprovalPrompt() {
-	message := strings.TrimSpace(m.lastGuardianReviewForApproval)
-	if message == "" || m.tracker == nil {
-		m.lastGuardianReviewForApproval = ""
-		return
-	}
-	m.tracker.AddExternalUIResult("Guardian review before approval:\n" + message)
-	m.invalidateViewCache()
-	m.lastGuardianReviewForApproval = ""
-}
-
 func guardianFooterTone(message string) string {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	switch {

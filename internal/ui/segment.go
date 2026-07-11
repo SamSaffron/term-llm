@@ -53,25 +53,26 @@ type ReasoningSegment struct {
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
 	Type           SegmentType
-	Text           string            // For text segments: markdown content (finalized on completion)
-	Rendered       string            // For text segments: cached rendered markdown
-	ToolCallID     string            // For tool segments: unique ID for this invocation
-	ToolName       string            // For tool segments
-	ToolInfo       string            // For tool segments: additional context
-	ToolArgs       json.RawMessage   // Raw args JSON, stored for expanded rendering
-	ToolStatus     ToolStatus        // For tool segments
-	ToolExpandHint bool              // Show one-time "CTRL+e to expand" discovery hint
-	Reasoning      *ReasoningSegment // For pre-rendered reasoning summary segments; rerendered when display mode changes
-	Complete       bool              // For text segments: whether streaming is complete
-	ImagePath      string            // For image segments: path to image file
-	DiffPath       string            // For diff segments: file path
-	DiffOld        string            // For diff segments: old content
-	DiffNew        string            // For diff segments: new content
-	DiffLine       int               // For diff segments: 1-indexed starting line (0 = unknown)
-	DiffOperation  string            // For diff segments: optional operation hint, e.g. "create"
-	DiffRendered   string            // For diff segments: cached rendered output
-	DiffWidth      int               // For diff segments: width when rendered (for cache invalidation)
-	Flushed        bool              // True if this segment has been printed to scrollback
+	Text           string               // For text segments: markdown content (finalized on completion)
+	Rendered       string               // For text segments: cached rendered markdown
+	ToolCallID     string               // For tool segments: unique ID for this invocation
+	ToolName       string               // For tool segments
+	ToolInfo       string               // For tool segments: additional context
+	ToolArgs       json.RawMessage      // Raw args JSON, stored for expanded rendering
+	Guardian       *tools.GuardianEvent // Guardian review for this exact tool invocation
+	ToolStatus     ToolStatus           // For tool segments
+	ToolExpandHint bool                 // Show one-time "CTRL+e to expand" discovery hint
+	Reasoning      *ReasoningSegment    // For pre-rendered reasoning summary segments; rerendered when display mode changes
+	Complete       bool                 // For text segments: whether streaming is complete
+	ImagePath      string               // For image segments: path to image file
+	DiffPath       string               // For diff segments: file path
+	DiffOld        string               // For diff segments: old content
+	DiffNew        string               // For diff segments: new content
+	DiffLine       int                  // For diff segments: 1-indexed starting line (0 = unknown)
+	DiffOperation  string               // For diff segments: optional operation hint, e.g. "create"
+	DiffRendered   string               // For diff segments: cached rendered output
+	DiffWidth      int                  // For diff segments: width when rendered (for cache invalidation)
+	Flushed        bool                 // True if this segment has been printed to scrollback
 
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
@@ -282,6 +283,28 @@ func buildExpandedShellInfo(args tools.ShellArgs) string {
 // For spawn_agent tools with progress, stats are shown instead of wave animation.
 // width is the terminal width used to truncate long lines (0 = no truncation).
 func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) string {
+	base := renderToolSegmentBase(seg, wavePos, width, expanded)
+	if seg == nil || seg.Guardian == nil || strings.TrimSpace(seg.Guardian.Message) == "" {
+		return base
+	}
+	message := strings.TrimSpace(seg.Guardian.Message)
+	message = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(message, "guardian:"), "Guardian:"))
+	prefix := "  Guardian: "
+	line := prefix + message
+	if width > len(prefix) {
+		wrapped := wordwrap.String(message, width-len(prefix))
+		line = prefix + strings.ReplaceAll(wrapped, "\n", "\n"+prefix)
+	}
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	if seg.Guardian.Outcome == tools.GuardianApproved {
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color("71"))
+	} else if seg.Guardian.Outcome == tools.GuardianError {
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	}
+	return base + "\n" + style.Render(line)
+}
+
+func renderToolSegmentBase(seg *Segment, wavePos int, width int, expanded bool) string {
 	info := seg.ToolInfo
 	expandedShellInfo := ""
 	if expanded && seg.ToolName == "shell" && len(seg.ToolArgs) > 0 {

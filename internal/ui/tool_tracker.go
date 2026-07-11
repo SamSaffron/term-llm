@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // WaveTickMsg is sent to advance the wave animation
@@ -102,6 +103,7 @@ type ToolTracker struct {
 	TextMode        bool   // When true, skip markdown rendering (plain text output)
 	expanded        bool
 	expandHintShown bool
+	pendingGuardian map[string]tools.GuardianEvent
 
 	// Flush state for consistent spacing
 	LastFlushedType SegmentType
@@ -111,8 +113,9 @@ type ToolTracker struct {
 // NewToolTracker creates a new ToolTracker
 func NewToolTracker() *ToolTracker {
 	return &ToolTracker{
-		Segments:     make([]Segment, 0),
-		LastActivity: time.Now(),
+		Segments:        make([]Segment, 0),
+		LastActivity:    time.Now(),
+		pendingGuardian: make(map[string]tools.GuardianEvent),
 	}
 }
 
@@ -200,7 +203,7 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string, toolArg
 	if showExpandHint {
 		t.expandHintShown = true
 	}
-	t.Segments = append(t.Segments, Segment{
+	seg := Segment{
 		Type:           SegmentTool,
 		ToolCallID:     callID,
 		ToolName:       toolName,
@@ -208,7 +211,12 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string, toolArg
 		ToolArgs:       toolArgs,
 		ToolStatus:     ToolPending,
 		ToolExpandHint: showExpandHint,
-	})
+	}
+	if event, ok := t.pendingGuardian[callID]; ok {
+		seg.Guardian = &event
+		delete(t.pendingGuardian, callID)
+	}
+	t.Segments = append(t.Segments, seg)
 	t.Version++
 	return true
 }
@@ -218,6 +226,26 @@ func (t *ToolTracker) HandleToolEnd(callID string, success bool) {
 	t.RecordActivity()
 	t.Segments = UpdateToolStatus(t.Segments, callID, success)
 	t.Version++
+}
+
+// HandleGuardianEvent attaches a guardian annotation to its exact tool call.
+// Events arriving before tool start are retained until that segment is created.
+func (t *ToolTracker) HandleGuardianEvent(event tools.GuardianEvent) {
+	if t == nil || event.ToolCallID == "" {
+		return
+	}
+	for i := range t.Segments {
+		if t.Segments[i].Type == SegmentTool && t.Segments[i].ToolCallID == event.ToolCallID {
+			t.Segments[i].Guardian = &event
+			t.RecordActivity()
+			t.Version++
+			return
+		}
+	}
+	if t.pendingGuardian == nil {
+		t.pendingGuardian = make(map[string]tools.GuardianEvent)
+	}
+	t.pendingGuardian[event.ToolCallID] = event
 }
 
 // HasPending returns true if there are any pending tool segments.

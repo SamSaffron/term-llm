@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // maxTextBufferBytes is the maximum size of a subagent's text buffer.
@@ -35,15 +38,20 @@ type SubagentProgress struct {
 
 	// For preview: last N lines of text
 	previewLines    []string
+	pendingGuardian map[string]tools.GuardianEvent // Guardian events received before nested tool start
+
 	bufferTruncated bool // true if TextBuffer hit the cap and stopped growing
 }
 
 // ToolSegment represents a tool's execution state in a subagent.
 type ToolSegment struct {
-	Name    string
-	Info    string
-	Success bool
-	Done    bool
+	CallID   string
+	Name     string
+	Info     string
+	Args     json.RawMessage
+	Guardian *tools.GuardianEvent
+	Success  bool
+	Done     bool
 }
 
 // SubagentTracker tracks progress from multiple concurrent subagents.
@@ -105,9 +113,10 @@ func (t *SubagentTracker) GetOrCreate(callID, agentName string) *SubagentProgres
 		return p
 	}
 	p := &SubagentProgress{
-		ToolCallID: callID,
-		AgentName:  agentName,
-		StartTime:  time.Now(),
+		ToolCallID:      callID,
+		AgentName:       agentName,
+		StartTime:       time.Now(),
+		pendingGuardian: make(map[string]tools.GuardianEvent),
 	}
 	t.agents[callID] = p
 	return p
@@ -195,22 +204,29 @@ func (t *SubagentTracker) HandleTextDelta(callID, text string) {
 }
 
 // HandleToolStart records a tool starting in a subagent.
-func (t *SubagentTracker) HandleToolStart(callID, toolName, toolInfo string) {
+func (t *SubagentTracker) HandleToolStart(callID, nestedCallID, toolName, toolInfo string, args json.RawMessage) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.agents[callID]
 	if p == nil {
 		return
 	}
-	p.ActiveTools = append(p.ActiveTools, ToolSegment{
-		Name: toolName,
-		Info: toolInfo,
-	})
+	tool := ToolSegment{
+		CallID: nestedCallID,
+		Name:   toolName,
+		Info:   toolInfo,
+		Args:   args,
+	}
+	if event, ok := p.pendingGuardian[nestedCallID]; ok {
+		tool.Guardian = &event
+		delete(p.pendingGuardian, nestedCallID)
+	}
+	p.ActiveTools = append(p.ActiveTools, tool)
 	p.ToolCalls++
 }
 
 // HandleToolEnd marks a tool as completed in a subagent.
-func (t *SubagentTracker) HandleToolEnd(callID, toolName string, success bool) {
+func (t *SubagentTracker) HandleToolEnd(callID, nestedCallID, toolName string, success bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.agents[callID]
@@ -219,7 +235,7 @@ func (t *SubagentTracker) HandleToolEnd(callID, toolName string, success bool) {
 	}
 	// Find and remove from active, add to completed
 	for i, tool := range p.ActiveTools {
-		if tool.Name == toolName {
+		if (nestedCallID != "" && tool.CallID == nestedCallID) || (nestedCallID == "" && tool.Name == toolName) {
 			tool.Success = success
 			tool.Done = true
 			p.CompletedTools = append(p.CompletedTools, tool)
@@ -227,6 +243,32 @@ func (t *SubagentTracker) HandleToolEnd(callID, toolName string, success bool) {
 			break
 		}
 	}
+}
+
+// HandleGuardianEvent attaches a guardian review to the exact nested tool.
+func (t *SubagentTracker) HandleGuardianEvent(callID string, event tools.GuardianEvent) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.agents[callID]
+	if p == nil || event.ToolCallID == "" {
+		return
+	}
+	for i := range p.ActiveTools {
+		if p.ActiveTools[i].CallID == event.ToolCallID {
+			p.ActiveTools[i].Guardian = &event
+			return
+		}
+	}
+	for i := range p.CompletedTools {
+		if p.CompletedTools[i].CallID == event.ToolCallID {
+			p.CompletedTools[i].Guardian = &event
+			return
+		}
+	}
+	if p.pendingGuardian == nil {
+		p.pendingGuardian = make(map[string]tools.GuardianEvent)
+	}
+	p.pendingGuardian[event.ToolCallID] = event
 }
 
 // HandlePhase updates the phase of a subagent.

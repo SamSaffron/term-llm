@@ -82,8 +82,8 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		return tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale}, nil
 	}
 	if approvalMgr.GuardianEventFunc == nil {
-		approvalMgr.GuardianEventFunc = func(message string) {
-			fmt.Fprintln(os.Stderr, message)
+		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
+			fmt.Fprintln(os.Stderr, event.Message)
 		}
 	}
 	return nil

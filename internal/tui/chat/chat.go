@@ -414,15 +414,14 @@ type Model struct {
 	postFrameTransmittedImages  map[uint32]struct{}
 
 	// Text selection state (alt-screen only)
-	selection                     Selection
-	contentLines                  []string // full viewport content split by \n
-	copyStatus                    string   // transient status message after copy attempt
-	footerMessage                 string   // transient footer message for short system notices
-	footerMessageTone             string   // "", "muted", "success", "warning", or "error"
-	footerMessageSeq              uint64   // monotonically increasing footer message timer token
-	worktreeOperation             string   // non-empty while an async /worktree operation is running
-	pendingWorktreeRecovery       *pendingWorktreeRecovery
-	lastGuardianReviewForApproval string // latest non-success guardian review message to show durably above an approval prompt
+	selection               Selection
+	contentLines            []string // full viewport content split by \n
+	copyStatus              string   // transient status message after copy attempt
+	footerMessage           string   // transient footer message for short system notices
+	footerMessageTone       string   // "", "muted", "success", "warning", or "error"
+	footerMessageSeq        uint64   // monotonically increasing footer message timer token
+	worktreeOperation       string   // non-empty while an async /worktree operation is running
+	pendingWorktreeRecovery *pendingWorktreeRecovery
 
 	attemptInput          int
 	attemptOutput         int
@@ -514,7 +513,7 @@ type (
 		manualEditVersion uint64
 	}
 	mcpStatusUpdateMsg struct{ update mcp.StatusUpdate }
-	GuardianReviewMsg  struct{ Message string }
+	GuardianReviewMsg  struct{ Event tools.GuardianEvent }
 )
 
 const (
@@ -1781,14 +1780,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.listenForMCPStatusUpdates())
 
 	case GuardianReviewMsg:
-		message := strings.TrimSpace(msg.Message)
+		message := strings.TrimSpace(msg.Event.Message)
 		tone := guardianFooterTone(message)
-		if message != "" && m.tracker != nil {
-			m.tracker.AddExternalUIResult(message)
+		if m.tracker != nil {
+			if msg.Event.ToolCallID != "" {
+				m.tracker.HandleGuardianEvent(msg.Event)
+			} else if message != "" {
+				// Session-level guardian status (for example a circuit breaker)
+				// has no tool row to annotate, so retain it durably in the stream.
+				m.tracker.AddExternalUIResult(message)
+			}
 			m.invalidateViewCache()
-		}
-		if message != "" && tone != "success" {
-			m.lastGuardianReviewForApproval = message
 		}
 		_, cmd := m.showFooterMessageWithTone(message, tone)
 		if cmd != nil {
@@ -2769,7 +2771,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// In alt screen mode, render approval UI inline
 		if m.altScreen {
-			m.addGuardianReviewBeforeApprovalPrompt()
 			m.pausedForExternalUI = true
 			m.approvalDoneCh = msg.DoneCh
 			if msg.IsShell {

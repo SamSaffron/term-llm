@@ -148,7 +148,7 @@ type AskUserPrompter interface {
 // GuardianEventSink is an optional EventSink capability for guardian review
 // notices emitted by auto-approval mode.
 type GuardianEventSink interface {
-	GuardianEvent(message string)
+	GuardianEvent(event tools.GuardianEvent)
 }
 
 // Result summarizes execution independently of platform rendering.

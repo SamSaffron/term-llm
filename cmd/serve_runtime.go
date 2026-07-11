@@ -83,8 +83,8 @@ type runtimeInterruptState struct {
 	reasoningEffort string
 }
 
-func (rt *serveRuntime) emitGuardianReview(message string) {
-	message = strings.TrimSpace(message)
+func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
+	message := strings.TrimSpace(event.Message)
 	if message == "" {
 		return
 	}
@@ -92,7 +92,14 @@ func (rt *serveRuntime) emitGuardianReview(message string) {
 	eventFunc := rt.approvalEventFunc
 	rt.approvalMu.Unlock()
 	if eventFunc != nil {
-		if err := eventFunc("response.guardian.review", map[string]any{"message": message}); err != nil {
+		payload := map[string]any{
+			"message":      message,
+			"tool_call_id": event.ToolCallID,
+			"outcome":      event.Outcome,
+			"command":      event.Command,
+			"workdir":      event.WorkDir,
+		}
+		if err := eventFunc("response.guardian.review", payload); err != nil {
 			log.Printf("[serve] guardian review event failed: %v", err)
 		}
 		return

@@ -40,6 +40,7 @@ const (
 	SubagentEventToolEnd   SubagentEventType = "tool_end"
 	SubagentEventPhase     SubagentEventType = "phase"
 	SubagentEventUsage     SubagentEventType = "usage"
+	SubagentEventGuardian  SubagentEventType = "guardian"
 	SubagentEventDone      SubagentEventType = "done"
 )
 
@@ -48,6 +49,9 @@ type SubagentEvent struct {
 	Type         SubagentEventType // "init", "text", "tool_start", "tool_end", "phase", "usage", "done"
 	Text         string            // for "text" events
 	ToolName     string            // for tool events
+	ToolCallID   string            // nested tool invocation ID
+	ToolArgs     json.RawMessage   // nested tool arguments
+	Guardian     *GuardianEvent    // for guardian events
 	ToolInfo     string            // for tool events
 	ToolOutput   string            // for "tool_end" events - text content
 	Diffs        []llm.DiffData    // for "tool_end" events - structured diffs

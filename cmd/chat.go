@@ -724,8 +724,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Set up the improved approval UI with git-aware heuristics.
 	// This also powers /handover script approvals even when no shell tool is enabled.
 	if approvalMgr != nil {
-		approvalMgr.GuardianEventFunc = func(message string) {
-			p.Send(chat.GuardianReviewMsg{Message: message})
+		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
+			p.Send(chat.GuardianReviewMsg{Event: event})
 		}
 		approvalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			// In alt screen mode, use inline approval UI

@@ -267,14 +267,22 @@ func (s *spawnRunSink) Event(event llm.Event) {
 	s.cb(s.callID, subagentEvent)
 }
 
+func (s *spawnRunSink) GuardianEvent(event tools.GuardianEvent) {
+	if s == nil || s.cb == nil || s.callID == "" {
+		return
+	}
+	s.Start()
+	s.cb(s.callID, tools.SubagentEvent{Type: tools.SubagentEventGuardian, ToolCallID: event.ToolCallID, Guardian: &event})
+}
+
 func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 	switch event.Type {
 	case llm.EventTextDelta:
 		return tools.SubagentEvent{Type: tools.SubagentEventText, Text: event.Text}
 	case llm.EventToolExecStart:
-		return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolName: event.ToolName, ToolInfo: event.ToolInfo}
+		return tools.SubagentEvent{Type: tools.SubagentEventToolStart, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolInfo: event.ToolInfo, ToolArgs: event.ToolArgs}
 	case llm.EventToolExecEnd:
-		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolName: event.ToolName, Diffs: event.ToolDiffs, Images: event.ToolImages, Success: event.ToolSuccess}
+		return tools.SubagentEvent{Type: tools.SubagentEventToolEnd, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ToolOutput: event.ToolOutput, Diffs: event.ToolDiffs, Images: event.ToolImages, Success: event.ToolSuccess}
 	case llm.EventPhase:
 		return tools.SubagentEvent{Type: tools.SubagentEventPhase, Phase: event.Text}
 	case llm.EventUsage:

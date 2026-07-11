@@ -12132,12 +12132,13 @@ func TestServeRuntimeEmitGuardianReviewUsesApprovalEventStream(t *testing.T) {
 		return nil
 	}
 
-	rt.emitGuardianReview("guardian: denied: nope")
+	event := tools.GuardianEvent{ToolCallID: "shell-1", Command: "rm file", WorkDir: "/tmp", Message: "guardian: denied: nope", Outcome: tools.GuardianDenied}
+	rt.emitGuardianReview(event)
 
 	if gotEvent != "response.guardian.review" {
 		t.Fatalf("event = %q, want response.guardian.review", gotEvent)
 	}
-	if gotData["message"] != "guardian: denied: nope" {
-		t.Fatalf("message payload = %#v", gotData)
+	if gotData["message"] != "guardian: denied: nope" || gotData["tool_call_id"] != "shell-1" || gotData["command"] != "rm file" || gotData["workdir"] != "/tmp" || gotData["outcome"] != tools.GuardianDenied {
+		t.Fatalf("guardian payload = %#v", gotData)
 	}
 }

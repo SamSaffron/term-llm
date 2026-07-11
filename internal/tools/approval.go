@@ -256,6 +256,26 @@ type guardianShellKey struct {
 	WorkDir string
 }
 
+// GuardianOutcome describes the result of an automatic guardian review.
+type GuardianOutcome string
+
+const (
+	GuardianApproved GuardianOutcome = "approved"
+	GuardianDenied   GuardianOutcome = "denied"
+	GuardianWarning  GuardianOutcome = "warning"
+	GuardianError    GuardianOutcome = "error"
+)
+
+// GuardianEvent is a guardian review annotation correlated with the shell tool
+// invocation that caused the review.
+type GuardianEvent struct {
+	ToolCallID string
+	Command    string
+	WorkDir    string
+	Message    string
+	Outcome    GuardianOutcome
+}
+
 // ApprovalManager coordinates approval requests and caching.
 type ApprovalManager struct {
 	cache         *ApprovalCache
@@ -308,8 +328,8 @@ type ApprovalManager struct {
 	// deterministic approvals. It must fail closed: errors never imply allow.
 	PolicyReviewFunc func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error)
 
-	// GuardianEventFunc receives one-line audit messages for auto approvals/denials.
-	GuardianEventFunc func(message string)
+	// GuardianEventFunc receives structured audit events for auto approvals/denials.
+	GuardianEventFunc func(event GuardianEvent)
 
 	// Parent manager for inheriting session approvals and prompt function.
 	// When set, this manager will check parent's caches and use parent's
@@ -448,7 +468,7 @@ func (m *ApprovalManager) lookupPolicyReviewFunc() func(context.Context, PolicyR
 	return nil
 }
 
-func (m *ApprovalManager) lookupGuardianEventFunc() func(message string) {
+func (m *ApprovalManager) lookupGuardianEventFunc() func(event GuardianEvent) {
 	for cur := m; cur != nil; cur = cur.parent {
 		if cur.GuardianEventFunc != nil {
 			return cur.GuardianEventFunc
@@ -1135,7 +1155,7 @@ func addApprovalContextLine(b *strings.Builder, seen map[string]struct{}, label,
 func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, command, workDir string, transcript []TranscriptEntry) (ConfirmOutcome, bool, error) {
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
-		m.emitGuardianEvent("guardian: auto mode unavailable (no reviewer configured); prompting for approval")
+		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); prompting for approval"))
 		if m.AutoHeadless() {
 			return Cancel, true, NewToolError(ErrPermissionDenied, "auto mode enabled but no guardian reviewer is configured")
 		}
@@ -1144,7 +1164,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	approvalContext := m.guardianApprovalContext(command, workDir)
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: transcript, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
 	if err != nil {
-		m.emitGuardianEvent(fmt.Sprintf("guardian: review failed (%v)", err))
+		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err)))
 		if m.AutoHeadless() {
 			return Cancel, true, NewToolErrorf(ErrPermissionDenied, "guardian review failed: %v", err)
 		}
@@ -1155,7 +1175,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 		if rationale == "" {
 			rationale = "guardian allow contradicted policy risk/authorization fields"
 		}
-		m.emitGuardianEvent("guardian: denied: " + rationale)
+		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale))
 		m.recordGuardianDenial()
 		if !m.AutoHeadless() {
 			return Cancel, false, nil
@@ -1165,14 +1185,14 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	if decision.Allowed {
 		m.resetGuardianDenials()
 		m.addGuardianExactShell(command, workDir)
-		m.emitGuardianEvent("guardian: " + formatGuardianApproval(decision))
+		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision)))
 		return ProceedAlways, true, nil
 	}
 	rationale := strings.TrimSpace(decision.Rationale)
 	if rationale == "" {
 		rationale = "action was not approved by guardian policy"
 	}
-	m.emitGuardianEvent("guardian: denied: " + rationale)
+	m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale))
 	m.recordGuardianDenial()
 	if !m.AutoHeadless() {
 		// In interactive auto mode, guardian denials are rare and high-signal.
@@ -1216,10 +1236,20 @@ func humanGuardianAuthorization(value string) string {
 	}
 }
 
-func (m *ApprovalManager) emitGuardianEvent(message string) {
+func (m *ApprovalManager) guardianEvent(ctx context.Context, command, workDir string, outcome GuardianOutcome, message string) GuardianEvent {
+	return GuardianEvent{
+		ToolCallID: llm.CallIDFromContext(ctx),
+		Command:    command,
+		WorkDir:    normalizeGuardianWorkDir(workDir),
+		Message:    message,
+		Outcome:    outcome,
+	}
+}
+
+func (m *ApprovalManager) emitGuardianEvent(event GuardianEvent) {
 	fn := m.lookupGuardianEventFunc()
 	if fn != nil {
-		fn(message)
+		fn(event)
 	}
 }
 
@@ -1245,7 +1275,7 @@ func (m *ApprovalManager) recordGuardianDenial() {
 	if tripped {
 		root.clearGuardianExactShell()
 		root.SetApprovalMode(ModePrompt)
-		root.emitGuardianEvent("guardian: circuit breaker tripped after repeated denials; auto mode disabled")
+		root.emitGuardianEvent(GuardianEvent{Message: "guardian: circuit breaker tripped after repeated denials; auto mode disabled", Outcome: GuardianWarning})
 	}
 }
 

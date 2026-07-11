@@ -53,9 +53,9 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 	case tools.SubagentEventText:
 		subagentTracker.HandleTextDelta(callID, event.Text)
 	case tools.SubagentEventToolStart:
-		subagentTracker.HandleToolStart(callID, event.ToolName, event.ToolInfo)
+		subagentTracker.HandleToolStart(callID, event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
 	case tools.SubagentEventToolEnd:
-		subagentTracker.HandleToolEnd(callID, event.ToolName, event.Success)
+		subagentTracker.HandleToolEnd(callID, event.ToolCallID, event.ToolName, event.Success)
 		// Process structured image/diff data from subagent events
 		for _, imagePath := range event.Images {
 			tracker.AddImageSegment(imagePath)
@@ -67,6 +67,10 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		subagentTracker.HandlePhase(callID, event.Phase)
 	case tools.SubagentEventUsage:
 		subagentTracker.HandleUsage(callID, event.InputTokens, event.OutputTokens)
+	case tools.SubagentEventGuardian:
+		if event.Guardian != nil {
+			subagentTracker.HandleGuardianEvent(callID, *event.Guardian)
+		}
 	case tools.SubagentEventDone:
 		subagentTracker.MarkDone(callID)
 		// Store completion time so elapsed timer freezes
@@ -184,6 +188,7 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 			line += " " + tool.Info
 		}
 		preview = append(preview, line)
+		preview = append(preview, renderSubagentGuardian(tool.Guardian)...)
 	}
 
 	// 2. Active tools after (they are the most recent)
@@ -193,6 +198,7 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 			line += " " + tool.Info
 		}
 		preview = append(preview, line)
+		preview = append(preview, renderSubagentGuardian(tool.Guardian)...)
 	}
 
 	// 3. Text lines only if no tools shown
@@ -207,12 +213,29 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 		}
 	}
 
-	// Limit to maxLines (keep the LAST N lines - most recent)
-	if len(preview) > maxLines {
+	// Guardian annotations are durable and must never be trimmed away from their
+	// command in collapsed mode. Otherwise keep the usual compact preview.
+	hasGuardian := false
+	for _, tool := range append(append([]ToolSegment(nil), p.CompletedTools...), p.ActiveTools...) {
+		if tool.Guardian != nil {
+			hasGuardian = true
+			break
+		}
+	}
+	if !hasGuardian && len(preview) > maxLines {
 		preview = preview[len(preview)-maxLines:]
 	}
 
 	return preview
+}
+
+func renderSubagentGuardian(event *tools.GuardianEvent) []string {
+	if event == nil || strings.TrimSpace(event.Message) == "" {
+		return nil
+	}
+	message := strings.TrimSpace(event.Message)
+	message = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(message, "guardian:"), "Guardian:"))
+	return []string{"  Guardian: " + message}
 }
 
 func extractSpawnAgentArgs(seg *Segment) (agentName, prompt string) {
