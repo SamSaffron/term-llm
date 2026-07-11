@@ -336,6 +336,7 @@ var keySpecs = []KeySpec{
 	def("serve.base_path", DefaultServeBasePath),
 	optional("serve.platforms", withPlaceholder([]string{})),
 	optional("serve.title"),
+	def("serve.disable_location_sharing", false),
 	optional("serve.files_dir"),
 	optional("serve.widgets_dir"),
 	def("serve.response_timeout", DefaultServeResponseTimeout),

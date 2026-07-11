@@ -277,6 +277,7 @@
       <footer class="composer">
         <div class="composer-inner">
           <div id="voiceStatus" class="voice-status hidden" aria-live="polite"></div>
+          <div id="locationStatus" class="voice-status hidden" role="status" aria-live="polite"></div>
           <div id="pendingInterjectionBanner" class="pending-interjection hidden" aria-live="polite"></div>
           <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
           <button type="button" id="goalChip" class="goal-chip hidden" aria-label="Manage goal"></button>
@@ -290,6 +291,12 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M12 18v-6"/><path d="M9 15l3-3 3 3"/></svg>
                 </span>
                 <span>Upload file</span>
+              </button>
+              <button type="button" id="addLocationOption" role="menuitem">
+                <span class="composer-add-menu-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>
+                </span>
+                <span>Share current location</span>
               </button>
               <button type="button" id="addMCPOption" role="menuitem">
                 <span class="composer-add-menu-icon" aria-hidden="true">

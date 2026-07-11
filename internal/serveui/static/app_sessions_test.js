@@ -294,6 +294,8 @@ async function createSessionsHarness(options = {}) {
     TERM_LLM_UI_PREFIX: options.uiPrefix || '/ui',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_HUB: options.hub || null,
+    TERM_LLM_LOCATION_SHARING_ENABLED: options.locationSharingEnabled !== false,
+    isSecureContext: options.isSecureContext !== false,
     location: { pathname: options.pathname || `${options.uiPrefix || '/ui'}/`, search: options.search || '', origin: 'https://example.test', protocol: 'https:', host: 'example.test' },
     history: {
       pushState(_state, _title, url) {
@@ -316,7 +318,7 @@ async function createSessionsHarness(options = {}) {
         removeListener() {},
       };
     },
-    navigator: { standalone: false, mediaDevices: null, serviceWorker: null },
+    navigator: { standalone: false, mediaDevices: null, serviceWorker: null, geolocation: options.geolocation || null },
     visualViewport: null,
     addEventListener() {},
     removeEventListener() {},
@@ -3954,6 +3956,52 @@ async function testAddMenuAttachOptionTriggersFileInput() {
   pass(name);
 }
 
+async function testAddMenuLocationAddsReviewableDraft() {
+  const name = 'plus menu location action adds reviewable draft without sending';
+  let requests = 0;
+  let sends = 0;
+  const { app } = await createSessionsHarness({
+    geolocation: {
+      getCurrentPosition(success, _error, options) {
+        requests += 1;
+        if (options.enableHighAccuracy !== false || options.timeout !== 12000) {
+          throw new Error('unexpected geolocation options');
+        }
+        success({ coords: { latitude: -33.86882, longitude: 151.20929, accuracy: 24.6 } });
+      }
+    },
+    appOverrides: { sendMessage() { sends += 1; } }
+  });
+
+  app.elements.promptInput.value = 'Find lunch nearby.';
+  app.elements.attachBtn.click();
+  app.elements.addLocationOption.click();
+
+  const prompt = app.elements.promptInput.value;
+  if (requests !== 1 || sends !== 0) {
+    fail(name, `requests=${requests} sends=${sends}, want requests=1 sends=0`);
+    return;
+  }
+  if (!prompt.includes('Find lunch nearby.\n\nMy current location:')
+      || !prompt.includes('-33.86882, 151.20929')
+      || !prompt.includes('approximately 25 m')
+      || !prompt.includes('openstreetmap.org')) {
+    fail(name, 'location draft missing expected reviewable content', prompt);
+    return;
+  }
+  pass(name);
+}
+
+async function testLocationSharingCanBeDisabled() {
+  const name = 'location sharing config hides plus menu action';
+  const { app } = await createSessionsHarness({ locationSharingEnabled: false });
+  if (!app.elements.addLocationOption.hidden) {
+    fail(name, 'expected location action to be hidden');
+    return;
+  }
+  pass(name);
+}
+
 async function testGoalStateResponseUpdatesChip() {
   const name = 'goal state response updates goal chip';
   const { app } = await createSessionsHarness({
@@ -4345,6 +4393,8 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
   await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
   await testAddMenuAttachOptionTriggersFileInput();
+  await testAddMenuLocationAddsReviewableDraft();
+  await testLocationSharingCanBeDisabled();
   await testGoalStateResponseUpdatesChip();
   await testGoalModalSavesGoal();
   await testOpenMCPFromDraftCreatesSessionBeforeFetch();

@@ -475,6 +475,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	if !strings.Contains(body, `TERM_LLM_SIDEBAR_SESSIONS=["chat","web"]`) {
 		t.Error("/ should inject TERM_LLM_SIDEBAR_SESSIONS")
 	}
+	if !strings.Contains(body, `TERM_LLM_LOCATION_SHARING_ENABLED=true`) {
+		t.Error("/ should enable location sharing by default")
+	}
 	if !strings.Contains(body, `TERM_LLM_AGENT_NAME="jarvis"`) {
 		t.Error("/ should inject TERM_LLM_AGENT_NAME")
 	}
@@ -510,6 +513,14 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("/images/ traversal status = %d, want 404", rr.Code)
+	}
+}
+
+func TestBuildIndexHTMLDisablesLocationSharing(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", locationSharingDisabled: true}}
+	body := string(srv.buildIndexHTML())
+	if !strings.Contains(body, `TERM_LLM_LOCATION_SHARING_ENABLED=false`) {
+		t.Fatal("index should disable location sharing when configured")
 	}
 }
 

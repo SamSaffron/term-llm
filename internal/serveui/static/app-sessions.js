@@ -2792,6 +2792,76 @@ const mutateGoalFromModal = async (action) => {
 };
 
 // Composer add menu and file attachment handlers
+let locationRequestPending = false;
+let locationStatusTimer = null;
+
+const showLocationStatus = (message, { persistent = false } = {}) => {
+  if (!elements.locationStatus) return;
+  if (locationStatusTimer) clearTimeout(locationStatusTimer);
+  elements.locationStatus.textContent = message;
+  elements.locationStatus.classList.toggle('hidden', !message);
+  if (message && !persistent) {
+    locationStatusTimer = setTimeout(() => {
+      elements.locationStatus.textContent = '';
+      elements.locationStatus.classList.add('hidden');
+    }, 5000);
+  }
+};
+
+const locationErrorMessage = (error) => {
+  if (error?.code === 1) return 'Location permission was denied.';
+  if (error?.code === 2) return 'Your device could not determine its location.';
+  if (error?.code === 3) return 'Location request timed out.';
+  return 'Could not get your current location.';
+};
+
+const shareCurrentLocation = () => {
+  if (locationRequestPending) return;
+  if (!window.isSecureContext) {
+    showLocationStatus('Location sharing requires HTTPS or localhost.');
+    return;
+  }
+  if (!navigator.geolocation || typeof navigator.geolocation.getCurrentPosition !== 'function') {
+    showLocationStatus('Location sharing is not supported in this browser.');
+    return;
+  }
+
+  locationRequestPending = true;
+  elements.addLocationOption.disabled = true;
+  showLocationStatus('Getting your current location…', { persistent: true });
+  navigator.geolocation.getCurrentPosition((position) => {
+    const latitude = Number(position.coords.latitude).toFixed(5);
+    const longitude = Number(position.coords.longitude).toFixed(5);
+    const accuracy = Math.max(1, Math.round(Number(position.coords.accuracy) || 0));
+    const locationText = [
+      'My current location:',
+      `- Coordinates: ${latitude}, ${longitude}`,
+      `- Accuracy: approximately ${accuracy} m`,
+      `- Map: https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=16/${latitude}/${longitude}`,
+    ].join('\n');
+    const existing = elements.promptInput.value.trimEnd();
+    elements.promptInput.value = existing ? `${existing}\n\n${locationText}` : locationText;
+    autoGrowPrompt();
+    elements.promptInput.focus();
+    showLocationStatus('Location added to your message. Review it before sending.');
+    locationRequestPending = false;
+    elements.addLocationOption.disabled = false;
+  }, (error) => {
+    showLocationStatus(locationErrorMessage(error));
+    locationRequestPending = false;
+    elements.addLocationOption.disabled = false;
+  }, {
+    enableHighAccuracy: false,
+    timeout: 12000,
+    maximumAge: 60000,
+  });
+};
+
+if (elements.addLocationOption) {
+  const locationEnabled = window.TERM_LLM_LOCATION_SHARING_ENABLED !== false;
+  elements.addLocationOption.hidden = !locationEnabled;
+}
+
 elements.attachBtn.addEventListener('click', (event) => {
   event.preventDefault();
   toggleAddMenu();
@@ -2800,6 +2870,12 @@ if (elements.addAttachOption) {
   elements.addAttachOption.addEventListener('click', () => {
     closeAddMenu();
     elements.fileInput.click();
+  });
+}
+if (elements.addLocationOption) {
+  elements.addLocationOption.addEventListener('click', () => {
+    closeAddMenu();
+    shareCurrentLocation();
   });
 }
 if (elements.addMCPOption) {

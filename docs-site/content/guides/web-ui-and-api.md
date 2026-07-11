@@ -86,6 +86,19 @@ File handling is provider-aware:
 
 Do not attach secrets unless you intend the selected provider to receive them. Native file forwarding and text fallback both send file contents upstream.
 
+## Current location
+
+The browser UI's **+** menu can request your current location and add coordinates, reported accuracy, and an OpenStreetMap link to the composer. It never requests location on page load and does not send automatically: review or edit the text, then press Send. Geolocation requires HTTPS or localhost and remains subject to the browser's permission controls.
+
+Coordinates become ordinary chat content when sent. They can be persisted in session history, included in later model context, and forwarded to the selected provider. term-llm does not call a reverse-geocoding service.
+
+Administrators can hide the action either with `term-llm serve --disable-location-sharing` or in `config.yaml`:
+
+```yaml
+serve:
+  disable_location_sharing: true
+```
+
 ## GPT-5.6 Responses controls
 
 The browser model picker reads `reasoning_efforts` and `reasoning_modes` from `GET /ui/v1/models`. For OpenAI API GPT-5.6 models it shows a **Standard / Pro** selector and sends the selection as `reasoning.mode`. The selector is hidden for unsupported models; switching to one clears a stale Pro selection. ChatGPT's `ultra` remains an effort in the effort picker and is not presented as Pro mode.

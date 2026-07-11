@@ -38,6 +38,7 @@ var (
 	serveAuthMode               string
 	serveBasePath               string
 	serveTitle                  string
+	serveDisableLocationSharing bool
 	serveCORSOrigins            []string
 	serveSessionTTL             time.Duration
 	serveSessionMax             int
@@ -139,6 +140,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
 	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
 	serveCmd.Flags().StringVar(&serveTitle, "title", "", "Override the web UI sidebar title (defaults to agent name or Chat)")
+	serveCmd.Flags().BoolVar(&serveDisableLocationSharing, "disable-location-sharing", false, "Hide the web UI action for sharing the browser's current location")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
@@ -332,6 +334,10 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	resolvedTitle := strings.TrimSpace(serveTitle)
 	if !cmd.Flags().Changed("title") {
 		resolvedTitle = strings.TrimSpace(cfg.Serve.Title)
+	}
+	locationSharingDisabled := serveDisableLocationSharing
+	if !cmd.Flags().Changed("disable-location-sharing") {
+		locationSharingDisabled = cfg.Serve.DisableLocationSharing
 	}
 
 	responseTimeout, err := resolveServeResponseTimeout(cmd.Flags().Changed("response-timeout"), serveResponseTimeout, cfg.Serve.ResponseTimeout)
@@ -600,27 +606,28 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 		s = &serveServer{
 			cfg: serveServerConfig{
-				host:                serveHost,
-				port:                servePort,
-				requireAuth:         requireAuth,
-				token:               token,
-				ui:                  serveUI,
-				api:                 hasAPI,
-				suppressServerTools: serveFilterServerTools,
-				verbose:             serveVerbose,
-				basePath:            serveBasePath,
-				uiTitle:             resolvedTitle,
-				sidebarSessions:     append([]string(nil), sidebarSessions...),
-				agentName:           agentName,
-				corsOrigins:         append([]string(nil), serveCORSOrigins...),
-				filesDir:            resolveFilesDir(serveFilesDir, cfg),
-				writeDirs:           resolveServeWriteDirs(serveWriteDirs, cfg),
-				enableWidgets:       serveEnableWidgets,
-				widgetsDir:          serveWidgetsDir,
-				responseTimeout:     responseTimeout,
-				hubURL:              strings.TrimSpace(serveHubURL),
-				hubNodeID:           strings.TrimSpace(serveHubNodeID),
-				hubNodeName:         strings.TrimSpace(serveHubNodeName),
+				host:                    serveHost,
+				port:                    servePort,
+				requireAuth:             requireAuth,
+				token:                   token,
+				ui:                      serveUI,
+				api:                     hasAPI,
+				suppressServerTools:     serveFilterServerTools,
+				verbose:                 serveVerbose,
+				basePath:                serveBasePath,
+				uiTitle:                 resolvedTitle,
+				locationSharingDisabled: locationSharingDisabled,
+				sidebarSessions:         append([]string(nil), sidebarSessions...),
+				agentName:               agentName,
+				corsOrigins:             append([]string(nil), serveCORSOrigins...),
+				filesDir:                resolveFilesDir(serveFilesDir, cfg),
+				writeDirs:               resolveServeWriteDirs(serveWriteDirs, cfg),
+				enableWidgets:           serveEnableWidgets,
+				widgetsDir:              serveWidgetsDir,
+				responseTimeout:         responseTimeout,
+				hubURL:                  strings.TrimSpace(serveHubURL),
+				hubNodeID:               strings.TrimSpace(serveHubNodeID),
+				hubNodeName:             strings.TrimSpace(serveHubNodeName),
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -934,24 +941,25 @@ func generateServeToken() (string, error) {
 }
 
 type serveServerConfig struct {
-	host                string
-	port                int
-	requireAuth         bool
-	token               string
-	ui                  bool
-	api                 bool
-	suppressServerTools bool
-	verbose             bool
-	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
-	uiTitle             string
-	sidebarSessions     []string
-	agentName           string
-	corsOrigins         []string
-	filesDir            string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
-	writeDirs           []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
-	enableWidgets       bool
-	widgetsDir          string
-	responseTimeout     time.Duration
+	host                    string
+	port                    int
+	requireAuth             bool
+	token                   string
+	ui                      bool
+	api                     bool
+	suppressServerTools     bool
+	verbose                 bool
+	basePath                string // e.g. "/ui" or "/chat", always without trailing slash
+	uiTitle                 string
+	locationSharingDisabled bool
+	sidebarSessions         []string
+	agentName               string
+	corsOrigins             []string
+	filesDir                string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
+	writeDirs               []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
+	enableWidgets           bool
+	widgetsDir              string
+	responseTimeout         time.Duration
 	// hubURL/hubNodeID/hubNodeName describe the term-llm Hub this node
 	// belongs to. When hubURL is set, the web UI gets window.TERM_LLM_HUB and
 	// renders a Back to Hub link. The hub proxy injects the same context
