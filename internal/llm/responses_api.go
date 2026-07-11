@@ -161,17 +161,12 @@ func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
 
 // ResponsesContentPart represents a content part (text, image, or file).
 type ResponsesContentPart struct {
-	Type                  string                          `json:"type"`
-	Text                  string                          `json:"text,omitempty"`
-	ImageURL              string                          `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
-	Detail                string                          `json:"detail,omitempty"`
-	Filename              string                          `json:"filename,omitempty"`
-	FileData              string                          `json:"file_data,omitempty"`
-	PromptCacheBreakpoint *ResponsesPromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
-}
-
-type ResponsesPromptCacheBreakpoint struct {
-	Mode string `json:"mode"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
+	Detail   string `json:"detail,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	FileData string `json:"file_data,omitempty"`
 }
 
 // ResponsesTool represents a tool definition in Open Responses format
@@ -326,7 +321,7 @@ func buildResponsesInputItems(messages []Message, policy *FileUploadPolicy) []Re
 	var inputItems []ResponsesInputItem
 	for _, msg := range messages {
 		if msg.Role == RoleSystem || msg.Role == RoleDeveloper {
-			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts, policy, msg.CacheAnchor)...)
+			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts, policy)...)
 		} else {
 			inputItems = append(inputItems, buildResponsesInputForRole(msg, policy)...)
 		}
@@ -395,9 +390,9 @@ func BuildResponsesContinuationInputWithFilePolicy(messages []Message, policy *F
 func buildResponsesInputForRole(msg Message, policy *FileUploadPolicy) []ResponsesInputItem {
 	switch msg.Role {
 	case RoleUser:
-		return buildResponsesMessageItems("user", msg.Parts, policy, msg.CacheAnchor)
+		return buildResponsesMessageItems("user", msg.Parts, policy)
 	case RoleDeveloper:
-		return buildResponsesMessageItems("developer", msg.Parts, policy, msg.CacheAnchor)
+		return buildResponsesMessageItems("developer", msg.Parts, policy)
 	case RoleAssistant:
 		return buildResponsesAssistantItems(msg.Parts)
 	case RoleTool:
@@ -430,28 +425,15 @@ func buildResponsesInputForRole(msg Message, policy *FileUploadPolicy) []Respons
 	}
 }
 
-func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPolicy, cacheAnchor bool) []ResponsesInputItem {
+func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPolicy) []ResponsesInputItem {
 	var items []ResponsesInputItem
 	var textBuf strings.Builder
-	textBreakpoint := false
-	breakpoint := func(enabled bool) *ResponsesPromptCacheBreakpoint {
-		if !enabled {
-			return nil
-		}
-		return &ResponsesPromptCacheBreakpoint{Mode: "explicit"}
-	}
-
 	flushText := func() {
 		if textBuf.Len() == 0 {
 			return
 		}
-		content := any(textBuf.String())
-		if textBreakpoint {
-			content = []ResponsesContentPart{{Type: "input_text", Text: textBuf.String(), PromptCacheBreakpoint: breakpoint(true)}}
-		}
-		items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: content})
+		items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: textBuf.String()})
 		textBuf.Reset()
-		textBreakpoint = false
 	}
 
 	for _, part := range parts {
@@ -463,20 +445,13 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 			}
 		case PartText:
 			if part.Text != "" {
-				if part.PromptCacheBreakpoint {
-					flushText()
-					textBreakpoint = true
-				}
 				textBuf.WriteString(part.Text)
-				if part.PromptCacheBreakpoint {
-					flushText()
-				}
 			}
 		case PartImage:
 			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
 				flushText()
 				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(part.ImageData.Detail), PromptCacheBreakpoint: breakpoint(part.PromptCacheBreakpoint)}}
+				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(part.ImageData.Detail)}}
 				if part.ImagePath != "" {
 					imageParts = append(imageParts, ResponsesContentPart{Type: "input_text", Text: "[image saved at: " + part.ImagePath + "]"})
 				}
@@ -493,17 +468,10 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 				if mediaType == "" {
 					mediaType = "application/octet-stream"
 				}
-				fileParts := []ResponsesContentPart{{Type: "input_file", Filename: filename, FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64), PromptCacheBreakpoint: breakpoint(part.PromptCacheBreakpoint)}}
+				fileParts := []ResponsesContentPart{{Type: "input_file", Filename: filename, FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64)}}
 				items = append(items, ResponsesInputItem{Type: "message", Role: role, Content: fileParts})
 			} else if text := responseFileTextFallback(part, policy); text != "" {
-				if part.PromptCacheBreakpoint {
-					flushText()
-					textBreakpoint = true
-				}
 				textBuf.WriteString(text)
-				if part.PromptCacheBreakpoint {
-					flushText()
-				}
 			}
 		case PartToolCall:
 			if part.ToolCall == nil {
@@ -522,23 +490,6 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 		}
 	}
 	flushText()
-	if cacheAnchor {
-		for i := len(items) - 1; i >= 0; i-- {
-			if items[i].Type != "message" {
-				continue
-			}
-			switch content := items[i].Content.(type) {
-			case string:
-				items[i].Content = []ResponsesContentPart{{Type: "input_text", Text: content, PromptCacheBreakpoint: breakpoint(true)}}
-			case []ResponsesContentPart:
-				if len(content) > 0 {
-					content[len(content)-1].PromptCacheBreakpoint = breakpoint(true)
-					items[i].Content = content
-				}
-			}
-			break
-		}
-	}
 	return items
 }
 

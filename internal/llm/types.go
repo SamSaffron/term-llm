@@ -309,7 +309,6 @@ type Part struct {
 	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
 	FileData                  *ToolFileData  // User-supplied file (base64-encoded)
 	FilePath                  string         // Local filesystem path to the file (when available)
-	PromptCacheBreakpoint     bool           // Emit an explicit GPT-5.6 prompt-cache breakpoint on this content block.
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
 	ProviderReplay            *ProviderReplayItem // Opaque Responses output item used only for stateless continuation.

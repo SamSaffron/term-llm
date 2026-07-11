@@ -534,7 +534,7 @@ Rules and caveats:
 - `reasoning_context` accepts only `auto`, `current_turn`, or `all_turns`.
 - Enabling multi-agent without a concurrency value uses `3`. Multi-agent requests omit the normal reasoning-summary request, send the required beta header, and use HTTP/SSE even when provider WebSocket transport is enabled; WebSocket `response.inject` support is not yet implemented.
 - Programmatic tool calling requires at least one listed tool, and every name must also be present in that request's tool definitions.
-- Prompt-cache `mode` accepts `implicit` or `explicit`; the only supported explicit TTL is `30m`. Explicit content breakpoints are available through the Responses API as `prompt_cache_breakpoint: {"mode":"explicit"}`.
+- Prompt-cache `mode` accepts `implicit` or `explicit`; the only supported explicit TTL is `30m`.
 - Request-level options override populated provider defaults. Ephemeral internal requests, such as title and helper calls, do not inherit provider advanced defaults unless the caller explicitly supplies options.
 
 In terminal chat, `/pro on`, `/pro off`, and `/pro status` set the session's reasoning mode. The setting is persisted with the session and automatically disabled if you switch to a provider/model that does not support it.
