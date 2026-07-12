@@ -4,13 +4,56 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunRipgrepDrainsStderrBeyondCaptureLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake rg executable uses a POSIX shell wrapper")
+	}
+
+	fakeDir := t.TempDir()
+	fakeRG := filepath.Join(fakeDir, "rg")
+	script := "#!/bin/sh\nexec \"$FAKE_RG_TEST_BINARY\" -test.run=TestRipgrepStderrHelperProcess\n"
+	if err := os.WriteFile(fakeRG, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake rg: %v", err)
+	}
+	t.Setenv("FAKE_RG_TEST_BINARY", os.Args[0])
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, err := runRipgrep(ctx, nil, defaultRipgrepCaptureLimits(), 0, false)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("runRipgrep blocked after its stderr capture limit was reached")
+	}
+	if err == nil {
+		t.Fatal("expected fake rg failure")
+	}
+	const prefix = "ripgrep failed: "
+	if !strings.HasPrefix(err.Error(), prefix) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(err.Error()) > len(prefix)+64*1024 {
+		t.Fatalf("stderr diagnostic exceeded capture limit: %d bytes", len(err.Error())-len(prefix))
+	}
+}
+
+func TestRipgrepStderrHelperProcess(t *testing.T) {
+	if os.Getenv("FAKE_RG_TEST_BINARY") == "" {
+		return
+	}
+	_, _ = os.Stderr.Write(bytes.Repeat([]byte("x"), 4*1024*1024))
+	os.Exit(2)
+}
 
 func TestCaptureRipgrepOutputStopsNearByteCapForOversizedLine(t *testing.T) {
 	limits := ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: 1024}

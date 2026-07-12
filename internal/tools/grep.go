@@ -326,6 +326,7 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits,
 	stderrCh := make(chan []byte, 1)
 	go func() {
 		data, _ := io.ReadAll(io.LimitReader(stderr, 64*1024))
+		_, _ = io.Copy(io.Discard, stderr)
 		stderrCh <- data
 	}()
 
