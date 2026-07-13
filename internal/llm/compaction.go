@@ -1783,9 +1783,8 @@ func truncateMessageParts(msg Message, maxChars int) Message {
 		if part.Text != "" {
 			result.Parts[i].Text = TruncateToolResult(part.Text, maxChars)
 		}
-		if part.ToolResult != nil && len(part.ToolResult.Content) > maxChars {
-			tr := *part.ToolResult
-			tr.Content = TruncateToolResult(tr.Content, maxChars)
+		if part.ToolResult != nil {
+			tr := truncateToolResult(*part.ToolResult, maxChars)
 			result.Parts[i].ToolResult = &tr
 		}
 	}

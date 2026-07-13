@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -384,4 +387,126 @@ func mcpProcStatState(data []byte) (byte, bool) {
 		return 0, false
 	}
 	return stat[end+2], true
+}
+
+func TestFormatContent(t *testing.T) {
+	imagePart := func(mimeType string, data []byte) llm.ToolContentPart {
+		return llm.ToolContentPart{
+			Type: llm.ToolContentPartImageData,
+			ImageData: &llm.ToolImageData{
+				MediaType: mimeType,
+				Base64:    base64.StdEncoding.EncodeToString(data),
+			},
+		}
+	}
+	textPart := func(text string) llm.ToolContentPart {
+		return llm.ToolContentPart{Type: llm.ToolContentPartText, Text: text}
+	}
+
+	tests := []struct {
+		name    string
+		content []sdkmcp.Content
+		want    llm.ToolOutput
+	}{
+		{
+			name:    "text only compatibility",
+			content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "hello"}, &sdkmcp.TextContent{Text: " world"}},
+			want: llm.ToolOutput{
+				Content:      "hello world",
+				ContentParts: []llm.ToolContentPart{textPart("hello"), textPart(" world")},
+			},
+		},
+		{
+			name:    "image only",
+			content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "image/png", Data: []byte("png bytes")}},
+			want: llm.ToolOutput{
+				ContentParts: []llm.ToolContentPart{imagePart("image/png", []byte("png bytes"))},
+			},
+		},
+		{
+			name:    "image MIME type is case normalized",
+			content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "Image/PNG", Data: []byte("png bytes")}},
+			want: llm.ToolOutput{
+				ContentParts: []llm.ToolContentPart{imagePart("image/png", []byte("png bytes"))},
+			},
+		},
+		{
+			name:    "image MIME parameters are removed",
+			content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: `image/png; profile="example"`, Data: []byte("png bytes")}},
+			want: llm.ToolOutput{
+				ContentParts: []llm.ToolContentPart{imagePart("image/png", []byte("png bytes"))},
+			},
+		},
+		{
+			name: "mixed content preserves ordering",
+			content: []sdkmcp.Content{
+				&sdkmcp.TextContent{Text: "before"},
+				&sdkmcp.ImageContent{MIMEType: "image/webp", Data: []byte("webp bytes")},
+				&sdkmcp.TextContent{Text: "after"},
+			},
+			want: llm.ToolOutput{
+				Content: "beforeafter",
+				ContentParts: []llm.ToolContentPart{
+					textPart("before"),
+					imagePart("image/webp", []byte("webp bytes")),
+					textPart("after"),
+				},
+			},
+		},
+		{
+			name: "unsupported content is retained as text",
+			content: []sdkmcp.Content{
+				&sdkmcp.AudioContent{MIMEType: "audio/wav", Data: []byte("audio")},
+				&sdkmcp.ResourceLink{URI: "https://example.com/file", Name: "file"},
+			},
+			want: llm.ToolOutput{
+				Content: `{"type":"audio","mimeType":"audio/wav","data":"YXVkaW8="}{"type":"resource_link","uri":"https://example.com/file","name":"file"}`,
+				ContentParts: []llm.ToolContentPart{
+					textPart(`{"type":"audio","mimeType":"audio/wav","data":"YXVkaW8="}`),
+					textPart(`{"type":"resource_link","uri":"https://example.com/file","name":"file"}`),
+				},
+			},
+		},
+		{
+			name:    "empty image falls back to MCP JSON",
+			content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "image/png"}},
+			want: llm.ToolOutput{
+				Content:      `{"type":"image","mimeType":"image/png","data":""}`,
+				ContentParts: []llm.ToolContentPart{textPart(`{"type":"image","mimeType":"image/png","data":""}`)},
+			},
+		},
+		{
+			name:    "unsupported image MIME type falls back to MCP JSON",
+			content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "image/svg+xml", Data: []byte("svg")}},
+			want: llm.ToolOutput{
+				Content:      `{"type":"image","mimeType":"image/svg+xml","data":"c3Zn"}`,
+				ContentParts: []llm.ToolContentPart{textPart(`{"type":"image","mimeType":"image/svg+xml","data":"c3Zn"}`)},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := formatContent(test.content)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("formatContent() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFormatContent_JSONFailureHasVisibleFallback(t *testing.T) {
+	output := formatContent([]sdkmcp.Content{&sdkmcp.AudioContent{
+		MIMEType: "audio/wav",
+		Data:     []byte("audio"),
+		Meta:     sdkmcp.Meta{"unencodable": make(chan int)},
+	}})
+
+	if len(output.ContentParts) != 1 || output.ContentParts[0].Type != llm.ToolContentPartText {
+		t.Fatalf("ContentParts = %#v, want one text fallback", output.ContentParts)
+	}
+	if !strings.Contains(output.Content, "unsupported MCP content *mcp.AudioContent") ||
+		!strings.Contains(output.Content, "JSON encoding failed") {
+		t.Fatalf("Content = %q, want visible JSON failure fallback", output.Content)
+	}
 }

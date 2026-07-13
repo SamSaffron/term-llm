@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 const runMCPManagerTestServerEnv = "TERM_LLM_MCP_MANAGER_TEST_SERVER"
@@ -33,6 +35,24 @@ func runMCPManagerTestServer() {
 	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "greet", Description: "say hi"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args managerTestGreetingParams) (*mcpSDK.CallToolResult, any, error) {
 		return &mcpSDK.CallToolResult{
 			Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: "hi " + args.Name}},
+		}, nil, nil
+	})
+	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "mixed", Description: "return text and an image"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args struct{}) (*mcpSDK.CallToolResult, any, error) {
+		return &mcpSDK.CallToolResult{Content: []mcpSDK.Content{
+			&mcpSDK.TextContent{Text: "before"},
+			&mcpSDK.ImageContent{MIMEType: "image/png", Data: []byte("image bytes")},
+			&mcpSDK.TextContent{Text: "after"},
+		}}, nil, nil
+	})
+	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "image", Description: "return an image"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args struct{}) (*mcpSDK.CallToolResult, any, error) {
+		return &mcpSDK.CallToolResult{Content: []mcpSDK.Content{
+			&mcpSDK.ImageContent{MIMEType: "image/png", Data: []byte("image only")},
+		}}, nil, nil
+	})
+	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "failure", Description: "return a tool error"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args struct{}) (*mcpSDK.CallToolResult, any, error) {
+		return &mcpSDK.CallToolResult{
+			Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: "tool failed"}},
+			IsError: true,
 		}, nil, nil
 	})
 	if err := server.Run(context.Background(), &mcpSDK.StdioTransport{}); err != nil {
@@ -111,8 +131,50 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 	if err != nil {
 		t.Fatalf("CallTool after startup timeout elapsed: %v", err)
 	}
-	if !strings.Contains(got, "hi Ada") {
-		t.Fatalf("CallTool result = %q, want greeting", got)
+	if !strings.Contains(got.Content, "hi Ada") {
+		t.Fatalf("CallTool result = %q, want greeting", got.Content)
+	}
+	if len(got.ContentParts) != 1 || got.ContentParts[0].Type != llm.ToolContentPartText || got.ContentParts[0].Text != "hi Ada" {
+		t.Fatalf("text-only ContentParts = %#v, want one text part", got.ContentParts)
+	}
+
+	mixedTool := NewMCPTool(manager, ToolSpec{Name: "greeter__mixed"})
+	mixed, err := mixedTool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("execute mixed MCP tool: %v", err)
+	}
+	if mixed.Content != "beforeafter" {
+		t.Fatalf("mixed Content = %q, want %q", mixed.Content, "beforeafter")
+	}
+	if len(mixed.ContentParts) != 3 ||
+		mixed.ContentParts[0].Type != llm.ToolContentPartText || mixed.ContentParts[0].Text != "before" ||
+		mixed.ContentParts[1].Type != llm.ToolContentPartImageData || mixed.ContentParts[1].ImageData == nil ||
+		mixed.ContentParts[1].ImageData.MediaType != "image/png" ||
+		mixed.ContentParts[1].ImageData.Base64 != base64.StdEncoding.EncodeToString([]byte("image bytes")) ||
+		mixed.ContentParts[2].Type != llm.ToolContentPartText || mixed.ContentParts[2].Text != "after" {
+		t.Fatalf("mixed ContentParts = %#v, want ordered text/image/text", mixed.ContentParts)
+	}
+
+	imageOnly, err := manager.CallTool(context.Background(), "greeter__image", nil)
+	if err != nil {
+		t.Fatalf("call image-only MCP tool: %v", err)
+	}
+	if imageOnly.Content != "" || len(imageOnly.ContentParts) != 1 ||
+		imageOnly.ContentParts[0].Type != llm.ToolContentPartImageData || imageOnly.ContentParts[0].ImageData == nil {
+		t.Fatalf("image-only result = %#v, want one structured image", imageOnly)
+	}
+
+	failure, err := manager.CallTool(context.Background(), "greeter__failure", nil)
+	if err != nil {
+		t.Fatalf("MCP IsError result should remain a tool output, got error: %v", err)
+	}
+	if !failure.IsError || failure.Content != "tool failed" || len(failure.ContentParts) != 1 {
+		t.Fatalf("failure result = %#v, want preserved content with IsError", failure)
+	}
+
+	_, err = manager.CallTool(context.Background(), "greeter__greet", json.RawMessage("{"))
+	if err == nil || !strings.Contains(err.Error(), "invalid tool arguments") {
+		t.Fatalf("malformed arguments error = %v, want invalid tool arguments", err)
 	}
 }
 

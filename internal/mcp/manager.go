@@ -350,11 +350,11 @@ func (m *Manager) AllTools() []ToolSpec {
 
 // CallTool routes a tool call to the appropriate MCP server.
 // Tool names should be prefixed with "servername__".
-func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMessage) (string, error) {
+func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMessage) (llm.ToolOutput, error) {
 	// Parse server name from tool name
 	serverName, toolName := parseToolName(fullName)
 	if serverName == "" {
-		return "", fmt.Errorf("invalid MCP tool name: %s (expected servername__toolname)", fullName)
+		return llm.ToolOutput{}, fmt.Errorf("invalid MCP tool name: %s (expected servername__toolname)", fullName)
 	}
 
 	m.mu.RLock()
@@ -362,7 +362,7 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMe
 	m.mu.RUnlock()
 
 	if !ok || state.Status != StatusReady || state.Client == nil {
-		return "", fmt.Errorf("MCP server %s is not running", serverName)
+		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", serverName)
 	}
 
 	return state.Client.CallTool(ctx, toolName, args)

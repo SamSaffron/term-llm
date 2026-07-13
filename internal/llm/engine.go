@@ -850,21 +850,21 @@ func (e *Engine) continueWithAutoInterjections(ctx context.Context, send eventSe
 }
 
 // applyToolOutputTruncation applies global and compaction truncation limits
-// to tool output content. Global limit fires first (typically stricter),
-// then compaction limit as a secondary safety net.
-func (e *Engine) applyToolOutputTruncation(content string) string {
+// to all textual tool output, including structured content parts. Global limit
+// fires first (typically stricter), then compaction limit as a safety net.
+func (e *Engine) applyToolOutputTruncation(output ToolOutput) ToolOutput {
 	e.callbackMu.RLock()
 	maxChars := e.maxToolOutputChars
 	cc := e.compactionConfig
 	e.callbackMu.RUnlock()
 
 	if maxChars > 0 {
-		content = TruncateToolResult(content, maxChars)
+		output = truncateToolOutput(output, maxChars)
 	}
 	if cc != nil && cc.MaxToolResultChars > 0 {
-		content = TruncateToolResult(content, cc.MaxToolResultChars)
+		output = truncateToolOutput(output, cc.MaxToolResultChars)
 	}
-	return content
+	return output
 }
 
 // getCompactionCallback returns the current compaction callback under read lock.
@@ -3193,7 +3193,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 
 	// Truncate large tool outputs (global limit, then compaction limit).
 	if err == nil {
-		output.Content = e.applyToolOutputTruncation(output.Content)
+		output = e.applyToolOutputTruncation(output)
 	}
 
 	if err != nil {
@@ -3275,7 +3275,7 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 
 	// Truncate large tool outputs (global limit, then compaction limit).
 	if err == nil {
-		result.Content = e.applyToolOutputTruncation(result.Content)
+		result = e.applyToolOutputTruncation(result)
 	}
 
 	// Debug logging

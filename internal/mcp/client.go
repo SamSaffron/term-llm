@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
@@ -269,21 +272,21 @@ func (c *Client) refreshTools(ctx context.Context) error {
 }
 
 // CallTool invokes a tool on the MCP server.
-func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage) (llm.ToolOutput, error) {
 	c.mu.RLock()
 	session := c.session
 	running := c.running
 	c.mu.RUnlock()
 
 	if !running || session == nil {
-		return "", fmt.Errorf("MCP server %s is not running", c.name)
+		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", c.name)
 	}
 
 	// Parse arguments
 	var arguments map[string]any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &arguments); err != nil {
-			return "", fmt.Errorf("invalid tool arguments: %w", err)
+			return llm.ToolOutput{}, fmt.Errorf("invalid tool arguments: %w", err)
 		}
 	}
 
@@ -292,29 +295,86 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 		Arguments: arguments,
 	})
 	if err != nil {
-		return "", fmt.Errorf("call tool %s: %w", name, err)
+		return llm.ToolOutput{}, fmt.Errorf("call tool %s: %w", name, err)
 	}
 
-	if result.IsError {
-		return "", fmt.Errorf("tool %s returned error: %s", name, formatContent(result.Content))
-	}
-
-	return formatContent(result.Content), nil
+	output := formatContent(result.Content)
+	output.IsError = result.IsError
+	return output, nil
 }
 
-// formatContent converts MCP content to a string.
-func formatContent(content []mcp.Content) string {
-	var sb strings.Builder
-	for _, c := range content {
-		switch v := c.(type) {
+// formatContent converts MCP content to ordered LLM tool-result content. Content
+// remains the concatenation of all textual parts for callers and providers that
+// only understand text.
+func formatContent(content []mcp.Content) llm.ToolOutput {
+	output := llm.ToolOutput{
+		ContentParts: make([]llm.ToolContentPart, 0, len(content)),
+	}
+	var text strings.Builder
+
+	for _, contentPart := range content {
+		switch part := contentPart.(type) {
 		case *mcp.TextContent:
-			sb.WriteString(v.Text)
-		default:
-			// For other content types, try JSON encoding
-			if data, err := json.Marshal(c); err == nil {
-				sb.WriteString(string(data))
+			if part == nil {
+				appendTextContentPart(&output, &text, fallbackContent(part))
+				continue
 			}
+			appendTextContentPart(&output, &text, part.Text)
+		case *mcp.ImageContent:
+			if mediaType, ok := supportedImageMediaType(part); ok {
+				output.ContentParts = append(output.ContentParts, llm.ToolContentPart{
+					Type: llm.ToolContentPartImageData,
+					ImageData: &llm.ToolImageData{
+						MediaType: mediaType,
+						Base64:    base64.StdEncoding.EncodeToString(part.Data),
+					},
+				})
+				continue
+			}
+			appendTextContentPart(&output, &text, fallbackContent(part))
+		default:
+			// The current LLM result model cannot represent audio or resources.
+			// Keep their MCP JSON as text rather than silently dropping them.
+			appendTextContentPart(&output, &text, fallbackContent(contentPart))
 		}
 	}
-	return sb.String()
+
+	output.Content = text.String()
+	if len(output.ContentParts) == 0 {
+		output.ContentParts = nil
+	}
+	return output
+}
+
+func appendTextContentPart(output *llm.ToolOutput, text *strings.Builder, content string) {
+	output.ContentParts = append(output.ContentParts, llm.ToolContentPart{
+		Type: llm.ToolContentPartText,
+		Text: content,
+	})
+	text.WriteString(content)
+}
+
+func supportedImageMediaType(content *mcp.ImageContent) (string, bool) {
+	if content == nil || len(content.Data) == 0 {
+		return "", false
+	}
+	mediaType, _, err := mime.ParseMediaType(content.MIMEType)
+	if err != nil {
+		return "", false
+	}
+	mediaType = strings.ToLower(mediaType)
+	switch mediaType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return mediaType, true
+	default:
+		return "", false
+	}
+}
+
+func fallbackContent(content mcp.Content) string {
+	data, err := json.Marshal(content)
+	if err == nil {
+		return string(data)
+	}
+	return fmt.Sprintf("[unsupported MCP content %T; JSON encoding failed: %v]", content, err)
 }
