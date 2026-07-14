@@ -1541,6 +1541,39 @@ func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
 	}
 }
 
+func TestCallbackStreamSeparatesReasoningItemsForPersistence(t *testing.T) {
+	inner := &sliceStream{events: []Event{
+		{Type: EventReasoningDelta, Text: "**Drafting joke**", ReasoningKind: ReasoningKindSummary, ReasoningItemID: "rs_1"},
+		{Type: EventReasoningDelta, ReasoningKind: ReasoningKindSummary, ReasoningItemID: "rs_2"},
+		{Type: EventReasoningDelta, Text: "**Evaluating joke**", ReasoningKind: ReasoningKindSummary, ReasoningItemID: "rs_2"},
+	}}
+	var persisted Message
+	stream := wrapCallbackStream(context.Background(), inner, func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		persisted = messages[0]
+		return nil
+	})
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+	}
+
+	if len(persisted.Parts) != 1 {
+		t.Fatalf("persisted parts = %d, want 1", len(persisted.Parts))
+	}
+	if got, want := persisted.Parts[0].ReasoningContent, "**Drafting joke**\n\n**Evaluating joke**"; got != want {
+		t.Fatalf("persisted reasoning content = %q, want %q", got, want)
+	}
+	if got, want := persisted.Parts[0].ReasoningItemID, "rs_2"; got != want {
+		t.Fatalf("persisted reasoning item ID = %q, want %q", got, want)
+	}
+}
+
 func TestRunLoopPersistsDeduplicatedCumulativeReasoningSummary(t *testing.T) {
 	events := cumulativeReasoningEvents(t)
 	for i, event := range events {

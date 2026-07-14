@@ -1259,11 +1259,14 @@ func wrapCallbackStream(ctx context.Context, inner Stream, cb TurnCompletedCallb
 
 // callbackStream wraps a stream to accumulate text/usage and call callback on EOF.
 type callbackStream struct {
-	inner                 Stream
-	ctx                   context.Context
-	mu                    sync.Mutex
-	text                  *strings.Builder
-	reasoning             *strings.Builder
+	inner     Stream
+	ctx       context.Context
+	mu        sync.Mutex
+	text      *strings.Builder
+	reasoning *strings.Builder
+	// reasoningTextItemID tracks only text-bearing items for display boundaries;
+	// reasoningItemID also tracks metadata-only events for provider replay.
+	reasoningTextItemID   string
 	reasoningItemID       string
 	reasoningEncrypted    string
 	reasoningKind         ReasoningKind
@@ -1293,6 +1296,7 @@ func (s *callbackStream) Recv() (Event, error) {
 	if event.Type == EventAttemptDiscard {
 		s.text.Reset()
 		s.reasoning.Reset()
+		s.reasoningTextItemID = ""
 		s.reasoningItemID = ""
 		s.reasoningEncrypted = ""
 		s.reasoningKind = ""
@@ -1310,8 +1314,8 @@ func (s *callbackStream) Recv() (Event, error) {
 		s.metrics.CacheWriteTokens += event.Use.CacheWriteTokens
 	}
 	if event.Type == EventReasoningDelta {
+		internalreasoning.AppendStreamItemText(s.reasoning, &s.reasoningTextItemID, event.Text, event.ReasoningItemID)
 		if event.Text != "" {
-			s.reasoning.WriteString(event.Text)
 			s.reasoningKind = MergeReasoningKind(s.reasoningKind, event.ReasoningKind)
 		}
 		if len(event.ReasoningSummaryParts) > 0 {
@@ -1432,6 +1436,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 		var scratchpad []Event
 		var textBuilder strings.Builder
 		var reasoningBuilder strings.Builder
+		var reasoningTextItemID string
 		var reasoningItemID string
 		var reasoningEncryptedContent string
 		var reasoningSummaryParts []string
@@ -1470,8 +1475,8 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 					return err
 				}
 			case EventReasoningDelta:
+				internalreasoning.AppendStreamItemText(&reasoningBuilder, &reasoningTextItemID, event.Text, event.ReasoningItemID)
 				if event.Text != "" {
-					reasoningBuilder.WriteString(event.Text)
 					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
 				if event.ReasoningItemID != "" {
@@ -1932,6 +1937,7 @@ turnLoop:
 		var toolCalls []ToolCall
 		var textBuilder strings.Builder
 		var reasoningBuilder strings.Builder // For reasoning summary/thinking content
+		var reasoningTextItemID string
 		var reasoningItemID string
 		var reasoningEncryptedContent string
 		var reasoningSummaryParts []string
@@ -2341,6 +2347,7 @@ turnLoop:
 			if event.Type == EventAttemptDiscard {
 				textBuilder.Reset()
 				reasoningBuilder.Reset()
+				reasoningTextItemID = ""
 				reasoningItemID = ""
 				reasoningEncryptedContent = ""
 				reasoningSummaryParts = nil
@@ -2412,9 +2419,11 @@ turnLoop:
 				continue
 			}
 			// Accumulate reasoning for thinking models (OpenRouter)
-			if event.Type == EventReasoningDelta && event.Text != "" {
-				reasoningBuilder.WriteString(event.Text)
-				reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
+			if event.Type == EventReasoningDelta {
+				internalreasoning.AppendStreamItemText(&reasoningBuilder, &reasoningTextItemID, event.Text, event.ReasoningItemID)
+				if event.Text != "" {
+					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
+				}
 			}
 			if event.Type == EventReasoningDelta {
 				if len(event.ReasoningSummaryParts) > 0 {

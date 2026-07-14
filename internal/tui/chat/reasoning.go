@@ -33,6 +33,7 @@ func (m *Model) resetCurrentReasoning() {
 
 func (m *Model) resetActiveReasoning() {
 	m.currentReasoning.Reset()
+	m.currentReasoningItemID = ""
 	m.currentReasoningKind = ""
 	m.currentReasoningTitle = ""
 	m.currentReasoningExpanded = nil
@@ -49,8 +50,8 @@ func (m *Model) handleReasoningStreamEvent(ev ui.StreamEvent) {
 	if !internalreasoning.IsDisplayable(string(kind), cfg) {
 		return
 	}
+	internalreasoning.AppendStreamItemText(&m.currentReasoning, &m.currentReasoningItemID, ev.ReasoningText, ev.ReasoningItemID)
 	if ev.ReasoningText != "" {
-		m.currentReasoning.WriteString(ev.ReasoningText)
 		m.mergeCurrentReasoningKind(kind)
 		limited := internalreasoning.LimitReasoningText(string(kind), m.currentReasoning.String(), cfg)
 		if limited != m.currentReasoning.String() {

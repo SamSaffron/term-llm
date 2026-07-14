@@ -9,6 +9,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
 const (
@@ -558,6 +560,7 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 
 	var brief strings.Builder
 	var reasoningSummary strings.Builder
+	var reasoningSummaryItemID string
 	var usage Usage
 	for {
 		event, err := stream.Recv()
@@ -572,12 +575,13 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 			brief.WriteString(event.Text)
 		case EventReasoningDelta:
 			if isDisplayableReasoningSummaryEvent(event) {
-				if event.Text != "" {
-					reasoningSummary.WriteString(event.Text)
-				}
+				internalreasoning.AppendStreamItemText(&reasoningSummary, &reasoningSummaryItemID, event.Text, event.ReasoningItemID)
 				if len(event.ReasoningSummaryParts) > 0 {
 					reasoningSummary.Reset()
 					reasoningSummary.WriteString(strings.Join(event.ReasoningSummaryParts, "\n\n"))
+					if event.ReasoningItemID != "" {
+						reasoningSummaryItemID = event.ReasoningItemID
+					}
 				}
 			}
 		case EventUsage:
@@ -587,6 +591,7 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 		case EventAttemptDiscard:
 			brief.Reset()
 			reasoningSummary.Reset()
+			reasoningSummaryItemID = ""
 			usage = Usage{}
 		}
 	}
@@ -1527,6 +1532,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// Collect the structured continuation brief.
 	var brief strings.Builder
 	var reasoningSummary strings.Builder
+	var reasoningSummaryItemID string
 	var usage Usage
 	for {
 		event, err := stream.Recv()
@@ -1541,12 +1547,13 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 			brief.WriteString(event.Text)
 		case EventReasoningDelta:
 			if isDisplayableReasoningSummaryEvent(event) {
-				if event.Text != "" {
-					reasoningSummary.WriteString(event.Text)
-				}
+				internalreasoning.AppendStreamItemText(&reasoningSummary, &reasoningSummaryItemID, event.Text, event.ReasoningItemID)
 				if len(event.ReasoningSummaryParts) > 0 {
 					reasoningSummary.Reset()
 					reasoningSummary.WriteString(strings.Join(event.ReasoningSummaryParts, "\n\n"))
+					if event.ReasoningItemID != "" {
+						reasoningSummaryItemID = event.ReasoningItemID
+					}
 				}
 			}
 		case EventUsage:
@@ -1556,6 +1563,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		case EventAttemptDiscard:
 			brief.Reset()
 			reasoningSummary.Reset()
+			reasoningSummaryItemID = ""
 			usage = Usage{}
 		}
 	}

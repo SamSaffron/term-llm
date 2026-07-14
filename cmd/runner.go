@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -752,11 +753,12 @@ func (f eventSinkFunc) Event(ev llm.Event) {
 type runnerEventCollector struct {
 	sink runpkg.EventSink
 
-	thinking strings.Builder
-	response strings.Builder
-	turns    int
-	input    int
-	output   int
+	thinking       strings.Builder
+	thinkingItemID string
+	response       strings.Builder
+	turns          int
+	input          int
+	output         int
 }
 
 func (c *runnerEventCollector) Event(ev llm.Event) error {
@@ -765,7 +767,7 @@ func (c *runnerEventCollector) Event(ev llm.Event) error {
 	}
 	switch ev.Type {
 	case llm.EventReasoningDelta:
-		c.thinking.WriteString(ev.Text)
+		internalreasoning.AppendStreamItemText(&c.thinking, &c.thinkingItemID, ev.Text, ev.ReasoningItemID)
 	case llm.EventTextDelta:
 		c.response.WriteString(ev.Text)
 	case llm.EventUsage:

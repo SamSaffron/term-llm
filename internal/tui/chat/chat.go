@@ -96,11 +96,12 @@ type Model struct {
 
 	// Reasoning display/status state. Provider replay metadata is persisted in
 	// assistant parts by the LLM engine; these fields only affect live UI policy.
-	reasoningConfig       config.ReasoningConfig
-	reasoningModeOverride string
-	currentReasoning      strings.Builder
-	currentReasoningKind  llm.ReasoningKind
-	currentReasoningTitle string
+	reasoningConfig        config.ReasoningConfig
+	reasoningModeOverride  string
+	currentReasoning       strings.Builder
+	currentReasoningItemID string
+	currentReasoningKind   llm.ReasoningKind
+	currentReasoningTitle  string
 	// Per-block expansion override for the live (uncommitted) reasoning
 	// block; carried onto the segment when it is committed to the tracker.
 	currentReasoningExpanded *bool

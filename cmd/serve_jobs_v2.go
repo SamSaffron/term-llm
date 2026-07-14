@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -406,12 +407,13 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 		ctx = tools.WithHubDelegationID(ctx, delegationID)
 	}
 	var thinkingBuilder strings.Builder
+	var thinkingItemID string
 	var responseBuilder strings.Builder
 	progressTracker := newProgressTracker()
 	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
 		switch ev.Type {
 		case llm.EventReasoningDelta:
-			thinkingBuilder.WriteString(ev.Text)
+			internalreasoning.AppendStreamItemText(&thinkingBuilder, &thinkingItemID, ev.Text, ev.ReasoningItemID)
 		case llm.EventTextDelta:
 			if !cfg.Progressive {
 				responseBuilder.WriteString(ev.Text)

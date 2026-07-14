@@ -1728,10 +1728,11 @@ type askStreamModel struct {
 
 	// Reasoning status title state. Ask keeps summaries out of stdout/plain text
 	// by default, but can use safe summary titles for the live TUI status.
-	reasoningConfig       config.ReasoningConfig
-	currentReasoning      *strings.Builder
-	currentReasoningTitle string
-	reasoningPhaseActive  bool
+	reasoningConfig        config.ReasoningConfig
+	currentReasoning       *strings.Builder
+	currentReasoningItemID string
+	currentReasoningTitle  string
+	reasoningPhaseActive   bool
 
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
@@ -1960,6 +1961,7 @@ func (m *askStreamModel) resetCurrentReasoning() {
 	if m.currentReasoning != nil {
 		m.currentReasoning.Reset()
 	}
+	m.currentReasoningItemID = ""
 	m.currentReasoningTitle = ""
 	m.reasoningPhaseActive = false
 }
@@ -2233,9 +2235,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cfg := m.reasoningConfig
 		kind := llm.NormalizeReasoningKind(ev.ReasoningKind)
 		if internalreasoning.IsDisplayable(string(kind), cfg) && internalreasoning.StatusEnabled(cfg) {
-			if ev.ReasoningText != "" {
-				m.reasoningBuilder().WriteString(ev.ReasoningText)
-			}
+			internalreasoning.AppendStreamItemText(m.reasoningBuilder(), &m.currentReasoningItemID, ev.ReasoningText, ev.ReasoningItemID)
 			title := strings.TrimSpace(ev.ReasoningTitle)
 			if title == "" && kind == llm.ReasoningKindSummary {
 				reasoningText := m.currentReasoningString()

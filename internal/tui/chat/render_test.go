@@ -1833,6 +1833,35 @@ func TestChatReasoningSummaryUpdatesThinkingStatus(t *testing.T) {
 	}
 }
 
+func TestChatReasoningSeparatesDifferentProviderItems(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+
+	for _, event := range []ui.StreamEvent{
+		ui.ReasoningEvent(llm.ReasoningKindSummary, "**Drafting bilingual couples therapy joke**", "", "rs_1", false, true),
+		ui.ReasoningEvent(llm.ReasoningKindSummary, "", "", "rs_1", true, true),
+		ui.ReasoningEvent(llm.ReasoningKindSummary, "**Evaluating bilingual joke options**", "", "rs_2", false, true),
+	} {
+		updated, _ := m.Update(streamEventMsg{event: event})
+		m = updated.(*Model)
+	}
+
+	if got, want := m.currentReasoning.String(), "**Drafting bilingual couples therapy joke**\n\n**Evaluating bilingual joke options**"; got != want {
+		t.Fatalf("reasoning content = %q, want %q", got, want)
+	}
+
+	m.reasoningConfig = config.DefaultReasoningConfig()
+	m.reasoningConfig.Display = config.ReasoningDisplayExpanded
+	rendered := ui.StripANSI(m.renderCurrentReasoningBlock())
+	if strings.Contains(rendered, "**") {
+		t.Fatalf("rendered reasoning should consume markdown markers, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Drafting bilingual couples therapy joke") || !strings.Contains(rendered, "Evaluating bilingual joke options") {
+		t.Fatalf("rendered reasoning should include both formatted summaries, got %q", rendered)
+	}
+}
+
 func TestChatReasoningRawAccumulatesWithoutStatusTitleByDefault(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
