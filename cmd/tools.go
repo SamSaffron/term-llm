@@ -46,6 +46,17 @@ func newEngine(provider llm.Provider, cfg *config.Config) *llm.Engine {
 	return engine
 }
 
+// newBareEngine creates an Engine with an EMPTY tool registry: no web_search,
+// read_url, skills, MCP, or agent tools. Unlike newEngine (which always seeds
+// web_search/read_url via defaultToolRegistry), this leaves the model with zero
+// server-executable tools. It backs the capability proxy's locked-down
+// pass-through runtime, where any server-side tool execution is disallowed.
+func newBareEngine(provider llm.Provider, cfg *config.Config) *llm.Engine {
+	engine := llm.NewEngine(provider, llm.NewToolRegistry())
+	engine.SetMaxToolOutputChars(cfg.Tools.MaxToolOutputChars)
+	return engine
+}
+
 // buildToolConfig creates a ToolConfig from CLI flags and config defaults.
 func buildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string, cfg *config.Config) tools.ToolConfig {
 	// Start with config defaults

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var knownPlatforms = map[string]bool{"web": true, "api": true, "jobs": true, "telegram": true}
+var knownPlatforms = map[string]bool{"web": true, "api": true, "jobs": true, "telegram": true, "proxy": true}
 
 // ResolvePlatforms returns the list of platforms to serve. Positional args take
 // precedence; if none are given, configPlatforms (from config.yaml
@@ -29,7 +29,7 @@ func ResolvePlatforms(args []string, configPlatforms []string) ([]string, error)
 			continue
 		}
 		if !knownPlatforms[p] {
-			return nil, fmt.Errorf("unknown platform %q (valid: web, api, jobs, telegram)", p)
+			return nil, fmt.Errorf("unknown platform %q (valid: web, api, jobs, telegram, proxy)", p)
 		}
 		if !seen[p] {
 			seen[p] = true

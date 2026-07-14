@@ -2472,6 +2472,11 @@ func (s *serveServer) unregisterSessionResponseIDs(sessionID string) {
 }
 
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
+	// Proxy mode pins the request to a granted provider/model. This is a no-op
+	// for ordinary serve requests (no forced route in context).
+	if route, ok := proxyForcedRouteFromContext(ctx); ok && s.runtimeFactory != nil {
+		return s.runtimeForProviderModelRequest(ctx, sessionID, route.Provider, route.Model)
+	}
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)
 		rt, err := s.sessionMgr.factory(ctx)
@@ -2534,6 +2539,13 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	}
 	providerName = strings.TrimSpace(providerName)
 	modelName = strings.TrimSpace(modelName)
+	// Proxy mode: the authorization gate has already resolved and vetted the
+	// upstream route, so it takes precedence over any provider/model the client
+	// supplied in the request body (preventing grant bypass).
+	if route, ok := proxyForcedRouteFromContext(ctx); ok {
+		providerName = route.Provider
+		modelName = route.Model
+	}
 	if sessionID == "" {
 		rt, err := s.runtimeFactory(ctx, providerName, modelName)
 		if err != nil {
@@ -2585,6 +2597,16 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
 	}
 	providerName = strings.TrimSpace(providerName)
+	forcedModel := ""
+	forcedRoute := false
+	// Proxy mode pins both provider and model at the authorization gate. Fresh
+	// Responses API conversations use this separate path, so honor the route here
+	// as well as in runtimeForProviderModelRequest.
+	if route, ok := proxyForcedRouteFromContext(ctx); ok {
+		providerName = route.Provider
+		forcedModel = route.Model
+		forcedRoute = true
+	}
 	desiredProvider := providerName
 	if desiredProvider == "" {
 		desiredProvider = defaultProvider
@@ -2593,9 +2615,9 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		desiredProvider = ""
 	}
 	create := s.sessionMgr.factory
-	if s.runtimeFactory != nil && providerName != "" && providerName != defaultProvider {
+	if s.runtimeFactory != nil && (forcedRoute || (providerName != "" && providerName != defaultProvider)) {
 		create = func(ctx context.Context) (*serveRuntime, error) {
-			return s.runtimeFactory(ctx, providerName, "")
+			return s.runtimeFactory(ctx, providerName, forcedModel)
 		}
 	}
 	if sessionID == "" {

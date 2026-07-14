@@ -87,9 +87,29 @@ Available platforms:
   api        HTTP server with API endpoints only (no UI)
   jobs       HTTP server with async job runner
   telegram   Telegram bot
+  proxy      Standalone capability proxy (mutually exclusive)
 
 Platforms are specified as positional arguments. If none are given, the
 serve.platforms list from config.yaml is used.
+
+The proxy platform (PROTOTYPE) runs a standalone capability proxy that exports a
+curated set of provider/model aliases to API clients. It reuses the OpenAI
+Responses/Chat and Anthropic Messages handlers behind a per-client grant check,
+with a separate admin token (--proxy-admin-token) from the per-client bearer
+tokens it issues. Clients calling an un-granted model get a structured 403 and a
+deduplicated pending access request (capped per client). State (clients,
+hashed+expiring tokens, grants, access requests, audit) is persisted in a local
+SQLite database (--proxy-db). Session and response-chaining state is isolated
+per client, and the runtime is a pure pass-through: no server tools, skills,
+system prompt, or agent memory. The admin token is always required, even in
+loopback no-auth mode. Prototype limits: single admin token, no per-token
+throughput quotas.
+
+  # run a proxy that exports whatever providers are configured (incl. claude-bin)
+  term-llm serve proxy --port 8081
+  # admin APIs:  {base}/admin/proxy/clients|tokens|grants|requests|audit
+  # client APIs: POST {base}/v1/responses|chat/completions|messages,
+  #              GET  {base}/v1/models, POST {base}/v1/proxy/access-requests
 
 Examples:
   term-llm serve web             # web server with UI enabled
@@ -192,6 +212,7 @@ func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete strin
 		"api\tHTTP server with API endpoints only (no UI)",
 		"jobs\tAsync job runner with HTTP management API",
 		"telegram\tTelegram bot",
+		"proxy\tStandalone capability proxy (mutually exclusive)",
 	}
 
 	// Filter out already-selected platforms
@@ -304,6 +325,26 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	hasAPI := platformContains(platformNames, "api")
 	hasTelegram := platformContains(platformNames, "telegram")
 
+	// Apply and validate the shared HTTP base path before any platform-specific
+	// early return, including the standalone proxy surface.
+	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
+		serveBasePath = cfg.Serve.BasePath
+	}
+	serveBasePath, err = normalizeBasePath(serveBasePath)
+	if err != nil {
+		return err
+	}
+
+	// The proxy platform is a mutually-exclusive standalone capability proxy:
+	// it reuses the provider protocol handlers behind a per-client grant gate
+	// and cannot be combined with the web/api/jobs/telegram platforms.
+	if err := ensureProxyExclusive(platformNames); err != nil {
+		return err
+	}
+	if platformContains(platformNames, "proxy") {
+		return runServeProxy(ctx, cmd, cfg, requireAuth)
+	}
+
 	// Auto-generate VAPID keys for web push if not already configured.
 	if hasWeb && (cfg.Serve.WebPush.VAPIDPublicKey == "" || cfg.Serve.WebPush.VAPIDPrivateKey == "") {
 		privKey, pubKey, genErr := webpush.GenerateVAPIDKeys()
@@ -320,15 +361,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 		cfg.Serve.WebPush = wpCfg
 		log.Println("generated VAPID keys for web push (saved to config)")
-	}
-
-	// Apply config fallback for base-path if not set via flag
-	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
-		serveBasePath = cfg.Serve.BasePath
-	}
-	serveBasePath, err = normalizeBasePath(serveBasePath)
-	if err != nil {
-		return err
 	}
 
 	resolvedTitle := strings.TrimSpace(serveTitle)

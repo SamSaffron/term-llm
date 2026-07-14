@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -592,13 +593,15 @@ func decodeJSONBody(r *http.Request, dst any) error {
 func resolveRequestSessionID(r *http.Request) string {
 	sessionID := strings.TrimSpace(r.Header.Get("session_id"))
 	if sessionID != "" {
-		return sessionID
+		// Scope client-supplied session IDs to the caller's namespace so two
+		// proxy clients reusing the same session_id cannot share a runtime.
+		return namespaceSessionID(serveSessionNamespace(r.Context()), sessionID)
 	}
 	return ""
 }
 
-func ensureSessionID(w http.ResponseWriter) string {
-	sessionID := session.NewID()
+func ensureSessionID(ctx context.Context, w http.ResponseWriter) string {
+	sessionID := namespaceSessionID(serveSessionNamespace(ctx), session.NewID())
 	w.Header().Set("x-session-id", sessionID)
 	return sessionID
 }

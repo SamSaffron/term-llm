@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#10131a">
+  <title>Proxy Admin · term-llm</title>
+  <link rel="stylesheet" href="proxy-admin.css">
+  <script src="proxy-admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand" type="button" data-page="overview" aria-label="Proxy overview">
+      <span class="brand-mark" aria-hidden="true">↗</span>
+      <span><strong>term-llm</strong><small>Proxy admin</small></span>
+    </button>
+    <div class="top-actions">
+      <span id="connectionState" class="connection"><i></i><span>Connecting</span></span>
+      <button id="refreshButton" class="icon-button" type="button" title="Refresh" aria-label="Refresh current page">↻</button>
+      <button id="lockButton" class="icon-button" type="button" title="Lock" aria-label="Lock admin UI">⌁</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="nav" aria-label="Proxy administration">
+      <button class="active" type="button" data-page="overview"><span>⌂</span>Overview</button>
+      <button type="button" data-page="clients"><span>♙</span>Clients</button>
+      <button type="button" data-page="models"><span>◇</span>Models</button>
+      <button type="button" data-page="requests"><span>✓</span>Requests <b id="requestBadge" hidden>0</b></button>
+      <button type="button" data-page="activity"><span>≋</span>Activity</button>
+    </nav>
+
+    <main id="main" tabindex="-1">
+      <div id="flash" class="flash" role="status" aria-live="polite" hidden></div>
+
+      <section id="page-overview" class="page active" aria-labelledby="overviewTitle">
+        <div class="page-head"><div><p class="eyebrow">Control plane</p><h1 id="overviewTitle">Overview</h1><p>Clients, credentials, and model access at a glance.</p></div></div>
+        <div id="stats" class="stats" aria-label="Proxy statistics"></div>
+        <div class="overview-grid">
+          <article class="panel"><div class="panel-head"><div><h2>Pending requests</h2><p>Access waiting for review</p></div><button class="text-button" type="button" data-page="requests">Review all</button></div><div id="overviewRequests" class="compact-list"></div></article>
+          <article class="panel"><div class="panel-head"><div><h2>Recent activity</h2><p>Latest control-plane events</p></div><button class="text-button" type="button" data-page="activity">View audit</button></div><div id="overviewActivity" class="compact-list"></div></article>
+        </div>
+      </section>
+
+      <section id="page-clients" class="page" aria-labelledby="clientsTitle">
+        <div class="page-head"><div><p class="eyebrow">Consumers</p><h1 id="clientsTitle">Clients</h1><p>Manage identities and their credentials.</p></div><button id="createClientButton" class="button primary" type="button">+ New client</button></div>
+        <div id="clientsList" class="card-list"></div>
+      </section>
+
+      <section id="page-models" class="page" aria-labelledby="modelsTitle">
+        <div class="page-head"><div><p class="eyebrow">Capabilities</p><h1 id="modelsTitle">Models & grants</h1><p>Choose which provider models each client may call.</p></div></div>
+        <div class="toolbar"><label>Client<select id="grantClientSelect"></select></label><label class="search">Search<input id="modelSearch" type="search" placeholder="Provider or model"></label></div>
+        <form id="manualGrantForm" class="inline-form"><input id="grantProvider" required placeholder="Provider"><input id="grantModel" required placeholder="Model or *"><input id="grantNote" placeholder="Note (optional)"><button class="button primary" type="submit">Grant</button></form>
+        <div id="modelsList" class="model-list"></div>
+      </section>
+
+      <section id="page-requests" class="page" aria-labelledby="requestsTitle">
+        <div class="page-head"><div><p class="eyebrow">Inbox</p><h1 id="requestsTitle">Access requests</h1><p>Approve or deny requested capabilities.</p></div></div>
+        <div class="segmented" id="requestFilters" role="group" aria-label="Request status"><button class="active" data-status="pending" type="button">Pending</button><button data-status="approved" type="button">Approved</button><button data-status="denied" type="button">Denied</button><button data-status="" type="button">All</button></div>
+        <div id="requestsList" class="card-list"></div>
+      </section>
+
+      <section id="page-activity" class="page" aria-labelledby="activityTitle">
+        <div class="page-head"><div><p class="eyebrow">Audit trail</p><h1 id="activityTitle">Activity</h1><p>Recent authorization and administration events.</p></div></div>
+        <div class="toolbar"><label>Client<select id="auditClientSelect"><option value="">All clients</option></select></label><label>Rows<select id="auditLimit"><option>50</option><option selected>200</option><option>500</option></select></label></div>
+        <div id="auditList" class="audit-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="authModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <form id="authForm" class="modal auth-modal">
+      <span class="modal-icon">↗</span><p class="eyebrow">term-llm proxy</p><h2 id="authTitle">Unlock administration</h2><p>Enter the admin token printed when the proxy started. It stays in memory only and is cleared when you lock or close this tab.</p>
+      <label>Admin token<input id="adminTokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste admin token"></label>
+      <div id="authError" class="form-error" role="alert"></div><button class="button primary wide" type="submit">Connect</button>
+    </form>
+  </div>
+
+  <div id="clientModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="clientModalTitle" hidden>
+    <form id="clientForm" class="modal"><div class="modal-head"><h2 id="clientModalTitle">Create client</h2><button type="button" class="icon-button close-modal" aria-label="Close">×</button></div><label>Name<input id="clientName" required maxlength="120" autocomplete="off" placeholder="Build agent"></label><label>Description<textarea id="clientDescription" rows="3" maxlength="500" placeholder="What this client is used for"></textarea></label><div class="modal-actions"><button type="button" class="button secondary close-modal">Cancel</button><button class="button primary" type="submit">Create client</button></div></form>
+  </div>
+
+  <div id="clientDetailModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="detailTitle" hidden>
+    <div class="modal modal-wide"><div class="modal-head"><div><p class="eyebrow">Client</p><h2 id="detailTitle"></h2></div><button type="button" class="icon-button close-modal" aria-label="Close">×</button></div><p id="detailDescription" class="muted"></p><div class="detail-actions"><button id="toggleClientButton" class="button secondary" type="button"></button><button id="issueTokenButton" class="button primary" type="button">Issue token</button></div><h3>Credentials</h3><div id="tokenList" class="compact-list"></div></div>
+  </div>
+
+  <div id="tokenFormModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="tokenFormTitle" hidden>
+    <form id="tokenForm" class="modal"><div class="modal-head"><h2 id="tokenFormTitle">Issue expiring token</h2><button type="button" class="icon-button close-modal" aria-label="Close">×</button></div><label>Expires<select id="tokenTTL"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800" selected>In 7 days</option><option value="2592000">In 30 days</option><option value="0">Never</option><option value="custom">Custom…</option></select></label><label id="customTTLLabel" hidden>Hours<input id="customTTL" type="number" min="1" max="87600" value="24"></label><label>Note<input id="tokenNote" maxlength="200" placeholder="Deployment or owner"></label><div class="modal-actions"><button type="button" class="button secondary close-modal">Cancel</button><button class="button primary" type="submit">Issue token</button></div></form>
+  </div>
+
+  <div id="secretModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="secretTitle" hidden>
+    <div class="modal"><span class="success-icon">✓</span><h2 id="secretTitle">Token issued</h2><p>This token is shown exactly once. Copy it now and store it securely.</p><code id="secretValue" class="secret-value"></code><div class="modal-actions"><button id="copySecretButton" class="button secondary" type="button">Copy token</button><button id="dismissSecretButton" class="button primary" type="button">I’ve saved it</button></div></div>
+  </div>
+
+  <div id="decisionModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="decisionTitle" hidden>
+    <form id="decisionForm" class="modal"><div class="modal-head"><h2 id="decisionTitle">Review request</h2><button type="button" class="icon-button close-modal" aria-label="Close">×</button></div><p id="decisionSummary"></p><label>Decision note<input id="decisionNote" maxlength="500" placeholder="Optional note"></label><div class="modal-actions"><button id="denyRequestButton" class="button danger" type="button">Deny</button><button class="button primary" type="submit">Approve & grant</button></div></form>
+  </div>
+</body>
+</html>

@@ -70,6 +70,7 @@ Common entry points:
 - [Configuration](https://term-llm.com/reference/configuration/)
 - [Providers and models](https://term-llm.com/reference/providers-and-models/)
 - [Web UI and API](https://term-llm.com/guides/web-ui-and-api/)
+- [Capability proxy](https://term-llm.com/guides/capability-proxy/)
 - [Search](https://term-llm.com/guides/search/)
 - [Usage](https://term-llm.com/guides/usage/)
 - [Agents](https://term-llm.com/guides/agents/)
