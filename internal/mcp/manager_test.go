@@ -238,6 +238,53 @@ func TestManagerDisable_CancelsInFlightStartup(t *testing.T) {
 	}
 }
 
+func TestManagerCallToolConcurrentDisable(t *testing.T) {
+	const iterations = 100
+
+	for i := 0; i < iterations; i++ {
+		manager := NewManager()
+		client := NewClient("test", ServerConfig{})
+		manager.clients["test"] = client
+		manager.statuses["test"] = &ServerState{
+			Name:   "test",
+			Status: StatusReady,
+			Client: client,
+		}
+
+		start := make(chan struct{})
+		callDone := make(chan error, 1)
+		disableDone := make(chan error, 1)
+		go func() {
+			<-start
+			_, err := manager.CallTool(context.Background(), "test__tool", nil)
+			callDone <- err
+		}()
+		go func() {
+			<-start
+			disableDone <- manager.Disable("test")
+		}()
+		close(start)
+
+		select {
+		case err := <-callDone:
+			if err == nil || !strings.Contains(err.Error(), "not running") {
+				t.Fatalf("iteration %d: CallTool error = %v, want not running", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: CallTool did not return", i)
+		}
+
+		select {
+		case err := <-disableDone:
+			if err != nil {
+				t.Fatalf("iteration %d: Disable returned error: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: Disable did not return", i)
+		}
+	}
+}
+
 func waitForServerStatus(t *testing.T, manager *Manager, name string, want ServerStatus, timeout time.Duration) (ServerStatus, error) {
 	t.Helper()
 
