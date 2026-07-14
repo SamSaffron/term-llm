@@ -325,6 +325,16 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	hasAPI := platformContains(platformNames, "api")
 	hasTelegram := platformContains(platformNames, "telegram")
 
+	// Apply and validate the shared HTTP base path before any platform-specific
+	// early return, including the standalone proxy surface.
+	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
+		serveBasePath = cfg.Serve.BasePath
+	}
+	serveBasePath, err = normalizeBasePath(serveBasePath)
+	if err != nil {
+		return err
+	}
+
 	// The proxy platform is a mutually-exclusive standalone capability proxy:
 	// it reuses the provider protocol handlers behind a per-client grant gate
 	// and cannot be combined with the web/api/jobs/telegram platforms.
@@ -351,15 +361,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}
 		cfg.Serve.WebPush = wpCfg
 		log.Println("generated VAPID keys for web push (saved to config)")
-	}
-
-	// Apply config fallback for base-path if not set via flag
-	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
-		serveBasePath = cfg.Serve.BasePath
-	}
-	serveBasePath, err = normalizeBasePath(serveBasePath)
-	if err != nil {
-		return err
 	}
 
 	resolvedTitle := strings.TrimSpace(serveTitle)
