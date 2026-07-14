@@ -49,6 +49,24 @@ func DefaultCompactionConfig() CompactionConfig {
 	}
 }
 
+func effectiveCompactionThresholdRatios(config *CompactionConfig) (soft, hard float64) {
+	soft, hard = defaultSoftThresholdRatio, defaultHardThresholdRatio
+	if config == nil {
+		return soft, hard
+	}
+	if config.SoftThresholdRatio > 0 {
+		soft = config.SoftThresholdRatio
+	} else if config.ThresholdRatio > 0 {
+		soft = config.ThresholdRatio
+	}
+	if config.HardThresholdRatio > 0 {
+		hard = config.HardThresholdRatio
+	} else if config.ThresholdRatio > 0 {
+		hard = config.ThresholdRatio
+	}
+	return soft, hard
+}
+
 // CompactionResult describes what happened during compaction.
 type CompactionResult struct {
 	Summary        string

@@ -492,7 +492,7 @@ func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
 		t.Fatalf("stats should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
 	}
 	content := rm.dialog.Content()
-	for _, want := range []string{"Context Usage", "Current state vs entire history", "Current context", "Entire history", "Input tokens", "Cache write tokens", "Total tokens", "Tool calls", "Compactions:        3", "LLM cost:           200k cache, 484 in, 1.2k out", "Last boundary:"} {
+	for _, want := range []string{"Stats:", "Current Context / Window Pressure", "Current context vs cumulative history", "Current context", "Cumulative history", "Cumulative Session Token Usage", "Fresh input tokens", "Cache write tokens", "Cache hit rate:", "Total tokens", "Cumulative Session Activity", "Tool calls", "Compactions:        3", "LLM cost:           200k cache, 484 in, 1.2k out", "Last boundary:"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("stats content missing %q:\n%s", want, content)
 		}
@@ -523,7 +523,7 @@ func TestCmdStatsUsesActiveContextAfterCompaction(t *testing.T) {
 		"Compactions:        2",
 		"Last boundary:      seq 10 (2 messages hidden from active context)",
 		"Active messages:    2 (user 1, assistant 1, tool 0)",
-		"Not in context:",
+		"Outside context:",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("stats content missing %q:\n%s", want, content)
@@ -546,6 +546,67 @@ func TestStatsSeedsCacheWriteTokensFromSession(t *testing.T) {
 	}
 	if !strings.Contains(content, "Total tokens:       190") {
 		t.Fatalf("stats total did not include cache-write tokens:\n%s", content)
+	}
+}
+
+func TestStatsModalUsesEngineThresholdsAndClearCacheDenominator(t *testing.T) {
+	oldEstimator := statsCostEstimator
+	estimatorCalls := 0
+	statsCostEstimator = func(string, *ui.SessionStats) (float64, error) {
+		estimatorCalls++
+		if estimatorCalls == 1 {
+			return 0.1234, nil
+		}
+		return 0, errors.New("raw pricing lookup detail")
+	}
+	t.Cleanup(func() { statsCostEstimator = oldEstimator })
+
+	m := newCmdTestModel(&mockStore{})
+	m.engine = llm.NewEngine(nil, nil)
+	m.engine.SetCompaction(1000, llm.CompactionConfig{
+		SoftThresholdRatio: 0.70,
+		HardThresholdRatio: 0.85,
+	})
+	m.engine.SetContextEstimateBaseline(10, 0)
+	m.stats = ui.NewSessionStats()
+	m.stats.AddUsage(400, 100, 200, 200)
+
+	content := m.renderStatsModal()
+	for _, want := range []string{
+		"Stats:",
+		"$0.1234",
+		"× Soft compact at:  700       70.0% (300 window buffer)",
+		"! Hard compact at:  850       85.0% (150 window buffer)",
+		"Cache hit rate:     25.0% (cache read / (fresh + read + write input))",
+		"Estimated cost:     unavailable",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("stats content missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "raw pricing lookup detail") {
+		t.Fatalf("stats exposed raw pricing error:\n%s", content)
+	}
+	// The modal may price its summary copy, but must not attach that cost to the
+	// live stats object.
+	if live := m.stats.Render(); strings.Contains(live, "$") {
+		t.Fatalf("rendering /stats mutated live estimated cost: %s", live)
+	}
+}
+
+func TestStatsModalDoesNotFinalizeLiveTiming(t *testing.T) {
+	oldEstimator := statsCostEstimator
+	statsCostEstimator = func(string, *ui.SessionStats) (float64, error) {
+		return 0, errors.New("unavailable")
+	}
+	t.Cleanup(func() { statsCostEstimator = oldEstimator })
+
+	m := newCmdTestModel(&mockStore{})
+	m.stats = ui.NewSessionStats()
+	before := m.stats.LLMTime
+	_ = m.renderStatsModal()
+	if m.stats.LLMTime != before {
+		t.Fatalf("rendering /stats finalized live timing: before=%v after=%v", before, m.stats.LLMTime)
 	}
 }
 

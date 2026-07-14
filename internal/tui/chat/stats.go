@@ -11,8 +11,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-const defaultAutoCompactThreshold = 0.90
-
 var statsCostEstimator = estimateStatsCost
 
 func (m *Model) exitStatsSummary() string {
@@ -25,6 +23,20 @@ func (m *Model) exitStatsSummary() string {
 		m.stats.SetEstimatedCost(cost)
 	}
 	return m.stats.Render()
+}
+
+func (m *Model) liveStatsSummary() string {
+	if m == nil || m.stats == nil {
+		return ""
+	}
+	// Price and render a value copy: opening /stats must not finalize the live
+	// timer or attach transient pricing state to the session accumulator.
+	snapshot := *m.stats
+	snapshot.ClearEstimatedCost()
+	if cost, err := statsCostEstimator(m.statsPricingModel(), &snapshot); err == nil {
+		snapshot.SetEstimatedCost(cost)
+	}
+	return snapshot.Render()
 }
 
 func (m *Model) cmdStats() (tea.Model, tea.Cmd) {
@@ -73,16 +85,18 @@ func (m *Model) renderStatsModal() string {
 	if limit > 0 {
 		free = max(0, limit-currentTokens)
 	}
-	buffer := 0
-	threshold := 0
-	if limit > 0 {
-		threshold = int(float64(limit) * defaultAutoCompactThreshold)
-		buffer = max(0, limit-threshold)
+	softThreshold, hardThreshold, compactionEnabled := 0, 0, false
+	if m.engine != nil {
+		softThreshold, hardThreshold, compactionEnabled = m.engine.CompactionThresholds()
 	}
 
 	var b strings.Builder
-	b.WriteString("Context Usage\n")
-	b.WriteString(renderContextGrid(currentTokens, limit, threshold))
+	if summary := m.liveStatsSummary(); summary != "" {
+		b.WriteString(summary)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Current Context / Window Pressure\n")
+	b.WriteString(renderContextGrid(currentTokens, limit, softThreshold, hardThreshold))
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("%s:%s\n", nonEmpty(m.providerKey, m.providerName), nonEmpty(m.modelName, "unknown-model")))
 	if limit > 0 {
@@ -90,21 +104,24 @@ func (m *Model) renderStatsModal() string {
 	} else {
 		b.WriteString(fmt.Sprintf("%s tokens used (context window unknown)\n", ui.FormatTokenCount(currentTokens)))
 	}
-	b.WriteString("\nCurrent state vs entire history\n")
+	b.WriteString("\nCurrent context vs cumulative history\n")
 	b.WriteString(fmt.Sprintf("■ Current context:   %-8s %5.1f%% of window\n", ui.FormatTokenCount(currentTokens), percent(currentTokens, limit)))
-	b.WriteString(fmt.Sprintf("◆ Entire history:    %-8s %5.1f%% of window\n", ui.FormatTokenCount(historyTokens), percent(historyTokens, limit)))
+	b.WriteString(fmt.Sprintf("◆ Cumulative history: %-8s %5.1f%% of window\n", ui.FormatTokenCount(historyTokens), percent(historyTokens, limit)))
 	if hidden := max(0, historyTokens-currentTokens); hidden > 0 {
-		b.WriteString(fmt.Sprintf("· Not in context:    %-8s %5.1f%% of history\n", ui.FormatTokenCount(hidden), percent(hidden, historyTokens)))
+		b.WriteString(fmt.Sprintf("· Outside context:   %-8s %5.1f%% of history\n", ui.FormatTokenCount(hidden), percent(hidden, historyTokens)))
 	}
 	if limit > 0 {
 		b.WriteString(fmt.Sprintf("□ Free space:        %-8s %5.1f%% of window\n", ui.FormatTokenCount(free), percent(free, limit)))
-		b.WriteString(fmt.Sprintf("☒ Autocompact buf:  %-8s %5.1f%% of window\n", ui.FormatTokenCount(buffer), percent(buffer, limit)))
+	}
+	if compactionEnabled {
+		b.WriteString(fmt.Sprintf("× Soft compact at:  %-8s %5.1f%% (%s window buffer)\n", ui.FormatTokenCount(softThreshold), percent(softThreshold, limit), ui.FormatTokenCount(max(0, limit-softThreshold))))
+		b.WriteString(fmt.Sprintf("! Hard compact at:  %-8s %5.1f%% (%s window buffer)\n", ui.FormatTokenCount(hardThreshold), percent(hardThreshold, limit), ui.FormatTokenCount(max(0, limit-hardThreshold))))
 	}
 
-	b.WriteString("\nToken Usage\n")
+	b.WriteString("\nCumulative Session Token Usage\n")
 	if m.stats != nil {
 		totalTokens := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens + m.stats.OutputTokens
-		b.WriteString(fmt.Sprintf("Input tokens:       %s\n", ui.FormatTokenCount(m.stats.InputTokens)))
+		b.WriteString(fmt.Sprintf("Fresh input tokens: %s\n", ui.FormatTokenCount(m.stats.InputTokens)))
 		if m.stats.CachedInputTokens > 0 {
 			b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(m.stats.CachedInputTokens)))
 		}
@@ -113,16 +130,20 @@ func (m *Model) renderStatsModal() string {
 		}
 		b.WriteString(fmt.Sprintf("Output tokens:      %s\n", ui.FormatTokenCount(m.stats.OutputTokens)))
 		b.WriteString(fmt.Sprintf("Total tokens:       %s\n", ui.FormatTokenCount(totalTokens)))
+		inputCategories := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens
+		if inputCategories > 0 {
+			b.WriteString(fmt.Sprintf("Cache hit rate:     %.1f%% (cache read / (fresh + read + write input))\n", percent(m.stats.CachedInputTokens, inputCategories)))
+		}
 		if cost, err := statsCostEstimator(m.statsPricingModel(), m.stats); err == nil {
 			b.WriteString(fmt.Sprintf("Estimated cost:     $%.4f\n", cost))
 		} else {
-			b.WriteString(fmt.Sprintf("Estimated cost:     unavailable (%s)\n", err.Error()))
+			b.WriteString("Estimated cost:     unavailable\n")
 		}
 	} else {
 		b.WriteString("No token usage recorded yet.\n")
 	}
 
-	b.WriteString("\nActivity\n")
+	b.WriteString("\nCumulative Session Activity\n")
 	if m.stats != nil {
 		b.WriteString(fmt.Sprintf("LLM calls:          %d\n", m.stats.LLMCallCount))
 		b.WriteString(fmt.Sprintf("Tool calls:         %d\n", m.stats.ToolCallCount))
@@ -266,19 +287,24 @@ func (m *Model) estimateMessagesTokens(messages []session.Message) int {
 	return total
 }
 
-func renderContextGrid(used, limit, threshold int) string {
+func renderContextGrid(used, limit, softThreshold, hardThreshold int) string {
 	const cols = 48
 	const rows = 6
 	total := cols * rows
 	usedCells := 0
-	bufferCells := 0
+	softBufferCells := 0
+	hardBufferCells := 0
 	if limit > 0 {
 		usedCells = int(float64(used) / float64(limit) * float64(total))
 		if used > 0 && usedCells == 0 {
 			usedCells = 1
 		}
-		buffer := max(0, limit-threshold)
-		bufferCells = int(float64(buffer) / float64(limit) * float64(total))
+		if softThreshold > 0 {
+			softBufferCells = int(float64(max(0, limit-softThreshold)) / float64(limit) * float64(total))
+		}
+		if hardThreshold > 0 {
+			hardBufferCells = int(float64(max(0, limit-hardThreshold)) / float64(limit) * float64(total))
+		}
 	}
 	var b strings.Builder
 	for r := 0; r < rows; r++ {
@@ -287,7 +313,9 @@ func renderContextGrid(used, limit, threshold int) string {
 			switch {
 			case i < usedCells:
 				b.WriteRune('■')
-			case limit > 0 && i >= total-bufferCells:
+			case hardBufferCells > 0 && i >= total-hardBufferCells:
+				b.WriteRune('!')
+			case softBufferCells > 0 && i >= total-softBufferCells:
 				b.WriteRune('×')
 			default:
 				b.WriteRune('□')

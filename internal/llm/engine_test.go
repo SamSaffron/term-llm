@@ -3075,6 +3075,23 @@ func TestRunLoopReactiveCompactsOnContextOverflowEvent(t *testing.T) {
 	}
 }
 
+func TestCompactionThresholdsUseEffectiveEngineConfig(t *testing.T) {
+	e := NewEngine(nil, nil)
+	if soft, hard, enabled := e.CompactionThresholds(); soft != 0 || hard != 0 || enabled {
+		t.Fatalf("disabled thresholds = (%d, %d, %v), want (0, 0, false)", soft, hard, enabled)
+	}
+
+	e.SetCompaction(10_000, CompactionConfig{SoftThresholdRatio: 0.72, HardThresholdRatio: 0.88})
+	if soft, hard, enabled := e.CompactionThresholds(); soft != 7200 || hard != 8800 || !enabled {
+		t.Fatalf("custom thresholds = (%d, %d, %v), want (7200, 8800, true)", soft, hard, enabled)
+	}
+
+	e.SetCompaction(10_000, CompactionConfig{ThresholdRatio: 0.80})
+	if soft, hard, enabled := e.CompactionThresholds(); soft != 8000 || hard != 8000 || !enabled {
+		t.Fatalf("legacy thresholds = (%d, %d, %v), want (8000, 8000, true)", soft, hard, enabled)
+	}
+}
+
 func TestConfigureContextManagementClearsUnknownLimit(t *testing.T) {
 	RegisterConfigLimits([]ConfigModelLimit{{Provider: "mock", Model: "known-model", InputLimit: 1234}})
 	defer RegisterConfigLimits(nil)

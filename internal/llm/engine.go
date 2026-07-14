@@ -527,6 +527,26 @@ func (e *Engine) InputLimit() int {
 	return v
 }
 
+// CompactionThresholds returns the configured soft and hard compaction token
+// thresholds. The final value is false when compaction is disabled or the
+// input limit is unknown.
+func (e *Engine) CompactionThresholds() (soft, hard int, enabled bool) {
+	e.callbackMu.RLock()
+	inputLimit := e.inputLimit
+	var config *CompactionConfig
+	if e.compactionConfig != nil {
+		copy := *e.compactionConfig
+		config = &copy
+	}
+	e.callbackMu.RUnlock()
+
+	if config == nil || inputLimit <= 0 {
+		return 0, 0, false
+	}
+	softRatio, hardRatio := effectiveCompactionThresholdRatios(config)
+	return int(float64(inputLimit) * softRatio), int(float64(inputLimit) * hardRatio), true
+}
+
 // LastTotalTokens returns the total tokens (cached+input+output) from the most
 // recent API response, approximating current context fullness.
 func (e *Engine) LastTotalTokens() int {
@@ -1625,20 +1645,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	var softCheckpointPrepared preparedCompactionContext
 	var softCheckpointOriginalCount int
 	var resumeAfterCompaction bool
-	softThresholdRatio := defaultSoftThresholdRatio
-	hardThresholdRatio := defaultHardThresholdRatio
-	if compactionConfig != nil {
-		if compactionConfig.SoftThresholdRatio > 0 {
-			softThresholdRatio = compactionConfig.SoftThresholdRatio
-		} else if compactionConfig.ThresholdRatio > 0 {
-			softThresholdRatio = compactionConfig.ThresholdRatio
-		}
-		if compactionConfig.HardThresholdRatio > 0 {
-			hardThresholdRatio = compactionConfig.HardThresholdRatio
-		} else if compactionConfig.ThresholdRatio > 0 {
-			hardThresholdRatio = compactionConfig.ThresholdRatio
-		}
-	}
+	softThresholdRatio, hardThresholdRatio := effectiveCompactionThresholdRatios(compactionConfig)
 	contextThresholdState := func(messages []Message) (estimate, soft, hard int) {
 		if compactionConfig == nil || inputLimit <= 0 {
 			return 0, 0, 0
