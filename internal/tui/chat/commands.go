@@ -996,6 +996,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
+	hadActiveStream := m.streaming || m.streamCancelFunc != nil
 	// Signal tool-initiated handover (if any) right before quitting.
 	// The session is about to restart so the tool result is moot,
 	// but we unblock the goroutine to avoid a leak.
@@ -1009,6 +1010,11 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 		m.streamCancelFunc = nil
 	}
 	m.quitting = true
+	if !hadActiveStream {
+		if summary := m.exitStatsSummary(); summary != "" {
+			return m, m.quitCmd(tea.Println(summary))
+		}
+	}
 	return m, m.quitCmd()
 }
 

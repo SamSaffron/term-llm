@@ -544,6 +544,9 @@ func TestStatsSeedsCacheWriteTokensFromSession(t *testing.T) {
 	if !strings.Contains(content, "Cache write tokens:") || !strings.Contains(content, "30") {
 		t.Fatalf("stats did not include cache write tokens restored from session DB metrics:\n%s", content)
 	}
+	if !strings.Contains(content, "Total tokens:       190") {
+		t.Fatalf("stats total did not include cache-write tokens:\n%s", content)
+	}
 }
 
 func TestStatsPricingModelStripsProviderAndEffort(t *testing.T) {

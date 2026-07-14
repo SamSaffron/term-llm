@@ -151,9 +151,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	// Track session stats
 	stats := ui.NewSessionStats()
+	statsModel := ""
 	defer func() {
 		if showStats {
 			stats.Finalize()
+			setEstimatedStatsCost(stats, statsModel)
 			fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
 		}
 	}()
@@ -218,6 +220,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer execEnv.Close()
+	statsModel = execEnv.llmReq.Model
 
 	for {
 		systemPrompt := prompt.SuggestSystemPrompt(shell, instructions, numSuggestions, execSearch)
@@ -240,6 +243,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 			defer close(progressCh)
 			configureInteractiveSink(execEnv.runtime.toolMgr, sink)
 			llmReq := execEnv.llmReq
+			stats.SetModel(statsModel)
+			stats.RequestStart()
 			_, runErr := execEnv.runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.SystemText(systemPrompt), llm.UserText(userPrompt)}, llmReq, func(ev llm.Event) error {
 				sink.Event(ev)
 				return nil
@@ -341,6 +346,9 @@ type execRunSink struct {
 	suggestions []llm.CommandSuggestion
 	err         error
 	sentFirst   bool
+
+	attemptInput, attemptOutput, attemptCached, attemptCacheWrite int
+	attemptUsageCalls                                             int
 }
 
 func execBoolPtr(v bool) *bool { return &v }
@@ -380,8 +388,12 @@ func (s *execRunSink) Event(event llm.Event) {
 		return
 	}
 
-	if event.Type == llm.EventToolExecEnd && s.debug {
-		if event.ToolName != "" {
+	if event.Type == llm.EventToolExecEnd {
+		if s.stats != nil {
+			s.stats.ToolEnd()
+		}
+		s.resetAttemptUsage()
+		if s.debug && event.ToolName != "" {
 			phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo)
 			if event.ToolSuccess {
 				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.SuccessCircle(), phase.Completed)
@@ -392,16 +404,49 @@ func (s *execRunSink) Event(event llm.Event) {
 	}
 
 	if event.Type == llm.EventRetry {
+		if s.stats != nil {
+			s.stats.ScheduleRetryStart(event.RetryWaitSecs)
+		}
 		status := ui.FormatRetryStatus("Rate limited", event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs, 0, "...")
 		s.sendProgress(ui.ProgressUpdate{Status: status})
 		return
 	}
 
-	if event.Type == llm.EventUsage && event.Use != nil {
+	if event.Type == llm.EventAttemptDiscard {
 		if s.stats != nil {
-			s.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+			s.stats.DiscardUsage(s.attemptInput, s.attemptOutput, s.attemptCached, s.attemptCacheWrite, s.attemptUsageCalls)
+		}
+		s.resetAttemptUsage()
+		s.suggestions = nil
+		return
+	}
+
+	if event.Type == llm.EventModelSwitch {
+		model := event.Model
+		if model == "" {
+			model = event.Text
+		}
+		if s.stats != nil {
+			s.stats.SetModel(model)
 		}
 		return
+	}
+
+	if event.Type == llm.EventUsage && event.Use != nil {
+		if s.stats != nil {
+			s.stats.GenerationEnd()
+			s.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+		}
+		s.attemptInput += event.Use.InputTokens
+		s.attemptOutput += event.Use.OutputTokens
+		s.attemptCached += event.Use.CachedInputTokens
+		s.attemptCacheWrite += event.Use.CacheWriteTokens
+		s.attemptUsageCalls++
+		return
+	}
+
+	if s.stats != nil && (event.Type == llm.EventTextDelta && event.Text != "" || event.Type == llm.EventReasoningDelta && (event.Text != "" || llm.IsEncryptedReasoningDelta(event))) {
+		s.stats.ObserveOutput()
 	}
 
 	if !s.sentFirst {
@@ -413,6 +458,11 @@ func (s *execRunSink) Event(event llm.Event) {
 		s.err = event.Err
 		return
 	}
+	if event.Type == llm.EventToolCall {
+		// Tool calls are durable boundaries; a later retry must not discard the
+		// provider request that produced the tool.
+		s.resetAttemptUsage()
+	}
 	if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.SuggestCommandsToolName {
 		llm.DebugToolCall(s.debug, *event.Tool)
 		parsed, err := llm.ParseCommandSuggestions(*event.Tool)
@@ -422,6 +472,12 @@ func (s *execRunSink) Event(event llm.Event) {
 		}
 		s.suggestions = append(s.suggestions, parsed...)
 	}
+}
+
+func (s *execRunSink) resetAttemptUsage() {
+	s.attemptInput, s.attemptOutput = 0, 0
+	s.attemptCached, s.attemptCacheWrite = 0, 0
+	s.attemptUsageCalls = 0
 }
 
 func (s *execRunSink) sendProgress(update ui.ProgressUpdate) {

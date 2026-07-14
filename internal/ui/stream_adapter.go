@@ -87,6 +87,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 		ctx = context.Background()
 	}
 	defer close(a.events)
+	a.stats.RequestStart()
 
 	emit := func(event StreamEvent) bool {
 		if ctx.Err() != nil {
@@ -132,6 +133,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 		case llm.EventTextDelta:
 			a.attemptUsageCommitted = false
 			if event.Text != "" {
+				a.stats.ObserveOutput()
 				if !emit(TextEvent(event.Text)) {
 					return
 				}
@@ -141,11 +143,18 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.attemptUsageCommitted = false
 			kind := llm.NormalizeReasoningKind(event.ReasoningKind)
 			if llm.IsEncryptedReasoningDelta(event) {
-				// Encrypted replay metadata never enters UI stream events.
+				a.stats.ObserveOutput()
+				// Preserve generation timing without exposing encrypted replay data.
+				if !emit(GenerationActivityEvent()) {
+					return
+				}
 				continue
 			}
 			if event.Text == "" && event.ReasoningItemID == "" && !event.ReasoningFinal {
 				continue
+			}
+			if event.Text != "" {
+				a.stats.ObserveOutput()
 			}
 			title := ""
 			displayable := kind == llm.ReasoningKindSummary
@@ -240,20 +249,20 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventRetry:
+			a.stats.ScheduleRetryStart(event.RetryWaitSecs)
 			if !emit(RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)) {
 				return
 			}
 
 		case llm.EventAttemptDiscard:
-			if a.attemptUsageCalls > 0 {
-				a.stats.DiscardUsage(a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls)
-			}
+			a.stats.DiscardUsage(a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls)
 			a.resetAttemptUsage()
 			if !emit(AttemptDiscardEvent()) {
 				return
 			}
 
 		case llm.EventUsage:
+			a.stats.GenerationEnd()
 			if event.Use != nil {
 				totalTokens = event.Use.OutputTokens
 				usageEvent := UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
@@ -283,6 +292,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				model = event.Text
 			}
 			if model != "" {
+				a.stats.SetModel(model)
 				if !emit(ModelSwitchEvent(model, event.ReasoningEffort)) {
 					return
 				}

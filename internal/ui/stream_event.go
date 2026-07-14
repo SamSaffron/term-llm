@@ -24,8 +24,9 @@ const (
 	StreamEventInterjection // User interjected a message mid-stream
 	StreamEventModelSwitch  // Request model changed at a provider-turn boundary
 	StreamEventAttemptDiscard
-	StreamEventReasoning  // Classified, non-encrypted reasoning text/metadata
-	StreamEventFileChange // Recorded file change metadata (file tracking)
+	StreamEventReasoning          // Classified, non-encrypted reasoning text/metadata
+	StreamEventGenerationActivity // Hidden generation activity (for timing only)
+	StreamEventFileChange         // Recorded file change metadata (file tracking)
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -103,6 +104,10 @@ func TextEvent(text string) StreamEvent {
 
 func AttemptDiscardEvent() StreamEvent {
 	return StreamEvent{Type: StreamEventAttemptDiscard}
+}
+
+func GenerationActivityEvent() StreamEvent {
+	return StreamEvent{Type: StreamEventGenerationActivity}
 }
 
 // ReasoningEvent creates a classified, non-encrypted reasoning stream event.

@@ -495,6 +495,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.resetRetainedStreamTracker()
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
+	if m.stats != nil {
+		m.stats.SetModel(m.statsPricingModel())
+		m.stats.RequestStart()
+	}
 	if m.altScreen {
 		m.scrollToBottom = true
 	}

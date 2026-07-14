@@ -302,6 +302,58 @@ func TestParseDiffMarkers(t *testing.T) {
 	}
 }
 
+type retryDelayStream struct {
+	testStream
+	delayed bool
+}
+
+func (s *retryDelayStream) Recv() (llm.Event, error) {
+	event, err := s.testStream.Recv()
+	if err == nil && !s.delayed && event.Type == llm.EventTextDelta {
+		s.delayed = true
+		time.Sleep(60 * time.Millisecond)
+	}
+	return event, err
+}
+
+func TestStreamAdapterRetryWaitExcludedFromReplacementTTFT(t *testing.T) {
+	stream := &retryDelayStream{testStream: testStream{events: []llm.Event{
+		{Type: llm.EventAttemptDiscard},
+		{Type: llm.EventRetry, RetryWaitSecs: 0.04},
+		{Type: llm.EventTextDelta, Text: "replacement"},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 2, OutputTokens: 3}},
+	}}}
+	adapter := NewStreamAdapter(10)
+	adapter.Stats().RequestStart()
+	go adapter.ProcessStream(context.Background(), stream)
+	for range adapter.Events() {
+	}
+	calls, _ := adapter.Stats().UsageCalls()
+	if len(calls) != 1 || !calls[0].ObservedOutput {
+		t.Fatalf("replacement call = %+v", calls)
+	}
+	if calls[0].TTFT < 10*time.Millisecond || calls[0].TTFT > 45*time.Millisecond {
+		t.Fatalf("replacement TTFT = %s, want retry wait excluded", calls[0].TTFT)
+	}
+}
+
+func TestStreamAdapterAssociatesUsageWithModelSwitches(t *testing.T) {
+	stream := &testStream{events: []llm.Event{
+		{Type: llm.EventModelSwitch, Model: "gpt-5.6-sol"},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 1}},
+		{Type: llm.EventModelSwitch, Model: "gpt-5.6-luna"},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 2}},
+	}}
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+	for range adapter.Events() {
+	}
+	calls, _ := adapter.Stats().UsageCalls()
+	if len(calls) != 2 || calls[0].Model != "gpt-5.6-sol" || calls[1].Model != "gpt-5.6-luna" {
+		t.Fatalf("usage models = %+v", calls)
+	}
+}
+
 func TestStreamAdapterDiscardRemovesAttemptUsage(t *testing.T) {
 	stream := &testStream{events: []llm.Event{
 		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, OutputTokens: 5, CachedInputTokens: 2, CacheWriteTokens: 1}},
@@ -372,6 +424,25 @@ func TestStreamAdapterForwardsClassifiedReasoningSummary(t *testing.T) {
 	}
 	if !got.ReasoningDisplayable {
 		t.Fatal("summary should be marked displayable")
+	}
+}
+
+func TestStreamAdapterHiddenReasoningCountsAsGenerationActivity(t *testing.T) {
+	stream := &testStream{events: []llm.Event{
+		{Type: llm.EventReasoningDelta, ReasoningKind: llm.ReasoningKindEncrypted, ReasoningEncryptedContent: "secret"},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 4}},
+	}}
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+	var sawActivity bool
+	for ev := range adapter.Events() {
+		if ev.Type == StreamEventGenerationActivity {
+			sawActivity = true
+		}
+	}
+	calls, _ := adapter.Stats().UsageCalls()
+	if !sawActivity || len(calls) != 1 || !calls[0].ObservedOutput {
+		t.Fatalf("hidden reasoning activity not associated with usage: event=%v calls=%+v", sawActivity, calls)
 	}
 }
 

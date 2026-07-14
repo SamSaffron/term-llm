@@ -2,93 +2,119 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
+
+// UsageCall is usage and performance data for one provider request made by this
+// process. Keeping request boundaries is important because some pricing tiers
+// apply to each request independently.
+type UsageCall struct {
+	Model             string
+	InputTokens       int
+	OutputTokens      int
+	CachedInputTokens int
+	CacheWriteTokens  int
+	TTFT              time.Duration
+	GenerationTime    time.Duration
+	ObservedOutput    bool
+}
 
 // SessionStats tracks statistics for a session.
 type SessionStats struct {
 	StartTime         time.Time
 	InputTokens       int
 	OutputTokens      int
-	CachedInputTokens int // Tokens read from cache
-	CacheWriteTokens  int // Tokens written to cache
+	CachedInputTokens int
+	CacheWriteTokens  int
 	ToolCallCount     int
-	LLMCallCount      int // Number of LLM API calls made
+	LLMCallCount      int
 
-	// Compaction usage is included in the cumulative token counters above and
-	// tracked separately so UIs can show how much the summary helper calls cost.
 	CompactionInputTokens       int
 	CompactionOutputTokens      int
 	CompactionCachedInputTokens int
 	CompactionCacheWriteTokens  int
 	CompactionLLMCallCount      int
 
-	// Per-call tracking (current process only, not seeded from persisted data)
-	lastInputTokens  int  // Input tokens from most recent LLM call
-	lastOutputTokens int  // Output tokens from most recent LLM call
-	peakInputTokens  int  // Highest input tokens seen in any single LLM call
-	hasPerCallUsage  bool // True after first AddUsage in this process
+	lastInputTokens  int
+	lastOutputTokens int
+	peakInputTokens  int
+	hasPerCallUsage  bool
 
-	// Time tracking
 	LLMTime       time.Duration
 	ToolTime      time.Duration
 	lastEventTime time.Time
 	inTool        bool
+
+	currentModel       string
+	requestStartTime   time.Time
+	firstActivityTime  time.Time
+	activityStartTime  time.Time
+	activityDuration   time.Duration
+	usageCalls         []UsageCall
+	hasHistoricalUsage bool
+	estimatedCostUSD   *float64
 }
 
-// NewSessionStats creates a new SessionStats with StartTime set to now.
 func NewSessionStats() *SessionStats {
 	now := time.Now()
-	return &SessionStats{
-		StartTime:     now,
-		lastEventTime: now,
-	}
+	return &SessionStats{StartTime: now, lastEventTime: now}
 }
 
 // SeedTotals initializes cumulative counters from persisted session metrics.
-// Timing remains scoped to the current process run.
+// Process-local call, timing, model, and cost state is reset: persisted totals
+// do not contain enough request detail to price or calculate throughput safely.
 func (s *SessionStats) SeedTotals(input, output, cached, cacheWrite, toolCalls, llmCalls int) {
-	s.InputTokens = input
-	s.OutputTokens = output
-	s.CachedInputTokens = cached
-	s.CacheWriteTokens = cacheWrite
-	s.ToolCallCount = toolCalls
-	s.LLMCallCount = llmCalls
-	// Reset compaction-only fields; persisted sessions store only cumulative
-	// token metrics today, not a separate compaction-cost breakdown.
-	s.CompactionInputTokens = 0
-	s.CompactionOutputTokens = 0
-	s.CompactionCachedInputTokens = 0
-	s.CompactionCacheWriteTokens = 0
+	s.InputTokens, s.OutputTokens = input, output
+	s.CachedInputTokens, s.CacheWriteTokens = cached, cacheWrite
+	s.ToolCallCount, s.LLMCallCount = toolCalls, llmCalls
+	s.CompactionInputTokens, s.CompactionOutputTokens = 0, 0
+	s.CompactionCachedInputTokens, s.CompactionCacheWriteTokens = 0, 0
 	s.CompactionLLMCallCount = 0
-	// Reset per-call fields so stale data from prior usage doesn't leak through
-	s.lastInputTokens = 0
-	s.lastOutputTokens = 0
-	s.peakInputTokens = 0
+	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
 	s.hasPerCallUsage = false
+	s.currentModel = ""
+	s.requestStartTime, s.activityStartTime = time.Time{}, time.Time{}
+	s.activityDuration = 0
+	s.usageCalls = nil
+	s.hasHistoricalUsage = input != 0 || output != 0 || cached != 0 || cacheWrite != 0 || llmCalls != 0
+	s.estimatedCostUSD = nil
 }
 
-// AddUsage adds token usage to the stats and increments the LLM call count.
+// SetModel sets the model attached to subsequently completed usage calls.
+func (s *SessionStats) SetModel(model string) { s.currentModel = strings.TrimSpace(model) }
+
 func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
+	s.addUsageAt(input, output, cached, cacheWrite, time.Now(), true)
+}
+
+func (s *SessionStats) addUsageAt(input, output, cached, cacheWrite int, now time.Time, recordPerformance bool) {
+	s.stopActivityAt(now)
 	s.InputTokens += input
 	s.OutputTokens += output
 	s.CachedInputTokens += cached
 	s.CacheWriteTokens += cacheWrite
 	s.LLMCallCount++
 	totalContext := input + cached + output
-	s.lastInputTokens = totalContext
-	s.lastOutputTokens = output
-	s.hasPerCallUsage = true
+	s.lastInputTokens, s.lastOutputTokens, s.hasPerCallUsage = totalContext, output, true
 	if totalContext > s.peakInputTokens {
 		s.peakInputTokens = totalContext
 	}
+
+	call := UsageCall{Model: s.currentModel, InputTokens: input, OutputTokens: output, CachedInputTokens: cached, CacheWriteTokens: cacheWrite}
+	if recordPerformance && s.activityDuration > 0 {
+		call.ObservedOutput = true
+		call.GenerationTime = s.activityDuration
+		if !s.requestStartTime.IsZero() && !s.firstActivityTime.IsZero() && !s.firstActivityTime.Before(s.requestStartTime) {
+			call.TTFT = s.firstActivityTime.Sub(s.requestStartTime)
+		}
+	}
+	s.usageCalls = append(s.usageCalls, call)
+	s.resetPendingCall()
 }
 
-// AddCompactionUsage records usage for a compaction helper LLM call. The tokens
-// are included in the overall usage counters and also kept as a compaction-only
-// subtotal for display.
 func (s *SessionStats) AddCompactionUsage(input, output, cached, cacheWrite int) {
-	s.AddUsage(input, output, cached, cacheWrite)
+	s.addUsageAt(input, output, cached, cacheWrite, time.Now(), false)
 	s.CompactionInputTokens += input
 	s.CompactionOutputTokens += output
 	s.CompactionCachedInputTokens += cached
@@ -96,62 +122,122 @@ func (s *SessionStats) AddCompactionUsage(input, output, cached, cacheWrite int)
 	s.CompactionLLMCallCount++
 }
 
-// DiscardUsage removes usage that belonged to an interrupted provisional
-// attempt. Peak/last per-call details are process-local display hints, so reset
-// them conservatively rather than pretending the discarded call committed.
+// DiscardUsage removes provisional usage calls from the tail and resets any
+// uncompleted attempt activity. Performance is always derived from retained
+// call records, so TTFT and throughput are restored exactly after a retry.
 func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int) {
-	s.InputTokens -= input
-	if s.InputTokens < 0 {
-		s.InputTokens = 0
+	s.InputTokens = max(0, s.InputTokens-input)
+	s.OutputTokens = max(0, s.OutputTokens-output)
+	s.CachedInputTokens = max(0, s.CachedInputTokens-cached)
+	s.CacheWriteTokens = max(0, s.CacheWriteTokens-cacheWrite)
+	s.LLMCallCount = max(0, s.LLMCallCount-calls)
+	if calls > len(s.usageCalls) {
+		calls = len(s.usageCalls)
 	}
-	s.OutputTokens -= output
-	if s.OutputTokens < 0 {
-		s.OutputTokens = 0
+	if calls > 0 {
+		s.usageCalls = s.usageCalls[:len(s.usageCalls)-calls]
 	}
-	s.CachedInputTokens -= cached
-	if s.CachedInputTokens < 0 {
-		s.CachedInputTokens = 0
-	}
-	s.CacheWriteTokens -= cacheWrite
-	if s.CacheWriteTokens < 0 {
-		s.CacheWriteTokens = 0
-	}
-	s.LLMCallCount -= calls
-	if s.LLMCallCount < 0 {
-		s.LLMCallCount = 0
-	}
-	s.lastInputTokens = 0
-	s.lastOutputTokens = 0
-	s.peakInputTokens = 0
-	s.hasPerCallUsage = false
+	s.rebuildPerCallHints()
+	s.resetPendingCall()
+	s.estimatedCostUSD = nil
 }
 
-// ToolStart marks the start of a tool execution.
+func (s *SessionStats) rebuildPerCallHints() {
+	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
+	s.hasPerCallUsage = false
+	for _, call := range s.usageCalls {
+		total := call.InputTokens + call.CachedInputTokens + call.OutputTokens
+		s.lastInputTokens, s.lastOutputTokens, s.hasPerCallUsage = total, call.OutputTokens, true
+		if total > s.peakInputTokens {
+			s.peakInputTokens = total
+		}
+	}
+}
+
+func (s *SessionStats) RequestStart() { s.requestStartAt(time.Now()) }
+func (s *SessionStats) requestStartAt(now time.Time) {
+	s.stopActivityAt(now)
+	s.resetPendingCall()
+	s.requestStartTime = now
+}
+
+// ScheduleRetryStart records when a retried provider request will start. Retry
+// events are emitted before the provider wait, so TTFT must exclude that delay.
+func (s *SessionStats) ScheduleRetryStart(waitSecs float64) {
+	if waitSecs < 0 {
+		waitSecs = 0
+	}
+	s.scheduleRetryStartAt(time.Now(), time.Duration(waitSecs*float64(time.Second)))
+}
+
+func (s *SessionStats) scheduleRetryStartAt(now time.Time, wait time.Duration) {
+	s.stopActivityAt(now)
+	s.resetPendingCall()
+	s.requestStartTime = now.Add(wait)
+}
+
+// ObserveOutput records generation activity. This includes visible text and
+// reasoning as well as hidden/encrypted reasoning events, but not tool calls.
+func (s *SessionStats) ObserveOutput() { s.outputAt(time.Now()) }
+func (s *SessionStats) outputAt(now time.Time) {
+	if s.firstActivityTime.IsZero() {
+		s.firstActivityTime = now
+	}
+	if s.activityStartTime.IsZero() {
+		s.activityStartTime = now
+	}
+}
+
+// GenerationEnd closes the current activity interval. AddUsage associates the
+// accumulated interval with that completed provider request.
+func (s *SessionStats) GenerationEnd() { s.stopActivityAt(time.Now()) }
+func (s *SessionStats) stopActivityAt(now time.Time) {
+	if !s.activityStartTime.IsZero() && !now.Before(s.activityStartTime) {
+		s.activityDuration += now.Sub(s.activityStartTime)
+	}
+	s.activityStartTime = time.Time{}
+}
+func (s *SessionStats) resetPendingCall() {
+	s.requestStartTime, s.firstActivityTime, s.activityStartTime = time.Time{}, time.Time{}, time.Time{}
+	s.activityDuration = 0
+}
+
+// UsageCalls returns current-process calls and whether they represent the whole
+// displayed session. A false completeness value means historical seeded usage
+// prevents a truthful whole-session cost.
+func (s *SessionStats) UsageCalls() ([]UsageCall, bool) {
+	return append([]UsageCall(nil), s.usageCalls...), !s.hasHistoricalUsage
+}
+
+func (s *SessionStats) SetEstimatedCost(cost float64) {
+	if cost >= 0 {
+		s.estimatedCostUSD = &cost
+	}
+}
+func (s *SessionStats) ClearEstimatedCost() { s.estimatedCostUSD = nil }
+
 func (s *SessionStats) ToolStart() {
 	now := time.Now()
+	s.stopActivityAt(now)
 	if !s.inTool {
-		// Was in LLM phase, record LLM time
 		s.LLMTime += now.Sub(s.lastEventTime)
 	}
-	s.lastEventTime = now
-	s.inTool = true
+	s.lastEventTime, s.inTool = now, true
 	s.ToolCallCount++
 }
-
-// ToolEnd marks the end of tool execution (back to LLM).
 func (s *SessionStats) ToolEnd() {
 	now := time.Now()
 	if s.inTool {
-		// Was in tool phase, record tool time
 		s.ToolTime += now.Sub(s.lastEventTime)
 	}
-	s.lastEventTime = now
-	s.inTool = false
+	s.lastEventTime, s.inTool = now, false
+	s.requestStartTime = now
+	s.firstActivityTime = time.Time{}
+	s.activityDuration = 0
 }
-
-// Finalize records any remaining time.
 func (s *SessionStats) Finalize() {
 	now := time.Now()
+	s.stopActivityAt(now)
 	if s.inTool {
 		s.ToolTime += now.Sub(s.lastEventTime)
 	} else {
@@ -160,56 +246,60 @@ func (s *SessionStats) Finalize() {
 	s.lastEventTime = now
 }
 
-// Render returns the stats as a compact single-line string.
 func (s SessionStats) Render() string {
-	total := time.Since(s.StartTime)
-
-	// Format tokens with optional cache info
-	var tokensStr string
-	switch {
-	case s.CachedInputTokens > 0 && s.CacheWriteTokens > 0:
-		tokensStr = fmt.Sprintf("%s in (cache: %s read, %s write) → %s out",
-			FormatTokenCount(s.InputTokens),
-			FormatTokenCount(s.CachedInputTokens),
-			FormatTokenCount(s.CacheWriteTokens),
-			FormatTokenCount(s.OutputTokens))
-	case s.CachedInputTokens > 0:
-		tokensStr = fmt.Sprintf("%s in (cache: %s read) → %s out",
-			FormatTokenCount(s.InputTokens),
-			FormatTokenCount(s.CachedInputTokens),
-			FormatTokenCount(s.OutputTokens))
-	case s.CacheWriteTokens > 0:
-		tokensStr = fmt.Sprintf("%s in (cache: %s write) → %s out",
-			FormatTokenCount(s.InputTokens),
-			FormatTokenCount(s.CacheWriteTokens),
-			FormatTokenCount(s.OutputTokens))
-	default:
-		tokensStr = fmt.Sprintf("%s in → %s out",
-			FormatTokenCount(s.InputTokens),
-			FormatTokenCount(s.OutputTokens))
+	parts := []string{fmt.Sprintf("%.1fs", time.Since(s.StartTime).Seconds())}
+	tokenParts := []string{fmt.Sprintf("%s in", formatStatsTokenCount(s.InputTokens))}
+	if s.CachedInputTokens > 0 {
+		tokenParts = append(tokenParts, fmt.Sprintf("%s cached", formatStatsTokenCount(s.CachedInputTokens)))
 	}
+	if s.CacheWriteTokens > 0 {
+		tokenParts = append(tokenParts, fmt.Sprintf("%s cache write", formatStatsTokenCount(s.CacheWriteTokens)))
+	}
+	parts = append(parts, fmt.Sprintf("%s → %s out", strings.Join(tokenParts, " + "), formatStatsTokenCount(s.OutputTokens)))
 
-	// Append last/peak context info when there's been at least one AddUsage this process
-	if s.hasPerCallUsage {
-		lastStr := fmt.Sprintf("last: %s→%s",
-			FormatTokenCount(s.lastInputTokens),
-			FormatTokenCount(s.lastOutputTokens))
-		if s.peakInputTokens > s.lastInputTokens {
-			tokensStr += fmt.Sprintf(" (%s, peak: %s)", lastStr, FormatTokenCount(s.peakInputTokens))
-		} else {
-			tokensStr += fmt.Sprintf(" (%s)", lastStr)
+	var firstTTFT time.Duration
+	var generated int
+	var generationTime time.Duration
+	for _, call := range s.usageCalls {
+		if !call.ObservedOutput {
+			continue
 		}
+		if firstTTFT == 0 && call.TTFT > 0 {
+			firstTTFT = call.TTFT
+		}
+		generated += call.OutputTokens
+		generationTime += call.GenerationTime
 	}
-
-	// Format time breakdown
-	var timeStr string
+	performance := []string{}
+	if firstTTFT > 0 {
+		performance = append(performance, fmt.Sprintf("TTFT %.1fs", firstTTFT.Seconds()))
+	}
+	if generated > 0 && generationTime > 0 {
+		performance = append(performance, fmt.Sprintf("%.0f tok/s", float64(generated)/generationTime.Seconds()))
+	}
+	if len(performance) > 0 {
+		parts = append(parts, strings.Join(performance, ", "))
+	}
+	if s.estimatedCostUSD != nil {
+		parts = append(parts, fmt.Sprintf("$%.4f", *s.estimatedCostUSD))
+	}
+	activity := []string{}
 	if s.ToolCallCount > 0 {
-		timeStr = fmt.Sprintf("%.1fs (llm %.1fs + tool %.1fs)",
-			total.Seconds(), s.LLMTime.Seconds(), s.ToolTime.Seconds())
-	} else {
-		timeStr = fmt.Sprintf("%.1fs", total.Seconds())
+		activity = append(activity, fmt.Sprintf("%d %s", s.ToolCallCount, plural(s.ToolCallCount, "tool", "tools")))
 	}
+	if s.LLMCallCount > 0 {
+		activity = append(activity, fmt.Sprintf("%d %s", s.LLMCallCount, plural(s.LLMCallCount, "call", "calls")))
+	}
+	if len(activity) > 0 {
+		parts = append(parts, strings.Join(activity, ", "))
+	}
+	return "Stats: " + strings.Join(parts, " | ")
+}
 
-	return fmt.Sprintf("Stats: %s | %s | %d tools | %d llm calls",
-		timeStr, tokensStr, s.ToolCallCount, s.LLMCallCount)
+func formatStatsTokenCount(n int) string { return strings.Replace(FormatTokenCount(n), "k", "K", 1) }
+func plural(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }

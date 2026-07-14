@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSessionStatsSeedTotals(t *testing.T) {
@@ -112,11 +113,12 @@ func TestSeedTotalsClearsPerCallState(t *testing.T) {
 		t.Errorf("expected no last/peak after reseed without AddUsage, got: %s", out)
 	}
 
-	// New AddUsage should work normally after reseed
+	// New AddUsage should preserve per-call tracking without adding the old,
+	// overly detailed last/peak diagnostics to balanced --stats.
 	stats.AddUsage(3000, 300, 0, 0)
 	out = stats.Render()
-	if !strings.Contains(out, "last:") {
-		t.Errorf("expected last info after AddUsage post-reseed, got: %s", out)
+	if strings.Contains(out, "last:") || strings.Contains(out, "peak:") {
+		t.Errorf("balanced stats should omit last/peak details, got: %s", out)
 	}
 }
 
@@ -157,20 +159,20 @@ func TestRenderCacheLabels(t *testing.T) {
 			name:        "both read and write",
 			cached:      500,
 			write:       7500,
-			wantContain: "cache: 500 read, 7.5k write",
+			wantContain: "500 cached + 7.5K cache write",
 		},
 		{
 			name:        "read only",
 			cached:      500,
 			write:       0,
-			wantContain: "cache: 500 read",
-			wantAbsent:  "write",
+			wantContain: "500 cached",
+			wantAbsent:  "cache write",
 		},
 		{
 			name:        "write only",
 			cached:      0,
 			write:       7500,
-			wantContain: "cache: 7.5k write",
+			wantContain: "7.5K cache write",
 			wantAbsent:  "read",
 		},
 		{
@@ -203,32 +205,108 @@ func TestRenderCacheLabels(t *testing.T) {
 	}
 }
 
-func TestRenderIncludesLastAndPeak(t *testing.T) {
+func TestRenderBalancedStatsWithTimingCostAndCacheWrite(t *testing.T) {
 	stats := NewSessionStats()
+	base := time.Now().Add(-12300 * time.Millisecond)
+	stats.StartTime = base
+	stats.requestStartAt(base)
+	stats.outputAt(base.Add(800 * time.Millisecond))
+	stats.addUsageAt(24_000, 1_200, 18_000, 2_000, base.Add(1300*time.Millisecond), true)
+	stats.ToolCallCount = 3
+	stats.LLMCallCount = 4
+	stats.SetEstimatedCost(0.084)
 
-	// No calls yet — should not include last/peak
 	out := stats.Render()
-	if strings.Contains(out, "last:") {
-		t.Errorf("expected no last/peak before any calls, got: %s", out)
+	for _, want := range []string{
+		"Stats: 12.3s | 24K in + 18K cached + 2.0K cache write → 1.2K out",
+		"TTFT 0.8s, 2400 tok/s",
+		"$0.0840",
+		"3 tools, 4 calls",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in render output, got: %s", want, out)
+		}
 	}
+}
 
-	// Single call — last == peak, so no "peak:" shown
-	stats.AddUsage(1000, 200, 0, 0)
-	out = stats.Render()
-	if !strings.Contains(out, "(last:") {
-		t.Errorf("expected last info in render, got: %s", out)
+func TestRenderGracefullyOmitsUnavailablePerformanceCostAndActivity(t *testing.T) {
+	stats := NewSessionStats()
+	out := stats.Render()
+	for _, absent := range []string{"TTFT", "tok/s", "$", "tools", "calls", "last:", "peak:"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("did not expect %q in render output, got: %s", absent, out)
+		}
 	}
-	if strings.Contains(out, "peak:") {
-		t.Errorf("expected no peak when last == peak, got: %s", out)
+	if !strings.Contains(out, "0 in → 0 out") {
+		t.Errorf("expected token accounting to remain present, got: %s", out)
 	}
+}
 
-	// Second call with lower input — peak > last, so "peak:" should appear
-	stats.AddUsage(500, 100, 0, 0)
-	out = stats.Render()
-	if !strings.Contains(out, "last:") {
-		t.Errorf("expected last info in render, got: %s", out)
+func TestGenerationRateUsesOnlyObservedCompletedCalls(t *testing.T) {
+	stats := NewSessionStats()
+	base := time.Now().Add(-10 * time.Second)
+
+	// A tool-only generation reports output usage but has no observed generation
+	// activity, so it must not inflate throughput.
+	stats.requestStartAt(base)
+	stats.addUsageAt(10, 900, 0, 0, base.Add(time.Second), true)
+
+	stats.requestStartAt(base.Add(2 * time.Second))
+	stats.outputAt(base.Add(3 * time.Second))
+	stats.addUsageAt(10, 100, 0, 0, base.Add(5*time.Second), true)
+
+	out := stats.Render()
+	if !strings.Contains(out, "50 tok/s") {
+		t.Fatalf("rate should use only 100 observed tokens over 2s, got: %s", out)
 	}
-	if !strings.Contains(out, "peak:") {
-		t.Errorf("expected peak info when peak > last, got: %s", out)
+	if !strings.Contains(out, "TTFT 1.0s") {
+		t.Fatalf("TTFT should come from the observed call, got: %s", out)
+	}
+}
+
+func TestAttemptDiscardWithoutUsageClearsPendingTiming(t *testing.T) {
+	stats := NewSessionStats()
+	stats.RequestStart()
+	stats.ObserveOutput()
+	stats.DiscardUsage(0, 0, 0, 0, 0)
+	if !stats.requestStartTime.IsZero() || !stats.firstActivityTime.IsZero() || !stats.activityStartTime.IsZero() || stats.activityDuration != 0 {
+		t.Fatalf("attempt discard retained pending timing: %+v", stats)
+	}
+}
+
+func TestDiscardRestoresPerformanceFromRetainedCalls(t *testing.T) {
+	stats := NewSessionStats()
+	base := time.Now().Add(-10 * time.Second)
+	stats.requestStartAt(base)
+	stats.outputAt(base.Add(time.Second))
+	stats.addUsageAt(10, 100, 0, 0, base.Add(3*time.Second), true) // 50 tok/s
+	stats.requestStartAt(base.Add(4 * time.Second))
+	stats.outputAt(base.Add(8 * time.Second))
+	stats.addUsageAt(10, 1000, 0, 0, base.Add(9*time.Second), true)
+	stats.DiscardUsage(10, 1000, 0, 0, 1)
+
+	out := stats.Render()
+	if !strings.Contains(out, "TTFT 1.0s, 50 tok/s") {
+		t.Fatalf("discard should restore retained-call timing, got: %s", out)
+	}
+}
+
+func TestSeedTotalsResetsProcessLocalState(t *testing.T) {
+	stats := NewSessionStats()
+	stats.SetModel("old")
+	stats.RequestStart()
+	stats.ObserveOutput()
+	stats.AddUsage(1, 1, 0, 0)
+	stats.SetEstimatedCost(1)
+	stats.SeedTotals(10, 20, 0, 0, 0, 1)
+	calls, complete := stats.UsageCalls()
+	if complete || len(calls) != 0 {
+		t.Fatalf("seeded calls = %v, complete=%v", calls, complete)
+	}
+	out := stats.Render()
+	for _, absent := range []string{"TTFT", "tok/s", "$"} {
+		if strings.Contains(out, absent) {
+			t.Fatalf("SeedTotals retained %q: %s", absent, out)
+		}
 	}
 }

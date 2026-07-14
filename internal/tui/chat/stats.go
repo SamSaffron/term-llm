@@ -9,12 +9,23 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
-	"github.com/samsaffron/term-llm/internal/usage"
 )
 
 const defaultAutoCompactThreshold = 0.90
 
 var statsCostEstimator = estimateStatsCost
+
+func (m *Model) exitStatsSummary() string {
+	if m == nil || !m.showStats || m.stats == nil || m.stats.LLMCallCount <= 0 {
+		return ""
+	}
+	m.stats.Finalize()
+	m.stats.ClearEstimatedCost()
+	if cost, err := statsCostEstimator(m.statsPricingModel(), m.stats); err == nil {
+		m.stats.SetEstimatedCost(cost)
+	}
+	return m.stats.Render()
+}
 
 func (m *Model) cmdStats() (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
@@ -92,7 +103,7 @@ func (m *Model) renderStatsModal() string {
 
 	b.WriteString("\nToken Usage\n")
 	if m.stats != nil {
-		totalTokens := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.OutputTokens
+		totalTokens := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens + m.stats.OutputTokens
 		b.WriteString(fmt.Sprintf("Input tokens:       %s\n", ui.FormatTokenCount(m.stats.InputTokens)))
 		if m.stats.CachedInputTokens > 0 {
 			b.WriteString(fmt.Sprintf("Cache read tokens:  %s\n", ui.FormatTokenCount(m.stats.CachedInputTokens)))
@@ -153,6 +164,7 @@ func (m *Model) recordCompactionUsage(ctx context.Context, sessionID string, u l
 	if m.stats == nil {
 		m.stats = ui.NewSessionStats()
 	}
+	m.stats.SetModel(m.statsPricingModel())
 	m.stats.AddCompactionUsage(u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	if !u.BillableCountersZero() && m.store != nil && sessionID != "" {
 		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
@@ -192,22 +204,7 @@ func formatCompactionUsage(stats *ui.SessionStats) string {
 }
 
 func estimateStatsCost(model string, stats *ui.SessionStats) (float64, error) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return 0, fmt.Errorf("model unknown")
-	}
-	if stats == nil {
-		return 0, fmt.Errorf("no usage recorded")
-	}
-	fetcher := usage.NewPricingFetcher()
-	return fetcher.CalculateCost(usage.UsageEntry{
-		Model:            model,
-		InputTokens:      stats.InputTokens,
-		OutputTokens:     stats.OutputTokens,
-		CacheReadTokens:  stats.CachedInputTokens,
-		CacheWriteTokens: stats.CacheWriteTokens,
-		Provider:         usage.ProviderTermLLM,
-	})
+	return ui.EstimateSessionStatsCost(stats, model)
 }
 
 func (m *Model) statsPricingModel() string {

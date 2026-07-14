@@ -534,8 +534,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Create stream adapter for unified event handling with proper buffering
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
 	if sess != nil {
-		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
+		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
 	}
+	adapter.Stats().SetModel(activeModel(cfg))
 
 	var outputToolMessagesMu sync.Mutex
 	outputToolMessages := append([]llm.Message{}, messages...)
@@ -712,21 +713,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	var compactionCallback llm.CompactionCallback
-	if store != nil && sess != nil {
-		compactionCallback = func(cbCtx context.Context, result *llm.CompactionResult) error {
-			_, _, refreshed, err := session.ApplyCompaction(cbCtx, store, sess, nil, result)
-			if err != nil {
-				return err
-			}
-			if refreshed != nil {
-				sess = refreshed
-			}
-			if result != nil && !result.Usage.BillableCountersZero() {
-				_ = store.UpdateMetrics(cbCtx, sess.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens)
-			}
+	var compactionUsages compactionUsageCollector
+	compactionCallback := func(cbCtx context.Context, result *llm.CompactionResult) error {
+		compactionUsages.add(result)
+		if store == nil || sess == nil {
 			return nil
 		}
+		_, _, refreshed, err := session.ApplyCompaction(cbCtx, store, sess, nil, result)
+		if err != nil {
+			return err
+		}
+		if refreshed != nil {
+			sess = refreshed
+		}
+		if result != nil && !result.Usage.BillableCountersZero() {
+			_ = store.UpdateMetrics(cbCtx, sess.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens)
+		}
+		return nil
 	}
 
 	var jsonInfo sessionInfo
@@ -853,8 +856,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if !askPorcelain || askJSON || showStats || needsCollector {
 			bridge = newAskProgressiveBridge(ui.DefaultStreamBufferSize)
 			if sess != nil {
-				bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
+				bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns+sess.CompactionCount)
 			}
+			bridge.Stats().SetModel(activeModel(cfg))
 			stats = bridge.Stats()
 			events = wrapStreamEvents(bridge.Events())
 			if askPorcelain && !askJSON {
@@ -872,6 +876,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			ContinueWith: progressiveOpts.ContinueWith,
 		}
 		runProgressive := func() askProgressiveRunResult {
+			if bridge != nil {
+				bridge.Stats().RequestStart()
+			}
 			sink := runpkg.EventSink(eventSinkFunc(func(llm.Event) {}))
 			if bridge != nil {
 				sink = askProgressiveRunnerSink{bridge: bridge}
@@ -1236,8 +1243,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		jsonFinalPending = false
 	}
 
+	compactionUsages.merge(stats)
 	if showStats && stats != nil && !askJSON {
 		stats.Finalize()
+		setEstimatedStatsCost(stats, activeModel(cfg))
 		fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
 	}
 

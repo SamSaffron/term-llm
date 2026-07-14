@@ -38,11 +38,13 @@ type ModelPricing struct {
 
 // PricingFetcher fetches and caches model pricing from LiteLLM
 type PricingFetcher struct {
-	mu         sync.RWMutex
-	cache      map[string]ModelPricing
-	lastFetch  time.Time
-	cacheDir   string
-	httpClient *http.Client
+	mu           sync.RWMutex
+	cache        map[string]ModelPricing
+	lastFetch    time.Time
+	cacheDir     string
+	httpClient   *http.Client
+	localOnce    sync.Once
+	localLoadErr error
 }
 
 // NewPricingFetcher creates a new pricing fetcher
@@ -286,6 +288,63 @@ func (p *PricingFetcher) parseData(data []byte) error {
 	return nil
 }
 
+// GetPricingLocal returns bundled pricing or pricing from the existing on-disk
+// cache. It never performs a network request and accepts stale cache data: exit
+// summaries must remain immediate even when the network is unavailable.
+func (p *PricingFetcher) GetPricingLocal(modelName string) (ModelPricing, error) {
+	if pricing, ok := lookupBundledPricing(modelName); ok {
+		return pricing, nil
+	}
+	p.localOnce.Do(func() {
+		cacheFile := filepath.Join(p.cacheDir, "pricing.json")
+		data, err := os.ReadFile(cacheFile)
+		if err != nil {
+			p.localLoadErr = fmt.Errorf("local pricing unavailable: %w", err)
+			return
+		}
+		p.mu.Lock()
+		p.localLoadErr = p.parseData(data)
+		p.mu.Unlock()
+	})
+	if p.localLoadErr != nil {
+		return ModelPricing{}, p.localLoadErr
+	}
+	return p.lookupLoadedPricing(modelName)
+}
+
+func (p *PricingFetcher) lookupLoadedPricing(modelName string) (ModelPricing, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if pricing, ok := p.cache[modelName]; ok {
+		return pricing, nil
+	}
+	for _, prefix := range providerPrefixes {
+		if pricing, ok := p.cache[prefix+modelName]; ok {
+			return pricing, nil
+		}
+	}
+	lower := strings.ToLower(modelName)
+	for key, pricing := range p.cache {
+		keyLower := strings.ToLower(key)
+		if strings.Contains(keyLower, lower) || strings.Contains(lower, keyLower) {
+			return pricing, nil
+		}
+	}
+	return ModelPricing{}, fmt.Errorf("pricing not found for model: %s", modelName)
+}
+
+// CalculateCostLocal calculates cost without fetching pricing from the network.
+func (p *PricingFetcher) CalculateCostLocal(entry UsageEntry) (float64, error) {
+	if entry.Model == "" {
+		return 0, nil
+	}
+	pricing, err := p.GetPricingLocal(entry.Model)
+	if err != nil {
+		return 0, err
+	}
+	return calculateCostWithPricing(entry, pricing), nil
+}
+
 // CalculateCost calculates the cost for a usage entry
 func (p *PricingFetcher) CalculateCost(entry UsageEntry) (float64, error) {
 	if entry.Model == "" {
@@ -296,7 +355,10 @@ func (p *PricingFetcher) CalculateCost(entry UsageEntry) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return calculateCostWithPricing(entry, pricing), nil
+}
 
+func calculateCostWithPricing(entry UsageEntry, pricing ModelPricing) float64 {
 	if pricing.WholeRequestTier {
 		threshold := pricing.TieredThreshold
 		if threshold <= 0 {
@@ -313,7 +375,7 @@ func (p *PricingFetcher) CalculateCost(entry UsageEntry) (float64, error) {
 		return float64(entry.InputTokens)*price(pricing.InputCostPerToken, pricing.InputCostPerTokenAbove200k) +
 			float64(entry.OutputTokens)*price(pricing.OutputCostPerToken, pricing.OutputCostPerTokenAbove200k) +
 			float64(entry.CacheWriteTokens)*price(pricing.CacheCreationInputTokenCost, pricing.CacheCreationCostAbove200k) +
-			float64(entry.CacheReadTokens)*price(pricing.CacheReadInputTokenCost, pricing.CacheReadCostAbove200k), nil
+			float64(entry.CacheReadTokens)*price(pricing.CacheReadInputTokenCost, pricing.CacheReadCostAbove200k)
 	}
 
 	var cost float64
@@ -346,7 +408,7 @@ func (p *PricingFetcher) CalculateCost(entry UsageEntry) (float64, error) {
 		pricing.CacheReadCostAbove200k,
 	)
 
-	return cost, nil
+	return cost
 }
 
 // calculateTieredCost calculates cost with tiered pricing (200k threshold)

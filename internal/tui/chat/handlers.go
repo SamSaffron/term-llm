@@ -329,6 +329,7 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 		m.dialog.Close()
 	}
 
+	hadActiveStream := m.streaming || m.streamCancelFunc != nil
 	_, _ = m.cancelActiveForInterrupt()
 	m.pausedForExternalUI = false
 	if m.program != nil {
@@ -339,9 +340,10 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 		}()
 	}
 
-	if m.showStats && m.stats.LLMCallCount > 0 {
-		m.stats.Finalize()
-		return m, m.quitCmd(tea.Println(m.stats.Render()))
+	if !hadActiveStream {
+		if summary := m.exitStatsSummary(); summary != "" {
+			return m, m.quitCmd(tea.Println(summary))
+		}
 	}
 	return m, m.quitCmd()
 }

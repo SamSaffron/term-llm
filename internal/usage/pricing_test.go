@@ -2,8 +2,66 @@ package usage
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestCalculateCostLocalUsesStaleCacheWithoutNetwork(t *testing.T) {
+	cacheDir := t.TempDir()
+	cacheFile := filepath.Join(cacheDir, "pricing.json")
+	if err := os.WriteFile(cacheFile, []byte(`{"local-model":{"input_cost_per_token":0.000001}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(cacheFile, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := NewPricingFetcher()
+	fetcher.cacheDir = cacheDir
+	// No network client is needed: a network attempt would panic on nil.
+	fetcher.httpClient = nil
+	cost, err := fetcher.CalculateCostLocal(UsageEntry{Model: "local-model", InputTokens: 1000})
+	if err != nil {
+		t.Fatalf("CalculateCostLocal() error = %v", err)
+	}
+	if math.Abs(cost-0.001) > 1e-9 {
+		t.Fatalf("cost = %g, want .001", cost)
+	}
+}
+
+func TestGetPricingLocalLoadsDiskCacheAtMostOnce(t *testing.T) {
+	cacheDir := t.TempDir()
+	cacheFile := filepath.Join(cacheDir, "pricing.json")
+	if err := os.WriteFile(cacheFile, []byte(`{"model-a":{"input_cost_per_token":0.000001},"model-b":{"input_cost_per_token":0.000002}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := NewPricingFetcher()
+	fetcher.cacheDir = cacheDir
+	if _, err := fetcher.GetPricingLocal("model-a"); err != nil {
+		t.Fatalf("first GetPricingLocal() error = %v", err)
+	}
+	if err := os.Remove(cacheFile); err != nil {
+		t.Fatal(err)
+	}
+	pricing, err := fetcher.GetPricingLocal("model-b")
+	if err != nil {
+		t.Fatalf("second GetPricingLocal() reread disk cache: %v", err)
+	}
+	if pricing.InputCostPerToken != 0.000002 {
+		t.Fatalf("model-b input price = %g", pricing.InputCostPerToken)
+	}
+}
+
+func TestCalculateCostLocalGracefullyFailsWithoutCache(t *testing.T) {
+	fetcher := NewPricingFetcher()
+	fetcher.cacheDir = t.TempDir()
+	fetcher.httpClient = nil
+	if _, err := fetcher.CalculateCostLocal(UsageEntry{Model: "unknown", InputTokens: 1}); err == nil {
+		t.Fatal("expected unavailable local pricing error")
+	}
+}
 
 func TestPricingFetcherUsesBundledSambaNovaPricing(t *testing.T) {
 	fetcher := NewPricingFetcher()

@@ -98,6 +98,9 @@ func (b *askProgressiveBridge) send(event ui.StreamEvent) error {
 }
 
 func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
+	if b == nil {
+		return nil
+	}
 	switch event.Type {
 	case llm.EventError:
 		if event.Err != nil {
@@ -106,16 +109,21 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 	case llm.EventTextDelta:
 		b.attemptUsageCommitted = false
 		if event.Text != "" {
+			b.stats.ObserveOutput()
 			return b.send(ui.TextEvent(event.Text))
 		}
 	case llm.EventReasoningDelta:
 		b.attemptUsageCommitted = false
 		kind := llm.NormalizeReasoningKind(event.ReasoningKind)
 		if llm.IsEncryptedReasoningDelta(event) {
+			b.stats.ObserveOutput()
 			break
 		}
 		if event.Text == "" && event.ReasoningItemID == "" && !event.ReasoningFinal {
 			break
+		}
+		if event.Text != "" {
+			b.stats.ObserveOutput()
 		}
 		title := ""
 		displayable := kind == llm.ReasoningKindSummary
@@ -190,6 +198,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 			}
 		}
 	case llm.EventUsage:
+		b.stats.GenerationEnd()
 		if event.Use != nil {
 			b.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
 			if !b.attemptUsageCommitted {
@@ -206,13 +215,18 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 			return b.send(ui.PhaseEvent(event.Text))
 		}
 	case llm.EventRetry:
+		b.stats.ScheduleRetryStart(event.RetryWaitSecs)
 		return b.send(ui.RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs))
 	case llm.EventAttemptDiscard:
-		if b.attemptUsageCalls > 0 {
-			b.stats.DiscardUsage(b.attemptInput, b.attemptOutput, b.attemptCached, b.attemptCacheWrite, b.attemptUsageCalls)
-		}
+		b.stats.DiscardUsage(b.attemptInput, b.attemptOutput, b.attemptCached, b.attemptCacheWrite, b.attemptUsageCalls)
 		b.resetAttemptUsage()
 		return b.send(ui.AttemptDiscardEvent())
+	case llm.EventModelSwitch:
+		model := event.Model
+		if model == "" {
+			model = event.Text
+		}
+		b.stats.SetModel(model)
 	case llm.EventInterjection:
 		if event.Text != "" {
 			return b.send(ui.InterjectionEvent(event.Text, event.InterjectionID))
