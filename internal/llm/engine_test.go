@@ -2762,6 +2762,9 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 	if compactionResult == nil {
 		t.Fatal("compaction callback was not called")
 	}
+	if compactionResult.Model != "compact-rush" {
+		t.Fatalf("compaction model = %q, want compact-rush", compactionResult.Model)
+	}
 	if compactionResult.Usage.InputTokens != 84 || compactionResult.Usage.OutputTokens != 2 {
 		t.Fatalf("compaction usage = %+v, want brief usage 84/2", compactionResult.Usage)
 	}

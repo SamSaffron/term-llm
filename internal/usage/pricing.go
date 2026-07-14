@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -136,37 +137,7 @@ func (p *PricingFetcher) GetPricing(modelName string) (ModelPricing, error) {
 	if err := p.ensureLoaded(); err != nil {
 		return ModelPricing{}, err
 	}
-
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	// Try exact match first
-	if pricing, ok := p.cache[modelName]; ok {
-		return pricing, nil
-	}
-
-	// Try with different provider prefixes
-	for _, prefix := range providerPrefixes {
-		key := prefix + modelName
-		if pricing, ok := p.cache[key]; ok {
-			return pricing, nil
-		}
-	}
-
-	if pricing, ok := lookupBundledPricing(modelName); ok {
-		return pricing, nil
-	}
-
-	// Try case-insensitive partial matching
-	lower := strings.ToLower(modelName)
-	for key, pricing := range p.cache {
-		keyLower := strings.ToLower(key)
-		if strings.Contains(keyLower, lower) || strings.Contains(lower, keyLower) {
-			return pricing, nil
-		}
-	}
-
-	return ModelPricing{}, fmt.Errorf("pricing not found for model: %s", modelName)
+	return p.lookupLoadedPricing(modelName)
 }
 
 func lookupBundledPricing(modelName string) (ModelPricing, bool) {
@@ -324,10 +295,15 @@ func (p *PricingFetcher) lookupLoadedPricing(modelName string) (ModelPricing, er
 		}
 	}
 	lower := strings.ToLower(modelName)
-	for key, pricing := range p.cache {
+	keys := make([]string, 0, len(p.cache))
+	for key := range p.cache {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
 		keyLower := strings.ToLower(key)
 		if strings.Contains(keyLower, lower) || strings.Contains(lower, keyLower) {
-			return pricing, nil
+			return p.cache[key], nil
 		}
 	}
 	return ModelPricing{}, fmt.Errorf("pricing not found for model: %s", modelName)

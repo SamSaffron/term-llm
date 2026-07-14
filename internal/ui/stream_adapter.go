@@ -270,7 +270,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 					return
 				}
 				a.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
-				if !a.attemptUsageCommitted {
+				if !event.Use.BillableCountersZero() && !a.attemptUsageCommitted {
 					a.attemptInput += event.Use.InputTokens
 					a.attemptOutput += event.Use.OutputTokens
 					a.attemptCached += event.Use.CachedInputTokens

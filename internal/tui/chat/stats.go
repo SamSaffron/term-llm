@@ -115,7 +115,9 @@ func (m *Model) renderStatsModal() string {
 	}
 	if compactionEnabled {
 		b.WriteString(fmt.Sprintf("× Soft compact at:  %-8s %5.1f%% (%s window buffer)\n", ui.FormatTokenCount(softThreshold), percent(softThreshold, limit), ui.FormatTokenCount(max(0, limit-softThreshold))))
-		b.WriteString(fmt.Sprintf("! Hard compact at:  %-8s %5.1f%% (%s window buffer)\n", ui.FormatTokenCount(hardThreshold), percent(hardThreshold, limit), ui.FormatTokenCount(max(0, limit-hardThreshold))))
+		if hardThreshold != softThreshold {
+			b.WriteString(fmt.Sprintf("! Hard compact at:  %-8s %5.1f%% (%s window buffer)\n", ui.FormatTokenCount(hardThreshold), percent(hardThreshold, limit), ui.FormatTokenCount(max(0, limit-hardThreshold))))
+		}
 	}
 
 	b.WriteString("\nCumulative Session Token Usage\n")
@@ -181,12 +183,17 @@ func sessionIDOf(sess *session.Session) string {
 	return sess.ID
 }
 
-func (m *Model) recordCompactionUsage(ctx context.Context, sessionID string, u llm.Usage) {
+type compactionUsageMsg struct {
+	sessionID string
+	model     string
+	usage     llm.Usage
+}
+
+func (m *Model) recordCompactionUsage(ctx context.Context, sessionID, model string, u llm.Usage) {
 	if m.stats == nil {
 		m.stats = ui.NewSessionStats()
 	}
-	m.stats.SetModel(m.statsPricingModel())
-	m.stats.AddCompactionUsage(u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	m.stats.AddCompactionUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	if !u.BillableCountersZero() && m.store != nil && sessionID != "" {
 		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	}

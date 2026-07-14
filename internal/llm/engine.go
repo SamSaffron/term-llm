@@ -2581,6 +2581,7 @@ turnLoop:
 					brief := continuationBriefFromAssistantMessage(finalMsg)
 					if brief != "" && compactionConfig != nil && softCheckpointOriginalCount > 0 {
 						result := compactionResultFromBriefPrepared(systemPrompt, brief, softCheckpointPrepared, softCheckpointOriginalCount, *compactionConfig)
+						result.Model = strings.TrimSpace(req.Model)
 						result.Usage = softCompactionUsage
 						if applyCompaction(result) {
 							resetSoftCheckpointState()

@@ -291,6 +291,63 @@ func TestDiscardRestoresPerformanceFromRetainedCalls(t *testing.T) {
 	}
 }
 
+func TestDiscardKeepsInterleavedCompactionCall(t *testing.T) {
+	stats := NewSessionStats()
+	stats.AddUsage(10, 2, 0, 0)
+	stats.AddCompactionUsageForModel("compact-model", 20, 3, 0, 0)
+
+	stats.DiscardUsage(10, 2, 0, 0, 1)
+
+	calls, _ := stats.UsageCalls()
+	if len(calls) != 1 || !calls[0].Compaction || calls[0].Model != "compact-model" {
+		t.Fatalf("discard removed the durable compaction call: %+v", calls)
+	}
+	if stats.LLMCallCount != 1 || stats.InputTokens != 20 || stats.OutputTokens != 3 {
+		t.Fatalf("totals after discard = %+v, want only compaction usage", stats)
+	}
+}
+
+func TestAddCompactionUsagePreservesPendingMainCallTimingAndModel(t *testing.T) {
+	stats := NewSessionStats()
+	base := time.Now().Add(-5 * time.Second)
+	stats.SetModel("main-model")
+	stats.requestStartAt(base)
+	stats.outputAt(base.Add(time.Second))
+	stats.stopActivityAt(base.Add(2 * time.Second))
+
+	stats.AddCompactionUsageForModel("  compact-model  ", 20, 5, 3, 2)
+	if stats.requestStartTime != base || stats.firstActivityTime != base.Add(time.Second) || stats.activityDuration != time.Second {
+		t.Fatalf("compaction disturbed pending timing: %+v", stats)
+	}
+
+	stats.outputAt(base.Add(3 * time.Second))
+	stats.addUsageAt(10, 4, 0, 0, base.Add(4*time.Second), true)
+	calls, _ := stats.UsageCalls()
+	if len(calls) != 2 {
+		t.Fatalf("usage calls = %d, want 2", len(calls))
+	}
+	if calls[0].Model != "compact-model" || calls[1].Model != "main-model" {
+		t.Fatalf("call models = %q, %q", calls[0].Model, calls[1].Model)
+	}
+	if calls[1].TTFT != time.Second || calls[1].GenerationTime != 2*time.Second {
+		t.Fatalf("main-call timing = TTFT %v generation %v", calls[1].TTFT, calls[1].GenerationTime)
+	}
+}
+
+func TestAllZeroUsageConsumesPendingTimingWithoutRecordingCall(t *testing.T) {
+	stats := NewSessionStats()
+	stats.RequestStart()
+	stats.ObserveOutput()
+	stats.AddUsage(0, 0, 0, 0)
+
+	if stats.LLMCallCount != 0 || len(stats.usageCalls) != 0 {
+		t.Fatalf("zero usage recorded a meaningful call: %+v", stats)
+	}
+	if !stats.requestStartTime.IsZero() || !stats.firstActivityTime.IsZero() || !stats.activityStartTime.IsZero() || stats.activityDuration != 0 {
+		t.Fatalf("zero usage retained pending timing: %+v", stats)
+	}
+}
+
 func TestSeedTotalsResetsProcessLocalState(t *testing.T) {
 	stats := NewSessionStats()
 	stats.SetModel("old")

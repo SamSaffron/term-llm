@@ -1631,6 +1631,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
 		return m.handleStreamCancelTimeout(timeoutMsg)
 	}
+	if usageMsg, ok := msg.(compactionUsageMsg); ok {
+		// Compaction callbacks run on the stream goroutine. Apply stats and
+		// session-counter mutations only on Bubble Tea's Update goroutine.
+		m.recordCompactionUsage(context.Background(), usageMsg.sessionID, usageMsg.model, usageMsg.usage)
+		return m, nil
+	}
 	if handled, cmd := m.handleTerminalTitleProviderMsg(msg); handled {
 		return m, cmd
 	}
@@ -1839,7 +1845,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if refreshed != nil {
 			m.sess = refreshed
 		}
-		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Usage)
+		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Model, msg.result.Usage)
 		m.messagesMu.Lock()
 		m.messages = updated
 		m.compactionIdx = activeStart
@@ -2250,8 +2256,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if writeTokens < 0 {
 				writeTokens = 0
 			}
-			if m.stats != nil && (inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || writeTokens > 0) {
+			if m.stats != nil {
+				// Even an all-zero terminal usage event consumes pending request
+				// timing; SessionStats intentionally does not count it as a call.
 				m.stats.AddUsage(inputTokens, outputTokens, cachedTokens, writeTokens)
+			}
+			if inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || writeTokens > 0 {
 				if !m.attemptUsageCommitted {
 					m.attemptInput += inputTokens
 					m.attemptOutput += outputTokens

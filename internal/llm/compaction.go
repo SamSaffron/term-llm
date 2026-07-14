@@ -73,7 +73,8 @@ type CompactionResult struct {
 	NewMessages    []Message
 	OriginalCount  int
 	CompactedCount int
-	Usage          Usage // Token usage/cost of the helper LLM call that produced the summary.
+	Model          string // Model used by the helper LLM call.
+	Usage          Usage  // Token usage/cost of the helper LLM call that produced the summary.
 }
 
 // EstimateTokens returns an approximate token count for a string using a
@@ -596,6 +597,7 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 	}
 
 	result := compactionResultFromBriefPrepared(systemPrompt, briefText, prepared, originalCount, config)
+	result.Model = strings.TrimSpace(model)
 	result.Usage = usage
 	return result, nil
 }
@@ -1567,6 +1569,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// compaction: deterministic previous-turn excerpts, the model-written
 	// continuation brief, then a bounded raw suffix.
 	result := compactionResultFromBriefPrepared(systemPrompt, briefText, prepared, originalCount, config)
+	result.Model = strings.TrimSpace(model)
 	result.Usage = usage
 	return result, nil
 }

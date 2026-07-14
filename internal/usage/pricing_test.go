@@ -54,6 +54,47 @@ func TestGetPricingLocalLoadsDiskCacheAtMostOnce(t *testing.T) {
 	}
 }
 
+func TestGetPricingLocalMatchesGetPricingDeterministicPrecedence(t *testing.T) {
+	cacheDir := t.TempDir()
+	data := []byte(`{
+		"anthropic/model-x":{"input_cost_per_token":0.000002},
+		"aaa-model-x-extended":{"input_cost_per_token":0.000003},
+		"zzz-model-x-extended":{"input_cost_per_token":0.000004},
+		"aaa-fuzzy-name":{"input_cost_per_token":0.000005},
+		"zzz-fuzzy-name":{"input_cost_per_token":0.000006}
+	}`)
+	if err := os.WriteFile(filepath.Join(cacheDir, "pricing.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	local := NewPricingFetcher()
+	local.cacheDir = cacheDir
+	network := NewPricingFetcher()
+	if err := network.parseData(data); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		model string
+		want  float64
+	}{
+		{model: "model-x", want: 0.000002}, // provider-prefix match beats partial matches
+		{model: "fuzzy", want: 0.000005},   // ambiguous partial match is lexical, not map-order dependent
+	} {
+		localPricing, err := local.GetPricingLocal(tc.model)
+		if err != nil {
+			t.Fatalf("GetPricingLocal(%q): %v", tc.model, err)
+		}
+		regularPricing, err := network.GetPricing(tc.model)
+		if err != nil {
+			t.Fatalf("GetPricing(%q): %v", tc.model, err)
+		}
+		if localPricing.InputCostPerToken != tc.want || regularPricing.InputCostPerToken != tc.want {
+			t.Fatalf("pricing(%q) local=%g regular=%g, want %g", tc.model, localPricing.InputCostPerToken, regularPricing.InputCostPerToken, tc.want)
+		}
+	}
+}
+
 func TestCalculateCostLocalGracefullyFailsWithoutCache(t *testing.T) {
 	fetcher := NewPricingFetcher()
 	fetcher.cacheDir = t.TempDir()

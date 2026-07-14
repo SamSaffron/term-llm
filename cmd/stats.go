@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -17,9 +18,14 @@ func setEstimatedStatsCost(stats *ui.SessionStats, model string) {
 	}
 }
 
+type compactionUsageEntry struct {
+	model string
+	usage llm.Usage
+}
+
 type compactionUsageCollector struct {
 	mu     sync.Mutex
-	usages []llm.Usage
+	usages []compactionUsageEntry
 }
 
 func (c *compactionUsageCollector) add(result *llm.CompactionResult) {
@@ -27,7 +33,7 @@ func (c *compactionUsageCollector) add(result *llm.CompactionResult) {
 		return
 	}
 	c.mu.Lock()
-	c.usages = append(c.usages, result.Usage)
+	c.usages = append(c.usages, compactionUsageEntry{model: strings.TrimSpace(result.Model), usage: result.Usage})
 	c.mu.Unlock()
 }
 
@@ -36,10 +42,11 @@ func (c *compactionUsageCollector) merge(stats *ui.SessionStats) {
 		return
 	}
 	c.mu.Lock()
-	usages := append([]llm.Usage(nil), c.usages...)
+	usages := append([]compactionUsageEntry(nil), c.usages...)
 	c.usages = nil
 	c.mu.Unlock()
-	for _, u := range usages {
-		stats.AddCompactionUsage(u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	for _, entry := range usages {
+		u := entry.usage
+		stats.AddCompactionUsageForModel(entry.model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
 	}
 }

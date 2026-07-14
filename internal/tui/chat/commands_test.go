@@ -594,6 +594,17 @@ func TestStatsModalUsesEngineThresholdsAndClearCacheDenominator(t *testing.T) {
 	}
 }
 
+func TestStatsModalCollapsesEqualCompactionThresholds(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.engine = llm.NewEngine(nil, nil)
+	m.engine.SetCompaction(1000, llm.CompactionConfig{ThresholdRatio: 0.8})
+	m.engine.SetContextEstimateBaseline(1, 0)
+	content := m.renderStatsModal()
+	if strings.Count(content, "compact at:") != 1 || !strings.Contains(content, "Soft compact at:") {
+		t.Fatalf("equal thresholds should display once:\n%s", content)
+	}
+}
+
 func TestStatsModalDoesNotFinalizeLiveTiming(t *testing.T) {
 	oldEstimator := statsCostEstimator
 	statsCostEstimator = func(string, *ui.SessionStats) (float64, error) {

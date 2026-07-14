@@ -16,7 +16,7 @@ func TestCompactionUsageCollectorMergesWithoutSession(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			collector.add(&llm.CompactionResult{Usage: llm.Usage{
+			collector.add(&llm.CompactionResult{Model: "  gpt-5.6-sol  ", Usage: llm.Usage{
 				InputTokens: 7, OutputTokens: 3, CachedInputTokens: 11, CacheWriteTokens: 2,
 			}})
 		}()
@@ -26,6 +26,12 @@ func TestCompactionUsageCollectorMergesWithoutSession(t *testing.T) {
 	collector.merge(stats)
 	if stats.InputTokens != 56 || stats.OutputTokens != 24 || stats.CachedInputTokens != 88 || stats.CacheWriteTokens != 16 || stats.LLMCallCount != 8 || stats.CompactionLLMCallCount != 8 {
 		t.Fatalf("compaction usage not merged into --stats: %+v", stats)
+	}
+	calls, _ := stats.UsageCalls()
+	for _, call := range calls {
+		if call.Model != "gpt-5.6-sol" {
+			t.Fatalf("compaction model = %q, want normalized actual model", call.Model)
+		}
 	}
 }
 

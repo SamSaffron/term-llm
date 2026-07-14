@@ -1428,6 +1428,26 @@ func TestUpdate_StreamEventUsage_CacheOnlyUpdatesStats(t *testing.T) {
 	}
 }
 
+func TestUpdateAllZeroStreamUsageConsumesPendingTimingWithoutCall(t *testing.T) {
+	m := newTestChatModel(false)
+	m.stats = ui.NewSessionStats()
+	m.stats.RequestStart()
+	m.stats.ObserveOutput()
+
+	_, _ = m.Update(streamEventMsg{event: ui.UsageEvent(0, 0, 0, 0)})
+	if m.stats.LLMCallCount != 0 {
+		t.Fatalf("all-zero usage incremented call count: %+v", m.stats)
+	}
+
+	// A later usage record without new observed activity must not inherit the
+	// consumed request's TTFT/generation state.
+	m.stats.AddUsage(1, 1, 0, 0)
+	calls, _ := m.stats.UsageCalls()
+	if len(calls) != 1 || calls[0].ObservedOutput {
+		t.Fatalf("all-zero usage leaked pending timing into the next call: %+v", calls)
+	}
+}
+
 func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
 	m := newTestChatModel(false)
 	m.pendingInterjection = "stop doing that"

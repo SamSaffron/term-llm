@@ -124,8 +124,8 @@ func TestStreamAdapterEmitsDiffOperation(t *testing.T) {
 	var diffEvent *StreamEvent
 	for ev := range adapter.Events() {
 		if ev.Type == StreamEventDiff {
-			copy := ev
-			diffEvent = &copy
+			eventCopy := ev
+			diffEvent = &eventCopy
 		}
 	}
 
@@ -134,6 +134,35 @@ func TestStreamAdapterEmitsDiffOperation(t *testing.T) {
 	}
 	if diffEvent.DiffOperation != llm.DiffOperationCreate {
 		t.Fatalf("diff operation = %q, want %q", diffEvent.DiffOperation, llm.DiffOperationCreate)
+	}
+}
+
+func TestStreamAdapterAllZeroUsageConsumesTimingWithoutCall(t *testing.T) {
+	stream := &testStream{events: []llm.Event{
+		{Type: llm.EventTextDelta, Text: "activity"},
+		{Type: llm.EventUsage, Use: &llm.Usage{}},
+	}}
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+
+	var usageEvents int
+	for event := range adapter.Events() {
+		if event.Type == StreamEventUsage {
+			usageEvents++
+		}
+	}
+	if usageEvents != 1 {
+		t.Fatalf("usage events = %d, want 1", usageEvents)
+	}
+	stats := adapter.Stats()
+	if stats.LLMCallCount != 0 {
+		t.Fatalf("zero usage incremented call count: %+v", stats)
+	}
+	if adapter.attemptUsageCalls != 0 {
+		t.Fatalf("zero usage incremented provisional attempt calls: %d", adapter.attemptUsageCalls)
+	}
+	if !stats.requestStartTime.IsZero() || !stats.firstActivityTime.IsZero() || !stats.activityStartTime.IsZero() || stats.activityDuration != 0 {
+		t.Fatalf("zero usage retained pending timing: %+v", stats)
 	}
 }
 

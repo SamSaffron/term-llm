@@ -201,7 +201,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 		b.stats.GenerationEnd()
 		if event.Use != nil {
 			b.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
-			if !b.attemptUsageCommitted {
+			if !event.Use.BillableCountersZero() && !b.attemptUsageCommitted {
 				b.attemptInput += event.Use.InputTokens
 				b.attemptOutput += event.Use.OutputTokens
 				b.attemptCached += event.Use.CachedInputTokens

@@ -247,8 +247,12 @@ func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.Compac
 		if refreshed != nil {
 			m.sess = refreshed
 		}
-		if result != nil {
-			m.recordCompactionUsage(ctx, streamSessionID, result.Usage)
+		if result != nil && m.program != nil {
+			m.program.Send(compactionUsageMsg{
+				sessionID: streamSessionID,
+				model:     result.Model,
+				usage:     result.Usage,
+			})
 		}
 		if m.engine != nil {
 			m.engine.SetContextEstimateBaseline(0, 0)

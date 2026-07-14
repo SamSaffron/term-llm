@@ -433,6 +433,9 @@ func TestSoftCompactUsesBriefPromptAndReportsUsage(t *testing.T) {
 	if !strings.Contains(prompt, "compact continuation brief") || !strings.Contains(prompt, "## Objective") || !strings.Contains(prompt, "## Relevant Files & Symbols") || strings.Contains(prompt, "Create a detailed summary") {
 		t.Fatalf("soft compaction prompt mismatch:\n%s", prompt)
 	}
+	if result.Model != "test-model" {
+		t.Fatalf("result model = %q, want test-model", result.Model)
+	}
 	if result.Usage.InputTokens != 12 || result.Usage.OutputTokens != 7 {
 		t.Fatalf("result usage = %+v, want 12/7", result.Usage)
 	}

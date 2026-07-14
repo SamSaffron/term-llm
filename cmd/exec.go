@@ -437,11 +437,13 @@ func (s *execRunSink) Event(event llm.Event) {
 			s.stats.GenerationEnd()
 			s.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
 		}
-		s.attemptInput += event.Use.InputTokens
-		s.attemptOutput += event.Use.OutputTokens
-		s.attemptCached += event.Use.CachedInputTokens
-		s.attemptCacheWrite += event.Use.CacheWriteTokens
-		s.attemptUsageCalls++
+		if !event.Use.BillableCountersZero() {
+			s.attemptInput += event.Use.InputTokens
+			s.attemptOutput += event.Use.OutputTokens
+			s.attemptCached += event.Use.CachedInputTokens
+			s.attemptCacheWrite += event.Use.CacheWriteTokens
+			s.attemptUsageCalls++
+		}
 		return
 	}
 

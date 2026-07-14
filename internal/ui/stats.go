@@ -18,6 +18,7 @@ type UsageCall struct {
 	TTFT              time.Duration
 	GenerationTime    time.Duration
 	ObservedOutput    bool
+	Compaction        bool
 }
 
 // SessionStats tracks statistics for a session.
@@ -74,7 +75,7 @@ func (s *SessionStats) SeedTotals(input, output, cached, cacheWrite, toolCalls, 
 	s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens = 0, 0, 0
 	s.hasPerCallUsage = false
 	s.currentModel = ""
-	s.requestStartTime, s.activityStartTime = time.Time{}, time.Time{}
+	s.requestStartTime, s.firstActivityTime, s.activityStartTime = time.Time{}, time.Time{}, time.Time{}
 	s.activityDuration = 0
 	s.usageCalls = nil
 	s.hasHistoricalUsage = input != 0 || output != 0 || cached != 0 || cacheWrite != 0 || llmCalls != 0
@@ -90,6 +91,12 @@ func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
 
 func (s *SessionStats) addUsageAt(input, output, cached, cacheWrite int, now time.Time, recordPerformance bool) {
 	s.stopActivityAt(now)
+	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
+		// Some providers emit a terminal usage event with no counters. It still
+		// completes the pending request timing, but is not a meaningful usage call.
+		s.resetPendingCall()
+		return
+	}
 	s.InputTokens += input
 	s.OutputTokens += output
 	s.CachedInputTokens += cached
@@ -113,8 +120,36 @@ func (s *SessionStats) addUsageAt(input, output, cached, cacheWrite int, now tim
 	s.resetPendingCall()
 }
 
+// AddCompactionUsage records a helper compaction call against the current model.
+// Unlike AddUsage, it deliberately leaves pending main-call timing untouched.
 func (s *SessionStats) AddCompactionUsage(input, output, cached, cacheWrite int) {
-	s.addUsageAt(input, output, cached, cacheWrite, time.Now(), false)
+	s.AddCompactionUsageForModel(s.currentModel, input, output, cached, cacheWrite)
+}
+
+// AddCompactionUsageForModel records compaction usage against the model that
+// performed it without changing the model or timing of a pending main call.
+func (s *SessionStats) AddCompactionUsageForModel(model string, input, output, cached, cacheWrite int) {
+	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
+		return
+	}
+	s.InputTokens += input
+	s.OutputTokens += output
+	s.CachedInputTokens += cached
+	s.CacheWriteTokens += cacheWrite
+	s.LLMCallCount++
+	totalContext := input + cached + output
+	s.lastInputTokens, s.lastOutputTokens, s.hasPerCallUsage = totalContext, output, true
+	if totalContext > s.peakInputTokens {
+		s.peakInputTokens = totalContext
+	}
+	s.usageCalls = append(s.usageCalls, UsageCall{
+		Model:             strings.TrimSpace(model),
+		InputTokens:       input,
+		OutputTokens:      output,
+		CachedInputTokens: cached,
+		CacheWriteTokens:  cacheWrite,
+		Compaction:        true,
+	})
 	s.CompactionInputTokens += input
 	s.CompactionOutputTokens += output
 	s.CompactionCachedInputTokens += cached
@@ -131,11 +166,13 @@ func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int
 	s.CachedInputTokens = max(0, s.CachedInputTokens-cached)
 	s.CacheWriteTokens = max(0, s.CacheWriteTokens-cacheWrite)
 	s.LLMCallCount = max(0, s.LLMCallCount-calls)
-	if calls > len(s.usageCalls) {
-		calls = len(s.usageCalls)
-	}
-	if calls > 0 {
-		s.usageCalls = s.usageCalls[:len(s.usageCalls)-calls]
+	remaining := calls
+	for i := len(s.usageCalls) - 1; i >= 0 && remaining > 0; i-- {
+		if s.usageCalls[i].Compaction {
+			continue
+		}
+		s.usageCalls = append(s.usageCalls[:i], s.usageCalls[i+1:]...)
+		remaining--
 	}
 	s.rebuildPerCallHints()
 	s.resetPendingCall()
