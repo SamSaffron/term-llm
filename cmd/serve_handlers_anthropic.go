@@ -58,7 +58,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 
 	sessionID := resolveRequestSessionID(r)
 	if sessionID == "" {
-		sessionID = ensureSessionID(w)
+		sessionID = ensureSessionID(ctx, w)
 	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {

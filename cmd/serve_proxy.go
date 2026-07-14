@@ -21,9 +21,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// maxProxyRequestBody bounds the request body the gate buffers to inspect the
-// requested model. It matches the decoder limit used by the reused handlers.
-const maxProxyRequestBody = 50 << 20
+// maxProxyRequestBody bounds the request body the gate buffers in memory to
+// inspect and rewrite the requested model before forwarding. LLM chat/response
+// payloads are text (plus base64 media) and comfortably fit; a tight cap keeps
+// a single authenticated client from pinning large buffers. Oversize requests
+// are rejected with 413 rather than silently truncated.
+const maxProxyRequestBody = 8 << 20
 
 var (
 	serveProxyAdminToken string
@@ -45,9 +48,15 @@ func init() {
 //   - client plane: per-client hashed+expiring bearer tokens (in the store)
 //     that authorize calls to granted provider/model aliases only.
 //
-// PROTOTYPE LIMITATIONS: single admin token (no admin accounts/rotation),
-// no rate limiting or quotas, no streaming-time re-authorization, and the
-// locked-down runtime exposes no server tools or agent memory. See command help.
+// Session and response-chaining state is namespaced per authenticated client so
+// two clients can never share or hijack a session/runtime. The locked-down
+// runtime is a pure provider pass-through: zero server-executable tools, no
+// skills, no MCP, no injected system prompt, and no agent memory.
+//
+// PROTOTYPE LIMITATIONS: single admin token (no admin accounts/rotation), no
+// per-request quotas or spend limits (pending access requests are capped per
+// client but token throughput is not), and no streaming-time re-authorization.
+// See command help.
 type proxyServer struct {
 	store       *proxy.Store
 	catalog     *proxy.Catalog
@@ -144,15 +153,17 @@ func (p *proxyServer) clientAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// adminAuth guards the admin plane with the single admin token.
+// adminAuth guards the admin plane with the single admin token. The token is
+// ALWAYS required — including in loopback no-auth mode — because the admin plane
+// can mint client tokens and grants; any co-located process (or a browser lured
+// to the loopback address) would otherwise seize full control. An unset admin
+// token fails closed (every admin request is rejected).
 func (p *proxyServer) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p.requireAuth {
-			token := proxyBearerToken(r)
-			if token == "" || p.adminToken == "" || !proxy.ConstantTimeEqual(token, p.adminToken) {
-				writeProxyError(w, http.StatusUnauthorized, "invalid_admin_token", "invalid admin token")
-				return
-			}
+		token := proxyBearerToken(r)
+		if token == "" || p.adminToken == "" || !proxy.ConstantTimeEqual(token, p.adminToken) {
+			writeProxyError(w, http.StatusUnauthorized, "invalid_admin_token", "invalid admin token")
+			return
 		}
 		next(w, r)
 	}
@@ -171,9 +182,15 @@ func (p *proxyServer) gate(next http.HandlerFunc) http.HandlerFunc {
 			writeProxyError(w, http.StatusUnauthorized, "missing_client", "client not resolved")
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyRequestBody))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxProxyRequestBody))
 		_ = r.Body.Close()
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeProxyError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+					fmt.Sprintf("request body exceeds the %d byte limit", int64(maxProxyRequestBody)))
+				return
+			}
 			writeProxyError(w, http.StatusBadRequest, "read_error", "failed to read request body")
 			return
 		}
@@ -216,6 +233,9 @@ func (p *proxyServer) gate(next http.HandlerFunc) http.HandlerFunc {
 
 		p.logf("allow client=%s provider=%s model=%s", client.ID, provider, routeModel)
 		ctx := withProxyForcedRoute(r.Context(), provider, routeModel)
+		// Scope all session/response-chain state to this client so two clients
+		// can never share or hijack each other's session or runtime.
+		ctx = withServeSessionNamespace(ctx, proxySessionNamespace(client.ID))
 		next(w, r.WithContext(ctx))
 	})
 }
@@ -252,36 +272,41 @@ func rewriteRequestModel(body []byte, model string) ([]byte, error) {
 
 // ---- client self-service handlers ---------------------------------------
 
-type proxyModelEntry struct {
-	Alias    string `json:"alias"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Display  string `json:"display,omitempty"`
-	Builtin  bool   `json:"builtin"`
-	Granted  bool   `json:"granted"`
+// proxyOpenAIModel is a single entry in the OpenAI-compatible /v1/models
+// response returned to clients.
+type proxyOpenAIModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
 }
 
-// handleClientModels lists the exported provider/model aliases, annotated with
-// whether the calling client is currently granted each one.
+// handleClientModels lists the models the calling client is granted, in the
+// OpenAI /v1/models shape: {"object":"list","data":[{id,object,created,owned_by}]}.
+// Only granted aliases are exposed to a client; the full routable catalog is
+// admin-only (GET /admin/proxy/models). This prevents the client plane from
+// leaking the operator's entire provider/model inventory.
 func (p *proxyServer) handleClientModels(w http.ResponseWriter, r *http.Request) {
-	client, _ := proxyClientFromContext(r.Context())
-	aliases := p.catalog.List()
-	out := make([]proxyModelEntry, 0, len(aliases))
-	for _, a := range aliases {
-		granted := false
-		if client != nil {
-			granted, _ = p.store.HasGrant(r.Context(), client.ID, a.Provider, a.Model)
+	client, ok := proxyClientFromContext(r.Context())
+	if !ok {
+		writeProxyError(w, http.StatusUnauthorized, "missing_client", "client not resolved")
+		return
+	}
+	created := time.Now().Unix()
+	data := make([]proxyOpenAIModel, 0)
+	for _, a := range p.catalog.List() {
+		granted, _ := p.store.HasGrant(r.Context(), client.ID, a.Provider, a.Model)
+		if !granted {
+			continue
 		}
-		out = append(out, proxyModelEntry{
-			Alias:    a.Alias,
-			Provider: a.Provider,
-			Model:    a.Model,
-			Display:  a.Display,
-			Builtin:  a.Builtin,
-			Granted:  granted,
+		data = append(data, proxyOpenAIModel{
+			ID:      a.Alias,
+			Object:  "model",
+			Created: created,
+			OwnedBy: a.Provider,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": out})
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
 func (p *proxyServer) handleWhoami(w http.ResponseWriter, r *http.Request) {
@@ -327,6 +352,11 @@ func (p *proxyServer) handleClientRequestAccess(w http.ResponseWriter, r *http.R
 	}
 	ar, err := p.store.RequestAccess(r.Context(), client.ID, provider, model, strings.TrimSpace(req.Reason))
 	if err != nil {
+		if errors.Is(err, proxy.ErrTooManyPendingRequests) {
+			writeProxyError(w, http.StatusTooManyRequests, "too_many_pending_requests",
+				"pending access request limit reached; wait for existing requests to be reviewed")
+			return
+		}
 		writeProxyError(w, http.StatusInternalServerError, "request_error", "failed to record access request")
 		return
 	}
@@ -636,7 +666,9 @@ func runServeProxy(ctx context.Context, cmd *cobra.Command, cfg *config.Config, 
 			adminToken, adminSource = env, "env"
 		}
 	}
-	if requireAuth && adminToken == "" {
+	// The admin token is always required (see adminAuth), so generate one even in
+	// loopback no-auth mode rather than leaving the admin plane unprotected.
+	if adminToken == "" {
 		adminToken, err = generateServeToken()
 		if err != nil {
 			return fmt.Errorf("generate proxy admin token: %w", err)
@@ -656,13 +688,14 @@ func runServeProxy(ctx context.Context, cmd *cobra.Command, cfg *config.Config, 
 	// session store — the proxy is a pure provider pass-through gated by grants.
 	runtimeFactory := func(ctx context.Context, providerName, providerModel string) (*serveRuntime, error) {
 		runner := &cmdRunner{baseCfg: cfg, defaults: cmdRunnerOptions{
-			Provider:  serveProvider,
-			Tools:     "", // no server tools
-			MCP:       "", // no MCP tools
-			NoSearch:  true,
-			Debug:     serveDebug,
-			DebugRaw:  debugRaw,
-			ErrWriter: io.Discard,
+			Provider:         serveProvider,
+			Tools:            "", // no server tools
+			MCP:              "", // no MCP tools
+			NoSearch:         true,
+			ProxyPassthrough: true, // bare engine: zero server tools/skills, no system prompt
+			Debug:            serveDebug,
+			DebugRaw:         debugRaw,
+			ErrWriter:        io.Discard,
 			// Store intentionally nil: no session persistence / agent memory.
 		}}
 		env, err := runner.prepare(ctx, runpkg.Request{
@@ -722,21 +755,20 @@ func runServeProxy(ctx context.Context, cmd *cobra.Command, cfg *config.Config, 
 	aliases := catalog.List()
 	fmt.Fprintf(out, "term-llm serve proxy listening on http://%s:%d\n", serveHost, servePort)
 	fmt.Fprintf(out, "auth: %s\n", authSummary(requireAuth))
-	if requireAuth {
-		switch adminSource {
-		case "generated":
-			fmt.Fprintf(out, "admin token: %s (auto-generated; export TERM_LLM_PROXY_ADMIN_TOKEN to persist)\n", adminToken)
-		case "env":
-			fmt.Fprintf(out, "admin token: %s (from $TERM_LLM_PROXY_ADMIN_TOKEN)\n", adminToken)
-		default:
-			fmt.Fprintf(out, "admin token: %s\n", adminToken)
-		}
-	} else {
-		fmt.Fprintf(out, "admin token: (auth disabled; loopback only)\n")
+	switch adminSource {
+	case "generated":
+		fmt.Fprintf(out, "admin token: %s (auto-generated; export TERM_LLM_PROXY_ADMIN_TOKEN to persist)\n", adminToken)
+	case "env":
+		fmt.Fprintf(out, "admin token: %s (from $TERM_LLM_PROXY_ADMIN_TOKEN)\n", adminToken)
+	default:
+		fmt.Fprintf(out, "admin token: %s\n", adminToken)
+	}
+	if !requireAuth {
+		fmt.Fprintf(out, "note: client bearer auth disabled (loopback only); admin token still required\n")
 	}
 	fmt.Fprintf(out, "proxy db: %s\n", serveProxyDBPathDisplay())
 	fmt.Fprintf(out, "exported provider/model aliases: %d\n", len(aliases))
-	fmt.Fprintf(out, "note: PROTOTYPE — no rate limits/quotas; single admin token; server tools & agent memory disabled\n")
+	fmt.Fprintf(out, "note: PROTOTYPE — no per-token quotas; single admin token; per-client session isolation; server tools, skills & system prompt disabled\n")
 
 	errCh := make(chan error, 1)
 	go func() {

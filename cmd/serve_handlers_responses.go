@@ -81,7 +81,11 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// External /v1/responses callers follow OpenAI-style chaining:
 	// previous_response_id continues a conversation; no previous response means a
 	// fresh conversation, even if a session_id header is reused for persistence.
-	headerSessionID := strings.TrimSpace(r.Header.Get("session_id"))
+	// namespace scopes every session/response identifier to the authenticated
+	// client when this serveServer is shared by the capability proxy. It is ""
+	// for ordinary serve mode, so all of the helpers below are no-ops there.
+	namespace := serveSessionNamespace(ctx)
+	headerSessionID := namespaceSessionID(namespace, strings.TrimSpace(r.Header.Get("session_id")))
 	sessionID := ""
 	previousDurable := false
 	if req.PreviousResponseID != "" {
@@ -93,6 +97,13 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, status, errType, msg)
 			return
 		} else if durable.sessionID != "" {
+			// The resolved session must belong to the caller; otherwise a client
+			// could continue another client's conversation by guessing its id.
+			if !sessionIDInNamespace(namespace, durable.sessionID) {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+					fmt.Sprintf("previous_response_id %q not found", req.PreviousResponseID))
+				return
+			}
 			sessionID = durable.sessionID
 			previousDurable = true
 		} else {
@@ -107,6 +118,13 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
 				return
 			}
+			// Enforce per-client ownership of the chained response so one client
+			// cannot resume another's session via a stolen previous_response_id.
+			if !sessionIDInNamespace(namespace, sidStr) {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+					fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
+				return
+			}
 			if headerSessionID != "" && headerSessionID != sidStr {
 				writeOpenAIError(w, http.StatusConflict, "conflict_error",
 					fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", headerSessionID, sidStr))
@@ -118,7 +136,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		sessionID = headerSessionID
 		if sessionID == "" {
-			sessionID = session.NewID()
+			sessionID = namespaceSessionID(namespace, session.NewID())
 		}
 		w.Header().Set("x-session-id", sessionID)
 		// External Responses API semantics: no previous_response_id means the

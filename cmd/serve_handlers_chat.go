@@ -46,7 +46,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	sessionID := resolveRequestSessionID(r)
 	if sessionID == "" {
-		sessionID = ensureSessionID(w)
+		sessionID = ensureSessionID(ctx, w)
 	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {

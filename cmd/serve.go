@@ -97,10 +97,13 @@ curated set of provider/model aliases to API clients. It reuses the OpenAI
 Responses/Chat and Anthropic Messages handlers behind a per-client grant check,
 with a separate admin token (--proxy-admin-token) from the per-client bearer
 tokens it issues. Clients calling an un-granted model get a structured 403 and a
-deduplicated pending access request. State (clients, hashed+expiring tokens,
-grants, access requests, audit) is persisted in a local SQLite database
-(--proxy-db). The proxy runtime exposes no server tools or agent memory.
-Prototype limits: single admin token, no rate limiting/quotas, no admin UI.
+deduplicated pending access request (capped per client). State (clients,
+hashed+expiring tokens, grants, access requests, audit) is persisted in a local
+SQLite database (--proxy-db). Session and response-chaining state is isolated
+per client, and the runtime is a pure pass-through: no server tools, skills,
+system prompt, or agent memory. The admin token is always required, even in
+loopback no-auth mode. Prototype limits: single admin token, no per-token
+throughput quotas.
 
   # run a proxy that exports whatever providers are configured (incl. claude-bin)
   term-llm serve proxy --port 8081

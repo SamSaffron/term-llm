@@ -28,6 +28,16 @@ import (
 // ErrNotFound is returned when a requested record does not exist.
 var ErrNotFound = errors.New("proxy: record not found")
 
+// ErrTooManyPendingRequests is returned by RequestAccess when a client already
+// has maxPendingRequestsPerClient distinct pending access requests. It bounds
+// database growth from a client probing many (provider, model) combinations.
+var ErrTooManyPendingRequests = errors.New("proxy: too many pending access requests")
+
+// maxPendingRequestsPerClient caps the distinct pending access requests a single
+// client may accumulate. Repeat requests for the same (provider, model) dedupe
+// onto one row (bumping its counter), so this only limits distinct models.
+const maxPendingRequestsPerClient = 100
+
 // Access-request statuses.
 const (
 	RequestPending  = "pending"

@@ -15,6 +15,7 @@ import (
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -49,6 +50,13 @@ type cmdRunnerOptions struct {
 	WireSpawn         func(*config.Config, *tools.ToolManager, bool) error
 	Store             session.Store
 	ParentApprovalMgr *tools.ApprovalManager
+
+	// ProxyPassthrough builds a locked-down runtime for the capability proxy:
+	// zero server-executable tools, no skills, no MCP, no search, and no
+	// injected system prompt or agent memory. The runtime becomes a pure
+	// provider pass-through so proxy clients cannot invoke server-side
+	// capabilities or read the operator's system prompt.
+	ProxyPassthrough bool
 }
 
 type cmdRunner struct {
@@ -179,8 +187,20 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	settings.SessionID = req.SessionID
-	skillsSetup := SetupSkills(&cfg.Skills, req.Skills, agentSkills, r.errWriter())
-	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	var skillsSetup *skills.Setup
+	if r.defaults.ProxyPassthrough {
+		// Locked-down capability-proxy runtime: strip the system prompt and any
+		// tool/MCP/search configuration so nothing but the client's own request
+		// reaches the provider. Skills are left uninitialized (nil) so no
+		// activate_skill/search_skills tools are ever registered on the engine.
+		settings.SystemPrompt = ""
+		settings.Tools = ""
+		settings.MCP = ""
+		settings.Search = false
+	} else {
+		skillsSetup = SetupSkills(&cfg.Skills, req.Skills, agentSkills, r.errWriter())
+		settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	}
 
 	modelName := activeModel(cfg)
 	provider := req.ProviderInstance
@@ -241,9 +261,16 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	engine := req.Engine
 	var toolMgr *tools.ToolManager
 	borrowedEngine := engine != nil
-	if borrowedEngine {
+	switch {
+	case borrowedEngine:
 		engine.ConfigureContextManagement(provider, cfg.DefaultProvider, modelName, cfg.AutoCompact)
-	} else {
+	case r.defaults.ProxyPassthrough:
+		// Bare engine with an empty tool registry: guarantees the proxy runtime
+		// exposes zero server-executable tools (not even web_search/read_url,
+		// which newEngine would otherwise seed), and never wires spawn/skills.
+		engine = newBareEngine(provider, cfg)
+		engine.ConfigureContextManagement(provider, cfg.DefaultProvider, modelName, cfg.AutoCompact)
+	default:
 		engine, toolMgr, err = newServeEngineWithTools(cfg, settings, provider, cfg.DefaultProvider, modelName, toolYoloMode, autoMode, wireSpawn, skillsSetup)
 		if err != nil {
 			return nil, err

@@ -354,6 +354,19 @@ func (s *Store) RequestAccess(ctx context.Context, clientID, provider, model, re
 		return nil, err
 	}
 
+	// Cap distinct pending requests per client so a client cannot grow the DB
+	// unbounded by probing many (provider, model) combinations. Repeat requests
+	// for an existing (provider, model) dedupe above and never reach here.
+	var pending int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM proxy_access_requests WHERE client_id = ? AND status = ?`,
+		clientID, RequestPending).Scan(&pending); err != nil {
+		return nil, fmt.Errorf("count pending access requests: %w", err)
+	}
+	if pending >= maxPendingRequestsPerClient {
+		return nil, ErrTooManyPendingRequests
+	}
+
 	now := s.now()
 	req := &AccessRequest{
 		ID:        newID("req"),
@@ -565,6 +578,19 @@ func (s *Store) Authorize(ctx context.Context, clientID, provider, model string)
 
 	req, err := s.RequestAccess(ctx, clientID, provider, model, "auto: denied model call")
 	if err != nil {
+		if errors.Is(err, ErrTooManyPendingRequests) {
+			// Still deny the call, but do not fail the request or grow the DB.
+			_ = s.AppendAudit(ctx, AuditEntry{
+				ClientID: clientID, Provider: provider, Model: model,
+				Action: "authorize", Decision: "deny", Detail: "pending_request_cap_reached",
+			})
+			return Decision{
+				Allowed:  false,
+				Provider: provider,
+				Model:    model,
+				Reason:   "no grant for provider/model; pending access request limit reached",
+			}, nil
+		}
 		return Decision{}, err
 	}
 	_ = s.AppendAudit(ctx, AuditEntry{
