@@ -37,11 +37,7 @@ func (t *MCPTool) Preview(args json.RawMessage) string {
 
 // Execute invokes the tool on the MCP server.
 func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	result, err := t.manager.CallTool(ctx, t.toolSpec.Name, args)
-	if err != nil {
-		return llm.ToolOutput{}, err
-	}
-	return llm.TextOutput(result), nil
+	return t.manager.CallTool(ctx, t.toolSpec.Name, args)
 }
 
 // RegisterMCPTools registers all MCP tools from the manager into the tool registry.

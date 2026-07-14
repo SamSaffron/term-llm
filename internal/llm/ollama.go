@@ -149,14 +149,17 @@ type ollamaMsgChunk struct {
 
 // buildOllamaMessages converts internal messages to Ollama's native format.
 // Ollama tool results use role "tool" with plain text content; tool calls have
-// no ID field. Developer-role messages are folded into the next user turn.
+// no ID field. Tool-result images are delivered in a following synthetic user
+// message because Ollama does not currently accept images on tool messages.
+// Developer-role messages are folded into the next user turn.
 func buildOllamaMessages(messages []Message) []ollamaChatMsg {
 	messages = sanitizeToolHistory(messages)
 
 	var result []ollamaChatMsg
 	var pendingDev string
 
-	for _, msg := range messages {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
 		switch msg.Role {
 		case RoleDeveloper:
 			text, _, _ := splitParts(msg.Parts)
@@ -205,13 +208,56 @@ func buildOllamaMessages(messages []Message) []ollamaChatMsg {
 				result = append(result, ollamaChatMsg{Role: "assistant", Content: text})
 			}
 		case RoleTool:
-			for _, part := range msg.Parts {
-				if part.Type != PartToolResult || part.ToolResult == nil {
-					continue
+			var toolImages []string
+			var imageToolNames []string
+			for ; i < len(messages) && messages[i].Role == RoleTool; i++ {
+				for _, part := range messages[i].Parts {
+					if part.Type != PartToolResult || part.ToolResult == nil {
+						continue
+					}
+
+					content := toolResultTextContent(part.ToolResult)
+					var images []string
+					invalidImages := 0
+					for _, contentPart := range toolResultContentParts(part.ToolResult) {
+						if contentPart.Type != ToolContentPartImageData {
+							continue
+						}
+						_, base64Data, ok := toolResultImageData(contentPart)
+						if !ok {
+							invalidImages++
+							continue
+						}
+						images = append(images, base64Data)
+					}
+
+					if invalidImages > 0 {
+						warning := fmt.Sprintf("[Ollama omitted %d invalid or unsupported tool-result image(s).]", invalidImages)
+						if content == "" {
+							content = warning
+						} else {
+							content += "\n\n" + warning
+						}
+					}
+					if content == "" && len(images) > 0 {
+						content = fmt.Sprintf("[Tool %q returned %d image(s), attached in the following user message.]", part.ToolResult.Name, len(images))
+					}
+					result = append(result, ollamaChatMsg{Role: "tool", Content: content})
+					if len(images) > 0 {
+						toolImages = append(toolImages, images...)
+						imageToolNames = append(imageToolNames, part.ToolResult.Name)
+					}
 				}
+			}
+			i-- // The outer loop advances to the first message after this tool-result run.
+			if len(toolImages) > 0 {
+				// Ollama currently ignores/rejects images on role=tool. A
+				// synthetic user turn is the documented-compatible way to
+				// actually place tool-produced images in model context.
 				result = append(result, ollamaChatMsg{
-					Role:    "tool",
-					Content: toolResultTextContent(part.ToolResult),
+					Role:    "user",
+					Content: fmt.Sprintf("Image(s) returned by tool(s) %q.", strings.Join(imageToolNames, ", ")),
+					Images:  toolImages,
 				})
 			}
 		}

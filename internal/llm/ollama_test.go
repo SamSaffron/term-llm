@@ -448,6 +448,127 @@ func TestBuildOllamaMessagesDeveloperRole(t *testing.T) {
 	}
 }
 
+func TestBuildOllamaMessagesToolResultImageFallback(t *testing.T) {
+	msgs := []Message{
+		UserText("inspect it"),
+		{Role: RoleAssistant, Parts: []Part{{
+			Type:     PartToolCall,
+			ToolCall: &ToolCall{ID: "call-1", Name: "inspect", Arguments: json.RawMessage(`{}`)},
+		}}},
+		ToolResultMessageFromOutput("call-1", "inspect", ToolOutput{
+			ContentParts: []ToolContentPart{{
+				Type:      ToolContentPartImageData,
+				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+			}},
+		}, nil),
+	}
+
+	result := buildOllamaMessages(msgs)
+	if len(result) != 4 {
+		t.Fatalf("expected user, assistant, tool, image fallback; got %#v", result)
+	}
+	if result[2].Role != "tool" || !strings.Contains(result[2].Content, "following user message") {
+		t.Fatalf("image-only tool result was silent: %#v", result[2])
+	}
+	if result[3].Role != "user" || len(result[3].Images) != 1 || result[3].Images[0] != "aGVsbG8=" {
+		t.Fatalf("tool image was not delivered through explicit user fallback: %#v", result[3])
+	}
+	if !strings.Contains(result[3].Content, "inspect") {
+		t.Fatalf("fallback does not identify tool provenance: %#v", result[3])
+	}
+}
+
+func TestBuildOllamaMessagesAggregatesConsecutiveToolResultImages(t *testing.T) {
+	toolCalls := func(calls ...ToolCall) Message {
+		parts := make([]Part, 0, len(calls))
+		for i := range calls {
+			call := calls[i]
+			parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
+		}
+		return Message{Role: RoleAssistant, Parts: parts}
+	}
+	imageOutput := func(mediaType, data string, text ...string) ToolOutput {
+		parts := make([]ToolContentPart, 0, len(text)+1)
+		for _, content := range text {
+			parts = append(parts, ToolContentPart{Type: ToolContentPartText, Text: content})
+		}
+		parts = append(parts, ToolContentPart{
+			Type:      ToolContentPartImageData,
+			ImageData: &ToolImageData{MediaType: mediaType, Base64: data},
+		})
+		return ToolOutput{ContentParts: parts}
+	}
+
+	msgs := []Message{
+		UserText("first turn"),
+		toolCalls(
+			ToolCall{ID: "call-early", Name: "early", Arguments: json.RawMessage(`{}`)},
+			ToolCall{ID: "call-mixed", Name: "mixed", Arguments: json.RawMessage(`{}`)},
+			ToolCall{ID: "call-text", Name: "text", Arguments: json.RawMessage(`{}`)},
+		),
+		ToolResultMessageFromOutput("call-early", "early", imageOutput("image/png", "ZWFybHk="), nil),
+		ToolResultMessageFromOutput("call-mixed", "mixed", imageOutput("image/webp", "bWl4ZWQ=", "mixed text"), nil),
+		ToolResultMessage("call-text", "text", "text only", nil),
+		UserText("second turn"),
+		toolCalls(ToolCall{ID: "call-later", Name: "later", Arguments: json.RawMessage(`{}`)}),
+		ToolResultMessageFromOutput("call-later", "later", imageOutput("image/gif", "bGF0ZXI="), nil),
+	}
+
+	result := buildOllamaMessages(msgs)
+	if len(result) != 10 {
+		t.Fatalf("expected two complete tool runs with separate image fallbacks; got %#v", result)
+	}
+	wantRoles := []string{"user", "assistant", "tool", "tool", "tool", "user", "user", "assistant", "tool", "user"}
+	for i, role := range wantRoles {
+		if result[i].Role != role {
+			t.Fatalf("message %d role = %q, want %q; messages: %#v", i, result[i].Role, role, result)
+		}
+	}
+	if result[3].Content != "mixed text" {
+		t.Fatalf("mixed image/text tool content = %q, want text preserved", result[3].Content)
+	}
+	if got := result[5].Images; len(got) != 2 || got[0] != "ZWFybHk=" || got[1] != "bWl4ZWQ=" {
+		t.Fatalf("first tool-run images = %#v, want early and mixed images in order", got)
+	}
+	if !strings.Contains(result[5].Content, "early") || !strings.Contains(result[5].Content, "mixed") {
+		t.Fatalf("first fallback provenance = %q, want both image tools", result[5].Content)
+	}
+	if got := result[9].Images; len(got) != 1 || got[0] != "bGF0ZXI=" {
+		t.Fatalf("second tool-run images = %#v, want no cross-turn aggregation", got)
+	}
+	if strings.Contains(result[9].Content, "early") || strings.Contains(result[9].Content, "mixed") {
+		t.Fatalf("second fallback leaked first-turn provenance: %q", result[9].Content)
+	}
+}
+
+func TestBuildOllamaMessagesMalformedToolResultImagesAreVisible(t *testing.T) {
+	msgs := []Message{
+		UserText("inspect it"),
+		{Role: RoleAssistant, Parts: []Part{{
+			Type:     PartToolCall,
+			ToolCall: &ToolCall{ID: "call-1", Name: "inspect", Arguments: json.RawMessage(`{}`)},
+		}}},
+		ToolResultMessageFromOutput("call-1", "inspect", ToolOutput{
+			ContentParts: []ToolContentPart{
+				{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png"}},
+				{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/png", Base64: "not-base64"}},
+				{Type: ToolContentPartImageData, ImageData: &ToolImageData{MediaType: "image/svg+xml", Base64: "PHN2Zz4="}},
+			},
+		}, nil),
+	}
+
+	result := buildOllamaMessages(msgs)
+	if len(result) != 3 {
+		t.Fatalf("invalid images must not create a fake delivered-image message: %#v", result)
+	}
+	if result[2].Role != "tool" || !strings.Contains(result[2].Content, "omitted 3 invalid or unsupported") {
+		t.Fatalf("malformed images were silently dropped: %#v", result[2])
+	}
+	if len(result[2].Images) != 0 {
+		t.Fatalf("invalid images were sent: %#v", result[2].Images)
+	}
+}
+
 func TestOllamaProviderListModels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/tags" {

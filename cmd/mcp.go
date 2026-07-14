@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
 	"github.com/spf13/cobra"
@@ -794,8 +795,41 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("call %s: %w", call.name, err)
 		}
 
-		fmt.Println(result)
+		if err := renderMCPToolResult(cmd.OutOrStdout(), result); err != nil {
+			return fmt.Errorf("format result for %s: %w", call.name, err)
+		}
+		if err := mcpToolResultError(call.name, result); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+func mcpToolResultError(name string, result llm.ToolOutput) error {
+	if result.IsError {
+		return fmt.Errorf("tool %s returned an error", name)
+	}
+	return nil
+}
+
+func renderMCPToolResult(w io.Writer, result llm.ToolOutput) error {
+	hasImage := false
+	for _, part := range result.ContentParts {
+		if part.Type == llm.ToolContentPartImageData {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		_, err := fmt.Fprintln(w, result.Content)
+		return err
+	}
+
+	data, err := json.MarshalIndent(result.ContentParts, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(data))
+	return err
 }

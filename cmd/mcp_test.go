@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
 )
@@ -79,6 +82,37 @@ func TestMCPRunArgCompletionUsesCachedTools(t *testing.T) {
 		t.Fatalf("directive = %v, want %v", directive, wantDirective)
 	}
 }
+func TestMCPRunIsErrorRendersThenFails(t *testing.T) {
+	result := llm.ToolOutput{
+		Content: "tool failed usefully",
+		IsError: true,
+	}
+	var output bytes.Buffer
+	if err := renderMCPToolResult(&output, result); err != nil {
+		t.Fatalf("renderMCPToolResult() error = %v", err)
+	}
+	if !strings.Contains(output.String(), "tool failed usefully") {
+		t.Fatalf("rendered output = %q, want useful error content", output.String())
+	}
+	if err := mcpToolResultError("failure", result); err == nil {
+		t.Fatal("IsError result must retain non-zero command behavior")
+	}
+}
+
+func TestRenderMCPToolResultImageOnly(t *testing.T) {
+	result := llm.ToolOutput{ContentParts: []llm.ToolContentPart{{
+		Type:      llm.ToolContentPartImageData,
+		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+	}}}
+	var output bytes.Buffer
+	if err := renderMCPToolResult(&output, result); err != nil {
+		t.Fatalf("renderMCPToolResult() error = %v", err)
+	}
+	if !strings.Contains(output.String(), `"type": "image_data"`) || !strings.Contains(output.String(), `"base64": "aGVsbG8="`) {
+		t.Fatalf("rendered image output = %q", output.String())
+	}
+}
+
 func TestParseValue(t *testing.T) {
 	tests := []struct {
 		input string
