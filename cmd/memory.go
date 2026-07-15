@@ -71,17 +71,35 @@ func openMemoryStore() (*memorydb.Store, error) {
 	return store, nil
 }
 
-// wireImageRecorder opens the memory store and attaches it to the registry as an image recorder.
+type imageRecordStore interface {
+	tools.ImageRecorder
+	Close() error
+}
+
+type lazyImageRecorder struct {
+	open func() (imageRecordStore, error)
+}
+
+func (r *lazyImageRecorder) RecordImage(ctx context.Context, record *memorydb.ImageRecord) error {
+	store, err := r.open()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.RecordImage(ctx, record)
+}
+
+func openImageRecordStore() (imageRecordStore, error) {
+	return openMemoryStore()
+}
+
+// wireImageRecorder attaches a recorder that opens the memory store only when an image is recorded.
 // Non-fatal: if the store cannot be opened, image generation still works normally.
 func wireImageRecorder(registry *tools.LocalToolRegistry, agent, sessionID string) {
 	if registry == nil {
 		return
 	}
-	store, err := openMemoryStore()
-	if err != nil {
-		return
-	}
-	registry.SetImageRecorder(store, agent, sessionID)
+	registry.SetImageRecorder(&lazyImageRecorder{open: openImageRecordStore}, agent, sessionID)
 }
 
 func recordImageDirect(cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {
