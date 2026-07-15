@@ -1833,6 +1833,30 @@ func TestChatReasoningSummaryUpdatesThinkingStatus(t *testing.T) {
 	}
 }
 
+func TestChatReasoningKeepsFirstSummaryTitleAcrossDeltas(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+
+	for _, event := range []ui.StreamEvent{
+		ui.ReasoningEvent(llm.ReasoningKindSummary, "**Verifying observation reachability during promote**", "Verifying observation reachability during promote", "rs_1", false, true),
+		ui.ReasoningEvent(llm.ReasoningKindSummary, "\n\n**Planning conservative plugin testing**", "Planning conservative plugin testing", "rs_1", false, true),
+	} {
+		updated, _ := m.Update(streamEventMsg{event: event})
+		m = updated.(*Model)
+	}
+
+	if got, want := m.currentReasoningTitle, "Verifying observation reachability during promote"; got != want {
+		t.Fatalf("reasoning title = %q, want %q", got, want)
+	}
+	m.reasoningConfig = config.DefaultReasoningConfig()
+	m.reasoningConfig.Display = config.ReasoningDisplayExpanded
+	rendered := ui.StripANSI(m.renderCurrentReasoningBlock())
+	if !strings.Contains(rendered, "Verifying observation reachability during promote") || !strings.Contains(rendered, "Planning conservative plugin testing") {
+		t.Fatalf("rendered reasoning should preserve both summary headings, got %q", rendered)
+	}
+}
+
 func TestChatReasoningSeparatesDifferentProviderItems(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true

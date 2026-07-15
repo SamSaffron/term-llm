@@ -1577,6 +1577,12 @@ func (s *responsesReasoningState) AppendSummaryAt(outputIndex int, summaryIndex 
 	s.Ensure(outputIndex)
 	state := s.items[outputIndex]
 	if summaryIndex >= 0 {
+		// Some Responses-compatible backends omit summary_part.added. Treat an
+		// explicit summary index transition as the same section boundary so two
+		// complete bold headings cannot be concatenated as `****`.
+		if summaryIndex != state.currentSummaryPart && strings.TrimSpace(state.part.ReasoningContent) != "" && !strings.HasSuffix(state.part.ReasoningContent, "\n\n") {
+			state.pendingSummarySeparator = true
+		}
 		state.currentSummaryPart = summaryIndex
 	}
 	state.ensureSummaryPart(state.currentSummaryPart)

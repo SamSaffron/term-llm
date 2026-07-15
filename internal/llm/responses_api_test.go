@@ -477,6 +477,22 @@ func TestResponsesReasoningSummaryPartsAreSeparated(t *testing.T) {
 	}
 }
 
+func TestResponsesReasoningStateSeparatesSummaryIndexTransitions(t *testing.T) {
+	state := newResponsesReasoningState()
+	first := state.AppendSummaryAt(0, 0, "**Reasoning one**")
+	second := state.AppendSummaryAt(0, 1, "**Reasoning two**")
+
+	if first == nil || first.ReasoningContent != "**Reasoning one**" {
+		t.Fatalf("first summary delta = %#v", first)
+	}
+	if second == nil || second.ReasoningContent != "\n\n**Reasoning two**" {
+		t.Fatalf("second summary delta = %#v, want separator-prefixed delta", second)
+	}
+	if got, want := state.Part(0).ReasoningContent, "**Reasoning one**\n\n**Reasoning two**"; got != want {
+		t.Fatalf("accumulated reasoning = %q, want %q", got, want)
+	}
+}
+
 func TestResponsesReasoningStateEncryptedOnlyKind(t *testing.T) {
 	state := newResponsesReasoningState()
 	state.Start(0, "rs_enc", "enc_payload", nil)

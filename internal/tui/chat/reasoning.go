@@ -61,8 +61,16 @@ func (m *Model) handleReasoningStreamEvent(ev ui.StreamEvent) {
 	}
 
 	title := strings.TrimSpace(ev.ReasoningTitle)
-	if title == "" && kind == llm.ReasoningKindSummary {
-		title = internalreasoning.SummaryTitle(m.currentReasoning.String(), cfg)
+	if kind == llm.ReasoningKindSummary {
+		// The adapter extracts a title from each individual stream delta. A single
+		// reasoning item can contain multiple bold summary headings, so a later
+		// delta's heading must not replace the leading heading for the accumulated
+		// block. Otherwise the renderer removes the first heading as body metadata
+		// while also labeling the block with the later heading, making the first
+		// heading disappear and the later one appear twice.
+		if accumulatedTitle := internalreasoning.SummaryTitle(m.currentReasoning.String(), cfg); accumulatedTitle != "" {
+			title = accumulatedTitle
+		}
 	}
 	if title == "" && kind == llm.ReasoningKindRaw && internalreasoning.EffectiveDisplay(cfg) == config.ReasoningDisplayRaw {
 		title = "Raw thinking"
