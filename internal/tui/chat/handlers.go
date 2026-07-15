@@ -331,7 +331,7 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 
 	hadActiveStream := m.streaming || m.streamCancelFunc != nil
 	_, _ = m.cancelActiveForInterrupt()
-	m.pausedForExternalUI = false
+	m.setShellTerminalHandoff(false)
 	if m.program != nil {
 		p := m.program
 		go func() {

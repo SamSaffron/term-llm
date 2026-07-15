@@ -160,9 +160,10 @@ type Model struct {
 	newlineCompactor        *ui.StreamingNewlineCompactor
 
 	// External UI state
-	pausedForExternalUI bool // True when paused for ask_user or approval prompts
-	approvalMgr         *tools.ApprovalManager
-	toolMgr             *tools.ToolManager
+	pausedForExternalUI   bool // True when paused for ask_user or approval prompts
+	externalProcessActive bool // True while Bubble Tea is handing the terminal to /shell
+	approvalMgr           *tools.ApprovalManager
+	toolMgr               *tools.ToolManager
 
 	// Embedded inline approval UI (alt screen mode only)
 	approvalModel  *tools.ApprovalModel
@@ -407,6 +408,7 @@ type Model struct {
 	postFrameImageUploadSeq     string
 	postFrameImagePlaceSeq      string
 	postFrameImageMu            sync.Mutex
+	postFrameImageSuppressed    bool
 	postFrameVisibleImages      map[string]postFrameImageState
 	postFramePendingImages      map[string]postFrameImageState
 	postFrameCurrentImages      map[string]postFrameImageState
@@ -1769,7 +1771,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case shellExitedMsg:
-		m.pausedForExternalUI = false
+		m.setShellTerminalHandoff(false)
 		if msg.err != nil {
 			return m.showFooterError(fmt.Sprintf("Shell failed: %v", msg.err))
 		}

@@ -15,6 +15,66 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestTakePostFrameImageSequenceSuppressedForExternalProcess(t *testing.T) {
+	m := newTestChatModel(true)
+	m.postFrameImageSeq = "\x1b_Gpending-image\x1b\\"
+	m.postFramePendingImages = map[string]postFrameImageState{
+		"pending": {ImageID: 42},
+	}
+
+	m.setPostFrameImageSuppressed(true)
+	if seq := m.TakePostFrameImageSequence(); seq != "" {
+		t.Fatalf("suppressed post-frame sequence = %q, want empty", seq)
+	}
+	if m.postFrameImageSeq != "" || m.postFramePendingImages != nil {
+		t.Fatal("suppressing post-frame output did not discard pending sequence state")
+	}
+
+	m.setPostFrameImageSuppressed(false)
+	m.postFrameImageSeq = "after-shell"
+	if seq := m.TakePostFrameImageSequence(); seq != "after-shell" {
+		t.Fatalf("resumed post-frame sequence = %q, want after-shell", seq)
+	}
+}
+
+func TestSuppressedPostFrameUploadIsRecomposedAfterExternalProcess(t *testing.T) {
+	m := newTestChatModel(true)
+	image := postFrameImageState{
+		ImageID:     42,
+		PlacementID: 7,
+		WidthCells:  2,
+		HeightCells: 1,
+		ScreenRow:   3,
+		Upload:      "kitty-upload",
+	}
+	compose := func() string {
+		m.beginPostFrameImageComposition()
+		m.postFrameImageMu.Lock()
+		m.postFrameCurrentImages["image"] = image
+		m.postFrameImageMu.Unlock()
+		m.finishPostFrameImageComposition()
+		return m.TakePostFrameImageSequence()
+	}
+
+	m.beginPostFrameImageComposition()
+	m.postFrameImageMu.Lock()
+	m.postFrameCurrentImages["image"] = image
+	m.postFrameImageMu.Unlock()
+	m.finishPostFrameImageComposition()
+	m.setPostFrameImageSuppressed(true)
+	if seq := m.TakePostFrameImageSequence(); seq != "" {
+		t.Fatalf("suppressed composed sequence = %q, want empty", seq)
+	}
+	if _, transmitted := m.postFrameTransmittedImages[image.ImageID]; transmitted {
+		t.Fatal("discarded upload was incorrectly marked as transmitted")
+	}
+
+	m.setPostFrameImageSuppressed(false)
+	if seq := compose(); !strings.Contains(seq, image.Upload) {
+		t.Fatalf("recomposed sequence %q does not contain discarded upload", seq)
+	}
+}
+
 func drainPendingImageRawForTest(t *testing.T, m *Model) string {
 	t.Helper()
 	cmd := m.drainPendingImageUploadCmd()

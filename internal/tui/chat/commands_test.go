@@ -3526,9 +3526,74 @@ func TestInteractiveShellCommandUsesBoundWorktreeDir(t *testing.T) {
 	if cmd.Path != "custom-shell-for-test" {
 		t.Fatalf("shell path = %q, want custom shell", cmd.Path)
 	}
+	if cmd.Stdout != os.Stdout || cmd.Stderr != os.Stderr {
+		t.Fatalf("shell output = (%T, %T), want direct terminal stdout/stderr", cmd.Stdout, cmd.Stderr)
+	}
+	if cmd.Stdin != nil {
+		t.Fatalf("shell stdin = %T, want nil for tea.ExecProcess TTY attachment", cmd.Stdin)
+	}
 	env := strings.Join(cmd.Env, "\n")
 	if !strings.Contains(env, "PWD="+dir) || !strings.Contains(env, "TERM_LLM_BASE_DIR="+dir) || !strings.Contains(env, "TERM_LLM_WORKTREE_DIR="+dir) {
 		t.Fatalf("shell env missing bound dir entries:\n%s", env)
+	}
+}
+
+func TestViewReleasesTerminalModesWhileShellRuns(t *testing.T) {
+	for _, altScreen := range []bool{false, true} {
+		t.Run(fmt.Sprintf("altScreen=%t", altScreen), func(t *testing.T) {
+			m := newTestChatModel(altScreen)
+			m.setShellTerminalHandoff(true)
+
+			view := m.View()
+			if view.Content != "" {
+				t.Fatalf("shell handoff view content = %q, want empty", view.Content)
+			}
+			if view.AltScreen {
+				t.Fatal("shell handoff view kept alternate screen enabled")
+			}
+			if view.MouseMode != tea.MouseModeNone {
+				t.Fatalf("shell handoff mouse mode = %v, want none", view.MouseMode)
+			}
+			if view.Cursor != nil {
+				t.Fatal("shell handoff view kept cursor configuration")
+			}
+
+			updated, _ := m.Update(shellExitedMsg{})
+			restored := updated.(*Model)
+			if restored.externalProcessActive {
+				t.Fatal("shell exit did not restore normal rendering")
+			}
+			if restored.pausedForExternalUI {
+				t.Fatal("shell exit left external UI paused")
+			}
+			restoredView := restored.View()
+			if restoredView.AltScreen != altScreen {
+				t.Fatalf("restored view AltScreen = %t, want %t", restoredView.AltScreen, altScreen)
+			}
+			if restored.mouseMode && restoredView.MouseMode != tea.MouseModeCellMotion {
+				t.Fatalf("restored view mouse mode = %v, want cell motion", restoredView.MouseMode)
+			}
+		})
+	}
+}
+
+func TestShellExitErrorRestoresRendering(t *testing.T) {
+	m := newTestChatModel(true)
+	m.setShellTerminalHandoff(true)
+
+	updated, _ := m.Update(shellExitedMsg{err: errors.New("restore failed")})
+	restored := updated.(*Model)
+	if restored.externalProcessActive || restored.pausedForExternalUI {
+		t.Fatal("shell error left external process rendering state active")
+	}
+	restored.postFrameImageMu.Lock()
+	imageSuppressed := restored.postFrameImageSuppressed
+	restored.postFrameImageMu.Unlock()
+	if imageSuppressed {
+		t.Fatal("shell error left post-frame images suppressed")
+	}
+	if !restored.View().AltScreen {
+		t.Fatal("shell error did not restore alternate-screen rendering")
 	}
 }
 

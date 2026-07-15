@@ -322,12 +322,35 @@ func clonePostFrameImageStates(src map[string]postFrameImageState) map[string]po
 	return dst
 }
 
+func (m *Model) setPostFrameImageSuppressed(suppressed bool) {
+	if m == nil {
+		return
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	m.postFrameImageSuppressed = suppressed
+	if suppressed {
+		// A post-frame timer may fire after Bubble Tea has handed the terminal to
+		// an interactive child. Discard queued output so it cannot draw into the
+		// child's screen; the next normal chat render will compose it again.
+		m.postFrameImageSeq = ""
+		m.postFramePendingImages = nil
+	}
+}
+
 func (m *Model) TakePostFrameImageSequence() string {
 	if m == nil {
 		return ""
 	}
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
+	if m.postFrameImageSuppressed {
+		// Composition may have queued another sequence after suppression began;
+		// discard it here as well before the timer writes to the terminal.
+		m.postFrameImageSeq = ""
+		m.postFramePendingImages = nil
+		return ""
+	}
 	seq := m.postFrameImageSeq
 	if seq != "" {
 		if m.postFrameTransmittedImages == nil {

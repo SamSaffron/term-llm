@@ -27,7 +27,7 @@ func (m *Model) cmdShell(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.clearFooterMessage()
-	m.pausedForExternalUI = true
+	m.setShellTerminalHandoff(true)
 	if m.completions != nil {
 		m.completions.Hide()
 	}
@@ -40,6 +40,18 @@ func (m *Model) cmdShell(args []string) (tea.Model, tea.Cmd) {
 
 type shellOptions struct {
 	NoRC bool
+}
+
+// setShellTerminalHandoff keeps the render pause and asynchronous image-output
+// suppression in one lifecycle operation. The latter is the hard guarantee
+// that a pending post-frame timer cannot write into the child process's screen.
+func (m *Model) setShellTerminalHandoff(active bool) {
+	if m == nil {
+		return
+	}
+	m.pausedForExternalUI = active
+	m.externalProcessActive = active
+	m.setPostFrameImageSuppressed(active)
 }
 
 func parseShellArgs(args []string) (shellOptions, error) {
@@ -68,6 +80,13 @@ func (m *Model) interactiveShellCommand(noRC bool) (*exec.Cmd, string, error) {
 	cmd := exec.Command(shellPath, shellArgs...)
 	cmd.Dir = dir
 	cmd.Env = interactiveShellEnv(os.Environ(), dir, m.boundWorktreeForShellEnv(), noRC)
+	// Full-screen terminal programs must write straight to the terminal. In
+	// alt-screen chat Bubble Tea's output is decorated to append image escape
+	// sequences after rendered frames; letting vim or another interactive child
+	// inherit that decorator can interleave TUI output with the child's screen.
+	// Leave stdin unset so tea.ExecProcess can attach the TTY input it owns.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	return cmd, dir, nil
 }
 

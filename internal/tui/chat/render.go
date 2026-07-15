@@ -28,6 +28,13 @@ const maxViewLines = 8
 
 // View renders the model
 func (m *Model) View() tea.View {
+	// Return a mode-free frame before ExecProcess releases the renderer. This
+	// prevents a queued render from re-enabling alt-screen, mouse, or keyboard
+	// protocols while an interactive child owns the terminal. Post-frame output
+	// is suppressed separately as the hard guard against asynchronous writes.
+	if m.externalProcessActive {
+		return tea.NewView("")
+	}
 	if m.quitting {
 		return m.newView("")
 	}
