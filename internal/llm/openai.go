@@ -145,7 +145,6 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		FileUploadPolicy: p.effectiveFileUploadPolicy(),
 		Tools:            tools,
 		Include:          []string{"reasoning.encrypted_content"},
-		PromptCacheKey:   req.SessionID,
 		Stream:           true,
 		SessionID:        req.SessionID,
 	}

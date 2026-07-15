@@ -1354,10 +1354,10 @@ func TestResponsesClientStream_ParsesMultilineSSEErrorEvent(t *testing.T) {
 	}
 }
 
-func TestOpenAIProviderStream_UsesSessionIDForResponsesCaching(t *testing.T) {
+func TestOpenAIProviderStream_OmitsPromptCacheKeyButKeepsSessionHeader(t *testing.T) {
 	type capturedRequest struct {
-		SessionID      string
-		PromptCacheKey string
+		SessionID         string
+		HasPromptCacheKey bool
 	}
 
 	captured := make(chan capturedRequest, 1)
@@ -1365,15 +1365,14 @@ func TestOpenAIProviderStream_UsesSessionIDForResponsesCaching(t *testing.T) {
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			defer r.Body.Close()
 
-			var payload struct {
-				PromptCacheKey string `json:"prompt_cache_key"`
-			}
+			var payload map[string]any
 			body, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(body, &payload)
+			_, hasPromptCacheKey := payload["prompt_cache_key"]
 
 			captured <- capturedRequest{
-				SessionID:      r.Header.Get("session_id"),
-				PromptCacheKey: payload.PromptCacheKey,
+				SessionID:         r.Header.Get("session_id"),
+				HasPromptCacheKey: hasPromptCacheKey,
 			}
 
 			return &http.Response{
@@ -1417,8 +1416,8 @@ func TestOpenAIProviderStream_UsesSessionIDForResponsesCaching(t *testing.T) {
 		if req.SessionID != "openai-session-1" {
 			t.Fatalf("expected session_id header 'openai-session-1', got %q", req.SessionID)
 		}
-		if req.PromptCacheKey != "openai-session-1" {
-			t.Fatalf("expected prompt_cache_key 'openai-session-1', got %q", req.PromptCacheKey)
+		if req.HasPromptCacheKey {
+			t.Fatal("OpenAI request contains prompt_cache_key")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for request capture")
