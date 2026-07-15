@@ -198,6 +198,11 @@ func TestGrokBinProviderBuildACPArgsUsesRestrictedProfile(t *testing.T) {
 	if !slices.Contains(args, "--disable-web-search") {
 		t.Fatalf("restricted ACP args did not disable web search: %q", args)
 	}
+	disableWebSearch := slices.Index(args, "--disable-web-search")
+	agentCommand := slices.Index(args, "agent")
+	if disableWebSearch < 0 || agentCommand < 0 || disableWebSearch > agentCommand {
+		t.Fatalf("root --disable-web-search flag must precede agent subcommand: %q", args)
+	}
 	disallowed := "," + argValue(args, "--disallowed-tools") + ","
 	for _, tool := range []string{"web_search", "web_fetch", "x_search"} {
 		if !strings.Contains(disallowed, ","+tool+",") {

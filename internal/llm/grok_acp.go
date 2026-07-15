@@ -381,13 +381,18 @@ func (p *GrokBinProvider) buildACPArgs(req Request, profilePath string) ([]strin
 		"--no-plan",
 		"--tools", toolAllowlist,
 		"--disallowed-tools", grokDisallowedTools(req.Search),
+	}
+	if !req.Search {
+		// --disable-web-search is a root grok flag, so it must appear before
+		// the agent subcommand. Placing it after "agent" makes Grok exit before
+		// the ACP handshake and surfaces as an initialize EOF.
+		args = append(args, "--disable-web-search")
+	}
+	args = append(args,
 		"agent",
 		"--agent-profile", profilePath,
 		"--no-leader",
-	}
-	if !req.Search {
-		args = append(args, "--disable-web-search")
-	}
+	)
 	model, effort := p.grokACPModelEffort(req)
 	if model != "" {
 		args = append(args, "-m", model)
