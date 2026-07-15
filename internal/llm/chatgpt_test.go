@@ -82,6 +82,58 @@ func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestChatGPTStream_OmitsPromptCacheKeyButKeepsSessionHeader(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var body []byte
+	var sessionID string
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		sessionID = req.Header.Get("session_id")
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "gpt-5.6-sol-medium")
+
+	stream, err := provider.Stream(context.Background(), Request{
+		SessionID: "chatgpt-session-123",
+		Messages:  []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if sessionID != "chatgpt-session-123" {
+		t.Fatalf("session_id header = %q, want %q", sessionID, "chatgpt-session-123")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if value, ok := payload["prompt_cache_key"]; ok {
+		t.Fatalf("ChatGPT request contains prompt_cache_key = %#v", value)
+	}
+}
+
 func TestChatGPTStream_CompactionAnchorDoesNotEmitPromptCacheBreakpoint(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() { chatGPTHTTPClient = origClient }()

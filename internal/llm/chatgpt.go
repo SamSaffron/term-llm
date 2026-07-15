@@ -265,10 +265,12 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		ExtractInstructionsFromMessages: true,
 		Tools:                           tools,
 		Include:                         []string{"reasoning.encrypted_content"},
-		PromptCacheKey:                  req.SessionID,
-		Store:                           boolPtr(false),
-		Stream:                          true,
-		SessionID:                       req.SessionID,
+		// The ChatGPT Codex backend's implicit prefix caching regresses for long
+		// prompts when prompt_cache_key is present. Keep session_id for routing and
+		// WebSocket continuation, but let the backend choose its cache route.
+		Store:     boolPtr(false),
+		Stream:    true,
+		SessionID: req.SessionID,
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
