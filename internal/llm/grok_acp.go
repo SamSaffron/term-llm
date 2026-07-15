@@ -372,7 +372,9 @@ func (p *GrokBinProvider) buildACPArgs(req Request, profilePath string) ([]strin
 	if req.Search {
 		toolAllowlist = grokNativeSearchToolAllowlist
 	}
-	args := []string{
+	// Keep root flags separate from agent subcommand flags. Grok rejects root
+	// options placed after "agent", exiting before the ACP handshake.
+	rootArgs := []string{
 		"--no-auto-update",
 		"--max-turns", fmt.Sprintf("%d", grokMaxTurns),
 		"--cwd", neutralCWD,
@@ -383,12 +385,9 @@ func (p *GrokBinProvider) buildACPArgs(req Request, profilePath string) ([]strin
 		"--disallowed-tools", grokDisallowedTools(req.Search),
 	}
 	if !req.Search {
-		// --disable-web-search is a root grok flag, so it must appear before
-		// the agent subcommand. Placing it after "agent" makes Grok exit before
-		// the ACP handshake and surfaces as an initialize EOF.
-		args = append(args, "--disable-web-search")
+		rootArgs = append(rootArgs, "--disable-web-search")
 	}
-	args = append(args,
+	args := append(rootArgs,
 		"agent",
 		"--agent-profile", profilePath,
 		"--no-leader",

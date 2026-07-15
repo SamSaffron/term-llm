@@ -195,9 +195,6 @@ func TestGrokBinProviderBuildACPArgsUsesRestrictedProfile(t *testing.T) {
 	if effort != "high" {
 		t.Fatalf("effort = %q", effort)
 	}
-	if !slices.Contains(args, "--disable-web-search") {
-		t.Fatalf("restricted ACP args did not disable web search: %q", args)
-	}
 	disableWebSearch := slices.Index(args, "--disable-web-search")
 	agentCommand := slices.Index(args, "agent")
 	if disableWebSearch < 0 || agentCommand < 0 || disableWebSearch > agentCommand {
