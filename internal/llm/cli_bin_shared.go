@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,14 @@ const cliDiagnosticLineMaxBytes = 4 * 1024
 
 // mcpCallCounter generates process-unique IDs for CLI-provider MCP tool calls.
 var mcpCallCounter atomic.Int64
+
+// newCLICommand is the common subprocess boundary for local CLI providers.
+// An empty working directory deliberately preserves os/exec's inherited-cwd behavior.
+func newCLICommand(ctx context.Context, binary string, args []string, workingDir string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = strings.TrimSpace(workingDir)
+	return cmd
+}
 
 // UserFacingProviderError keeps detailed subprocess diagnostics available to
 // debug logging while presenting a concise error to users.
@@ -67,6 +76,9 @@ type CLICommandError struct {
 	Args           []string
 	CommandLine    string
 	Cwd            string
+	// CLICwd is an optional provider-level cwd argument. It can differ from Cwd,
+	// which always describes the operating-system process working directory.
+	CLICwd         string
 	Effort         string
 	ToolsExecuted  bool
 	PreferOAuth    bool
@@ -130,6 +142,9 @@ func (e *CLICommandError) DebugFields() map[string]any {
 		"stdin_sha256":        e.StdinSHA256,
 		"stdin_truncated":     e.StdinTruncated,
 		"stdin":               e.Stdin,
+	}
+	if e.CLICwd != "" {
+		fields["cli_cwd"] = e.CLICwd
 	}
 	if e.PromptLen > 0 || e.PromptSHA256 != "" {
 		fields["prompt_len"] = e.PromptLen

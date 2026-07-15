@@ -401,6 +401,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 		// Build request
 		req := llm.Request{
+			WorkingDir:              settings.BaseDir,
 			Messages:                messages,
 			Tools:                   toolSpecs,
 			ToolChoice:              llm.ToolChoice{Mode: llm.ToolChoiceAuto},

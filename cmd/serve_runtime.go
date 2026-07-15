@@ -1008,6 +1008,14 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	messages = append(messages, inputMessages...)
 
 	req.Messages = messages
+	// The runtime's restored session/worktree binding is authoritative for both
+	// local tools and local CLI providers. Keep caller-supplied values only when
+	// this runtime has no explicit base directory.
+	if rt.toolMgr != nil {
+		if baseDir := strings.TrimSpace(rt.toolMgr.BaseDir()); baseDir != "" {
+			req.WorkingDir = baseDir
+		}
+	}
 
 	// Re-set each run in case the request selects a different model than the
 	// runtime default, matching the TUI's per-turn context management behavior.

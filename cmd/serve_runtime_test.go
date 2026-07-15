@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestServeRuntimeSessionNumberConcurrentAccess(t *testing.T) {
@@ -107,6 +109,41 @@ func (p *serveRuntimeTestProvider) Stream(ctx context.Context, req llm.Request) 
 	}
 	p.calls++
 	return &serveRuntimeTestStream{events: events}, nil
+}
+
+func TestServeRuntimePropagatesToolManagerBaseDirToLLMRequest(t *testing.T) {
+	toolConfig := tools.DefaultToolConfig()
+	toolConfig.Enabled = nil
+	toolMgr, err := tools.NewToolManager(&toolConfig, &config.Config{})
+	if err != nil {
+		t.Fatalf("NewToolManager: %v", err)
+	}
+	workingDir := t.TempDir()
+	if err := toolMgr.SetBaseDir(workingDir); err != nil {
+		t.Fatalf("SetBaseDir: %v", err)
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("done")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		toolMgr:      toolMgr,
+		defaultModel: "mock-model",
+	}
+	_, err = rt.Run(context.Background(), false, false,
+		[]llm.Message{llm.UserText("hello")},
+		llm.Request{WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	if got := provider.Requests[0].WorkingDir; got != workingDir {
+		t.Fatalf("WorkingDir = %q, want runtime BaseDir %q", got, workingDir)
+	}
 }
 
 type serveRuntimeTestTool struct{}

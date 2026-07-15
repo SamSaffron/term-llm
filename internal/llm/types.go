@@ -147,8 +147,9 @@ func (o ResponsesOptions) IsZero() bool {
 
 // Request represents a single model turn.
 type Request struct {
-	Model     string
-	SessionID string // Optional session ID for provider-side continuity/caching hints
+	Model      string
+	SessionID  string // Optional session ID for provider-side continuity/caching hints
+	WorkingDir string // Optional working directory for local subprocess providers
 	// Ephemeral marks one-shot internal requests (title generation, summaries,
 	// vision helpers) that must not participate in provider-side conversation/session
 	// state. Stateful providers should avoid resuming an existing session and must

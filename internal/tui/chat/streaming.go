@@ -627,6 +627,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{
 			SessionID:               m.sess.ID,
+			WorkingDir:              m.effectiveWorkingDir(),
 			Model:                   strings.TrimSpace(m.modelName),
 			Messages:                messages,
 			Tools:                   reqTools,
@@ -695,6 +696,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					Engine:                    m.engine,
 					ProviderInstance:          m.provider,
 					SessionID:                 req.SessionID,
+					Cwd:                       req.WorkingDir,
 					DeferSession:              true,
 					DisableRuntimePersistence: true,
 					Provider:                  strings.TrimSpace(m.providerKey),

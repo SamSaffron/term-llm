@@ -27,6 +27,19 @@ func (r *blockingChatRunner) Run(ctx context.Context, req runpkg.Request, sink r
 	return runpkg.Result{}, nil
 }
 
+type capturingChatRunner struct {
+	requests chan runpkg.Request
+}
+
+func (r *capturingChatRunner) Run(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (runpkg.Result, error) {
+	select {
+	case r.requests <- req:
+		return runpkg.Result{}, nil
+	case <-ctx.Done():
+		return runpkg.Result{}, ctx.Err()
+	}
+}
+
 type interjectionTestTool struct{}
 
 type updateMessageFailStore struct {
@@ -137,6 +150,65 @@ func TestRunnerStreamDoneWaitsForRunnerAfterCancellation(t *testing.T) {
 	case <-m.streamDone:
 	case <-time.After(time.Second):
 		t.Fatal("streamDone did not close after runner returned")
+	}
+}
+
+func TestRunnerStreamPropagatesSessionWorkingDirectory(t *testing.T) {
+	m := newTestChatModel(false)
+	worktreeDir := t.TempDir()
+	m.sess = &session.Session{
+		ID:          "runner-working-dir",
+		CWD:         t.TempDir(),
+		WorktreeDir: worktreeDir,
+	}
+	runner := &capturingChatRunner{requests: make(chan runpkg.Request, 1)}
+	m.SetRunner(runner)
+
+	cmdDone := make(chan any, 1)
+	go func() {
+		cmdDone <- m.startStream("hello")()
+	}()
+
+	select {
+	case req := <-runner.requests:
+		if req.Cwd != worktreeDir {
+			t.Fatalf("runner request Cwd = %q, want %q", req.Cwd, worktreeDir)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner did not receive request")
+	}
+
+	select {
+	case <-cmdDone:
+	case <-time.After(time.Second):
+		t.Fatal("stream command did not finish")
+	}
+}
+
+func TestDirectStreamPropagatesSessionWorkingDirectory(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("done")
+	m := newTestChatModel(false)
+	m.provider = provider
+	m.engine = llm.NewEngine(provider, nil)
+	worktreeDir := t.TempDir()
+	m.sess = &session.Session{
+		ID:          "direct-working-dir",
+		CWD:         t.TempDir(),
+		WorktreeDir: worktreeDir,
+	}
+
+	_ = m.startStream("hello")()
+	select {
+	case <-m.streamDone:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not finish")
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+	if got := provider.Requests[0].WorkingDir; got != worktreeDir {
+		t.Fatalf("provider request WorkingDir = %q, want %q", got, worktreeDir)
 	}
 }
 

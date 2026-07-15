@@ -295,7 +295,7 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 			return err
 		}
 
-		result, err := p.runGrokCommand(ctx, args, effort, prompt, debug, send, req.Ephemeral, exposeToolBridge)
+		result, err := p.runGrokCommand(ctx, args, effort, prompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
 		if err != nil {
 			return err
 		}
@@ -353,6 +353,10 @@ func (p *GrokBinProvider) buildArgs(req Request, promptPath string) ([]string, s
 	if strings.TrimSpace(p.grokHome) == "" {
 		return nil, "", fmt.Errorf("grok-bin GROK_HOME is not initialized")
 	}
+	// Keep Grok's provider-level project/config discovery isolated in its private
+	// home. Request.WorkingDir is applied separately as exec.Cmd.Dir so relative
+	// process operations inherit the session directory without enabling project
+	// memory, hooks, or other Grok-local configuration.
 	neutralCWD := filepath.Join(p.grokHome, "cwd")
 	if err := os.MkdirAll(neutralCWD, 0o700); err != nil {
 		return nil, "", fmt.Errorf("create grok-bin neutral cwd: %w", err)
@@ -397,8 +401,16 @@ func (p *GrokBinProvider) buildArgs(req Request, promptPath string) ([]string, s
 }
 
 func grokSystemPromptArg(args []string) string {
+	return grokArgValue(args, "--system-prompt-override")
+}
+
+func grokCWDArg(args []string) string {
+	return grokArgValue(args, "--cwd")
+}
+
+func grokArgValue(args []string, name string) string {
 	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "--system-prompt-override" {
+		if args[i] == name {
 			return args[i+1]
 		}
 	}
@@ -467,8 +479,8 @@ func (p *GrokBinProvider) buildCommandEnv() []string {
 	return filtered
 }
 
-func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string) (*exec.Cmd, func(), error) {
-	cmd := exec.CommandContext(ctx, "grok", args...)
+func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string, workingDir string) (*exec.Cmd, func(), error) {
+	cmd := newCLICommand(ctx, "grok", args, workingDir)
 	cmd.WaitDelay = grokCommandWaitDelay
 	cmd.Env = p.buildCommandEnv()
 	cleanup, err := procutil.PrepareCommand(cmd)
@@ -483,6 +495,7 @@ func (p *GrokBinProvider) runGrokCommand(
 	args []string,
 	effort string,
 	prompt []byte,
+	workingDir string,
 	debug bool,
 	send eventSender,
 	ephemeral bool,
@@ -496,7 +509,7 @@ func (p *GrokBinProvider) runGrokCommand(
 		fmt.Fprintln(os.Stderr, "================================")
 	}
 
-	cmd, cleanup, err := p.prepareGrokCommand(ctx, args)
+	cmd, cleanup, err := p.prepareGrokCommand(ctx, args, workingDir)
 	if err != nil {
 		return grokCommandResult{}, err
 	}
@@ -597,7 +610,7 @@ func (p *GrokBinProvider) runGrokCommand(
 			exitCode = exitErr.ExitCode()
 		}
 		if !state.maxTurnsReached {
-			commandErr := p.newGrokCommandError(cmdErr, exitCode, args, effort, prompt, toolsExecuted,
+			commandErr := p.newGrokCommandError(cmdErr, exitCode, args, effort, prompt, workingDir, toolsExecuted,
 				snapshotCLITail(&stdoutMu, stdoutTail), snapshotCLITail(&stderrMu, stderrTail))
 			slog.Error("grok command failed",
 				"exit_code", exitCode,
@@ -738,8 +751,12 @@ func (p *GrokBinProvider) handleGrokLine(line string, debug bool, send eventSend
 	return nil
 }
 
-func (p *GrokBinProvider) newGrokCommandError(cmdErr error, exitCode int, args []string, effort string, prompt []byte, toolsExecuted bool, stdoutTail, stderrTail []string) *CLICommandError {
+func (p *GrokBinProvider) newGrokCommandError(cmdErr error, exitCode int, args []string, effort string, prompt []byte, workingDir string, toolsExecuted bool, stdoutTail, stderrTail []string) *CLICommandError {
 	sum := sha256.Sum256(prompt)
+	cwd := strings.TrimSpace(workingDir)
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
 	env, removed := p.commandEnvDebugFields()
 	systemPrompt := grokSystemPromptArg(args)
 	redactedArgs := redactedGrokArgs(args)
@@ -752,7 +769,8 @@ func (p *GrokBinProvider) newGrokCommandError(cmdErr error, exitCode int, args [
 		Err:           cmdErr,
 		Args:          redactedArgs,
 		CommandLine:   shellJoin(append([]string{"grok"}, redactedArgs...)),
-		Cwd:           filepath.Join(p.grokHome, "cwd"),
+		Cwd:           cwd,
+		CLICwd:        grokCWDArg(args),
 		Effort:        effort,
 		ToolsExecuted: toolsExecuted,
 		PreferOAuth:   p.preferOAuth,

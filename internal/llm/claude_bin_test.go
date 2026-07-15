@@ -161,16 +161,20 @@ func TestClaudeBinProvider_CleanupTurn_DoesNotStopMCPServer(t *testing.T) {
 	}
 }
 
-func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupAndWaitDelay(t *testing.T) {
+func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayAndWorkingDir(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet", nil)
+	workingDir := t.TempDir()
 
-	cmd, stdin, cleanup, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "")
+	cmd, stdin, cleanup, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "", workingDir)
 	if err != nil {
 		t.Fatalf("prepareClaudeCommand failed: %v", err)
 	}
 	defer cleanup()
 	defer stdin.Close()
 
+	if cmd.Dir != workingDir {
+		t.Fatalf("Dir = %q, want %q", cmd.Dir, workingDir)
+	}
 	if cmd.WaitDelay != claudeCommandWaitDelay {
 		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, claudeCommandWaitDelay)
 	}
@@ -1202,6 +1206,7 @@ func TestClaudeBinProvider_UserFacingCommandErrorKeepsDiagnosticsOutOfErrorStrin
 		[]string{"--print"},
 		"",
 		"User: hello",
+		"",
 		false,
 		[]string{`{"type":"result","is_error":true}`},
 		[]string{"", "permission denied by managed policy", "extra stderr detail"},
@@ -1242,6 +1247,7 @@ func TestClaudeBinProvider_CommandErrorDebugFields(t *testing.T) {
 		[]string{"--print", "--model", "opus", "--settings", `{"disableAllHooks":true}`},
 		"max",
 		"User: hello",
+		"/tmp/worktree",
 		false,
 		[]string{`{"type":"system","subtype":"init"}`},
 		[]string{"fatal problem"},
@@ -1251,6 +1257,9 @@ func TestClaudeBinProvider_CommandErrorDebugFields(t *testing.T) {
 		t.Fatalf("unexpected error string: %s", err.Error())
 	}
 	fields := err.DebugFields()
+	if got := fields["cwd"].(string); got != "/tmp/worktree" {
+		t.Fatalf("cwd = %q, want /tmp/worktree", got)
+	}
 	if got := fields["command_line"].(string); !strings.Contains(got, "claude --print --model opus --settings") || !strings.Contains(got, `'`+`{"disableAllHooks":true}`+`'`) {
 		t.Fatalf("command_line not shell quoted as expected: %q", got)
 	}
@@ -1281,7 +1290,7 @@ func TestClaudeBinProvider_CommandErrorTruncatesDiagnostics(t *testing.T) {
 	longPrompt := strings.Repeat("x", claudeDiagnosticStdinMaxBytes+10)
 	longLine := strings.Repeat("y", claudeDiagnosticLineMaxBytes+10)
 
-	err := p.newClaudeCommandError(fmt.Errorf("exit status 1"), 1, []string{"--print"}, "", longPrompt, false, []string{longLine}, []string{longLine})
+	err := p.newClaudeCommandError(fmt.Errorf("exit status 1"), 1, []string{"--print"}, "", longPrompt, "", false, []string{longLine}, []string{longLine})
 	fields := err.DebugFields()
 	if truncated, _ := fields["stdin_truncated"].(bool); !truncated {
 		t.Fatal("expected stdin_truncated=true")

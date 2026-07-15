@@ -358,7 +358,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// acquire activeStream above, so the bridge is never shared with a parent
 		// conversation while still allowing standalone one-shot tool requests.
 		exposeToolBridge := len(req.Tools) > 0
-		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, send, req.Ephemeral, exposeToolBridge)
+		err := p.runClaudeCommand(ctx, args, effort, userPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
 		if err != nil && isPromptTooLong(err) {
 			// Retry with progressively more aggressive truncation
 			retryLimits := []int{maxToolResultCharsOnRetry, maxToolResultCharsOnAggressiveRetry}
@@ -374,7 +374,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				slog.Info("prompt too long, retrying with truncated tool results",
 					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
 				prevLen = len(retryPrompt)
-				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, send, req.Ephemeral, exposeToolBridge)
+				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
 				if err == nil || !isPromptTooLong(err) {
 					break
 				}
@@ -468,8 +468,11 @@ func envHasTruthy(env []string, key string) bool {
 	return false
 }
 
-func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, args []string, effort, userPrompt string, toolsExecuted bool, stdoutTail, stderrTail []string) *ClaudeCommandError {
-	cwd, _ := os.Getwd()
+func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, args []string, effort, userPrompt, workingDir string, toolsExecuted bool, stdoutTail, stderrTail []string) *ClaudeCommandError {
+	cwd := strings.TrimSpace(workingDir)
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
 	stdin, stdinTruncated := truncateCLIDiagnosticString(userPrompt, claudeDiagnosticStdinMaxBytes)
 	sum := sha256.Sum256([]byte(userPrompt))
 	env, removedEnv := p.commandEnvDebugFields(effort)
@@ -615,8 +618,8 @@ func shellQuote(s string) string {
 	return s
 }
 
-func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort string) (*exec.Cmd, io.WriteCloser, func(), error) {
-	cmd := exec.CommandContext(ctx, "claude", args...)
+func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort, workingDir string) (*exec.Cmd, io.WriteCloser, func(), error) {
+	cmd := newCLICommand(ctx, "claude", args, workingDir)
 	cmd.WaitDelay = claudeCommandWaitDelay
 	cmd.Env = p.buildCommandEnv(effort)
 
@@ -641,6 +644,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	args []string,
 	effort string,
 	userPrompt string,
+	workingDir string,
 	debug bool,
 	send eventSender,
 	ephemeral bool,
@@ -661,7 +665,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		fmt.Fprintln(os.Stderr, "=================================")
 	}
 
-	cmd, stdin, cleanup, err := p.prepareClaudeCommand(ctx, args, effort)
+	cmd, stdin, cleanup, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
 	if err != nil {
 		return err
 	}
@@ -816,7 +820,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		expectedToolExit := toolsExecuted && exitCode == 1
 		expectedHandledTerminalResult := handledTerminalResult && exitCode == 1
 		if !expectedToolExit && !expectedHandledTerminalResult {
-			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, toolsExecuted, stdoutSnapshot, stderrSnapshot)
+			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, workingDir, toolsExecuted, stdoutSnapshot, stderrSnapshot)
 			slog.Error("claude command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,

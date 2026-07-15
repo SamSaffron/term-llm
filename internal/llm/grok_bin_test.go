@@ -12,6 +12,27 @@ import (
 	"time"
 )
 
+func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
+	provider := NewGrokBinProvider("grok-4.5", nil)
+	workingDir := t.TempDir()
+
+	cmd, cleanup, err := provider.prepareGrokCommand(context.Background(), []string{"--version"}, workingDir)
+	if err != nil {
+		t.Fatalf("prepareGrokCommand: %v", err)
+	}
+	defer cleanup()
+
+	if cmd.Dir != workingDir {
+		t.Fatalf("Dir = %q, want %q", cmd.Dir, workingDir)
+	}
+	if cmd.WaitDelay != grokCommandWaitDelay {
+		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, grokCommandWaitDelay)
+	}
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		t.Fatal("expected grok subprocess to run in its own process group")
+	}
+}
+
 func TestParseGrokEffort(t *testing.T) {
 	tests := []struct {
 		model      string
@@ -247,7 +268,7 @@ func TestGrokBinCommandErrorDoesNotExposePromptContent(t *testing.T) {
 		"--prompt-file", filepath.Join(p.grokHome, "prompt.json"),
 		"--system-prompt-override", systemPrompt,
 	}
-	err := p.newGrokCommandError(io.ErrUnexpectedEOF, 1, args, "", prompt, false,
+	err := p.newGrokCommandError(io.ErrUnexpectedEOF, 1, args, "", prompt, "", false,
 		[]string{"stdout echoed " + systemPrompt}, []string{"stderr echoed " + systemPrompt})
 	diagnostics := strings.Join([]string{
 		err.Error(),
@@ -268,6 +289,26 @@ func TestGrokBinCommandErrorDoesNotExposePromptContent(t *testing.T) {
 	fields := err.DebugFields()
 	if fields["prompt_len"] != len(prompt) || fields["prompt_sha256"] == "" {
 		t.Fatalf("prompt diagnostics = %+v", fields)
+	}
+}
+
+func TestGrokBinCommandErrorDistinguishesProcessAndCLICWD(t *testing.T) {
+	p := NewGrokBinProvider("grok-4.5", nil)
+	p.grokHome = t.TempDir()
+	args, _, err := p.buildArgs(Request{}, filepath.Join(p.grokHome, "prompt.json"))
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
+	processCWD := t.TempDir()
+
+	commandErr := p.newGrokCommandError(io.ErrUnexpectedEOF, 1, args, "", []byte("prompt"), processCWD, false, nil, nil)
+	fields := commandErr.DebugFields()
+	if got := fields["cwd"]; got != processCWD {
+		t.Fatalf("process cwd = %q, want %q", got, processCWD)
+	}
+	wantCLICWD := filepath.Join(p.grokHome, "cwd")
+	if got := fields["cli_cwd"]; got != wantCLICWD {
+		t.Fatalf("Grok --cwd = %q, want neutral cwd %q", got, wantCLICWD)
 	}
 }
 

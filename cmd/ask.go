@@ -494,6 +494,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	req := llm.Request{
 		SessionID:               sessionID,
+		WorkingDir:              settings.BaseDir,
 		Messages:                messages,
 		Search:                  settings.Search,
 		ForceExternalSearch:     resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
@@ -1378,6 +1379,7 @@ func runOutputToolFinalization(ctx context.Context, provider llm.Provider, regis
 		finalReq := llm.Request{
 			Model:             baseReq.Model,
 			SessionID:         baseReq.SessionID,
+			WorkingDir:        baseReq.WorkingDir,
 			Messages:          attemptMessages,
 			Tools:             []llm.ToolSpec{outputTool.Spec()},
 			ToolChoice:        llm.ToolChoice{Mode: llm.ToolChoiceAuto},

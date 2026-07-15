@@ -355,6 +355,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	llmReq := llm.Request{
 		Model:                    modelName,
 		SessionID:                req.SessionID,
+		WorkingDir:               settings.BaseDir,
 		Tools:                    toolSpecs,
 		ToolChoice:               toolChoice,
 		LastTurnToolChoice:       lastTurnToolChoice,
@@ -526,7 +527,9 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 		MCP:         settings.MCP,
 		Status:      session.StatusActive,
 	}
-	if cwd, err := os.Getwd(); err == nil {
+	if cwd := strings.TrimSpace(settings.BaseDir); cwd != "" {
+		sess.CWD = cwd
+	} else if cwd, err := os.Getwd(); err == nil {
 		sess.CWD = cwd
 	}
 	if err := store.Create(ctx, sess); err != nil {

@@ -71,19 +71,28 @@ func (m *Model) interactiveShellCommand(noRC bool) (*exec.Cmd, string, error) {
 	return cmd, dir, nil
 }
 
-func (m *Model) interactiveShellDir() (string, error) {
-	dir := ""
-	if m != nil {
-		if m.sess != nil {
-			dir = strings.TrimSpace(m.sess.WorktreeDir)
-		}
-		if dir == "" && m.toolMgr != nil {
-			dir = strings.TrimSpace(m.toolMgr.BaseDir())
-		}
-		if dir == "" && m.sess != nil {
-			dir = strings.TrimSpace(m.sess.CWD)
+func (m *Model) effectiveWorkingDir() string {
+	if m == nil {
+		return ""
+	}
+	if m.sess != nil {
+		if dir := strings.TrimSpace(m.sess.WorktreeDir); dir != "" {
+			return dir
 		}
 	}
+	if m.toolMgr != nil {
+		if dir := strings.TrimSpace(m.toolMgr.BaseDir()); dir != "" {
+			return dir
+		}
+	}
+	if m.sess != nil {
+		return strings.TrimSpace(m.sess.CWD)
+	}
+	return ""
+}
+
+func (m *Model) interactiveShellDir() (string, error) {
+	dir := m.effectiveWorkingDir()
 	if dir == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
