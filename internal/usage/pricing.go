@@ -147,6 +147,7 @@ func lookupBundledPricing(modelName string) (ModelPricing, bool) {
 		candidates = append(candidates, trimmed[slash+1:])
 	}
 	for _, candidate := range append([]string(nil), candidates...) {
+		// Keep the former ultra alias for pricing historical persisted selections.
 		for _, suffix := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
 			if strings.HasSuffix(candidate, "-"+suffix) {
 				candidates = append(candidates, strings.TrimSuffix(candidate, "-"+suffix))

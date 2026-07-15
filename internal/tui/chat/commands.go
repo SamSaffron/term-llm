@@ -101,7 +101,7 @@ func AllCommands() []Command {
 		{
 			Name:        "effort",
 			Description: "Switch reasoning effort for current model (Ctrl+R cycles)",
-			Usage:       "/effort [none|minimal|low|medium|high|xhigh|max|ultra|default]",
+			Usage:       "/effort [none|minimal|low|medium|high|xhigh|max|default]",
 		},
 		{
 			Name:        "pro",
@@ -1236,7 +1236,7 @@ func (m *Model) cmdPro(args []string) (tea.Model, tea.Cmd) {
 		return m.showFooterWarning("Usage: /pro [on|off|status]")
 	}
 	if requested == "on" && !supported {
-		return m.showFooterWarning(fmt.Sprintf("Pro mode is not supported by %s:%s; use ChatGPT /effort ultra where available.", provider, model))
+		return m.showFooterWarning(fmt.Sprintf("Pro mode is not supported by %s:%s; it is available only through the OpenAI API GPT-5.6 models.", provider, model))
 	}
 	if m.sess == nil {
 		return m.showFooterWarning("Cannot change Pro mode: no active session.")

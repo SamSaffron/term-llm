@@ -2519,7 +2519,7 @@ const reasoningEffortsForModel = (model) => {
     : [];
 };
 
-const LEGACY_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const LEGACY_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const allowedReasoningEffortsForSelection = () => {
   const model = effectiveModelForEffort();

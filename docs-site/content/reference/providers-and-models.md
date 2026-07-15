@@ -86,11 +86,11 @@ term-llm ships fallback metadata for the GPT-5.6 family:
 | Provider | Default model | Fast model | Effective input | Max output | Efforts |
 |---|---|---|---:|---:|---|
 | `openai` (API key) | `gpt-5.6-sol` | `gpt-5.6-luna` | 922K | 128K | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `chatgpt` (OAuth) | `gpt-5.6-sol-medium` | `gpt-5.6-luna` | 372K fallback | 128K | Sol/Terra: `low` through `max`, plus `ultra`; Luna: `low` through `max` |
+| `chatgpt` (OAuth) | `gpt-5.6-sol-medium` | `gpt-5.6-luna` | 372K fallback | 128K | `low`, `medium`, `high`, `xhigh`, `max` |
 
 The OpenAI model IDs are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. ChatGPT exposes the same named variants through its live Codex catalog; live input limits and reasoning metadata take precedence over the static fallback. Luna keeps its upstream medium default unless you explicitly select another effort.
 
-**Pro and Ultra are different controls.** On the public OpenAI API, Pro sends `reasoning.mode: pro`; Standard sends `reasoning.mode: standard`. In terminal chat use `/pro on`, `/pro off`, or `/pro status`. The browser shows a Standard/Pro selector only when the selected model advertises it. ChatGPT OAuth does not receive public-API Pro mode: its `ultra` option is a distinct reasoning effort available only on Sol/Terra.
+**Pro and Ultra are not reasoning efforts.** On the public OpenAI API, Pro sends `reasoning.mode: pro`; Standard sends `reasoning.mode: standard`. In terminal chat use `/pro on`, `/pro off`, or `/pro status`. The browser shows a Standard/Pro selector only when the selected model advertises it. ChatGPT OAuth does not receive public-API Pro mode. Codex's separate product-level Ultra option runs at `max` effort and adds subagents, so term-llm does not expose it as an effort.
 
 OpenAI API GPT-5.6 also supports term-llm's advanced Responses controls: reasoning context, hosted multi-agent execution, programmatic tool calling, and prompt-cache options. These controls are model/provider gated. term-llm rejects them for older OpenAI models, OpenAI-compatible providers, and the ChatGPT OAuth backend rather than sending unverified fields. See [Configuration](/reference/configuration/#gpt-56-advanced-responses-controls) and [Web UI and API](/guides/web-ui-and-api/#gpt-56-responses-controls).
 
@@ -385,7 +385,7 @@ providers:
 
 Older GPT-5 models retain their existing provider-specific effort sets. Natural model IDs ending in a suffix-like word are preserved when that suffix is not valid for the model; for example, `gpt-5.1-codex-max` remains a model ID rather than being split into model plus `max` effort.
 
-For ChatGPT OAuth, GPT-5.6 Sol and Terra additionally expose `ultra`; Luna does not. Ultra is an effort, not the public OpenAI API's Pro reasoning mode.
+For ChatGPT OAuth, GPT-5.6 Sol, Terra, and Luna expose `low`, `medium`, `high`, `xhigh`, and `max`. Codex's product-level Ultra option is not an inference effort: the official client sends `max` and separately enables subagents, so it is not included in term-llm's effort suffixes.
 
 ### vLLM thinking suffixes
 

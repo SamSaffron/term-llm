@@ -101,7 +101,7 @@ serve:
 
 ## GPT-5.6 Responses controls
 
-The browser model picker reads `reasoning_efforts` and `reasoning_modes` from `GET /ui/v1/models`. For OpenAI API GPT-5.6 models it shows a **Standard / Pro** selector and sends the selection as `reasoning.mode`. The selector is hidden for unsupported models; switching to one clears a stale Pro selection. ChatGPT's `ultra` remains an effort in the effort picker and is not presented as Pro mode.
+The browser model picker reads `reasoning_efforts` and `reasoning_modes` from `GET /ui/v1/models`. For OpenAI API GPT-5.6 models it shows a **Standard / Pro** selector and sends the selection as `reasoning.mode`. The selector is hidden for unsupported models; switching to one clears a stale Pro selection. Codex's product-level Ultra option is not shown as an effort because its inference request uses `max` and separately enables subagents.
 
 API clients can send GPT-5.6 advanced controls to `POST /ui/v1/responses`:
 
@@ -154,7 +154,7 @@ Programmatic tool calling is requested with an eligible function tool plus the P
 
 Every programmatic tool must be present in the request. Optional `output_schema` metadata is preserved for tool definitions.
 
-These fields are deliberately gated to the built-in `openai` provider's GPT-5.6 family. Requests using older OpenAI models, custom OpenAI-compatible providers, or ChatGPT OAuth fail validation instead of forwarding unsupported controls. OpenAI Pro and ChatGPT Ultra are distinct: do not send `reasoning.mode: pro` merely because a ChatGPT account has Pro subscription access or a model supports the `ultra` effort.
+These fields are deliberately gated to the built-in `openai` provider's GPT-5.6 family. Requests using older OpenAI models, custom OpenAI-compatible providers, or ChatGPT OAuth fail validation instead of forwarding unsupported controls. Do not send `reasoning.mode: pro` merely because a ChatGPT account has Pro subscription access. Likewise, Codex Ultra is a product-level multi-agent option, not a `reasoning.effort` wire value.
 
 Opaque provider replay items used to continue stateless Responses turns are persisted internally but never rendered in the browser or included in session exports.
 

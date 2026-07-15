@@ -91,7 +91,12 @@ func TestChatGPTListModelsFallsBackToStaleCache(t *testing.T) {
 	if err := saveChatGPTModelsCache(chatGPTModelsCache{
 		FetchedAt:     time.Now().Add(-time.Hour),
 		ClientVersion: chatGPTModelsClientVersion,
-		Models:        []ModelInfo{{ID: "gpt-5.5", ServiceTiers: []ModelServiceTier{{ID: ServiceTierFast}}}},
+		Models: []ModelInfo{{
+			ID:                     "gpt-5.5",
+			ServiceTiers:           []ModelServiceTier{{ID: ServiceTierFast}},
+			ReasoningEfforts:       []string{"medium", "max", "ultra"},
+			DefaultReasoningEffort: "ultra",
+		}},
 	}); err != nil {
 		t.Fatalf("save cache: %v", err)
 	}
@@ -115,6 +120,12 @@ func TestChatGPTListModelsFallsBackToStaleCache(t *testing.T) {
 	}
 	if len(models) != 1 || models[0].ID != "gpt-5.5" {
 		t.Fatalf("unexpected stale models: %#v", models)
+	}
+	if want := []string{"medium", "max"}; !equalSlice(models[0].ReasoningEfforts, want) {
+		t.Fatalf("stale ReasoningEfforts = %v, want %v", models[0].ReasoningEfforts, want)
+	}
+	if models[0].DefaultReasoningEffort != "max" {
+		t.Fatalf("stale DefaultReasoningEffort = %q, want max", models[0].DefaultReasoningEffort)
 	}
 }
 
@@ -144,7 +155,7 @@ func TestChatGPTModelInfoDecodesReasoningMetadata(t *testing.T) {
 	if got.ID != "gpt-5.6-sol" || got.DisplayName != "GPT-5.6 Sol" || got.InputLimit != 372_000 {
 		t.Fatalf("model identity/limit = %#v", got)
 	}
-	wantEfforts := []string{"low", "medium", "ultra"}
+	wantEfforts := []string{"low", "medium", "max"}
 	if !equalSlice(got.ReasoningEfforts, wantEfforts) {
 		t.Fatalf("ReasoningEfforts = %v, want %v", got.ReasoningEfforts, wantEfforts)
 	}

@@ -209,9 +209,34 @@ func (m chatGPTModelInfo) toModelInfo() ModelInfo {
 		OutputPrice:            -1,
 		ServiceTiers:           m.ServiceTiers,
 		AdditionalSpeedTiers:   m.AdditionalSpeedTiers,
-		ReasoningEfforts:       append([]string(nil), m.SupportedReasoningLevels...),
-		DefaultReasoningEffort: firstNonEmpty(m.DefaultReasoningEffort, m.DefaultReasoningLevel),
+		ReasoningEfforts:       chatGPTWireReasoningEfforts(m.SupportedReasoningLevels),
+		DefaultReasoningEffort: chatGPTWireReasoningEffort(firstNonEmpty(m.DefaultReasoningEffort, m.DefaultReasoningLevel)),
 	}
+}
+
+// Ultra is a Codex product mode that combines max effort with subagents. It is
+// not an inference API effort, so expose the max wire value to term-llm's
+// effort-only selectors instead.
+func chatGPTWireReasoningEffort(effort string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "ultra" {
+		return "max"
+	}
+	return effort
+}
+
+func chatGPTWireReasoningEfforts(efforts []string) []string {
+	seen := make(map[string]bool, len(efforts))
+	out := make([]string, 0, len(efforts))
+	for _, effort := range efforts {
+		effort = chatGPTWireReasoningEffort(effort)
+		if effort == "" || seen[effort] {
+			continue
+		}
+		seen[effort] = true
+		out = append(out, effort)
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {
@@ -258,6 +283,10 @@ func loadChatGPTModelsCache(expectedVersion string) (chatGPTModelsCache, error) 
 	}
 	if len(cache.Models) == 0 {
 		return chatGPTModelsCache{}, fmt.Errorf("cached ChatGPT model metadata is empty")
+	}
+	for i := range cache.Models {
+		cache.Models[i].ReasoningEfforts = chatGPTWireReasoningEfforts(cache.Models[i].ReasoningEfforts)
+		cache.Models[i].DefaultReasoningEffort = chatGPTWireReasoningEffort(cache.Models[i].DefaultReasoningEffort)
 	}
 	return cache, nil
 }

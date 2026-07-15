@@ -84,7 +84,7 @@ If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provid
 
 ```bash
 term-llm ask --provider chatgpt "explain this code"
-term-llm ask --provider chatgpt:gpt-5.6-sol-ultra "hard code question"
+term-llm ask --provider chatgpt:gpt-5.6-sol-max "hard code question"
 term-llm ask --provider chatgpt:gpt-5.6-luna-medium "quick code question"
 term-llm image --provider chatgpt:gpt-5.4 "storybook fox in the snow"
 ```
@@ -106,9 +106,9 @@ providers:
     use_websocket: true
 ```
 
-The ChatGPT default pins Sol to medium effort. Its live model catalog supplies current limits and supported efforts; the static GPT-5.6 fallback is 372K effective input and 128K output. Sol and Terra support `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; Luna supports the same set without `ultra` and keeps its upstream medium default.
+The ChatGPT default pins Sol to medium effort. Its live model catalog supplies current limits and supported efforts; the static GPT-5.6 fallback is 372K effective input and 128K output. Sol, Terra, and Luna support `low`, `medium`, `high`, `xhigh`, and `max`, with Luna keeping its upstream medium default.
 
-ChatGPT `ultra` is an effort, not OpenAI public-API `reasoning.mode: pro`. The ChatGPT OAuth backend does not receive the public API's Pro, hosted multi-agent, programmatic-tool-calling, or prompt-cache control fields. `service_tier: fast` is a user-facing alias for the upstream `priority` tier; omit it to send no tier.
+Codex's product-level **Ultra** option combines `max` effort with subagents; it is not an inference API effort and term-llm does not show it in the effort selector. The ChatGPT OAuth backend also does not receive the public API's Pro, hosted multi-agent, programmatic-tool-calling, or prompt-cache control fields. `service_tier: fast` is a user-facing alias for the upstream `priority` tier; omit it to send no tier.
 
 ### Option 4: Use xAI (Grok)
 

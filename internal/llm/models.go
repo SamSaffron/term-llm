@@ -64,9 +64,9 @@ var ProviderModels = map[string][]ModelEntry{
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth. These are static fallback
 		// capabilities; live /codex/models metadata takes precedence in clients.
-		{ID: "gpt-5.6-sol", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTSolTerraEffortVariants},
-		{ID: "gpt-5.6-terra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTSolTerraEffortVariants},
-		{ID: "gpt-5.6-luna", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTLunaEffortVariants},
+		{ID: "gpt-5.6-sol", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
+		{ID: "gpt-5.6-terra", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
+		{ID: "gpt-5.6-luna", InputLimit: 372_000, OutputLimit: 128_000, ReasoningEfforts: gpt56ChatGPTEffortVariants},
 		{ID: "gpt-5.5", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
 		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
@@ -318,8 +318,7 @@ var ImageProviderModels = map[string][]string{
 var defaultEffortVariants = []string{"minimal", "low", "medium", "high", "xhigh"}
 
 var gpt56OpenAIEffortVariants = []string{"none", "low", "medium", "high", "xhigh", "max"}
-var gpt56ChatGPTSolTerraEffortVariants = []string{"low", "medium", "high", "xhigh", "max", "ultra"}
-var gpt56ChatGPTLunaEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
+var gpt56ChatGPTEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 
 var claudeBinOpusEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeBinSonnetEffortVariants = []string{"low", "medium", "high"}
@@ -399,11 +398,8 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 			return cloneEfforts(defaultEffortVariants)
 		}
 	case "chatgpt":
-		if nameLower == "gpt-5.6-sol" || nameLower == "gpt-5.6-terra" {
-			return cloneEfforts(gpt56ChatGPTSolTerraEffortVariants)
-		}
-		if nameLower == "gpt-5.6-luna" {
-			return cloneEfforts(gpt56ChatGPTLunaEffortVariants)
+		if isGPT56Model(nameLower) {
+			return cloneEfforts(gpt56ChatGPTEffortVariants)
 		}
 		if strings.HasPrefix(nameLower, "gpt-5") && !strings.HasSuffix(nameLower, "-codex-max") {
 			return cloneEfforts(defaultEffortVariants)
@@ -457,7 +453,7 @@ func isGPT56Model(model string) bool {
 
 // SupportsReasoningMode reports whether a provider/model accepts the public
 // Responses API reasoning.mode control. ChatGPT OAuth intentionally returns
-// false: its Codex backend exposes Ultra as an effort and rejects Pro mode.
+// false because its Codex backend rejects public-API reasoning modes.
 func SupportsReasoningMode(provider, model string) bool {
 	providerType := resolveProviderType(strings.ToLower(strings.TrimSpace(provider)))
 	if providerType != "openai" {
@@ -487,6 +483,16 @@ func BaseModelAndEffortForProvider(provider, model string) (base string, effort 
 
 	if cfgBase, cfgEffort, _ := configBaseModelAndEffortForProvider(provider, model); cfgBase != "" {
 		return cfgBase, cfgEffort
+	}
+
+	// Older term-llm versions exposed Codex Ultra as an effort suffix even
+	// though the inference request uses max. Migrate persisted selections to
+	// the valid wire effort instead of treating the stale suffix as a model ID.
+	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "chatgpt" && strings.HasSuffix(model, "-ultra") {
+		candidate := strings.TrimSuffix(model, "-ultra")
+		if isGPT56Model(candidate) {
+			return candidate, "max"
+		}
 	}
 
 	entries := resolveProviderModelEntries(provider)
@@ -621,7 +627,7 @@ func trimKnownEffortSuffix(model string) (string, bool) {
 // across providers. It is a parser/legacy-dedup helper, not a capability list
 // for every model. Provider-aware callers should use
 // BaseModelAndEffortForProvider / ReasoningEffortsForProviderModel instead.
-var knownEffortSuffixes = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+var knownEffortSuffixes = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // DedupeEffortVariants removes effort-suffixed aliases (e.g. "opus-high",
 // "gpt-5.4-medium") when the base model is also present in the list.

@@ -245,8 +245,8 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		return nil, err
 	}
 
-	// Build tools. ChatGPT Ultra remains an effort; no public-API Pro or
-	// multi-agent/PTC/cache controls are synthesized for the Codex backend.
+	// Build tools. Public-API Pro and advanced Responses controls are not
+	// synthesized for the ChatGPT Codex backend.
 	tools := BuildResponsesTools(req.Tools)
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)

@@ -286,8 +286,8 @@ func TestReasoningEffortsForProviderModel(t *testing.T) {
 		{"openai", "gpt-5.4-high", []string{"minimal", "low", "medium", "high", "xhigh"}},
 		{"openai", "gpt-5.6-sol", []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{"openai", "gpt-5.6-sol-max", []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{"chatgpt", "gpt-5.6-sol", []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
-		{"chatgpt", "gpt-5.6-terra-ultra", []string{"low", "medium", "high", "xhigh", "max", "ultra"}},
+		{"chatgpt", "gpt-5.6-sol", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"chatgpt", "gpt-5.6-terra-max", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"chatgpt", "gpt-5.6-luna", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-opus-4-8", []string{"low", "medium", "high", "xhigh", "max"}},
 		{"anthropic", "claude-opus-4-8-max", []string{"low", "medium", "high", "xhigh", "max"}},
@@ -317,6 +317,15 @@ func TestReasoningEffortsAreProviderSpecific(t *testing.T) {
 	}
 	if got := ReasoningEffortsForProviderModel("claude-bin", "sonnet"); containsModelID(got, "max") || containsModelID(got, "xhigh") {
 		t.Fatalf("claude-bin:sonnet efforts unexpectedly include opus-only levels: %v", got)
+	}
+}
+
+func TestBaseModelAndEffortForProviderMigratesChatGPTUltraToMax(t *testing.T) {
+	t.Parallel()
+
+	base, effort := BaseModelAndEffortForProvider("chatgpt", "gpt-5.6-sol-ultra")
+	if base != "gpt-5.6-sol" || effort != "max" {
+		t.Fatalf("BaseModelAndEffortForProvider() = (%q, %q), want (%q, %q)", base, effort, "gpt-5.6-sol", "max")
 	}
 }
 

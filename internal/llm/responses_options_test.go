@@ -48,7 +48,7 @@ func TestValidateResponsesOptionsGPT56ProviderGating(t *testing.T) {
 		{name: "OpenAI Sol", provider: "openai", model: "gpt-5.6-sol", wantErr: false},
 		{name: "OpenAI variant effort suffix", provider: "openai", model: "gpt-5.6-terra-max", wantErr: false},
 		{name: "older OpenAI", provider: "openai", model: "gpt-5.5", wantErr: true},
-		{name: "ChatGPT Ultra is not Pro", provider: "chatgpt", model: "gpt-5.6-sol-ultra", wantErr: true},
+		{name: "ChatGPT does not support Pro", provider: "chatgpt", model: "gpt-5.6-sol-max", wantErr: true},
 		{name: "compatible provider", provider: "openai-compatible", model: "gpt-5.6-sol", wantErr: true},
 	}
 	for _, tt := range tests {
