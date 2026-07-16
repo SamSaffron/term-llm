@@ -567,6 +567,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 func (m *Model) startStream(content string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.rootContext())
 	m.streamGeneration++
+	m.routedGeneration.Store(m.streamGeneration)
 	streamGeneration := m.streamGeneration
 	m.streamCancelFunc = cancel
 	m.setStreamCancelRequested(false)

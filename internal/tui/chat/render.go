@@ -1015,6 +1015,13 @@ func (m *Model) renderStatusLine() string {
 		conversationLabel = "side"
 	}
 	baseSegments = append(baseSegments, seg(successStyle.Render(conversationLabel), 0, true))
+	if conversationLabel == "side" && m.parentRuntimeStatus != "" {
+		parentStyle := mutedStyle
+		if strings.HasPrefix(m.parentRuntimeStatus, "needs") || m.parentRuntimeStatus == "failed" {
+			parentStyle = warningStyle
+		}
+		baseSegments = append(baseSegments, seg(parentStyle.Render("main: "+m.parentRuntimeStatus), 5, false))
+	}
 	if m.agentName != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(m.agentName), 0, true))
 	}

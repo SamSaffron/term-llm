@@ -119,6 +119,7 @@ type Model struct {
 	streamCancelFunc      context.CancelFunc
 	streamDone            chan struct{}       // closed when the engine goroutine exits
 	streamGeneration      uint64              // increments for each stream; used to ignore stale listener messages
+	routedGeneration      atomic.Uint64       // lock-free generation tag for callbacks outside the UI goroutine
 	streamCancelRequested *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
 	tracker               *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker       *ui.SubagentTracker // Subagent progress tracking
@@ -268,6 +269,9 @@ type Model struct {
 
 	// If set, the caller should relaunch chat with this session ID.
 	pendingResumeSessionID string
+	conversationNavigation bool
+	parentRuntimeStatus    string
+	runtimeCancel          context.CancelFunc
 
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string

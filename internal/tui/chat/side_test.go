@@ -56,6 +56,53 @@ func TestSideCommandsForkReturnAndCloseExplicitly(t *testing.T) {
 	}
 }
 
+func TestSideCommandsNavigateInProcessWhenHosted(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Path: t.TempDir() + "/sessions.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	parent := &session.Session{ID: "parent-hosted", Kind: session.KindRoot, Provider: "mock", Model: "model"}
+	if err := store.Create(context.Background(), parent); err != nil {
+		t.Fatal(err)
+	}
+	m := newCmdTestModel(store)
+	m.sess = parent
+	m.EnableConversationNavigation(true)
+	updated, cmd := m.ExecuteCommand("/side investigate")
+	got := updated.(*Model)
+	if got.quitting || got.pendingResumeSessionID != "" {
+		t.Fatalf("hosted /side requested relaunch: quitting=%v resume=%q", got.quitting, got.pendingResumeSessionID)
+	}
+	if cmd == nil {
+		t.Fatal("hosted /side returned no navigation command")
+	}
+	nav, ok := cmd().(ConversationNavigationMsg)
+	if !ok || nav.SessionID == "" || nav.AutoSend != "investigate" {
+		t.Fatalf("navigation = %#v", nav)
+	}
+
+	side, err := store.Get(context.Background(), nav.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sideModel := newCmdTestModel(store)
+	sideModel.sess = side
+	sideModel.EnableConversationNavigation(true)
+	updated, cmd = sideModel.ExecuteCommand("/main")
+	if updated.(*Model).quitting {
+		t.Fatal("hosted /main quit the TUI")
+	}
+	mainNav, ok := cmd().(ConversationNavigationMsg)
+	if !ok || mainNav.SessionID != parent.ID || mainNav.CloseID != "" {
+		t.Fatalf("/main navigation = %#v", mainNav)
+	}
+	refreshed, _ := store.Get(context.Background(), side.ID)
+	if refreshed.SideState != session.SideOpen {
+		t.Fatal("/main implicitly closed side")
+	}
+}
+
 func TestSideBuildMessagesIncludesHiddenInheritedContextAndPolicy(t *testing.T) {
 	m := newTestChatModel(false)
 	m.sess = &session.Session{ID: "side", Kind: session.KindSide, SideState: session.SideOpen}

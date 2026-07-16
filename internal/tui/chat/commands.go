@@ -397,6 +397,8 @@ func isStreamingLocalSlashCommand(input string) bool {
 		"pro":       true,
 		"title":     true,
 		"autotitle": true,
+		"side":      true,
+		"main":      true,
 	}
 	return localCommands[name]
 }
@@ -561,6 +563,9 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 		if err := sideStore.CloseSide(context.Background(), open.ID); err != nil {
 			return m.showSystemMessage(fmt.Sprintf("Could not close side conversation: %v", err))
 		}
+		if m.conversationNavigation {
+			return m, func() tea.Msg { return ConversationNavigationMsg{CloseID: open.ID} }
+		}
 		return m.showSystemMessage("Side conversation closed.")
 	}
 	if m.sess.Kind == session.KindSide {
@@ -597,6 +602,10 @@ func (m *Model) cmdMain(closeSide bool) (tea.Model, tea.Cmd) {
 		}
 		if err := sideStore.CloseSide(context.Background(), m.sess.ID); err != nil && err != session.ErrSideClosed {
 			return m.showSystemMessage(fmt.Sprintf("Could not close side conversation: %v", err))
+		}
+		if m.conversationNavigation {
+			parentID, sideID := m.sess.ParentID, m.sess.ID
+			return m, func() tea.Msg { return ConversationNavigationMsg{SessionID: parentID, CloseID: sideID} }
 		}
 	}
 	return m.requestResumeSession(m.sess.ParentID)

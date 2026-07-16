@@ -176,6 +176,14 @@ func TestFilterCommandsMatchesEffort(t *testing.T) {
 	}
 }
 
+func TestStreamingLocalSlashCommandIncludesConversationNavigation(t *testing.T) {
+	for _, command := range []string{"/side investigate", "/main", "/side close"} {
+		if !isStreamingLocalSlashCommand(command) {
+			t.Fatalf("expected %s to be handled locally while streaming", command)
+		}
+	}
+}
+
 func TestStreamingLocalSlashCommandIncludesEffort(t *testing.T) {
 	if !isStreamingLocalSlashCommand("/effort high") {
 		t.Fatal("expected /effort to be handled locally while streaming")
