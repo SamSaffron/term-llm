@@ -305,6 +305,135 @@ func TestJobsV2ManualTriggerAndCancel(t *testing.T) {
 	}
 }
 
+func TestJobsV2CancelRunAfterClaimedToRunningTransition(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "cancel-claimed-race",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunClaimed, run.ID, jobsV2RunQueued); err != nil {
+		t.Fatalf("mark run claimed: %v", err)
+	}
+
+	runnerStarted := make(chan struct{})
+	cancelObserved := make(chan struct{})
+	releaseRunner := make(chan struct{})
+	runnerDone := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseRunner:
+		default:
+			close(releaseRunner)
+		}
+	}()
+	mgr.runners[jobsV2RunnerProgram] = jobsV2RunnerFunc(func(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+		close(runnerStarted)
+		<-ctx.Done()
+		close(cancelObserved)
+		<-releaseRunner
+		return jobsV2RunResult{}, ctx.Err()
+	})
+
+	go func() {
+		mgr.executeRun(run)
+		close(runnerDone)
+	}()
+	select {
+	case <-runnerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	cancelled, err := mgr.CancelRun(run.ID)
+	if err != nil {
+		t.Fatalf("CancelRun failed: %v", err)
+	}
+	if cancelled.Status != jobsV2RunCancelRequested {
+		t.Fatalf("cancelled status = %s, want %s", cancelled.Status, jobsV2RunCancelRequested)
+	}
+	select {
+	case <-cancelObserved:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not observe cancellation")
+	}
+
+	close(releaseRunner)
+	select {
+	case <-runnerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not finish")
+	}
+	finished, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if finished.Status != jobsV2RunCancelled {
+		t.Fatalf("finished status = %s, want %s", finished.Status, jobsV2RunCancelled)
+	}
+}
+
+func TestJobsV2CancelRunDoesNotOverrideCompletedRun(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "cancel-completion-race",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, time.Now().UTC(), run.ID, jobsV2RunQueued); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+
+	cancelCalled := false
+	mgr.mu.Lock()
+	mgr.cancels[run.ID] = func() { cancelCalled = true }
+	mgr.mu.Unlock()
+
+	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	completed, err := mgr.CancelRun(run.ID)
+	if err != nil {
+		t.Fatalf("CancelRun failed: %v", err)
+	}
+	if completed.Status != jobsV2RunSucceeded {
+		t.Fatalf("completed status = %s, want %s", completed.Status, jobsV2RunSucceeded)
+	}
+	if cancelCalled {
+		t.Fatal("cancel function called after run completed")
+	}
+}
+
 func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 0, nil)
 	if err != nil {

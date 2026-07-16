@@ -11,26 +11,29 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 )
 
 type sideQuestionRuntime struct {
-	mu            sync.Mutex
-	running       bool
-	generation    uint64
-	cancel        context.CancelFunc
-	done          chan struct{}
-	history       []sidequestion.Entry
-	mainSnapshot  []llm.Message
-	snapshotReady bool
-	context       []llm.Message
-	providerKey   string
-	model         string
-	question      string
-	response      string
-	synthetic     bool
-	usage         llm.Usage
-	lastError     string
+	mu              sync.Mutex
+	running         bool
+	generation      uint64
+	cancel          context.CancelFunc
+	done            chan struct{}
+	history         []sidequestion.Entry
+	mainSnapshot    []llm.Message
+	snapshotReady   bool
+	context         []llm.Message
+	providerKey     string
+	model           string
+	reasoningEffort string
+	reasoningMode   string
+	question        string
+	response        string
+	synthetic       bool
+	usage           llm.Usage
+	lastError       string
 }
 
 type sideQuestionView struct {
@@ -66,14 +69,23 @@ func (rt *serveRuntime) configureSideQuestionContext() {
 	rt.sideQuestion.mu.Unlock()
 }
 
-func (rt *serveRuntime) updateSideQuestionConfig(model string) {
-	if strings.TrimSpace(model) == "" {
+func (rt *serveRuntime) updateSideQuestionConfig(req llm.Request) {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
 		model = rt.defaultModel
+	}
+	effort := normalizeReasoningEffort(req.ReasoningEffort)
+	model, effort = normalizeProviderModelEffort(rt.providerKey, model, effort)
+	mode := ""
+	if req.Responses != nil {
+		mode = strings.TrimSpace(req.Responses.ReasoningMode)
 	}
 	rt.sideQuestion.mu.Lock()
 	rt.sideQuestion.context = rt.sideQuestionContext()
 	rt.sideQuestion.providerKey = rt.providerKey
 	rt.sideQuestion.model = model
+	rt.sideQuestion.reasoningEffort = effort
+	rt.sideQuestion.reasoningMode = mode
 	rt.sideQuestion.mu.Unlock()
 }
 
@@ -110,9 +122,25 @@ func (sq *sideQuestionRuntime) view() sideQuestionView {
 	}
 }
 
+const sideQuestionStopTimeout = 250 * time.Millisecond
+
+func waitForSideQuestion(done <-chan struct{}, timeout time.Duration) bool {
+	if done == nil {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func (sq *sideQuestionRuntime) cancelActive() {
 	sq.mu.Lock()
-	cancel := sq.cancel
+	cancel, done := sq.cancel, sq.done
 	sq.generation++
 	sq.running = false
 	sq.cancel = nil
@@ -122,6 +150,7 @@ func (sq *sideQuestionRuntime) cancelActive() {
 	if cancel != nil {
 		cancel()
 	}
+	_ = waitForSideQuestion(done, sideQuestionStopTimeout)
 }
 
 func (sq *sideQuestionRuntime) clearHistory() {
@@ -153,9 +182,7 @@ func (sq *sideQuestionRuntime) close(ctx context.Context) {
 }
 
 type sideQuestionStart struct {
-	Question        string `json:"question"`
-	Model           string `json:"model,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Question string `json:"question"`
 }
 
 func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQuestionEventMsg, error) {
@@ -172,11 +199,19 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 		sq.mu.Unlock()
 		return nil, errors.New("A side question is already running")
 	}
-	providerKey := sq.providerKey
-	model := strings.TrimSpace(input.Model)
-	if model == "" {
-		model = sq.model
+	if sq.done != nil {
+		select {
+		case <-sq.done:
+			sq.done = nil
+		default:
+			sq.mu.Unlock()
+			return nil, errors.New("The previous side question is still stopping")
+		}
 	}
+	providerKey := sq.providerKey
+	model := sq.model
+	reasoningEffort := sq.reasoningEffort
+	reasoningMode := sq.reasoningMode
 	sq.mu.Unlock()
 	provider, err := rt.sideProviderFactory(providerKey, model)
 	if err != nil {
@@ -210,8 +245,9 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 	sq.mu.Unlock()
 
 	req := llm.Request{
-		Model: model, ReasoningEffort: input.ReasoningEffort,
-		Messages: sidequestion.BuildMessages(snapshot, history, question),
+		Model: model, ReasoningEffort: reasoningEffort,
+		Messages:  sidequestion.BuildMessages(snapshot, history, question),
+		Responses: &llm.ResponsesOptions{ReasoningMode: reasoningMode},
 	}
 	go func() {
 		defer close(done)
@@ -232,9 +268,8 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 				}
 			}
 			sq.mu.Unlock()
-			select {
-			case events <- sideQuestionEventMsg{Generation: generation, Event: event}:
-			default:
+			if len(events) < cap(events)-1 {
+				events <- sideQuestionEventMsg{Generation: generation, Event: event}
 			}
 		})
 
@@ -260,10 +295,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 		}
 		sq.mu.Unlock()
 		if current {
-			select {
-			case events <- sideQuestionEventMsg{Generation: generation, Result: &result, Err: runErr}:
-			default:
-			}
+			events <- sideQuestionEventMsg{Generation: generation, Result: &result, Err: runErr}
 		}
 	}()
 	return events, nil
@@ -274,6 +306,62 @@ type sideQuestionEventMsg struct {
 	Event      llm.Event
 	Result     *sidequestion.Result
 	Err        error
+}
+
+func (s *serveServer) runtimeForSideQuestion(ctx context.Context, sessionID string) (*serveRuntime, error) {
+	rt, inMemory := s.sessionMgr.Get(sessionID)
+	if s.store == nil {
+		if !inMemory {
+			return nil, session.ErrNotFound
+		}
+		return rt, nil
+	}
+	meta, err := s.store.Get(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if meta == nil {
+		return nil, session.ErrNotFound
+	}
+	providerKey := strings.TrimSpace(meta.ProviderKey)
+	if providerKey == "" {
+		providerKey = resolveSessionProviderKey(s.cfgRef, meta)
+	}
+	model, effort := normalizeProviderModelEffort(providerKey, meta.Model, meta.ReasoningEffort)
+	mode, _, err := validateResponseReasoningMode(providerKey, model, meta.ReasoningMode, strings.TrimSpace(meta.ReasoningMode) != "")
+	if err != nil {
+		return nil, err
+	}
+	if !inMemory {
+		rt, _, err = s.runtimeForProviderModelRequest(ctx, sessionID, providerKey, model)
+		if err != nil {
+			return nil, err
+		}
+	}
+	storedMessages, err := s.store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("load session history: %w", err)
+	}
+	history := make([]llm.Message, 0, len(storedMessages))
+	for _, message := range storedMessages {
+		history = append(history, message.ToLLMMessage())
+	}
+	rt.sideQuestion.mu.Lock()
+	snapshotReady := rt.sideQuestion.snapshotReady
+	rt.sideQuestion.mu.Unlock()
+	rt.mu.Lock()
+	rt.sessionMeta = meta
+	if !snapshotReady {
+		rt.history = copyLLMMessageSlice(history)
+		rt.historyPersisted = true
+	}
+	rt.mu.Unlock()
+	rt.initializeSideQuestionSnapshot(history)
+	rt.updateSideQuestionConfig(llm.Request{
+		Model: model, ReasoningEffort: effort,
+		Responses: &llm.ResponsesOptions{ReasoningMode: mode},
+	})
+	return rt, nil
 }
 
 func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
@@ -291,26 +379,28 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 	}
 
 	if len(parts) == 2 && r.Method == http.MethodGet {
-		rt, ok := s.sessionMgr.Get(sessionID)
-		if !ok {
-			writeJSON(w, http.StatusOK, sideQuestionView{History: []sidequestion.Entry{}})
+		rt, err := s.runtimeForSideQuestion(r.Context(), sessionID)
+		if err != nil {
+			writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 			return
 		}
 		writeJSON(w, http.StatusOK, rt.sideQuestion.view())
 		return
 	}
 	if len(parts) == 3 && r.Method == http.MethodDelete {
-		rt, ok := s.sessionMgr.Get(sessionID)
-		if ok {
-			switch parts[2] {
-			case "active":
-				rt.sideQuestion.cancelActive()
-			case "history":
-				rt.sideQuestion.clearHistory()
-			default:
-				writeOpenAIError(w, http.StatusNotFound, "not_found_error", "not found")
-				return
-			}
+		rt, err := s.runtimeForSideQuestion(r.Context(), sessionID)
+		if err != nil {
+			writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+			return
+		}
+		switch parts[2] {
+		case "active":
+			rt.sideQuestion.cancelActive()
+		case "history":
+			rt.sideQuestion.clearHistory()
+		default:
+			writeOpenAIError(w, http.StatusNotFound, "not_found_error", "not found")
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -325,9 +415,15 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "question is required")
 		return
 	}
-	rt, err := s.sessionMgr.GetOrCreate(r.Context(), sessionID)
+	rt, err := s.runtimeForSideQuestion(r.Context(), sessionID)
 	if err != nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		status := http.StatusNotFound
+		errorType := "not_found_error"
+		if !errors.Is(err, session.ErrNotFound) {
+			status = http.StatusBadRequest
+			errorType = "invalid_request_error"
+		}
+		writeOpenAIError(w, status, errorType, err.Error())
 		return
 	}
 	events, err := rt.startSideQuestion(input)

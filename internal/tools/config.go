@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gobwas/glob"
 	"github.com/samsaffron/term-llm/internal/pathutil"
 )
 
@@ -213,7 +212,7 @@ func (c *ToolConfig) Validate() []error {
 
 	// Validate shell patterns
 	for _, pattern := range shellAllow {
-		if _, err := glob.Compile(pattern); err != nil {
+		if err := validateShellApprovalPattern(pattern); err != nil {
 			errs = append(errs, fmt.Errorf("invalid shell pattern %q: %w", pattern, err))
 		}
 	}

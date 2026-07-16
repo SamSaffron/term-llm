@@ -2018,17 +2018,39 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 }
 
 func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
-	run, err := m.GetRun(id)
-	if err != nil {
-		return jobsV2Run{}, err
-	}
 	now := time.Now().UTC()
-	switch run.Status {
-	case jobsV2RunQueued, jobsV2RunClaimed:
-		_, err = m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunCancelled, now, id)
+	var transitioned jobsV2RunStatus
+	err := m.db.QueryRow(`
+		UPDATE job_runs_v2
+		SET status = CASE
+				WHEN status IN (?, ?) THEN ?
+				ELSE ?
+			END,
+			finished_at = CASE
+				WHEN status IN (?, ?) THEN ?
+				ELSE finished_at
+			END,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND status IN (?, ?, ?)
+		RETURNING status`,
+		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunCancelled,
+		jobsV2RunCancelRequested,
+		jobsV2RunQueued, jobsV2RunClaimed, now,
+		id, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning,
+	).Scan(&transitioned)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A concurrent worker completed the run, or it was already terminal.
+		// Return that authoritative state without overwriting it.
+		return m.GetRun(id)
+	}
+	if err != nil {
+		return jobsV2Run{}, fmt.Errorf("cancel run: %w", err)
+	}
+
+	switch transitioned {
+	case jobsV2RunCancelled:
 		_ = m.addRunEvent(id, "cancelled", "run cancelled before start", nil)
-	case jobsV2RunRunning:
-		_, err = m.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunCancelRequested, id)
+	case jobsV2RunCancelRequested:
 		_ = m.addRunEvent(id, "cancel_requested", "cancellation requested", nil)
 		m.mu.Lock()
 		cancel := m.cancels[id]
@@ -2036,11 +2058,6 @@ func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
 		if cancel != nil {
 			cancel()
 		}
-	default:
-		return run, nil
-	}
-	if err != nil {
-		return jobsV2Run{}, err
 	}
 	return m.GetRun(id)
 }

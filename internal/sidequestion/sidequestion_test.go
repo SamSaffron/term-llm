@@ -53,6 +53,38 @@ func TestBuildMessagesRefreshesMainAndKeepsChronologicalHistory(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesPutsPolicyInLeadingDeveloperPosition(t *testing.T) {
+	got := BuildMessages([]llm.Message{
+		llm.SystemText("system"),
+		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "platform"}}},
+		llm.UserText("main question"),
+		llm.AssistantText("main answer"),
+	}, []Entry{{Question: "side one", Response: "side answer"}}, "side two")
+	wantRoles := []llm.Role{llm.RoleSystem, llm.RoleDeveloper, llm.RoleDeveloper, llm.RoleUser, llm.RoleAssistant, llm.RoleUser, llm.RoleAssistant, llm.RoleUser}
+	wantTexts := []string{"system", "platform", SystemPolicy, "main question", "main answer", "side one", "side answer", "side two"}
+	if len(got) != len(wantRoles) {
+		t.Fatalf("messages = %#v", got)
+	}
+	for i := range got {
+		if got[i].Role != wantRoles[i] || len(got[i].Parts) != 1 || got[i].Parts[0].Text != wantTexts[i] {
+			t.Fatalf("message %d = %#v, want role=%s text=%q", i, got[i], wantRoles[i], wantTexts[i])
+		}
+	}
+}
+
+func TestPrepareContextSnapshotRejectsMalformedToolOrdering(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "same"}}}},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "same", Name: "read"}}}},
+		{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "same"}}}},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "same", Name: "duplicate"}}}},
+	}
+	got := PrepareContextSnapshot(messages)
+	if len(got) != 2 || got[0].Parts[0].ToolCall == nil || got[1].Parts[0].ToolResult == nil {
+		t.Fatalf("malformed ordering was globally matched: %#v", got)
+	}
+}
+
 func TestAppendHistoryCapsAtTwenty(t *testing.T) {
 	var history []Entry
 	for i := 0; i < 25; i++ {

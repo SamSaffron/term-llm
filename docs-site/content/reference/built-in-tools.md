@@ -145,6 +145,8 @@ term-llm chat --tools read,write,edit --read-dir . --write-dir ./src
 term-llm chat --tools shell --shell-allow "git *" --shell-allow "npm test"
 ```
 
+Shell allowlists are matched command-by-command and word-by-word. A final standalone `*` allows any remaining arguments, while `*` inside an argument does not cross `/`; use `**` for recursive path segments. Every command in a compound expression must be covered by an allowlist pattern.
+
 When a tool needs access outside approved directories, term-llm prompts for approval with options:
 - **Proceed once**: Allow this specific action
 - **Proceed always**: Allow for this session (memory only)

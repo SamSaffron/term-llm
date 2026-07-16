@@ -104,6 +104,8 @@ Tools whose backing provider isn't configured are skipped with a warning.
 | `--yolo` | `false` | Auto-approve all tool operations |
 | `--debug` | `false` | Verbose HTTP request logging |
 
+Shell allow patterns are matched per command and shell word. A final standalone `*` allows remaining arguments. Within a word, `*` does not cross `/`; use `**` to match recursive path segments. Compound commands are allowed only when every command is covered.
+
 ## Edit format
 
 By default, the `edit_file` tool (find/replace) is exposed. If the connecting LLM handles unified diffs better, use `--edit-format diff` to swap it for the `unified_diff` tool instead. Only one edit tool is exposed at a time to avoid confusing the LLM.

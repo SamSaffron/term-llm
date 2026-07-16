@@ -2,7 +2,11 @@ package chat
 
 import (
 	"context"
+	"io"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -90,6 +94,104 @@ func TestLateSideGenerationIgnoredAndClearConfirmed(t *testing.T) {
 	_, _ = m.Update(tea.KeyPressMsg{Code: 'x'})
 	if len(m.sideQuestion.History) != 0 || m.sideQuestion.Visible {
 		t.Fatal("second x did not clear history")
+	}
+}
+
+func TestSideQuestionMirrorsMainReasoningRequestNotDisplayMode(t *testing.T) {
+	m := newTestChatModel(true)
+	m.modelName = "reasoning-model"
+	m.reasoningModeOverride = "expanded"
+	m.sess = &session.Session{ID: "main", ReasoningEffort: "high", ReasoningMode: "pro"}
+	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+	_, cmd := m.cmdSide("question")
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			break
+		}
+		cmd = m.updateSideQuestion(msg.(sideQuestionEventMsg))
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("requests = %d", len(provider.Requests))
+	}
+	req := provider.Requests[0]
+	if req.ReasoningEffort != "high" || req.ReasoningEffort == m.reasoningModeOverride || req.Responses == nil || req.Responses.ReasoningMode != "pro" {
+		t.Fatalf("side reasoning config = effort %q responses %#v", req.ReasoningEffort, req.Responses)
+	}
+}
+
+type stubbornTUISideProvider struct {
+	release chan struct{}
+	mu      sync.Mutex
+	starts  int
+}
+
+func (p *stubbornTUISideProvider) Name() string                   { return "stubborn" }
+func (p *stubbornTUISideProvider) Credential() string             { return "test" }
+func (p *stubbornTUISideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *stubbornTUISideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	p.mu.Lock()
+	p.starts++
+	p.mu.Unlock()
+	return &stubbornTUISideStream{release: p.release}, nil
+}
+
+type stubbornTUISideStream struct{ release <-chan struct{} }
+
+func (s *stubbornTUISideStream) Recv() (llm.Event, error) {
+	<-s.release
+	return llm.Event{}, io.EOF
+}
+func (*stubbornTUISideStream) Close() error { return nil }
+
+func TestSideCleanupIsBoundedAndPreventsStubbornRestartOverlap(t *testing.T) {
+	m := newTestChatModel(true)
+	provider := &stubbornTUISideProvider{release: make(chan struct{})}
+	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+	_, _ = m.cmdSide("first")
+	deadline := time.Now().Add(time.Second)
+	for {
+		provider.mu.Lock()
+		started := provider.starts
+		provider.mu.Unlock()
+		if started == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("provider did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	started := time.Now()
+	m.clearSideQuestionHistory()
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cleanup took %v", elapsed)
+	}
+	_, cmd := m.cmdSide("second")
+	if cmd != nil || m.sideQuestion.Err == nil || !strings.Contains(m.sideQuestion.Err.Error(), "still stopping") {
+		t.Fatalf("restart state: cmd=%v err=%v", cmd != nil, m.sideQuestion.Err)
+	}
+	provider.mu.Lock()
+	starts := provider.starts
+	provider.mu.Unlock()
+	if starts != 1 {
+		t.Fatalf("overlapping provider starts = %d", starts)
+	}
+	close(provider.release)
+}
+
+func TestSyntheticSideUsageSurvivesHistoryCleanupInSessionStats(t *testing.T) {
+	m := newTestChatModel(true)
+	m.sideQuestion.Generation = 1
+	m.sideQuestion.Running = true
+	m.updateSideQuestion(sideQuestionEventMsg{
+		generation: 1,
+		result:     &sidequestion.Result{Response: sidequestion.ToolAttemptResponse, Synthetic: true, Usage: llm.Usage{InputTokens: 7, OutputTokens: 3}},
+	})
+	m.clearSideQuestionHistory()
+	if m.stats == nil || m.stats.InputTokens != 7 || m.stats.OutputTokens != 3 {
+		t.Fatalf("side usage lost after cleanup: %#v", m.stats)
 	}
 }
 

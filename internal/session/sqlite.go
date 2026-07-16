@@ -254,7 +254,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 37
+const schemaVersion = 39
 
 // migration represents a schema migration.
 type migration struct {
@@ -1015,6 +1015,56 @@ var migrations = []migration{
 			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN share TEXT")
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
+			}
+			return nil
+		},
+	},
+	{
+		// Version 38 was briefly shipped by the persistent side-session rework.
+		// Reserve it so databases on the overlay implementation never reuse that
+		// version for a different schema.
+		version:     38,
+		description: "reserve retired persistent side-session schema version",
+		up:          func(schemaExecutor) error { return nil },
+	},
+	{
+		version:     39,
+		description: "remove retired persistent side sessions",
+		up: func(db schemaExecutor) error {
+			rows, err := db.Query("PRAGMA table_info(sessions)")
+			if err != nil {
+				return err
+			}
+			hasKind := false
+			for rows.Next() {
+				var cid int
+				var name, columnType string
+				var notNull, primaryKey int
+				var defaultValue any
+				if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+					rows.Close()
+					return err
+				}
+				if name == "kind" {
+					hasKind = true
+				}
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			if hasKind {
+				if _, err := db.Exec("DELETE FROM sessions WHERE kind = 'side'"); err != nil {
+					return err
+				}
+			}
+			for _, stmt := range []string{
+				"DROP TABLE IF EXISTS side_context_messages",
+				"DROP INDEX IF EXISTS idx_sessions_one_open_side",
+				"DROP INDEX IF EXISTS idx_sessions_root_kind",
+			} {
+				if _, err := db.Exec(stmt); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

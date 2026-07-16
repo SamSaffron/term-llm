@@ -301,7 +301,7 @@ func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	// Option: Allow this specific command (session only)
 	options = append(options, ApprovalOption{
 		Label:       "Allow this specific command",
-		Description: "Approve exact command above (session only)",
+		Description: "Approve exact command in the current working directory (session only)",
 		Choice:      ApprovalChoiceCommand,
 		Pattern:     command,
 		SaveToRepo:  false,

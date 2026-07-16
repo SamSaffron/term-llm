@@ -934,7 +934,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	baseHistory := make([]llm.Message, len(rt.history))
 	copy(baseHistory, rt.history)
 	rt.initializeSideQuestionSnapshot(baseHistory)
-	rt.updateSideQuestionConfig(req.Model)
+	rt.updateSideQuestionConfig(req)
 	replacingExistingHistory := replaceHistory && len(baseHistory) > 0
 	replaceHistoryBackup := baseHistory
 	replaceUsageBackup := rt.cumulativeUsage
@@ -1532,7 +1532,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		rt.history = newHistory
 		rt.historyPersisted = false
 		rt.refreshSideQuestionSnapshot(newHistory)
-		rt.updateSideQuestionConfig(req.Model)
+		rt.updateSideQuestionConfig(req)
 	}
 	needFinalSnapshot = false
 	if persisted {

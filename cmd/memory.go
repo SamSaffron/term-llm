@@ -58,30 +58,68 @@ func init() {
 	memoryCmd.AddCommand(memoryInsightsCmd)
 }
 
-func openMemoryStore() (*memorydb.Store, error) {
-	if dbEnv := os.Getenv("TERM_LLM_MEMORY_DB"); dbEnv != "" {
-		if memoryDBPath == defaultMemoryDBPath {
-			memoryDBPath = dbEnv
-		}
+type imageRecordStore interface {
+	tools.ImageRecorder
+	Close() error
+}
+
+type imageRecordStoreOpener func(path string) (imageRecordStore, error)
+
+type lazyImageRecorder struct {
+	path string
+	open imageRecordStoreOpener
+}
+
+func (r *lazyImageRecorder) RecordImage(ctx context.Context, record *memorydb.ImageRecord) error {
+	store, err := r.open(r.path)
+	if err != nil {
+		return err
 	}
-	store, err := memorydb.NewStore(memorydb.Config{Path: memoryDBPath})
+	defer store.Close()
+	return store.RecordImage(ctx, record)
+}
+
+func resolvedMemoryDBPath() string {
+	if dbEnv := os.Getenv("TERM_LLM_MEMORY_DB"); dbEnv != "" && memoryDBPath == defaultMemoryDBPath {
+		return dbEnv
+	}
+	return memoryDBPath
+}
+
+func openMemoryStoreAtPath(path string) (*memorydb.Store, error) {
+	store, err := memorydb.NewStore(memorydb.Config{Path: path})
 	if err != nil {
 		return nil, fmt.Errorf("open memory store: %w", err)
 	}
 	return store, nil
 }
 
-// wireImageRecorder opens the memory store and attaches it to the registry as an image recorder.
-// Non-fatal: if the store cannot be opened, image generation still works normally.
+func openMemoryStore() (*memorydb.Store, error) {
+	return openMemoryStoreAtPath(resolvedMemoryDBPath())
+}
+
+func openImageRecordStore(path string) (imageRecordStore, error) {
+	return openMemoryStoreAtPath(path)
+}
+
+// wireImageRecorder attaches a recorder that opens the memory store only when
+// an image is generated, then closes it after recording. Recording remains
+// non-fatal if the store cannot be opened.
 func wireImageRecorder(registry *tools.LocalToolRegistry, agent, sessionID string) {
+	wireImageRecorderWithOpener(registry, agent, sessionID, openImageRecordStore)
+}
+
+func wireImageRecorderWithOpener(registry *tools.LocalToolRegistry, agent, sessionID string, open imageRecordStoreOpener) {
 	if registry == nil {
 		return
 	}
-	store, err := openMemoryStore()
-	if err != nil {
-		return
+	recorder := &lazyImageRecorder{
+		// Runtime setup has already applied flags and environment overrides. Keep
+		// that selected path stable for the lifetime of this registry.
+		path: resolvedMemoryDBPath(),
+		open: open,
 	}
-	registry.SetImageRecorder(store, agent, sessionID)
+	registry.SetImageRecorder(recorder, agent, sessionID)
 }
 
 func recordImageDirect(cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {

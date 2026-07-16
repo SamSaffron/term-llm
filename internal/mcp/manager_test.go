@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -20,6 +22,10 @@ const runMCPManagerTestServerEnv = "TERM_LLM_MCP_MANAGER_TEST_SERVER"
 
 type managerTestGreetingParams struct {
 	Name string `json:"name"`
+}
+
+type managerTestBlockingParams struct {
+	StartedPath string `json:"started_path"`
 }
 
 func TestMain(m *testing.M) {
@@ -54,6 +60,13 @@ func runMCPManagerTestServer() {
 			Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: "tool failed"}},
 			IsError: true,
 		}, nil, nil
+	})
+	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "blocking", Description: "block until the request is cancelled"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args managerTestBlockingParams) (*mcpSDK.CallToolResult, any, error) {
+		if err := os.WriteFile(args.StartedPath, nil, 0600); err != nil {
+			return nil, nil, err
+		}
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
 	})
 	if err := server.Run(context.Background(), &mcpSDK.StdioTransport{}); err != nil {
 		log.Fatal(err)
@@ -235,6 +248,63 @@ func TestManagerDisable_CancelsInFlightStartup(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("status error after canceled startup settled = %v, want nil", err)
+	}
+}
+
+func TestManagerCallToolConcurrentDisable(t *testing.T) {
+	manager := NewManager()
+	manager.config = &Config{Servers: map[string]ServerConfig{
+		"blocking": {
+			Command: os.Args[0],
+			Env: map[string]string{
+				runMCPManagerTestServerEnv: "1",
+			},
+		},
+	}}
+	defer manager.StopAll()
+
+	if err := manager.Enable(context.Background(), "blocking"); err != nil {
+		t.Fatalf("Enable returned error: %v", err)
+	}
+	status, err := waitForServerStatus(t, manager, "blocking", StatusReady, 3*time.Second)
+	if status != StatusReady || err != nil {
+		t.Fatalf("server status = %s, error = %v; want ready", status, err)
+	}
+
+	startedPath := filepath.Join(t.TempDir(), "started")
+	args, err := json.Marshal(managerTestBlockingParams{StartedPath: startedPath})
+	if err != nil {
+		t.Fatalf("marshal blocking args: %v", err)
+	}
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := manager.CallTool(context.Background(), "blocking__blocking", args)
+		callDone <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(startedPath); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("stat blocking call marker: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("tool call did not reach the server")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := manager.Disable("blocking"); err != nil {
+		t.Fatalf("Disable returned error: %v", err)
+	}
+	select {
+	case err := <-callDone:
+		if err == nil {
+			t.Fatal("in-flight CallTool returned nil error after disable")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight CallTool did not return after disable")
 	}
 }
 

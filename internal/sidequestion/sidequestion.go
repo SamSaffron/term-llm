@@ -39,41 +39,47 @@ type Result struct {
 // removes cache anchors and incomplete tool protocol fragments.
 func PrepareContextSnapshot(messages []llm.Message) []llm.Message {
 	copied := deepCopyMessages(messages)
-	calls := make(map[string]struct{})
-	results := make(map[string]struct{})
-	for _, msg := range copied {
-		for _, part := range msg.Parts {
-			if part.ToolCall != nil && strings.TrimSpace(part.ToolCall.ID) != "" {
-				calls[part.ToolCall.ID] = struct{}{}
+	type position struct{ message, part int }
+	pending := make(map[string]position)
+	seen := make(map[string]struct{})
+	complete := make(map[position]struct{})
+	for messageIndex, msg := range copied {
+		for partIndex, part := range msg.Parts {
+			pos := position{messageIndex, partIndex}
+			switch {
+			case part.ToolCall != nil:
+				id := strings.TrimSpace(part.ToolCall.ID)
+				if id == "" {
+					continue
+				}
+				if _, duplicate := seen[id]; duplicate {
+					continue
+				}
+				seen[id] = struct{}{}
+				pending[id] = pos
+			case part.ToolResult != nil:
+				id := strings.TrimSpace(part.ToolResult.ID)
+				callPos, ok := pending[id]
+				if !ok {
+					continue
+				}
+				complete[callPos] = struct{}{}
+				complete[pos] = struct{}{}
+				delete(pending, id)
 			}
-			if part.ToolResult != nil && strings.TrimSpace(part.ToolResult.ID) != "" {
-				results[part.ToolResult.ID] = struct{}{}
-			}
-		}
-	}
-	complete := make(map[string]struct{})
-	for id := range calls {
-		if _, ok := results[id]; ok {
-			complete[id] = struct{}{}
 		}
 	}
 	out := make([]llm.Message, 0, len(copied))
-	for _, msg := range copied {
+	for messageIndex, msg := range copied {
 		if msg.Role == llm.RoleEvent {
 			continue
 		}
 		msg.CacheAnchor = false
 		partial := false
 		parts := make([]llm.Part, 0, len(msg.Parts))
-		for _, part := range msg.Parts {
-			if part.ToolCall != nil {
-				if _, ok := complete[part.ToolCall.ID]; !ok {
-					partial = true
-					continue
-				}
-			}
-			if part.ToolResult != nil {
-				if _, ok := complete[part.ToolResult.ID]; !ok {
+		for partIndex, part := range msg.Parts {
+			if part.ToolCall != nil || part.ToolResult != nil {
+				if _, ok := complete[position{messageIndex, partIndex}]; !ok {
 					partial = true
 					continue
 				}
@@ -119,8 +125,14 @@ func deepCopyMessages(messages []llm.Message) []llm.Message {
 }
 
 func BuildMessages(snapshot []llm.Message, history []Entry, question string) []llm.Message {
-	messages := append([]llm.Message(nil), PrepareContextSnapshot(snapshot)...)
+	snapshot = PrepareContextSnapshot(snapshot)
+	leading := 0
+	for leading < len(snapshot) && (snapshot[leading].Role == llm.RoleSystem || snapshot[leading].Role == llm.RoleDeveloper) {
+		leading++
+	}
+	messages := append([]llm.Message(nil), snapshot[:leading]...)
 	messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: SystemPolicy}}})
+	messages = append(messages, snapshot[leading:]...)
 	for _, entry := range history {
 		messages = append(messages, llm.UserText(entry.Question), llm.AssistantText(entry.Response))
 	}

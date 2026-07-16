@@ -16,6 +16,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 )
 
+const sideQuestionStopTimeout = 250 * time.Millisecond
+
 type SideQuestionState struct {
 	Visible      bool
 	Running      bool
@@ -25,6 +27,7 @@ type SideQuestionState struct {
 	Selected     int
 	History      []sidequestion.Entry
 	Cancel       context.CancelFunc
+	Done         chan struct{}
 	Generation   uint64
 	Usage        llm.Usage
 	Err          error
@@ -76,6 +79,16 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 		m.sideQuestion.Err = errors.New("A side question is already running")
 		return m, nil
 	}
+	if m.sideQuestion.Done != nil {
+		select {
+		case <-m.sideQuestion.Done:
+			m.sideQuestion.Done = nil
+		default:
+			m.sideQuestion.Visible = true
+			m.sideQuestion.Err = errors.New("The previous side question is still stopping")
+			return m, nil
+		}
+	}
 	if m.sideProviderFactory == nil {
 		return m.showSystemMessage("Side questions are unavailable for this runtime")
 	}
@@ -98,14 +111,24 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	m.sideQuestion.ConfirmClear = false
 	m.sideQuestion.Selected = len(m.sideQuestion.History)
 	m.sideQuestion.events = make(chan sideQuestionEventMsg, 64)
+	done := make(chan struct{})
+	m.sideQuestion.Done = done
 	events := m.sideQuestion.events
 	history := append([]sidequestion.Entry(nil), m.sideQuestion.History...)
+	reasoningEffort := ""
+	reasoningMode := ""
+	if m.sess != nil {
+		reasoningEffort = strings.TrimSpace(m.sess.ReasoningEffort)
+		reasoningMode = strings.TrimSpace(m.sess.ReasoningMode)
+	}
 	req := llm.Request{
 		Model:           m.modelName,
 		Messages:        sidequestion.BuildMessages(m.sideSnapshot(), history, question),
-		ReasoningEffort: m.reasoningModeOverride,
+		ReasoningEffort: reasoningEffort,
+		Responses:       &llm.ResponsesOptions{ReasoningMode: reasoningMode},
 	}
 	go func() {
+		defer close(done)
 		defer close(events)
 		defer func() {
 			if cleaner, ok := provider.(llm.ProviderCleaner); ok {
@@ -113,9 +136,8 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 			}
 		}()
 		result, runErr := sidequestion.Run(ctx, provider, req, func(event llm.Event) {
-			select {
-			case events <- sideQuestionEventMsg{generation: generation, event: event}:
-			case <-ctx.Done():
+			if len(events) < cap(events)-1 {
+				events <- sideQuestionEventMsg{generation: generation, event: event}
 			}
 		})
 		select {
@@ -156,6 +178,9 @@ func (m *Model) updateSideQuestion(msg sideQuestionEventMsg) tea.Cmd {
 		m.sideQuestion.Response.WriteString(msg.result.Response)
 		m.sideQuestion.Synthetic = msg.result.Synthetic
 		m.sideQuestion.Usage = msg.result.Usage
+		if m.stats != nil {
+			m.stats.AddUsage(msg.result.Usage.InputTokens, msg.result.Usage.OutputTokens, msg.result.Usage.CachedInputTokens, msg.result.Usage.CacheWriteTokens)
+		}
 		if !msg.result.Synthetic && strings.TrimSpace(msg.result.Response) != "" {
 			m.sideQuestion.History = sidequestion.AppendHistory(m.sideQuestion.History, sidequestion.Entry{
 				Question: m.sideQuestion.Question, Response: msg.result.Response,
@@ -181,8 +206,18 @@ func (m *Model) updateSideQuestion(msg sideQuestionEventMsg) tea.Cmd {
 }
 
 func (m *Model) cancelSideQuestion() {
-	if m.sideQuestion.Cancel != nil {
-		m.sideQuestion.Cancel()
+	cancel, done := m.sideQuestion.Cancel, m.sideQuestion.Done
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		timer := time.NewTimer(sideQuestionStopTimeout)
+		select {
+		case <-done:
+			timer.Stop()
+			m.sideQuestion.Done = nil
+		case <-timer.C:
+		}
 	}
 	m.sideQuestion.Generation++
 	m.sideQuestion.Running = false
@@ -193,12 +228,17 @@ func (m *Model) cancelSideQuestion() {
 }
 
 func (m *Model) clearSideQuestionHistory() {
-	if m.sideQuestion.Running {
+	if m.sideQuestion.Running || m.sideQuestion.Done != nil {
 		m.cancelSideQuestion()
 	}
 	m.sideQuestion.History = nil
 	m.sideQuestion.Selected = 0
+	m.sideQuestion.Question = ""
 	m.sideQuestion.Response.Reset()
+	m.sideQuestion.Synthetic = false
+	m.sideQuestion.Usage = llm.Usage{}
+	m.sideQuestion.Err = nil
+	m.sideQuestion.Scroll = 0
 	m.sideQuestion.Visible = false
 	m.sideQuestion.ConfirmClear = false
 }
