@@ -128,17 +128,15 @@ type PromoteResult struct {
 
 // AssistedMergeOptions configures StartAssistedMerge.
 type AssistedMergeOptions struct {
-	Branch         string
-	SnapshotCommit string
-	Message        string
+	Message string
 }
 
-// AssistedMergeResult describes a recovery branch prepared for LLM-assisted merge resolution.
+// AssistedMergeResult describes worktree changes prepared in the root checkout
+// for LLM-assisted merge resolution.
 type AssistedMergeResult struct {
 	RootDir            string   `json:"root_dir,omitempty"`
 	WorktreeDir        string   `json:"worktree_dir,omitempty"`
 	WorktreeName       string   `json:"worktree_name,omitempty"`
-	Branch             string   `json:"branch,omitempty"`
 	PreviousRootRef    string   `json:"previous_root_ref,omitempty"`
 	PreviousRootBranch string   `json:"previous_root_branch,omitempty"`
 	Base               string   `json:"base,omitempty"`
@@ -695,9 +693,9 @@ func runPromoteToRootHook(stage string) error {
 	return promoteToRootTestHook(stage)
 }
 
-// StartAssistedMerge prepares a safe root recovery branch for LLM-assisted
-// resolution. It applies the worktree snapshot with cherry-pick -n and leaves
-// conflicts in place on the recovery branch when they occur.
+// StartAssistedMerge applies the worktree snapshot directly to the current
+// root checkout branch. It leaves conflicts in place there for LLM-assisted
+// resolution, or leaves a clean application staged and uncommitted.
 func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptions) (AssistedMergeResult, error) {
 	wt, err := getWorktreeForOperation(dir)
 	if err != nil {
@@ -729,16 +727,13 @@ func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptio
 		return res, ErrRootDirty
 	}
 
-	snapshot := strings.TrimSpace(opts.SnapshotCommit)
-	if snapshot == "" {
-		msg := strings.TrimSpace(opts.Message)
-		if msg == "" {
-			msg = fmt.Sprintf("Assisted merge term-llm worktree %s", wt.Name)
-		}
-		snapshot, err = snapshotCommit(ctx, wt.Dir, base, msg)
-		if err != nil {
-			return res, err
-		}
+	msg := strings.TrimSpace(opts.Message)
+	if msg == "" {
+		msg = fmt.Sprintf("Assisted merge term-llm worktree %s", wt.Name)
+	}
+	snapshot, err := snapshotCommit(ctx, wt.Dir, base, msg)
+	if err != nil {
+		return res, err
 	}
 	res.SnapshotCommit = snapshot
 	res.ChangedFiles = changedFilesForCommit(root, snapshot)
@@ -747,53 +742,17 @@ func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptio
 		return res, nil
 	}
 
-	branch := strings.TrimSpace(opts.Branch)
-	if branch == "" {
-		branch = recoveryBranchName(root, wt.Name)
-	}
-	res.Branch = branch
-	if out, err := runGitCtx(ctx, root, "check-ref-format", "--branch", branch); err != nil {
-		return res, fmt.Errorf("worktree: invalid recovery branch %q: %w: %s", branch, err, strings.TrimSpace(out))
-	}
-	exists, err := localBranchExists(root, branch)
-	if err != nil {
-		return res, err
-	}
-	if exists {
-		return res, fmt.Errorf("branch %q already exists", branch)
-	}
-
-	branchCreated := false
-	rollback := func() {
-		cleanupCherryPickState(root)
-		if previousRootBranch != "" {
-			if _, err := runGit(root, "checkout", previousRootBranch); err != nil && rootHead != "" {
-				_, _ = runGit(root, "checkout", rootHead)
-			}
-		} else if rootHead != "" {
-			_, _ = runGit(root, "checkout", rootHead)
-		}
-		if branchCreated {
-			_, _ = runGit(root, "branch", "-D", branch)
-		}
-	}
-	fail := func(err error) (AssistedMergeResult, error) {
-		rollback()
-		res.RootStatus = statusPorcelain(root)
-		return res, err
-	}
-
-	if out, err := runGitCtx(ctx, root, "checkout", "-b", branch); err != nil {
-		return res, fmt.Errorf("worktree: create recovery branch: %w: %s", err, strings.TrimSpace(out))
-	}
-	branchCreated = true
 	out, err := runGitCtx(ctx, root, "cherry-pick", "-n", snapshot)
 	if err != nil {
 		conflicts := conflictFiles(root)
 		if len(conflicts) == 0 {
-			return fail(fmt.Errorf("worktree: apply recovery snapshot: %w: %s", err, strings.TrimSpace(out)))
+			cleanupErr := cleanupCherryPickState(root)
+			res.RootStatus = statusPorcelain(root)
+			if cleanupErr != nil {
+				return res, fmt.Errorf("worktree: apply assisted snapshot: %w: %s; cleanup: %v", err, strings.TrimSpace(out), cleanupErr)
+			}
+			return res, fmt.Errorf("worktree: apply assisted snapshot: %w: %s", err, strings.TrimSpace(out))
 		}
-		res.Applied = false
 		res.NeedsResolution = true
 		res.Conflicts = conflicts
 		res.Message = strings.TrimSpace(out)
@@ -803,23 +762,6 @@ func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptio
 	res.Applied = true
 	res.RootStatus = statusPorcelain(root)
 	return res, nil
-}
-
-func recoveryBranchName(root, worktreeName string) string {
-	name := slug(worktreeName)
-	if name == "" {
-		name = "worktree"
-	}
-	stamp := time.Now().UTC().Format("20060102-150405")
-	base := fmt.Sprintf("term-llm/merge-%s-%s", name, stamp)
-	branch := base
-	for i := 2; ; i++ {
-		exists, err := localBranchExists(root, branch)
-		if err != nil || !exists {
-			return branch
-		}
-		branch = fmt.Sprintf("%s-%d", base, i)
-	}
 }
 
 // Remove removes a managed worktree and prunes git's worktree metadata.

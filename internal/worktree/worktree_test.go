@@ -421,7 +421,7 @@ func TestPromoteToRootRollsBackAfterCheckoutFailure(t *testing.T) {
 	}
 }
 
-func TestStartAssistedMergeNoChangesDoesNotCreateRecoveryBranch(t *testing.T) {
+func TestStartAssistedMergeNoChangesLeavesRootUnchanged(t *testing.T) {
 	t.Parallel()
 
 	repo := newGitRepoForWorktreeTest(t)
@@ -431,19 +431,79 @@ func TestStartAssistedMergeNoChangesDoesNotCreateRecoveryBranch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
 
-	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{Branch: "assist-noop-branch"})
+	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{})
 	if err != nil {
 		t.Fatalf("StartAssistedMerge: %v (result=%+v)", err, res)
 	}
-	if res.Branch != "" || res.Applied || res.NeedsResolution || len(res.ChangedFiles) != 0 {
-		t.Fatalf("AssistedMergeResult = %+v, want no branch and no changes", res)
+	if res.Applied || res.NeedsResolution || len(res.ChangedFiles) != 0 {
+		t.Fatalf("AssistedMergeResult = %+v, want no changes", res)
 	}
-	if exists, err := localBranchExists(repo, "assist-noop-branch"); err != nil || exists {
-		t.Fatalf("assist-noop-branch exists=%v err=%v, want no branch created", exists, err)
+	if status := strings.TrimSpace(runGitForWorktreeTest(t, repo, "status", "--porcelain")); status != "" {
+		t.Fatalf("root status = %q, want clean", status)
 	}
 }
 
-func TestStartAssistedMergeLeavesConflictsOnRecoveryBranch(t *testing.T) {
+func TestStartAssistedMergeRefusesDirtyRootWithoutChangingIt(t *testing.T) {
+	t.Parallel()
+
+	repo := newGitRepoForWorktreeTest(t)
+	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "assist-dirty-root"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(wt.Dir, "source.txt"), []byte("source change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "root.txt"), []byte("root change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile root: %v", err)
+	}
+	before := runGitForWorktreeTest(t, repo, "status", "--porcelain")
+
+	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{})
+	if !errors.Is(err, ErrRootDirty) {
+		t.Fatalf("StartAssistedMerge error = %v, want ErrRootDirty (result=%+v)", err, res)
+	}
+	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); got != before {
+		t.Fatalf("root status changed from %q to %q", before, got)
+	}
+	if got := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current")); got != previousBranch {
+		t.Fatalf("root branch = %q, want unchanged branch %q", got, previousBranch)
+	}
+}
+
+func TestStartAssistedMergeAppliesCleanlyOnCurrentRootBranch(t *testing.T) {
+	t.Parallel()
+
+	repo := newGitRepoForWorktreeTest(t)
+	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "assist-clean"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	if err := os.WriteFile(filepath.Join(wt.Dir, "assisted.txt"), []byte("applied to root\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile worktree: %v", err)
+	}
+
+	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{})
+	if err != nil {
+		t.Fatalf("StartAssistedMerge: %v (result=%+v)", err, res)
+	}
+	if !res.Applied || res.NeedsResolution || len(res.ChangedFiles) == 0 {
+		t.Fatalf("AssistedMergeResult = %+v, want clean staged application", res)
+	}
+	if got := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current")); got != previousBranch {
+		t.Fatalf("root branch = %q, want unchanged branch %q", got, previousBranch)
+	}
+	status := runGitForWorktreeTest(t, repo, "status", "--porcelain")
+	if !strings.Contains(status, "A  assisted.txt") {
+		t.Fatalf("root status = %q, want staged assisted.txt", status)
+	}
+}
+
+func TestStartAssistedMergeLeavesConflictsOnCurrentRootBranch(t *testing.T) {
 	t.Parallel()
 
 	repo := newGitRepoForWorktreeTest(t)
@@ -462,21 +522,19 @@ func TestStartAssistedMergeLeavesConflictsOnRecoveryBranch(t *testing.T) {
 		t.Fatalf("WriteFile worktree: %v", err)
 	}
 
-	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{Branch: "assist-recovery"})
+	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{})
 	t.Cleanup(func() {
 		_, _ = runGit(repo, "reset", "--merge")
 		_, _ = runGit(repo, "cherry-pick", "--quit")
-		_, _ = runGit(repo, "checkout", previousBranch)
-		_, _ = runGit(repo, "branch", "-D", "assist-recovery")
 	})
 	if err != nil {
 		t.Fatalf("StartAssistedMerge: %v (result=%+v)", err, res)
 	}
-	if !res.NeedsResolution || res.Applied || res.Branch != "assist-recovery" || len(res.Conflicts) == 0 {
-		t.Fatalf("AssistedMergeResult = %+v, want conflict on recovery branch", res)
+	if !res.NeedsResolution || res.Applied || len(res.Conflicts) == 0 {
+		t.Fatalf("AssistedMergeResult = %+v, want conflict on current root branch", res)
 	}
-	if got := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current")); got != "assist-recovery" {
-		t.Fatalf("root branch = %q, want assist-recovery", got)
+	if got := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current")); got != previousBranch {
+		t.Fatalf("root branch = %q, want unchanged branch %q", got, previousBranch)
 	}
 	status := runGitForWorktreeTest(t, repo, "status", "--porcelain")
 	if !strings.Contains(status, "UU file.txt") {

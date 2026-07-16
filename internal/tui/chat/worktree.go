@@ -792,7 +792,7 @@ func formatWorktreeMergeConflictMessage(res worktree.MergeResult) string {
 	}
 	appendStatusSection(&b, statusTitle, res.RootStatus, 30)
 	b.WriteString("\nInteractive recovery:\n")
-	b.WriteString("  A Yes/No prompt has opened in the TUI. Select Yes to resolve the promotion on a safe recovery branch.\n")
+	b.WriteString("  A Yes/No prompt has opened in the TUI. Select Yes to resolve the promotion directly on the current root branch.\n")
 	b.WriteString("  Select No to leave the root clean and keep working manually.\n")
 	b.WriteString("\nNext options:\n")
 	b.WriteString("  /worktree promote --branch   # continue from root on a branch based at the worktree HEAD\n")
@@ -893,7 +893,7 @@ func worktreeRecoveryPromptText(pending pendingWorktreeRecovery) (string, string
 	suffix := strings.TrimRight(details.String(), "\n")
 	switch pending.kind {
 	case "conflict":
-		return "Assisted Worktree Recovery", "This worktree does not promote cleanly onto the current root branch. Would you like me to resolve the promotion on a safe recovery branch?" + suffix
+		return "Assisted Worktree Recovery", "This worktree does not promote cleanly onto the current root branch. Would you like me to resolve it directly in the root checkout, leaving the result staged and uncommitted?" + suffix
 	case "dirty-root":
 		return "Assisted Worktree Recovery", "The root checkout is dirty. Would you like me to inspect the dirty root/worktree state and help sort it out before retrying?" + suffix
 	case "remove-in-use":
@@ -916,13 +916,27 @@ func (m *Model) resolveWorktreeRecoveryPrompt(proceed bool) (tea.Model, tea.Cmd)
 	if m == nil {
 		return m, nil
 	}
-	if m.dialog != nil && m.dialog.IsOpen() && m.dialog.Type() == DialogWorktreeRecovery {
-		m.dialog.Close()
-	}
 	if m.pendingWorktreeRecovery == nil {
+		if m.dialog != nil && m.dialog.IsOpen() && m.dialog.Type() == DialogWorktreeRecovery {
+			m.dialog.Close()
+		}
 		return m.showFooterMuted("No pending worktree recovery.")
 	}
 	pending := *m.pendingWorktreeRecovery
+	if proceed && pending.kind != "remove-in-use" {
+		root := strings.TrimSpace(pending.merge.RootDir)
+		if root == "" && pending.kind != "dirty-root" {
+			return m.showFooterError("assisted promotion failed: missing root checkout")
+		}
+		if root != "" {
+			if err := m.bindRootDir(root); err != nil {
+				return m.showFooterError(err.Error())
+			}
+		}
+	}
+	if m.dialog != nil && m.dialog.IsOpen() && m.dialog.Type() == DialogWorktreeRecovery {
+		m.dialog.Close()
+	}
 	m.pendingWorktreeRecovery = nil
 	if proceed {
 		return m.startPendingWorktreeRecovery(pending)
@@ -957,17 +971,12 @@ func (m *Model) startPendingWorktreeRecovery(pending pendingWorktreeRecovery) (t
 		})
 	}
 	if pending.kind == "dirty-root" {
-		if strings.TrimSpace(pending.merge.RootDir) != "" {
-			if err := m.bindRootDir(pending.merge.RootDir); err != nil {
-				return m.showFooterError(err.Error())
-			}
-		}
 		prompt := formatDirtyRootAssistedMergePrompt(pending.merge)
 		return m.sendMessage(prompt)
 	}
 	parentCtx := m.rootContext()
 	m.worktreeOperation = "assist-merge"
-	message := fmt.Sprintf("Okay — preparing a safe recovery branch for %s. I will ask the LLM to resolve it there without committing or pushing.", worktreeDisplayName(pending.merge.WorktreeName))
+	message := fmt.Sprintf("Okay — switching to the root checkout and applying %s there. I will ask the LLM to resolve conflicts without committing or pushing.", worktreeDisplayName(pending.merge.WorktreeName))
 	return m.showSystemMessageWithCmd(message, func() tea.Msg {
 		res, err := worktree.StartAssistedMerge(parentCtx, pending.merge.WorktreeDir, worktree.AssistedMergeOptions{})
 		return worktreeOperationDoneMsg{op: "assist-merge", dir: pending.merge.WorktreeDir, assist: res, err: err}
@@ -982,7 +991,6 @@ func (m *Model) startAssistedMergeLLM(res worktree.AssistedMergeResult) (tea.Mod
 		return m.showWorktreeContent("Assisted Worktree Recovery", formatAssistedMergeNothingToApplyMessage(res))
 	}
 	prompt := formatAssistedMergeLLMPrompt(res)
-	m.showWorktreeContent("Assisted Worktree Recovery", formatAssistedMergeReadyMessage(res))
 	return m.sendMessage(prompt)
 }
 
@@ -992,7 +1000,7 @@ func formatAssistedMergeRootDirtyMessage(res worktree.AssistedMergeResult) strin
 	fmt.Fprintf(&b, "Root checkout: %s\n", res.RootDir)
 	fmt.Fprintf(&b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
 	appendStatusSection(&b, "Root status", res.RootStatus, 30)
-	b.WriteString("\nNo recovery branch was created. Clean/commit/stash root changes, then retry `/worktree promote`.\n")
+	b.WriteString("\nThe root checkout was not changed. Clean/commit/stash root changes, then retry `/worktree promote`.\n")
 	return b.String()
 }
 
@@ -1004,47 +1012,21 @@ func formatAssistedMergeNothingToApplyMessage(res worktree.AssistedMergeResult) 
 	if res.SnapshotCommit != "" {
 		fmt.Fprintf(&b, "Snapshot checked: %s\n", shortSHA(res.SnapshotCommit))
 	}
-	b.WriteString("No recovery branch was created.\n")
-	return b.String()
-}
-
-func formatAssistedMergeReadyMessage(res worktree.AssistedMergeResult) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Prepared assisted worktree promotion on branch %s\n\n", res.Branch)
-	fmt.Fprintf(&b, "Root checkout: %s\n", res.RootDir)
-	fmt.Fprintf(&b, "Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
-	if res.NeedsResolution {
-		b.WriteString("Status: conflicts are intentionally left on this recovery branch for the LLM to resolve.\n")
-	} else if res.Applied {
-		b.WriteString("Status: worktree changes applied cleanly, staged/uncommitted on the recovery branch.\n")
-	}
-	appendLinesSection(&b, "Conflicts", res.Conflicts, 20)
-	appendStatusSection(&b, "Root status", res.RootStatus, 30)
-	b.WriteString("\nI am sending the LLM a recovery task now. It may inspect/edit files and run local commands, but it must not commit or push.\n")
-	b.WriteString("Abort manually if needed:\n")
-	b.WriteString("  git reset --merge\n")
-	b.WriteString("  git cherry-pick --quit\n")
-	if res.PreviousRootBranch != "" {
-		fmt.Fprintf(&b, "  git checkout %s\n", res.PreviousRootBranch)
-	} else if res.PreviousRootRef != "" {
-		fmt.Fprintf(&b, "  git checkout %s\n", res.PreviousRootRef)
-	}
-	fmt.Fprintf(&b, "  git branch -D %s\n", res.Branch)
+	b.WriteString("The root checkout was not changed.\n")
 	return b.String()
 }
 
 func formatAssistedMergeLLMPrompt(res worktree.AssistedMergeResult) string {
 	var b strings.Builder
-	b.WriteString("The user confirmed interactive recovery for a failed `/worktree promote`. You have permission to sort this out on the prepared recovery branch.\n\n")
+	b.WriteString("The user confirmed interactive recovery for a failed `/worktree promote`. The worktree snapshot has been applied directly to the current root checkout branch.\n\n")
 	b.WriteString("Goal:\n")
-	b.WriteString("- Resolve/apply the source worktree changes onto the current root checkout branch.\n")
-	b.WriteString("- Leave the result staged/uncommitted in the root checkout.\n")
-	b.WriteString("- Do not commit, push, delete branches, discard user changes, or remove the original worktree unless the user explicitly confirms later.\n\n")
+	b.WriteString("- Resolve/apply all source worktree changes on the current root checkout branch.\n")
+	b.WriteString("- Leave the complete result staged and uncommitted in the root checkout.\n")
+	b.WriteString("- Do not commit, push, switch branches, discard user changes, or remove the original worktree.\n\n")
 	b.WriteString("State:\n")
 	fmt.Fprintf(&b, "- Root checkout: %s\n", res.RootDir)
-	fmt.Fprintf(&b, "- Recovery branch checked out in root: %s\n", res.Branch)
+	fmt.Fprintf(&b, "- Current root branch: %s\n", res.PreviousRootBranch)
 	fmt.Fprintf(&b, "- Source worktree: %s (%s)\n", worktreeDisplayName(res.WorktreeName), res.WorktreeDir)
-	fmt.Fprintf(&b, "- Previous root branch/ref: %s %s\n", res.PreviousRootBranch, res.PreviousRootRef)
 	fmt.Fprintf(&b, "- Worktree base SHA: %s\n", res.Base)
 	fmt.Fprintf(&b, "- Root HEAD before recovery: %s\n", res.RootHead)
 	fmt.Fprintf(&b, "- Worktree HEAD: %s\n", res.WorktreeHead)
@@ -1061,10 +1043,11 @@ func formatAssistedMergeLLMPrompt(res worktree.AssistedMergeResult) string {
 	b.WriteString("Instructions:\n")
 	b.WriteString("0. Use available shell/read/edit tools as needed; operate in the root checkout unless inspecting the source worktree.\n")
 	b.WriteString("1. Start with `git status --short` in the root checkout and inspect conflicted files if any.\n")
-	b.WriteString("2. Resolve conflict markers or apply equivalent edits that preserve the user's worktree intent on top of current root.\n")
+	b.WriteString("2. Resolve conflict markers or apply equivalent edits that preserve all source worktree intent on top of the current root branch.\n")
 	b.WriteString("3. Stage resolved files with `git add` as appropriate.\n")
 	b.WriteString("4. If a cherry-pick state remains after staging, run `git cherry-pick --quit` (not `--continue`) so the result stays uncommitted.\n")
-	b.WriteString("5. Finish by running `git status --short` and summarizing what changed plus next commands: `git status`, `git commit -m \"...\"`, and `git push -u origin <branch>`.\n")
+	b.WriteString("5. Compare the final staged diff with the source worktree and ensure no source changes were omitted.\n")
+	b.WriteString("6. Finish by running `git status --short` and summarizing what changed plus next commands: `git status`, `git commit -m \"...\"`, and `git push`.\n")
 	return b.String()
 }
 

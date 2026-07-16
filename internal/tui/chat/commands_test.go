@@ -4000,15 +4000,14 @@ func TestWorktreeOperationDoneStaleMessageDoesNotClearCurrentOperation(t *testin
 	}
 }
 
-func TestAssistedMergeNothingToApplyMessageDoesNotMentionBranch(t *testing.T) {
+func TestAssistedMergeNothingToApplyMessageSaysRootUnchanged(t *testing.T) {
 	msg := formatAssistedMergeNothingToApplyMessage(worktree.AssistedMergeResult{
 		RootDir:        "/repo/root",
 		WorktreeDir:    "/tmp/wt/goal",
 		WorktreeName:   "goal",
-		Branch:         "assist-was-not-created",
 		SnapshotCommit: "4444444444444444444444444444444444444444",
 	})
-	for _, want := range []string{"no worktree changes", "No recovery branch was created", "/tmp/wt/goal"} {
+	for _, want := range []string{"no worktree changes", "root checkout was not changed", "/tmp/wt/goal"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("nothing-to-apply message missing %q:\n%s", want, msg)
 		}
@@ -4048,9 +4047,12 @@ func TestWorktreeRecoveryPromptOpensOnMergeConflict(t *testing.T) {
 	}
 }
 
-func TestPendingWorktreeRecoveryYesStartsAssistedMerge(t *testing.T) {
+func TestPendingWorktreeRecoveryYesStartsAssistedMergeFromRoot(t *testing.T) {
 	m := newTestChatModel(false)
-	pending := pendingWorktreeRecovery{kind: "conflict", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: "/tmp/wt/goal", SnapshotCommit: "abc123"}}
+	root := t.TempDir()
+	worktreeDir := filepath.Join(t.TempDir(), "goal")
+	m.sess = &session.Session{ID: "assisted-recovery", CWD: worktreeDir, WorktreeDir: worktreeDir}
+	pending := pendingWorktreeRecovery{kind: "conflict", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: worktreeDir, RootDir: root}}
 	m.pendingWorktreeRecovery = &pending
 	m.openWorktreeRecoveryPrompt(pending)
 
@@ -4065,11 +4067,156 @@ func TestPendingWorktreeRecoveryYesStartsAssistedMerge(t *testing.T) {
 	if got.worktreeOperation != "assist-merge" {
 		t.Fatalf("worktreeOperation after yes = %q, want assist-merge", got.worktreeOperation)
 	}
+	if got.sess.CWD != root || got.sess.WorktreeDir != "" {
+		t.Fatalf("session binding = %q/%q, want root %q before assisted merge", got.sess.CWD, got.sess.WorktreeDir, root)
+	}
 	if got.streaming {
-		t.Fatal("affirmative conflict recovery should prepare branch before starting LLM stream")
+		t.Fatal("affirmative conflict recovery should prepare root before starting LLM stream")
 	}
 	if cmd == nil {
 		t.Fatal("expected assisted merge preparation command")
+	}
+}
+
+func TestAssistedMergeStartsLLMWithoutOpeningContentDialog(t *testing.T) {
+	m := newTestChatModel(false)
+	root := t.TempDir()
+	m.sess = &session.Session{ID: "assisted-ready", CWD: root}
+	m.worktreeOperation = "assist-merge"
+
+	model, cmd := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{
+		op: "assist-merge",
+		assist: worktree.AssistedMergeResult{
+			RootDir:         root,
+			WorktreeDir:     filepath.Join(t.TempDir(), "goal"),
+			WorktreeName:    "goal",
+			ChangedFiles:    []string{"file.txt"},
+			Conflicts:       []string{"file.txt"},
+			NeedsResolution: true,
+		},
+	})
+	got := model.(*Model)
+	if got.dialog.IsOpen() {
+		t.Fatalf("assisted recovery opened distracting dialog type %v", got.dialog.Type())
+	}
+	if !got.streaming || cmd == nil {
+		t.Fatalf("assisted recovery did not start LLM: streaming=%v cmd=%v", got.streaming, cmd != nil)
+	}
+	if got.sess.CWD != root || got.sess.WorktreeDir != "" {
+		t.Fatalf("session binding = %q/%q, want root %q", got.sess.CWD, got.sess.WorktreeDir, root)
+	}
+}
+func TestPendingWorktreeRecoveryBindFailureKeepsPromptRetryable(t *testing.T) {
+	m := newTestChatModel(false)
+	root := t.TempDir()
+	worktreeDir := filepath.Join(t.TempDir(), "goal")
+	m.sess = &session.Session{ID: "assisted-bind-failure", CWD: worktreeDir, WorktreeDir: worktreeDir}
+	m.runtimeSystemContextResolver = func(_ *agents.Agent, _, _, dir string) (RuntimeSystemContext, error) {
+		return RuntimeSystemContext{}, fmt.Errorf("cannot load root context for %s", dir)
+	}
+	pending := pendingWorktreeRecovery{kind: "conflict", merge: worktree.MergeResult{WorktreeName: "goal", WorktreeDir: worktreeDir, RootDir: root}}
+	m.pendingWorktreeRecovery = &pending
+	m.openWorktreeRecoveryPrompt(pending)
+
+	model, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := model.(*Model)
+	if got.worktreeOperation != "" {
+		t.Fatalf("bind failure started recovery operation %q", got.worktreeOperation)
+	}
+	if got.pendingWorktreeRecovery == nil {
+		t.Fatal("bind failure consumed pending recovery")
+	}
+	if !got.dialog.IsOpen() || got.dialog.Type() != DialogWorktreeRecovery {
+		t.Fatalf("bind failure closed recovery prompt: open=%v type=%v", got.dialog.IsOpen(), got.dialog.Type())
+	}
+	if got.sess.CWD != worktreeDir || got.sess.WorktreeDir != worktreeDir {
+		t.Fatalf("bind failure changed session binding = %q/%q", got.sess.CWD, got.sess.WorktreeDir)
+	}
+	if !strings.Contains(got.footerMessage, "cannot load root context") {
+		t.Fatalf("footerMessage = %q, want binding error", got.footerMessage)
+	}
+}
+
+func TestAssistedRecoverySnapshotsChangesMadeAfterConflictPrompt(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "assist-fresh-snapshot"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() {
+		runGitForChatWorktreeTest(t, repo, "reset", "--merge")
+		_ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true})
+	})
+
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForChatWorktreeTest(t, repo, "add", "file.txt")
+	runGitForChatWorktreeTest(t, repo, "commit", "-m", "root change")
+	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("worktree change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "assist-fresh-snapshot", CWD: wt.Dir, WorktreeDir: wt.Dir}
+	model, promoteCmd := m.ExecuteCommand("/worktree promote")
+	m = model.(*Model)
+	promoteMsg := runWorktreeOperationTestCmd(t, promoteCmd)
+	if !errors.Is(promoteMsg.err, worktree.ErrConflict) {
+		t.Fatalf("promote error = %v, want conflict", promoteMsg.err)
+	}
+	model, _ = m.handleWorktreeOperationDone(promoteMsg)
+	m = model.(*Model)
+
+	if err := os.WriteFile(filepath.Join(wt.Dir, "after-prompt.txt"), []byte("newer change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model, assistCmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = model.(*Model)
+	if assistCmd == nil {
+		t.Fatal("expected assisted merge command")
+	}
+	assistMsg := runWorktreeOperationTestCmd(t, assistCmd)
+	if assistMsg.err != nil {
+		t.Fatalf("assisted merge: %v", assistMsg.err)
+	}
+	if !assistMsg.assist.NeedsResolution {
+		t.Fatalf("assisted result = %+v, want conflict", assistMsg.assist)
+	}
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = repo
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	status := string(statusOut)
+	if !strings.Contains(status, "A  after-prompt.txt") {
+		t.Fatalf("root status = %q, want newer worktree change included", status)
+	}
+}
+
+func TestAssistedMergeErrRootDirtyClearsOperationAndShowsDetails(t *testing.T) {
+	m := newTestChatModel(false)
+	m.worktreeOperation = "assist-merge"
+	model, cmd := m.handleWorktreeOperationDone(worktreeOperationDoneMsg{
+		op: "assist-merge",
+		assist: worktree.AssistedMergeResult{
+			RootDir:      "/repo/root",
+			WorktreeDir:  "/tmp/wt/goal",
+			WorktreeName: "goal",
+			RootStatus:   " M root.txt",
+		},
+		err: worktree.ErrRootDirty,
+	})
+	got := model.(*Model)
+	if cmd != nil || got.worktreeOperation != "" {
+		t.Fatalf("dirty-root result left operation active: cmd=%v op=%q", cmd != nil, got.worktreeOperation)
+	}
+	if !got.dialog.IsOpen() || got.dialog.Type() != DialogContent {
+		t.Fatalf("dirty-root result dialog = open:%v type:%v", got.dialog.IsOpen(), got.dialog.Type())
+	}
+	if !strings.Contains(got.dialog.Content(), "root checkout became dirty") || !strings.Contains(got.dialog.Content(), "root.txt") {
+		t.Fatalf("dirty-root content missing details:\n%s", got.dialog.Content())
 	}
 }
 
