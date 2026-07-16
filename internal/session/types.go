@@ -53,6 +53,20 @@ const (
 	TitleSourceGenerated SessionTitleSource = "generated"
 )
 
+type SessionKind string
+
+const (
+	KindRoot SessionKind = "root"
+	KindSide SessionKind = "side"
+)
+
+type SideLifecycle string
+
+const (
+	SideOpen   SideLifecycle = "open"
+	SideClosed SideLifecycle = "closed"
+)
+
 // Session represents a chat session stored in the database.
 type Session struct {
 	ID      string `json:"id"`
@@ -82,7 +96,10 @@ type Session struct {
 	UpdatedAt       time.Time           `json:"updated_at"`
 	Archived        bool                `json:"archived,omitempty"`
 	Pinned          bool                `json:"pinned,omitempty"`
-	ParentID        string              `json:"parent_id,omitempty"`   // For session branching
+	ParentID        string              `json:"parent_id,omitempty"` // Immediate parent for a side conversation
+	RootID          string              `json:"root_id,omitempty"`   // Root conversation (self for roots)
+	Kind            SessionKind         `json:"kind,omitempty"`
+	SideState       SideLifecycle       `json:"side_state,omitempty"`
 	IsSubagent      bool                `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
@@ -151,6 +168,10 @@ type SessionSummary struct {
 	Status              SessionStatus      `json:"status,omitempty"`
 	Tags                string             `json:"tags,omitempty"`
 	WorktreeDir         string             `json:"worktree_dir,omitempty"`
+	ParentID            string             `json:"parent_id,omitempty"`
+	RootID              string             `json:"root_id,omitempty"`
+	Kind                SessionKind        `json:"kind,omitempty"`
+	SideState           SideLifecycle      `json:"side_state,omitempty"`
 	Goal                *Goal              `json:"goal,omitempty"`
 	Share               *ShareState        `json:"share,omitempty"`
 	CreatedAt           time.Time          `json:"created_at"`
@@ -173,6 +194,9 @@ type ListOptions struct {
 	SortByNumberDesc bool          // Order by session number descending instead of activity sort
 	Archived         bool          // Include archived sessions
 	SortByActivity   bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+	IncludeSides     bool          // Include child side conversations (hidden by default)
+	OnlySides        bool          // Return only side conversations
+	RootID           string        // Restrict side conversations to this root
 }
 
 // SearchOptions configures session full-text search.
