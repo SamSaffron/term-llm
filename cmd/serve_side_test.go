@@ -37,8 +37,11 @@ func TestServeRuntimeSideUsesInheritedContextWithoutPersistingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := llm.NewMockProvider("mock").AddTextResponse("side answer")
+	registry := llm.NewToolRegistry()
+	registry.Register(&serveRuntimeTestTool{}) // unknown/custom mutation surface must fail closed
+	engine := llm.NewEngine(provider, registry)
 	rt := &serveRuntime{
-		provider: provider, providerKey: "mock", engine: llm.NewEngine(provider, nil),
+		provider: provider, providerKey: "mock", engine: engine,
 		store: store, defaultModel: "model", platform: "web",
 	}
 	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("local question")}, llm.Request{SessionID: side.ID, Model: "model"}); err != nil {
@@ -46,6 +49,9 @@ func TestServeRuntimeSideUsesInheritedContextWithoutPersistingIt(t *testing.T) {
 	}
 	if len(provider.Requests) != 1 {
 		t.Fatalf("requests = %d", len(provider.Requests))
+	}
+	if _, ok := engine.Tools().Get("serve_runtime_test_tool"); ok {
+		t.Fatal("unknown dynamic tool remained available in side runtime")
 	}
 	request := provider.Requests[0]
 	joined := ""
@@ -65,6 +71,39 @@ func TestServeRuntimeSideUsesInheritedContextWithoutPersistingIt(t *testing.T) {
 		if strings.Contains(msg.TextContent, "inherited reference") || strings.Contains(msg.TextContent, "reference-only") {
 			t.Fatalf("inherited/policy content polluted local transcript: %#v", persisted)
 		}
+	}
+}
+
+func TestServeRuntimeSideCompactionConsumesInheritedContextOnce(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "serve-runtime-compact", Model: "compact-runtime", InputLimit: 1000}})
+	defer llm.RegisterConfigLimits(nil)
+	ctx := context.Background()
+	store := newSideTestStore(t)
+	parent := &session.Session{ID: "parent", Provider: "serve-runtime-compact", ProviderKey: "serve-runtime-compact", Model: "compact-runtime"}
+	if err := store.Create(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(ctx, parent.ID, session.NewMessage(parent.ID, llm.UserText(strings.Repeat("inherited history ", 1000)), -1)); err != nil {
+		t.Fatal(err)
+	}
+	side, err := store.ForkSide(ctx, parent.ID, session.OriginWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &serveRuntimeCompactionProvider{}
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, store: store, autoCompact: true, defaultModel: "compact-runtime"}
+	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime"})
+	engine.SetContextEstimateBaseline(910, 4)
+	if _, err := rt.Run(ctx, true, false, []llm.Message{llm.UserText("continue")}, llm.Request{SessionID: side.ID, Model: "compact-runtime", Tools: []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	base, err := store.GetSideContext(ctx, side.ID)
+	if err != nil || len(base) != 0 {
+		t.Fatalf("persisted inherited context after compaction=%#v err=%v", base, err)
+	}
+	if len(rt.baseContext) != 0 {
+		t.Fatalf("runtime inherited context after compaction=%#v", rt.baseContext)
 	}
 }
 
@@ -90,6 +129,33 @@ func TestServeRuntimeClosedSideRejectsRun(t *testing.T) {
 	}
 	if len(provider.Requests) != 0 {
 		t.Fatal("closed side reached provider")
+	}
+}
+
+func TestServeSideCloseRejectsConcurrentRun(t *testing.T) {
+	store := newSideTestStore(t)
+	parent := &session.Session{ID: "parent", Provider: "mock", Model: "model"}
+	if err := store.Create(context.Background(), parent); err != nil {
+		t.Fatal(err)
+	}
+	side, err := store.ForkSide(context.Background(), parent.ID, session.OriginWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &serveRuntime{}
+	rt.mu.Lock() // models the run lock held from start through completion
+	mgr := &serveSessionManager{sessions: map[string]*serveRuntime{side.ID: rt}}
+	server := &serveServer{store: store, sessionMgr: mgr}
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+side.ID+"/side/close", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	server.handleSessionByID(rec, req)
+	rt.mu.Unlock()
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("close while running status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	persisted, _ := store.Get(context.Background(), side.ID)
+	if persisted.SideState != session.SideOpen {
+		t.Fatalf("close raced through active run: %s", persisted.SideState)
 	}
 }
 

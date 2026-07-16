@@ -588,7 +588,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		// Collect MCP tools if available and register them with the engine
 		var reqTools []llm.ToolSpec
-		if m.mcpManager != nil {
+		if m.mcpManager != nil && (m.sess == nil || m.sess.Kind != session.KindSide) {
 			mcpTools := m.mcpManager.AllTools()
 			for _, t := range mcpTools {
 				reqTools = append(reqTools, llm.ToolSpec{

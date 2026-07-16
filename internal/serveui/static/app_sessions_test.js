@@ -4454,6 +4454,62 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   pass(name);
 }
 
+async function testSideChatCreateBackAndExplicitClose() {
+  const name = 'side chat creates, navigates back without close, and closes explicitly';
+  const calls = [];
+  const rootRaw = { id: 'root', number: 1, provider: 'mock', model: 'm', kind: 'root', root_id: 'root', origin: 'web' };
+  const sideRaw = { id: 'side', number: 2, provider: 'mock', model: 'm', kind: 'side', root_id: 'root', parent_id: 'root', side_state: 'open', origin: 'web' };
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      const parsed = parsedTestURL(url);
+      const pathname = parsed?.pathname || '';
+      calls.push(`${String(options.method || 'GET').toUpperCase()} ${pathname}`);
+      if (pathname.endsWith('/relationship')) {
+        const onSide = pathname.includes('/sessions/side/');
+        return new Response(JSON.stringify(onSide
+          ? { session: sideRaw, parent: rootRaw, sides: [sideRaw], parent_active_run: true }
+          : { session: rootRaw, open_side: null, sides: [], parent_active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (pathname.endsWith('/root/side') && options.method === 'POST') {
+        return new Response(JSON.stringify(sideRaw), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (pathname.endsWith('/side/side/close') && options.method === 'POST') {
+        return new Response(JSON.stringify({ closed: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (pathname.endsWith('/state')) {
+        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (pathname.endsWith('/messages')) {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (pathname === '/ui/v1/providers' || pathname === '/ui/v1/models') {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.state.sessions = [{ ...rootRaw, title: 'Root', messages: [], created: Date.now() }];
+  app.state.activeSessionId = 'root';
+  app.state.draftSessionActive = false;
+  await app.openSideConversation();
+  if (app.state.activeSessionId !== 'side' || app.elements.sideChatBanner.hidden) {
+    fail(name, 'expected created side to become active with its banner');
+    return;
+  }
+  await app.backToMainConversation();
+  if (app.state.activeSessionId !== 'root' || calls.some((call) => call.includes('/side/side/close'))) {
+    fail(name, 'Back to main must not close the side', JSON.stringify(calls));
+    return;
+  }
+  await app.switchToSession('side', { sync: false });
+  await app.closeSideConversation();
+  if (!calls.some((call) => call === 'POST /ui/v1/sessions/side/side/close') || app.state.activeSessionId !== 'root') {
+    fail(name, 'explicit close did not close and return to root', JSON.stringify(calls));
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
@@ -4525,6 +4581,7 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testMCPHeaderPillOpensServersModal();
   await testMCPControlChangePatchesImmediately();
   await testMCPPatchConflictDoesNotOptimisticallyEnable();
+  await testSideChatCreateBackAndExplicitClose();
 
   if (failures > 0) process.exit(1);
   process.exit(0);

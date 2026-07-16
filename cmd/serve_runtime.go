@@ -510,9 +510,23 @@ func (rt *serveRuntime) configureSideRuntime(ctx context.Context, sess *session.
 			rt.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
 		}
 		if rt.engine != nil {
-			for _, name := range []string{tools.SpawnAgentToolName, tools.QueueAgentToolName, tools.WaitForJobsToolName, tools.InitiateHandoverToolName, tools.HubDelegateToolName, tools.HubCheckDelegationToolName} {
-				rt.engine.UnregisterTool(name)
+			blocked := map[string]bool{
+				tools.SpawnAgentToolName: true, tools.QueueAgentToolName: true, tools.WaitForJobsToolName: true,
+				tools.InitiateHandoverToolName: true, tools.RunAgentScriptToolName: true,
+				tools.HubDelegateToolName: true, tools.HubCheckDelegationToolName: true,
+				"activate_skill": true,
 			}
+			for _, spec := range rt.engine.Tools().AllSpecs() {
+				// Unknown tools include custom scripts and dynamically registered MCP
+				// mutation surfaces. Fail closed rather than assuming they are reads.
+				if blocked[spec.Name] || !tools.ValidToolName(spec.Name) {
+					rt.engine.UnregisterTool(spec.Name)
+				}
+			}
+		}
+		if rt.mcpManager != nil {
+			rt.mcpManager.StopAll()
+			rt.mcpSetting = ""
 		}
 		rt.yoloMode = false
 		rt.sidePolicyConfigured = true

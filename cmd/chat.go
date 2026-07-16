@@ -625,9 +625,26 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			approvalMgr.IgnoreProjectApprovals = true
 		}
 		mcpManager.SetSamplingYoloMode(false)
-		for _, name := range []string{tools.SpawnAgentToolName, tools.QueueAgentToolName, tools.WaitForJobsToolName, tools.InitiateHandoverToolName, tools.HubDelegateToolName, tools.HubCheckDelegationToolName} {
-			engine.UnregisterTool(name)
+		mcpManager.StopAll()
+		settings.MCP = ""
+		blocked := map[string]bool{
+			tools.SpawnAgentToolName: true, tools.QueueAgentToolName: true, tools.WaitForJobsToolName: true,
+			tools.InitiateHandoverToolName: true, tools.RunAgentScriptToolName: true,
+			tools.HubDelegateToolName: true, tools.HubCheckDelegationToolName: true,
+			"activate_skill": true,
 		}
+		for _, spec := range engine.Tools().AllSpecs() {
+			if blocked[spec.Name] || !tools.ValidToolName(spec.Name) {
+				engine.UnregisterTool(spec.Name)
+			}
+		}
+		filteredTools := enabledLocalTools[:0]
+		for _, name := range enabledLocalTools {
+			if !blocked[name] && tools.ValidToolName(name) {
+				filteredTools = append(filteredTools, name)
+			}
+		}
+		enabledLocalTools = filteredTools
 	}
 
 	// Create chat model
