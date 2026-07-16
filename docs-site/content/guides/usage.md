@@ -102,11 +102,11 @@ When web search is enabled, the chat status line shows `web`; when fast service 
 
 ### Side questions
 
-`/side <question>` opens an overlay over the current TUI or web conversation. The main answer keeps running and remains visible. Each side question is a single provider request with no local tools, MCP, search, approvals, or subagents. It uses the latest completed main context plus up to 20 successful side exchanges kept only in the active runtime's memory. Side questions are never added to the transcript, resume state, exports, search index, compaction input, title input, or session message count.
+`/side <question>` opens an overlay over the current TUI or web conversation and sends immediately. `/side` alone opens or reopens the overlay with its dedicated `Ask a follow-up…` composer focused. The main answer keeps running and remains visible. Each send is an independent one-turn provider request with no local tools, MCP, search, approvals, attachments, model picker, slash commands, queue, or subagents. It uses a fresh snapshot of the latest completed main context plus up to 20 successful side exchanges kept only in the active runtime's memory. Side questions are never added to the transcript, resume state, exports, search index, compaction input, title input, or session message count.
 
-Use `/side` without text to reopen the latest overlay. In the TUI, use Left/Right for history, Up/Down to scroll, `c` to copy, and `x` twice to clear history. `Esc` cancels a running side question without cancelling the main turn. The web overlay provides equivalent cancel, history, copy, and clear controls. Side history is intentionally lost on a new/cleared/resumed session, runtime eviction, or server restart.
+Side exchanges appear chronologically in one compact scrollable transcript (`You` question, rendered Markdown `Side` answer). After an answer completes, the pinned single-line side composer accepts a follow-up with Enter. While answering, the composer is unavailable and `Esc` cancels only the side request while leaving the overlay open. When idle, `Esc` first clears a non-empty side draft, then closes the overlay when the draft is empty. In the TUI, PageUp/PageDown or Ctrl+Up/Ctrl+Down scroll the transcript, Ctrl+C copies the latest answer, and Ctrl+X twice clears history. The web overlay provides equivalent cancel, copy-latest, and confirmed-clear controls and sanitizes rendered Markdown. Main composer draft, session, transcript position, and main cancellation remain independent.
 
-Promotion or merging a side answer into the main transcript is not supported; copy it or restate the conclusion in the main conversation.
+Side history is intentionally lost on a new/cleared/resumed session, runtime eviction, or process/server restart. Promotion or merging a side answer into the main transcript is not supported; copy it or restate the conclusion in the main conversation.
 
 ### Persistent goals
 

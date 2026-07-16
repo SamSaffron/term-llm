@@ -1631,6 +1631,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if sideMsg, ok := msg.(sideQuestionEventMsg); ok {
 		return m, m.updateSideQuestion(sideMsg)
 	}
+	if pasteMsg, ok := msg.(tea.PasteMsg); ok && m.sideQuestion.Visible {
+		if !m.sideQuestion.Running {
+			m.focusSideComposer()
+			pasteMsg.Content = strings.Join(strings.Fields(pasteMsg.Content), " ")
+			var cmd tea.Cmd
+			m.sideQuestion.Composer, cmd = m.sideQuestion.Composer.Update(pasteMsg)
+			return m, cmd
+		}
+		return m, nil
+	}
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.sideQuestion.Visible {
 		return m.handleSideQuestionKey(keyMsg)
 	}

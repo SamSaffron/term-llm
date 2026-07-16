@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -25,8 +26,9 @@ type SideQuestionState struct {
 	Question     string
 	Response     strings.Builder
 	Synthetic    bool
-	Selected     int
 	History      []sidequestion.Entry
+	Composer     textarea.Model
+	ComposerInit bool
 	Cancel       context.CancelFunc
 	Done         chan struct{}
 	Generation   uint64
@@ -64,23 +66,47 @@ func (m *Model) sideSnapshot() []llm.Message {
 	return sidequestion.PrepareContextSnapshot(messages)
 }
 
-func (m *Model) clearSideSubmittedCommand() {
-	m.setTextareaValue("")
-	if m.completions != nil {
-		m.completions.Hide()
+func (m *Model) ensureSideComposer() {
+	if m.sideQuestion.ComposerInit {
+		return
 	}
+	composer := textarea.New()
+	composer.Placeholder = "Ask a follow-up…"
+	composer.Prompt = "❯ "
+	composer.ShowLineNumbers = false
+	composer.CharLimit = 0
+	composer.SetHeight(1)
+	composer.SetVirtualCursor(true)
+	composer.Focus()
+	m.sideQuestion.Composer = composer
+	m.sideQuestion.ComposerInit = true
+}
+
+func (m *Model) clearSubmittedSideCommand(question string) {
+	value := strings.TrimSpace(m.textarea.Value())
+	if len(value) < len("/side") || !strings.EqualFold(value[:len("/side")], "/side") {
+		return
+	}
+	if strings.TrimSpace(value[len("/side"):]) == question {
+		m.setTextareaValue("")
+		if m.completions != nil {
+			m.completions.Hide()
+		}
+	}
+}
+
+func (m *Model) focusSideComposer() {
+	m.ensureSideComposer()
+	m.sideQuestion.Composer.Focus()
 }
 
 func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	question = strings.TrimSpace(question)
+	m.clearSubmittedSideCommand(question)
+	m.sideQuestion.Visible = true
+	m.sideQuestion.ConfirmClear = false
 	if question == "" {
-		if len(m.sideQuestion.History) == 0 {
-			return m.showSystemMessage("Usage: /side <question>")
-		}
-		m.sideQuestion.Visible = true
-		m.sideQuestion.Selected = len(m.sideQuestion.History) - 1
-		m.loadSelectedSideEntry()
-		m.clearSideSubmittedCommand()
+		m.focusSideComposer()
 		return m, nil
 	}
 	if m.sideQuestion.Running {
@@ -105,7 +131,9 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Unable to start side question: %v", err))
 	}
-	m.clearSideSubmittedCommand()
+	m.ensureSideComposer()
+	m.sideQuestion.Composer.SetValue("")
+	m.sideQuestion.Composer.Blur()
 
 	m.sideQuestion.Generation++
 	generation := m.sideQuestion.Generation
@@ -119,7 +147,6 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	m.sideQuestion.Err = nil
 	m.sideQuestion.Scroll = 0
 	m.sideQuestion.ConfirmClear = false
-	m.sideQuestion.Selected = len(m.sideQuestion.History)
 	m.sideQuestion.events = make(chan sideQuestionEventMsg, 64)
 	done := make(chan struct{})
 	m.sideQuestion.Done = done
@@ -176,12 +203,14 @@ func (m *Model) updateSideQuestion(msg sideQuestionEventMsg) tea.Cmd {
 		m.sideQuestion.Running = false
 		m.sideQuestion.Cancel = nil
 		if errors.Is(msg.err, context.Canceled) {
+			m.sideQuestion.Question = ""
 			m.sideQuestion.Response.Reset()
-			m.sideQuestion.Visible = false
+			m.focusSideComposer()
 			return nil
 		}
 		if msg.err != nil {
 			m.sideQuestion.Err = msg.err
+			m.focusSideComposer()
 			return nil
 		}
 		m.sideQuestion.Response.Reset()
@@ -196,8 +225,8 @@ func (m *Model) updateSideQuestion(msg sideQuestionEventMsg) tea.Cmd {
 				Question: m.sideQuestion.Question, Response: msg.result.Response,
 				CreatedAt: time.Now(), Usage: msg.result.Usage,
 			})
-			m.sideQuestion.Selected = len(m.sideQuestion.History) - 1
 		}
+		m.focusSideComposer()
 		return nil
 	}
 	switch msg.event.Type {
@@ -232,9 +261,10 @@ func (m *Model) cancelSideQuestion() {
 	m.sideQuestion.Generation++
 	m.sideQuestion.Running = false
 	m.sideQuestion.Cancel = nil
+	m.sideQuestion.Question = ""
 	m.sideQuestion.Response.Reset()
-	m.sideQuestion.Visible = false
 	m.sideQuestion.Err = nil
+	m.focusSideComposer()
 }
 
 func (m *Model) clearSideQuestionHistory() {
@@ -242,7 +272,6 @@ func (m *Model) clearSideQuestionHistory() {
 		m.cancelSideQuestion()
 	}
 	m.sideQuestion.History = nil
-	m.sideQuestion.Selected = 0
 	m.sideQuestion.Question = ""
 	m.sideQuestion.Response.Reset()
 	m.sideQuestion.Synthetic = false
@@ -253,62 +282,64 @@ func (m *Model) clearSideQuestionHistory() {
 	m.sideQuestion.ConfirmClear = false
 }
 
-func (m *Model) loadSelectedSideEntry() {
-	if m.sideQuestion.Selected < 0 || m.sideQuestion.Selected >= len(m.sideQuestion.History) {
-		return
+func (m *Model) latestSideAnswer() string {
+	if len(m.sideQuestion.History) > 0 {
+		return m.sideQuestion.History[len(m.sideQuestion.History)-1].Response
 	}
-	entry := m.sideQuestion.History[m.sideQuestion.Selected]
-	m.sideQuestion.Question = entry.Question
-	m.sideQuestion.Response.Reset()
-	m.sideQuestion.Response.WriteString(entry.Response)
-	m.sideQuestion.Usage = entry.Usage
-	m.sideQuestion.Err = nil
-	m.sideQuestion.Scroll = 0
+	return m.sideQuestion.Response.String()
 }
 
 func (m *Model) handleSideQuestionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyName := strings.ToLower(msg.String())
-	if m.sideQuestion.ConfirmClear && keyName != "x" {
+	if m.sideQuestion.ConfirmClear && keyName != "ctrl+x" {
 		m.sideQuestion.ConfirmClear = false
 	}
 	switch keyName {
 	case "esc":
 		if m.sideQuestion.Running {
 			m.cancelSideQuestion()
-		} else {
-			m.sideQuestion.Visible = false
+			return m, nil
 		}
-	case "enter", " ", "space":
+		m.focusSideComposer()
+		if m.sideQuestion.Composer.Value() != "" {
+			m.sideQuestion.Composer.SetValue("")
+			return m, nil
+		}
+		m.sideQuestion.Visible = false
+	case "enter":
+		if m.sideQuestion.Running {
+			return m, nil
+		}
+		m.focusSideComposer()
+		question := strings.TrimSpace(m.sideQuestion.Composer.Value())
+		if question == "" {
+			return m, nil
+		}
+		return m.cmdSide(question)
+	case "pgup", "ctrl+up":
+		m.sideQuestion.Scroll += max(1, m.sideQuestionPanelGeometry().responseRows-1)
+	case "pgdown", "ctrl+down":
+		m.sideQuestion.Scroll = max(0, m.sideQuestion.Scroll-max(1, m.sideQuestionPanelGeometry().responseRows-1))
+	case "ctrl+c":
 		if !m.sideQuestion.Running {
-			m.sideQuestion.Visible = false
+			_ = clipboard.CopyTextOSC52(m.latestSideAnswer())
 		}
-	case "left":
-		if !m.sideQuestion.Running && m.sideQuestion.Selected > 0 {
-			m.sideQuestion.Selected--
-			m.loadSelectedSideEntry()
-		}
-	case "right":
-		if !m.sideQuestion.Running && m.sideQuestion.Selected+1 < len(m.sideQuestion.History) {
-			m.sideQuestion.Selected++
-			m.loadSelectedSideEntry()
-		}
-	case "up":
-		m.sideQuestion.Scroll++
-	case "down":
-		if m.sideQuestion.Scroll > 0 {
-			m.sideQuestion.Scroll--
-		}
-	case "c":
-		if !m.sideQuestion.Running {
-			_ = clipboard.CopyTextOSC52(m.sideQuestion.Response.String())
-		}
-	case "x":
+	case "ctrl+x":
 		if !m.sideQuestion.Running {
 			if m.sideQuestion.ConfirmClear {
 				m.clearSideQuestionHistory()
-			} else {
+				m.sideQuestion.Visible = true
+				m.focusSideComposer()
+			} else if len(m.sideQuestion.History) > 0 {
 				m.sideQuestion.ConfirmClear = true
 			}
+		}
+	default:
+		if !m.sideQuestion.Running {
+			m.focusSideComposer()
+			var cmd tea.Cmd
+			m.sideQuestion.Composer, cmd = m.sideQuestion.Composer.Update(msg)
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -332,26 +363,41 @@ func (m *Model) sideQuestionPanelGeometry() sideQuestionPanelSize {
 	return sideQuestionPanelSize{width: width, bodyWidth: bodyWidth, responseRows: responseRows}
 }
 
-func (m *Model) renderSideQuestionResponse(width int) []string {
-	response := m.sideQuestion.Response.String()
-	if response == "" && m.sideQuestion.Running {
-		response = "Thinking…"
+func (m *Model) renderSideQuestionTranscript(width int) []string {
+	var transcript strings.Builder
+	appendExchange := func(question, response string) {
+		if transcript.Len() > 0 {
+			transcript.WriteString("\n\n")
+		}
+		transcript.WriteString(m.styles.Bold.Render("You"))
+		transcript.WriteByte('\n')
+		transcript.WriteString(wordwrap.String(strings.TrimSpace(question), width))
+		transcript.WriteString("\n\n")
+		transcript.WriteString(m.styles.Bold.Render("Side"))
+		transcript.WriteByte('\n')
+		if strings.TrimSpace(response) != "" {
+			transcript.WriteString(ui.RenderMarkdownWithOptions(response, width, ui.MarkdownRenderOptions{
+				WrapOffset:        0,
+				NormalizeTabs:     true,
+				NormalizeNewlines: false,
+			}))
+		} else if m.sideQuestion.Running {
+			transcript.WriteString("Thinking…")
+		}
 	}
-	var rendered string
-	if response != "" {
-		rendered = ui.RenderMarkdownWithOptions(response, width, ui.MarkdownRenderOptions{
-			WrapOffset:        0,
-			NormalizeTabs:     true,
-			NormalizeNewlines: false,
-		})
+	for _, entry := range m.sideQuestion.History {
+		appendExchange(entry.Question, entry.Response)
+	}
+	if m.sideQuestion.Running || m.sideQuestion.Synthetic || m.sideQuestion.Err != nil {
+		appendExchange(m.sideQuestion.Question, m.sideQuestion.Response.String())
 	}
 	if m.sideQuestion.Err != nil {
-		if rendered != "" {
-			rendered += "\n\n"
+		if transcript.Len() > 0 {
+			transcript.WriteString("\n\n")
 		}
-		rendered += wordwrap.String(m.sideQuestion.Err.Error(), width)
+		transcript.WriteString(wordwrap.String(m.sideQuestion.Err.Error(), width))
 	}
-	return strings.Split(strings.Trim(rendered, "\n"), "\n")
+	return strings.Split(strings.Trim(transcript.String(), "\n"), "\n")
 }
 
 func sideQuestionFooter(running, confirmClear bool, width int) string {
@@ -359,22 +405,22 @@ func sideQuestionFooter(running, confirmClear bool, width int) string {
 	if !running {
 		switch {
 		case width >= 64:
-			footer = "Esc/Enter close · ←/→ history · ↑/↓ scroll · c copy · x clear"
+			footer = "Enter send · Esc clear/close · PgUp/PgDn scroll · Ctrl+C copy · Ctrl+X clear"
 		case width >= 36:
-			footer = "Esc close · ←/→ history · ↑/↓ scroll"
+			footer = "Enter send · Esc clear/close · PgUp/PgDn scroll"
 		default:
-			footer = "Esc close · ↑/↓ scroll"
+			footer = "Enter send · Esc close"
 		}
 	}
 	if confirmClear {
-		footer = "Press x again to clear side history"
+		footer = "Press Ctrl+X again to clear side history"
 	}
 	return ansi.Truncate(footer, width, "…")
 }
 
 func (m *Model) renderSideQuestionPanel() string {
 	geometry := m.sideQuestionPanelGeometry()
-	lines := m.renderSideQuestionResponse(geometry.bodyWidth)
+	lines := m.renderSideQuestionTranscript(geometry.bodyWidth)
 	maxScroll := max(0, len(lines)-geometry.responseRows)
 	scroll := min(maxScroll, max(0, m.sideQuestion.Scroll))
 	start := maxScroll - scroll
@@ -384,7 +430,7 @@ func (m *Model) renderSideQuestionPanel() string {
 		visibleLines = append(visibleLines, "")
 	}
 	visible := strings.Join(visibleLines, "\n")
-	status := "done"
+	status := "ready"
 	if m.sideQuestion.Running {
 		status = "answering"
 	}
@@ -401,13 +447,16 @@ func (m *Model) renderSideQuestionPanel() string {
 	} else if m.askUserModel != nil || m.askUserDoneCh != nil {
 		attention = " · main needs input"
 	}
-	position := ""
-	if len(m.sideQuestion.History) > 1 && !m.sideQuestion.Running {
-		position = fmt.Sprintf(" · %d/%d", m.sideQuestion.Selected+1, len(m.sideQuestion.History))
-	}
-	header := ansi.Truncate("Side question · "+status+position+mainStatus+attention, geometry.bodyWidth, "…")
+	header := ansi.Truncate("Side question · "+status+mainStatus+attention, geometry.bodyWidth, "…")
 	footer := sideQuestionFooter(m.sideQuestion.Running, m.sideQuestion.ConfirmClear, geometry.bodyWidth)
-	content := fmt.Sprintf("%s\n\n%s\n\n%s", header, visible, footer)
+	content := fmt.Sprintf("%s\n\n%s", header, visible)
+	if !m.sideQuestion.Running {
+		m.focusSideComposer()
+		m.sideQuestion.Composer.SetWidth(geometry.bodyWidth)
+		m.sideQuestion.Composer.SetHeight(1)
+		content += "\n\n" + m.sideQuestion.Composer.View()
+	}
+	content += "\n" + footer
 	return m.styles.TableBorder.Border(lipgloss.RoundedBorder()).Width(geometry.bodyWidth).Padding(0, 1).Render(content)
 }
 

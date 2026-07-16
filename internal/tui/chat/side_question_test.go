@@ -27,10 +27,10 @@ func TestSideQuestionPanelResponsiveReadingSurface(t *testing.T) {
 		wantResponseRows int
 		wantPanelRows    int
 	}{
-		{name: "demo terminal", terminalWidth: 120, terminalHeight: 36, wantWidth: 112, wantResponseRows: 22, wantPanelRows: 28},
-		{name: "tall terminal grows", terminalWidth: 120, terminalHeight: 48, wantWidth: 112, wantResponseRows: 34, wantPanelRows: 40},
-		{name: "maximum", terminalWidth: 200, terminalHeight: 100, wantWidth: 120, wantResponseRows: 40, wantPanelRows: 46},
-		{name: "small terminal", terminalWidth: 28, terminalHeight: 10, wantWidth: 28, wantResponseRows: 1, wantPanelRows: 8},
+		{name: "demo terminal", terminalWidth: 120, terminalHeight: 36, wantWidth: 112, wantResponseRows: 22, wantPanelRows: 29},
+		{name: "tall terminal grows", terminalWidth: 120, terminalHeight: 48, wantWidth: 112, wantResponseRows: 34, wantPanelRows: 41},
+		{name: "maximum", terminalWidth: 200, terminalHeight: 100, wantWidth: 120, wantResponseRows: 40, wantPanelRows: 47},
+		{name: "small terminal", terminalWidth: 28, terminalHeight: 10, wantWidth: 28, wantResponseRows: 1, wantPanelRows: 10},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -74,8 +74,8 @@ func TestSideQuestionPanelShowsLiveMainStatus(t *testing.T) {
 
 	m.sideQuestion.Running = false
 	mainStillRunning := ui.StripANSI(m.renderSideQuestionPanel())
-	if !strings.Contains(mainStillRunning, "Side question · done · main running") {
-		t.Fatalf("done side header missing live main status: %q", mainStillRunning)
+	if !strings.Contains(mainStillRunning, "Side question · ready · main running") {
+		t.Fatalf("idle side header missing live main status: %q", mainStillRunning)
 	}
 
 	m.streaming = false
@@ -83,7 +83,7 @@ func TestSideQuestionPanelShowsLiveMainStatus(t *testing.T) {
 	if strings.Contains(done, "main responding") || strings.Contains(done, "main running") {
 		t.Fatalf("completed main status remained in side header: %q", done)
 	}
-	if !strings.Contains(done, "Side question · done") {
+	if !strings.Contains(done, "Side question · ready") {
 		t.Fatalf("side status changed when main completed: %q", done)
 	}
 }
@@ -91,6 +91,8 @@ func TestSideQuestionPanelShowsLiveMainStatus(t *testing.T) {
 func TestSideQuestionPanelRendersMarkdown(t *testing.T) {
 	m := newTestChatModel(true)
 	m.width, m.height = 100, 30
+	m.sideQuestion.Question = "markdown?"
+	m.sideQuestion.Running = true
 	m.sideQuestion.Response.WriteString("## Result\n\n- **bold item**\n- `code`")
 
 	panel := m.renderSideQuestionPanel()
@@ -111,6 +113,8 @@ func TestSideQuestionPanelRendersMarkdown(t *testing.T) {
 func TestSideQuestionPanelLongAnswerScrollsRenderedLines(t *testing.T) {
 	m := newTestChatModel(true)
 	m.width, m.height = 80, 20
+	m.sideQuestion.Question = "list?"
+	m.sideQuestion.Running = true
 	for i := 1; i <= 30; i++ {
 		m.sideQuestion.Response.WriteString(fmt.Sprintf("- item %02d\n", i))
 	}
@@ -182,8 +186,8 @@ func TestSideCommandReopensOverlayAndClearsSubmittedCommand(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("reopening side history unexpectedly returned a command")
 	}
-	if !m.sideQuestion.Visible || m.sideQuestion.Selected != 0 {
-		t.Fatalf("side history was not reopened: %#v", m.sideQuestion)
+	if !m.sideQuestion.Visible || !m.sideQuestion.Composer.Focused() {
+		t.Fatalf("side composer was not reopened and focused: %#v", m.sideQuestion)
 	}
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("textarea = %q, want submitted command cleared", got)
@@ -248,13 +252,13 @@ func TestLateSideGenerationIgnoredAndClearConfirmed(t *testing.T) {
 	if m.sideQuestion.Response.Len() != 0 {
 		t.Fatal("late side event was applied")
 	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: 'x'})
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if !m.sideQuestion.ConfirmClear || len(m.sideQuestion.History) != 1 {
-		t.Fatal("first x should only confirm")
+		t.Fatal("first ctrl+x should only confirm")
 	}
-	_, _ = m.Update(tea.KeyPressMsg{Code: 'x'})
-	if len(m.sideQuestion.History) != 0 || m.sideQuestion.Visible {
-		t.Fatal("second x did not clear history")
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if len(m.sideQuestion.History) != 0 || !m.sideQuestion.Visible {
+		t.Fatal("second ctrl+x did not clear history in place")
 	}
 }
 
@@ -279,6 +283,108 @@ func TestSideQuestionMirrorsMainReasoningRequestNotDisplayMode(t *testing.T) {
 	req := provider.Requests[0]
 	if req.ReasoningEffort != "high" || req.ReasoningEffort == m.reasoningModeOverride || req.Responses == nil || req.Responses.ReasoningMode != "pro" {
 		t.Fatalf("side reasoning config = effort %q responses %#v", req.ReasoningEffort, req.Responses)
+	}
+}
+
+func TestSideTranscriptIsChronologicalAndComposerPreservesMainDraft(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width, m.height = 100, 24
+	m.sideQuestion.Visible = true
+	m.sideQuestion.History = []sidequestion.Entry{
+		{Question: "first question", Response: "first answer"},
+		{Question: "second question", Response: "second answer"},
+	}
+	m.setTextareaValue("unfinished main draft")
+	m.focusSideComposer()
+	m.sideQuestion.Composer.SetValue("follow-up")
+	provider := llm.NewMockProvider("mock").AddTextResponse("third answer")
+	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
+
+	plain := ui.StripANSI(m.renderSideQuestionPanel())
+	positions := []int{
+		strings.Index(plain, "first question"), strings.Index(plain, "first answer"),
+		strings.Index(plain, "second question"), strings.Index(plain, "second answer"),
+	}
+	for i, position := range positions {
+		if position < 0 || (i > 0 && position <= positions[i-1]) {
+			t.Fatalf("transcript is not chronological: %q", plain)
+		}
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.sideQuestion.Running || cmd == nil {
+		t.Fatal("Enter did not send the side composer")
+	}
+	if got := m.textarea.Value(); got != "unfinished main draft" {
+		t.Fatalf("side composer changed main draft: %q", got)
+	}
+}
+
+func TestSideEscapeClearsDraftThenClosesAndCancelKeepsOpen(t *testing.T) {
+	m := newTestChatModel(true)
+	m.sideQuestion.Visible = true
+	m.focusSideComposer()
+	m.sideQuestion.Composer.SetValue("draft")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(*Model)
+	if !m.sideQuestion.Visible || m.sideQuestion.Composer.Value() != "" {
+		t.Fatalf("first Esc state = visible %v draft %q", m.sideQuestion.Visible, m.sideQuestion.Composer.Value())
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(*Model)
+	if m.sideQuestion.Visible {
+		t.Fatal("second Esc did not close empty idle overlay")
+	}
+
+	sideCtx, sideCancel := context.WithCancel(context.Background())
+	m.sideQuestion.Visible = true
+	m.sideQuestion.Running = true
+	m.sideQuestion.Cancel = sideCancel
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(*Model)
+	if sideCtx.Err() == nil || !m.sideQuestion.Visible || m.sideQuestion.Running || !m.sideQuestion.Composer.Focused() {
+		t.Fatalf("running Esc did not cancel in place: %#v", m.sideQuestion)
+	}
+}
+
+func TestSideTranscriptScrollKeysDoNotStealCursorKeys(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width, m.height = 80, 20
+	m.sideQuestion.Visible = true
+	m.sideQuestion.History = []sidequestion.Entry{{Question: "q", Response: strings.Repeat("line\n", 50)}}
+	m.focusSideComposer()
+	m.sideQuestion.Composer.SetValue("editing")
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.sideQuestion.Scroll != 0 {
+		t.Fatalf("ordinary Up scrolled transcript while editing: %d", m.sideQuestion.Scroll)
+	}
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.sideQuestion.Scroll == 0 {
+		t.Fatal("PageUp did not scroll transcript")
+	}
+	before := m.sideQuestion.Scroll
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	if m.sideQuestion.Scroll >= before {
+		t.Fatalf("Ctrl+Down did not scroll toward transcript bottom: %d >= %d", m.sideQuestion.Scroll, before)
+	}
+}
+
+func TestSideCommandWhileRunningOnlyRefocusesLiveOverlay(t *testing.T) {
+	m := newTestChatModel(true)
+	m.sideQuestion.Visible = true
+	m.sideQuestion.Running = true
+	m.sideQuestion.Question = "live question"
+	m.sideQuestion.Response.WriteString("partial answer")
+	m.sideQuestion.History = []sidequestion.Entry{{Question: "old", Response: "old answer"}}
+	m.setTextareaValue("/side")
+
+	updated, cmd := m.ExecuteCommand("/side")
+	m = updated.(*Model)
+	if cmd != nil || m.sideQuestion.Question != "live question" || m.sideQuestion.Response.String() != "partial answer" {
+		t.Fatalf("/side replaced active exchange: %#v", m.sideQuestion)
 	}
 }
 

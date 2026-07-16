@@ -154,7 +154,7 @@ func (m *Model) composerCursor() *tea.Cursor {
 	if m == nil || !m.textareaBoundsValid || !m.textarea.Focused() {
 		return nil
 	}
-	if m.autoSendQueue != nil || m.quitting {
+	if m.autoSendQueue != nil || m.quitting || m.sideQuestion.Visible {
 		return nil
 	}
 	if m.dialog != nil && m.dialog.IsOpen() {

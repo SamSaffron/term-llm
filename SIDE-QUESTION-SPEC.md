@@ -1,7 +1,8 @@
 # Side Questions: Overlay Rework Specification
 
-Status: proposed
+Status: implemented
 Prepared: 2026-07-16
+Updated: 2026-07-17
 Reworks: PR #924 (`feat/side-conversations`)
 
 ## 1. Decision
@@ -52,11 +53,7 @@ Examples:
 /side Does that change the rollback checkpoint you mentioned?
 ```
 
-`/side` with no argument opens the latest side overlay and its history. If there is no history, it shows usage:
-
-```text
-Usage: /side <question>
-```
+`/side` with no argument opens or reopens the overlay with its dedicated side composer focused. It does not send a request. The composer placeholder is `Ask a follow-up…`.
 
 Remove these commands from PR #924:
 
@@ -73,29 +70,31 @@ There is no side location to return from or close.
 2. The user enters `/side <question>`.
 3. A side overlay appears over or adjacent to the still-visible main conversation.
 4. The main run continues unchanged in the background.
-5. The side answer streams into the overlay.
-6. The user dismisses the overlay and remains at the same main scroll position and input state.
-7. A later `/side` starts a fresh one-turn inference using newer completed main context and prior private side history.
+5. The side answer streams into a compact chronological transcript. Each exchange is rendered as the `You` question followed by the Markdown `Side` answer.
+6. When the answer completes, a pinned, single-line side-only composer appears for follow-up questions.
+7. The user can dismiss the overlay and remains at the same main scroll position and input state.
+8. Each follow-up is a fresh one-turn request using newer completed main context and prior private side history.
 
 ### 4.3 Overlay controls
 
 TUI:
 
-- `Esc`, `Enter`, or `Space`: dismiss a completed overlay.
-- `Esc` while answering: cancel the side request and dismiss it.
-- `Up`/`Down`: scroll the selected answer.
-- `Left`/`Right`: browse earlier side exchanges.
-- `c`: copy the selected answer.
-- `x`: clear private side history after confirmation.
+- While answering, the composer is hidden and the footer shows `Esc cancel`. `Esc` cancels only the side request, keeps the overlay open, and restores the side composer.
+- While idle, `Esc` clears a non-empty side draft first; with an empty draft it closes the overlay.
+- `Enter` sends the single-line side draft. The side composer has no attachments, slash commands, model picker, tools, multiline growth, queue, or nested side mode.
+- `PageUp`/`PageDown` or `Ctrl+Up`/`Ctrl+Down`: scroll the chronological transcript. Ordinary cursor keys remain available for text editing.
+- `Ctrl+C`: copy the latest answer.
+- `Ctrl+X` twice: clear private side history.
 
 Web:
 
-- Close button or `Esc`: dismiss; while running this cancels after confirmation or via a distinct cancel control.
-- Previous/next controls: browse history.
-- Copy button.
-- Clear-history action.
+- The same chronological transcript and pinned side-only composer are shown.
+- `Enter`/Send submits the side draft. While answering, the composer is hidden and `Esc cancel` is shown.
+- `Esc` follows the same cancel, clear-draft, then close sequence as the TUI.
+- Copy latest and confirmed Clear controls are provided.
+- Side answers use the shared sanitized rich-Markdown renderer.
 
-The main transcript must remain visible behind the overlay. Opening or dismissing the overlay must not change the active session, route, transcript scroll anchor, or main input draft.
+The main transcript must remain visible behind the overlay. Opening, sending from, cancelling, or dismissing the overlay must not change the active session, route, transcript scroll anchor, or main input draft. A side request cannot be queued or started while another side request is active.
 
 ## 5. Context semantics
 
@@ -226,13 +225,14 @@ type SideQuestionState struct {
     Question   string
     Response   strings.Builder
     Synthetic  bool
-    Retry      *RetryState
-    Selected   int
     History    []SideQuestionEntry
+    Composer   textarea.Model
     Cancel     context.CancelFunc
     Generation uint64
 }
 ```
+
+The overlay renders all successful history entries in chronological order and appends the active exchange while it streams; it does not page through a selected entry.
 
 Recommended responsibilities:
 
@@ -253,7 +253,7 @@ Delete or revert:
 
 ## 8. Web architecture
 
-Keep the current main session route and transcript mounted. Replace the persistent Side Chat navigation/panel with an overlay owned by the active session page.
+Keep the current main session route and transcript mounted. The overlay owns one chronological transcript plus a pinned side-only input when idle. Side answers are rendered through the shared sanitized Markdown pipeline; the main composer is never reused for side follow-ups.
 
 Server runtime state:
 
@@ -312,7 +312,7 @@ Remove side-only persistence:
 - Side already running: focus it and show a concise warning.
 - Provider error: show error in overlay; do not append history.
 - Tool-call attempt: show a synthetic tool-less warning; do not append history.
-- Cancellation: close cleanly, discard partial answer, preserve earlier history.
+- Cancellation: keep the overlay open, discard the partial answer, restore the composer, and preserve earlier history.
 - Main session changes while side is running: cancel the side before replacing the runtime.
 - Provider/model changes: future side requests use the new configuration; existing textual history remains unless the session itself changes.
 
@@ -362,15 +362,17 @@ Required tests must prove:
 - `/side <question>` opens an overlay without changing conversation ID.
 - Main transcript remains visible and keeps updating behind the overlay.
 - Dismiss restores the same scroll position and input draft.
-- History navigation, copy, clear, and cancel keys work.
+- Composer focus/send, three-stage Escape behavior, chronological transcript, dedicated scroll keys, copy-latest, clear, and cancel work.
 - `/main` and `/side close` are absent.
 
 ### 12.5 Web tests
 
-- Starting a side question does not navigate or create a session.
+- Starting a side question does not navigate, mutate the main composer, or create a session.
+- Chronological side exchanges render through the sanitized Markdown path.
+- Side composer focus/send, Escape cancellation/clearing/closing, and concurrent-send rejection work.
 - Main and side streams render concurrently.
-- Refresh can recover history while the server runtime remains alive.
-- Runtime eviction/restart safely yields empty history.
+- Refresh can recover runtime-local history while the server runtime remains alive.
+- Runtime eviction/restart safely yields empty history; no side content is persisted.
 - Cancel and clear endpoints are idempotent.
 
 ## 13. Acceptance criteria

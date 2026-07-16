@@ -3949,6 +3949,7 @@ const sendMessage = async (options = {}) => {
 
   if (/^\/side(?:\s|$)/i.test(prompt)) {
     const question = prompt.replace(/^\/side\b/i, '').trim();
+    elements.promptInput.value = '';
     if (typeof app.openSideQuestion === 'function') await app.openSideQuestion(question);
     return;
   }

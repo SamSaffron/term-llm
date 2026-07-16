@@ -48,6 +48,56 @@ func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
 	}
 }
 
+func TestServeSideFollowUpRefreshesMainContextAndKeepsPrivateHistoryChronological(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("first side answer").AddTextResponse("second side answer")
+	rt := &serveRuntime{providerKey: "mock", defaultModel: "m"}
+	rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+	rt.refreshSideQuestionSnapshot([]llm.Message{llm.UserText("main one"), llm.AssistantText("main answer one")})
+
+	events, err := rt.startSideQuestion(sideQuestionStart{Question: "first side question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	rt.refreshSideQuestionSnapshot([]llm.Message{
+		llm.UserText("main one"), llm.AssistantText("main answer one"),
+		llm.UserText("main two"), llm.AssistantText("main answer two"),
+	})
+	events, err = rt.startSideQuestion(sideQuestionStart{Question: "second side question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider requests = %d", len(provider.Requests))
+	}
+	var joined strings.Builder
+	for _, msg := range provider.Requests[1].Messages {
+		for _, part := range msg.Parts {
+			joined.WriteString(part.Text)
+			joined.WriteByte('\n')
+		}
+	}
+	text := joined.String()
+	positions := []int{
+		strings.Index(text, "main two"),
+		strings.Index(text, "first side question"),
+		strings.Index(text, "first side answer"),
+		strings.LastIndex(text, "second side question"),
+	}
+	for i, position := range positions {
+		if position < 0 || (i > 0 && position <= positions[i-1]) {
+			t.Fatalf("follow-up context is missing or out of order: %q", text)
+		}
+	}
+	if got := rt.sideQuestion.view().History; len(got) != 2 {
+		t.Fatalf("private history len = %d, want 2", len(got))
+	}
+}
+
 func TestServeSideQuestionEndpointsRecoverCancelAndClear(t *testing.T) {
 	provider := llm.NewMockProvider("mock").AddTextResponse("answer")
 	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
@@ -83,6 +133,14 @@ func TestServeSideQuestionEndpointsRecoverCancelAndClear(t *testing.T) {
 		if rr.Code != http.StatusNoContent {
 			t.Fatalf("DELETE %s status = %d", suffix, rr.Code)
 		}
+	}
+	rt, ok := manager.Get("main")
+	if !ok {
+		t.Fatal("runtime disappeared")
+	}
+	view := rt.sideQuestion.view()
+	if len(view.History) != 0 || view.Question != "" || view.Response != "" || view.Error != "" {
+		t.Fatalf("clear retained private side state: %#v", view)
 	}
 }
 

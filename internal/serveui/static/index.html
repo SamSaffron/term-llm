@@ -344,20 +344,20 @@
   <div class="side-question-overlay hidden" id="sideQuestionOverlay" role="dialog" aria-modal="true" aria-labelledby="sideQuestionTitle">
     <div class="side-question-panel">
       <div class="side-question-header">
-        <div><strong id="sideQuestionTitle">Side question</strong><span id="sideQuestionStatus"></span></div>
+        <div><strong id="sideQuestionTitle">Side</strong><span id="sideQuestionStatus"></span></div>
         <button class="icon-btn" id="sideQuestionCloseBtn" type="button" aria-label="Close side question">✕</button>
       </div>
       <div class="side-question-main-attention hidden" id="sideQuestionMainAttention">The main run needs your attention.</div>
-      <div class="side-question-question" id="sideQuestionQuestion"></div>
-      <div class="side-question-response markdown-body" id="sideQuestionResponse" aria-live="polite"></div>
+      <div class="side-question-transcript" id="sideQuestionTranscript" aria-live="polite"></div>
       <div class="side-question-error" id="sideQuestionError"></div>
+      <form class="side-question-composer" id="sideQuestionComposer">
+        <input id="sideQuestionInput" type="text" placeholder="Ask a follow-up…" autocomplete="off" aria-label="Ask a side follow-up">
+        <button class="btn" id="sideQuestionSendBtn" type="submit">Send</button>
+      </form>
       <div class="side-question-actions">
-        <button class="btn" id="sideQuestionPrevBtn" type="button">Previous</button>
-        <span id="sideQuestionPosition"></span>
-        <button class="btn" id="sideQuestionNextBtn" type="button">Next</button>
-        <button class="btn" id="sideQuestionCopyBtn" type="button">Copy</button>
-        <button class="btn" id="sideQuestionClearBtn" type="button">Clear history</button>
-        <button class="btn danger hidden" id="sideQuestionCancelBtn" type="button">Cancel</button>
+        <button class="btn" id="sideQuestionCopyBtn" type="button">Copy latest</button>
+        <button class="btn" id="sideQuestionClearBtn" type="button">Clear</button>
+        <button class="btn danger hidden" id="sideQuestionCancelBtn" type="button">Esc cancel</button>
       </div>
     </div>
   </div>

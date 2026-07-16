@@ -156,6 +156,11 @@ func (sq *sideQuestionRuntime) cancelActive() {
 func (sq *sideQuestionRuntime) clearHistory() {
 	sq.mu.Lock()
 	sq.history = nil
+	sq.question = ""
+	sq.response = ""
+	sq.synthetic = false
+	sq.usage = llm.Usage{}
+	sq.lastError = ""
 	sq.mu.Unlock()
 }
 
