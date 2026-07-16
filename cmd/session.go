@@ -642,7 +642,10 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	if err != nil {
 		return nil, fmt.Errorf("setup spawn_agent: %w", err)
 	}
+	// Keep a snapshot for legacy callers and as a fallback if the live resolver
+	// cannot provide a directory.
 	runner.SetBaseDir(toolMgr.BaseDir())
+	runner.SetBaseDirFunc(toolMgr.BaseDir)
 	spawnTool.SetDepth(depth)
 	spawnTool.SetRunner(runner)
 	return runner, nil

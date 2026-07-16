@@ -179,7 +179,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	settings.SessionID = req.SessionID
-	skillsSetup := SetupSkills(&cfg.Skills, req.Skills, agentSkills, r.errWriter())
+	skillsSetup := SetupSkillsInDir(&cfg.Skills, req.Skills, agentSkills, r.errWriter(), settings.BaseDir)
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 
 	modelName := activeModel(cfg)
@@ -434,7 +434,7 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 		defaultMaxTurns = 50
 	}
 	cmdProvider, cmdModel, cmdInstructions, cmdMaxTurns := r.commandConfig(cfg)
-	settings, err := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{
 		Provider:        providerFlag,
 		Tools:           toolsFlag,
 		ReadDirs:        readDirs,
@@ -448,7 +448,7 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 		Search:          search,
 		NoSearch:        noSearch,
 		Platform:        templatePlatform(req.Platform),
-	}, cmdProvider, cmdModel, cmdInstructions, cmdMaxTurns, defaultMaxTurns)
+	}, cmdProvider, cmdModel, cmdInstructions, cmdMaxTurns, defaultMaxTurns, req.Cwd)
 	if err != nil {
 		return SessionSettings{}, err
 	}

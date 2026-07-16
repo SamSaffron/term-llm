@@ -25,8 +25,9 @@ type SpawnAgentRunner struct {
 	yoloMode          bool // Auto-approve all tool operations in sub-agents
 	parentApprovalMgr *tools.ApprovalManager
 	store             session.Store // Session store for tracking subagent turns
-	parentSessionID   string        // Parent session ID for child session linking
-	parentBaseDir     string        // Per-session BaseDir inherited by child agents
+	parentSessionID   string        // Fallback parent session ID when execution context has none
+	parentBaseDir     string        // Fallback BaseDir for legacy callers
+	parentBaseDirFunc func() string // Returns the parent's current per-session BaseDir
 	warnFunc          func(format string, args ...any)
 	wg                *sync.WaitGroup // tracks in-flight agent runs so callers can drain before closing the store
 }
@@ -62,11 +63,33 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 	}, nil
 }
 
-// SetBaseDir sets the per-session BaseDir inherited by spawned agents.
+// SetBaseDir sets the fallback per-session BaseDir inherited by spawned agents.
 func (r *SpawnAgentRunner) SetBaseDir(dir string) {
 	if r != nil {
 		r.parentBaseDir = strings.TrimSpace(dir)
 	}
+}
+
+// SetBaseDirFunc sets a resolver for the parent's current BaseDir. Interactive
+// sessions can switch worktrees after the runner is wired, so a copied path is
+// not sufficient. It must be configured before the runner is installed on a
+// SpawnAgentTool; the resolver itself must be safe for concurrent calls.
+func (r *SpawnAgentRunner) SetBaseDirFunc(fn func() string) {
+	if r != nil {
+		r.parentBaseDirFunc = fn
+	}
+}
+
+func (r *SpawnAgentRunner) currentBaseDir() string {
+	if r != nil && r.parentBaseDirFunc != nil {
+		if dir := strings.TrimSpace(r.parentBaseDirFunc()); dir != "" {
+			return dir
+		}
+	}
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.parentBaseDir)
 }
 
 // SetWarnFunc sets a function to be called when non-fatal warnings occur
@@ -114,6 +137,10 @@ func (r *SpawnAgentRunner) RunAgentWithCallbackAndOptions(ctx context.Context, a
 }
 
 func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, prompt, childSessionID string, depth int, search bool, opts tools.SpawnAgentRunOptions) runpkg.Request {
+	parentSessionID := r.parentSessionID
+	if contextSessionID := llm.SessionIDFromContext(ctx); contextSessionID != "" {
+		parentSessionID = contextSessionID
+	}
 	return runpkg.Request{
 		Platform:                 runpkg.PlatformConsole,
 		AgentName:                agentName,
@@ -122,9 +149,9 @@ func (r *SpawnAgentRunner) buildRunRequest(ctx context.Context, agentName, promp
 		SessionName:              fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
 		Persist:                  r.store != nil,
 		Model:                    strings.TrimSpace(opts.ModelOverride),
-		Cwd:                      r.parentBaseDir,
+		Cwd:                      r.currentBaseDir(),
 		Search:                   &search,
-		ParentSessionID:          r.parentSessionID,
+		ParentSessionID:          parentSessionID,
 		IsSubagent:               true,
 		Depth:                    depth,
 		ApprovalRole:             "parent_agent_task",
@@ -301,18 +328,19 @@ func subagentEventFromLLM(event llm.Event) tools.SubagentEvent {
 // setupAgentTools keeps the historical spawn-agent tool wiring path available for
 // focused tests while delegating to the shared SessionSettings tool setup.
 func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
-	settings, err := ResolveSettings(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
+	baseDir := r.currentBaseDir()
+	settings, err := ResolveSettingsInDir(cfg, agent, CLIFlags{}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20, baseDir)
 	if err != nil {
 		return nil, err
 	}
 	settings.SessionID = childSessionID
 	settings.Provider = strings.TrimSpace(cfg.DefaultProvider)
 	settings.Model = strings.TrimSpace(activeModel(cfg))
-	if strings.TrimSpace(r.parentBaseDir) != "" {
-		settings.BaseDir = r.parentBaseDir
-		settings.ReadDirs = append(settings.ReadDirs, r.parentBaseDir)
-		settings.WriteDirs = append(settings.WriteDirs, r.parentBaseDir)
-		settings.ShellWorkingDir = r.parentBaseDir
+	if baseDir != "" {
+		settings.BaseDir = baseDir
+		settings.ReadDirs = append(settings.ReadDirs, baseDir)
+		settings.WriteDirs = append(settings.WriteDirs, baseDir)
+		settings.ShellWorkingDir = baseDir
 	}
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil || toolMgr == nil {

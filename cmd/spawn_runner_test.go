@@ -48,6 +48,82 @@ func TestSpawnRunnerBuildRunRequestInheritsParentBaseDir(t *testing.T) {
 	}
 }
 
+func TestSpawnRunnerBuildRunRequestUsesCurrentParentContext(t *testing.T) {
+	baseDir := "/tmp/first-worktree"
+	runner := &SpawnAgentRunner{parentSessionID: "stale-parent"}
+	runner.SetBaseDirFunc(func() string { return baseDir })
+
+	baseDir = "/tmp/current-worktree"
+	ctx := llm.ContextWithSessionID(context.Background(), "current-parent")
+	req := runner.buildRunRequest(ctx, "reviewer", "review this", "child-session", 1, false, tools.SpawnAgentRunOptions{})
+	if req.Cwd != "/tmp/current-worktree" {
+		t.Fatalf("Cwd = %q, want current parent BaseDir", req.Cwd)
+	}
+	if req.ParentSessionID != "current-parent" {
+		t.Fatalf("ParentSessionID = %q, want current context session", req.ParentSessionID)
+	}
+}
+
+func TestSpawnRunnerBuildRunRequestFallsBackToConfiguredContext(t *testing.T) {
+	runner := &SpawnAgentRunner{parentSessionID: "configured-parent"}
+	runner.SetBaseDir("/tmp/configured-worktree")
+	runner.SetBaseDirFunc(func() string { return "" })
+
+	req := runner.buildRunRequest(context.Background(), "reviewer", "review this", "child-session", 1, false, tools.SpawnAgentRunOptions{})
+	if req.Cwd != "/tmp/configured-worktree" {
+		t.Fatalf("Cwd = %q, want configured BaseDir fallback", req.Cwd)
+	}
+	if req.ParentSessionID != "configured-parent" {
+		t.Fatalf("ParentSessionID = %q, want configured parent fallback", req.ParentSessionID)
+	}
+}
+
+func TestWireSpawnAgentRunnerTracksToolManagerBaseDir(t *testing.T) {
+	first := t.TempDir()
+	current := t.TempDir()
+	cfg := &config.Config{}
+	toolMgr, err := tools.NewToolManager(&tools.ToolConfig{Enabled: []string{tools.SpawnAgentToolName}}, cfg)
+	if err != nil {
+		t.Fatalf("NewToolManager: %v", err)
+	}
+	if err := toolMgr.SetBaseDir(first); err != nil {
+		t.Fatalf("SetBaseDir first: %v", err)
+	}
+	runner, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, false, nil, "parent-session")
+	if err != nil {
+		t.Fatalf("WireSpawnAgentRunnerWithStore: %v", err)
+	}
+	if err := toolMgr.SetBaseDir(current); err != nil {
+		t.Fatalf("SetBaseDir current: %v", err)
+	}
+
+	req := runner.buildRunRequest(context.Background(), "reviewer", "review this", "child-session", 1, false, tools.SpawnAgentRunOptions{})
+	if req.Cwd != current {
+		t.Fatalf("Cwd = %q, want current tool manager BaseDir %q", req.Cwd, current)
+	}
+}
+
+func TestSpawnRunnerSetupAgentToolsUsesCurrentBaseDir(t *testing.T) {
+	first := t.TempDir()
+	current := t.TempDir()
+	runner := &SpawnAgentRunner{cfg: &config.Config{}}
+	runner.SetBaseDir(first)
+	runner.SetBaseDirFunc(func() string { return current })
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	agent := &agents.Agent{
+		Name:  "parent",
+		Tools: agents.ToolsConfig{Enabled: []string{tools.SpawnAgentToolName}},
+	}
+
+	toolMgr, err := runner.setupAgentTools(runner.cfg, engine, agent, 0, "child-session")
+	if err != nil {
+		t.Fatalf("setupAgentTools() error = %v", err)
+	}
+	if got := toolMgr.BaseDir(); got != current {
+		t.Fatalf("BaseDir = %q, want current BaseDir %q", got, current)
+	}
+}
+
 func TestSpawnRunnerSetupAgentToolsPropagatesAgentModels(t *testing.T) {
 	cfg := &config.Config{}
 	runner := &SpawnAgentRunner{cfg: cfg}
