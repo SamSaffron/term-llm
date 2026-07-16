@@ -1041,7 +1041,7 @@ func runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memoryd
 			texts[j] = frag.Content
 		}
 
-		result, err := embedder.Embed(embedding.EmbedRequest{
+		result, err := embedder.Embed(ctx, embedding.EmbedRequest{
 			Texts:    texts,
 			Model:    modelName,
 			TaskType: "RETRIEVAL_DOCUMENT",

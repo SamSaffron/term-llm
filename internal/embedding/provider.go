@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -45,8 +46,8 @@ type EmbeddingProvider interface {
 	// DefaultModel returns the default embedding model for this provider
 	DefaultModel() string
 
-	// Embed generates embeddings for the given texts
-	Embed(req EmbedRequest) (*EmbeddingResult, error)
+	// Embed generates embeddings for the given texts.
+	Embed(ctx context.Context, req EmbedRequest) (*EmbeddingResult, error)
 }
 
 // NewEmbeddingProvider creates an embedding provider based on config

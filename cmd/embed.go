@@ -154,7 +154,7 @@ func runEmbed(cmd *cobra.Command, args []string) error {
 	}
 
 	// Generate embeddings
-	result, err := provider.Embed(req)
+	result, err := provider.Embed(cmd.Context(), req)
 	if err != nil {
 		return err
 	}

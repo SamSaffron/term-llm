@@ -5,24 +5,26 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"google.golang.org/genai"
 )
 
 // GeminiProvider implements Provider using the Google Gemini API.
 type GeminiProvider struct {
 	apiKey         string
 	model          string
-	thinkingLevel  genai.ThinkingLevel // for Gemini 3: MINIMAL, LOW, HIGH
+	thinkingLevel  geminiThinkingLevel // for Gemini 3: MINIMAL, LOW, HIGH
 	thinkingBudget *int32              // for Gemini 2.5: 0, 8192, etc.
+	baseURL        string
+	client         *http.Client
 }
 
 // geminiThinkingConfig holds thinking configuration for a Gemini model
 type geminiThinkingConfig struct {
-	level  genai.ThinkingLevel // for Gemini 3
+	level  geminiThinkingLevel // for Gemini 3
 	budget *int32              // for Gemini 2.5 (nil = no config)
 }
 
@@ -34,19 +36,19 @@ func parseGeminiModelThinking(model string) (string, geminiThinkingConfig) {
 	baseModel := strings.TrimSuffix(model, "-thinking")
 
 	switch {
-	// Gemini 3 Flash - supports MINIMAL, LOW, MEDIUM, HIGH
+	// Gemini 3 Flash - use minimal thinking by default and high with -thinking.
 	case strings.HasPrefix(baseModel, "gemini-3-flash"):
 		if hasThinkingSuffix {
-			return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelHigh}
+			return baseModel, geminiThinkingConfig{level: geminiThinkingLevelHigh}
 		}
-		return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelMinimal}
+		return baseModel, geminiThinkingConfig{level: geminiThinkingLevelMinimal}
 
 	// Gemini 3 Pro - only supports LOW and HIGH (not MINIMAL)
 	case strings.HasPrefix(baseModel, "gemini-3-pro"):
 		if hasThinkingSuffix {
-			return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelHigh}
+			return baseModel, geminiThinkingConfig{level: geminiThinkingLevelHigh}
 		}
-		return baseModel, geminiThinkingConfig{level: genai.ThinkingLevelLow}
+		return baseModel, geminiThinkingConfig{level: geminiThinkingLevelLow}
 
 	// Gemini 2.5 models - disable thinking with thinkingBudget=0
 	case strings.HasPrefix(baseModel, "gemini-2.5"):
@@ -69,6 +71,8 @@ func NewGeminiProvider(apiKey, model string) *GeminiProvider {
 		model:          baseModel,
 		thinkingLevel:  thinkingCfg.level,
 		thinkingBudget: thinkingCfg.budget,
+		baseURL:        geminiAPIBaseURL,
+		client:         defaultHTTPClient,
 	}
 }
 
@@ -95,49 +99,48 @@ func (p *GeminiProvider) Capabilities() Capabilities {
 	}
 }
 
-func (p *GeminiProvider) newClient(ctx context.Context) (*genai.Client, error) {
-	return genai.NewClient(ctx, &genai.ClientConfig{APIKey: p.apiKey})
-}
-
 func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	effectiveModel := chooseModel(req.Model, p.model)
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-
-		client, err := p.newClient(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to create gemini client: %w", err)
-		}
-
 		system, contents := buildGeminiContents(req.Messages)
 		if len(contents) == 0 {
 			return fmt.Errorf("no user content provided")
 		}
 
-		config := &genai.GenerateContentConfig{}
+		apiReq := geminiGenerateContentRequest{Contents: contents}
 		if system != "" {
-			config.SystemInstruction = genai.NewContentFromText(system, genai.RoleUser)
+			apiReq.SystemInstruction = &geminiContent{Role: geminiRoleUser, Parts: []*geminiPart{{Text: system}}}
 		}
 
-		// Apply thinking config based on model generation
-		// Note: Skip thinking config when search or tools are enabled (not supported together)
+		generation := &geminiGenerationConfig{}
+		// Thinking is not supported together with search or function tools.
 		if !req.Search && len(req.Tools) == 0 {
 			if p.thinkingLevel != "" {
-				config.ThinkingConfig = &genai.ThinkingConfig{
-					ThinkingLevel: p.thinkingLevel,
-				}
+				generation.ThinkingConfig = &geminiThinkingAPIConfig{ThinkingLevel: p.thinkingLevel}
 			} else if p.thinkingBudget != nil {
-				config.ThinkingConfig = &genai.ThinkingConfig{
-					ThinkingBudget: p.thinkingBudget,
-				}
+				generation.ThinkingConfig = &geminiThinkingAPIConfig{ThinkingBudget: p.thinkingBudget}
 			}
+		}
+		if req.TemperatureSet || req.Temperature != 0 {
+			temperature := req.Temperature
+			generation.Temperature = &temperature
+		}
+		if req.TopPSet || req.TopP != 0 {
+			topP := req.TopP
+			generation.TopP = &topP
+		}
+		generation.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, effectiveModel)
+		if generation.ThinkingConfig != nil || generation.Temperature != nil || generation.TopP != nil || generation.MaxOutputTokens > 0 {
+			apiReq.GenerationConfig = generation
 		}
 
 		if req.Search {
-			config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+			apiReq.Tools = append(apiReq.Tools, &geminiTool{GoogleSearch: &geminiGoogleSearch{}})
 		}
 
 		if len(req.Tools) > 0 {
-			config.Tools = append(config.Tools, buildGeminiTools(req.Tools)...)
-			config.ToolConfig = buildGeminiToolConfig(req.ToolChoice)
+			apiReq.Tools = append(apiReq.Tools, buildGeminiTools(req.Tools)...)
+			apiReq.ToolConfig = buildGeminiToolConfig(req.ToolChoice)
 		}
 
 		if req.Debug {
@@ -153,22 +156,25 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 		var lastThoughtSig []byte
 		var sources []string
-		var lastResp *genai.GenerateContentResponse
-		for resp, err := range client.Models.GenerateContentStream(ctx, chooseModel(req.Model, p.model), contents, config) {
-			if err != nil {
-				return fmt.Errorf("gemini streaming error: %w", err)
+		var usageResp *geminiGenerateContentResponse
+		sawCandidateContent := false
+		err := streamGeminiResponses(ctx, p.client, p.baseURL, p.apiKey, effectiveModel, apiReq, func(resp *geminiGenerateContentResponse) error {
+			if resp.UsageMetadata != nil {
+				usageResp = resp
 			}
-			lastResp = resp
-			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			if len(resp.Candidates) > 0 && resp.Candidates[0] != nil && resp.Candidates[0].Content != nil {
+				if len(resp.Candidates[0].Content.Parts) > 0 {
+					sawCandidateContent = true
+				}
 				if err := emitGeminiParts(send, resp.Candidates[0].Content.Parts, &lastThoughtSig); err != nil {
 					return err
 				}
 			}
 			if req.Search {
 				for _, cand := range resp.Candidates {
-					if cand.GroundingMetadata != nil && cand.GroundingMetadata.GroundingChunks != nil {
+					if cand != nil && cand.GroundingMetadata != nil {
 						for _, chunk := range cand.GroundingMetadata.GroundingChunks {
-							if chunk.Web != nil && chunk.Web.URI != "" {
+							if chunk != nil && chunk.Web != nil && chunk.Web.URI != "" {
 								title := chunk.Web.Title
 								if title == "" {
 									title = "Source"
@@ -182,6 +188,13 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 					}
 				}
 			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("gemini streaming error: %w", err)
+		}
+		if !sawCandidateContent {
+			return fmt.Errorf("gemini streaming error: response contained no candidate content")
 		}
 
 		if len(sources) > 0 {
@@ -194,7 +207,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 				}
 			}
 		}
-		if err := emitGeminiUsage(send, lastResp); err != nil {
+		if err := emitGeminiUsage(send, usageResp); err != nil {
 			return err
 		}
 		if err := send.Send(Event{Type: EventDone}); err != nil {
@@ -204,7 +217,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}), nil
 }
 
-func emitGeminiParts(send eventSender, parts []*genai.Part, lastThoughtSig *[]byte) error {
+func emitGeminiParts(send eventSender, parts []*geminiPart, lastThoughtSig *[]byte) error {
 	var text strings.Builder
 	flushText := func() error {
 		if text.Len() == 0 {
@@ -255,33 +268,33 @@ func emitGeminiParts(send eventSender, parts []*genai.Part, lastThoughtSig *[]by
 	return flushText()
 }
 
-func emitGeminiUsage(send eventSender, resp *genai.GenerateContentResponse) error {
+func emitGeminiUsage(send eventSender, resp *geminiGenerateContentResponse) error {
 	if resp == nil || resp.UsageMetadata == nil {
 		return nil
 	}
 	if resp.UsageMetadata.TotalTokenCount > 0 {
 		return send.Send(Event{Type: EventUsage, Use: &Usage{
 			InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
-			OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+			OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount),
 		}})
 	}
 	return nil
 }
 
-func buildGeminiTools(specs []ToolSpec) []*genai.Tool {
+func buildGeminiTools(specs []ToolSpec) []*geminiTool {
 	if len(specs) == 0 {
 		return nil
 	}
-	tools := make([]*genai.Tool, 0, len(specs))
+	tools := make([]*geminiTool, 0, len(specs))
 	for _, spec := range specs {
 		// Normalize schema for Gemini's requirements (similar to OpenAI normalization)
 		schema := normalizeSchemaForGemini(spec.Schema)
-		tools = append(tools, &genai.Tool{
-			FunctionDeclarations: []*genai.FunctionDeclaration{
+		tools = append(tools, &geminiTool{
+			FunctionDeclarations: []*geminiFunctionDeclaration{
 				{
 					Name:        spec.Name,
 					Description: spec.Description,
-					Parameters:  schemaToGenai(schema),
+					Parameters:  schemaToGemini(schema),
 				},
 			},
 		})
@@ -303,11 +316,11 @@ func jsonMarshal(v any) (json.RawMessage, error) {
 	return json.RawMessage(b), err
 }
 
-func buildGeminiContents(messages []Message) (string, []*genai.Content) {
+func buildGeminiContents(messages []Message) (string, []*geminiContent) {
 	messages = sanitizeToolHistory(messages)
 
 	var systemParts []string
-	contents := make([]*genai.Content, 0, len(messages))
+	contents := make([]*geminiContent, 0, len(messages))
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -316,12 +329,12 @@ func buildGeminiContents(messages []Message) (string, []*genai.Content) {
 				systemParts = append(systemParts, text)
 			}
 		case RoleUser:
-			content := buildGeminiContent(genai.RoleUser, msg.Parts)
+			content := buildGeminiContent(geminiRoleUser, msg.Parts)
 			if content != nil {
 				contents = append(contents, content)
 			}
 		case RoleAssistant:
-			content := buildGeminiContent(genai.RoleModel, msg.Parts)
+			content := buildGeminiContent(geminiRoleModel, msg.Parts)
 			if content != nil {
 				contents = append(contents, content)
 			}
@@ -336,26 +349,26 @@ func buildGeminiContents(messages []Message) (string, []*genai.Content) {
 	return strings.Join(systemParts, "\n\n"), contents
 }
 
-func buildGeminiContent(role string, parts []Part) *genai.Content {
-	content := &genai.Content{Role: role}
+func buildGeminiContent(role string, parts []Part) *geminiContent {
+	content := &geminiContent{Role: role}
 	for _, part := range parts {
 		switch part.Type {
 		case PartText, PartFile:
 			if part.Text != "" {
-				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
+				content.Parts = append(content.Parts, &geminiPart{Text: part.Text})
 			}
 		case PartImage:
 			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
 				imageData, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
 				if err == nil {
-					content.Parts = append(content.Parts, &genai.Part{
-						InlineData: &genai.Blob{
+					content.Parts = append(content.Parts, &geminiPart{
+						InlineData: &geminiBlob{
 							MIMEType: part.ImageData.MediaType,
 							Data:     imageData,
 						},
 					})
 					if part.ImagePath != "" {
-						content.Parts = append(content.Parts, &genai.Part{Text: "[image saved at: " + part.ImagePath + "]"})
+						content.Parts = append(content.Parts, &geminiPart{Text: "[image saved at: " + part.ImagePath + "]"})
 					}
 				}
 			}
@@ -364,8 +377,8 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 				continue
 			}
 			args := toolArgsToMap(part.ToolCall.Arguments)
-			content.Parts = append(content.Parts, &genai.Part{
-				FunctionCall: &genai.FunctionCall{
+			content.Parts = append(content.Parts, &geminiPart{
+				FunctionCall: &geminiFunctionCall{
 					ID:   part.ToolCall.ID,
 					Name: part.ToolCall.Name,
 					Args: args,
@@ -380,13 +393,13 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 	return content
 }
 
-func buildGeminiToolResultContent(parts []Part) *genai.Content {
-	content := &genai.Content{Role: genai.RoleUser}
+func buildGeminiToolResultContent(parts []Part) *geminiContent {
+	content := &geminiContent{Role: geminiRoleUser}
 	for _, part := range parts {
 		switch part.Type {
 		case PartText, PartFile:
 			if part.Text != "" {
-				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
+				content.Parts = append(content.Parts, &geminiPart{Text: part.Text})
 			}
 		case PartToolResult:
 			if part.ToolResult == nil {
@@ -397,8 +410,8 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 
 			// Add the function response with text content
 			// Include ThoughtSignature if present (required for Gemini 3 thinking models)
-			content.Parts = append(content.Parts, &genai.Part{
-				FunctionResponse: &genai.FunctionResponse{
+			content.Parts = append(content.Parts, &geminiPart{
+				FunctionResponse: &geminiFunctionResponse{
 					ID:       part.ToolResult.ID,
 					Name:     part.ToolResult.Name,
 					Response: map[string]any{"output": textContent},
@@ -415,8 +428,8 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 				if err != nil {
 					continue
 				}
-				content.Parts = append(content.Parts, &genai.Part{
-					InlineData: &genai.Blob{
+				content.Parts = append(content.Parts, &geminiPart{
+					InlineData: &geminiBlob{
 						MIMEType: mimeType,
 						Data:     imageData,
 					},
@@ -441,26 +454,26 @@ func toolArgsToMap(raw json.RawMessage) map[string]any {
 	return map[string]any{"_raw": string(raw)}
 }
 
-func buildGeminiToolConfig(choice ToolChoice) *genai.ToolConfig {
-	mode := genai.FunctionCallingConfigModeAuto
+func buildGeminiToolConfig(choice ToolChoice) *geminiToolConfig {
+	mode := geminiFunctionCallingConfigModeAuto
 	var allowed []string
 
 	switch choice.Mode {
 	case ToolChoiceNone:
-		mode = genai.FunctionCallingConfigModeNone
+		mode = geminiFunctionCallingConfigModeNone
 	case ToolChoiceRequired:
-		mode = genai.FunctionCallingConfigModeAny
+		mode = geminiFunctionCallingConfigModeAny
 	case ToolChoiceName:
 		if strings.TrimSpace(choice.Name) != "" {
-			mode = genai.FunctionCallingConfigModeAny
+			mode = geminiFunctionCallingConfigModeAny
 			allowed = []string{choice.Name}
 		}
 	case ToolChoiceAuto:
-		mode = genai.FunctionCallingConfigModeAuto
+		mode = geminiFunctionCallingConfigModeAuto
 	}
 
-	cfg := &genai.ToolConfig{
-		FunctionCallingConfig: &genai.FunctionCallingConfig{
+	cfg := &geminiToolConfig{
+		FunctionCallingConfig: &geminiFunctionCallingConfig{
 			Mode:                 mode,
 			AllowedFunctionNames: allowed,
 		},
@@ -469,10 +482,10 @@ func buildGeminiToolConfig(choice ToolChoice) *genai.ToolConfig {
 	return cfg
 }
 
-func collectGeminiUserPreview(contents []*genai.Content) string {
+func collectGeminiUserPreview(contents []*geminiContent) string {
 	var parts []string
 	for _, content := range contents {
-		if content.Role != genai.RoleUser {
+		if content.Role != geminiRoleUser {
 			continue
 		}
 		for _, part := range content.Parts {

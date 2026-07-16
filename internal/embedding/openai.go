@@ -36,7 +36,7 @@ func (p *OpenAIProvider) DefaultModel() string {
 	return openaiDefaultModel
 }
 
-func (p *OpenAIProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
+func (p *OpenAIProvider) Embed(ctx context.Context, req EmbedRequest) (*EmbeddingResult, error) {
 	client := openai.NewClient(option.WithAPIKey(p.apiKey))
 
 	model := p.model
@@ -56,7 +56,7 @@ func (p *OpenAIProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
 		params.Dimensions = param.NewOpt(int64(req.Dimensions))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), openaiEmbedTimeout)
+	ctx, cancel := context.WithTimeout(ctx, openaiEmbedTimeout)
 	defer cancel()
 
 	resp, err := client.Embeddings.New(ctx, params)

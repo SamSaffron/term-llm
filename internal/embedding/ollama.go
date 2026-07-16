@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,7 +39,7 @@ func (p *OllamaProvider) DefaultModel() string {
 	return ollamaDefaultModel
 }
 
-func (p *OllamaProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
+func (p *OllamaProvider) Embed(ctx context.Context, req EmbedRequest) (*EmbeddingResult, error) {
 	model := p.model
 	if req.Model != "" {
 		model = req.Model
@@ -56,7 +57,7 @@ func (p *OllamaProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
 	}
 
 	url := p.baseURL + "/api/embed"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

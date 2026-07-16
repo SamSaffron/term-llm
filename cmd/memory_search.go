@@ -171,7 +171,7 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 		return limitScoredFragments(applySearchScoreOptions(bm25Candidates), memorySearchLimit), nil
 	}
 
-	embRes, err := embedder.Embed(embedding.EmbedRequest{
+	embRes, err := embedder.Embed(ctx, embedding.EmbedRequest{
 		Texts:    []string{query},
 		Model:    modelName,
 		TaskType: "RETRIEVAL_QUERY",

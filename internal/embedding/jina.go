@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,7 +42,7 @@ func (p *JinaProvider) DefaultModel() string {
 	return jinaDefaultModel
 }
 
-func (p *JinaProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
+func (p *JinaProvider) Embed(ctx context.Context, req EmbedRequest) (*EmbeddingResult, error) {
 	model := p.model
 	if req.Model != "" {
 		model = req.Model
@@ -67,7 +68,7 @@ func (p *JinaProvider) Embed(req EmbedRequest) (*EmbeddingResult, error) {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", jinaEndpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, jinaEndpoint, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

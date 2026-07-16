@@ -1,7 +1,5 @@
 package llm
 
-import "google.golang.org/genai"
-
 // normalizeSchemaForGemini ensures schema meets Gemini's requirements by removing
 // unsupported format values and ensuring required fields are complete.
 func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interface{} {
@@ -109,51 +107,51 @@ func normalizeGeminiSchemaRecursive(schema map[string]interface{}) map[string]in
 	return schema
 }
 
-func schemaToGenai(schema map[string]interface{}) *genai.Schema {
+func schemaToGemini(schema map[string]interface{}) *geminiSchema {
 	if schema == nil {
-		return &genai.Schema{Type: genai.TypeString}
+		return &geminiSchema{Type: geminiSchemaTypeString}
 	}
 
-	genSchema := &genai.Schema{
+	genSchema := &geminiSchema{
 		Type:        schemaTypeFromValue(schema),
 		Description: stringField(schema, "description"),
 		Required:    requiredFields(schema),
 	}
 
 	if props, ok := schema["properties"].(map[string]interface{}); ok {
-		genSchema.Properties = make(map[string]*genai.Schema, len(props))
+		genSchema.Properties = make(map[string]*geminiSchema, len(props))
 		for name, prop := range props {
 			if propMap, ok := prop.(map[string]interface{}); ok {
-				genSchema.Properties[name] = schemaToGenai(propMap)
+				genSchema.Properties[name] = schemaToGemini(propMap)
 			}
 		}
 	}
 
 	if items, ok := schema["items"].(map[string]interface{}); ok {
-		genSchema.Items = schemaToGenai(items)
+		genSchema.Items = schemaToGemini(items)
 	}
 
 	return genSchema
 }
 
-func schemaTypeFromValue(schema map[string]interface{}) genai.Type {
+func schemaTypeFromValue(schema map[string]interface{}) geminiSchemaType {
 	if t, ok := schema["type"].(string); ok {
 		switch t {
 		case "string":
-			return genai.TypeString
+			return geminiSchemaTypeString
 		case "integer":
-			return genai.TypeInteger
+			return geminiSchemaTypeInteger
 		case "number":
-			return genai.TypeNumber
+			return geminiSchemaTypeNumber
 		case "boolean":
-			return genai.TypeBoolean
+			return geminiSchemaTypeBoolean
 		case "array":
-			return genai.TypeArray
+			return geminiSchemaTypeArray
 		case "object":
-			return genai.TypeObject
+			return geminiSchemaTypeObject
 		}
 	}
-	return genai.TypeString
+	return geminiSchemaTypeString
 }
 
 func requiredFields(schema map[string]interface{}) []string {
