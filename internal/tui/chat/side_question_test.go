@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -9,10 +10,87 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+func TestSideQuestionPanelResponsiveReadingSurface(t *testing.T) {
+	tests := []struct {
+		name             string
+		terminalWidth    int
+		terminalHeight   int
+		wantWidth        int
+		wantResponseRows int
+	}{
+		{name: "demo terminal", terminalWidth: 120, terminalHeight: 36, wantWidth: 112, wantResponseRows: 26},
+		{name: "maximum", terminalWidth: 200, terminalHeight: 100, wantWidth: 120, wantResponseRows: 40},
+		{name: "small terminal", terminalWidth: 28, terminalHeight: 10, wantWidth: 28, wantResponseRows: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestChatModel(true)
+			m.width, m.height = tc.terminalWidth, tc.terminalHeight
+			geometry := m.sideQuestionPanelGeometry()
+			if geometry.width != tc.wantWidth || geometry.responseRows != tc.wantResponseRows {
+				t.Fatalf("geometry = %+v, want width %d response rows %d", geometry, tc.wantWidth, tc.wantResponseRows)
+			}
+			panel := m.renderSideQuestionPanel()
+			if got := lipgloss.Width(panel); got > tc.terminalWidth {
+				t.Fatalf("panel width = %d, terminal width = %d", got, tc.terminalWidth)
+			}
+			if got := lipgloss.Height(panel); got > tc.terminalHeight {
+				t.Fatalf("panel height = %d, terminal height = %d", got, tc.terminalHeight)
+			}
+		})
+	}
+}
+
+func TestSideQuestionPanelRendersMarkdown(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width, m.height = 100, 30
+	m.sideQuestion.Response.WriteString("## Result\n\n- **bold item**\n- `code`")
+
+	panel := m.renderSideQuestionPanel()
+	plain := ui.StripANSI(panel)
+	if strings.Contains(plain, "**bold item**") || strings.Contains(plain, "`code`") {
+		t.Fatalf("panel retained raw markdown: %q", plain)
+	}
+	for _, want := range []string{"Result", "bold item", "code"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("panel missing rendered markdown text %q: %q", want, plain)
+		}
+	}
+	if !strings.Contains(panel, "\x1b[") {
+		t.Fatalf("panel response did not use ANSI markdown styles: %q", panel)
+	}
+}
+
+func TestSideQuestionPanelLongAnswerScrollsRenderedLines(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width, m.height = 80, 20
+	for i := 1; i <= 30; i++ {
+		m.sideQuestion.Response.WriteString(fmt.Sprintf("- item %02d\n", i))
+	}
+
+	bottom := ui.StripANSI(m.renderSideQuestionPanel())
+	if !strings.Contains(bottom, "item 30") || strings.Contains(bottom, "item 01") {
+		t.Fatalf("default viewport should show answer tail: %q", bottom)
+	}
+	m.sideQuestion.Scroll = 1000
+	top := ui.StripANSI(m.renderSideQuestionPanel())
+	if !strings.Contains(top, "item 01") || strings.Contains(top, "item 30") {
+		t.Fatalf("scrolled viewport should clamp at answer start: %q", top)
+	}
+	for _, line := range strings.Split(m.renderSideQuestionPanel(), "\n") {
+		if got := ansi.StringWidth(line); got > m.width {
+			t.Fatalf("rendered line width = %d, terminal width = %d: %q", got, m.width, line)
+		}
+	}
+}
 
 func TestSideCommandOpensOverlayAndClearsSubmittedCommand(t *testing.T) {
 	m := newTestChatModel(true)

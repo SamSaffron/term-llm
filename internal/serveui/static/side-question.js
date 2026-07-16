@@ -20,7 +20,8 @@ const render = () => {
   const usageLabel = inputTokens || outputTokens ? ` · ${inputTokens} in / ${outputTokens} out` : '';
   elements.sideQuestionStatus.textContent = (side.running ? ' · answering' : ' · done') + usageLabel;
   elements.sideQuestionQuestion.textContent = question;
-  elements.sideQuestionResponse.textContent = response || (side.running ? 'Thinking…' : '');
+  const responseText = response || (side.running ? 'Thinking…' : '');
+  app.renderAssistantMarkdown(elements.sideQuestionResponse, responseText);
   elements.sideQuestionError.textContent = side.error || '';
   elements.sideQuestionCancelBtn.classList.toggle('hidden', !side.running);
   elements.sideQuestionPrevBtn.disabled = side.running || side.selected <= 0;

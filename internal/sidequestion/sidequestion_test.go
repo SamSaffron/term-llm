@@ -8,6 +8,22 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestSystemPolicyRequestsUsefulMarkdownWithoutForcedVerbosity(t *testing.T) {
+	for _, want := range []string{
+		"clear Markdown structure",
+		"headings, bullets, tables, or code blocks",
+		"enough detail",
+		"simple question",
+		"one response",
+		"no tools",
+		"cannot inspect files, run commands, search, delegate, or take actions",
+	} {
+		if !strings.Contains(SystemPolicy, want) {
+			t.Fatalf("SystemPolicy missing %q:\n%s", want, SystemPolicy)
+		}
+	}
+}
+
 func TestPrepareContextSnapshotRemovesDanglingToolsAndAnchors(t *testing.T) {
 	messages := []llm.Message{
 		{Role: llm.RoleUser, CacheAnchor: true, Parts: []llm.Part{{Type: llm.PartText, Text: "completed"}}},

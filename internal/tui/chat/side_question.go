@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/sidequestion"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 const sideQuestionStopTimeout = 250 * time.Millisecond
@@ -313,22 +314,75 @@ func (m *Model) handleSideQuestionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
-func (m *Model) renderSideQuestionPanel() string {
-	width := min(max(40, m.width-12), 88)
-	bodyWidth := max(20, width-4)
+type sideQuestionPanelSize struct {
+	width        int
+	bodyWidth    int
+	responseRows int
+}
+
+func (m *Model) sideQuestionPanelGeometry() sideQuestionPanelSize {
+	// Leave the underlying conversation visible around the panel while making
+	// the response a useful reading surface on normal terminals. The clamps keep
+	// very large terminals comfortable and let small terminals use every cell.
+	width := min(120, max(64, m.width-8))
+	width = min(width, max(1, m.width))
+	bodyWidth := max(1, width-4) // border plus one cell of padding on each side
+	responseRows := min(40, max(1, m.height-10))
+	return sideQuestionPanelSize{width: width, bodyWidth: bodyWidth, responseRows: responseRows}
+}
+
+func (m *Model) renderSideQuestionResponse(width int) []string {
 	response := m.sideQuestion.Response.String()
 	if response == "" && m.sideQuestion.Running {
 		response = "Thinking…"
 	}
-	if m.sideQuestion.Err != nil {
-		response += "\n\n" + m.sideQuestion.Err.Error()
+	var rendered string
+	if response != "" {
+		rendered = ui.RenderMarkdownWithOptions(response, width, ui.MarkdownRenderOptions{
+			WrapOffset:        0,
+			NormalizeTabs:     true,
+			NormalizeNewlines: false,
+		})
 	}
-	wrapped := wordwrap.String(response, bodyWidth)
-	lines := strings.Split(wrapped, "\n")
-	maxLines := max(4, min(16, m.height-10))
-	start := max(0, len(lines)-maxLines-m.sideQuestion.Scroll)
-	end := min(len(lines), start+maxLines)
-	visible := strings.Join(lines[start:end], "\n")
+	if m.sideQuestion.Err != nil {
+		if rendered != "" {
+			rendered += "\n\n"
+		}
+		rendered += wordwrap.String(m.sideQuestion.Err.Error(), width)
+	}
+	return strings.Split(strings.Trim(rendered, "\n"), "\n")
+}
+
+func sideQuestionFooter(running, confirmClear bool, width int) string {
+	footer := "Esc cancel"
+	if !running {
+		switch {
+		case width >= 64:
+			footer = "Esc/Enter close · ←/→ history · ↑/↓ scroll · c copy · x clear"
+		case width >= 36:
+			footer = "Esc close · ←/→ history · ↑/↓ scroll"
+		default:
+			footer = "Esc close · ↑/↓ scroll"
+		}
+	}
+	if confirmClear {
+		footer = "Press x again to clear side history"
+	}
+	return ansi.Truncate(footer, width, "…")
+}
+
+func (m *Model) renderSideQuestionPanel() string {
+	geometry := m.sideQuestionPanelGeometry()
+	lines := m.renderSideQuestionResponse(geometry.bodyWidth)
+	maxScroll := max(0, len(lines)-geometry.responseRows)
+	scroll := min(maxScroll, max(0, m.sideQuestion.Scroll))
+	start := maxScroll - scroll
+	end := min(len(lines), start+geometry.responseRows)
+	visibleLines := append([]string(nil), lines[start:end]...)
+	for len(visibleLines) < geometry.responseRows {
+		visibleLines = append(visibleLines, "")
+	}
+	visible := strings.Join(visibleLines, "\n")
 	status := "done"
 	if m.sideQuestion.Running {
 		status = "answering"
@@ -343,15 +397,10 @@ func (m *Model) renderSideQuestionPanel() string {
 	if len(m.sideQuestion.History) > 1 && !m.sideQuestion.Running {
 		position = fmt.Sprintf(" · %d/%d", m.sideQuestion.Selected+1, len(m.sideQuestion.History))
 	}
-	footer := "Esc cancel"
-	if !m.sideQuestion.Running {
-		footer = "Esc/Enter close · ←/→ history · ↑/↓ scroll · c copy · x clear"
-	}
-	if m.sideQuestion.ConfirmClear {
-		footer = "Press x again to clear side history"
-	}
-	content := fmt.Sprintf("Side question · %s%s%s\n\n%s\n\n%s", status, position, attention, visible, footer)
-	return m.styles.TableBorder.Border(lipgloss.RoundedBorder()).Width(width).Padding(0, 1).Render(content)
+	header := ansi.Truncate("Side question · "+status+position+attention, geometry.bodyWidth, "…")
+	footer := sideQuestionFooter(m.sideQuestion.Running, m.sideQuestion.ConfirmClear, geometry.bodyWidth)
+	content := fmt.Sprintf("%s\n\n%s\n\n%s", header, visible, footer)
+	return m.styles.TableBorder.Border(lipgloss.RoundedBorder()).Width(geometry.bodyWidth).Padding(0, 1).Render(content)
 }
 
 func (m *Model) renderSideQuestionOverlay(background string) string {
