@@ -744,9 +744,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Run the TUI
-	if useAltScreen {
-		opts = append(opts, tea.WithOutput(newPostFrameWriter(os.Stdout, model.TakePostFrameImageSequence)))
-	}
 	var p *tea.Program
 	factory := func(sessionID, autoSend string) (*chat.Model, error) {
 		sideModel, buildErr := buildConcurrentSideChatModel(ctx, cmd, store, sessionID, autoSend, useAltScreen, func(msg tea.Msg) {
@@ -760,10 +757,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		return sideModel, buildErr
 	}
 	host := chat.NewConversationHost(model, factory)
+	if useAltScreen {
+		opts = append(opts, tea.WithOutput(newPostFrameWriter(os.Stdout, host.TakePostFrameImageSequence)))
+	}
 	p = tea.NewProgram(host, opts...)
 	model.SetProgram(p)
 	sendModel := func(msg tea.Msg) {
-		p.Send(chat.RoutedConversationMsg{ConversationID: model.ConversationID(), Generation: model.StreamGeneration(), Msg: msg})
+		p.Send(chat.RoutedConversationMsg{ConversationID: model.RuntimeRoutingID(), Generation: model.StreamGeneration(), Msg: msg})
 	}
 
 	modelCtx, modelCancel := context.WithCancel(ctx)

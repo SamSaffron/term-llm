@@ -146,6 +146,7 @@ const pollSidebarStatus = async () => {
       const data = await resp.json();
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
+        renderSideStatusFromPoll(data.sessions);
         await reconcileActiveTranscriptFromStatus(data.sessions);
         recordTranscriptVersionsFromStatus(data.sessions);
         // Discover sessions created in other tabs/devices
@@ -372,6 +373,28 @@ const renderSideRelationship = (relationship) => {
     elements.sideParentStatus.textContent = attention ? 'Main needs your attention' : (running ? 'Main is running' : 'Main is idle');
     elements.sideParentStatus.classList.toggle('needs-attention', attention);
   }
+};
+
+const renderSideStatusFromPoll = (statusSessions) => {
+  const active = getActiveSession();
+  if (!active || !Array.isArray(statusSessions)) return;
+  const byId = new Map(statusSessions.map((entry) => [String(entry.id || ''), entry]));
+  if (active.kind === 'side') {
+    const parent = byId.get(String(active.parentId || ''));
+    if (parent && elements.sideParentStatus) {
+      const status = String(parent.runtime_status || (parent.active_run ? 'running' : 'done'));
+      elements.sideParentStatus.textContent = `Main: ${status}`;
+      elements.sideParentStatus.classList.toggle('needs-attention', status.startsWith('needs') || status === 'failed');
+    }
+    return;
+  }
+  const side = statusSessions.find((entry) => entry.kind === 'side'
+    && entry.side_state === 'open'
+    && String(entry.root_id || entry.parent_id || '') === String(active.rootId || active.id));
+  if (!side || !elements.sideChatBtnLabel) return;
+  const status = String(side.runtime_status || (side.active_run ? 'running' : 'done'));
+  elements.sideChatBtnLabel.textContent = `Side: ${status}`;
+  elements.sideChatBtn?.classList.toggle('needs-attention', status.startsWith('needs') || status === 'failed' || status === 'done');
 };
 
 const loadSideRelationship = async (session = getActiveSession()) => {
@@ -1756,7 +1779,6 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   const runtimeState = await loadServerSessionState(session.id);
   if (!runtimeState) return null;
-  try { await loadSideRelationship(session); } catch (_) {}
 
   const expectedGeneration = Number(expectedSwitchGeneration);
   const hasExpectedGeneration = Number.isFinite(expectedGeneration) && expectedGeneration > 0;
@@ -3379,6 +3401,7 @@ Object.assign(app, {
   switchToDraftSession,
   switchToSession,
   loadSideRelationship,
+  renderSideStatusFromPoll,
   openSideConversation,
   backToMainConversation,
   closeSideConversation,

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,6 +130,38 @@ func TestServeRuntimeClosedSideRejectsRun(t *testing.T) {
 	}
 	if len(provider.Requests) != 0 {
 		t.Fatal("closed side reached provider")
+	}
+}
+
+type failingSideContextStore struct {
+	session.Store
+	session.SideStore
+	err error
+}
+
+func (s failingSideContextStore) GetSideContext(context.Context, string) ([]llm.Message, error) {
+	return nil, s.err
+}
+
+func TestConfigureSideRuntimePreservesContextLoadError(t *testing.T) {
+	store, err := session.NewSQLiteStore(session.Config{Path: t.TempDir() + "/sessions.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	parent := &session.Session{ID: "parent_error", Provider: "mock", Model: "model"}
+	if err := store.Create(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	side, err := store.ForkSide(ctx, parent.ID, session.OriginWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextErr := errors.New("context storage unavailable")
+	rt := &serveRuntime{store: failingSideContextStore{Store: store, SideStore: store, err: contextErr}}
+	if err := rt.configureSideRuntime(ctx, side); !errors.Is(err, contextErr) {
+		t.Fatalf("configure error = %v, want wrapped context error", err)
 	}
 }
 

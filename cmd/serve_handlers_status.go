@@ -34,6 +34,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		Archived:       includeArchived,
 		Categories:     categories,
 		SortByActivity: true,
+		IncludeSides:   true,
 	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
@@ -48,13 +49,18 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// insert/update paths bump updated_at even when message_count or
 	// last_message_at do not change.
 	type statusEntry struct {
-		ID                  string `json:"id"`
-		ShortTitle          string `json:"short_title"`
-		LongTitle           string `json:"long_title"`
-		ActiveRun           bool   `json:"active_run,omitempty"`
-		MsgCount            int    `json:"message_count"`
-		LastMessageAt       int64  `json:"last_message_at"`
-		TranscriptUpdatedAt int64  `json:"transcript_updated_at"`
+		ID                  string                `json:"id"`
+		ShortTitle          string                `json:"short_title"`
+		LongTitle           string                `json:"long_title"`
+		ActiveRun           bool                  `json:"active_run,omitempty"`
+		RuntimeStatus       string                `json:"runtime_status,omitempty"`
+		ParentID            string                `json:"parent_id,omitempty"`
+		RootID              string                `json:"root_id,omitempty"`
+		Kind                session.SessionKind   `json:"kind,omitempty"`
+		SideState           session.SideLifecycle `json:"side_state,omitempty"`
+		MsgCount            int                   `json:"message_count"`
+		LastMessageAt       int64                 `json:"last_message_at"`
+		TranscriptUpdatedAt int64                 `json:"transcript_updated_at"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
@@ -67,11 +73,36 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		if transcriptUpdatedAt.IsZero() {
 			transcriptUpdatedAt = sess.CreatedAt
 		}
+		runtimeStatus := ""
+		if s.sessionMgr != nil {
+			if rt, exists := s.sessionMgr.Peek(sess.ID); exists {
+				switch {
+				case len(rt.pendingApprovalPrompts()) > 0:
+					runtimeStatus = "needs approval"
+				case len(rt.pendingAskUserPrompts()) > 0:
+					runtimeStatus = "needs input"
+				case rt.hasActiveRun():
+					runtimeStatus = "running"
+				}
+			}
+		}
+		if runtimeStatus == "" && sess.Kind == session.KindSide {
+			if sess.Status == session.StatusError {
+				runtimeStatus = "failed"
+			} else {
+				runtimeStatus = "done"
+			}
+		}
 		result = append(result, statusEntry{
 			ID:                  sess.ID,
 			ShortTitle:          sess.PreferredShortTitle(),
 			LongTitle:           sess.PreferredLongTitle(),
 			ActiveRun:           activeIDs[sess.ID],
+			RuntimeStatus:       runtimeStatus,
+			ParentID:            sess.ParentID,
+			RootID:              sess.RootID,
+			Kind:                sess.Kind,
+			SideState:           sess.SideState,
 			MsgCount:            sess.MessageCount,
 			LastMessageAt:       lastMessageAt.UnixMilli(),
 			TranscriptUpdatedAt: transcriptUpdatedAt.UnixMilli(),

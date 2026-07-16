@@ -130,10 +130,11 @@ func buildConcurrentSideChatModel(rootCtx context.Context, cmd *cobra.Command, s
 		NoNativeSearch: chatNoNativeSearch, Yolo: false, Auto: false, ErrWriter: cmd.ErrOrStderr(), Store: store,
 	}))
 	model.SetHandoverAutoSend(autoSend)
+	model.SetRuntimeRoutingID(sess.ID)
 
 	runtimeCtx, cancel := context.WithCancel(rootCtx)
 	addressed := func(msg tea.Msg) {
-		send(chat.RoutedConversationMsg{ConversationID: sess.ID, Generation: model.StreamGeneration(), Msg: msg})
+		send(chat.RoutedConversationMsg{ConversationID: model.RuntimeRoutingID(), Generation: model.StreamGeneration(), Msg: msg})
 	}
 	if toolMgr != nil {
 		approvalMgr := toolMgr.ApprovalMgr

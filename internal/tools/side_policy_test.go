@@ -37,6 +37,27 @@ func TestApprovalManagerExplicitMutationPolicyOverridesYoloAndCaches(t *testing.
 		t.Fatalf("prompts=%d, want 2", prompts)
 	}
 
+	// "Always" choices are deliberately narrowed to the current mutation and
+	// never enter side-session caches (or project persistence).
+	mgr.PromptUIFunc = func(value string, isWrite, isShell bool, workDir string) (ApprovalResult, error) {
+		prompts++
+		if isShell {
+			return ApprovalResult{Choice: ApprovalChoicePattern, Pattern: "echo *", SaveToRepo: true}, nil
+		}
+		return ApprovalResult{Choice: ApprovalChoiceRepoWrite, Path: dir}, nil
+	}
+	for i := 0; i < 2; i++ {
+		if outcome, err := mgr.CheckPathApproval(WriteFileToolName, path, path, true); err != nil || outcome != ProceedOnce {
+			t.Fatalf("remembered write outcome=%v err=%v", outcome, err)
+		}
+		if outcome, err := mgr.CheckShellApproval("echo mutate", dir); err != nil || outcome != ProceedOnce {
+			t.Fatalf("remembered shell outcome=%v err=%v", outcome, err)
+		}
+	}
+	if prompts != 6 {
+		t.Fatalf("always choices escaped one-shot policy; prompts=%d, want 6", prompts)
+	}
+
 	// Reads remain eligible for deterministic approval; the side policy is about
 	// shared-state mutation rather than making inherited context unusable.
 	if err := perms.AddReadDir(dir); err != nil {
@@ -45,7 +66,7 @@ func TestApprovalManagerExplicitMutationPolicyOverridesYoloAndCaches(t *testing.
 	if outcome, err := mgr.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedOnce {
 		t.Fatalf("read outcome=%v err=%v", outcome, err)
 	}
-	if prompts != 2 {
+	if prompts != 6 {
 		t.Fatalf("read unexpectedly prompted; prompts=%d", prompts)
 	}
 }

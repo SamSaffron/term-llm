@@ -190,7 +190,7 @@ func (s *SQLiteStore) ForkSide(ctx context.Context, parentID string, origin Sess
 		SideState:     SideOpen,
 		Search:        parent.Search,
 		Tools:         parent.Tools,
-		MCP:           parent.MCP,
+		MCP:           "", // side runtimes never inherit external MCP mutation surfaces
 		Status:        StatusActive,
 		CompactionSeq: -1,
 		CreatedAt:     now,
@@ -286,6 +286,10 @@ func (s *SQLiteStore) CloseSide(ctx context.Context, sideID string) error {
 		return fmt.Errorf("close side: %w", err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
+		var state string
+		if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(side_state,'') FROM sessions WHERE id = ? AND kind = 'side'", sideID).Scan(&state); err == nil && SideLifecycle(state) == SideClosed {
+			return nil
+		}
 		return ErrSideClosed
 	}
 	return nil

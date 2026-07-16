@@ -995,6 +995,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
+	m.advanceRoutingGeneration()
 	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
@@ -1893,6 +1894,7 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
+	m.advanceRoutingGeneration()
 	m.pauseGoalForLocalAction("paused because a new session was started")
 	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one

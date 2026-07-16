@@ -364,6 +364,13 @@ func (s *serveServer) applyPersistedMCPSelectionLocked(ctx context.Context, sess
 	if err != nil || sess == nil {
 		return nil
 	}
+	if sess.Kind == session.KindSide {
+		rt.mcpSetting = ""
+		if rt.mcpManager != nil {
+			rt.mcpManager.StopAll()
+		}
+		return nil
+	}
 	desired := normalizeMCPSelection(parseServerList(sess.MCP))
 	current := normalizeMCPSelection(parseServerList(rt.mcpSetting))
 	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
@@ -512,6 +519,29 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 	if rt.hasActiveRun() {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot change MCP servers while a response is running")
 		return
+	}
+
+	var persisted *session.Session
+	if s.store != nil {
+		persisted, _ = s.store.Get(r.Context(), sessionID)
+	}
+	if persisted != nil && persisted.Kind == session.KindSide {
+		rt.mcpSetting = ""
+		if rt.mcpManager != nil {
+			rt.mcpManager.StopAll()
+		}
+		if persisted.MCP != "" {
+			persisted.MCP = ""
+			_ = s.store.Update(r.Context(), persisted)
+		}
+		if r.Method == http.MethodPatch {
+			writeOpenAIError(w, http.StatusForbidden, "invalid_request_error", "MCP servers are disabled for side conversations")
+			return
+		}
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, rt.mcpStateLocked())
+			return
+		}
 	}
 
 	if err := rt.ensureMCPManagerLocked(); err != nil {

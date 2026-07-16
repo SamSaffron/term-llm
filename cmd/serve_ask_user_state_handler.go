@@ -77,6 +77,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 					persistedGoalRead = true
 				}
 				mcpState := rt.mcpStateLocked()
+				if rt.sessionMeta != nil && rt.sessionMeta.Kind == session.KindSide {
+					mcpState = serveMCPSessionResponse{Servers: []serveMCPServerView{}, Enabled: []string{}}
+				}
 				resp["mcp_servers"] = mcpState.Servers
 				resp["mcp_enabled"] = mcpState.Enabled
 				rt.mu.Unlock()
@@ -99,10 +102,15 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				persistedGoal = sess.Goal.Clone()
 				persistedGoalRead = true
 			}
-			if enabled, ok := resp["mcp_enabled"].([]string); !ok || len(enabled) == 0 {
-				if persistedMCP := parseServerList(sess.MCP); len(persistedMCP) > 0 {
-					resp["mcp_enabled"] = persistedMCP
+			if sess.Kind != session.KindSide {
+				if enabled, ok := resp["mcp_enabled"].([]string); !ok || len(enabled) == 0 {
+					if persistedMCP := parseServerList(sess.MCP); len(persistedMCP) > 0 {
+						resp["mcp_enabled"] = persistedMCP
+					}
 				}
+			} else {
+				resp["mcp_enabled"] = []string{}
+				resp["mcp_servers"] = []serveMCPServerView{}
 			}
 			if persistedProvider == "" {
 				pk := strings.TrimSpace(sess.ProviderKey)

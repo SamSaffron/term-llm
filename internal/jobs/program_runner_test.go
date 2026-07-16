@@ -103,7 +103,7 @@ func TestProgramRunnerDoesNotLeakBackgroundChildren(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		err = syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) || processIsZombie(pid) {
+		if errors.Is(err, syscall.ESRCH) {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -111,18 +111,6 @@ func TestProgramRunnerDoesNotLeakBackgroundChildren(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-}
-
-func processIsZombie(pid int) bool {
-	// kill(pid, 0) reports zombies as existing until PID 1 reaps them. Some
-	// container init processes do not reap promptly, but a zombie has no running
-	// code or resources and is not a leaked background process.
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return false
-	}
-	closeParen := strings.LastIndexByte(string(stat), ')')
-	return closeParen >= 0 && len(stat) > closeParen+2 && stat[closeParen+2] == 'Z'
 }
 
 func shellQuote(s string) string {

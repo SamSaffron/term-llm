@@ -3456,6 +3456,27 @@ async function testStatusPollUnchangedTranscriptDoesNotFetchMessages() {
   pass(name);
 }
 
+async function testStatusPollSurfacesSideAttentionWhileViewingMain() {
+  const name = 'status poll surfaces side attention while viewing main without relationship fetch';
+  const { app, elementMap } = await createSessionsHarness();
+  const main = { id: 'main', rootId: 'main', kind: 'root', title: 'Main', messages: [] };
+  app.state.sessions = [main];
+  app.state.activeSessionId = main.id;
+  app.state.draftSessionActive = false;
+
+  app.renderSideStatusFromPoll([
+    { id: 'main', kind: 'root', runtime_status: 'done' },
+    { id: 'side', kind: 'side', parent_id: 'main', root_id: 'main', side_state: 'open', runtime_status: 'needs approval' },
+  ]);
+
+  const label = elementMap.get('sideChatBtnLabel');
+  if (!label || label.textContent !== 'Side: needs approval') {
+    fail(name, 'main side attention label was not updated', label?.textContent || 'missing');
+    return;
+  }
+  pass(name);
+}
+
 async function testActiveTranscriptRefreshSkipsBusyStates() {
   const name = 'active transcript refresh skips while active session is busy';
   let messageCalls = 0;
@@ -4562,6 +4583,7 @@ async function testSideChatCreateBackAndExplicitClose() {
   await testSanitizeSessionPreservesTranscriptUpdatedAt();
   await testStatusPollAdvancementRefreshesActiveMessagesOnce();
   await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
+  await testStatusPollSurfacesSideAttentionWhileViewingMain();
   await testActiveTranscriptRefreshSkipsBusyStates();
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
   await testSessionStatePollRetriesAfterTransientFailure();

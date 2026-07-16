@@ -965,6 +965,9 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc result: choice=%v cancelled=%v", toolName, absPath, result.Choice, result.Cancelled)
 		}
+		if forceExplicit && !result.Cancelled && result.Choice != ApprovalChoiceDeny {
+			return ProceedOnce, nil
+		}
 		return m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
 	}
 
@@ -998,6 +1001,9 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 
 	outcome, _ := promptFunc(req)
 
+	if forceExplicit && (outcome == ProceedAlways || outcome == ProceedAlwaysAndSave) {
+		return ProceedOnce, nil
+	}
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		m.dirCache.Set(absDir, outcome, isWrite)
 	}
@@ -1176,6 +1182,10 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 		if err != nil {
 			return Cancel, err
 		}
+		if forceExplicit && !result.Cancelled && result.Choice != ApprovalChoiceDeny {
+			m.resetGuardianDenials()
+			return ProceedOnce, nil
+		}
 		return m.handleShellApprovalResult(result, command, workDir, projectApprovals)
 	}
 
@@ -1194,6 +1204,10 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 
 	outcome, pattern := promptFunc(req)
 
+	if forceExplicit && (outcome == ProceedAlways || outcome == ProceedAlwaysAndSave) {
+		m.resetGuardianDenials()
+		return ProceedOnce, nil
+	}
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		// Cache the command or pattern for future use. A malformed remembered
 		// pattern still honors the user's approval for this invocation.

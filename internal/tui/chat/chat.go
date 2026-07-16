@@ -271,6 +271,8 @@ type Model struct {
 	pendingResumeSessionID string
 	conversationNavigation bool
 	parentRuntimeStatus    string
+	sideRuntimeStatus      string
+	runtimeRoutingID       atomic.Value // string; immutable after the runtime is installed in a host
 	runtimeCancel          context.CancelFunc
 
 	// If set, the caller should auto-send this message after handover restart.

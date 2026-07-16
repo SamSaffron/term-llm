@@ -54,8 +54,21 @@ func (h *ConversationHost) install(id string, model *Model) {
 	if model == nil || strings.TrimSpace(id) == "" {
 		return
 	}
+	model.SetRuntimeRoutingID(id)
 	model.EnableConversationNavigation(true)
 	h.runtimes[id] = model
+}
+
+// routingIDForSession resolves a mutable persisted session identity to the
+// immutable address owned by this host. It is only called from the Bubble Tea
+// update loop, so reading Model.ConversationID here cannot race tool goroutines.
+func (h *ConversationHost) routingIDForSession(sessionID string) string {
+	for id, runtime := range h.runtimes {
+		if runtime != nil && runtime.ConversationID() == sessionID {
+			return id
+		}
+	}
+	return sessionID
 }
 
 func (h *ConversationHost) Init() tea.Cmd {
@@ -74,6 +87,13 @@ func (h *ConversationHost) routeCmd(id string, generation uint64, cmd tea.Cmd) t
 	}
 }
 
+// sequenceCommands is the only compatibility boundary for Bubble Tea's private
+// sequenceMsg. Bubble Tea v2 exposes tea.Sequence but no public way to unwrap
+// the resulting message. A routed host must unwrap it so each child command is
+// re-addressed to its owning runtime; treating it as an ordinary message would
+// either lose the sequence or let inactive terminal-control output leak into the
+// active UI. The package/name checks intentionally fail closed on upstream type
+// changes, and TestConversationHostPreservesRoutedSequences pins this contract.
 func sequenceCommands(msg tea.Msg) ([]tea.Cmd, bool) {
 	value := reflect.ValueOf(msg)
 	if !value.IsValid() || value.Kind() != reflect.Slice || value.Type().PkgPath() != "charm.land/bubbletea/v2" || value.Type().Name() != "sequenceMsg" {
@@ -116,6 +136,7 @@ func (h *ConversationHost) updateRuntime(id string, msg tea.Msg) tea.Cmd {
 
 func (h *ConversationHost) navigate(msg ConversationNavigationMsg) tea.Cmd {
 	if closeID := strings.TrimSpace(msg.CloseID); closeID != "" {
+		closeID = h.routingIDForSession(closeID)
 		if runtime := h.runtimes[closeID]; runtime != nil {
 			runtime.Shutdown()
 			delete(h.runtimes, closeID)
@@ -125,9 +146,10 @@ func (h *ConversationHost) navigate(msg ConversationNavigationMsg) tea.Cmd {
 	if target == "" {
 		return nil
 	}
-	if existing := h.runtimes[target]; existing != nil {
-		h.activeID = target
-		return nil
+	routingID := h.routingIDForSession(target)
+	if existing := h.runtimes[routingID]; existing != nil {
+		h.activeID = routingID
+		return h.routeCmd(routingID, existing.StreamGeneration(), existing.QueueAutoSend(msg.AutoSend))
 	}
 	if h.factory == nil {
 		h.err = fmt.Errorf("conversation runtime %s is not available", target)
@@ -152,6 +174,12 @@ func (h *ConversationHost) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Msg == nil {
 			return h, nil
 		}
+		target := h.runtimes[msg.ConversationID]
+		if target == nil || msg.Generation != target.StreamGeneration() {
+			// Runtime generations are part of the routing contract: callbacks from
+			// a previous stream must never satisfy prompts in a later stream.
+			return h, nil
+		}
 		if batch, ok := msg.Msg.(tea.BatchMsg); ok {
 			cmds := make([]tea.Cmd, 0, len(batch))
 			for _, cmd := range batch {
@@ -170,7 +198,10 @@ func (h *ConversationHost) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, h.navigate(nav)
 		}
 		if _, ok := msg.Msg.(tea.QuitMsg); ok {
-			return h, tea.Quit
+			if msg.ConversationID == h.activeID {
+				return h, tea.Quit
+			}
+			return h, nil
 		}
 		if isBubbleTeaControlMessage(msg.Msg) {
 			if msg.ConversationID == h.activeID {
@@ -202,6 +233,16 @@ func (h *ConversationHost) View() tea.View {
 		if parent := h.runtimes[h.mainID]; parent != nil {
 			active.SetParentRuntimeStatus(parent.RuntimeStatus())
 		}
+		active.SetSideRuntimeStatus("")
+	} else {
+		active.SetParentRuntimeStatus("")
+		active.SetSideRuntimeStatus("")
+		for id, runtime := range h.runtimes {
+			if id != h.mainID && runtime != nil {
+				active.SetSideRuntimeStatus(runtime.RuntimeStatus())
+				break
+			}
+		}
 	}
 	if h.err != nil {
 		active.SetFooterWarning(h.err.Error())
@@ -215,6 +256,15 @@ func (h *ConversationHost) ActiveConversationID() string { return h.activeID }
 func (h *ConversationHost) Runtime(id string) *Model { return h.runtimes[id] }
 
 func (h *ConversationHost) ActiveRuntime() *Model { return h.runtimes[h.activeID] }
+
+// TakePostFrameImageSequence drains image output from the currently rendered
+// runtime. Inactive runtimes retain their sequences until they become active.
+func (h *ConversationHost) TakePostFrameImageSequence() string {
+	if active := h.ActiveRuntime(); active != nil {
+		return active.TakePostFrameImageSequence()
+	}
+	return ""
+}
 
 // Shutdown deterministically resolves pending UI callers and cancels every
 // conversation without allowing one runtime to tear down another.

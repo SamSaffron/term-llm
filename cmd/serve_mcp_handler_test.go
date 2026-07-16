@@ -128,6 +128,48 @@ func decodeServeMCPResponse(t *testing.T, rr *httptest.ResponseRecorder) serveMC
 	return resp
 }
 
+func TestHandleSessionMCPRejectsSideMutationAndNeutralizesLegacySelection(t *testing.T) {
+	store := newServeMCPTestStore(t)
+	parent := &session.Session{ID: "parent", Kind: session.KindRoot, Status: session.StatusActive}
+	if err := store.Create(context.Background(), parent); err != nil {
+		t.Fatal(err)
+	}
+	side := &session.Session{ID: "side_mcp", Kind: session.KindSide, SideState: session.SideOpen, ParentID: parent.ID, RootID: parent.ID, MCP: "legacy", Status: session.StatusActive}
+	if err := store.Create(context.Background(), side); err != nil {
+		t.Fatal(err)
+	}
+	srv, createdPtr := newServeMCPHandlerTestServer(t, store)
+
+	stateReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/side_mcp/state", nil)
+	stateRR := httptest.NewRecorder()
+	srv.handleSessionByID(stateRR, stateReq)
+	if stateRR.Code != http.StatusOK || strings.Contains(stateRR.Body.String(), "legacy") {
+		t.Fatalf("side state leaked persisted MCP: status=%d body=%s", stateRR.Code, stateRR.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/sessions/side_mcp/mcp", strings.NewReader(`{"enabled":["anything"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("PATCH status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rt := *createdPtr; rt == nil || rt.mcpSetting != "" {
+		t.Fatalf("side runtime MCP selection was not clamped: %#v", rt)
+	}
+	stored, err := store.Get(context.Background(), side.ID)
+	if err != nil || stored.MCP != "" {
+		t.Fatalf("legacy side MCP was not neutralized: session=%#v err=%v", stored, err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions/side_mcp/mcp", nil)
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK || len(decodeServeMCPResponse(t, rr).Enabled) != 0 {
+		t.Fatalf("GET exposed side MCP: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleSessionMCPGetListsConfiguredServers(t *testing.T) {
 	writeServeMCPConfig(t, map[string]internalmcp.ServerConfig{
 		"filesystem": {Command: "term-llm-test-filesystem"},

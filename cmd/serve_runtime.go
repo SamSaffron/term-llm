@@ -488,20 +488,24 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 	return sess.Number
 }
 
-func (rt *serveRuntime) configureSideRuntime(ctx context.Context, sess *session.Session) bool {
+func (rt *serveRuntime) configureSideRuntime(ctx context.Context, sess *session.Session) error {
 	if sess == nil || sess.Kind != session.KindSide {
-		return true
+		return nil
 	}
 	// Lifecycle is persisted independently of runtime status; refresh it on every
 	// start so a close/reopen from another process is authoritative.
 	if rt.store != nil {
-		if fresh, err := rt.store.Get(ctx, sess.ID); err == nil && fresh != nil {
+		fresh, err := rt.store.Get(ctx, sess.ID)
+		if err != nil {
+			return fmt.Errorf("refresh side conversation: %w", err)
+		}
+		if fresh != nil {
 			rt.sessionMeta = fresh
 			sess = fresh
 		}
 	}
 	if sess.SideState != session.SideOpen {
-		return false
+		return session.ErrSideClosed
 	}
 	if !rt.sidePolicyConfigured {
 		if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
@@ -526,22 +530,26 @@ func (rt *serveRuntime) configureSideRuntime(ctx context.Context, sess *session.
 		}
 		if rt.mcpManager != nil {
 			rt.mcpManager.StopAll()
-			rt.mcpSetting = ""
 		}
 		rt.yoloMode = false
 		rt.sidePolicyConfigured = true
+	}
+	// Reassert the clamp on every run. Settings endpoints must not be able to
+	// leave a side runtime with an MCP selection between one-shot executions.
+	rt.mcpSetting = ""
+	if rt.mcpManager != nil {
+		rt.mcpManager.StopAll()
 	}
 	if rt.baseContext == nil {
 		if sideStore, ok := rt.store.(session.SideStore); ok {
 			base, err := sideStore.GetSideContext(ctx, sess.ID)
 			if err != nil {
-				log.Printf("[serve] load inherited side context failed for %s: %v", sess.ID, err)
-				return false
+				return fmt.Errorf("load inherited side context: %w", err)
 			}
 			rt.baseContext = base
 		}
 	}
-	return true
+	return nil
 }
 
 func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *session.Session) bool {
@@ -966,8 +974,10 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	}
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
-	if persisted && !rt.configureSideRuntime(ctx, rt.sessionMeta) {
-		return serveRunResult{}, session.ErrSideClosed
+	if persisted {
+		if err := rt.configureSideRuntime(ctx, rt.sessionMeta); err != nil {
+			return serveRunResult{}, err
+		}
 	}
 	if persisted {
 		rt.persistStatus(ctx, req.SessionID, session.StatusActive)

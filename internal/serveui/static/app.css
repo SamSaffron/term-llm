@@ -4144,6 +4144,7 @@
   cursor: pointer;
 }
 .side-chat-btn:hover, .side-chat-btn.has-open-side { background: rgba(127,127,127,.12); }
+.side-chat-btn.needs-attention { border-color: #e9a23b; color: #e9a23b; font-weight: 650; }
 .side-chat-btn:disabled { display: none; }
 .side-chat-banner {
   display: flex;

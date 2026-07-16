@@ -16,7 +16,7 @@ func TestSQLiteSideForkLifecycleAndContextIsolation(t *testing.T) {
 	}
 	defer store.Close()
 	ctx := context.Background()
-	parent := &Session{ID: "parent", Provider: "mock", ProviderKey: "mock", Model: "m", Mode: ModeChat, Origin: OriginWeb}
+	parent := &Session{ID: "parent", Provider: "mock", ProviderKey: "mock", Model: "m", Mode: ModeChat, Origin: OriginWeb, MCP: "filesystem"}
 	if err := store.Create(ctx, parent); err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +38,9 @@ func TestSQLiteSideForkLifecycleAndContextIsolation(t *testing.T) {
 	}
 	if side.Kind != KindSide || side.ParentID != parent.ID || side.RootID != parent.ID || side.SideState != SideOpen {
 		t.Fatalf("unexpected relationship: %+v", side)
+	}
+	if side.MCP != "" {
+		t.Fatalf("side inherited MCP selection %q", side.MCP)
 	}
 	if err := store.SetCurrent(ctx, side.ID); err != nil {
 		t.Fatal(err)
@@ -75,6 +78,9 @@ func TestSQLiteSideForkLifecycleAndContextIsolation(t *testing.T) {
 	}
 	if err := store.CloseSide(ctx, side.ID); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.CloseSide(ctx, side.ID); err != nil {
+		t.Fatalf("idempotent close: %v", err)
 	}
 	if _, err := store.ReopenSide(ctx, side.ID); err != nil {
 		t.Fatal(err)
