@@ -4,15 +4,81 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/acp"
 )
+
+type observedWriteCloser struct {
+	io.WriteCloser
+	started chan struct{}
+	once    sync.Once
+}
+
+func (w *observedWriteCloser) Write(data []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	return w.WriteCloser.Write(data)
+}
+
+func TestStopGrokACPProcessUnblocksBlockedWrite(t *testing.T) {
+	clientSide, agentSide := net.Pipe()
+	defer clientSide.Close()
+	defer agentSide.Close()
+
+	stdin := &observedWriteCloser{WriteCloser: clientSide, started: make(chan struct{})}
+	conn := acp.NewConnection(clientSide, stdin, nil, acp.Options{})
+	waitDone := make(chan struct{})
+	process := &grokACPProcess{
+		cancel:   func() { close(waitDone) },
+		stdin:    stdin,
+		client:   acp.NewClient(conn),
+		conn:     conn,
+		waitDone: waitDone,
+		capabilities: acp.AgentCapabilities{SessionCapabilities: acp.SessionCapabilities{
+			Close: json.RawMessage(`true`),
+		}},
+		sessionID: "blocked-session",
+	}
+
+	callDone := make(chan error, 1)
+	go func() {
+		callDone <- conn.Call(context.Background(), "session/prompt", map[string]string{
+			"prompt": strings.Repeat("x", 1<<20),
+		}, nil)
+	}()
+	select {
+	case <-stdin.started:
+	case <-time.After(time.Second):
+		t.Fatal("ACP call did not start its blocked write")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		var provider GrokBinProvider
+		provider.stopGrokACPProcess(process)
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Grok ACP process stop remained blocked behind the stdin write")
+	}
+	select {
+	case err := <-callDone:
+		if err == nil {
+			t.Fatal("blocked ACP call unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked ACP call did not exit after stdin was closed")
+	}
+}
 
 func TestParseGrokACPUsage(t *testing.T) {
 	usage, err := parseGrokACPUsage(json.RawMessage(`{

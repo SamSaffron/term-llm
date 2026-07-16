@@ -941,7 +941,15 @@ func (p *GrokBinProvider) stopGrokACPProcess(process *grokACPProcess) {
 	process.stopOnce.Do(func() {
 		if process.capabilities.SessionCapabilities.SupportsClose() && process.sessionID != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			_ = process.client.CloseSession(ctx, acp.CloseSessionRequest{SessionID: process.sessionID})
+			closeDone := make(chan struct{})
+			go func() {
+				defer close(closeDone)
+				_ = process.client.CloseSession(ctx, acp.CloseSessionRequest{SessionID: process.sessionID})
+			}()
+			select {
+			case <-closeDone:
+			case <-ctx.Done():
+			}
 			cancel()
 		}
 		_ = process.stdin.Close()
