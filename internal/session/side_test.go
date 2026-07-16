@@ -9,6 +9,38 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestLoggingStoreForwardsSideCapability(t *testing.T) {
+	base, err := NewSQLiteStore(Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+
+	store := NewLoggingStore(base, nil)
+	var _ SideStore = store
+
+	ctx := context.Background()
+	parent := &Session{ID: "logging-parent", Provider: "mock", Model: "m", Mode: ModeChat, Origin: OriginTUI}
+	if err := store.Create(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMessage(ctx, parent.ID, NewMessage(parent.ID, llm.UserText("parent context"), -1)); err != nil {
+		t.Fatal(err)
+	}
+
+	side, err := store.ForkSide(ctx, parent.ID, OriginTUI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseContext, err := store.GetSideContext(ctx, side.ID)
+	if err != nil || len(baseContext) != 1 {
+		t.Fatalf("base context = %#v, %v", baseContext, err)
+	}
+	if err := store.CloseSide(ctx, side.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLiteSideForkLifecycleAndContextIsolation(t *testing.T) {
 	store, err := NewSQLiteStore(Config{Path: ":memory:"})
 	if err != nil {

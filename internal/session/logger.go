@@ -3,8 +3,11 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 // WarnFunc is a function that logs warnings.
@@ -371,4 +374,93 @@ func (s *LoggingStore) SetCurrent(ctx context.Context, sessionID string) error {
 	err := s.Store.SetCurrent(ctx, sessionID)
 	s.logOnce("SetCurrent", err)
 	return err
+}
+
+// sideStore returns the optional side-conversation capability of the wrapped
+// store. LoggingStore must forward optional capabilities explicitly because
+// embedding Store only promotes methods declared by the base interface.
+func (s *LoggingStore) sideStore() (SideStore, error) {
+	store, ok := s.Store.(SideStore)
+	if !ok {
+		return nil, fmt.Errorf("side conversations are unsupported by %T", s.Store)
+	}
+	return store, nil
+}
+
+func (s *LoggingStore) ForkSide(ctx context.Context, parentID string, origin SessionOrigin) (*Session, error) {
+	store, err := s.sideStore()
+	if err != nil {
+		return nil, err
+	}
+	sess, err := store.ForkSide(ctx, parentID, origin)
+	if err != nil && !errors.Is(err, ErrOpenSideExists) && !errors.Is(err, ErrNestedSide) {
+		s.logOnce("ForkSide", err)
+	}
+	return sess, err
+}
+
+func (s *LoggingStore) GetOpenSide(ctx context.Context, rootID string) (*Session, error) {
+	store, err := s.sideStore()
+	if err != nil {
+		return nil, err
+	}
+	sess, err := store.GetOpenSide(ctx, rootID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("GetOpenSide", err)
+	}
+	return sess, err
+}
+
+func (s *LoggingStore) ListSides(ctx context.Context, rootID string) ([]SessionSummary, error) {
+	store, err := s.sideStore()
+	if err != nil {
+		return nil, err
+	}
+	sides, err := store.ListSides(ctx, rootID)
+	s.logOnce("ListSides", err)
+	return sides, err
+}
+
+func (s *LoggingStore) GetSideContext(ctx context.Context, sideID string) ([]llm.Message, error) {
+	store, err := s.sideStore()
+	if err != nil {
+		return nil, err
+	}
+	messages, err := store.GetSideContext(ctx, sideID)
+	s.logOnce("GetSideContext", err)
+	return messages, err
+}
+
+func (s *LoggingStore) ConsumeSideContext(ctx context.Context, sideID string) ([]llm.Message, error) {
+	store, err := s.sideStore()
+	if err != nil {
+		return nil, err
+	}
+	messages, err := store.ConsumeSideContext(ctx, sideID)
+	s.logOnce("ConsumeSideContext", err)
+	return messages, err
+}
+
+func (s *LoggingStore) CloseSide(ctx context.Context, sideID string) error {
+	store, err := s.sideStore()
+	if err != nil {
+		return err
+	}
+	err = store.CloseSide(ctx, sideID)
+	if err != nil && !errors.Is(err, ErrSideClosed) {
+		s.logOnce("CloseSide", err)
+	}
+	return err
+}
+
+func (s *LoggingStore) ReopenSide(ctx context.Context, sideID string) (*Session, error) {
+	store, err := s.sideStore()
+	if err != nil {
+		return nil, err
+	}
+	sess, err := store.ReopenSide(ctx, sideID)
+	if err != nil && !errors.Is(err, ErrSideClosed) && !errors.Is(err, ErrOpenSideExists) {
+		s.logOnce("ReopenSide", err)
+	}
+	return sess, err
 }
