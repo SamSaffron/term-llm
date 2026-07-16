@@ -702,6 +702,10 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		_ = db.Close()
 		return nil, err
 	}
+	if err := mgr.reconcileMisfiredSchedules(time.Now().UTC()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	mgr.wg.Add(1)
 	go mgr.schedulerLoop()
@@ -785,6 +789,64 @@ func (m *jobsV2Manager) recoverRuns() error {
 		}
 	}
 
+	return nil
+}
+
+func (m *jobsV2Manager) reconcileMisfiredSchedules(now time.Time) error {
+	rows, err := m.db.Query(`SELECT id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, retry_policy, timeout_seconds, misfire_policy, labels, next_run_at, created_at, updated_at FROM jobs_v2 WHERE enabled = 1 AND misfire_policy = 'skip' AND trigger_type IN (?, ?) AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at ASC`, jobsV2TriggerCron, jobsV2TriggerOnce, now.UTC())
+	if err != nil {
+		return fmt.Errorf("load misfired schedules: %w", err)
+	}
+
+	var jobs []jobsV2Job
+	for rows.Next() {
+		job, err := scanJobV2(rows)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan misfired schedule: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("scan misfired schedules: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close misfired schedules query: %w", err)
+	}
+
+	for _, job := range jobs {
+		var next *time.Time
+		if job.TriggerType == jobsV2TriggerCron {
+			cfg, err := parseTriggerConfig(job.TriggerType, job.TriggerConfig, job.ScheduleTimezone)
+			if err != nil {
+				return fmt.Errorf("parse misfired schedule %s: %w", job.ID, err)
+			}
+			nextRun, err := nextCronTime(cfg.Expression, effectiveCronTimezone(cfg.Timezone, job.ScheduleTimezone), now.UTC())
+			if err != nil {
+				return fmt.Errorf("advance misfired schedule %s: %w", job.ID, err)
+			}
+			nextRun = nextRun.UTC()
+			next = &nextRun
+		}
+
+		tx, err := m.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin misfired schedule update %s: %w", job.ID, err)
+		}
+		if job.TriggerType == jobsV2TriggerOnce {
+			_, err = tx.Exec(`UPDATE jobs_v2 SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND enabled = 1 AND misfire_policy = 'skip' AND next_run_at <= ?`, job.ID, now.UTC())
+		} else {
+			_, err = tx.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND enabled = 1 AND misfire_policy = 'skip' AND next_run_at <= ?`, next, job.ID, now.UTC())
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("update misfired schedule %s: %w", job.ID, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit misfired schedule update %s: %w", job.ID, err)
+		}
+	}
 	return nil
 }
 

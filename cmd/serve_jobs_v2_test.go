@@ -29,6 +29,101 @@ func TestNewJobsV2ManagerLimitsFileBackedDBConnections(t *testing.T) {
 	}
 }
 
+func TestNewJobsV2ManagerReconcilesMisfirePolicies(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	if err := execJobsV2Schema(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("execJobsV2Schema failed: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-10 * time.Minute)
+	cronConfig := `{"expression":"*/5 * * * *","timezone":"UTC"}`
+	onceConfig := `{"run_at":"` + past.Format(time.RFC3339) + `"}`
+	jobs := []struct {
+		id            string
+		triggerType   jobsV2TriggerType
+		triggerConfig string
+		misfirePolicy string
+	}{
+		{id: "job_skip_cron", triggerType: jobsV2TriggerCron, triggerConfig: cronConfig, misfirePolicy: "skip"},
+		{id: "job_skip_once", triggerType: jobsV2TriggerOnce, triggerConfig: onceConfig, misfirePolicy: "skip"},
+		{id: "job_run_cron", triggerType: jobsV2TriggerCron, triggerConfig: cronConfig, misfirePolicy: "run"},
+		{id: "job_run_once", triggerType: jobsV2TriggerOnce, triggerConfig: onceConfig, misfirePolicy: "run"},
+	}
+	for _, job := range jobs {
+		_, err := db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, schedule_timezone, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, next_run_at, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'UTC', 'forbid', 1, 30, ?, ?, ?, ?)`,
+			job.id, job.id, jobsV2RunnerProgram, `{"command":"true"}`, job.triggerType, job.triggerConfig, job.misfirePolicy, past, now, now)
+		if err != nil {
+			_ = db.Close()
+			t.Fatalf("insert %s: %v", job.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded database: %v", err)
+	}
+
+	startedAt := time.Now().UTC()
+	mgr, err := newJobsV2Manager(dbPath, 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var count int
+		if err := mgr.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2`).Scan(&count); err != nil {
+			t.Fatalf("count startup runs: %v", err)
+		}
+		if count == 2 {
+			break
+		}
+		if count > 2 || time.Now().After(deadline) {
+			t.Fatalf("startup run count = %d, want 2", count)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for _, tc := range []struct {
+		id      string
+		enabled bool
+		hasNext bool
+		runs    int
+	}{
+		{id: "job_skip_cron", enabled: true, hasNext: true, runs: 0},
+		{id: "job_skip_once", enabled: false, hasNext: false, runs: 0},
+		{id: "job_run_cron", enabled: true, hasNext: true, runs: 1},
+		{id: "job_run_once", enabled: false, hasNext: false, runs: 1},
+	} {
+		job, err := mgr.GetJob(tc.id)
+		if err != nil {
+			t.Fatalf("GetJob(%s): %v", tc.id, err)
+		}
+		if job.Enabled != tc.enabled {
+			t.Errorf("%s enabled = %v, want %v", tc.id, job.Enabled, tc.enabled)
+		}
+		if (job.NextRunAt != nil) != tc.hasNext {
+			t.Errorf("%s next_run_at = %v, want present %v", tc.id, job.NextRunAt, tc.hasNext)
+		}
+		if job.NextRunAt != nil && !job.NextRunAt.After(startedAt) {
+			t.Errorf("%s next_run_at = %v, want after startup %v", tc.id, job.NextRunAt, startedAt)
+		}
+
+		var runCount int
+		if err := mgr.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ?`, tc.id).Scan(&runCount); err != nil {
+			t.Fatalf("count runs for %s: %v", tc.id, err)
+		}
+		if runCount != tc.runs {
+			t.Errorf("%s run count = %d, want %d", tc.id, runCount, tc.runs)
+		}
+	}
+}
+
 func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 0, nil)
 	if err != nil {
