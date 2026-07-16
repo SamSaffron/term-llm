@@ -159,30 +159,82 @@ func (c *DirCache) Snapshot() (readDirs []string, writeDirs []string) {
 	return readDirs, writeDirs
 }
 
-// ShellApprovalCache caches shell command pattern approvals for the session.
+type shellCommandApproval struct {
+	command string
+	workDir string
+}
+
+// ShellApprovalCache caches exact shell commands and glob pattern approvals for
+// the session.
 type ShellApprovalCache struct {
 	mu       sync.RWMutex
-	patterns []string // Patterns approved during this session
+	patterns []string               // Glob patterns approved during this session
+	commands []shellCommandApproval // Exact command/workdir pairs approved during this session
 }
 
 // NewShellApprovalCache creates a new ShellApprovalCache.
 func NewShellApprovalCache() *ShellApprovalCache {
 	return &ShellApprovalCache{
 		patterns: []string{},
+		commands: []shellCommandApproval{},
 	}
 }
 
-// AddPattern adds a pattern to the session cache.
-func (c *ShellApprovalCache) AddPattern(pattern string) {
+// AddPattern adds a validated glob pattern to the session cache.
+func (c *ShellApprovalCache) AddPattern(pattern string) error {
+	if err := validateShellApprovalPattern(pattern); err != nil {
+		return NewToolErrorf(ErrInvalidParams, "invalid shell pattern %q: %v", pattern, err)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Avoid duplicates
 	for _, p := range c.patterns {
 		if p == pattern {
-			return
+			return nil
 		}
 	}
 	c.patterns = append(c.patterns, pattern)
+	return nil
+}
+
+// AddCommand adds an exact command/workdir pair to the session cache. Exact
+// commands are kept separate from glob patterns so shell syntax and glob
+// metacharacters are compared literally.
+func (c *ShellApprovalCache) AddCommand(command, workDir string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return NewToolError(ErrInvalidParams, "shell command is required")
+	}
+	approval := shellCommandApproval{
+		command: command,
+		workDir: normalizeGuardianWorkDir(workDir),
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, existing := range c.commands {
+		if existing == approval {
+			return nil
+		}
+	}
+	c.commands = append(c.commands, approval)
+	return nil
+}
+
+// IsCommandApproved reports whether command has an exact session approval in
+// workDir.
+func (c *ShellApprovalCache) IsCommandApproved(command, workDir string) bool {
+	approval := shellCommandApproval{
+		command: strings.TrimSpace(command),
+		workDir: normalizeGuardianWorkDir(workDir),
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, existing := range c.commands {
+		if existing == approval {
+			return true
+		}
+	}
+	return false
 }
 
 // GetPatterns returns all session-approved patterns.
@@ -192,6 +244,13 @@ func (c *ShellApprovalCache) GetPatterns() []string {
 	result := make([]string, len(c.patterns))
 	copy(result, c.patterns)
 	return result
+}
+
+// getCommands returns all exact command approvals for the session.
+func (c *ShellApprovalCache) getCommands() []shellCommandApproval {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]shellCommandApproval(nil), c.commands...)
 }
 
 // ApprovalMode controls how unmatched tool approval requests are handled.
@@ -749,13 +808,19 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 		return ProceedAlways, true
 	}
 
-	// Check session-approved patterns
+	// Check session-approved exact commands and patterns.
+	if m.shellCache.IsCommandApproved(command, workDir) {
+		return ProceedAlways, true
+	}
 	if matchAnyShellPattern(m.shellCache.GetPatterns(), command) {
 		return ProceedAlways, true
 	}
 
-	// Check parent's session-approved patterns (inherited approvals)
+	// Check parent's session-approved commands and patterns (inherited approvals).
 	if m.parent != nil {
+		if m.parent.shellCache.IsCommandApproved(command, workDir) {
+			return ProceedAlways, true
+		}
 		if matchAnyShellPattern(m.parent.shellCache.GetPatterns(), command) {
 			return ProceedAlways, true
 		}
@@ -1076,7 +1141,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 		if err != nil {
 			return Cancel, err
 		}
-		return m.handleShellApprovalResult(result, command, projectApprovals)
+		return m.handleShellApprovalResult(result, command, workDir, projectApprovals)
 	}
 
 	// Fall back to legacy PromptFunc (local, then ancestors)
@@ -1095,11 +1160,15 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	outcome, pattern := promptFunc(req)
 
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
-		// Cache the command or pattern for future use
+		// Cache the command or pattern for future use. A malformed remembered
+		// pattern still honors the user's approval for this invocation.
 		if pattern != "" {
-			m.shellCache.AddPattern(pattern)
-		} else {
-			m.shellCache.AddPattern(command)
+			if err := m.shellCache.AddPattern(pattern); err != nil {
+				log.Printf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
+				outcome = ProceedOnce
+			}
+		} else if err := m.shellCache.AddCommand(command, workDir); err != nil {
+			return Cancel, fmt.Errorf("remember exact shell command: %w", err)
 		}
 	}
 	if outcome == ProceedOnce || outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
@@ -1145,7 +1214,19 @@ func (m *ApprovalManager) appendApprovalContextFromChain(b *strings.Builder) {
 		for _, pattern := range cur.shellCache.GetPatterns() {
 			addApprovalContextLine(b, seenShell, "session_shell_pattern", pattern)
 		}
+		for _, approval := range cur.shellCache.getCommands() {
+			addShellCommandApprovalContextLine(b, seenShell, approval)
+		}
 	}
+}
+
+func addShellCommandApprovalContextLine(b *strings.Builder, seen map[string]struct{}, approval shellCommandApproval) {
+	key := "session_shell_command\x00" + approval.command + "\x00" + approval.workDir
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	fmt.Fprintf(b, "session_shell_command=%q workdir=%q\n", approval.command, approval.workDir)
 }
 
 func addApprovalContextLine(b *strings.Builder, seen map[string]struct{}, label, value string) {
@@ -1293,7 +1374,7 @@ func (m *ApprovalManager) recordGuardianDenial() {
 }
 
 // handleShellApprovalResult processes the result from the shell approval UI.
-func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, command string, projectApprovals *ProjectApprovals) (ConfirmOutcome, error) {
+func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, command, workDir string, projectApprovals *ProjectApprovals) (ConfirmOutcome, error) {
 	if result.Cancelled {
 		return Cancel, nil
 	}
@@ -1307,9 +1388,11 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 		return ProceedOnce, nil
 
 	case ApprovalChoiceCommand:
+		// Session-only exact command approval.
+		if err := m.shellCache.AddCommand(command, workDir); err != nil {
+			return Cancel, fmt.Errorf("remember exact shell command: %w", err)
+		}
 		m.resetGuardianDenials()
-		// Session-only command approval
-		m.shellCache.AddPattern(command)
 		return ProceedAlways, nil
 
 	case ApprovalChoicePattern:
@@ -1318,16 +1401,26 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 		if pattern == "" {
 			pattern = GenerateShellPattern(command)
 		}
-
-		if result.SaveToRepo && projectApprovals != nil {
-			if err := projectApprovals.ApproveShellPattern(pattern); err != nil {
-				if m.DebugApproval {
-					log.Printf("[approval] failed to persist shell pattern %q: %v", pattern, err)
-				}
-			}
+		if err := validateShellApprovalPattern(pattern); err != nil {
+			log.Printf("[approval] invalid shell pattern %q; using one-time approval: %v", pattern, err)
+			m.resetGuardianDenials()
+			return ProceedOnce, nil
 		}
-		// Also add to session cache for fast lookups
-		m.shellCache.AddPattern(pattern)
+		// Cache before persistence so a durable success can never be followed by a
+		// failed session insertion. Validation failures degrade to this invocation.
+		if err := m.shellCache.AddPattern(pattern); err != nil {
+			log.Printf("[approval] failed to remember shell pattern %q; using one-time approval: %v", pattern, err)
+			m.resetGuardianDenials()
+			return ProceedOnce, nil
+		}
+
+		var persistErr error
+		if result.SaveToRepo && projectApprovals != nil {
+			persistErr = projectApprovals.ApproveShellPattern(pattern)
+		}
+		if persistErr != nil {
+			log.Printf("[approval] failed to persist shell pattern %q; using session-only approval: %v", pattern, persistErr)
+		}
 		m.resetGuardianDenials()
 		return ProceedAlways, nil
 
@@ -1337,8 +1430,8 @@ func (m *ApprovalManager) handleShellApprovalResult(result ApprovalResult, comma
 }
 
 // ApproveShellPattern adds a pattern to the session cache.
-func (m *ApprovalManager) ApproveShellPattern(pattern string) {
-	m.shellCache.AddPattern(pattern)
+func (m *ApprovalManager) ApproveShellPattern(pattern string) error {
+	return m.shellCache.AddPattern(pattern)
 }
 
 // ApprovePath adds a path/directory approval to the session cache.
@@ -1389,8 +1482,15 @@ func isSafePipeTarget(command string) bool {
 //	gh pr diff 1 | python summarize.py           → approved
 //	gh pr view 1 && rm -rf /tmp                  → denied
 func matchAnyShellPattern(patterns []string, command string) bool {
+	validPatterns := make([]string, 0, len(patterns))
 	for _, pattern := range patterns {
-		if matchPattern(pattern, command) {
+		if validateShellApprovalPattern(pattern) == nil {
+			validPatterns = append(validPatterns, pattern)
+		}
+	}
+
+	for _, pattern := range validPatterns {
+		if matchPatternValidated(pattern, command) {
 			return true
 		}
 	}
@@ -1407,7 +1507,7 @@ func matchAnyShellPattern(patterns []string, command string) bool {
 			return false
 		}
 		for i, pipePart := range pipeParts {
-			if matchAnyPatternSingle(patterns, pipePart) {
+			if matchAnyPatternSingle(validPatterns, pipePart) {
 				continue
 			}
 			if i > 0 && isSafePipeTarget(pipePart) {
@@ -1436,6 +1536,15 @@ func matchAnyPatternSingle(patterns []string, command string) bool {
 //  2. Within each segment, split on pipes (|) — the first command must match
 //     the pattern, and remaining pipe targets must match OR be safe pipe targets.
 func matchPattern(pattern, command string) bool {
+	if validateShellApprovalPattern(pattern) != nil {
+		return false
+	}
+	return matchPatternValidated(pattern, command)
+}
+
+// matchPatternValidated matches a pattern that has already passed
+// validateShellApprovalPattern.
+func matchPatternValidated(pattern, command string) bool {
 	if matchPatternSingle(pattern, command) {
 		return true
 	}

@@ -843,7 +843,7 @@ func TestApprovalManager_HandleShellApprovalResult(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			outcome, err := mgr.handleShellApprovalResult(tt.result, "git status", nil)
+			outcome, err := mgr.handleShellApprovalResult(tt.result, "git status", "", nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("handleShellApprovalResult() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -1070,7 +1070,7 @@ func TestApprovalManager_HandleShellApprovalResult_Pattern_AddedToCache(t *testi
 		Pattern: "cargo *",
 	}
 
-	_, err := mgr.handleShellApprovalResult(result, "cargo build", nil)
+	_, err := mgr.handleShellApprovalResult(result, "cargo build", "", nil)
 	if err != nil {
 		t.Fatalf("handleShellApprovalResult failed: %v", err)
 	}

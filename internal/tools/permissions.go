@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gobwas/glob"
-
 	"github.com/samsaffron/term-llm/internal/appdata"
 )
 
@@ -19,9 +17,6 @@ type ToolPermissions struct {
 	WriteDirs      []string // Directories for write/edit
 	ShellAllow     []string // Shell command patterns (glob syntax)
 	ScriptCommands []string // Exact script commands (auto-approved)
-
-	// Compiled patterns for shell commands
-	shellPatterns []glob.Glob
 }
 
 // NewToolPermissions creates a new ToolPermissions instance.
@@ -72,8 +67,7 @@ func (p *ToolPermissions) AddWriteDir(dir string) error {
 
 // AddShellPattern adds a shell command pattern to the allowlist.
 func (p *ToolPermissions) AddShellPattern(pattern string) error {
-	g, err := glob.Compile(pattern)
-	if err != nil {
+	if err := validateShellApprovalPattern(pattern); err != nil {
 		return NewToolErrorf(ErrInvalidParams, "invalid shell pattern %q: %v", pattern, err)
 	}
 	p.mu.Lock()
@@ -85,7 +79,6 @@ func (p *ToolPermissions) AddShellPattern(pattern string) error {
 		}
 	}
 	p.ShellAllow = append(p.ShellAllow, pattern)
-	p.shellPatterns = append(p.shellPatterns, g)
 	return nil
 }
 
@@ -106,21 +99,15 @@ func (p *ToolPermissions) AddScriptCommand(command string) {
 	p.ScriptCommands = append(p.ScriptCommands, cmd)
 }
 
-// CompileShellPatterns pre-compiles all shell patterns.
+// CompileShellPatterns validates all shell patterns. The method name is kept
+// for compatibility with callers that populated ShellAllow directly.
 func (p *ToolPermissions) CompileShellPatterns() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.compileShellPatternsLocked()
-}
-
-func (p *ToolPermissions) compileShellPatternsLocked() error {
-	p.shellPatterns = make([]glob.Glob, 0, len(p.ShellAllow))
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	for _, pattern := range p.ShellAllow {
-		g, err := glob.Compile(pattern)
-		if err != nil {
+		if err := validateShellApprovalPattern(pattern); err != nil {
 			return NewToolErrorf(ErrInvalidParams, "invalid shell pattern %q: %v", pattern, err)
 		}
-		p.shellPatterns = append(p.shellPatterns, g)
 	}
 	return nil
 }
@@ -178,33 +165,19 @@ func (p *ToolPermissions) IsShellCommandAllowed(command string) bool {
 	p.mu.RLock()
 	scripts := append([]string(nil), p.ScriptCommands...)
 	shellAllow := append([]string(nil), p.ShellAllow...)
-	patterns := append([]glob.Glob(nil), p.shellPatterns...)
-	needsCompile := len(patterns) == 0 && len(shellAllow) > 0
 	p.mu.RUnlock()
 
-	// Check exact script matches first
+	// Check exact script matches first.
 	for _, script := range scripts {
 		if trimmedCmd == script {
 			return true
 		}
 	}
 
-	// Ensure patterns are compiled
-	if needsCompile {
-		p.mu.Lock()
-		if len(p.shellPatterns) == 0 && len(p.ShellAllow) > 0 {
-			_ = p.compileShellPatternsLocked()
-		}
-		patterns = append([]glob.Glob(nil), p.shellPatterns...)
-		p.mu.Unlock()
-	}
-
-	for _, pattern := range patterns {
-		if pattern.Match(command) {
-			return true
-		}
-	}
-	return false
+	// Use the same shell-aware matcher as session and project approvals. In
+	// particular, every command in a compound expression must be covered by an
+	// allowlist pattern; a wildcard never consumes raw shell operators.
+	return matchAnyShellPattern(shellAllow, trimmedCmd)
 }
 
 func (p *ToolPermissions) Snapshot() (readDirs, writeDirs, shellAllow []string) {

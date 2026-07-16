@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gobwas/glob"
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/samsaffron/term-llm/internal/pathutil"
 )
 
@@ -321,12 +321,25 @@ func HasUnsafeShellSyntax(input string) bool {
 	return hasUnsafeShellSyntax(input)
 }
 
-func matchShellPattern(pattern, value string) bool {
-	g, err := glob.Compile(pattern)
+func validateShellApprovalPattern(pattern string) error {
+	parts, err := splitShellWords(pattern)
 	if err != nil {
-		return false
+		return err
 	}
-	return g.Match(value)
+	if len(parts) == 0 {
+		return errors.New("shell pattern is required")
+	}
+	for _, part := range parts {
+		if _, err := doublestar.Match(part, ""); err != nil {
+			return fmt.Errorf("invalid glob in shell word %q: %w", part, err)
+		}
+	}
+	return nil
+}
+
+func matchShellPattern(pattern, value string) bool {
+	matched, err := doublestar.Match(pattern, value)
+	return err == nil && matched
 }
 
 func resolveToolPath(path string, isWrite bool) (string, error) {
