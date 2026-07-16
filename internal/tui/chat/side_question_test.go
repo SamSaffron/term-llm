@@ -14,12 +14,13 @@ import (
 	"github.com/samsaffron/term-llm/internal/sidequestion"
 )
 
-func TestSideCommandOpensOverlayWithoutChangingConversation(t *testing.T) {
+func TestSideCommandOpensOverlayAndClearsSubmittedCommand(t *testing.T) {
 	m := newTestChatModel(true)
 	m.sess = &session.Session{ID: "main-session"}
 	m.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "main fact"}}}}
 	m.scrollOffset = 3
-	m.textarea.SetValue("preserved draft")
+	m.setTextareaValue("/side what does that mean?")
+	m.completions.Show()
 	provider := llm.NewMockProvider("mock").AddTextResponse("side answer")
 	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) { return provider, nil })
 
@@ -28,8 +29,14 @@ func TestSideCommandOpensOverlayWithoutChangingConversation(t *testing.T) {
 	if !m.sideQuestion.Visible || !m.sideQuestion.Running || m.sess.ID != "main-session" || cmd == nil {
 		t.Fatalf("side state = visible %v running %v session %q cmd %v", m.sideQuestion.Visible, m.sideQuestion.Running, m.sess.ID, cmd != nil)
 	}
-	if m.scrollOffset != 3 || m.textarea.Value() != "preserved draft" {
-		t.Fatalf("overlay changed main UI state: scroll=%d draft=%q", m.scrollOffset, m.textarea.Value())
+	if m.scrollOffset != 3 {
+		t.Fatalf("overlay changed main scroll: %d", m.scrollOffset)
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want submitted command cleared", got)
+	}
+	if m.completions.IsVisible() {
+		t.Fatal("expected command completions to be hidden")
 	}
 	for cmd != nil {
 		msg := cmd()
@@ -44,6 +51,43 @@ func TestSideCommandOpensOverlayWithoutChangingConversation(t *testing.T) {
 	}
 	if len(m.messages) != 1 {
 		t.Fatalf("side content entered transcript: %#v", m.messages)
+	}
+}
+
+func TestSideCommandReopensOverlayAndClearsSubmittedCommand(t *testing.T) {
+	m := newTestChatModel(true)
+	m.sideQuestion.History = []sidequestion.Entry{{Question: "earlier", Response: "answer"}}
+	m.setTextareaValue("/side")
+	m.completions.Show()
+
+	updated, cmd := m.ExecuteCommand("/side")
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("reopening side history unexpectedly returned a command")
+	}
+	if !m.sideQuestion.Visible || m.sideQuestion.Selected != 0 {
+		t.Fatalf("side history was not reopened: %#v", m.sideQuestion)
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want submitted command cleared", got)
+	}
+	if m.completions.IsVisible() {
+		t.Fatal("expected command completions to be hidden")
+	}
+}
+
+func TestSideCommandStartupErrorUsesSlashCommandClearing(t *testing.T) {
+	m := newTestChatModel(true)
+	m.setTextareaValue("/side question")
+	m.completions.Show()
+
+	updated, _ := m.ExecuteCommand("/side question")
+	m = updated.(*Model)
+	if m.sideQuestion.Running {
+		t.Fatal("side question unexpectedly started without a provider factory")
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want established slash-command error clearing", got)
 	}
 }
 

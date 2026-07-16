@@ -63,6 +63,13 @@ func (m *Model) sideSnapshot() []llm.Message {
 	return sidequestion.PrepareContextSnapshot(messages)
 }
 
+func (m *Model) clearSideSubmittedCommand() {
+	m.setTextareaValue("")
+	if m.completions != nil {
+		m.completions.Hide()
+	}
+}
+
 func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	question = strings.TrimSpace(question)
 	if question == "" {
@@ -72,6 +79,7 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 		m.sideQuestion.Visible = true
 		m.sideQuestion.Selected = len(m.sideQuestion.History) - 1
 		m.loadSelectedSideEntry()
+		m.clearSideSubmittedCommand()
 		return m, nil
 	}
 	if m.sideQuestion.Running {
@@ -96,6 +104,7 @@ func (m *Model) cmdSide(question string) (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Unable to start side question: %v", err))
 	}
+	m.clearSideSubmittedCommand()
 
 	m.sideQuestion.Generation++
 	generation := m.sideQuestion.Generation
