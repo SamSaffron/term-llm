@@ -112,6 +112,14 @@ func (m *serveSessionManager) makeRoomForNewSessionLocked() (*serveRuntime, erro
 	return nil, errServeSessionLimitReached
 }
 
+// Peek returns an existing runtime without changing its eviction/activity time.
+func (m *serveSessionManager) Peek(id string) (*serveRuntime, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt, ok := m.sessions[id]
+	return rt, ok
+}
+
 // Get returns an existing session runtime without creating one.
 // Returns (nil, false) if the session does not exist.
 func (m *serveSessionManager) Get(id string) (*serveRuntime, bool) {

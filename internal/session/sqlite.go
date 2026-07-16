@@ -1349,6 +1349,13 @@ func (s *SQLiteStore) cleanup() error {
 	// Delete old sessions
 	if s.cfg.MaxAgeDays > 0 {
 		cutoff := time.Now().AddDate(0, 0, -s.cfg.MaxAgeDays)
+		if s.hasSideMetadata {
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE kind = 'side' AND root_id IN (
+				SELECT id FROM sessions WHERE kind = 'root' AND updated_at < ? AND archived = FALSE
+			)`, cutoff); err != nil {
+				return fmt.Errorf("delete old side sessions: %w", err)
+			}
+		}
 		_, err := s.db.ExecContext(ctx,
 			"DELETE FROM sessions WHERE updated_at < ? AND archived = FALSE",
 			cutoff)
@@ -1359,10 +1366,22 @@ func (s *SQLiteStore) cleanup() error {
 
 	// Keep only max_count sessions
 	if s.cfg.MaxCount > 0 {
+		if s.hasSideMetadata {
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE kind = 'side' AND root_id IN (
+				SELECT id FROM sessions WHERE archived = FALSE AND kind = 'root'
+				ORDER BY updated_at DESC LIMIT -1 OFFSET ?
+			)`, s.cfg.MaxCount); err != nil {
+				return fmt.Errorf("delete excess side sessions: %w", err)
+			}
+		}
+		kindClause := ""
+		if s.hasSideMetadata {
+			kindClause = " AND kind = 'root'"
+		}
 		_, err := s.db.ExecContext(ctx, `
 			DELETE FROM sessions WHERE id IN (
 				SELECT id FROM sessions
-				WHERE archived = FALSE
+				WHERE archived = FALSE`+kindClause+`
 				ORDER BY updated_at DESC
 				LIMIT -1 OFFSET ?
 			)`, s.cfg.MaxCount)
@@ -3290,8 +3309,15 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 	return messages, rows.Err()
 }
 
-// SetCurrent marks a session as the current one.
+// SetCurrent marks a root session as the current auto-resume target. Entering a
+// side does not steal the process-wide root resume pointer.
 func (s *SQLiteStore) SetCurrent(ctx context.Context, sessionID string) error {
+	if s.hasSideMetadata {
+		var rootID string
+		if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(root_id,id) FROM sessions WHERE id = ?", sessionID).Scan(&rootID); err == nil && rootID != "" {
+			sessionID = rootID
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO metadata (key, value) VALUES ('current_session', ?)`,
 		sessionID)

@@ -12,6 +12,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+const SideSystemPolicy = `You are operating in a side conversation forked from a running main conversation.
+Inherited context is reference-only: do not claim that inherited tasks were assigned to this side, and do not continue or complete them unless the user explicitly asks here.
+The main and side conversations share a workspace. Before any action that may mutate files, repositories, processes, services, external systems, or other shared state, obtain explicit user approval. Never delegate, spawn subagents, queue agents, or hand work to another agent. Clearly distinguish observations from changes you made in this side.`
+
 var (
 	ErrOpenSideExists = errors.New("session: an open side conversation already exists")
 	ErrSideClosed     = errors.New("session: side conversation is closed")

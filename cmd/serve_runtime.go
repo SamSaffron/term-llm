@@ -36,6 +36,8 @@ type serveRuntime struct {
 	goalStore            session.Store
 	syntheticUserCB      func(context.Context, llm.Message) error
 	systemPrompt         string
+	baseContext          []llm.Message // inherited side context; never part of the local transcript
+	sidePolicyConfigured bool
 	history              []llm.Message
 	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
 	search               bool
@@ -486,6 +488,48 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 	return sess.Number
 }
 
+func (rt *serveRuntime) configureSideRuntime(ctx context.Context, sess *session.Session) bool {
+	if sess == nil || sess.Kind != session.KindSide {
+		return true
+	}
+	// Lifecycle is persisted independently of runtime status; refresh it on every
+	// start so a close/reopen from another process is authoritative.
+	if rt.store != nil {
+		if fresh, err := rt.store.Get(ctx, sess.ID); err == nil && fresh != nil {
+			rt.sessionMeta = fresh
+			sess = fresh
+		}
+	}
+	if sess.SideState != session.SideOpen {
+		return false
+	}
+	if !rt.sidePolicyConfigured {
+		if rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
+			rt.toolMgr.ApprovalMgr.SetApprovalMode(tools.ModePrompt)
+			rt.toolMgr.ApprovalMgr.SetRequireExplicitMutations(true)
+			rt.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
+		}
+		if rt.engine != nil {
+			for _, name := range []string{tools.SpawnAgentToolName, tools.QueueAgentToolName, tools.WaitForJobsToolName, tools.InitiateHandoverToolName, tools.HubDelegateToolName, tools.HubCheckDelegationToolName} {
+				rt.engine.UnregisterTool(name)
+			}
+		}
+		rt.yoloMode = false
+		rt.sidePolicyConfigured = true
+	}
+	if rt.baseContext == nil {
+		if sideStore, ok := rt.store.(session.SideStore); ok {
+			base, err := sideStore.GetSideContext(ctx, sess.ID)
+			if err != nil {
+				log.Printf("[serve] load inherited side context failed for %s: %v", sess.ID, err)
+				return false
+			}
+			rt.baseContext = base
+		}
+	}
+	return true
+}
+
 func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *session.Session) bool {
 	if sess == nil || len(rt.history) > 0 || rt.historyPersisted {
 		return true
@@ -908,6 +952,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	}
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
+	if persisted && !rt.configureSideRuntime(ctx, rt.sessionMeta) {
+		return serveRunResult{}, session.ErrSideClosed
+	}
 	if persisted {
 		rt.persistStatus(ctx, req.SessionID, session.StatusActive)
 	}
@@ -999,11 +1046,15 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 	}()
 
-	messages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
+	messages := make([]llm.Message, 0, len(rt.baseContext)+len(baseHistory)+len(inputMessages)+2)
+	if rt.sessionMeta != nil && rt.sessionMeta.Kind == session.KindSide {
+		messages = append(messages, llm.SystemText(session.SideSystemPolicy))
+	}
 	systemPromptInjected := rt.systemPrompt != "" && !containsSystemMessage(baseHistory) && !containsSystemMessage(inputMessages)
 	if systemPromptInjected {
 		messages = append(messages, llm.SystemText(rt.systemPrompt))
 	}
+	messages = append(messages, rt.baseContext...)
 	messages = append(messages, baseHistory...)
 	messages = append(messages, inputMessages...)
 
@@ -1220,6 +1271,14 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 		if len(compacted) == 0 {
 			compacted = append(compacted, result.NewMessages...)
+		}
+		if len(rt.baseContext) > 0 && rt.sessionMeta != nil && rt.sessionMeta.Kind == session.KindSide {
+			if sideStore, ok := rt.store.(session.SideStore); ok {
+				if _, err := sideStore.ConsumeSideContext(cbCtx, rt.sessionMeta.ID); err != nil {
+					return fmt.Errorf("consume inherited side context after compaction: %w", err)
+				}
+			}
+			rt.baseContext = nil
 		}
 		baseHistory = compacted
 		compactedActiveHistory = true

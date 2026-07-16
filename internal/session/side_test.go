@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -37,6 +38,21 @@ func TestSQLiteSideForkLifecycleAndContextIsolation(t *testing.T) {
 	}
 	if side.Kind != KindSide || side.ParentID != parent.ID || side.RootID != parent.ID || side.SideState != SideOpen {
 		t.Fatalf("unexpected relationship: %+v", side)
+	}
+	if err := store.SetCurrent(ctx, side.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.GetCurrent(ctx)
+	if err != nil || current == nil || current.ID != parent.ID {
+		t.Fatalf("current after entering side = %+v, %v", current, err)
+	}
+	var schemaVersionGot int
+	if err := store.db.QueryRow("SELECT version FROM schema_version").Scan(&schemaVersionGot); err != nil || schemaVersionGot != schemaVersion {
+		t.Fatalf("schema version=%d err=%v", schemaVersionGot, err)
+	}
+	var uniqueIndexSQL string
+	if err := store.db.QueryRow("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_sessions_one_open_side'").Scan(&uniqueIndexSQL); err != nil || !strings.Contains(uniqueIndexSQL, "WHERE") {
+		t.Fatalf("partial unique index missing: %q %v", uniqueIndexSQL, err)
 	}
 	base, err := store.GetSideContext(ctx, side.ID)
 	if err != nil {

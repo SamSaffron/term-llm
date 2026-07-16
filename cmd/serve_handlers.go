@@ -1345,6 +1345,11 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		suffix = parts[1]
 	}
 
+	if suffix == "side" || suffix == "side/reopen" || suffix == "side/close" || suffix == "relationship" {
+		s.handleSessionSide(w, r, sessionID, suffix)
+		return
+	}
+
 	if suffix == "" && r.Method == http.MethodPatch {
 		if err := requireJSONContentType(r); err != nil {
 			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())

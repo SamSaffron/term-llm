@@ -233,6 +233,16 @@ type SearchResult struct {
 	CreatedAt           time.Time          `json:"created_at"`
 }
 
+func (s *Session) RootConversationID() string {
+	if s == nil {
+		return ""
+	}
+	if strings.TrimSpace(s.RootID) != "" {
+		return s.RootID
+	}
+	return s.ID
+}
+
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.
 func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 	m := &Message{

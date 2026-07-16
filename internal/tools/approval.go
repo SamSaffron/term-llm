@@ -357,10 +357,11 @@ type ApprovalManager struct {
 	// Approval mode. Yolo mode auto-approves all tool executions without prompting;
 	// auto mode asks a policy reviewer for shell commands after deterministic
 	// checks fail and before falling back to a human prompt.
-	modeMu       sync.RWMutex
-	mode         ApprovalMode
-	YoloMode     bool // Deprecated compatibility mirror for ModeYolo.
-	autoHeadless bool
+	modeMu                   sync.RWMutex
+	mode                     ApprovalMode
+	YoloMode                 bool // Deprecated compatibility mirror for ModeYolo.
+	autoHeadless             bool
+	requireExplicitMutations bool
 
 	guardianConsecutiveDenials  int
 	guardianCircuitBreakerLimit int
@@ -555,6 +556,29 @@ func (m *ApprovalManager) SetApprovalMode(mode ApprovalMode) {
 	if old == ModeAuto && mode != ModeAuto {
 		m.clearGuardianExactShell()
 	}
+}
+
+// SetRequireExplicitMutations makes every shell execution and write operation
+// require a fresh human decision, bypassing yolo, allowlists, and remembered
+// approvals. Side conversations use this because they share the parent's
+// workspace and can otherwise race it.
+func (m *ApprovalManager) SetRequireExplicitMutations(required bool) {
+	if m == nil {
+		return
+	}
+	m.modeMu.Lock()
+	m.requireExplicitMutations = required
+	m.modeMu.Unlock()
+}
+
+func (m *ApprovalManager) requiresExplicitMutations() bool {
+	if m == nil {
+		return false
+	}
+	m.modeMu.RLock()
+	required := m.requireExplicitMutations
+	m.modeMu.RUnlock()
+	return required
 }
 
 // ApprovalMode returns this manager's effective mode, inheriting from parents.
@@ -847,8 +871,10 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 // for one tool allows all tools to access files within it.
 // toolInfo is optional context for display (e.g., filename being accessed).
 func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
-	// 0. Yolo mode - auto-approve everything
-	if m.YoloEnabled() {
+	forceExplicit := isWrite && m.requiresExplicitMutations()
+	// 0. Yolo mode - auto-approve everything unless this runtime mechanically
+	// requires a fresh decision for shared-state mutations.
+	if !forceExplicit && m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
 		}
@@ -867,18 +893,20 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		originalPath = resolved
 	}
 
-	outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
-	if err != nil {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
+	if !forceExplicit {
+		outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
+		if err != nil {
+			if m.DebugApproval {
+				log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt error: %v", toolName, absPath, err)
+			}
+			return Cancel, err
 		}
-		return Cancel, err
-	}
-	if ok {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt decided: %v", toolName, absPath, outcome)
+		if ok {
+			if m.DebugApproval {
+				log.Printf("[approval] CheckPathApproval tool=%s path=%q → no-prompt decided: %v", toolName, absPath, outcome)
+			}
+			return outcome, nil
 		}
-		return outcome, nil
 	}
 	if originalPath != absPath {
 		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
@@ -892,26 +920,28 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
 	// while this request was waiting behind another prompt.
-	if m.YoloEnabled() {
+	if !forceExplicit && m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve after lock", toolName, path, isWrite)
 		}
 		return ProceedOnce, nil
 	}
 
-	// Recheck now that we hold the prompt lock to avoid duplicate prompts
-	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
-	if err != nil {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
+	// Recheck now that we hold the prompt lock to avoid duplicate prompts.
+	if !forceExplicit {
+		outcome, ok, err := m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
+		if err != nil {
+			if m.DebugApproval {
+				log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck error: %v", toolName, absPath, err)
+			}
+			return Cancel, err
 		}
-		return Cancel, err
-	}
-	if ok {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
+		if ok {
+			if m.DebugApproval {
+				log.Printf("[approval] CheckPathApproval tool=%s path=%q → recheck decided: %v", toolName, absPath, outcome)
+			}
+			return outcome, nil
 		}
-		return outcome, nil
 	}
 	if originalPath != absPath {
 		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
@@ -966,7 +996,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		ToolInfo:    toolInfo,
 	}
 
-	outcome, _ = promptFunc(req)
+	outcome, _ := promptFunc(req)
 
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		m.dirCache.Set(absDir, outcome, isWrite)
@@ -1071,23 +1101,26 @@ func (m *ApprovalManager) CheckShellApprovalWithContext(ctx context.Context, com
 // transcript evidence. The supplier is only evaluated when an auto guardian
 // reviewer actually needs the transcript.
 func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, error) {
-	// Yolo mode - auto-approve everything
-	if m.YoloEnabled() {
+	forceExplicit := m.requiresExplicitMutations()
+	// Yolo mode - auto-approve everything unless shared-state safety requires a prompt.
+	if !forceExplicit && m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve", command)
 		}
 		return ProceedOnce, nil
 	}
 
-	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
+	if !forceExplicit {
+		if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
+			if m.DebugApproval {
+				log.Printf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
+			}
+			return outcome, nil
 		}
-		return outcome, nil
 	}
 
 	guardianAttemptedBeforeLock := false
-	if m.ApprovalMode() == ModeAuto {
+	if !forceExplicit && m.ApprovalMode() == ModeAuto {
 		guardianAttemptedBeforeLock = true
 		if outcome, decided, err := m.checkShellGuardianApproval(ctx, command, workDir, transcript); decided || err != nil {
 			return outcome, err
@@ -1102,22 +1135,24 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
 	// while this request was waiting behind another prompt.
-	if m.YoloEnabled() {
+	if !forceExplicit && m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve after lock", command)
 		}
 		return ProceedOnce, nil
 	}
 
-	// Recheck now that we hold the prompt lock to avoid duplicate prompts
-	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
+	// Recheck now that we hold the prompt lock to avoid duplicate prompts.
+	if !forceExplicit {
+		if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
+			if m.DebugApproval {
+				log.Printf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
+			}
+			return outcome, nil
 		}
-		return outcome, nil
 	}
 
-	if m.ApprovalMode() == ModeAuto && !guardianAttemptedBeforeLock {
+	if !forceExplicit && m.ApprovalMode() == ModeAuto && !guardianAttemptedBeforeLock {
 		if outcome, decided, err := m.checkShellGuardianApproval(ctx, command, workDir, transcript); decided || err != nil {
 			return outcome, err
 		}
