@@ -261,11 +261,22 @@
             <span class="header-tokens" id="headerTokens"></span>
           </div>
           </div>
+          <button class="side-chat-btn header-action" id="sideChatBtn" type="button" aria-label="Open side chat" title="Fork a side conversation">
+            <span aria-hidden="true">⑂</span><span id="sideChatBtnLabel">Side chat</span>
+          </button>
           <button class="icon-btn diff-toggle header-action" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
             <span class="diff-toggle-badge" id="diffToggleBadge"></span>
           </button>
         </div>
       </header>
+
+      <div class="side-chat-banner hidden" id="sideChatBanner" role="status">
+        <div><strong>Side chat</strong><span id="sideParentStatus">Main conversation is idle</span></div>
+        <div class="side-chat-banner-actions">
+          <button type="button" id="backToMainBtn">Back to main</button>
+          <button type="button" id="closeSideBtn">Close side</button>
+        </div>
+      </div>
 
       <section class="chat-scroll" id="chatScroll">
         <div class="messages" id="messages"></div>

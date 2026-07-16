@@ -253,6 +253,7 @@ const buildCachedSessionRow = (session) => {
   row.className = 'session-row';
   row.dataset.sessionId = session.id;
   row.classList.toggle('is-active', sessionHasInProgressState(session));
+  row.classList.toggle('is-side-session', session.kind === 'side');
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
 
   const btn = document.createElement('button');
@@ -373,6 +374,7 @@ const updateCachedSessionRow = (session, cached) => {
   const { row, btn, titleEl, metaEl, pinIconEl, pinLabelEl, archiveIconEl, archiveLabelEl } = cached;
 
   row.classList.toggle('is-active', sessionHasInProgressState(session));
+  row.classList.toggle('is-side-session', session.kind === 'side');
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
   btn.classList.toggle('active', session.id === state.activeSessionId);
 
