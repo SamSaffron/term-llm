@@ -1092,6 +1092,20 @@ func (m *Model) resetAltScreenStreamingAppendCache() {
 	m.contentLines = nil
 }
 
+// invalidateAltScreenStreamingViewportCache discards the rendered viewport and
+// append state when a streaming-local command clears the composer. This is
+// deliberately narrower than textarea editing: normal keystrokes only change
+// the footer and must not rebuild the streaming viewport on every frame.
+func (m *Model) invalidateAltScreenStreamingViewportCache() {
+	if !m.altScreen {
+		return
+	}
+	m.viewCache.lastViewportView = ""
+	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
+	m.bumpContentVersion()
+}
+
 func (m *Model) bumpContentVersion() {
 	m.viewCache.contentVersion++
 	if m.streamPerf != nil {

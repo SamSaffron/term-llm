@@ -1423,17 +1423,30 @@ func TestStreamingSlashThinkingExecutesLocally(t *testing.T) {
 	}
 }
 
-func TestStreamingSideSlashClearsRenderedComposerBeforeOverlay(t *testing.T) {
-	m := newTestChatModel(false)
+func TestStreamingSideSlashInvalidatesCachedAltScreenBackgroundBeforeOverlay(t *testing.T) {
+	m := newTestChatModel(true)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.streaming = true
+	m.streamRenderMinInterval = 0
 	m.SetSideQuestionProviderFactory(func(_, _ string) (llm.Provider, error) {
 		return llm.NewMockProvider("side").AddTextResponse("answer"), nil
 	})
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
 	const submitted = "/side stale-composer-token"
 	m.setTextareaValue(submitted)
+
+	// Prime the actual cached viewport.View path with the stale command. This
+	// models the append/viewport cache observed in a real alt-screen recording;
+	// merely rendering the composer does not exercise that cache.
+	_ = m.View()
+	m.viewport.SetContent(submitted)
+	m.viewCache.lastViewportView = ""
+	m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
 	if view := ui.StripANSI(m.View().Content); !strings.Contains(view, submitted) {
-		t.Fatalf("precondition: rendered composer does not contain %q: %q", submitted, view)
+		t.Fatalf("precondition: cached streaming view does not contain %q: %q", submitted, view)
+	}
+	if !strings.Contains(ui.StripANSI(m.viewCache.lastViewportView), submitted) {
+		t.Fatalf("precondition: lastViewportView was not primed with %q: %q", submitted, m.viewCache.lastViewportView)
 	}
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -1444,8 +1457,19 @@ func TestStreamingSideSlashClearsRenderedComposerBeforeOverlay(t *testing.T) {
 	if got := fmt.Sprintf("%T", cmd()); got != "tea.sequenceMsg" {
 		t.Fatalf("side submission command = %s, want ordered clear-screen/listener sequence", got)
 	}
-	if view := ui.StripANSI(m.View().Content); strings.Contains(view, submitted) {
-		t.Fatalf("submitted composer remained in overlay frame: %q", view)
+	if m.viewCache.lastViewportView != "" || !m.viewCache.lastSetContentAt.IsZero() {
+		t.Fatalf("streaming viewport cache was not invalidated: view=%q setAt=%v", m.viewCache.lastViewportView, m.viewCache.lastSetContentAt)
+	}
+	if m.viewCache.lastContentHistoryPlusStream || m.viewCache.lastStreamingContent != "" || m.viewCache.lastContentStr != "" || m.contentLines != nil {
+		t.Fatalf("streaming append cache was not invalidated: historyPlusStream=%v stream=%q content=%q lines=%#v",
+			m.viewCache.lastContentHistoryPlusStream, m.viewCache.lastStreamingContent, m.viewCache.lastContentStr, m.contentLines)
+	}
+	background := ui.StripANSI(m.viewAltScreen())
+	if strings.Contains(background, submitted) {
+		t.Fatalf("submitted composer remained in overlay background: %q", background)
+	}
+	if view := ui.StripANSI(m.renderSideQuestionOverlay(background)); strings.Contains(view, submitted) {
+		t.Fatalf("submitted composer remained beneath side-question overlay: %q", view)
 	}
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("textarea = %q, want cleared", got)
