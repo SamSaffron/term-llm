@@ -5,9 +5,10 @@
 // home peer, bypassing the intermediate relay for all /v1/ API calls.
 //
 // Two-tier timeout:
-//   1. First-frame timeout (1 s):  if no response frame arrives within 1 s,
-//      the request seamlessly falls back to HTTPS and the channel is torn down
-//      and renegotiated in the background.
+//   1. First-frame timeout: read-only requests fall back after 1 s; mutations get
+//      5 s because their handlers may legitimately perform classification or
+//      other work before sending headers. Ambiguous mutations are retried only
+//      when they carry an idempotency key.
 //   2. Stream watchdog (30 s):  once streaming begins, if no frame (chunk,
 //      done, or server keepalive) arrives for 30 s the stream is closed and
 //      the channel renegotiated.  The app-layer resume logic reconnects via
@@ -40,9 +41,12 @@
   const UI_PREFIX = window.TERM_LLM_UI_PREFIX || '/ui';
   const ICE_TIMEOUT_MS = 8000;
 
-  // If no response frame (headers/chunk/done) arrives within this window,
-  // assume UDP is dead: fall back to HTTPS and renegotiate in the background.
-  const RESPONSE_TIMEOUT_MS = 1000;
+  // Read-only requests should fail over quickly when UDP is dead. Mutations get
+  // longer because endpoints such as /interrupt can classify input before they
+  // emit headers. Mutation retries must still be idempotent server-side because
+  // the original request may have completed despite a lost response frame.
+  const READ_RESPONSE_TIMEOUT_MS = 1000;
+  const MUTATION_RESPONSE_TIMEOUT_MS = 5000;
 
   // Once streaming has started, if no frame arrives within this window,
   // assume the channel silently died.  The backend sends keepalive pings
@@ -360,7 +364,7 @@
   }
 
   function webrtcFetch(urlStr, options) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const reqId = crypto.randomUUID();
       let streamController;
       let resolved = false;
@@ -369,7 +373,13 @@
       const reqStart = performance.now();
 
       const urlObj = new URL(urlStr, window.location.origin);
-      const method = options.method || 'GET';
+      const method = (options.method || 'GET').toUpperCase();
+      const readOnly = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+      const requestHeaderSet = new Headers(options.headers || {});
+      const replaySafe = readOnly || requestHeaderSet.has('Idempotency-Key');
+      const responseTimeoutMs = readOnly
+        ? READ_RESPONSE_TIMEOUT_MS
+        : MUTATION_RESPONSE_TIMEOUT_MS;
       const path = urlObj.pathname + (urlObj.search || '');
       const bodySize = options.body ? new Blob([options.body]).size : 0;
 
@@ -385,6 +395,17 @@
 
       function resolveOnce(response) {
         if (!resolved) { resolved = true; resolve(response); }
+      }
+
+      function retryOrRejectAmbiguousMutation(reason) {
+        if (replaySafe) {
+          resolveOnce(originalFetch(urlStr, options));
+          return;
+        }
+        if (!resolved) {
+          resolved = true;
+          reject(new TypeError('WebRTC request outcome is unknown; refusing to replay non-idempotent ' + method + ' request (' + reason + ')'));
+        }
       }
 
       // Central cleanup — idempotent, called from every exit path.
@@ -430,18 +451,20 @@
       const responseTimer = setTimeout(() => {
         if (gotResponse) return; // already got data, all good
 
-        diag('⚠ timeout (' + RESPONSE_TIMEOUT_MS + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
+        diag('⚠ timeout (' + responseTimeoutMs + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
 
         cleanup('first-frame-timeout');
         closeStream();
 
-        // Fall back to HTTPS for this request.
-        resolveOnce(originalFetch(urlStr, options));
+        // A read or idempotency-keyed mutation can be replayed over HTTPS. For
+        // any other mutation, surface an ambiguous network failure rather than
+        // risking the side effect twice.
+        retryOrRejectAmbiguousMutation('first-frame timeout');
 
         // Mark the channel as degraded and renegotiate in the background.
         // This also drains any other stuck pending requests.
         triggerRenegotiation();
-      }, RESPONSE_TIMEOUT_MS);
+      }, responseTimeoutMs);
 
       function markGotResponse() {
         if (!gotResponse) {
@@ -488,10 +511,11 @@
       function fallback() {
         cleanup('drain-fallback');
         if (!gotResponse) {
-          // Haven't received anything yet — retry cleanly via HTTPS.
+          // No response frame means the server may still have performed the
+          // operation. Replay only requests whose semantics make that safe.
           closeStream();
           diag('↩ fallback ' + method + ' ' + path);
-          resolveOnce(originalFetch(urlStr, options));
+          retryOrRejectAmbiguousMutation('data channel closed');
         } else {
           // Already streaming — close the stream; consumer sees truncation.
           // App-layer resume logic will reconnect via HTTPS.

@@ -515,6 +515,7 @@ function createHarness(options = {}) {
       url,
       method: requestOptions.method || 'GET',
       body: typeof requestOptions.body === 'string' ? requestOptions.body : null,
+      headers: requestOptions.headers || null,
     });
     if (typeof options.fetchImpl === 'function') {
       return options.fetchImpl(url, requestOptions, {
@@ -4808,6 +4809,11 @@ async function testStaleInterrupt404RefreshesAndSendsMessage() {
   const interruptCalls = fetchCalls.filter((call) => call.url === `/ui/v1/sessions/${session.id}/interrupt` && call.method === 'POST');
   if (interruptCalls.length !== 1) {
     fail(name, 'expected initial send to attempt interrupt once', JSON.stringify(fetchCalls));
+    return;
+  }
+  const interruptBody = JSON.parse(interruptCalls[0].body || '{}');
+  if (!interruptBody.interjection_id || interruptCalls[0].headers?.['Idempotency-Key'] !== interruptBody.interjection_id) {
+    fail(name, 'interrupt retry key should match its stable interjection id', JSON.stringify(interruptCalls[0]));
     return;
   }
   const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');

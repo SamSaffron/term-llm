@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +56,7 @@ type serveRuntime struct {
 	yoloMode             bool
 	lastUsedUnixNano     atomic.Int64
 	activeInterrupt      *runtimeInterruptState
+	interjectionCalls    map[string]*runtimeInterjectionCall
 	lastResponseID       string
 	responseIDs          []string
 	cumulativeUsage      llm.Usage
@@ -82,6 +85,15 @@ type runtimeInterruptState struct {
 	model           string
 	reasoningEffort string
 }
+
+type runtimeInterjectionCall struct {
+	done        chan struct{}
+	fingerprint string
+	action      llm.InterruptAction
+	completedAt time.Time
+}
+
+const runtimeInterjectionCallTTL = time.Minute
 
 func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
 	message := strings.TrimSpace(event.Message)
@@ -353,7 +365,8 @@ func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
 }
 
 func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
-	return rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, false)
+	action, _, err := rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, false)
+	return action, err
 }
 
 func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort string) error {
@@ -381,12 +394,72 @@ func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort strin
 	return nil
 }
 
-func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, autoContinue bool) (llm.InterruptAction, error) {
+func interjectionFingerprint(msg llm.Message, displayText string, autoContinue bool) (string, error) {
+	parts := append([]llm.Part(nil), msg.Parts...)
+	for i := range parts {
+		// Parsing inline attachments can materialize them at a fresh temporary path
+		// on each transport retry. The content fields are the stable identity.
+		parts[i].ImagePath = ""
+		parts[i].FilePath = ""
+	}
+	payload, err := json.Marshal(struct {
+		Parts        []llm.Part `json:"parts"`
+		DisplayText  string     `json:"display_text"`
+		AutoContinue bool       `json:"auto_continue"`
+	}{parts, displayText, autoContinue})
+	if err != nil {
+		return "", fmt.Errorf("encode interjection idempotency payload: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum), nil
+}
+
+func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, autoContinue bool) (llm.InterruptAction, bool, error) {
+	interjectionID = strings.TrimSpace(interjectionID)
+	fingerprint := ""
+	if interjectionID != "" {
+		var err error
+		fingerprint, err = interjectionFingerprint(msg, displayText, autoContinue)
+		if err != nil {
+			return llm.InterruptInterject, false, err
+		}
+	}
+
 	rt.interruptMu.Lock()
+	now := time.Now()
+	for id, existing := range rt.interjectionCalls {
+		if !existing.completedAt.IsZero() && now.Sub(existing.completedAt) > runtimeInterjectionCallTTL {
+			delete(rt.interjectionCalls, id)
+		}
+	}
+	var call *runtimeInterjectionCall
+	if interjectionID != "" {
+		if rt.interjectionCalls == nil {
+			rt.interjectionCalls = make(map[string]*runtimeInterjectionCall)
+		}
+		if existing := rt.interjectionCalls[interjectionID]; existing != nil {
+			if existing.fingerprint != fingerprint {
+				rt.interruptMu.Unlock()
+				return llm.InterruptInterject, false, fmt.Errorf("interjection id %q was already used for different content", interjectionID)
+			}
+			rt.interruptMu.Unlock()
+			select {
+			case <-existing.done:
+				return existing.action, true, nil
+			case <-ctx.Done():
+				return llm.InterruptInterject, true, ctx.Err()
+			}
+		}
+		call = &runtimeInterjectionCall{done: make(chan struct{}), fingerprint: fingerprint}
+		rt.interjectionCalls[interjectionID] = call
+	}
 	state := rt.activeInterrupt
 	if state == nil {
+		if call != nil {
+			delete(rt.interjectionCalls, interjectionID)
+		}
 		rt.interruptMu.Unlock()
-		return llm.InterruptInterject, fmt.Errorf("session has no active stream")
+		return llm.InterruptInterject, false, fmt.Errorf("session has no active stream")
 	}
 	cancel := state.cancel
 	activity := llm.InterruptActivity{
@@ -406,7 +479,13 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 		}
 		classifyText += summary
 	}
-	action := llm.ClassifyInterrupt(ctx, fastProvider, classifyText, activity)
+	classifyCtx := ctx
+	classifyCancel := func() {}
+	if interjectionID != "" {
+		classifyCtx, classifyCancel = context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
+	}
+	action := llm.ClassifyInterrupt(classifyCtx, fastProvider, classifyText, activity)
+	classifyCancel()
 	switch action {
 	case llm.InterruptCancel:
 		if cancel != nil {
@@ -415,7 +494,14 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 	case llm.InterruptInterject:
 		rt.engine.QueueInterjection(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText, AutoContinue: autoContinue})
 	}
-	return action, nil
+	if call != nil {
+		rt.interruptMu.Lock()
+		call.action = action
+		call.completedAt = time.Now()
+		close(call.done)
+		rt.interruptMu.Unlock()
+	}
+	return action, false, nil
 }
 
 // ensureSessionInStore creates the session record in the database if it doesn't

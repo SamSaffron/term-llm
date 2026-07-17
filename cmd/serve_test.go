@@ -2707,7 +2707,7 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 }
 
-func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) {
+func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
@@ -2720,17 +2720,33 @@ func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) 
 
 	srv := &serveServer{sessionMgr: mgr}
 	body := `{"message":"please inspect this image","interjection_id":"web-1","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	srv.handleSessionByID(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200; body=%s", i+1, rr.Code, rr.Body.String())
+		}
+		if i == 0 {
+			// A transport retry can arrive after the active run has already ended.
+			rt.clearActiveInterrupt(state)
+		}
 	}
 	entries := engine.ListPendingInterjections()
 	if len(entries) != 1 {
-		t.Fatalf("pending entries = %d, want 1", len(entries))
+		t.Fatalf("pending entries after duplicate interjection ID = %d, want 1", len(entries))
 	}
+
+	mismatch := `{"message":"different message","interjection_id":"web-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(mismatch))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("mismatched idempotency payload status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+
 	parts := entries[0].Message.Parts
 	if len(parts) != 2 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartText || parts[1].Text != "please inspect this image" {
 		t.Fatalf("queued parts = %#v, want image plus message text", parts)

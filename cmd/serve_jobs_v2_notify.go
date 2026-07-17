@@ -173,7 +173,7 @@ func (s *serveServer) notifyQueuedAgentWeb(ctx context.Context, runID, sessionID
 				// originating session is already generating. Pass no classifier
 				// provider so this best-effort notice cannot be upgraded into a
 				// cancel/interrupt decision for the user's active run.
-				if _, err := rt.InterruptMessage(ctx, llm.UserText(message), message, "job_notify_"+strings.TrimSpace(runID), nil, true); err == nil {
+				if _, _, err := rt.InterruptMessage(ctx, llm.UserText(message), message, "job_notify_"+strings.TrimSpace(runID), nil, true); err == nil {
 					return nil
 				}
 			}

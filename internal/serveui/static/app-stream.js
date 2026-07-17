@@ -3804,9 +3804,11 @@ const interruptActiveRun = async (session, prompt, messageId, contentParts = nul
   const body = Array.isArray(contentParts) && contentParts.length > 0
     ? { message: prompt, content: prompt ? [...contentParts, { type: 'input_text', text: prompt }] : contentParts, interjection_id: messageId }
     : { message: prompt, interjection_id: messageId };
+  const headers = requestHeaders(session.id);
+  headers['Idempotency-Key'] = messageId;
   const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
     method: 'POST',
-    headers: requestHeaders(session.id),
+    headers,
     body: JSON.stringify(body)
   });
   if (!response.ok) {
