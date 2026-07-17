@@ -385,7 +385,7 @@ func (m *Model) handleCreateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if base == "" {
 			base = "HEAD"
 		}
-		opts := worktree.CreateOptions{Name: name, Base: base, Branch: strings.TrimSpace(m.inputs[2].Value())}
+		opts := worktree.CreateOptions{Name: name, Base: base, Branch: strings.TrimSpace(m.inputs[2].Value()), MoveChanges: true}
 		m.err = nil
 		return m, func() tea.Msg { return CreateMsg{Options: opts} }
 	}

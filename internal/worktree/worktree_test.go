@@ -62,6 +62,231 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+func TestCreateMovesRootChangesIntoNewWorktree(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "older.txt"), []byte("existing stash\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile older stash: %v", err)
+	}
+	runGitForWorktreeTest(t, repo, "stash", "push", "--include-untracked", "--message", "existing")
+	wantStashes := runGitForWorktreeTest(t, repo, "stash", "list", "--format=%H")
+
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("unstaged\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tracked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile staged: %v", err)
+	}
+	runGitForWorktreeTest(t, repo, "add", "staged.txt")
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile untracked: %v", err)
+	}
+	wantStatus := runGitForWorktreeTest(t, repo, "status", "--porcelain")
+
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "move-changes", MoveChanges: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+
+	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); got != "" {
+		t.Fatalf("root status = %q, want clean", got)
+	}
+	if got := runGitForWorktreeTest(t, wt.Dir, "status", "--porcelain"); got != wantStatus {
+		t.Fatalf("worktree status = %q, want %q", got, wantStatus)
+	}
+	if got := runGitForWorktreeTest(t, repo, "stash", "list", "--format=%H"); got != wantStashes {
+		t.Fatalf("stash list = %q, want existing stash %q", got, wantStashes)
+	}
+	if got := runGitForWorktreeTest(t, repo, "for-each-ref", "--format=%(refname)", "refs/term-llm/worktree-migrations"); got != "" {
+		t.Fatalf("migration refs = %q, want none after success", got)
+	}
+}
+
+func TestCreateRestoresRootChangesWhenSetupFails(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tracked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile untracked: %v", err)
+	}
+	runGitForWorktreeTest(t, repo, "add", "file.txt")
+	wantStatus := runGitForWorktreeTest(t, repo, "status", "--porcelain")
+
+	_, err := Create(context.Background(), repo, CreateOptions{
+		Name:        "move-rollback",
+		MoveChanges: true,
+		SetupScript: "exit 1",
+	})
+	if err == nil {
+		t.Fatal("Create succeeded, want setup failure")
+	}
+	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); got != wantStatus {
+		t.Fatalf("root status after rollback = %q, want %q", got, wantStatus)
+	}
+	if got := runGitForWorktreeTest(t, repo, "stash", "list"); got != "" {
+		t.Fatalf("stash list = %q, want migration stash removed after rollback", got)
+	}
+	if got := runGitForWorktreeTest(t, repo, "for-each-ref", "--format=%(refname)", "refs/term-llm/worktree-migrations"); got != "" {
+		t.Fatalf("migration refs = %q, want none after rollback", got)
+	}
+}
+
+func TestCreateRetainsRecoveryCopiesWhenRootRestoreFails(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("original changes\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tracked: %v", err)
+	}
+
+	_, err := Create(context.Background(), repo, CreateOptions{
+		Name:        "move-restore-failure",
+		MoveChanges: true,
+		SetupScript: fmt.Sprintf("printf 'concurrent changes\\n' > %q; exit 1", filepath.Join(repo, "file.txt")),
+	})
+	if err == nil {
+		t.Fatal("Create succeeded, want setup and restore failure")
+	}
+	if !strings.Contains(err.Error(), "failed worktree and recovery ref retained") {
+		t.Fatalf("Create error = %v, want retained recovery details", err)
+	}
+
+	items, listErr := List(repo)
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(items) != 1 || items[0].Name != "move-restore-failure" {
+		t.Fatalf("managed worktrees = %+v, want failed worktree retained", items)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), items[0].Dir, RemoveOptions{Force: true}) })
+	gotMoved, readErr := os.ReadFile(filepath.Join(items[0].Dir, "file.txt"))
+	if readErr != nil {
+		t.Fatalf("ReadFile retained worktree: %v", readErr)
+	}
+	if string(gotMoved) != "original changes\n" {
+		t.Fatalf("retained worktree file = %q, want original changes", gotMoved)
+	}
+	refs := strings.TrimSpace(runGitForWorktreeTest(t, repo, "for-each-ref", "--format=%(refname)", "refs/term-llm/worktree-migrations"))
+	if refs == "" {
+		t.Fatal("migration recovery ref missing after restore failure")
+	}
+	t.Cleanup(func() { runGitForWorktreeTest(t, repo, "update-ref", "-d", refs) })
+}
+
+func TestCreateCopyFilesDoesNotOverwriteMovedChanges(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("moved changes\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tracked: %v", err)
+	}
+
+	wt, err := Create(context.Background(), repo, CreateOptions{
+		Name:        "move-copy-overlap",
+		MoveChanges: true,
+		CopyFiles:   []string{"file.txt"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	got, err := os.ReadFile(filepath.Join(wt.Dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile moved file: %v", err)
+	}
+	if string(got) != "moved changes\n" {
+		t.Fatalf("worktree file = %q, want moved changes", got)
+	}
+}
+
+func TestCreateKeepsSuccessfulWorktreeWhenRecoveryRefCleanupFails(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("moved changes\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tracked: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = update-ref ] && [ \"$2\" = -d ]; then\n" +
+		"  case \"$3\" in refs/term-llm/worktree-migrations/*) echo forced ref cleanup failure >&2; exit 1;; esac\n" +
+		"fi\n" +
+		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("TERM_LLM_REAL_GIT", realGit)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var progress []string
+	wt, err := Create(context.Background(), repo, CreateOptions{
+		Name:        "move-ref-cleanup",
+		MoveChanges: true,
+		ProgressFn:  func(message string) { progress = append(progress, message) },
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(progress) == 0 || !strings.Contains(progress[len(progress)-1], "recovery ref cleanup failed") {
+		t.Fatalf("final progress = %q, want recovery ref cleanup warning", progress)
+	}
+	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); got != "" {
+		t.Fatalf("root status = %q, want clean", got)
+	}
+	got, readErr := os.ReadFile(filepath.Join(wt.Dir, "file.txt"))
+	if readErr != nil || string(got) != "moved changes\n" {
+		t.Fatalf("retained worktree file = %q, %v; want moved changes", got, readErr)
+	}
+	refs := strings.TrimSpace(runGitForWorktreeTest(t, repo, "for-each-ref", "--format=%(refname)", "refs/term-llm/worktree-migrations"))
+	if refs == "" {
+		t.Fatal("recovery ref missing after forced cleanup failure")
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(realGit, "update-ref", "-d", refs)
+		cmd.Dir = repo
+		_ = cmd.Run()
+	})
+}
+
+func TestCreateRestoresUnrelatedStashDroppedByConcurrentChange(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("moved changes\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile tracked: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	marker := filepath.Join(wrapperDir, "injected")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = stash ] && [ \"$2\" = drop ] && [ ! -e \"$TERM_LLM_INJECT_MARKER\" ]; then\n" +
+		"  : > \"$TERM_LLM_INJECT_MARKER\"\n" +
+		"  printf 'concurrent stash\\n' > concurrent.txt\n" +
+		"  \"$TERM_LLM_REAL_GIT\" stash push --include-untracked --message concurrent >/dev/null || exit $?\n" +
+		"fi\n" +
+		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("TERM_LLM_REAL_GIT", realGit)
+	t.Setenv("TERM_LLM_INJECT_MARKER", marker)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err = Create(context.Background(), repo, CreateOptions{Name: "move-stash-race", MoveChanges: true})
+	if err == nil {
+		t.Fatal("Create succeeded after concurrent stash change, want safe abort")
+	}
+	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); !strings.Contains(got, "file.txt") {
+		t.Fatalf("root status = %q, want original changes restored", got)
+	}
+	if got := runGitForWorktreeTest(t, repo, "stash", "list", "--format=%gs"); !strings.Contains(got, "concurrent") {
+		t.Fatalf("stash list = %q, want concurrently dropped stash restored", got)
+	}
+}
+
 func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
 	repo := newGitRepoForWorktreeTest(t)
 	wt1, err := Create(context.Background(), repo, CreateOptions{Name: "list-fast-one"})

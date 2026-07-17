@@ -167,7 +167,7 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}
-	opts := worktree.CreateOptions{Name: req.Name, Base: req.Base, Branch: req.Branch, SetupTimeout: 10 * time.Minute}
+	opts := worktree.CreateOptions{Name: req.Name, Base: req.Base, Branch: req.Branch, SetupTimeout: 10 * time.Minute, MoveChanges: true}
 	if opts.Base == "" {
 		opts.Base = "HEAD"
 	}

@@ -63,8 +63,11 @@ type CreateOptions struct {
 	SetupScript  string
 	SetupTimeout time.Duration
 	CopyFiles    []string
-	ProgressFn   func(message string)
-	Progress     chan<- Progress
+	// MoveChanges transfers staged, unstaged, and untracked changes from the
+	// main checkout into the new worktree, leaving the main checkout clean.
+	MoveChanges bool
+	ProgressFn  func(message string)
+	Progress    chan<- Progress
 }
 
 // RemoveOptions configures Remove.
@@ -229,6 +232,241 @@ func ManagedRootBase() (string, error) {
 	return filepath.Join(canonicalPathWithExistingAncestor(dataDir), "worktrees"), nil
 }
 
+// changeMigration tracks a temporary stash until changes have either been
+// transferred successfully or restored to the main checkout.
+type changeMigration struct {
+	root      string
+	oid       string
+	ref       string
+	active    bool
+	refActive bool
+}
+
+func stashRootChanges(ctx context.Context, root string) (*changeMigration, error) {
+	status, err := runGitCtx(ctx, root, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("worktree: inspect root changes: %w", err)
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil, nil
+	}
+
+	// Do not make stash creation cancelable. Once Git starts cleaning the
+	// checkout, we must wait until its object ID is captured durably.
+	message := fmt.Sprintf("term-llm worktree migration %d", time.Now().UnixNano())
+	if out, err := runGit(root, "stash", "push", "--include-untracked", "--message", message); err != nil {
+		return nil, fmt.Errorf("worktree: stash root changes: %w: %s", err, strings.TrimSpace(out))
+	}
+	oid, selector, err := findStashByMessage(root, message)
+	if err != nil {
+		return nil, fmt.Errorf("worktree: find migration stash after Git cleaned the root (recover it from git stash list): %w", err)
+	}
+	ref := fmt.Sprintf("refs/term-llm/worktree-migrations/%s-%d", oid[:12], time.Now().UnixNano())
+	migration := &changeMigration{root: root, oid: oid, ref: ref, active: true}
+	zeroOID := strings.Repeat("0", len(oid))
+	if out, err := runGit(root, "update-ref", ref, oid, zeroOID); err != nil {
+		restoreErr := migration.restoreFromStash()
+		cause := fmt.Errorf("worktree: preserve migration stash %s: %w: %s", oid, err, strings.TrimSpace(out))
+		if restoreErr != nil {
+			return nil, errors.Join(cause, restoreErr)
+		}
+		return nil, cause
+	}
+
+	migration.refActive = true
+
+	// The private ref now owns the recovery object. Remove the stash entry we
+	// created. If its selector moved concurrently, verify what Git actually
+	// dropped and immediately restore any unrelated stash object.
+	selectedOID, selectedErr := revParseFull(root, selector)
+	if selectedErr != nil || selectedOID != oid {
+		restoreErr := migration.restoreFromStash()
+		cause := fmt.Errorf("worktree: stash stack changed while capturing root changes; migration aborted safely")
+		if restoreErr != nil {
+			return nil, errors.Join(cause, restoreErr)
+		}
+		return nil, cause
+	}
+	beforeDrop, beforeErr := stashOIDs(root)
+	if beforeErr != nil {
+		restoreErr := migration.restoreFromStash()
+		return nil, errors.Join(fmt.Errorf("worktree: snapshot stash stack before migration detach: %w", beforeErr), restoreErr)
+	}
+	dropOut, dropErr := runGit(root, "stash", "drop", selector)
+	if dropErr != nil {
+		restoreErr := migration.restoreFromStash()
+		cause := fmt.Errorf("worktree: detach migration from stash stack: %w: %s", dropErr, strings.TrimSpace(dropOut))
+		if restoreErr != nil {
+			return nil, errors.Join(cause, restoreErr)
+		}
+		return nil, cause
+	}
+	afterDrop, afterErr := stashOIDs(root)
+	var removed []string
+	if afterErr == nil {
+		removed = removedStashOIDs(beforeDrop, afterDrop)
+	}
+	droppedOID, parseErr := parseDroppedStashOID(dropOut)
+	if afterErr != nil && parseErr != nil {
+		restoreErr := migration.restoreFromStash()
+		return nil, errors.Join(fmt.Errorf("worktree: verify detached migration stash: %w", errors.Join(afterErr, parseErr)), restoreErr)
+	}
+	if parseErr == nil {
+		foundDropped := false
+		for _, removedOID := range removed {
+			if removedOID == droppedOID {
+				foundDropped = true
+				break
+			}
+		}
+		if !foundDropped {
+			removed = append(removed, droppedOID)
+		}
+	}
+	removedMigration := false
+	var unrelated []string
+	for _, removedOID := range removed {
+		if removedOID == oid && !removedMigration {
+			removedMigration = true
+			continue
+		}
+		unrelated = append(unrelated, removedOID)
+	}
+	var unrelatedRestoreErr error
+	for _, removedOID := range unrelated {
+		if out, err := runGit(root, "stash", "store", "--message", "restored after concurrent term-llm worktree migration", removedOID); err != nil {
+			unrelatedRestoreErr = errors.Join(unrelatedRestoreErr, fmt.Errorf("restore unrelated stash %s immediately with 'git stash store %s': %w: %s", removedOID, removedOID, err, strings.TrimSpace(out)))
+		}
+	}
+	if !removedMigration || len(unrelated) > 0 {
+		restoreErr := migration.restoreFromStash()
+		cause := fmt.Errorf("worktree: stash stack changed concurrently; restored %d unrelated stash object(s) and aborted migration", len(unrelated))
+		return nil, errors.Join(cause, unrelatedRestoreErr, restoreErr)
+	}
+
+	remaining, err := runGit(root, "status", "--porcelain")
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("worktree: verify clean root: %w", err), migration.restore())
+	}
+	if strings.TrimSpace(remaining) != "" {
+		restoreErr := migration.restore()
+		cause := fmt.Errorf("worktree: root contains changes Git cannot move automatically (for example, dirty submodules):\n%s", strings.TrimSpace(remaining))
+		if restoreErr != nil {
+			return nil, errors.Join(cause, fmt.Errorf("restore stashed changes: %w", restoreErr))
+		}
+		return nil, cause
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(fmt.Errorf("worktree: move changes canceled: %w", err), migration.restore())
+	}
+	return migration, nil
+}
+
+func findStashByMessage(root, message string) (oid, selector string, err error) {
+	out, err := runGit(root, "stash", "list", "--format=%H%x09%gd%x09%gs")
+	if err != nil {
+		return "", "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) == 3 && strings.Contains(fields[2], message) {
+			return fields[0], fields[1], nil
+		}
+	}
+	return "", "", fmt.Errorf("stash with message %q not found", message)
+}
+
+func stashOIDs(root string) ([]string, error) {
+	out, err := runGit(root, "stash", "list", "--format=%H")
+	if err != nil {
+		return nil, err
+	}
+	var oids []string
+	for _, line := range strings.Split(out, "\n") {
+		if oid := strings.TrimSpace(line); oid != "" {
+			oids = append(oids, oid)
+		}
+	}
+	return oids, nil
+}
+
+func removedStashOIDs(before, after []string) []string {
+	remaining := make(map[string]int, len(after))
+	for _, oid := range after {
+		remaining[oid]++
+	}
+	var removed []string
+	for _, oid := range before {
+		if remaining[oid] > 0 {
+			remaining[oid]--
+		} else {
+			removed = append(removed, oid)
+		}
+	}
+	return removed
+}
+
+func parseDroppedStashOID(out string) (string, error) {
+	trimmed := strings.TrimSpace(out)
+	open := strings.LastIndexByte(trimmed, '(')
+	close := strings.LastIndexByte(trimmed, ')')
+	if open < 0 || close <= open+1 {
+		return "", fmt.Errorf("unexpected git stash drop output %q", trimmed)
+	}
+	oid := trimmed[open+1 : close]
+	if (len(oid) != 40 && len(oid) != 64) || len(oid)%2 != 0 {
+		return "", fmt.Errorf("unexpected dropped stash object ID %q", oid)
+	}
+	if _, err := hex.DecodeString(oid); err != nil {
+		return "", fmt.Errorf("unexpected dropped stash object ID %q", oid)
+	}
+	return oid, nil
+}
+
+func (m *changeMigration) restoreFromStash() error {
+	if out, err := runGit(m.root, "stash", "apply", "--index", m.oid); err != nil {
+		return fmt.Errorf("worktree: restore stash %s (stash and recovery ref retained): %w: %s", m.oid, err, strings.TrimSpace(out))
+	}
+	// The stash entry may still be needed if deleting the private ref fails.
+	if m.refActive {
+		if out, err := runGit(m.root, "update-ref", "-d", m.ref, m.oid); err != nil {
+			return fmt.Errorf("worktree: changes restored but recovery ref %s retained: %w: %s", m.ref, err, strings.TrimSpace(out))
+		}
+		m.refActive = false
+	}
+	m.active = false
+	return nil
+}
+
+func (m *changeMigration) restore() error {
+	if m == nil || !m.active {
+		return nil
+	}
+	if out, err := runGit(m.root, "stash", "apply", "--index", m.ref); err != nil {
+		return fmt.Errorf("apply recovery ref %s (failed worktree and recovery ref retained): %w: %s", m.ref, err, strings.TrimSpace(out))
+	}
+	if err := m.finish(); err != nil {
+		return fmt.Errorf("changes restored but recovery ref retained: %w", err)
+	}
+	return nil
+}
+
+func (m *changeMigration) finish() error {
+	if m == nil || !m.active {
+		return nil
+	}
+	if !m.refActive {
+		m.active = false
+		return nil
+	}
+	if out, err := runGit(m.root, "update-ref", "-d", m.ref, m.oid); err != nil {
+		return fmt.Errorf("delete recovery ref %s: %w: %s", m.ref, err, strings.TrimSpace(out))
+	}
+	m.refActive = false
+	m.active = false
+	return nil
+}
+
 // Create creates a managed worktree. Detached HEAD is used unless Branch is set.
 func Create(ctx context.Context, repoRoot string, opts CreateOptions) (*Worktree, error) {
 	if !IsGitRepo(repoRoot) {
@@ -261,6 +499,26 @@ func Create(ctx context.Context, repoRoot string, opts CreateOptions) (*Worktree
 	}
 	branch := strings.TrimSpace(opts.Branch)
 
+	var migration *changeMigration
+	if opts.MoveChanges {
+		migration, err = stashRootChanges(ctx, mainRoot)
+		if err != nil {
+			return nil, err
+		}
+		if migration != nil {
+			opts.progress("Moving current changes into the new worktree…")
+		}
+	}
+	rollbackMigration := func(cause error) error {
+		if migration == nil {
+			return cause
+		}
+		if restoreErr := migration.restore(); restoreErr != nil {
+			return errors.Join(cause, fmt.Errorf("worktree: restore changes to root: %w", restoreErr))
+		}
+		return cause
+	}
+
 	opts.progress(fmt.Sprintf("Creating worktree %s…", name))
 	args := []string{"worktree", "add"}
 	if branch != "" {
@@ -270,35 +528,49 @@ func Create(ctx context.Context, repoRoot string, opts CreateOptions) (*Worktree
 	}
 	args = append(args, dir, baseSHA)
 	if out, err := runGitCtx(ctx, mainRoot, args...); err != nil {
-		return nil, fmt.Errorf("worktree: git worktree add: %w: %s", err, strings.TrimSpace(out))
+		return nil, rollbackMigration(fmt.Errorf("worktree: git worktree add: %w: %s", err, strings.TrimSpace(out)))
 	}
 
-	cleanup := func() {
-		_, _ = runGit(mainRoot, "worktree", "remove", "--force", dir)
-		_, _ = runGit(mainRoot, "worktree", "prune")
-		_ = os.RemoveAll(dir)
-		_ = os.Remove(metaPath(root, name))
-	}
-
-	m := metadata{Name: name, Dir: dir, Base: baseSHA, Branch: branch, RepoRoot: mainRoot, CreatedAt: time.Now()}
-	if err := writeMetadata(root, m); err != nil {
-		cleanup()
-		return nil, err
+	cleanup := func(cause error) error {
+		// Restore the root first. If that fails, retain both the failed worktree
+		// and the private recovery ref rather than deleting either copy.
+		if restoreErr := rollbackMigration(nil); restoreErr != nil {
+			return errors.Join(cause, restoreErr)
+		}
+		if out, removeErr := runGit(mainRoot, "worktree", "remove", "--force", dir); removeErr != nil {
+			return errors.Join(cause, fmt.Errorf("worktree: remove failed worktree %s (retained for recovery): %w: %s", dir, removeErr, strings.TrimSpace(out)))
+		}
+		if out, pruneErr := runGit(mainRoot, "worktree", "prune"); pruneErr != nil {
+			cause = errors.Join(cause, fmt.Errorf("worktree: prune after rollback: %w: %s", pruneErr, strings.TrimSpace(out)))
+		}
+		if removeErr := os.Remove(metaPath(root, name)); removeErr != nil && !os.IsNotExist(removeErr) {
+			cause = errors.Join(cause, fmt.Errorf("worktree: remove metadata after rollback: %w", removeErr))
+		}
+		return cause
 	}
 
 	if len(opts.CopyFiles) > 0 {
 		opts.progress("Copying configured files…")
 		if err := copyFiles(mainRoot, dir, opts.CopyFiles); err != nil {
-			cleanup()
-			return nil, err
+			return nil, cleanup(err)
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(mainRoot, ".gitmodules")); err == nil {
+	if migration != nil {
+		if out, err := runGitCtx(ctx, dir, "stash", "apply", "--index", migration.ref); err != nil {
+			return nil, cleanup(fmt.Errorf("worktree: apply current changes: %w: %s", err, strings.TrimSpace(out)))
+		}
+	}
+
+	m := metadata{Name: name, Dir: dir, Base: baseSHA, Branch: branch, RepoRoot: mainRoot, CreatedAt: time.Now()}
+	if err := writeMetadata(root, m); err != nil {
+		return nil, cleanup(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".gitmodules")); err == nil {
 		opts.progress("Initializing submodules…")
 		if out, err := runGitCtx(ctx, dir, "submodule", "update", "--init", "--recursive"); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("worktree: submodule update: %w: %s", err, strings.TrimSpace(out))
+			return nil, cleanup(fmt.Errorf("worktree: submodule update: %w: %s", err, strings.TrimSpace(out)))
 		}
 	}
 
@@ -315,22 +587,26 @@ func Create(ctx context.Context, repoRoot string, opts CreateOptions) (*Worktree
 			opts.progress(lastLines(out, 5))
 		}
 		if err != nil {
-			cleanup()
-			return nil, fmt.Errorf("worktree: setup script failed: %w\n%s", err, strings.TrimSpace(out))
+			return nil, cleanup(fmt.Errorf("worktree: setup script failed: %w\n%s", err, strings.TrimSpace(out)))
 		}
 	}
 
 	wt, err := Get(dir)
 	if err != nil {
-		cleanup()
-		return nil, err
+		return nil, cleanup(err)
+	}
+	var readyMessage = "Ready"
+	if migration != nil {
+		if err := migration.finish(); err != nil {
+			readyMessage = fmt.Sprintf("Ready; recovery ref cleanup failed: %v", err)
+		}
 	}
 	wt.Name = name
 	wt.Base = baseSHA
 	wt.Branch = branch
 	wt.CreatedAt = m.CreatedAt
 	wt.Status = StatusReady
-	opts.progress("Ready")
+	opts.progress(readyMessage)
 	return wt, nil
 }
 

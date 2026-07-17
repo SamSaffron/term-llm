@@ -102,6 +102,7 @@ func (m *Model) startBrowserWorktreeCreate(opts worktree.CreateOptions) (tea.Mod
 	if strings.TrimSpace(opts.Base) == "" {
 		opts.Base = "HEAD"
 	}
+	opts.MoveChanges = true
 	if script := strings.TrimSpace(os.Getenv("TERM_LLM_WORKTREE_SETUP")); script != "" {
 		opts.SetupScript = script
 		opts.SetupTimeout = 10 * time.Minute

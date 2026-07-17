@@ -225,7 +225,7 @@ func (m *Model) cmdWorktreeNew(args []string) (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m.showFooterError(err.Error())
 	}
-	opts := worktree.CreateOptions{Base: "HEAD"}
+	opts := worktree.CreateOptions{Base: "HEAD", MoveChanges: true}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--base":

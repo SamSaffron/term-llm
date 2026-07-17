@@ -126,7 +126,7 @@ func TestCreateFormDefaultsFocusAndSubmission(t *testing.T) {
 	}
 	cmd := mKey(m, tea.KeyEnter)
 	created, ok := cmd().(CreateMsg)
-	if !ok || created.Options.Name != "x" || created.Options.Base != "HEAD" {
+	if !ok || created.Options.Name != "x" || created.Options.Base != "HEAD" || !created.Options.MoveChanges {
 		t.Fatalf("create = %#v", cmd())
 	}
 }

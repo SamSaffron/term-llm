@@ -26,6 +26,9 @@ func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
 	t.Parallel()
 
 	repo := newGitRepoForBindingTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("dirty before API create\n"), 0o644); err != nil {
+		t.Fatalf("write dirty root file: %v", err)
+	}
 	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees", bytes.NewBufferString(`{"name":"api-test"}`))
@@ -42,6 +45,13 @@ func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
 	}
 	if createResp.Worktree.Dir == "" {
 		t.Fatalf("create response missing worktree dir: %s", createRec.Body.String())
+	}
+	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Fatalf("root status after API create = %q, want clean", status)
+	}
+	moved, err := os.ReadFile(filepath.Join(createResp.Worktree.Dir, "file.txt"))
+	if err != nil || string(moved) != "dirty before API create\n" {
+		t.Fatalf("moved API worktree file = %q, %v", moved, err)
 	}
 	if err := os.WriteFile(filepath.Join(createResp.Worktree.Dir, "new.txt"), []byte("hello from api\n"), 0o644); err != nil {
 		t.Fatalf("write worktree file: %v", err)
