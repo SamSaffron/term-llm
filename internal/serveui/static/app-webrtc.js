@@ -5,9 +5,9 @@
 // home peer, bypassing the intermediate relay for all /v1/ API calls.
 //
 // Two-tier timeout:
-//   1. First-frame timeout (1 s):  if no response frame arrives within 1 s,
-//      the request seamlessly falls back to HTTPS and the channel is torn down
-//      and renegotiated in the background.
+//   1. First-frame timeout: read-only requests fall back after 1 s; mutations get
+//      5 s because their handlers may legitimately perform classification or
+//      other work before sending headers.
 //   2. Stream watchdog (30 s):  once streaming begins, if no frame (chunk,
 //      done, or server keepalive) arrives for 30 s the stream is closed and
 //      the channel renegotiated.  The app-layer resume logic reconnects via
@@ -33,6 +33,18 @@
 (function () {
   'use strict';
 
+  const READ_RESPONSE_TIMEOUT_MS = 1000;
+  const MUTATION_RESPONSE_TIMEOUT_MS = 5000;
+  const responseTimeoutForMethod = (method) => {
+    const normalized = String(method || 'GET').toUpperCase();
+    return (normalized === 'GET' || normalized === 'HEAD' || normalized === 'OPTIONS')
+      ? READ_RESPONSE_TIMEOUT_MS
+      : MUTATION_RESPONSE_TIMEOUT_MS;
+  };
+
+  if (window.__TERM_LLM_WEBRTC_TESTING__) {
+    window.__TERM_LLM_WEBRTC_TEST_HOOKS__ = Object.freeze({ responseTimeoutForMethod });
+  }
   if (!window.__WEBRTC_ENABLED__) return;
   if (new URLSearchParams(window.location.search).has('no_webrtc')) return;
 
@@ -40,9 +52,10 @@
   const UI_PREFIX = window.TERM_LLM_UI_PREFIX || '/ui';
   const ICE_TIMEOUT_MS = 8000;
 
-  // If no response frame (headers/chunk/done) arrives within this window,
-  // assume UDP is dead: fall back to HTTPS and renegotiate in the background.
-  const RESPONSE_TIMEOUT_MS = 1000;
+  // Read-only requests should fail over quickly when UDP is dead. Mutations get
+  // longer because endpoints such as /interrupt can classify input before they
+  // emit headers. Retried mutations still need endpoint-level idempotency; the
+  // interrupt endpoint uses its stable interjection ID for that purpose.
 
   // Once streaming has started, if no frame arrives within this window,
   // assume the channel silently died.  The backend sends keepalive pings
@@ -369,7 +382,8 @@
       const reqStart = performance.now();
 
       const urlObj = new URL(urlStr, window.location.origin);
-      const method = options.method || 'GET';
+      const method = (options.method || 'GET').toUpperCase();
+      const responseTimeoutMs = responseTimeoutForMethod(method);
       const path = urlObj.pathname + (urlObj.search || '');
       const bodySize = options.body ? new Blob([options.body]).size : 0;
 
@@ -430,18 +444,19 @@
       const responseTimer = setTimeout(() => {
         if (gotResponse) return; // already got data, all good
 
-        diag('⚠ timeout (' + RESPONSE_TIMEOUT_MS + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
+        diag('⚠ timeout (' + responseTimeoutMs + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
 
         cleanup('first-frame-timeout');
         closeStream();
 
-        // Fall back to HTTPS for this request.
+        // Fall back to HTTPS for this request. Mutation endpoints that can be
+        // replayed must enforce idempotency server-side.
         resolveOnce(originalFetch(urlStr, options));
 
         // Mark the channel as degraded and renegotiate in the background.
         // This also drains any other stuck pending requests.
         triggerRenegotiation();
-      }, RESPONSE_TIMEOUT_MS);
+      }, responseTimeoutMs);
 
       function markGotResponse() {
         if (!gotResponse) {
@@ -488,7 +503,8 @@
       function fallback() {
         cleanup('drain-fallback');
         if (!gotResponse) {
-          // Haven't received anything yet — retry cleanly via HTTPS.
+          // Haven't received anything yet — retry via HTTPS. Mutation endpoints
+          // are responsible for making transport retries idempotent.
           closeStream();
           diag('↩ fallback ' + method + ' ' + path);
           resolveOnce(originalFetch(urlStr, options));

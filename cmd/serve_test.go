@@ -2707,7 +2707,7 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 }
 
-func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) {
+func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
@@ -2720,20 +2720,92 @@ func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) 
 
 	srv := &serveServer{sessionMgr: mgr}
 	body := `{"message":"please inspect this image","interjection_id":"web-1","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	srv.handleSessionByID(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200; body=%s", i+1, rr.Code, rr.Body.String())
+		}
+		if i == 0 {
+			// A transport retry can arrive after the active run has already ended.
+			rt.clearActiveInterrupt(state)
+		}
 	}
 	entries := engine.ListPendingInterjections()
 	if len(entries) != 1 {
-		t.Fatalf("pending entries = %d, want 1", len(entries))
+		t.Fatalf("pending entries after duplicate interjection ID = %d, want 1", len(entries))
 	}
+
+	mismatch := `{"message":"different message","interjection_id":"web-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(mismatch))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("mismatched idempotency payload status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+
 	parts := entries[0].Message.Parts
 	if len(parts) != 2 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartText || parts[1].Text != "please inspect this image" {
 		t.Fatalf("queued parts = %#v, want image plus message text", parts)
+	}
+}
+
+func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
+	engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
+	fastProvider := llm.NewMockProvider("classifier")
+	fastProvider.AddTurn(llm.MockTurn{Text: "interject", Delay: 100 * time.Millisecond})
+	rt := &serveRuntime{engine: engine}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+
+	type result struct {
+		action   llm.InterruptAction
+		replayed bool
+		err      error
+	}
+	results := make(chan result, 2)
+	call := func() {
+		action, replayed, err := rt.InterruptMessage(
+			context.Background(),
+			llm.UserText("please incorporate this"),
+			"please incorporate this",
+			"web-concurrent-1",
+			fastProvider,
+			false,
+		)
+		results <- result{action: action, replayed: replayed, err: err}
+	}
+
+	go call()
+	deadline := time.Now().Add(time.Second)
+	for fastProvider.CurrentTurn() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fastProvider.CurrentTurn() != 1 {
+		t.Fatal("first interrupt never reached classifier")
+	}
+	go call()
+
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("interrupt errors = %v, %v", first.err, second.err)
+	}
+	if first.action != llm.InterruptInterject || second.action != llm.InterruptInterject {
+		t.Fatalf("actions = %v, %v, want interject", first.action, second.action)
+	}
+	if first.replayed == second.replayed {
+		t.Fatalf("replayed flags = %v, %v, want exactly one replay", first.replayed, second.replayed)
+	}
+	if got := fastProvider.CurrentTurn(); got != 1 {
+		t.Fatalf("classifier calls = %d, want 1", got)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 1 {
+		t.Fatalf("pending interjections = %d, want 1", len(pending))
 	}
 }
 
