@@ -182,8 +182,8 @@ func AllCommands() []Command {
 		{
 			Name:        "shell",
 			Aliases:     []string{"sh"},
-			Description: "Open your shell in this session's working directory",
-			Usage:       "/shell [--no-rc]",
+			Description: "Open your shell or run a command in the session directory",
+			Usage:       "/shell [--no-rc] [command ...]",
 		},
 		{
 			Name:        "dirs",
@@ -549,7 +549,7 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	case "file":
 		return m.cmdFile(args)
 	case "shell":
-		return m.cmdShell(args)
+		return m.cmdShell(rawArgs)
 	case "dirs":
 		return m.cmdDirs(args)
 	case "worktree":

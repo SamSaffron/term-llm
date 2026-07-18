@@ -11,17 +11,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func (m *Model) cmdShell(args []string) (tea.Model, tea.Cmd) {
+func (m *Model) cmdShell(rawArgs string) (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
 	if m.streaming {
 		return m.showFooterWarning("Cannot open a shell while a response is streaming.")
 	}
-	opts, err := parseShellArgs(args)
+	opts, err := parseShellArgs(rawArgs)
 	if err != nil {
 		return m.showFooterError(err.Error())
 	}
 
-	cmd, dir, err := m.interactiveShellCommand(opts.NoRC)
+	cmd, dir, err := m.interactiveShellCommand(opts)
 	if err != nil {
 		return m.showFooterError(err.Error())
 	}
@@ -39,7 +39,8 @@ func (m *Model) cmdShell(args []string) (tea.Model, tea.Cmd) {
 }
 
 type shellOptions struct {
-	NoRC bool
+	NoRC    bool
+	Command string
 }
 
 // setShellTerminalHandoff keeps the render pause and asynchronous image-output
@@ -54,32 +55,43 @@ func (m *Model) setShellTerminalHandoff(active bool) {
 	m.setPostFrameImageSuppressed(active)
 }
 
-func parseShellArgs(args []string) (shellOptions, error) {
+func parseShellArgs(rawArgs string) (shellOptions, error) {
 	var opts shellOptions
-	for _, arg := range args {
-		switch arg {
-		case "--no-rc":
-			opts.NoRC = true
-		default:
-			return opts, fmt.Errorf("unknown /shell option %q; usage: /shell [--no-rc]", arg)
-		}
+	rest := strings.TrimSpace(rawArgs)
+	if rest == "" {
+		return opts, nil
 	}
+
+	first := strings.Fields(rest)[0]
+	remainder := strings.TrimSpace(rest[len(first):])
+	if first == "--no-rc" {
+		opts.NoRC = true
+		opts.Command = strings.TrimSpace(remainder)
+		return opts, nil
+	}
+	if strings.HasPrefix(first, "-") {
+		return opts, fmt.Errorf("unknown /shell option %q; usage: /shell [--no-rc] [command ...]", first)
+	}
+	opts.Command = rest
 	return opts, nil
 }
 
-func (m *Model) interactiveShellCommand(noRC bool) (*exec.Cmd, string, error) {
+func (m *Model) interactiveShellCommand(opts shellOptions) (*exec.Cmd, string, error) {
 	dir, err := m.interactiveShellDir()
 	if err != nil {
 		return nil, "", err
 	}
 	shellPath := interactiveShellPath()
-	shellArgs, err := interactiveShellArgs(shellPath, noRC)
+	shellArgs, err := interactiveShellArgs(shellPath, opts.NoRC)
 	if err != nil {
 		return nil, "", err
 	}
+	if opts.Command != "" {
+		shellArgs = append(shellArgs, "-c", opts.Command)
+	}
 	cmd := exec.Command(shellPath, shellArgs...)
 	cmd.Dir = dir
-	cmd.Env = interactiveShellEnv(os.Environ(), dir, m.boundWorktreeForShellEnv(), noRC)
+	cmd.Env = interactiveShellEnv(os.Environ(), dir, m.boundWorktreeForShellEnv(), opts.NoRC)
 	// Full-screen terminal programs must write straight to the terminal. In
 	// alt-screen chat Bubble Tea's output is decorated to append image escape
 	// sequences after rendered frames; letting vim or another interactive child

@@ -111,7 +111,7 @@ Slash commands:
   /thinking    - Toggle reasoning display
   /system      - Set custom system prompt
   /file        - Attach file(s) to next message
-  /shell       - Open your shell in the session directory (--no-rc skips rc files)
+  /shell       - Open your shell or run a command in the session directory (--no-rc skips rc files)
   /dirs        - Manage approved directories
   /worktree    - Manage git worktrees for this session
   /mcp         - Manage MCP servers

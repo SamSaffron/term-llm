@@ -3622,8 +3622,8 @@ func TestAllCommandsIncludesShell(t *testing.T) {
 	commands := AllCommands()
 	for _, cmd := range commands {
 		if cmd.Name == "shell" {
-			if cmd.Usage != "/shell [--no-rc]" {
-				t.Fatalf("shell usage = %q, want /shell [--no-rc]", cmd.Usage)
+			if cmd.Usage != "/shell [--no-rc] [command ...]" {
+				t.Fatalf("shell usage = %q, want /shell [--no-rc] [command ...]", cmd.Usage)
 			}
 			if !slices.Contains(cmd.Aliases, "sh") {
 				t.Fatalf("shell aliases = %v, want sh", cmd.Aliases)
@@ -3634,6 +3634,61 @@ func TestAllCommandsIncludesShell(t *testing.T) {
 	t.Fatal("AllCommands() missing /shell")
 }
 
+func TestShellCommandRunsCommandThroughConfiguredShell(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{CWD: dir}
+
+	opts, err := parseShellArgs(`git gui --title "My repo"`)
+	if err != nil {
+		t.Fatalf("parseShellArgs: %v", err)
+	}
+	cmd, gotDir, err := m.interactiveShellCommand(opts)
+	if err != nil {
+		t.Fatalf("interactiveShellCommand: %v", err)
+	}
+	if gotDir != dir || cmd.Dir != dir {
+		t.Fatalf("shell dir = %q cmd.Dir = %q, want %q", gotDir, cmd.Dir, dir)
+	}
+	wantArgs := []string{"/bin/zsh", "-c", `git gui --title "My repo"`}
+	if !slices.Equal(cmd.Args, wantArgs) {
+		t.Fatalf("shell args = %v, want %v", cmd.Args, wantArgs)
+	}
+}
+
+func TestShellCommandRunsCommandWithoutRCFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{CWD: dir}
+
+	opts, err := parseShellArgs(`--no-rc git gui --title "My repo"`)
+	if err != nil {
+		t.Fatalf("parseShellArgs: %v", err)
+	}
+	cmd, _, err := m.interactiveShellCommand(opts)
+	if err != nil {
+		t.Fatalf("interactiveShellCommand: %v", err)
+	}
+	wantArgs := []string{"/bin/zsh", "-f", "-c", `git gui --title "My repo"`}
+	if !slices.Equal(cmd.Args, wantArgs) {
+		t.Fatalf("shell args = %v, want %v", cmd.Args, wantArgs)
+	}
+}
+
+func TestParseShellArgsRejectsUnknownLeadingOption(t *testing.T) {
+	for _, input := range []string{"--bad-option", "-x", "--no-rc-extra"} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := parseShellArgs(input); err == nil {
+				t.Fatalf("parseShellArgs(%q) error = nil, want unknown option error", input)
+			}
+		})
+	}
+}
+
 func TestInteractiveShellCommandUsesBoundWorktreeDir(t *testing.T) {
 	dir := t.TempDir()
 	otherDir := t.TempDir()
@@ -3642,7 +3697,7 @@ func TestInteractiveShellCommandUsesBoundWorktreeDir(t *testing.T) {
 	m := newTestChatModel(false)
 	m.sess = &session.Session{WorktreeDir: dir, CWD: otherDir}
 
-	cmd, gotDir, err := m.interactiveShellCommand(false)
+	cmd, gotDir, err := m.interactiveShellCommand(shellOptions{})
 	if err != nil {
 		t.Fatalf("interactiveShellCommand: %v", err)
 	}
@@ -3745,7 +3800,7 @@ func TestInteractiveShellCommandNoRCUsesZshFastFlag(t *testing.T) {
 	m := newTestChatModel(false)
 	m.sess = &session.Session{CWD: dir}
 
-	cmd, gotDir, err := m.interactiveShellCommand(true)
+	cmd, gotDir, err := m.interactiveShellCommand(shellOptions{NoRC: true})
 	if err != nil {
 		t.Fatalf("interactiveShellCommand(no-rc): %v", err)
 	}
