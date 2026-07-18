@@ -4,7 +4,7 @@ agents_md: "true"
 skills: "all"
 
 tools:
-  enabled: [read_file, glob, grep, shell]
+  enabled: [read_file, glob, grep, shell, view_image]
 
 shell:
   allow: ["pwd", "git log *", "git show *", "git blame *", "git branch *", "git tag *", "git ls-files *"]
