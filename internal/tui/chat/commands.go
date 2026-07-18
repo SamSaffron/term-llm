@@ -946,6 +946,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
+		m.pendingTerminalDirectory = cwd
 	}
 
 	// Persist new session
@@ -1846,6 +1847,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		m.sess.CWD = cwd
+		m.pendingTerminalDirectory = cwd
 	}
 
 	// Persist to store

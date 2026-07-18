@@ -4359,6 +4359,9 @@ func TestApplyRuntimeDirectoryRefreshesExistingSystemMessage(t *testing.T) {
 	if m.sess.CWD != "/new" || m.sess.WorktreeDir != "/new" {
 		t.Fatalf("session binding = %q/%q", m.sess.CWD, m.sess.WorktreeDir)
 	}
+	if m.pendingTerminalDirectory != "/new" {
+		t.Fatalf("pending terminal directory = %q, want /new", m.pendingTerminalDirectory)
+	}
 	if m.viewCache.historyValid || m.contextEstimateCachedValid {
 		t.Fatal("runtime refresh left history/context estimate caches valid")
 	}

@@ -81,10 +81,14 @@ type Model struct {
 	keyMap   KeyMap
 
 	// Session state
-	store         session.Store     // Session storage backend
-	sess          *session.Session  // Current session
-	messages      []session.Message // In-memory messages for current session
-	compactionIdx int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
+	store    session.Store     // Session storage backend
+	sess     *session.Session  // Current session
+	messages []session.Message // In-memory messages for current session
+	// pendingTerminalDirectory is emitted as OSC 7 after a successful runtime
+	// directory change, keeping terminal workspace metadata in sync without a
+	// process-wide chdir.
+	pendingTerminalDirectory string
+	compactionIdx            int // Prefix length to skip for LLM context; 0 means no prefix is skipped.
 	// olderScrollbackLoaded is false when a compacted resume initially loaded only
 	// the active tail; scrolling upward can hydrate the older display prefix once.
 	olderScrollbackLoaded bool
@@ -1483,6 +1487,9 @@ func (m *Model) Init() tea.Cmd {
 	if cmd := m.terminalTitleCmd(); cmd != nil {
 		baseCmds = append(baseCmds, cmd)
 	}
+	if cmd := terminalWorkingDirectoryCmd(m.effectiveWorkingDir()); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
 
 	// Set markdown renderer for chat renderer
 	if m.chatRenderer != nil {
@@ -1625,7 +1632,13 @@ func (m *Model) shouldIgnoreStreamEvent(msg streamEventMsg) bool {
 }
 
 // Update handles messages
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	defer func() {
+		if reportCmd := m.takeTerminalWorkingDirectoryCmd(); reportCmd != nil {
+			cmd = tea.Batch(cmd, reportCmd)
+		}
+	}()
+
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
 

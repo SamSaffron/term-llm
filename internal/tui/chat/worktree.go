@@ -394,6 +394,7 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 	}
 	m.invalidateHistoryCache()
 	m.resetContextEstimateBaseline(context.Background())
+	m.pendingTerminalDirectory = dir
 	return nil
 }
 
