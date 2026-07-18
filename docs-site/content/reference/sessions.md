@@ -62,7 +62,7 @@ term-llm ask --session-db /tmp/term-llm.db ...
 Chat sessions can bind their tools to a git worktree without changing the term-llm process working directory. In the TUI, use `/worktree` (or `/wt`) while in `chat`:
 
 ```text
-/worktree new [name] [--base REF] [-b branch]
+/worktree new [name] [--clean] [--base REF] [-b branch]
 /worktree browse
 /worktree switch <name-or-dir>
 /worktree diff
@@ -70,6 +70,8 @@ Chat sessions can bind their tools to a git worktree without changing the term-l
 /worktree root
 /worktree rm [name-or-dir] [--force]
 ```
+
+By default, `/worktree new` transfers staged, unstaged, and untracked changes from the root checkout into the new worktree. Add `--clean` to create the new worktree from the selected base without transferring those changes; the existing work in progress remains in the root checkout.
 
 A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_file`, `edit_file`, `grep`, `glob`, shell working directories, image paths, and spawned agents resolve there. The binding is saved as `worktree_dir` in SQLite and is restored on resume.
 

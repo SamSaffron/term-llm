@@ -214,6 +214,38 @@ func resolveWorktreeTargetFrom(start, target string) (string, error) {
 	return "", fmt.Errorf("unknown managed worktree %q", target)
 }
 
+func parseWorktreeNewOptions(args []string) (worktree.CreateOptions, error) {
+	opts := worktree.CreateOptions{Base: "HEAD", MoveChanges: true}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--clean":
+			opts.MoveChanges = false
+		case "--base":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return worktree.CreateOptions{}, fmt.Errorf("--base requires a value")
+			}
+			opts.Base = args[i+1]
+			i++
+		case "-b", "--branch":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return worktree.CreateOptions{}, fmt.Errorf("%s requires a value", arg)
+			}
+			opts.Branch = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return worktree.CreateOptions{}, fmt.Errorf("unknown option %s", arg)
+			}
+			if opts.Name != "" {
+				return worktree.CreateOptions{}, fmt.Errorf("unexpected argument %s", arg)
+			}
+			opts.Name = arg
+		}
+	}
+	return opts, nil
+}
+
 func (m *Model) cmdWorktreeNew(args []string) (tea.Model, tea.Cmd) {
 	if m.streaming {
 		return m.showFooterWarning("Cannot create/switch worktrees while a response is streaming.")
@@ -221,28 +253,13 @@ func (m *Model) cmdWorktreeNew(args []string) (tea.Model, tea.Cmd) {
 	if m.worktreeOperationBusy() {
 		return m.worktreeBusyMessage()
 	}
+	opts, err := parseWorktreeNewOptions(args)
+	if err != nil {
+		return m.showFooterError(fmt.Sprintf("%v. Usage: /worktree new [name] [--clean] [--base REF] [-b branch]", err))
+	}
 	root, err := m.repoRootForWorktree()
 	if err != nil {
 		return m.showFooterError(err.Error())
-	}
-	opts := worktree.CreateOptions{Base: "HEAD", MoveChanges: true}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--base":
-			if i+1 < len(args) {
-				opts.Base = args[i+1]
-				i++
-			}
-		case "-b", "--branch":
-			if i+1 < len(args) {
-				opts.Branch = args[i+1]
-				i++
-			}
-		default:
-			if opts.Name == "" {
-				opts.Name = args[i]
-			}
-		}
 	}
 	if script := strings.TrimSpace(os.Getenv("TERM_LLM_WORKTREE_SETUP")); script != "" {
 		opts.SetupScript = script
@@ -1175,6 +1192,7 @@ func (m *Model) worktreeCompletionItems(query string) ([]Command, bool) {
 		return m.worktreePromoteCompletionItems(parts, trailingSpace), true
 	case "new":
 		return worktreeOptionCompletionItems(parts, trailingSpace, []worktreeOptionCompletion{
+			{Name: "--clean", Description: "Create clean and leave current changes in root"},
 			{Name: "--base", Description: "Base ref for the new worktree"},
 			{Name: "--branch", Description: "Create and check out a branch"},
 			{Name: "-b", Description: "Create and check out a branch"},

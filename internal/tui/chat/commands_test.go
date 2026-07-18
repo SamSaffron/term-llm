@@ -3479,6 +3479,87 @@ func TestCmdWorktreeMergeIsUnknown(t *testing.T) {
 	}
 }
 
+func TestCmdWorktreeNewRejectsInvalidArguments(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "base missing value", command: "/worktree new feature --base", want: "--base requires a value"},
+		{name: "base does not consume flag", command: "/worktree new feature --base --clean", want: "--base requires a value"},
+		{name: "branch missing value", command: "/worktree new feature --branch", want: "--branch requires a value"},
+		{name: "branch does not consume flag", command: "/worktree new feature -b --clean", want: "-b requires a value"},
+		{name: "unknown option", command: "/worktree new feature --unknown", want: "unknown option --unknown"},
+		{name: "extra name", command: "/worktree new feature extra", want: "unexpected argument extra"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.sess = &session.Session{ID: "sess-worktree-new-invalid", CWD: t.TempDir()}
+			m.setTextareaValue(tt.command)
+
+			result, _ := m.ExecuteCommand(tt.command)
+			m = result.(*Model)
+			if m.worktreeOperation != "" {
+				t.Fatalf("invalid command started operation %q", m.worktreeOperation)
+			}
+			if !strings.Contains(m.footerMessage, tt.want) {
+				t.Fatalf("footer = %q, want %q", m.footerMessage, tt.want)
+			}
+			if got := m.textarea.Value(); got != tt.command {
+				t.Fatalf("textarea = %q, want invalid command retained", got)
+			}
+		})
+	}
+}
+
+func TestCmdWorktreeNewCleanLeavesChangesInRoot(t *testing.T) {
+	repo := newGitRepoForChatWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("root work in progress\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("root untracked work\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile untracked: %v", err)
+	}
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-worktree-new-clean", CWD: repo}
+	result, cmd := m.ExecuteCommand("/worktree new clean-start --clean")
+	m = result.(*Model)
+	if cmd == nil {
+		t.Fatalf("expected create command, footer=%q", m.footerMessage)
+	}
+	msg := runWorktreeOperationTestCmd(t, cmd)
+	if msg.err != nil {
+		t.Fatalf("clean worktree create: %v", msg.err)
+	}
+	if msg.wt == nil {
+		t.Fatal("clean worktree create returned no worktree")
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), msg.wt.Dir, worktree.RemoveOptions{Force: true}) })
+
+	rootREADME, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	if err != nil {
+		t.Fatalf("ReadFile root README: %v", err)
+	}
+	if got := string(rootREADME); got != "root work in progress\n" {
+		t.Fatalf("root README = %q, want work in progress retained", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "untracked.txt")); err != nil {
+		t.Fatalf("root untracked file was not retained: %v", err)
+	}
+	worktreeREADME, err := os.ReadFile(filepath.Join(msg.wt.Dir, "README.md"))
+	if err != nil {
+		t.Fatalf("ReadFile worktree README: %v", err)
+	}
+	if got := string(worktreeREADME); got != "hello\n" {
+		t.Fatalf("worktree README = %q, want clean HEAD content", got)
+	}
+	if _, err := os.Stat(filepath.Join(msg.wt.Dir, "untracked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("worktree untracked file exists or stat failed: %v", err)
+	}
+}
+
 func TestCmdWorktreeNewClearsComposerImmediately(t *testing.T) {
 	t.Parallel()
 
@@ -3528,9 +3609,17 @@ func TestCmdWorktreeKeepsComposerOnCommandError(t *testing.T) {
 func TestUpdateCompletions_WorktreeOptionCommands(t *testing.T) {
 	m := newTestChatModel(false)
 	m.completions.Show()
-	m.setTextareaValue("/worktree new --b")
+	m.setTextareaValue("/worktree new --c")
 	m.updateCompletions()
 	got := completionNames(m.completions.filtered)
+	if !containsString(got, "worktree new --clean") {
+		t.Fatalf("new option completions = %v, want --clean", got)
+	}
+
+	m.completions.Show()
+	m.setTextareaValue("/worktree new --b")
+	m.updateCompletions()
+	got = completionNames(m.completions.filtered)
 	if !containsString(got, "worktree new --base") || !containsString(got, "worktree new --branch") {
 		t.Fatalf("new option completions = %v, want --base and --branch", got)
 	}
