@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,12 @@ import (
 func TestTerminalWorkingDirectorySequence(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator), "tmp", "term llm", "worktree#1")
 	got := terminalWorkingDirectorySequence(dir)
-	want := "\x1b]7;file:///tmp/term%20llm/worktree%231\x1b\\"
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := (&url.URL{Scheme: "file", Host: hostname, Path: "/tmp/term llm/worktree#1"}).String()
+	want = "\x1b]7;" + want + "\x1b\\"
 	if got != want {
 		t.Fatalf("terminalWorkingDirectorySequence() = %q, want %q", got, want)
 	}

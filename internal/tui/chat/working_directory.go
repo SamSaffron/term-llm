@@ -2,6 +2,7 @@ package chat
 
 import (
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -26,12 +27,19 @@ func terminalWorkingDirectorySequence(dir string) string {
 		return ""
 	}
 
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		return ""
+	}
+
 	path := filepath.ToSlash(filepath.Clean(dir))
 	// Windows drive paths need a leading slash in a file URI.
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	uri := (&url.URL{Scheme: "file", Path: path}).String()
+	// Ghostty (and therefore cmux) rejects hostless OSC 7 file URIs. Include
+	// the local hostname so the terminal can validate and accept the report.
+	uri := (&url.URL{Scheme: "file", Host: hostname, Path: path}).String()
 	return "\x1b]7;" + uri + "\x1b\\"
 }
 
