@@ -544,16 +544,48 @@ func TestServeSkillRunSubscriberOverflowReconnectsThroughReplay(t *testing.T) {
 
 func TestServeSkillRunEventHistoryIsBounded(t *testing.T) {
 	run := newServeSkillRun("skill-history", "sess-history", "child-history", &skills.Activation{Skill: &skills.Skill{Name: "review"}}, func() {})
-	for i := 0; i < serveSkillRunEventHistoryLimit+50; i++ {
+	total := serveSkillRunEventHistoryLimit*4 + 137
+	for i := 0; i < total; i++ {
 		run.appendEvent("skill_run.progress", map[string]any{"index": i})
 	}
-	run.mu.Lock()
-	defer run.mu.Unlock()
-	if len(run.events) != serveSkillRunEventHistoryLimit {
-		t.Fatalf("retained events = %d, want %d", len(run.events), serveSkillRunEventHistoryLimit)
+
+	snapshotEvents, ok := run.snapshot()["events"].([]serveSkillRunEvent)
+	if !ok {
+		t.Fatal("snapshot events have unexpected type")
 	}
-	if run.events[0].Sequence != 51 || run.events[len(run.events)-1].Sequence != serveSkillRunEventHistoryLimit+50 {
-		t.Fatalf("retained sequence range = %d..%d", run.events[0].Sequence, run.events[len(run.events)-1].Sequence)
+	if len(snapshotEvents) != serveSkillRunEventHistoryLimit {
+		t.Fatalf("snapshot retained events = %d, want %d", len(snapshotEvents), serveSkillRunEventHistoryLimit)
+	}
+	firstSequence := total - serveSkillRunEventHistoryLimit + 1
+	for i, event := range snapshotEvents {
+		if want := firstSequence + i; event.Sequence != want {
+			t.Fatalf("snapshot event %d sequence = %d, want %d", i, event.Sequence, want)
+		}
+	}
+
+	replay, subscriberID, _, terminal := run.subscribe(0)
+	defer run.unsubscribe(subscriberID)
+	if terminal {
+		t.Fatal("running skill unexpectedly returned a terminal subscription")
+	}
+	if len(replay) != serveSkillRunEventHistoryLimit {
+		t.Fatalf("replayed events = %d, want %d", len(replay), serveSkillRunEventHistoryLimit)
+	}
+	for i, event := range replay {
+		if want := firstSequence + i; event.Sequence != want {
+			t.Fatalf("replay event %d sequence = %d, want %d", i, event.Sequence, want)
+		}
+	}
+}
+
+func BenchmarkServeSkillRunAppendEvents(b *testing.B) {
+	activation := &skills.Activation{Skill: &skills.Skill{Name: "review"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		run := newServeSkillRun("skill-benchmark", "sess-benchmark", "child-benchmark", activation, func() {})
+		for j := 0; j < 10_000; j++ {
+			run.appendEvent("skill_run.progress", nil)
+		}
 	}
 }
 

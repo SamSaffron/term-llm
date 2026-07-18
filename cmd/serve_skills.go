@@ -54,6 +54,8 @@ type serveSkillRun struct {
 	Activation        *skills.Activation
 	cancel            context.CancelFunc
 	events            []serveSkillRunEvent
+	eventHead         int
+	eventCount        int
 	nextSequence      int
 	subscribers       map[int]chan serveSkillRunEvent
 	subscriberDropped map[int]bool
@@ -86,10 +88,12 @@ func (run *serveSkillRun) appendEvent(eventType string, data any) {
 func (run *serveSkillRun) appendEventLocked(eventType string, data any) {
 	run.nextSequence++
 	event := serveSkillRunEvent{Sequence: run.nextSequence, Type: eventType, Data: data, At: time.Now().UTC()}
-	run.events = append(run.events, event)
-	if len(run.events) > serveSkillRunEventHistoryLimit {
-		copy(run.events, run.events[len(run.events)-serveSkillRunEventHistoryLimit:])
-		run.events = run.events[:serveSkillRunEventHistoryLimit]
+	if run.eventCount < serveSkillRunEventHistoryLimit {
+		run.events = append(run.events, event)
+		run.eventCount++
+	} else {
+		run.events[run.eventHead] = event
+		run.eventHead = (run.eventHead + 1) % serveSkillRunEventHistoryLimit
 	}
 	for id, subscriber := range run.subscribers {
 		select {
@@ -139,10 +143,20 @@ func errorString(err error) string {
 	return err.Error()
 }
 
+func (run *serveSkillRun) eventHistoryLocked() []serveSkillRunEvent {
+	if run.eventCount == 0 {
+		return nil
+	}
+	events := make([]serveSkillRunEvent, run.eventCount)
+	copied := copy(events, run.events[run.eventHead:])
+	copy(events[copied:], run.events[:run.eventHead])
+	return events
+}
+
 func (run *serveSkillRun) snapshot() map[string]any {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	events := append([]serveSkillRunEvent(nil), run.events...)
+	events := run.eventHistoryLocked()
 	return map[string]any{
 		"id":               run.ID,
 		"session_id":       run.SessionID,
@@ -160,8 +174,9 @@ func (run *serveSkillRun) snapshot() map[string]any {
 func (run *serveSkillRun) subscribe(after int) ([]serveSkillRunEvent, int, <-chan serveSkillRunEvent, bool) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	var replay []serveSkillRunEvent
-	for _, event := range run.events {
+	events := run.eventHistoryLocked()
+	replay := events[:0]
+	for _, event := range events {
 		if event.Sequence > after {
 			replay = append(replay, event)
 		}
