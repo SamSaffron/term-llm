@@ -102,7 +102,9 @@ func (sr *StreamRenderer) renderFlowingPartialSnapshot(safeContent, rendered str
 	// The committed renderer already proved that block-local appends are safe for
 	// this document. Use the same top-level separator for a local partial block;
 	// globally-sensitive Markdown still goes through the full-document oracle.
-	if len(sr.lastCommittedRendered) > 0 &&
+	if len(rendered) > 0 &&
+		len(sr.lastCommittedRendered) > 0 &&
+		sr.committedMarkdownEndsWithBlankLine() &&
 		!sr.incrementalUnsafe &&
 		!markdownNeedsFullDocumentRender([]byte(safeContent)) &&
 		!markdownHasGlobalMarkdownSemantics([]byte(safeContent)) {
@@ -119,6 +121,21 @@ func (sr *StreamRenderer) renderFlowingPartialSnapshot(safeContent, rendered str
 	}
 
 	return snapshot, nil
+}
+
+// committedMarkdownEndsWithBlankLine reports whether block-local output can be
+// joined to the committed snapshot with the renderer's top-level separator.
+// Without a blank line, the parser may merge the pending line into the preceding
+// paragraph even if the streaming state machine tentatively classified it as a
+// new block (for example pipe-bearing prose that resembles a table row).
+func (sr *StreamRenderer) committedMarkdownEndsWithBlankLine() bool {
+	markdown := sr.allMarkdown.Bytes()
+	if len(markdown) == 0 || markdown[len(markdown)-1] != '\n' {
+		return false
+	}
+	lineEnd := len(markdown) - 1
+	lineStart := bytes.LastIndexByte(markdown[:lineEnd], '\n') + 1
+	return len(bytes.TrimSpace(markdown[lineStart:lineEnd])) == 0
 }
 
 func (sr *StreamRenderer) renderPartialSnapshot(safeContent string) ([]byte, error) {

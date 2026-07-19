@@ -621,6 +621,32 @@ func TestFlowingPartialPreviewMatchesFullRenderAcrossUpdates(t *testing.T) {
 	}
 }
 
+func TestFlowingPartialPreviewDoesNotSeparateAdjacentPipeProse(t *testing.T) {
+	var buf bytes.Buffer
+	sr, err := NewRendererWithOptions(
+		&buf,
+		newTestMarkdownRenderer(testRenderWidth),
+		[]StreamRendererOption{WithPartialRendering()},
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	input := "Alpha beta\nuse `a | b` to pipe\n"
+	if _, err := sr.Write([]byte(input)); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	want, err := newTestMarkdownRenderer(testRenderWidth).Render([]byte(input))
+	if err != nil {
+		t.Fatalf("direct render failed: %v", err)
+	}
+	want = bytes.TrimRight(normalizeNewlines(want), "\n")
+	if got := buf.Bytes(); !bytes.Equal(got, want) {
+		t.Fatalf("partial preview mismatch\nwant: %q\ngot:  %q", want, got)
+	}
+}
+
 // stripAnsiHelper removes ANSI escape sequences for test assertions.
 // Note: can't use ui.StripANSI here because ui imports streaming (circular).
 func stripAnsiHelper(s string) string {
