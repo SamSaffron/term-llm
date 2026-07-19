@@ -719,25 +719,49 @@ func (s *stubbornSideStream) Recv() (llm.Event, error) {
 }
 func (*stubbornSideStream) Close() error { return nil }
 
-type burstSideProvider struct{}
-
-func (burstSideProvider) Name() string                   { return "burst" }
-func (burstSideProvider) Credential() string             { return "test" }
-func (burstSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
-func (burstSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return &burstSideStream{}, nil
+type burstSideProvider struct {
+	deltas int
 }
 
-type burstSideStream struct{ index int }
+func (p burstSideProvider) Name() string                   { return "burst" }
+func (p burstSideProvider) Credential() string             { return "test" }
+func (p burstSideProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p burstSideProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	deltas := p.deltas
+	if deltas == 0 {
+		deltas = 100
+	}
+	return &burstSideStream{remaining: deltas}, nil
+}
+
+type burstSideStream struct{ remaining int }
 
 func (s *burstSideStream) Recv() (llm.Event, error) {
-	if s.index == 100 {
+	if s.remaining == 0 {
 		return llm.Event{}, io.EOF
 	}
-	s.index++
+	s.remaining--
 	return llm.Event{Type: llm.EventTextDelta, Text: "x"}, nil
 }
 func (*burstSideStream) Close() error { return nil }
+
+func BenchmarkStartSideQuestionTextDeltas(b *testing.B) {
+	const deltas = 10_000
+	provider := burstSideProvider{deltas: deltas}
+	b.ReportAllocs()
+	b.SetBytes(deltas)
+	for b.Loop() {
+		rt := &serveRuntime{providerKey: "burst", defaultModel: "m"}
+		rt.configureSideQuestionContext()
+		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return provider, nil }
+		events, err := rt.startSideQuestion(sideQuestionStart{Question: "question"})
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range events {
+		}
+	}
+}
 
 func TestServeSideQuestionTerminalEventSurvivesBackpressure(t *testing.T) {
 	rt := &serveRuntime{providerKey: "burst", defaultModel: "m"}

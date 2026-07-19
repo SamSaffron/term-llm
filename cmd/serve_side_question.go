@@ -31,7 +31,7 @@ type sideQuestionRuntime struct {
 	reasoningEffort string
 	reasoningMode   string
 	question        string
-	response        string
+	response        []byte
 	synthetic       bool
 	usage           llm.Usage
 	totalUsage      llm.Usage
@@ -153,7 +153,7 @@ func (sq *sideQuestionRuntime) backup() sideQuestionStateBackup {
 		history: append([]sidequestion.Entry(nil), sq.history...), mainSnapshot: sidequestion.CloneMessages(sq.mainSnapshot),
 		snapshotReady: sq.snapshotReady, context: sidequestion.CloneMessages(sq.context), providerKey: sq.providerKey,
 		model: sq.model, reasoningEffort: sq.reasoningEffort, reasoningMode: sq.reasoningMode,
-		question: sq.question, response: sq.response, synthetic: sq.synthetic, usage: sq.usage, lastError: sq.lastError,
+		question: sq.question, response: string(sq.response), synthetic: sq.synthetic, usage: sq.usage, lastError: sq.lastError,
 	}
 }
 
@@ -166,7 +166,8 @@ func (sq *sideQuestionRuntime) restore(backup sideQuestionStateBackup) {
 	sq.context = sidequestion.CloneMessages(backup.context)
 	sq.providerKey, sq.model = backup.providerKey, backup.model
 	sq.reasoningEffort, sq.reasoningMode = backup.reasoningEffort, backup.reasoningMode
-	sq.question, sq.response = backup.question, backup.response
+	sq.question = backup.question
+	sq.response = append(sq.response[:0], backup.response...)
 	sq.synthetic, sq.usage, sq.lastError = backup.synthetic, backup.usage, backup.lastError
 }
 
@@ -174,7 +175,7 @@ func (sq *sideQuestionRuntime) view() sideQuestionView {
 	sq.mu.Lock()
 	defer sq.mu.Unlock()
 	return sideQuestionView{
-		Running: sq.running, Question: sq.question, Response: sq.response,
+		Running: sq.running, Question: sq.question, Response: string(sq.response),
 		Synthetic: sq.synthetic, Usage: sq.usage, TotalUsage: sq.totalUsage, Requests: sq.requestCount, Error: sq.lastError,
 		Generation: sq.generation, History: append([]sidequestion.Entry(nil), sq.history...),
 	}
@@ -200,7 +201,7 @@ func (sq *sideQuestionRuntime) cancelActive() {
 	sq.generation++
 	sq.running = false
 	sq.cancel = nil
-	sq.response = ""
+	sq.response = nil
 	sq.lastError = ""
 	sq.mu.Unlock()
 	if cancel != nil {
@@ -213,7 +214,7 @@ func (sq *sideQuestionRuntime) clearHistory() {
 	sq.mu.Lock()
 	sq.history = nil
 	sq.question = ""
-	sq.response = ""
+	sq.response = nil
 	sq.synthetic = false
 	sq.usage = llm.Usage{}
 	sq.lastError = ""
@@ -360,7 +361,7 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 	sq.cancel = cancel
 	sq.done = done
 	sq.question = question
-	sq.response = ""
+	sq.response = nil
 	sq.synthetic = false
 	sq.usage = llm.Usage{}
 	sq.lastError = ""
@@ -384,9 +385,9 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 			if generation == sq.generation {
 				switch event.Type {
 				case llm.EventTextDelta:
-					sq.response += event.Text
+					sq.response = append(sq.response, event.Text...)
 				case llm.EventAttemptDiscard:
-					sq.response = ""
+					sq.response = sq.response[:0]
 				}
 			}
 			sq.mu.Unlock()
@@ -407,18 +408,19 @@ func (rt *serveRuntime) startSideQuestion(input sideQuestionStart) (<-chan sideQ
 			sq.cancel = nil
 			sq.usage = result.Usage
 			if errors.Is(runErr, context.Canceled) {
-				sq.response = ""
+				sq.response = nil
 			} else if runErr != nil {
 				sq.lastError = runErr.Error()
 			} else {
-				sq.response = result.Response
 				sq.synthetic = result.Synthetic
 				if !result.Synthetic && strings.TrimSpace(result.Response) != "" {
 					sq.history = sidequestion.AppendHistory(sq.history, sidequestion.Entry{
 						Question: question, Response: result.Response, CreatedAt: time.Now(), Usage: result.Usage,
 					})
 					sq.question = ""
-					sq.response = ""
+					sq.response = nil
+				} else {
+					sq.response = append(sq.response[:0], result.Response...)
 				}
 			}
 		}
