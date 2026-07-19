@@ -219,6 +219,12 @@ func (sr *StreamRenderer) CommittedRendered() string {
 	return string(sr.lastCommittedRendered)
 }
 
+// RenderedSnapshot returns the latest rendered bytes. The returned slice is
+// read-only and remains stable across future writes.
+func (sr *StreamRenderer) RenderedSnapshot() []byte {
+	return sr.lastRendered
+}
+
 // PendingMarkdown returns the current incomplete block markdown.
 // This includes pending complete lines plus any partial line in the buffer.
 func (sr *StreamRenderer) PendingMarkdown() string {
@@ -267,7 +273,10 @@ func (sr *StreamRenderer) PendingIsList() bool {
 // firstPendingLine returns the first incomplete line from current block content,
 // left-trimmed of indentation and without trailing carriage return.
 func (sr *StreamRenderer) firstPendingLine() string {
-	content := sr.currentBlockContent()
+	return firstPendingLine(sr.currentBlockContent())
+}
+
+func firstPendingLine(content string) string {
 	if content == "" {
 		return ""
 	}
@@ -521,17 +530,16 @@ func (sr *StreamRenderer) emitRenderedBlock(markdown []byte) error {
 		return nil
 	}
 
-	// Match the ANSI renderer's top-level block separator. If
-	// internal/render/markdown changes renderBlockChildren's document separator,
-	// committed-boundary parity tests should fail before this leaks to scrollback.
-	snapshot := make([]byte, 0, len(sr.lastCommittedRendered)+2+len(rendered))
+	// Match the ANSI renderer's top-level block separator. Grow the committed
+	// snapshot in place so appending a block does not copy the entire rendered
+	// response on every commit. If internal/render/markdown changes
+	// renderBlockChildren's document separator, committed-boundary parity tests
+	// should fail before this leaks to scrollback.
 	if len(sr.lastCommittedRendered) > 0 {
-		snapshot = append(snapshot, sr.lastCommittedRendered...)
-		snapshot = append(snapshot, '\n', '\n')
+		sr.lastCommittedRendered = append(sr.lastCommittedRendered, '\n', '\n')
 	}
-	snapshot = append(snapshot, rendered...)
-	sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], snapshot...)
-	return sr.applyRenderedSnapshot(snapshot, false)
+	sr.lastCommittedRendered = append(sr.lastCommittedRendered, rendered...)
+	return sr.applyRenderedSnapshot(sr.lastCommittedRendered, false)
 }
 
 // applyRenderedSnapshot writes the next rendered snapshot using one of:
@@ -553,7 +561,7 @@ func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, _ bool) error {
 				return err
 			}
 		}
-		sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+		sr.lastRendered = snapshot
 		sr.renderedLen = len(sr.lastRendered)
 		return nil
 	}
@@ -569,7 +577,7 @@ func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, _ bool) error {
 	// Changed prefix on a resettable writer: rewrite the full snapshot.
 	// Append-only deltas are not safe because bytes before the previous length
 	// may have changed.
-	sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+	sr.lastRendered = snapshot
 	sr.renderedLen = len(sr.lastRendered)
 	resetter.Reset()
 	if len(snapshot) > 0 {
@@ -736,7 +744,7 @@ func (sr *StreamRenderer) handleTable(content, rawLine string) error {
 		return sr.handleList(content, rawLine)
 	}
 	sr.state = stateReady
-	if err := sr.commitPendingLines(); err != nil {
+	if err := sr.commitPendingLinesIncremental(); err != nil {
 		return err
 	}
 
@@ -892,7 +900,7 @@ func (sr *StreamRenderer) emitRendered() error {
 		stableLen--
 	}
 
-	sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], rendered[:stableLen]...)
+	sr.lastCommittedRendered = bytes.Clone(rendered[:stableLen])
 	return sr.applyRenderedSnapshot(rendered[:stableLen], false)
 }
 
@@ -935,7 +943,7 @@ func (sr *StreamRenderer) Flush() error {
 
 	// Normalize consecutive newlines to fix inconsistent header spacing
 	rendered = normalizeNewlines(rendered)
-	sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], rendered...)
+	sr.lastCommittedRendered = bytes.Clone(rendered)
 
 	// Output final render including trailing newlines.
 	return sr.applyRenderedSnapshot(rendered, true)
@@ -986,7 +994,7 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 			stableLen--
 		}
 
-		sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], rendered[:stableLen]...)
+		sr.lastCommittedRendered = bytes.Clone(rendered[:stableLen])
 		if stableLen > 0 {
 			if err := sr.applyRenderedSnapshot(rendered[:stableLen], true); err != nil {
 				return err

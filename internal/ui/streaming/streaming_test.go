@@ -546,6 +546,31 @@ func TestNestedList_EmitsNestedItemsIncrementally(t *testing.T) {
 	}
 }
 
+func TestTableCommitUsesBlockLocalRenderWhenSafe(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &recordingRenderer{}
+	sr, err := NewRenderer(&buf, renderer)
+	if err != nil {
+		t.Fatalf("NewRenderer failed: %v", err)
+	}
+
+	if _, err := sr.Write([]byte("# Results\n\n")); err != nil {
+		t.Fatalf("write heading: %v", err)
+	}
+	renderer.resetCalls()
+
+	table := "| size | time |\n| ---: | ---: |\n| 32 | 1ms |\n\n"
+	if _, err := sr.Write([]byte(table)); err != nil {
+		t.Fatalf("write table: %v", err)
+	}
+	if len(renderer.calls) != 1 {
+		t.Fatalf("table render calls = %d, want 1", len(renderer.calls))
+	}
+	if got := string(renderer.calls[0]); got != table[:len(table)-1] {
+		t.Fatalf("table render source = %q, want block-local %q", got, table[:len(table)-1])
+	}
+}
+
 func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testing.T) {
 	writer := &nonResettableWriter{}
 	sr, err := NewRenderer(writer, newTestMarkdownRenderer(testRenderWidth))
@@ -569,6 +594,28 @@ func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testin
 	}
 	if !strings.Contains(err.Error(), "non-resettable writer") {
 		t.Fatalf("expected non-resettable writer error, got: %v", err)
+	}
+}
+
+func TestApplyRenderedSnapshotPreservesPreviousSnapshot(t *testing.T) {
+	var buf bytes.Buffer
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+
+	initial := make([]byte, len("committed"), 64)
+	copy(initial, "committed")
+	if err := sr.applyRenderedSnapshot(initial, false); err != nil {
+		t.Fatalf("apply initial snapshot: %v", err)
+	}
+	previous := sr.RenderedSnapshot()
+
+	if err := sr.applyRenderedSnapshot([]byte("commitment"), false); err != nil {
+		t.Fatalf("apply changed snapshot: %v", err)
+	}
+	if got := string(previous); got != "committed" {
+		t.Fatalf("previous snapshot mutated to %q", got)
 	}
 }
 

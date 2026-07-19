@@ -37,7 +37,7 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 		return nil
 	}
 
-	firstPending := sr.firstPendingLine()
+	firstPending := firstPendingLine(content)
 	if strings.HasPrefix(firstPending, "|") || isListMarkerOnly(firstPending) {
 		return sr.suppressPartialPreview()
 	}
@@ -95,6 +95,20 @@ func (sr *StreamRenderer) renderFlowingPartialSnapshot(safeContent, rendered str
 		prefixLen := len(sr.lastRendered) - len(sr.partialState.safeRendered)
 		snapshot := make([]byte, 0, prefixLen+len(rendered))
 		snapshot = append(snapshot, sr.lastRendered[:prefixLen]...)
+		snapshot = append(snapshot, rendered...)
+		return snapshot, nil
+	}
+
+	// The committed renderer already proved that block-local appends are safe for
+	// this document. Use the same top-level separator for a local partial block;
+	// globally-sensitive Markdown still goes through the full-document oracle.
+	if len(sr.lastCommittedRendered) > 0 &&
+		!sr.incrementalUnsafe &&
+		!markdownNeedsFullDocumentRender([]byte(safeContent)) &&
+		!markdownHasGlobalMarkdownSemantics([]byte(safeContent)) {
+		snapshot := make([]byte, 0, len(sr.lastCommittedRendered)+2+len(rendered))
+		snapshot = append(snapshot, sr.lastCommittedRendered...)
+		snapshot = append(snapshot, '\n', '\n')
 		snapshot = append(snapshot, rendered...)
 		return snapshot, nil
 	}

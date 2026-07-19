@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+func TestFirstPendingLineFromCurrentContent(t *testing.T) {
+	var buf bytes.Buffer
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
+	if err != nil {
+		t.Fatalf("NewRenderer failed: %v", err)
+	}
+	sr.pendingLines = []string{"  first line\n", "second line\n"}
+	sr.lineBuf.WriteString("partial")
+
+	content := sr.currentBlockContent()
+	if got, want := firstPendingLine(content), sr.firstPendingLine(); got != want || got != "first line" {
+		t.Fatalf("first pending line = %q, method = %q, want %q", got, want, "first line")
+	}
+}
+
 func TestFindSafePoint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -509,6 +524,13 @@ func TestFlowingPartialPreviewAvoidsFullSnapshotRerenderAfterFirstTick(t *testin
 	if _, err := sr.Write([]byte("Hello")); err != nil {
 		t.Fatalf("Write first partial failed: %v", err)
 	}
+	if len(renderer.calls) != 1 || string(renderer.calls[0]) != "Hello" {
+		var calls []string
+		for _, call := range renderer.calls {
+			calls = append(calls, string(call))
+		}
+		t.Fatalf("expected first preview to render only the current partial block, got %q", calls)
+	}
 
 	renderer.resetCalls()
 	if _, err := sr.Write([]byte(" world")); err != nil {
@@ -527,6 +549,41 @@ func TestFlowingPartialPreviewAvoidsFullSnapshotRerenderAfterFirstTick(t *testin
 	}
 	if got := buf.String(); got != "# Title\n\nHello world" {
 		t.Fatalf("buffer = %q, want %q", got, "# Title\n\nHello world")
+	}
+}
+
+func TestFlowingPartialPreviewUsesFullRenderForGlobalMarkdown(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &recordingRenderer{}
+	sr, err := NewRendererWithOptions(
+		&buf,
+		renderer,
+		[]StreamRendererOption{WithPartialRendering()},
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	if _, err := sr.Write([]byte("# Title\n\n")); err != nil {
+		t.Fatalf("Write committed block failed: %v", err)
+	}
+	renderer.resetCalls()
+	if _, err := sr.Write([]byte("> global quote")); err != nil {
+		t.Fatalf("Write partial blockquote failed: %v", err)
+	}
+
+	if len(renderer.calls) != 2 {
+		var calls []string
+		for _, call := range renderer.calls {
+			calls = append(calls, string(call))
+		}
+		t.Fatalf("expected local preview plus full-document fallback, got %q", calls)
+	}
+	if got := string(renderer.calls[1]); got != "# Title\n\n> global quote" {
+		t.Fatalf("full render source = %q", got)
+	}
+	if got := buf.String(); got != "# Title\n\n> global quote" {
+		t.Fatalf("buffer = %q", got)
 	}
 }
 

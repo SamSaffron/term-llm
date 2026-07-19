@@ -1,28 +1,32 @@
 package ui
 
 import (
-	"bytes"
-
 	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
+	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 	"github.com/samsaffron/term-llm/internal/ui/streaming"
 )
 
 // TextSegmentRenderer wraps the streaming markdown renderer for use with
-// text segments. It buffers rendered output so View() can read it.
+// text segments. StreamRenderer owns the current snapshot so View() can read it
+// without maintaining a second full-size buffer.
 type TextSegmentRenderer struct {
-	sr     *streaming.StreamRenderer
-	output *bytes.Buffer
-	width  int
+	sr    *streaming.StreamRenderer
+	width int
 
 	// flushedRenderedPos tracks how much of the rendered output has been
 	// flushed to scrollback, allowing RenderedFrom to return only unflushed content.
 	flushedRenderedPos int
 }
 
+type snapshotSink struct{}
+
+func (*snapshotSink) Write(p []byte) (int, error) { return len(p), nil }
+func (*snapshotSink) Reset()                      {}
+
 // NewTextSegmentRenderer creates a new TextSegmentRenderer with the given width.
 // Uses partial flowing snapshots (no cursor control) since Bubble Tea owns the terminal.
 func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
-	var output bytes.Buffer
+	var output snapshotSink
 	renderer := rendermarkdown.NewANSI(rendermarkdown.Config{
 		Palette: currentMarkdownPalette(),
 		Width:   width,
@@ -40,16 +44,15 @@ func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 	}
 
 	return &TextSegmentRenderer{
-		sr:     sr,
-		output: &output,
-		width:  width,
+		sr:    sr,
+		width: width,
 	}, nil
 }
 
 // Write writes text to the streaming renderer.
 // Complete markdown blocks are rendered immediately.
 func (r *TextSegmentRenderer) Write(text string) error {
-	prevOutput := r.output.Bytes()
+	prevOutput := r.sr.RenderedSnapshot()
 	prevFlushedPos := r.flushedRenderedPos
 	if prevFlushedPos > len(prevOutput) {
 		prevFlushedPos = len(prevOutput)
@@ -58,7 +61,7 @@ func (r *TextSegmentRenderer) Write(text string) error {
 
 	var prevFlushedPrefix []byte
 	if prevFlushedPos > 0 {
-		prevFlushedPrefix = append([]byte(nil), prevOutput[:prevFlushedPos]...)
+		prevFlushedPrefix = prevOutput[:prevFlushedPos]
 	}
 
 	_, err := r.sr.Write([]byte(text))
@@ -66,7 +69,7 @@ func (r *TextSegmentRenderer) Write(text string) error {
 		return err
 	}
 
-	currentOutput := r.output.Bytes()
+	currentOutput := r.sr.RenderedSnapshot()
 	currentLen := len(currentOutput)
 	if r.flushedRenderedPos > currentLen {
 		r.flushedRenderedPos = currentLen
@@ -84,12 +87,12 @@ func (r *TextSegmentRenderer) Write(text string) error {
 // Rendered returns the currently rendered output.
 // This is the content to display in View().
 func (r *TextSegmentRenderer) Rendered() string {
-	return r.output.String()
+	return string(r.sr.RenderedSnapshot())
 }
 
 // RenderedAll returns the full rendered output including already-flushed content.
 func (r *TextSegmentRenderer) RenderedAll() string {
-	return r.output.String()
+	return string(r.sr.RenderedSnapshot())
 }
 
 // RenderedCommitted returns the latest rendered snapshot that contains only
@@ -105,18 +108,18 @@ func (r *TextSegmentRenderer) RenderedCommitted() string {
 // been flushed to scrollback yet. Use this in View() to avoid duplicating
 // content that was already printed via FlushStreamingText.
 func (r *TextSegmentRenderer) RenderedUnflushed() string {
-	output := r.output.String()
+	output := r.sr.RenderedSnapshot()
 	if r.flushedRenderedPos >= len(output) {
 		return ""
 	}
-	return safeANSISlice(output, r.flushedRenderedPos)
+	return string(ansisafe.SuffixBytes(output, r.flushedRenderedPos))
 }
 
 // MarkFlushed marks the current committed rendered output as flushed.
 // Call this after successfully flushing content to scrollback.
 func (r *TextSegmentRenderer) MarkFlushed() {
 	if r.sr == nil {
-		r.flushedRenderedPos = r.output.Len()
+		r.flushedRenderedPos = 0
 		return
 	}
 	r.flushedRenderedPos = len(r.sr.CommittedRendered())
@@ -184,7 +187,7 @@ func (r *TextSegmentRenderer) Resize(newWidth int) error {
 	// logic (same approach as Write) so content already printed to
 	// scrollback is not duplicated.
 	prevFlushedPos := r.flushedRenderedPos
-	prevOutput := r.output.Bytes()
+	prevOutput := r.sr.RenderedSnapshot()
 	if prevFlushedPos > len(prevOutput) {
 		prevFlushedPos = len(prevOutput)
 	}
@@ -193,7 +196,6 @@ func (r *TextSegmentRenderer) Resize(newWidth int) error {
 		prevFlushedPrefix = append([]byte(nil), prevOutput[:prevFlushedPos]...)
 	}
 
-	r.output.Reset()
 	r.width = newWidth
 
 	if err := r.sr.Resize(newWidth); err != nil {
@@ -201,7 +203,7 @@ func (r *TextSegmentRenderer) Resize(newWidth int) error {
 		return err
 	}
 
-	currentOutput := r.output.Bytes()
+	currentOutput := r.sr.RenderedSnapshot()
 	if prevFlushedPos > 0 && len(currentOutput) > 0 {
 		r.flushedRenderedPos = longestCommonPrefixLenBytes(prevFlushedPrefix, currentOutput)
 	} else {
