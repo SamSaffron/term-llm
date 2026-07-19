@@ -238,12 +238,13 @@ type MemoryConfig struct {
 
 // OutputToolConfig configures a tool for capturing structured output.
 type OutputToolConfig struct {
-	Name        string `yaml:"name"`        // Tool name (e.g., "set_commit_message")
-	Param       string `yaml:"param"`       // Parameter to capture (default: "content")
-	Description string `yaml:"description"` // Tool description
+	Name        string                 `yaml:"name"`        // Tool name (e.g., "set_commit_message")
+	Param       string                 `yaml:"param"`       // Legacy string parameter to capture (default: "content")
+	Description string                 `yaml:"description"` // Tool description
+	Schema      map[string]interface{} `yaml:"schema"`      // Typed object schema; captures the complete argument object
 }
 
-// IsConfigured returns true if the output tool is configured.
+// IsConfigured returns true if the output tool has a name.
 func (c *OutputToolConfig) IsConfigured() bool {
 	return c.Name != ""
 }
@@ -442,9 +443,17 @@ func (a *Agent) Validate() error {
 	}
 
 	// Validate output_tool if configured
+	if a.OutputTool.Schema != nil && a.OutputTool.Name == "" {
+		return fmt.Errorf("output_tool.name is required when output_tool.schema is configured")
+	}
 	if a.OutputTool.IsConfigured() {
-		if a.OutputTool.Name == "" {
-			return fmt.Errorf("output_tool.name is required when output_tool is configured")
+		if a.OutputTool.Param != "" && a.OutputTool.Schema != nil {
+			return fmt.Errorf("output_tool cannot configure both param and schema")
+		}
+		if a.OutputTool.Schema != nil {
+			if schemaType, ok := a.OutputTool.Schema["type"]; !ok || schemaType != "object" {
+				return fmt.Errorf("output_tool.schema must have \"type\": \"object\" at root")
+			}
 		}
 	}
 

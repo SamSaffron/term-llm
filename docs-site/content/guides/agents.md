@@ -137,7 +137,9 @@ Built-in agents that currently default to `search: true`: `agent-builder`, `web-
 
 ## Structured ask output
 
-Use `output_tool` when an agent must return a machine-consumable artifact to `term-llm ask` instead of relying on freeform prose. In `ask`, a configured output tool is the agent's final return channel: successful completion requires the model to call that tool and provide the configured parameter. If the model naturally finishes without calling it, `ask` runs a constrained finalization pass that preserves the original tool context, forces the output tool when the provider supports named tool choice, and otherwise strongly instructs the model that the task is done and it must call the output tool. If the tool still is not called, `ask` fails nonzero and does not run `on_complete`.
+Use `output_tool` when an agent must return a machine-consumable artifact to `term-llm ask` instead of relying on freeform prose. In `ask`, a configured output tool is the agent's final return channel: successful completion requires the model to call that tool. If the model naturally finishes without calling it, `ask` runs a constrained finalization pass that preserves the original tool context, forces the output tool when the provider supports named tool choice, and otherwise strongly instructs the model that the task is done and it must call the output tool. If the tool still is not called, `ask` fails nonzero and does not run `on_complete`.
+
+Define a typed object `schema` when the final result has multiple parameters:
 
 ```yaml
 name: scanner
@@ -147,14 +149,38 @@ tools:
 
 output_tool:
   name: submit_result
-  param: result_json
-  description: "Submit the final scanner result as JSON"
+  description: "Submit the final scanner result"
+  schema:
+    type: object
+    properties:
+      summary:
+        type: string
+      severity:
+        type: string
+        enum: [low, medium, high]
+      files:
+        type: array
+        items:
+          type: string
+    required: [summary, severity, files]
+    additionalProperties: false
 
 on_complete: |
   jq -e . > result.json
 ```
 
-`on_complete` receives the captured output-tool value on stdin. When `output_tool` is configured, `ask` never falls back to passing assistant prose to `on_complete`; validate formats such as JSON in your handler if you need schema guarantees.
+For a typed schema, `on_complete` receives the complete argument object as compact JSON. The schema root must have `type: object`. Providers enforce the field constraints; validate the JSON again in `on_complete` when correctness is critical.
+
+The legacy `param` shorthand remains available when the tool should capture one string value:
+
+```yaml
+output_tool:
+  name: set_commit_message
+  param: message
+  description: "Set the commit message"
+```
+
+`param` defaults to `content` when omitted, and `param` and `schema` cannot be configured together. For this shorthand, `on_complete` receives only the captured string rather than a JSON object. When `output_tool` is configured, `ask` never falls back to passing assistant prose to `on_complete`.
 
 `output_tool` is ignored in `term-llm chat`. Chat is an open-ended conversation with no single final return value; use `ask` for tool-captured output.
 

@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-func TestAskOutputToolRunsOnCompleteAfterCentralizedRunner(t *testing.T) {
+func TestAskTypedOutputToolRunsOnCompleteAfterCentralizedRunner(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 
@@ -39,8 +39,17 @@ func TestAskOutputToolRunsOnCompleteAfterCentralizedRunner(t *testing.T) {
 	agentYAML := `name: output-agent
 output_tool:
   name: set_commit_message
-  param: message
-  description: Set the commit message
+  description: Set the commit result
+  schema:
+    type: object
+    properties:
+      message:
+        type: string
+      category:
+        type: string
+        enum: [chore, feat, fix]
+    required: [message, category]
+    additionalProperties: false
 on_complete: |
   tee .git/COMMIT_EDITMSG > .git/GITGUI_MSG
 `
@@ -75,9 +84,10 @@ sessions:
 	t.Cleanup(func() { _ = os.Chdir(oldDir) })
 
 	const message = "chore: replace stale message"
+	const wantOutput = `{"category":"chore","message":"chore: replace stale message"}`
 	provider := llm.NewMockProvider("mock").
 		WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true}).
-		AddToolCall("call-1", "set_commit_message", map[string]string{"message": message})
+		AddToolCall("call-1", "set_commit_message", map[string]string{"message": message, "category": "chore"})
 	oldProviderFactory := newAskProvider
 	newAskProvider = func(*config.Config, bool) (llm.Provider, error) { return provider, nil }
 	t.Cleanup(func() { newAskProvider = oldProviderFactory })
@@ -108,16 +118,33 @@ sessions:
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if string(got) != message {
-			t.Errorf("%s = %q, want %q", name, got, message)
+		if string(got) != wantOutput {
+			t.Errorf("%s = %q, want %q", name, got, wantOutput)
 		}
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider saw %d requests, want 1", len(provider.Requests))
+	}
+	var outputSpec *llm.ToolSpec
+	for i := range provider.Requests[0].Tools {
+		if provider.Requests[0].Tools[i].Name == "set_commit_message" {
+			outputSpec = &provider.Requests[0].Tools[i]
+			break
+		}
+	}
+	if outputSpec == nil {
+		t.Fatal("set_commit_message schema was not sent to provider")
+	}
+	properties, ok := outputSpec.Schema["properties"].(map[string]interface{})
+	if !ok || properties["message"] == nil || properties["category"] == nil {
+		t.Fatalf("output tool properties = %#v", outputSpec.Schema["properties"])
 	}
 }
 
 func TestEnsureOutputToolCapturedCoaxesModelWithoutAssistantText(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	provider.AddToolCall("call_1", "submit_result", map[string]string{"result_json": `{"ok":true}`})
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 
 	if err := ensureOutputToolCaptured(context.Background(), provider, nil, llm.Request{}, outputTool, ""); err != nil {
 		t.Fatalf("ensureOutputToolCaptured() error = %v", err)
@@ -136,7 +163,7 @@ func TestEnsureOutputToolCapturedCoaxesModelWithoutAssistantText(t *testing.T) {
 
 func TestEnsureOutputToolCapturedNoopsAfterToolCapturesValue(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 
 	args, _ := json.Marshal(map[string]string{"result_json": `{"ok":true}`})
 	if _, err := outputTool.Execute(context.Background(), args); err != nil {
@@ -153,7 +180,7 @@ func TestEnsureOutputToolCapturedNoopsAfterToolCapturesValue(t *testing.T) {
 
 func TestEnsureOutputToolCapturedAllowsEmptyStringValue(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 
 	args, _ := json.Marshal(map[string]string{"result_json": ""})
 	if _, err := outputTool.Execute(context.Background(), args); err != nil {
@@ -177,7 +204,7 @@ func TestEnsureOutputToolCapturedAllowsEmptyStringValue(t *testing.T) {
 func TestRunOutputToolFinalizationUsesOnlyOutputToolAndForcesIt(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: true})
 	provider.AddToolCall("call_1", "submit_result", map[string]string{"result_json": `{"status":"ok"}`})
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 	baseReq := llm.Request{
 		Model:      "mock-model",
 		WorkingDir: t.TempDir(),
@@ -230,7 +257,7 @@ func TestRunOutputToolFinalizationUsesOnlyOutputToolAndForcesIt(t *testing.T) {
 func TestRunOutputToolFinalizationFallsBackToAutoWhenToolChoiceUnsupported(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true, SupportsToolChoice: false})
 	provider.AddToolCall("call_1", "submit_result", map[string]string{"result_json": `{"status":"ok"}`})
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 
 	if err := runOutputToolFinalization(context.Background(), provider, nil, llm.Request{}, outputTool, "Done."); err != nil {
 		t.Fatalf("runOutputToolFinalization() error = %v", err)
@@ -249,7 +276,7 @@ func TestRunOutputToolFinalizationRetriesWhenModelRespondsWithText(t *testing.T)
 	provider.AddTextResponse("Still prose instead of a tool call.")
 	provider.AddTextResponse("I continue to be prose-only.")
 	provider.AddToolCall("call_4", "submit_result", map[string]string{"result_json": `{"status":"ok"}`})
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 
 	if err := runOutputToolFinalization(context.Background(), provider, nil, llm.Request{}, outputTool, "Done."); err != nil {
 		t.Fatalf("runOutputToolFinalization() error = %v", err)
@@ -271,7 +298,7 @@ func TestRunOutputToolFinalizationFailsWhenToolStillMissing(t *testing.T) {
 	provider.AddTextResponse("Done.")
 	provider.AddTextResponse("Still prose.")
 	provider.AddTextResponse("Still not a tool call.")
-	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result")
+	outputTool := tools.NewSetOutputTool("submit_result", "result_json", "Submit the result", nil)
 	baseReq := llm.Request{Messages: []llm.Message{llm.UserText("Review the thing.")}}
 
 	err := runOutputToolFinalization(context.Background(), provider, nil, baseReq, outputTool, "Done.")

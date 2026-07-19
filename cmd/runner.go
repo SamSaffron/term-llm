@@ -250,17 +250,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			return nil, err
 		}
 		if agent != nil && agent.OutputTool.IsConfigured() && req.Platform != runpkg.PlatformChat {
-			agentCfg := agent.OutputTool
-			param := agentCfg.Param
-			if param == "" {
-				param = "content"
-			}
-			if toolMgr != nil {
-				toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
-				toolMgr.SetupEngine(engine)
-			} else {
-				engine.RegisterTool(tools.NewSetOutputTool(agentCfg.Name, param, agentCfg.Description))
-			}
+			registerAgentOutputTool(agent.OutputTool, toolMgr, engine)
 		}
 	}
 	if err := applyChildSkillRuntime(engine, toolMgr, req.ChildSkill); err != nil {

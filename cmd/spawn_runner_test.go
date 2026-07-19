@@ -43,7 +43,7 @@ func (r *capturingSpawnRunner) RunAgentWithCallbackAndOptions(ctx context.Contex
 
 func TestCompleteChildAgentUsesOutputToolAndRunsHookInChildDirectory(t *testing.T) {
 	baseDir := t.TempDir()
-	outputTool := tools.NewSetOutputTool("set_commit_message", "message", "Set the commit message")
+	outputTool := tools.NewSetOutputTool("set_commit_message", "message", "Set the commit message", nil)
 	args, err := json.Marshal(map[string]string{"message": "feat: show isolated skill output"})
 	if err != nil {
 		t.Fatal(err)

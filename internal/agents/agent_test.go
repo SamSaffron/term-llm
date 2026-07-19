@@ -181,6 +181,67 @@ func TestAgent_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "partial legacy output tool remains ignored",
+			agent: Agent{
+				Name: "test",
+				OutputTool: OutputToolConfig{
+					Param:       "content",
+					Description: "missing name",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid typed output tool schema",
+			agent: Agent{
+				Name: "test",
+				OutputTool: OutputToolConfig{
+					Name: "submit_result",
+					Schema: map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"summary": map[string]interface{}{"type": "string"},
+							"score":   map[string]interface{}{"type": "number"},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "output tool rejects param and schema",
+			agent: Agent{
+				Name: "test",
+				OutputTool: OutputToolConfig{
+					Name:   "submit_result",
+					Param:  "content",
+					Schema: map[string]interface{}{"type": "object"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "output tool schema requires object root",
+			agent: Agent{
+				Name: "test",
+				OutputTool: OutputToolConfig{
+					Name:   "submit_result",
+					Schema: map[string]interface{}{"type": "array"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "output tool schema requires name",
+			agent: Agent{
+				Name: "test",
+				OutputTool: OutputToolConfig{
+					Schema: map[string]interface{}{"type": "object"},
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "valid agents_md empty",
 			agent: Agent{
 				Name:     "test",

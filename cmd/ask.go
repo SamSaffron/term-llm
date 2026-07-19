@@ -377,19 +377,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	if agent != nil && agent.OutputTool.IsConfigured() {
-		agentCfg := agent.OutputTool
-		param := agentCfg.Param
-		if param == "" {
-			param = "content" // default
-		}
-		if toolMgr != nil {
-			outputTool = toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
-			// Re-register tools with engine after output tool was added.
-			toolMgr.SetupEngine(engine)
-		} else {
-			outputTool = tools.NewSetOutputTool(agentCfg.Name, param, agentCfg.Description)
-			engine.RegisterTool(outputTool)
-		}
+		outputTool = registerAgentOutputTool(agent.OutputTool, toolMgr, engine)
 	}
 
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
