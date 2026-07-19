@@ -430,15 +430,12 @@ func (r *LocalToolRegistry) GetSpawnAgentTool() *SpawnAgentTool {
 	return nil
 }
 
-// RegisterOutputTool creates and registers a SetOutputTool with the given configuration.
-// Returns the tool so the caller can retrieve the captured value later.
-func (r *LocalToolRegistry) RegisterOutputTool(name, param, desc string) *SetOutputTool {
+// RegisterOutputTool adds an output tool to the local registry.
+func (r *LocalToolRegistry) RegisterOutputTool(tool *SetOutputTool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	tool := NewSetOutputTool(name, param, desc)
-	r.tools[name] = tool
-	return tool
+	r.tools[tool.Name()] = tool
 }
 
 // GetOutputTool returns the output tool by name if it exists and is a SetOutputTool.

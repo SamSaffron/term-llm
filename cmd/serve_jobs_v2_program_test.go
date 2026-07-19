@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 func testJobsV2ProgramJob(t *testing.T, cfg jobsV2ProgramConfig) jobsV2Job {
@@ -82,12 +83,12 @@ func TestJobsV2ProgramRunner_CleansUpBackgroundChildOnSuccess(t *testing.T) {
 
 	pid := readJobsV2ProgramPID(t, pidPath)
 	defer func() {
-		if !jobsV2ProcessHasExited(pid) {
+		if !testutil.ProcessHasExited(pid) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}()
 
-	waitForJobsV2ProcessExit(t, pid)
+	testutil.WaitForProcessExit(t, pid, 2*time.Second)
 }
 
 func TestJobsV2ProgramRunner_TruncatesCapturedOutput(t *testing.T) {
@@ -137,49 +138,6 @@ func readJobsV2ProgramPID(t *testing.T, path string) int {
 		t.Fatalf("parse child pid %q: %v", pidText, err)
 	}
 	return pid
-}
-
-func waitForJobsV2ProcessExit(t *testing.T, pid int) {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if jobsV2ProcessHasExited(pid) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for background child process %d to exit", pid)
-}
-
-func jobsV2ProcessHasExited(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	if err != nil {
-		return errors.Is(err, syscall.ESRCH)
-	}
-	if runtime.GOOS == "linux" {
-		state, ok := jobsV2LinuxProcState(pid)
-		return ok && state == 'Z'
-	}
-	return false
-}
-
-func jobsV2LinuxProcState(pid int) (byte, bool) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return 0, false
-	}
-	stat := string(data)
-	end := strings.LastIndex(stat, ")")
-	if end == -1 {
-		return 0, false
-	}
-	rest := strings.TrimSpace(stat[end+1:])
-	if rest == "" {
-		return 0, false
-	}
-	return rest[0], true
 }
 
 func jobsV2ProgramTestShellQuote(s string) string {

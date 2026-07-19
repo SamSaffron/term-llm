@@ -3,15 +3,15 @@ package jobs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
 func testProgramJob(t *testing.T, cfg ProgramConfig) Job {
@@ -100,17 +100,7 @@ func TestProgramRunnerDoesNotLeakBackgroundChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse child pid %q: %v", string(pidRaw), err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		err = syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("background child process %d still appears to be alive", pid)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testutil.WaitForProcessExit(t, pid, time.Second)
 }
 
 func shellQuote(s string) string {
