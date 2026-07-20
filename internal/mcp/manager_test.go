@@ -61,6 +61,10 @@ func runMCPManagerTestServer() {
 			IsError: true,
 		}, nil, nil
 	})
+	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "crash", Description: "exit without closing the session"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args struct{}) (*mcpSDK.CallToolResult, any, error) {
+		os.Exit(42)
+		return nil, nil, nil
+	})
 	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "blocking", Description: "block until the request is cancelled"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args managerTestBlockingParams) (*mcpSDK.CallToolResult, any, error) {
 		if err := os.WriteFile(args.StartedPath, nil, 0600); err != nil {
 			return nil, nil, err
@@ -188,6 +192,80 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 	_, err = manager.CallTool(context.Background(), "greeter__greet", json.RawMessage("{"))
 	if err == nil || !strings.Contains(err.Error(), "invalid tool arguments") {
 		t.Fatalf("malformed arguments error = %v, want invalid tool arguments", err)
+	}
+}
+
+func TestManagerExitedServerBecomesFailedAndCanRestart(t *testing.T) {
+	manager := NewManager()
+	manager.config = &Config{Servers: map[string]ServerConfig{
+		"crasher": {
+			Command: os.Args[0],
+			Env: map[string]string{
+				runMCPManagerTestServerEnv: "1",
+			},
+		},
+	}}
+	statusUpdates := make(chan StatusUpdate, 10)
+	manager.SetStatusChannel(statusUpdates)
+	defer manager.StopAll()
+
+	if err := manager.Enable(context.Background(), "crasher"); err != nil {
+		t.Fatalf("Enable returned error: %v", err)
+	}
+	status, err := waitForServerStatus(t, manager, "crasher", StatusReady, 3*time.Second)
+	if status != StatusReady || err != nil {
+		t.Fatalf("server status = %s, error = %v; want ready", status, err)
+	}
+	if len(manager.AllTools()) == 0 {
+		t.Fatal("ready server did not advertise tools")
+	}
+
+	if _, err := manager.CallTool(context.Background(), "crasher__crash", nil); err == nil {
+		t.Fatal("crash tool unexpectedly returned without an error")
+	}
+
+	status, err = waitForServerStatus(t, manager, "crasher", StatusFailed, 3*time.Second)
+	if status != StatusFailed || err == nil {
+		t.Fatalf("server status = %s, error = %v; want failed with terminal error", status, err)
+	}
+	if tools := manager.AllTools(); len(tools) != 0 {
+		t.Fatalf("AllTools after server exit = %#v, want no tools", tools)
+	}
+
+	failedUpdate := false
+	deadline := time.After(3 * time.Second)
+	for !failedUpdate {
+		select {
+		case update := <-statusUpdates:
+			if update.Name == "crasher" && update.Status == StatusFailed {
+				if update.Error == nil {
+					t.Fatal("failed status update had no terminal error")
+				}
+				failedUpdate = true
+			}
+		case <-deadline:
+			t.Fatal("did not receive failed status update")
+		}
+	}
+
+	if err := manager.Restart(context.Background(), "crasher"); err != nil {
+		t.Fatalf("Restart returned error: %v", err)
+	}
+	status, err = waitForServerStatus(t, manager, "crasher", StatusReady, 3*time.Second)
+	if status != StatusReady || err != nil {
+		t.Fatalf("restarted server status = %s, error = %v; want ready", status, err)
+	}
+
+	args, err := json.Marshal(map[string]string{"name": "Grace"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	got, err := manager.CallTool(context.Background(), "crasher__greet", args)
+	if err != nil {
+		t.Fatalf("CallTool after restart: %v", err)
+	}
+	if !strings.Contains(got.Content, "hi Grace") {
+		t.Fatalf("CallTool result after restart = %q, want greeting", got.Content)
 	}
 }
 

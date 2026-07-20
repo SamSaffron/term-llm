@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
@@ -126,11 +127,14 @@ func (m *Manager) GetSamplingHandler() *SamplingHandler {
 // sendStatus sends a status update if a channel is configured.
 func (m *Manager) sendStatus(name string, status ServerStatus, err error) {
 	m.mu.RLock()
-	ch := m.statusChan
-	m.mu.RUnlock()
-	if ch != nil {
+	defer m.mu.RUnlock()
+	m.sendStatusLocked(name, status, err)
+}
+
+func (m *Manager) sendStatusLocked(name string, status ServerStatus, err error) {
+	if m.statusChan != nil {
 		select {
-		case ch <- StatusUpdate{Name: name, Status: status, Error: err}:
+		case m.statusChan <- StatusUpdate{Name: name, Status: status, Error: err}:
 		default:
 			// Don't block if channel is full
 		}
@@ -264,9 +268,35 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		m.mu.Unlock()
 
 		m.sendStatus(name, status, err)
+		if err == nil {
+			session := client.currentSession()
+			if session != nil {
+				go m.watchSession(name, client, session)
+			}
+		}
 	}()
 
 	return nil
+}
+
+func (m *Manager) watchSession(name string, client *Client, session *sdkmcp.ClientSession) {
+	err := session.Wait()
+	if err == nil {
+		err = fmt.Errorf("MCP server %s session ended", name)
+	} else {
+		err = fmt.Errorf("MCP server %s session ended: %w", name, err)
+	}
+
+	m.mu.Lock()
+	state, ok := m.statuses[name]
+	if !ok || state.Status != StatusReady || state.Client != client || m.clients[name] != client || !client.clearTerminatedSession(session) {
+		m.mu.Unlock()
+		return
+	}
+	state.Status = StatusFailed
+	state.Error = err
+	m.sendStatusLocked(name, StatusFailed, err)
+	m.mu.Unlock()
 }
 
 // Disable stops an MCP server.
