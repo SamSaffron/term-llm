@@ -26,6 +26,7 @@
 // ?webrtc_diag=1 in the URL) to enable console.log timeline output:
 //   [webrtc] connection lifecycle events with timestamps
 //   [webrtc] per-request: method, path, body size, status, latency
+//   [webrtc] pending queue size and HTTPS/stream-close fallback state
 //
 // Force TURN relay: pass ?webrtc_turn=1 to set iceTransportPolicy=relay,
 // which forces all traffic through the TURN server (ignores host/srflx).
@@ -88,6 +89,11 @@
     if (!diagEnabled) return;
     const elapsed = diagT0 ? ((performance.now() - diagT0) | 0) : 0;
     console.log('[webrtc] +' + elapsed + 'ms ' + msg);
+  }
+
+  function diagQueue(state, fallback) {
+    diag('queue state=' + state + ' pending=' + pendingRequests.size +
+      ' fallback=' + (fallback || 'none'));
   }
 
   function termApp() {
@@ -294,7 +300,7 @@
   // consumer will see a truncated stream and can retry at the app layer.
   function drainPendingToHTTPS(reason) {
     if (pendingRequests.size === 0) return;
-    diag(reason + ' — draining ' + pendingRequests.size + ' pending request(s) to HTTPS');
+    diagQueue('draining', reason + ':https-before-response-or-stream-close');
 
     // Snapshot the entries; fallback() deletes its own key.
     const entries = Array.from(pendingRequests.values());
@@ -412,6 +418,7 @@
           try { options.signal.removeEventListener('abort', abortHandler); } catch (_e) { /* */ }
         }
         diag('cleanup ' + method + ' ' + path + ' reason=' + reason);
+        diagQueue('settled', reason.includes('fallback') || reason.includes('timeout') ? 'https' : 'none');
       }
 
       function closeStream() {
@@ -501,6 +508,8 @@
 
       // fallback: called by drainPendingToHTTPS() when the channel dies.
       function fallback() {
+        const fallbackState = !gotResponse ? 'https' : 'stream-close';
+        diagQueue('fallback', fallbackState);
         cleanup('drain-fallback');
         if (!gotResponse) {
           // Haven't received anything yet — retry via HTTPS. Mutation endpoints
@@ -546,6 +555,7 @@
         },
         fallback,
       });
+      diagQueue('queued', 'none');
 
       // Build and send the request frame.
       const headersObj = {};

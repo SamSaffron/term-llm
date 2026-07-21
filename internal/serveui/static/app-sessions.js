@@ -512,33 +512,54 @@ const messageDedupeKey = (message) => {
   });
 };
 
-const messageRangesEquivalent = (messages, leftStart, rightStart, length) => {
-  for (let offset = 0; offset < length; offset += 1) {
-    if (messageDedupeKey(messages[leftStart + offset]) !== messageDedupeKey(messages[rightStart + offset])) {
-      return false;
+const messageFingerprints = (messages, metrics = null) => (Array.isArray(messages) ? messages : []).map((message) => {
+  if (metrics) metrics.fingerprints = Number(metrics.fingerprints || 0) + 1;
+  return messageDedupeKey(message);
+});
+
+const longestCompactionTailOverlap = (fingerprints, markerIndex, start, metrics = null) => {
+  const maxLength = Math.min(markerIndex, fingerprints.length - start);
+  if (maxLength <= 0) return 0;
+
+  const pattern = fingerprints.slice(start, start + maxLength);
+  const sequence = pattern.concat([null], fingerprints.slice(0, markerIndex));
+  const prefix = new Array(sequence.length).fill(0);
+  const equalAt = (left, right) => {
+    if (metrics) metrics.operations = Number(metrics.operations || 0) + 1;
+    return sequence[left] === sequence[right];
+  };
+
+  for (let index = 1; index < sequence.length; index += 1) {
+    let matched = prefix[index - 1];
+    while (matched > 0 && !equalAt(index, matched)) {
+      matched = prefix[matched - 1];
     }
+    if (equalAt(index, matched)) matched += 1;
+    prefix[index] = matched;
   }
-  return true;
+
+  return Math.min(maxLength, prefix[prefix.length - 1]);
 };
 
 const isSyntheticCompactionAckMessage = (message) => (
   message?.role === 'assistant' && String(message.content || '').trim() === "I've reviewed the context summary. I'll continue from where we left off."
 );
 
-const compactionDuplicateTailRange = (messages, markerIndex) => {
+const compactionDuplicateTailRange = (messages, markerIndex, fingerprints = null, metrics = null) => {
   if (markerIndex <= 0 || markerIndex + 1 >= messages.length) return { start: -1, length: 0 };
+  const keys = Array.isArray(fingerprints) && fingerprints.length === messages.length
+    ? fingerprints
+    : messageFingerprints(messages, metrics);
   const candidates = [markerIndex + 1];
   if (isSyntheticCompactionAckMessage(messages[markerIndex + 1])) candidates.push(markerIndex + 2);
   let bestStart = -1;
   let bestLength = 0;
   candidates.forEach((start) => {
     if (start >= messages.length) return;
-    const maxLength = Math.min(markerIndex, messages.length - start);
-    for (let length = 1; length <= maxLength; length += 1) {
-      if (length > bestLength && messageRangesEquivalent(messages, markerIndex - length, start, length)) {
-        bestStart = start;
-        bestLength = length;
-      }
+    const length = longestCompactionTailOverlap(keys, markerIndex, start, metrics);
+    if (length > bestLength) {
+      bestStart = start;
+      bestLength = length;
     }
   });
   return { start: bestStart, length: bestLength };
@@ -547,14 +568,18 @@ const compactionDuplicateTailRange = (messages, markerIndex) => {
 const suppressCompactionTailMessages = (messages) => {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
   const out = messages.slice();
+  const fingerprints = messageFingerprints(out);
   for (let index = 0; index < out.length; index += 1) {
     if (out[index]?.role !== 'compaction') continue;
     if (out[index]?.authoritativeTailSuppressed) continue;
-    const { start, length } = compactionDuplicateTailRange(out, index);
+    const { start, length } = compactionDuplicateTailRange(out, index, fingerprints);
     if (length > 0) {
-      out.splice(index + 1, start + length - (index + 1));
+      const removeCount = start + length - (index + 1);
+      out.splice(index + 1, removeCount);
+      fingerprints.splice(index + 1, removeCount);
     } else if (isSyntheticCompactionAckMessage(out[index + 1])) {
       out.splice(index + 1, 1);
+      fingerprints.splice(index + 1, 1);
     }
   }
   return out;
@@ -1240,6 +1265,13 @@ const applyMCPStateToSession = (session, data) => {
   return changed;
 };
 
+// loadServerSessionState always returns one of these discriminated result
+// shapes. Callers must retry only `retry`; `auth` is a terminal authentication
+// failure and can never be confused with a falsy transient response.
+const SESSION_STATE_AUTH_RESULT = Object.freeze({ kind: 'auth' });
+const SESSION_STATE_RETRY_RESULT = Object.freeze({ kind: 'retry' });
+const sessionStateOKResult = (stateValue) => ({ kind: 'ok', state: stateValue });
+
 const loadServerSessionState = async (sessionId) => {
   try {
     const headers = {};
@@ -1247,15 +1279,19 @@ const loadServerSessionState = async (sessionId) => {
     const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
     if (!resp.ok) {
       if (resp.status === 404) {
-        return { active_run: false, active_response_id: '' };
+        return sessionStateOKResult({ active_run: false, active_response_id: '' });
       }
-      return null;
+      if (resp.status === 401) {
+        handleAuthFailure();
+        return SESSION_STATE_AUTH_RESULT;
+      }
+      return SESSION_STATE_RETRY_RESULT;
     }
     const data = await resp.json().catch(() => null);
-    if (!data || typeof data !== 'object') return null;
-    return data;
+    if (!data || typeof data !== 'object') return SESSION_STATE_RETRY_RESULT;
+    return sessionStateOKResult(data);
   } catch {
-    return null;
+    return SESSION_STATE_RETRY_RESULT;
   }
 };
 
@@ -1655,13 +1691,13 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
       stopSessionStatePoll();
       return;
     }
-    let runtimeState = null;
+    let syncResult = SESSION_STATE_RETRY_RESULT;
     try {
-      runtimeState = await syncActiveSessionFromServer(active, true);
+      syncResult = await syncActiveSessionFromServer(active, true);
     } catch (_) {
-      runtimeState = null;
+      syncResult = SESSION_STATE_RETRY_RESULT;
     }
-    if (runtimeState === null) {
+    if (syncResult?.kind === 'retry') {
       const stillActive = getActiveSession();
       if (stillActive && stillActive.id === sessionId && !state.abortController) {
         scheduleSessionStatePoll(sessionId, SESSION_STATE_POLL_RETRY);
@@ -1671,12 +1707,17 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 };
 
 const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false, expectedSwitchGeneration = null } = {}) => {
-  if (!session) return null;
+  if (!session) return SESSION_STATE_RETRY_RESULT;
 
   const busyBefore = sessionHasInProgressState(session);
 
-  const runtimeState = await loadServerSessionState(session.id);
-  if (!runtimeState) return null;
+  const loadResult = await loadServerSessionState(session.id);
+  if (loadResult.kind === 'auth') {
+    stopSessionStatePoll();
+    return loadResult;
+  }
+  if (loadResult.kind !== 'ok') return SESSION_STATE_RETRY_RESULT;
+  const runtimeState = loadResult.state;
 
   const expectedGeneration = Number(expectedSwitchGeneration);
   const hasExpectedGeneration = Number.isFinite(expectedGeneration) && expectedGeneration > 0;
@@ -1800,12 +1841,12 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     if (isStillActive() && !state.abortController) {
       setStreaming(true);
       resumeAndDrain(session, { responseId: activeResponseId, recoverFromSnapshot });
-      return runtimeState;
+      return loadResult;
     }
     if (pollOnActive && isStillActive()) {
       scheduleSessionStatePoll(session.id);
     }
-    return runtimeState;
+    return loadResult;
   }
 
   if (activeRun && !state.abortController) {
@@ -1816,7 +1857,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     if (pollOnActive && isStillActive()) {
       scheduleSessionStatePoll(session.id);
     }
-    return runtimeState;
+    return loadResult;
   }
 
   if (!activeRun && !state.abortController) {
@@ -1861,7 +1902,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     drainInterruptQueueIfIdle(session);
   }
 
-  return runtimeState;
+  return loadResult;
 };
 
 const applyServerSessionSummary = (target, serverSession) => {
@@ -3183,6 +3224,15 @@ document.addEventListener('visibilitychange', async () => {
   const session = getActiveSession();
   if (!session) return;
 
+  if (session.activeResponseId && app.wakeResponseReconnect?.({
+    reason: 'visibility',
+    sessionId: session.id,
+    responseId: session.activeResponseId
+  })) {
+    setConnectionState('Page visible, reconnecting\u2026', 'bad');
+    setStreaming(true);
+    return;
+  }
   if (session.activeResponseId && !state.abortController) {
     setStreaming(true);
     resumeAndDrain(session, {
@@ -3209,13 +3259,22 @@ window.addEventListener('online', async () => {
   setConnectionState('', '');
   const session = getActiveSession();
   if (!session) return;
+  if (session.activeResponseId && app.wakeResponseReconnect?.({
+    reason: 'online',
+    sessionId: session.id,
+    responseId: session.activeResponseId
+  })) {
+    setConnectionState('Network restored, reconnecting\u2026', 'bad');
+    setStreaming(true);
+    return;
+  }
   if (session.activeResponseId && state.abortController) {
     // Abort the stale fetch so the existing resume loop reconnects immediately
     // instead of waiting for the heartbeat timeout.
     state.abortController._heartbeatAbort = true;
     state.abortController.abort();
   } else if (session.activeResponseId && !state.abortController) {
-    setConnectionState('Network restored, reconnecting\u2026');
+    setConnectionState('Network restored, reconnecting\u2026', 'bad');
     setStreaming(true);
     resumeAndDrain(session, {
       responseId: session.activeResponseId,
@@ -3231,9 +3290,18 @@ window.addEventListener('offline', () => {
 });
 
 window.addEventListener('pageshow', (event) => {
-  if (!event.persisted) return;
   const session = getActiveSession();
   if (!session) return;
+  if (session.activeResponseId && app.wakeResponseReconnect?.({
+    reason: 'pageshow',
+    sessionId: session.id,
+    responseId: session.activeResponseId
+  })) {
+    setConnectionState('Page restored, reconnecting\u2026', 'bad');
+    setStreaming(true);
+    return;
+  }
+  if (!event.persisted) return;
   if (session.activeResponseId) {
     setStreaming(true);
     resumeAndDrain(session, {
@@ -3263,6 +3331,7 @@ initialize();
 Object.assign(app, {
   createAndSwitchToFreshSession,
   convertServerMessages,
+  compactionDuplicateTailRange,
   loadServerSessionMessages,
   refreshActiveSessionMessagesFromServer,
   loadOlderSessionMessages,

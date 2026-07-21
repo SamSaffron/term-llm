@@ -885,6 +885,10 @@ const syncAssistantUsageNode = (node, message) => {
 };
 
 const STREAM_STABLE_MIN_TAIL_LENGTH = 256;
+const STREAM_MARKDOWN_MUTABLE_LIMIT = Number(app.markdownStreaming?.MAX_MUTABLE_MARKDOWN_CHARS) || (64 * 1024);
+const STREAM_STABLE_GUARD_LENGTH = 64;
+const STREAM_STABLE_HASH_A_OFFSET = 0x811c9dc5;
+const STREAM_STABLE_HASH_B_OFFSET = 0x9747b28c;
 
 const createAssistantStreamContainers = (body) => {
   body.innerHTML = '';
@@ -910,8 +914,10 @@ const getOrCreateAssistantStreamState = (message, body) => {
       body: null,
       stableContainer: null,
       tailContainer: null,
-      stableSource: '',
       stableLength: 0,
+      stableHashLength: 0,
+      stableHashA: STREAM_STABLE_HASH_A_OFFSET,
+      stableHashB: STREAM_STABLE_HASH_B_OFFSET,
       latestContent: '',
       lastTailContent: '',
       lastTailSource: '',
@@ -932,18 +938,75 @@ const getOrCreateAssistantStreamState = (message, body) => {
   streamState._canPlainCached = null;
   streamState._canPlainCachedAt = 0;
   streamState._stableCheckedAt = 0;
+  streamState.plainFallback = false;
+  streamState.lastBoundaryOperations = 0;
+  streamState.stablePrefixGuard = '';
+  streamState.stableSuffixGuard = '';
+  streamState.stableHashLength = 0;
+  streamState.stableHashA = STREAM_STABLE_HASH_A_OFFSET;
+  streamState.stableHashB = STREAM_STABLE_HASH_B_OFFSET;
   streamState.turnPanelSynced = false;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
+};
+
+const advanceStableAssistantHash = (hashA, hashB, text, limit = String(text || '').length) => {
+  const value = String(text || '');
+  const end = Math.max(0, Math.min(value.length, Number(limit) || 0));
+  let nextA = Number(hashA) >>> 0;
+  let nextB = Number(hashB) >>> 0;
+  for (let index = 0; index < end; index += 1) {
+    const code = value.charCodeAt(index);
+    nextA = Math.imul(nextA ^ code, 0x01000193) >>> 0;
+    nextB = Math.imul(nextB ^ code, 0x5bd1e995) >>> 0;
+  }
+  return { hashA: nextA, hashB: nextB };
+};
+
+const stableAssistantPrefixMatches = (streamState, content) => {
+  const stableLength = Math.max(0, Number(streamState?.stableLength) || 0);
+  if (stableLength <= 0) return true;
+  if (content.length < stableLength) return false;
+  if (Number(streamState?.stableHashLength) !== stableLength) return false;
+  const prefixGuard = String(streamState?.stablePrefixGuard || '');
+  const suffixGuard = String(streamState?.stableSuffixGuard || '');
+  if (prefixGuard && content.slice(0, prefixGuard.length) !== prefixGuard) return false;
+  if (suffixGuard && content.slice(stableLength - suffixGuard.length, stableLength) !== suffixGuard) return false;
+  const fingerprint = advanceStableAssistantHash(
+    STREAM_STABLE_HASH_A_OFFSET,
+    STREAM_STABLE_HASH_B_OFFSET,
+    content,
+    stableLength
+  );
+  return fingerprint.hashA === (Number(streamState.stableHashA) >>> 0)
+    && fingerprint.hashB === (Number(streamState.stableHashB) >>> 0);
+};
+
+const updateStableAssistantFingerprint = (streamState, source, content) => {
+  const stableLength = Math.max(0, Number(streamState?.stableLength) || 0);
+  const sourceLength = String(source || '').length;
+  const previousLength = Math.max(0, stableLength - sourceLength);
+  const previousHashLength = Math.max(0, Number(streamState?.stableHashLength) || 0);
+  const initialHashA = previousHashLength === previousLength
+    ? streamState.stableHashA
+    : STREAM_STABLE_HASH_A_OFFSET;
+  const initialHashB = previousHashLength === previousLength
+    ? streamState.stableHashB
+    : STREAM_STABLE_HASH_B_OFFSET;
+  const fingerprint = advanceStableAssistantHash(initialHashA, initialHashB, source);
+  streamState.stableHashLength = stableLength;
+  streamState.stableHashA = fingerprint.hashA;
+  streamState.stableHashB = fingerprint.hashB;
+  const guardLength = Math.min(STREAM_STABLE_GUARD_LENGTH, stableLength);
+  streamState.stablePrefixGuard = content.slice(0, guardLength);
+  streamState.stableSuffixGuard = content.slice(stableLength - guardLength, stableLength);
 };
 
 const assistantStreamMutableLength = (streamState) => {
   const content = String(streamState?.latestContent || '');
   const stableLength = Math.max(0, Number(streamState?.stableLength) || 0);
   if (stableLength <= 0) return content.length;
-
-  const stableSource = String(streamState?.stableSource || '');
-  if (stableSource && !content.startsWith(stableSource)) return content.length;
+  if (!stableAssistantPrefixMatches(streamState, content)) return content.length;
   return Math.max(0, content.length - Math.min(stableLength, content.length));
 };
 
@@ -970,6 +1033,11 @@ const clearAssistantTailRender = (streamState) => {
   if (!streamState?.tailContainer) return;
   streamState.tailContainer.classList.remove('streaming-plain-text');
   streamState.tailContainer.innerHTML = '';
+  if (webUIDiagnosticsEnabled() && streamState.tailContainer.dataset) {
+    streamState.tailContainer.dataset.mutableMarkdownTailSize = '0';
+    streamState.tailContainer.dataset.streamRenderMode = 'empty';
+    streamState.tailContainer.dataset.boundaryOperations = String(Number(streamState.lastBoundaryOperations) || 0);
+  }
   streamState.tailTextNode = null;
   streamState.lastTailSource = '';
 };
@@ -979,8 +1047,14 @@ const resetAssistantStableRender = (streamState) => {
   if (streamState.stableContainer) {
     streamState.stableContainer.innerHTML = '';
   }
-  streamState.stableSource = '';
   streamState.stableLength = 0;
+  streamState.stablePrefixGuard = '';
+  streamState.stableSuffixGuard = '';
+  streamState.stableHashLength = 0;
+  streamState.stableHashA = STREAM_STABLE_HASH_A_OFFSET;
+  streamState.stableHashB = STREAM_STABLE_HASH_B_OFFSET;
+  streamState.plainFallback = false;
+  streamState.lastBoundaryOperations = 0;
   streamState.lastTailContent = '';
   streamState.lastTailSource = '';
   streamState.tailTextNode = null;
@@ -995,17 +1069,15 @@ const appendAssistantStableMarkdown = (streamState, source) => {
   piece.className = 'markdown-stream-piece';
   renderAssistantMarkdown(piece, source, { streaming: true });
   streamState.stableContainer.appendChild(piece);
-  streamState.stableSource = `${streamState.stableSource || ''}${source}`;
-  streamState.stableLength = streamState.stableSource.length;
+  streamState.stableLength = Math.max(0, Number(streamState.stableLength) || 0) + source.length;
 };
 
 const promoteAssistantStableMarkdown = (streamState, content) => {
-  if (!streamState?.stableContainer || !app.markdownStreaming || typeof app.markdownStreaming.findStableMarkdownBoundary !== 'function') {
-    return false;
+  if (!streamState?.stableContainer || !app.markdownStreaming) {
+    return { promoted: false, fallback: false };
   }
 
-  const stableSource = streamState.stableSource || '';
-  if (stableSource && !content.startsWith(stableSource)) {
+  if (!stableAssistantPrefixMatches(streamState, content)) {
     resetAssistantStableRender(streamState);
     clearAssistantTailRender(streamState);
   }
@@ -1017,17 +1089,44 @@ const promoteAssistantStableMarkdown = (streamState, content) => {
   }
 
   const uncommitted = content.slice(streamState.stableLength || 0);
-  const boundary = app.markdownStreaming.findStableMarkdownBoundary(uncommitted, STREAM_STABLE_MIN_TAIL_LENGTH);
-  if (!boundary || boundary <= 0) return false;
+  if (uncommitted.length > STREAM_MARKDOWN_MUTABLE_LIMIT) {
+    streamState.plainFallback = true;
+    return { promoted: false, fallback: true };
+  }
 
-  appendAssistantStableMarkdown(streamState, uncommitted.slice(0, boundary));
-  return true;
+  const analysis = typeof app.markdownStreaming.analyzeStableMarkdownBoundary === 'function'
+    ? app.markdownStreaming.analyzeStableMarkdownBoundary(uncommitted, STREAM_STABLE_MIN_TAIL_LENGTH)
+    : {
+        boundary: typeof app.markdownStreaming.findStableMarkdownBoundary === 'function'
+          ? app.markdownStreaming.findStableMarkdownBoundary(uncommitted, STREAM_STABLE_MIN_TAIL_LENGTH)
+          : 0,
+        operations: 0,
+        overBudget: false
+      };
+  streamState.lastBoundaryOperations = Number(analysis?.operations) || 0;
+  if (analysis?.overBudget) {
+    streamState.plainFallback = true;
+    return { promoted: false, fallback: true };
+  }
+
+  const boundary = Number(analysis?.boundary) || 0;
+  if (boundary <= 0) return { promoted: false, fallback: false };
+
+  const source = uncommitted.slice(0, boundary);
+  appendAssistantStableMarkdown(streamState, source);
+  updateStableAssistantFingerprint(streamState, source, content);
+  return { promoted: true, fallback: false };
 };
 
-const renderAssistantTailPlainText = (streamState, tail) => {
+const renderAssistantTailPlainText = (streamState, tail, mode = 'plain') => {
   const container = streamState?.tailContainer;
   if (!container) return;
   container.classList.add('streaming-plain-text');
+  if (webUIDiagnosticsEnabled() && container.dataset) {
+    container.dataset.mutableMarkdownTailSize = '0';
+    container.dataset.streamRenderMode = mode;
+    container.dataset.boundaryOperations = String(Number(streamState.lastBoundaryOperations) || 0);
+  }
 
   let textNode = streamState.tailTextNode;
   if (!textNode || textNode.parentNode !== container) {
@@ -1060,6 +1159,11 @@ const renderAssistantTailMarkdown = (streamState, tail) => {
   if (!container) return;
   container.classList.remove('streaming-plain-text');
   streamState.tailTextNode = null;
+  if (webUIDiagnosticsEnabled() && container.dataset) {
+    container.dataset.mutableMarkdownTailSize = String(tail.length);
+    container.dataset.streamRenderMode = 'markdown';
+    container.dataset.boundaryOperations = String(Number(streamState.lastBoundaryOperations) || 0);
+  }
   renderAssistantMarkdown(container, tail, { streaming: true });
   streamState.lastTailSource = tail;
 };
@@ -1102,7 +1206,7 @@ const maybePromoteAssistantStableMarkdown = (streamState, content) => {
   const prevAt = streamState._stableCheckedAt || 0;
   if (prevAt > 0 && content.length > prevAt && !content.slice(prevAt).includes('\n')) {
     streamState._stableCheckedAt = content.length;
-    return false;
+    return { promoted: false, fallback: false };
   }
   const result = promoteAssistantStableMarkdown(streamState, content);
   streamState._stableCheckedAt = content.length;
@@ -1134,11 +1238,25 @@ const performAssistantStreamRender = (streamState) => {
     }
 
     if (content) {
+      // A replacement snapshot can revise already-promoted text. Validate the
+      // complete committed prefix before either an existing or newly-triggered
+      // plain fallback slices at the old stable length, otherwise stale stable
+      // DOM and a truncated tail can survive until finalization.
+      if (!stableAssistantPrefixMatches(streamState, content)) {
+        resetAssistantStableRender(streamState);
+        clearAssistantTailRender(streamState);
+      }
+      const mutableLength = assistantStreamMutableLength(streamState);
+      if (mutableLength > STREAM_MARKDOWN_MUTABLE_LIMIT) {
+        streamState.plainFallback = true;
+      }
+
       // When stable markdown has already been promoted (stableLength > 0) the
-      // plain-text path is unreachable — skip the O(n) eligibility scan.
-      // Otherwise use the incremental cache to avoid re-scanning unchanged prefixes.
+      // ordinary plain-text path is unreachable. Oversized/over-budget tails
+      // use the same incremental text-node renderer, but stay explicitly in a
+      // sticky fallback mode until final full Markdown rendering.
       const ms = app.markdownStreaming;
-      const renderPlainTail = !(streamState.stableLength > 0) && Boolean(
+      const renderPlainTail = !streamState.plainFallback && !(streamState.stableLength > 0) && Boolean(
         ms && (
           (typeof ms.canStreamPlainTextTailIncremental === 'function'
             && ms.canStreamPlainTextTailIncremental(streamState, content))
@@ -1147,15 +1265,24 @@ const performAssistantStreamRender = (streamState) => {
         )
       );
 
-      if (renderPlainTail) {
+      if (streamState.plainFallback) {
+        const tail = content.slice(streamState.stableLength || 0);
+        if (tail !== streamState.lastTailContent) {
+          renderAssistantTailPlainText(streamState, tail, 'plain-fallback');
+          streamState.lastTailContent = tail;
+        }
+      } else if (renderPlainTail) {
         if (content !== streamState.lastTailContent) {
           renderAssistantTailPlainText(streamState, content);
           streamState.lastTailContent = content;
         }
       } else {
-        const promoted = maybePromoteAssistantStableMarkdown(streamState, content);
+        const promotion = maybePromoteAssistantStableMarkdown(streamState, content);
         const tail = content.slice(streamState.stableLength || 0);
-        if (promoted || tail !== streamState.lastTailContent) {
+        if (promotion.fallback) {
+          renderAssistantTailPlainText(streamState, tail, 'plain-fallback');
+          streamState.lastTailContent = tail;
+        } else if (promotion.promoted || tail !== streamState.lastTailContent) {
           if (tail) {
             renderAssistantTailMarkdown(streamState, tail);
           } else {
@@ -2501,7 +2628,39 @@ const updateMessageNode = (message) => {
   }
 };
 
+// Reuse the existing opt-in browser diagnostics switch; counts require a DOM
+// walk, so normal rendering pays only for the duration clock read.
+const webUIDiagnosticsEnabled = () => Boolean(
+  window.__TERM_LLM_DIAGNOSTICS__ || window.__WEBRTC_DIAGNOSTICS__
+);
+
+const renderDiagnosticsNow = () => (
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+);
+
+const mountedElementCount = (root) => {
+  let count = 0;
+  const stack = Array.from(root?.children || []);
+  while (stack.length > 0) {
+    const node = stack.pop();
+    count += 1;
+    if (node?.children?.length) stack.push(...node.children);
+  }
+  return count;
+};
+
+const recordMountedConversationDiagnostics = (startedAt, messageCount, renderMode) => {
+  if (!webUIDiagnosticsEnabled() || !elements.messages?.dataset) return;
+  elements.messages.dataset.mountedMessageCount = String(Math.max(0, Number(messageCount) || 0));
+  elements.messages.dataset.mountedElementCount = String(mountedElementCount(elements.messages));
+  elements.messages.dataset.renderDurationMs = (renderDiagnosticsNow() - startedAt).toFixed(2);
+  elements.messages.dataset.renderMode = renderMode;
+};
+
 const renderMessages = (forceScroll = false) => {
+  const renderStartedAt = renderDiagnosticsNow();
   const session = ensureActiveSession();
   resetAssistantStreamRenders();
 
@@ -2525,6 +2684,7 @@ const renderMessages = (forceScroll = false) => {
     refreshRelativeTimes();
     scrollToBottom(forceScroll);
     updateHeader();
+    recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'empty');
     return;
   }
 
@@ -2549,6 +2709,7 @@ const renderMessages = (forceScroll = false) => {
       refreshRelativeTimes();
       scrollToBottom(forceScroll);
       updateHeader();
+      recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'append');
       return;
     }
   }
@@ -2600,6 +2761,7 @@ const renderMessages = (forceScroll = false) => {
     refreshRelativeTimes();
     scrollToBottom(forceScroll);
     updateHeader();
+    recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'reconcile');
     return;
   }
 
@@ -2616,6 +2778,7 @@ const renderMessages = (forceScroll = false) => {
   refreshRelativeTimes();
   scrollToBottom(forceScroll);
   updateHeader();
+  recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'rebuild');
 };
 
 const updateSidebarStatus = (statusSessions) => {

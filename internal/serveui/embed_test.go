@@ -765,6 +765,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 		"function nextStreamingRenderDelay(",
 		"function areMathDelimitersBalanced(",
 		"function findStableMarkdownBoundary(",
+		"function analyzeStableMarkdownBoundary(",
 		"function canStreamPlainTextTail(",
 	} {
 		if !strings.Contains(streamingSrc, want) {
@@ -780,7 +781,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	for _, want := range []string{
 		"const enqueueAssistantStreamUpdate = (message) => {",
 		"const finalizeAssistantStreamRender = (message) => {",
-		"const renderAssistantTailPlainText = (streamState, tail) => {",
+		"const renderAssistantTailPlainText = (streamState, tail, mode = 'plain') => {",
 		"markdown-stream-stable",
 	} {
 		if !strings.Contains(renderSrc, want) {

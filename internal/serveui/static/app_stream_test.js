@@ -189,6 +189,7 @@ function createHarness(options = {}) {
       querySelector(selector) { return selector === '.arrow' ? this._arrow : null; },
     },
     stopBtn: { classList: makeClassList() },
+    connectionState: makeNode(),
     attachmentsStrip: {
       innerHTML: '',
       style: {},
@@ -460,6 +461,7 @@ function createHarness(options = {}) {
 
   const windowObj = {
     TermLLMApp: app,
+    __TERM_LLM_DIAGNOSTICS__: Boolean(options.diagnostics),
     setTimeout: typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout,
     clearTimeout: typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout,
     setInterval: typeof options.setInterval === 'function' ? options.setInterval : setInterval,
@@ -2703,7 +2705,7 @@ async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
       throw new Error(`unexpected fetch: ${url}`);
     },
   });
-  const { app, state, cleanup } = harness;
+  const { app, elements, state, cleanup } = harness;
   app.syncActiveSessionFromServer = async (session) => {
     syncCalls += 1;
     session.activeResponseId = responseId;
@@ -2753,7 +2755,265 @@ async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
     fail(name, 'events retry loop did not poll server state after repeated heartbeat aborts');
     return;
   }
+  if (Object.prototype.hasOwnProperty.call(elements.connectionState.dataset, 'reconnectState')) {
+    fail(name, 'reconnect diagnostics were written without opt-in', JSON.stringify(elements.connectionState.dataset));
+    return;
+  }
 
+  pass(name);
+}
+
+async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
+  const name = 'slow response reconnect backoff is wakeable without a duplicate resume loop';
+  const responseId = 'resp_wakeable_retry';
+  const timers = [];
+  let nextTimerID = 0;
+  let eventsCount = 0;
+  const harness = createHarness({
+    responseId,
+    diagnostics: true,
+    setTimeout(callback, ms) {
+      const timer = { id: ++nextTimerID, callback, ms: Number(ms || 0), cleared: false };
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout(id) {
+      const timer = timers.find((item) => item.id === id);
+      if (timer) timer.cleared = true;
+    },
+    fetchImpl: async (url, _requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (!url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      eventsCount += 1;
+      if (eventsCount <= 6) {
+        return new Response('temporary failure', { status: 503 });
+      }
+      const body = [
+        'event: response.created\n',
+        `data: {"response":{"id":"${responseId}","status":"in_progress"},"sequence_number":1}\n\n`,
+        'event: response.completed\n',
+        `data: {"response":{"id":"${responseId}","status":"completed"},"sequence_number":2}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(body));
+          controller.close();
+        },
+      }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    },
+  });
+  const { app, elements, state, connectionStates, cleanup } = harness;
+  const session = {
+    id: 'session_wakeable_retry',
+    title: 'Wakeable retry',
+    messages: [],
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const resumePromise = app.resumeActiveResponse(session, { responseId });
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const ready = await waitFor(() => eventsCount === attempt && timers.some((timer) => !timer.cleared), 1000);
+    if (!ready) {
+      fail(name, `retry ${attempt} did not schedule`);
+      await cleanup();
+      return;
+    }
+    const timer = timers.find((item) => !item.cleared);
+    timer.cleared = true;
+    timer.callback();
+  }
+
+  const slowReady = await waitFor(() => eventsCount === 6 && timers.some((timer) => !timer.cleared && timer.ms === 60000), 1000);
+  if (!slowReady) {
+    fail(name, 'slow one-minute retry was not scheduled', JSON.stringify(timers));
+    await cleanup();
+    return;
+  }
+  const duplicateResult = await app.resumeActiveResponse(session, { responseId });
+  if (duplicateResult !== false) {
+    fail(name, 'duplicate resume call should remain idempotently suppressed');
+    await cleanup();
+    return;
+  }
+
+  const slowTimer = timers.find((timer) => !timer.cleared && timer.ms === 60000);
+  if (elements.connectionState.dataset.reconnectState !== 'waiting') {
+    fail(name, 'opted-in diagnostics did not expose waiting reconnect state', JSON.stringify(elements.connectionState.dataset));
+    await cleanup();
+    return;
+  }
+  const partialWake = app.wakeResponseReconnect({ reason: 'online', responseId });
+  if (partialWake || slowTimer.cleared) {
+    fail(name, 'response-only wake must not match an ambiguous session');
+    await cleanup();
+    return;
+  }
+  const woke = app.wakeResponseReconnect({ reason: 'online', sessionId: session.id, responseId });
+  if (!woke || !slowTimer.cleared) {
+    fail(name, 'online wake did not resolve and cancel the slow backoff');
+    await cleanup();
+    return;
+  }
+  if (elements.connectionState.dataset.reconnectState !== 'waking') {
+    fail(name, 'opted-in diagnostics did not expose wake state', JSON.stringify(elements.connectionState.dataset));
+    await cleanup();
+    return;
+  }
+
+  await resumePromise;
+  await cleanup();
+  if (eventsCount !== 7) {
+    fail(name, `expected one resumed fetch after wake, got ${eventsCount} total fetches`);
+    return;
+  }
+  if (!connectionStates.some((text) => text.includes('within one minute'))) {
+    fail(name, 'slow reconnect status was not exposed to the UI', JSON.stringify(connectionStates));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testDetachDuringSlowReconnectTransfersResumeOwnership() {
+  const name = 'detach during slow reconnect cancels the old loop without releasing the new owner';
+  const responseId = 'resp_detached_retry';
+  const timers = [];
+  let nextTimerID = 0;
+  let eventsCount = 0;
+  const harness = createHarness({
+    responseId,
+    setTimeout(callback, ms) {
+      const timer = { id: ++nextTimerID, callback, ms: Number(ms || 0), cleared: false };
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout(id) {
+      const timer = timers.find((item) => item.id === id);
+      if (timer) timer.cleared = true;
+    },
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream }) => {
+      if (!url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      eventsCount += 1;
+      if (eventsCount <= 6) {
+        return new Response('temporary failure', { status: 503 });
+      }
+      const signal = requestOptions.signal;
+      return new Response(new ReadableStream({
+        start(controller) {
+          signal.addEventListener('abort', () => {
+            try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch (_err) { /* ignore */ }
+          });
+        },
+      }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    },
+  });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_detached_retry',
+    title: 'Detached retry',
+    messages: [],
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  const otherSession = {
+    id: 'session_other',
+    title: 'Other session',
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 2,
+  };
+  state.sessions.push(session, otherSession);
+  state.activeSessionId = session.id;
+
+  let oldResult;
+  void app.resumeActiveResponse(session, { responseId }).then((result) => {
+    oldResult = result;
+  });
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const ready = await waitFor(() => eventsCount === attempt && timers.some((timer) => !timer.cleared), 1000);
+    if (!ready) {
+      fail(name, `retry ${attempt} did not schedule`);
+      app.detachResponseStream();
+      await cleanup();
+      return;
+    }
+    const timer = timers.find((item) => !item.cleared);
+    timer.cleared = true;
+    timer.callback();
+  }
+
+  const slowReady = await waitFor(() => eventsCount === 6 && timers.some((timer) => !timer.cleared && timer.ms === 60000), 1000);
+  if (!slowReady) {
+    fail(name, 'old loop did not enter the one-minute reconnect backoff', JSON.stringify(timers));
+    app.detachResponseStream();
+    await cleanup();
+    return;
+  }
+  const oldSlowTimer = timers.find((timer) => !timer.cleared && timer.ms === 60000);
+
+  // Switch away and immediately back before promise continuations run. The new
+  // loop must acquire the same resume key before the detached old loop cleans up.
+  state.activeSessionId = otherSession.id;
+  app.detachResponseStream();
+  state.activeSessionId = session.id;
+  const newResumePromise = app.resumeActiveResponse(session, { responseId });
+
+  if (!oldSlowTimer.cleared) {
+    fail(name, 'detach did not explicitly cancel the old reconnect waiter');
+    await cleanup();
+    return;
+  }
+  const oldStopped = await waitFor(() => oldResult !== undefined, 1000);
+  if (!oldStopped || oldResult !== false) {
+    fail(name, `detached old resume loop did not terminate; result=${String(oldResult)}`);
+    await cleanup();
+    return;
+  }
+  if (eventsCount !== 7) {
+    fail(name, `only the new loop should issue an event request after switching back; got ${eventsCount} total`);
+    app.detachResponseStream();
+    await newResumePromise;
+    await cleanup();
+    return;
+  }
+
+  // The old loop's finally must not delete the new loop's registration. A
+  // third call is suppressed only while that one new owner remains registered.
+  let duplicateResult;
+  void app.resumeActiveResponse(session, { responseId }).then((result) => {
+    duplicateResult = result;
+  });
+  const duplicateSettled = await waitFor(() => duplicateResult !== undefined || eventsCount !== 7, 1000);
+  if (!duplicateSettled || duplicateResult !== false || eventsCount !== 7) {
+    fail(name, `expected exactly one new resume owner to remain; duplicateResult=${String(duplicateResult)}, events=${eventsCount}`);
+    app.detachResponseStream();
+    await cleanup();
+    return;
+  }
+  oldSlowTimer.callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (eventsCount !== 7) {
+    fail(name, `expired old waiter issued another event request; got ${eventsCount} total`);
+    app.detachResponseStream();
+    await newResumePromise;
+    await cleanup();
+    return;
+  }
+
+  app.detachResponseStream();
+  await newResumePromise;
+  await cleanup();
   pass(name);
 }
 
@@ -5552,6 +5812,8 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
   await testToolExecImagesUseHubAssetRebase();
   await testResumeActiveResponseHeartbeatAbortSlowsAndRecovers();
+  await testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop();
+  await testDetachDuringSlowReconnectTransfersResumeOwnership();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();

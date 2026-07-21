@@ -1072,6 +1072,64 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
   pass(name);
 })();
 
+(function testMessageEvictionReleasesDuplicateHistoryRepresentations() {
+  const name = 'message eviction releases converted and raw history representations';
+  const testApp = loadAppCore();
+  testApp.state.sessions = Array.from({ length: 11 }, (_, index) => ({
+    id: `s${index + 1}`,
+    title: `Session ${index + 1}`,
+    created: 1000 + index,
+    lastMessageAt: 1000 + index,
+    messages: [{ id: `m${index + 1}`, role: 'assistant', content: 'x'.repeat(1024), created: 1000 + index }],
+    _history: {
+      rawMessages: [{ sequence: index + 1, role: 'assistant', parts: [{ type: 'text', text: 'x'.repeat(1024) }] }],
+      loadedTail: true,
+    },
+  }));
+  testApp.state.activeSessionId = 's11';
+
+  testApp.saveSessions();
+
+  const evicted = testApp.state.sessions.find((session) => session.id === 's1');
+  if (!evicted || !evicted._serverOnly || evicted.messages.length !== 0) {
+    fail(name, 'expected oldest inactive session converted messages to be evicted');
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(evicted, '_history')) {
+    fail(name, 'raw server history remained reachable after message eviction');
+    return;
+  }
+  const retained = testApp.state.sessions.find((session) => session.id === 's11');
+  if (!retained?._history?.rawMessages?.length || retained.messages.length !== 1) {
+    fail(name, 'retained active session lost its history representations');
+    return;
+  }
+  pass(name);
+})();
+
+(function testHistoryOnlySessionParticipatesInMessageCacheEviction() {
+  const name = 'history-only inactive sessions participate in cache eviction';
+  const testApp = loadAppCore();
+  testApp.state.sessions = Array.from({ length: 11 }, (_, index) => ({
+    id: `raw${index + 1}`,
+    title: `Raw ${index + 1}`,
+    created: 1000 + index,
+    lastMessageAt: 1000 + index,
+    messages: [],
+    _history: { rawMessages: [{ sequence: index + 1, parts: [{ type: 'text', text: 'large raw history' }] }] },
+  }));
+  testApp.state.activeSessionId = 'raw11';
+
+  testApp.saveSessions();
+
+  const evicted = testApp.state.sessions.find((session) => session.id === 'raw1');
+  if (!evicted?._serverOnly || Object.prototype.hasOwnProperty.call(evicted, '_history')) {
+    fail(name, 'history-only session was not fully evicted');
+    return;
+  }
+  pass(name);
+})();
+
 function dispatchSwipeListeners(listeners, target, event) {
   const evt = {
     target,
