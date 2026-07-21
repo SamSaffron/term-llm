@@ -46,17 +46,6 @@ expand_path() {
 
 # HTTP helpers ---------------------------------------------------------------
 
-download_to_stdout() {
-    url="$1"
-    if command_exists curl; then
-        curl -fsSL -H "User-Agent: ${BINARY_NAME}-installer" "$url"
-    elif command_exists wget; then
-        wget -qO- --header="User-Agent: ${BINARY_NAME}-installer" "$url"
-    else
-        err "Either curl or wget is required to download files."
-    fi
-}
-
 download_to_file() {
     url="$1"
     dest="$2"
@@ -90,9 +79,24 @@ normalize_arch() {
 # Release helpers -----------------------------------------------------------
 
 get_latest_version() {
-    api_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
-    tag=$(download_to_stdout "$api_url" | \
-        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    latest_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+
+    if command_exists curl; then
+        release_url=$(curl -fsSL -o /dev/null -w '%{url_effective}\n' \
+            -H "User-Agent: ${BINARY_NAME}-installer" "$latest_url")
+    elif command_exists wget; then
+        release_url=$(wget -q -S --spider \
+            --header="User-Agent: ${BINARY_NAME}-installer" "$latest_url" 2>&1 | \
+            sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tail -n 1)
+    else
+        err "Either curl or wget is required to download files."
+    fi
+
+    case "$release_url" in
+        */${REPO_OWNER}/${REPO_NAME}/releases/tag/*) tag=${release_url##*/} ;;
+        *) err "Unable to determine latest release tag" ;;
+    esac
+
     [ -n "$tag" ] || err "Unable to determine latest release tag"
     printf '%s\n' "$tag"
 }
