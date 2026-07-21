@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -47,16 +46,7 @@ const (
 // http.Client.Timeout is intentionally NOT set: it applies to the entire
 // request lifetime including reading the streaming response body, and would
 // abort legitimate long-running Copilot streams.
-var copilotHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 2 * time.Minute,
-		IdleConnTimeout:       90 * time.Second,
-	},
-}
+var copilotHTTPClient = newStreamingHTTPClient()
 
 // CopilotProvider implements Provider using GitHub Copilot's OpenAI-compatible API.
 type CopilotProvider struct {

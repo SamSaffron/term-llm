@@ -22,6 +22,48 @@ func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {
 	}
 }
 
+func TestProviderHTTPClients_UseHTTP2WithLargerIdlePool(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	serverTransport := server.Client().Transport.(*http.Transport)
+	clients := map[string]*http.Client{
+		"default": defaultHTTPClient,
+		"copilot": copilotHTTPClient,
+	}
+	for name, providerClient := range clients {
+		t.Run(name, func(t *testing.T) {
+			providerTransport, ok := providerClient.Transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("transport type = %T, want *http.Transport", providerClient.Transport)
+			}
+			if !providerTransport.ForceAttemptHTTP2 {
+				t.Fatal("HTTP/2 is not enabled")
+			}
+			if providerTransport.MaxIdleConnsPerHost <= http.DefaultMaxIdleConnsPerHost {
+				t.Fatalf("MaxIdleConnsPerHost = %d, want more than default %d", providerTransport.MaxIdleConnsPerHost, http.DefaultMaxIdleConnsPerHost)
+			}
+
+			transport := providerTransport.Clone()
+			transport.TLSClientConfig = serverTransport.TLSClientConfig.Clone()
+			defer transport.CloseIdleConnections()
+
+			response, err := (&http.Client{Transport: transport}).Get(server.URL)
+			if err != nil {
+				t.Fatalf("HTTP/2 request: %v", err)
+			}
+			defer response.Body.Close()
+			if response.ProtoMajor != 2 {
+				t.Fatalf("response protocol = %s, want HTTP/2", response.Proto)
+			}
+		})
+	}
+}
+
 func TestReadSSEEvent_AllowsEventAndDataLinesWithoutSpace(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("event:error\ndata:{\"error\":{\"message\":\"boom\"}}\n\n"))
 

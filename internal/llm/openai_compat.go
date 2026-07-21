@@ -18,6 +18,21 @@ import (
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
+// newStreamingHTTPClient creates an HTTP client with transport-level timeouts.
+// It clones the default transport to retain HTTP/2 and standard connection-pool
+// behavior, while allowing more concurrent provider connections to remain idle.
+func newStreamingHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = 15 * time.Second
+	transport.ResponseHeaderTimeout = 2 * time.Minute
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.MaxIdleConnsPerHost = 100
+	return &http.Client{Transport: transport}
+}
+
 // defaultHTTPClient is a shared HTTP client with transport-level timeouts.
 //
 // http.Client.Timeout is intentionally NOT set: it applies to the entire
@@ -27,16 +42,7 @@ import (
 // Instead we use Transport-level timeouts that only cover connection
 // establishment and the initial response headers, so hung connections fail
 // fast while active streams are never killed.
-var defaultHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 2 * time.Minute,
-		IdleConnTimeout:       90 * time.Second,
-	},
-}
+var defaultHTTPClient = newStreamingHTTPClient()
 
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
