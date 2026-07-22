@@ -143,6 +143,13 @@ const state = {
   streaming: false,
   streamGeneration: 0,
   sessionSwitchGeneration: 0,
+  sessionStateRequestGeneration: 0,
+  lastAppliedSessionStateRequestGeneration: 0,
+  currentPlan: null,
+  currentPlanSessionId: '',
+  currentPlanInitialized: false,
+  currentPlanUnseen: false,
+  currentPlanOpen: false,
   currentStreamResponseId: '',
   currentStreamSessionId: '',
   renameSessionId: '',
@@ -411,6 +418,24 @@ const elements = {
   chipWorktreeTrigger: document.getElementById('chipWorktreeTrigger'),
   chipWorktreeLabel: document.getElementById('chipWorktreeLabel'),
   chipSepEffortWorktree: document.getElementById('chipSepEffortWorktree'),
+  planToggleBtn: document.getElementById('planToggleBtn'),
+  planToggleWord: document.getElementById('planToggleWord'),
+  planToggleProgress: document.getElementById('planToggleProgress'),
+  planUnseenDot: document.getElementById('planUnseenDot'),
+  planPanel: document.getElementById('planPanel'),
+  planPanelProgress: document.getElementById('planPanelProgress'),
+  planPanelCloseBtn: document.getElementById('planPanelCloseBtn'),
+  planPanelBody: document.getElementById('planPanelBody'),
+  planPanelExplanation: document.getElementById('planPanelExplanation'),
+  planPanelChecklist: document.getElementById('planPanelChecklist'),
+  planSheet: document.getElementById('planSheet'),
+  planSheetBackdrop: document.getElementById('planSheetBackdrop'),
+  planSheetProgress: document.getElementById('planSheetProgress'),
+  planSheetCloseBtn: document.getElementById('planSheetCloseBtn'),
+  planSheetBody: document.getElementById('planSheetBody'),
+  planSheetExplanation: document.getElementById('planSheetExplanation'),
+  planSheetChecklist: document.getElementById('planSheetChecklist'),
+  planAnnouncement: document.getElementById('planAnnouncement'),
   chipPopover: document.getElementById('chipPopover'),
   chipPopoverBackdrop: document.getElementById('chipPopoverBackdrop'),
   chipSepProviderModel: document.getElementById('chipSepProviderModel'),
@@ -1947,7 +1972,8 @@ const sanitizeMessage = (msg) => {
   if (role === 'tool') {
     base.name = String(msg.name || 'tool');
     base.arguments = String(msg.arguments || '');
-    base.status = msg.status === 'done' ? 'done' : 'running';
+    base.status = msg.status === 'done' ? 'done' : (msg.status === 'error' ? 'error' : 'running');
+    if (msg.resultStatus === 'success' || msg.resultStatus === 'error') base.resultStatus = msg.resultStatus;
     base.expanded = Boolean(msg.expanded);
     if (Array.isArray(msg.images) && msg.images.length > 0) {
       base.images = msg.images.map((url) => rebaseHubAssetURL(url)).filter(Boolean);
@@ -1961,9 +1987,10 @@ const sanitizeMessage = (msg) => {
         id: String(t.id || ''),
         name: String(t.name || 'tool'),
         arguments: String(t.arguments || ''),
-        status: t.status === 'done' ? 'done' : 'running',
+        status: t.status === 'done' ? 'done' : (t.status === 'error' ? 'error' : 'running'),
         created: asTimestamp(t.created)
       };
+      if (t.resultStatus === 'success' || t.resultStatus === 'error') tool.resultStatus = t.resultStatus;
       if (Array.isArray(t.images) && t.images.length > 0) {
         tool.images = t.images.map((url) => rebaseHubAssetURL(url)).filter(Boolean);
       }

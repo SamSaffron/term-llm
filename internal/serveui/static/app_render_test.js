@@ -1046,46 +1046,104 @@ async function run(name, fn) {
     );
   });
 
-  await run('update_plan renders a safe visible checklist card and updates in place', () => {
+  await run('successful update_plan calls stay out of the transcript while running and failed calls remain visible', () => {
     const { app, messages } = createHarness();
     const tool = {
       id: 'plan_1',
       name: 'update_plan',
       status: 'done',
+      resultStatus: 'success',
       arguments: JSON.stringify({
-        explanation: '<img src=x onerror=alert(1)> moving to tests',
+        explanation: 'historical detail should not be rendered',
         plan: [
           { step: 'Inspect patterns', status: 'completed' },
-          { step: 'Add tests', status: 'in_progress' },
+          { step: 'Add tests', status: 'completed' },
           { step: 'Run suite', status: 'pending' },
         ],
       }),
       argumentsFinalized: true,
     };
     const group = { id: 'plan_group', role: 'tool-group', status: 'done', tools: [tool], expanded: false };
-    messages.appendChild(app.createToolGroupNode(group));
+    const node = app.createToolGroupNode(group);
+    messages.appendChild(node);
 
-    const card = messages.querySelector('.plan-card');
-    assert(card, 'plan card should be visible outside collapsed generic details');
-    assertEqual(messages.querySelectorAll('.plan-card').length, 1, 'one plan card');
-    assertEqual(messages.querySelectorAll('.tool-group-entry').length, 0, 'no duplicate generic row');
-    assertEqual(card.querySelector('.plan-explanation').textContent, '<img src=x onerror=alert(1)> moving to tests', 'explanation uses text content');
-    const rows = card.querySelectorAll('.plan-step');
-    assertEqual(rows.length, 3, 'three checklist rows');
-    assertEqual(rows[1].querySelector('.plan-step-marker').textContent, '→', 'in-progress marker');
-    assertEqual(rows[1].querySelector('.plan-step-text').textContent, 'Add tests', 'step text');
+    assert(node.hidden, 'successful plan-only group should be hidden');
+    assertEqual(messages.querySelectorAll('.plan-update-event').length, 0, 'no plan event row');
+    assertEqual(messages.querySelectorAll('.tool-group-entry').length, 0, 'no generic successful plan row');
+    assertEqual(app.formatToolClipboardLines(tool).length, 0, 'successful plan update is omitted from clipboard history');
+    const copiedTurn = app.buildTurnClipboardText({
+      items: [
+        { role: 'user', content: 'Plan this' },
+        group,
+        { role: 'assistant', content: 'Done' },
+      ],
+    });
+    assert(!copiedTurn.includes('Tools:'), 'plan-only turns should not leave an empty clipboard tools section');
 
-    const originalCard = card;
-    tool.arguments = JSON.stringify({ plan: [{ step: 'All done', status: 'completed' }] });
+    const standalone = {
+      ...tool,
+      id: 'plan_standalone',
+      role: 'tool',
+    };
+    const standaloneNode = app.createToolCard(standalone);
+    messages.appendChild(standaloneNode);
+    assert(standaloneNode.hidden, 'legacy standalone successful plan row should be hidden');
+    standalone.status = 'running';
+    delete standalone.resultStatus;
+    app.updateToolNode(standalone);
+    assert(!standaloneNode.hidden, 'legacy standalone running plan row should remain visible');
+    standalone.status = 'error';
+    standalone.resultStatus = 'error';
+    app.updateToolNode(standalone);
+    assert(!standaloneNode.hidden, 'legacy standalone failed plan row should remain visible');
+
+    tool.arguments = JSON.stringify({ plan: [] });
     app.updateToolGroupNode(group);
-    const updatedCard = messages.querySelector('.plan-card');
-    assertEqual(updatedCard, originalCard, 'plan card DOM is reused');
-    assertEqual(updatedCard.querySelector('.plan-step-text').textContent, 'All done', 'updated checklist text');
+    assert(node.hidden, 'successful clear should also stay out of transcript');
+
+    tool.status = 'running';
+    delete tool.resultStatus;
+    tool.arguments = JSON.stringify({ plan: [{ step: 'Speculative', status: 'in_progress' }] });
+    app.updateToolGroupNode(group);
+    assert(!node.hidden, 'running plan update should retain ordinary tool feedback');
+    assertEqual(messages.querySelectorAll('.tool-group-entry').length, 1, 'running call stays generic');
+
+    tool.status = 'done';
+    tool.resultStatus = 'success';
+    app.updateToolGroupNode(group);
+    assert(node.hidden, 'confirmed success removes the running row');
+    assertEqual(messages.querySelectorAll('.tool-group-entry').length, 0, 'success transition leaves no transcript row');
 
     tool.status = 'error';
+    tool.resultStatus = 'error';
     app.updateToolGroupNode(group);
-    assertEqual(messages.querySelectorAll('.plan-card').length, 0, 'failed plan card removed');
+    assert(!node.hidden, 'failed update remains visible');
     assertEqual(messages.querySelectorAll('.tool-group-entry').length, 1, 'failed call uses generic tool row');
+    assertEqual(messages.querySelector('.tool-entry-status').textContent, '×', 'failed row keeps failure marker');
+  });
+
+  await run('mixed tool groups omit successful plan calls from counts and order', () => {
+    const { app, messages } = createHarness();
+    const group = {
+      id: 'mixed_plan_group',
+      role: 'tool-group',
+      status: 'done',
+      expanded: true,
+      tools: [
+        { id: 'before', name: 'grep', status: 'done', resultStatus: 'success', arguments: '{"pattern":"x"}' },
+        { id: 'plan', name: 'update_plan', status: 'done', resultStatus: 'success', arguments: '{"plan":[{"step":"Work","status":"completed"}]}' },
+        { id: 'after', name: 'shell', status: 'done', resultStatus: 'success', arguments: '{"command":"go test ./..."}' },
+      ],
+    };
+    const node = app.createToolGroupNode(group);
+    messages.appendChild(node);
+    const details = messages.querySelector('.tool-group-details');
+    assert(!node.hidden, 'mixed group remains visible for other tools');
+    assertEqual(details.children.map((entry) => entry.dataset.toolId).join(','), 'before,after', 'plan call is omitted without reordering siblings');
+    assertEqual(messages.querySelector('.tool-group-summary').textContent, '2 tool calls completed', 'summary excludes plan update');
+    app.updateToolGroupNode(group);
+    assertEqual(details.children.map((entry) => entry.dataset.toolId).join(','), 'before,after', 'reconciliation keeps one copy of visible siblings');
+    assertEqual(messages.querySelectorAll('.plan-update-event').length, 0, 'reconciliation never adds a plan event');
   });
 
   await run('done finalized tool args are not rebuilt on later group updates', () => {

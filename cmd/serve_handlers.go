@@ -1221,8 +1221,12 @@ func (s *serveServer) getSessionMessagesPageDescending(ctx context.Context, sess
 
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
 	failedToolCalls := make(map[string]bool)
+	planToolCalls := make(map[string]bool)
 	for _, msg := range msgs {
 		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
+				planToolCalls[part.ToolCall.ID] = true
+			}
 			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.IsError && part.ToolResult.ID != "" {
 				failedToolCalls[part.ToolResult.ID] = true
 			}
@@ -1303,7 +1307,12 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					entry.Parts = append(entry.Parts, pe)
 				}
 			case llm.PartToolResult:
-				if p.ToolResult != nil && (p.ToolResult.IsError || len(p.ToolResult.Images) > 0) {
+				if p.ToolResult != nil {
+					isPlanResult := p.ToolResult.ID != "" && (p.ToolResult.Name == "update_plan" || planToolCalls[p.ToolResult.ID])
+					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || isPlanResult
+					if !includeResult {
+						continue
+					}
 					pe := sessionMessagePartEntry{
 						Type:       "tool_result",
 						ToolName:   p.ToolResult.Name,
@@ -1313,9 +1322,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					if len(p.ToolResult.Images) > 0 {
 						pe.Images = s.toolImageURLs(p.ToolResult.Images)
 					}
-					if p.ToolResult.IsError || len(pe.Images) > 0 {
-						entry.Parts = append(entry.Parts, pe)
-					}
+					entry.Parts = append(entry.Parts, pe)
 				}
 			}
 		}

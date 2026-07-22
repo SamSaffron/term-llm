@@ -1012,6 +1012,7 @@ const toggleDiffSidebar = () => {
   if (isDiffDrawerViewport()) {
     const open = !elements.diffSidebar?.classList.contains('open');
     if (open) {
+      app.closeCurrentPlanSurface?.({ restoreFocus: false });
       ds.hidden = false;
       setPanelOpen({
         panel: elements.diffSidebar,
@@ -1029,6 +1030,7 @@ const toggleDiffSidebar = () => {
     }
     return;
   }
+  if (ds.hidden) app.closeCurrentPlanSurface?.({ restoreFocus: false });
   setDiffSidebarHidden(!ds.hidden);
 };
 
@@ -1044,6 +1046,23 @@ const closeDiffDrawer = () => {
   elements.appShell?.classList.remove('diff-open');
   const ds = diffStateBySession.get(state.activeSessionId);
   if (ds) ds.hidden = true;
+};
+
+const closeDiffSidebar = () => {
+  const ds = currentDiffState();
+  if (!ds) return false;
+  const wasOpen = elements.diffSidebar?.classList.contains('open') || !ds.hidden;
+  if (isDiffDrawerViewport()) closeDiffDrawer();
+  else setDiffSidebarHidden(true);
+  // Mutual exclusion with another right-edge surface must be immediate: do
+  // not leave a fading Changes element participating in the grid while Plan
+  // takes over the same edge.
+  elements.diffSidebar?.classList.remove('open');
+  elements.appShell?.classList.remove('diff-open');
+  elements.diffToggleBtn?.classList.toggle('active', false);
+  setPanelHidden(elements.diffSidebar, true);
+  ds.hidden = true;
+  return Boolean(wasOpen);
 };
 
 // ===== Session lifecycle =====
@@ -1295,6 +1314,7 @@ Object.assign(app, {
   activateDiffSidebar,
   refreshFileChangesAfterRun,
   setDiffSidebarHidden,
+  closeDiffSidebar,
   toggleDiffSidebar,
   toggleDiffFile,
   fetchSessionFileChanges,

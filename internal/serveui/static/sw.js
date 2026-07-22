@@ -9,6 +9,7 @@ const SHELL_ASSETS = [
   './markdown-streaming.js',
   './decoration.js',
   './app-core.js',
+  './app-plan.js',
   './slash-commands.js',
   './app-render.js',
   './app-attachments.js',

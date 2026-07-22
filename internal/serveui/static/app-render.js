@@ -1378,10 +1378,17 @@ const finalizeAssistantStreamRender = (message) => {
   syncTurnActionPanelForAssistant(message.id);
 };
 
+const isSuccessfulPlanUpdate = (tool) => Boolean(
+  tool?.name === 'update_plan'
+  && tool?.status === 'done'
+  && tool?.resultStatus === 'success'
+);
+
 const createToolCard = (message) => {
   const wrapper = document.createElement('article');
   wrapper.className = 'message tool';
   wrapper.dataset.messageId = message.id;
+  wrapper.hidden = isSuccessfulPlanUpdate(message);
 
   const card = document.createElement('div');
   card.className = 'tool-card';
@@ -1696,6 +1703,8 @@ const updateToolNode = (message) => {
     return;
   }
 
+  node.hidden = isSuccessfulPlanUpdate(message);
+
   const toggle = node.querySelector('.tool-toggle');
   const status = node.querySelector('.tool-status');
   const details = node.querySelector('.tool-details');
@@ -1721,9 +1730,14 @@ const updateToolNode = (message) => {
   syncToolArtifactsNode(node.querySelector('.tool-card'), message);
 };
 
+const transcriptVisibleTools = (message) => (
+  (Array.isArray(message?.tools) ? message.tools : []).filter((tool) => !isSuccessfulPlanUpdate(tool))
+);
+
 const toolGroupSummaryText = (message) => {
-  const total = message.tools.length;
-  const done = message.tools.filter(t => t.status === 'done').length;
+  const tools = transcriptVisibleTools(message);
+  const total = tools.length;
+  const done = tools.filter(t => t.status === 'done').length;
   if (message.status === 'done' || done === total) {
     return `${total} tool call${total === 1 ? '' : 's'} completed`;
   }
@@ -1800,6 +1814,7 @@ const createToolGroupNode = (message) => {
   const wrapper = document.createElement('article');
   wrapper.className = 'message tool-group';
   wrapper.dataset.messageId = message.id;
+  wrapper.hidden = transcriptVisibleTools(message).length === 0;
 
   const card = document.createElement('div');
   card.className = 'tool-group-card';
@@ -1831,13 +1846,7 @@ const createToolGroupNode = (message) => {
   toggle.appendChild(statusBadge);
 
   const details = document.createElement('div');
-  details.className = `tool-group-details${message.expanded ? ' open' : ''}`;
-
-  message.tools.forEach(tool => {
-    if (!parseUpdatePlanSnapshot(tool)) {
-      details.appendChild(createToolEntryNode(tool));
-    }
-  });
+  renderToolGroupDetails(details, message);
 
   toggle.addEventListener('click', () => {
     message.expanded = !message.expanded;
@@ -1849,10 +1858,6 @@ const createToolGroupNode = (message) => {
   card.appendChild(toggle);
   const groupArtifacts = createToolArtifactsNode(message);
   if (groupArtifacts) card.appendChild(groupArtifacts);
-  message.tools.forEach((tool) => {
-    const snapshot = parseUpdatePlanSnapshot(tool);
-    if (snapshot) card.appendChild(createPlanCardNode(tool, snapshot));
-  });
   card.appendChild(details);
   wrapper.appendChild(card);
   wrapper.appendChild(createMetaNode(message.created));
@@ -1952,90 +1957,6 @@ const formatToolArgs = (tool) => {
   return entries.slice(0, TOOL_SUMMARY_ARG_LIMIT); // Keep tool summaries bounded without hiding useful context
 };
 
-const parseUpdatePlanSnapshot = (tool) => {
-  if (!tool || tool.name !== 'update_plan' || tool.status === 'error') return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(String(tool.arguments || ''));
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray(parsed.plan)) return null;
-  if (Object.keys(parsed).some((key) => key !== 'plan' && key !== 'explanation')) return null;
-  if (Object.prototype.hasOwnProperty.call(parsed, 'explanation') && typeof parsed.explanation !== 'string') return null;
-  const explanation = typeof parsed.explanation === 'string' ? parsed.explanation.trim() : '';
-  if ([...explanation].length > 500 || parsed.plan.length > 20) return null;
-  const statuses = new Set(['pending', 'in_progress', 'completed']);
-  const seen = new Set();
-  let inProgress = 0;
-  const steps = [];
-  for (const candidate of parsed.plan) {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
-    if (Object.keys(candidate).some((key) => key !== 'step' && key !== 'status')) return null;
-    const step = typeof candidate.step === 'string' ? candidate.step.trim() : '';
-    const status = typeof candidate.status === 'string' ? candidate.status : '';
-    if (!step || [...step].length > 240 || !statuses.has(status)) return null;
-    if (status === 'in_progress') inProgress += 1;
-    const normalized = step.toLowerCase().replace(/\s+/g, ' ');
-    if (seen.has(normalized)) return null;
-    seen.add(normalized);
-    steps.push({ step, status });
-  }
-  if (inProgress > 1) return null;
-  return { explanation, plan: steps };
-};
-
-const planStepMarker = (status) => {
-  if (status === 'completed') return '✓';
-  if (status === 'in_progress') return '→';
-  return '○';
-};
-
-const updatePlanCardContent = (card, tool, snapshot) => {
-  card.replaceChildren();
-  card.className = `plan-card${tool.status === 'done' ? ' done' : ' running'}`;
-
-  const header = document.createElement('div');
-  header.className = 'plan-card-header';
-  header.textContent = snapshot.plan.length === 0
-    ? (tool.status === 'done' ? 'Plan cleared' : 'Clearing plan…')
-    : (tool.status === 'done' ? 'Plan updated' : 'Updating plan…');
-  card.appendChild(header);
-
-  if (snapshot.explanation) {
-    const explanation = document.createElement('div');
-    explanation.className = 'plan-explanation';
-    explanation.textContent = snapshot.explanation;
-    card.appendChild(explanation);
-  }
-
-  if (snapshot.plan.length > 0) {
-    const checklist = document.createElement('div');
-    checklist.className = 'plan-checklist';
-    snapshot.plan.forEach((item) => {
-      const row = document.createElement('div');
-      row.className = `plan-step plan-step-${item.status}`;
-      const marker = document.createElement('span');
-      marker.className = 'plan-step-marker';
-      marker.textContent = planStepMarker(item.status);
-      const text = document.createElement('span');
-      text.className = 'plan-step-text';
-      text.textContent = item.step;
-      row.appendChild(marker);
-      row.appendChild(text);
-      checklist.appendChild(row);
-    });
-    card.appendChild(checklist);
-  }
-};
-
-const createPlanCardNode = (tool, snapshot) => {
-  const card = document.createElement('div');
-  card.dataset.toolId = tool.id;
-  updatePlanCardContent(card, tool, snapshot);
-  return card;
-};
-
 const buildArgsNode = (tool) => {
   const entries = formatToolArgs(tool);
   if (!entries || entries.length === 0) return null;
@@ -2090,6 +2011,42 @@ const createToolEntryNode = (tool) => {
   if (argsNode) wrapper.appendChild(argsNode);
 
   return wrapper;
+};
+
+const syncGenericToolEntry = (entry, tool) => {
+  const status = entry.querySelector('.tool-entry-status');
+  if (status) {
+    status.className = `tool-entry-status${tool.status === 'done' ? ' done' : (tool.status === 'error' ? ' error' : '')}`;
+    status.textContent = tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…');
+  }
+  const existingArgs = entry.querySelector('.tool-entry-args');
+  if (tool.status === 'done' && tool.argumentsFinalized && existingArgs) return;
+  const newArgs = buildArgsNode(tool);
+  if (existingArgs && newArgs) existingArgs.replaceWith(newArgs);
+  else if (!existingArgs && newArgs) entry.appendChild(newArgs);
+  else if (existingArgs && !newArgs) existingArgs.remove();
+};
+
+const renderToolGroupDetails = (details, message) => {
+  const tools = transcriptVisibleTools(message);
+  details.className = `tool-group-details${message?.expanded ? ' open' : ''}`;
+
+  const liveIDs = new Set(tools.map((tool) => String(tool.id || '')));
+  Array.from(details.children || []).forEach((entry) => {
+    if (!liveIDs.has(String(entry.dataset?.toolId || ''))) entry.remove();
+  });
+
+  tools.forEach((tool) => {
+    const toolID = String(tool.id || '');
+    const escapedID = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(toolID) : toolID;
+    let entry = details.querySelector(`[data-tool-id="${escapedID}"]`);
+    if (!entry) {
+      entry = createToolEntryNode(tool);
+    } else {
+      syncGenericToolEntry(entry, tool);
+    }
+    details.appendChild(entry);
+  });
 };
 
 const TURN_COPY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
@@ -2153,6 +2110,8 @@ const truncateClipboardLine = (value, max = 220) => {
 };
 
 const formatToolClipboardLines = (tool) => {
+  if (isSuccessfulPlanUpdate(tool)) return [];
+
   const name = String(tool?.name || 'tool').trim() || 'tool';
   const status = String(tool?.status || 'pending').trim() || 'pending';
   const lines = [`- ${name} [${status}]`];
@@ -2200,7 +2159,7 @@ const buildTurnClipboardText = (turn) => {
     }
 
     if (message?.role === 'tool-group') {
-      const tools = Array.isArray(message.tools) ? message.tools : [];
+      const tools = transcriptVisibleTools(message);
       if (tools.length === 0) return;
       if (!inToolsSection) {
         if (parts.length > 0 && parts[parts.length - 1] !== '') parts.push('');
@@ -2214,6 +2173,7 @@ const buildTurnClipboardText = (turn) => {
     }
 
     if (message?.role === 'tool') {
+      if (isSuccessfulPlanUpdate(message)) return;
       if (!inToolsSection) {
         if (parts.length > 0 && parts[parts.length - 1] !== '') parts.push('');
         parts.push('Tools:');
@@ -2392,6 +2352,8 @@ const updateToolGroupNode = (message) => {
     return;
   }
 
+  node.hidden = transcriptVisibleTools(message).length === 0;
+
   const summary = node.querySelector('.tool-group-summary');
   if (summary) summary.textContent = toolGroupSummaryText(message);
 
@@ -2410,48 +2372,11 @@ const updateToolGroupNode = (message) => {
   syncToolArtifactsNode(card, message);
 
   const details = node.querySelector('.tool-group-details');
-  if (details) {
-    // Update existing entries or add new ones
-    message.tools.forEach(tool => {
-      const snapshot = parseUpdatePlanSnapshot(tool);
-      let entry = details.querySelector(`[data-tool-id="${CSS.escape(tool.id)}"]`);
-      const planCard = card
-        ? Array.from(card.querySelectorAll('.plan-card')).find((candidate) => candidate.dataset.toolId === tool.id)
-        : null;
-      if (snapshot) {
-        if (entry) entry.remove();
-        if (planCard) {
-          updatePlanCardContent(planCard, tool, snapshot);
-        } else if (card) {
-          card.insertBefore(createPlanCardNode(tool, snapshot), details);
-        }
-        return;
-      }
-      if (planCard) planCard.remove();
-      if (!entry) {
-        entry = createToolEntryNode(tool);
-        details.appendChild(entry);
-      } else {
-        const status = entry.querySelector('.tool-entry-status');
-        if (status) {
-          status.className = `tool-entry-status${tool.status === 'done' ? ' done' : (tool.status === 'error' ? ' error' : '')}`;
-          status.textContent = tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…');
-        }
-        // Update or add arguments display. Once the response stream has
-        // finalized a completed tool's arguments, they are immutable; keep the
-        // existing DOM node instead of reparsing JSON and rebuilding it on
-        // every later group update.
-        const existingArgs = entry.querySelector('.tool-entry-args');
-        if (!(tool.status === 'done' && tool.argumentsFinalized && existingArgs)) {
-          const newArgs = buildArgsNode(tool);
-          if (existingArgs && newArgs) {
-            existingArgs.replaceWith(newArgs);
-          } else if (!existingArgs && newArgs) {
-            entry.appendChild(newArgs);
-          }
-        }
-      }
-    });
+  if (details) renderToolGroupDetails(details, message);
+
+  const toggle = node.querySelector('.tool-group-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
   }
 };
 

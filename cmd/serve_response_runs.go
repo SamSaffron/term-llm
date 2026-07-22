@@ -26,12 +26,13 @@ type responseRunEvent struct {
 }
 
 type responseRunRecoveryTool struct {
-	ID        string
-	Name      string
-	Arguments string
-	Status    string
-	Created   int64
-	Images    []string
+	ID           string
+	Name         string
+	Arguments    string
+	Status       string
+	ResultStatus string
+	Created      int64
+	Images       []string
 }
 
 type responseRunRecoveryMessage struct {
@@ -457,12 +458,22 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 	case "response.tool_exec.end":
 		images := stringSliceValue(payload["images"])
+		succeeded := true
+		if value, ok := payload["success"].(bool); ok {
+			succeeded = value
+		}
 		if r.currentToolGroup >= 0 && r.currentToolGroup < len(r.recoveryMessages) {
 			group := &r.recoveryMessages[r.currentToolGroup]
 			callID := stringValue(payload["call_id"])
 			for i := range group.Tools {
 				if callID == "" || group.Tools[i].ID == callID {
-					group.Tools[i].Status = "done"
+					if succeeded {
+						group.Tools[i].Status = "done"
+						group.Tools[i].ResultStatus = "success"
+					} else {
+						group.Tools[i].Status = "error"
+						group.Tools[i].ResultStatus = "error"
+					}
 					group.Tools[i].Images = appendUniqueStrings(group.Tools[i].Images, images...)
 					if callID != "" {
 						break
@@ -471,7 +482,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			}
 			allDone := len(group.Tools) > 0
 			for _, tool := range group.Tools {
-				if tool.Status != "done" {
+				if tool.Status != "done" && tool.Status != "error" {
 					allDone = false
 					break
 				}
@@ -695,6 +706,9 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				}
 				if tool.Arguments != "" {
 					toolEntry["arguments"] = tool.Arguments
+				}
+				if tool.ResultStatus != "" {
+					toolEntry["resultStatus"] = tool.ResultStatus
 				}
 				if len(tool.Images) > 0 {
 					images := make([]string, len(tool.Images))

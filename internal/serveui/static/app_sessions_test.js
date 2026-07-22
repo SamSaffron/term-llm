@@ -8,6 +8,7 @@ const { webcrypto } = require('crypto');
 
 const dir = __dirname;
 const coreSource = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
+const planSource = fs.readFileSync(path.join(dir, 'app-plan.js'), 'utf8');
 const sessionsSource = fs.readFileSync(path.join(dir, 'app-sessions.js'), 'utf8')
   .replace('initialize();', 'window.__termllmInitializePromise = initialize();');
 
@@ -371,6 +372,7 @@ async function createSessionsHarness(options = {}) {
 
   vm.createContext(context);
   vm.runInContext(coreSource, context, { filename: 'app-core.js' });
+  vm.runInContext(planSource, context, { filename: 'app-plan.js' });
 
   const app = windowObj.TermLLMApp;
   Object.assign(app, defaultAppStubs(app, options.appOverrides || {}));
@@ -1369,6 +1371,39 @@ async function testConvertServerMessagesAttachesToolErrorsWithoutPhantoms() {
   pass(name);
 }
 
+async function testConvertServerMessagesCorrelatesSuccessfulPlanResults() {
+  const name = 'server plan results retain one confirmed result source';
+  const { app } = await createSessionsHarness();
+  const args = '{"plan":[{"step":"Done","status":"completed"}]}';
+  const converted = app.convertServerMessages([
+    { role: 'assistant', created_at: 1000, parts: [{ type: 'text', text: 'Before' }] },
+    { role: 'assistant', created_at: 2000, parts: [{ type: 'tool_call', tool_name: 'update_plan', tool_call_id: 'call_plan_success', tool_arguments: args }] },
+    { role: 'tool', created_at: 3000, parts: [{ type: 'tool_result', tool_name: 'update_plan', tool_call_id: 'call_plan_success', tool_error: false }] },
+    { role: 'assistant', created_at: 4000, parts: [{ type: 'text', text: 'After' }] },
+  ]);
+  const groups = converted.filter((message) => message.role === 'tool-group');
+  const tool = groups[0]?.tools?.[0];
+  if (groups.length !== 1 || tool?.resultStatus !== 'success' || tool.status !== 'done') {
+    fail(name, 'successful result was not correlated exactly once', JSON.stringify(converted));
+    return;
+  }
+  if (converted.map((message) => message.role).join(',') !== 'assistant,tool-group,assistant') {
+    fail(name, 'tool group moved out of transcript chronology', JSON.stringify(converted));
+    return;
+  }
+
+  const orphaned = app.convertServerMessages([{
+    role: 'tool',
+    created_at: 3000,
+    parts: [{ type: 'tool_result', tool_name: 'update_plan', tool_call_id: 'call_older_page', tool_error: false }],
+  }]);
+  if (orphaned.some((message) => message.role === 'tool-group')) {
+    fail(name, 'result-only page created a phantom tool group', JSON.stringify(orphaned));
+    return;
+  }
+  pass(name);
+}
+
 async function testConvertServerMessagesRebasesHubImageURLs() {
   const name = 'server message conversion rebases hub image URLs';
   const { app } = await createSessionsHarness({
@@ -1559,6 +1594,43 @@ async function testMergeServerMessagesDropsLocalToolGroupRecordedInServerTurn() 
     return;
   }
 
+  pass(name);
+}
+
+async function testMergeServerMessagesReconcilesSuccessfulPlanResultOnce() {
+  const name = 'mergeServerMessagesWithLocalState reconciles successful plan result exactly once';
+  const { app } = await createSessionsHarness();
+  const args = '{"plan":[{"step":"Done","status":"completed"}]}';
+  const session = {
+    id: 'sess_plan_dup',
+    title: 'Plan dup',
+    messages: [
+      { id: 'u_local_plan', role: 'user', content: 'plan it', created: 1000 },
+      {
+        id: 'plan_local_group', role: 'tool-group', status: 'done', expanded: false, created: 1100,
+        tools: [{ id: 'call_plan_dup', name: 'update_plan', arguments: args, status: 'done', resultStatus: 'success' }],
+      },
+      { id: 'a_local_plan', role: 'assistant', content: 'planned', created: 1200 },
+    ],
+  };
+  app.mergeServerMessagesWithLocalState(session, [
+    { id: 'u_server_plan', role: 'user', content: 'plan it', created: 1000 },
+    {
+      id: 'plan_server_group', role: 'tool-group', status: 'done', expanded: false, created: 1100,
+      tools: [{ id: 'call_plan_dup', name: 'update_plan', arguments: args, status: 'done', resultStatus: 'success' }],
+    },
+    { id: 'a_server_plan', role: 'assistant', content: 'planned', created: 1200 },
+  ]);
+
+  const groups = session.messages.filter((message) => message.role === 'tool-group');
+  if (groups.length !== 1 || groups[0].id !== 'plan_server_group' || groups[0].tools[0]?.resultStatus !== 'success') {
+    fail(name, 'local and persisted plan results did not reconcile to the server copy', JSON.stringify(session.messages));
+    return;
+  }
+  if (session.messages.map((message) => message.role).join(',') !== 'user,tool-group,assistant') {
+    fail(name, 'successful plan result moved out of turn chronology', JSON.stringify(session.messages));
+    return;
+  }
   pass(name);
 }
 
@@ -4913,6 +4985,27 @@ function testSanitizeMessagePreservesSkillRunState() {
   });
 }
 
+function testSanitizeMessagePreservesPlanExecutionEvidence() {
+  const name = 'sanitizeMessage preserves failed and successful plan execution evidence';
+  return createSessionsHarness().then(({ app }) => {
+    const failed = app.sanitizeMessage({
+      id: 'plan-group',
+      role: 'tool-group',
+      status: 'done',
+      created: 1,
+      tools: [{ id: 'plan-failed', name: 'update_plan', status: 'error', resultStatus: 'error', arguments: '{"plan":[]}', created: 1 }],
+    });
+    const succeeded = app.sanitizeMessage({
+      id: 'plan-success', role: 'tool', name: 'update_plan', status: 'done', resultStatus: 'success', arguments: '{"plan":[]}', created: 1,
+    });
+    if (failed?.tools?.[0]?.status !== 'error' || failed.tools[0].resultStatus !== 'error' || succeeded?.resultStatus !== 'success') {
+      fail(name, 'execution evidence was discarded', JSON.stringify({ failed, succeeded }));
+      return;
+    }
+    pass(name);
+  });
+}
+
 function testSkillProvenanceEventConvertsToLinkedRunBlock() {
   const name = 'skill provenance event converts to linked run block';
   return createSessionsHarness().then(({ app }) => {
@@ -4973,10 +5066,161 @@ async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
   pass(name);
 }
 
+async function testOrdinaryStateSyncConvergesMissedPlanUpdate() {
+  const name = 'ordinary session-state sync converges a missed plan completion event';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/session-plan-poll/state') {
+        return new Response(JSON.stringify({
+          active_run: true,
+          current_plan: { version: 3, steps: [{ step: 'Recovered by poll', status: 'in_progress' }] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: 'session-plan-poll', title: 'Plan poll', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.resetCurrentPlanForSession(session.id);
+
+  await app.syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
+  if (app.state.currentPlan?.version !== 3 || app.state.currentPlan?.steps?.[0]?.step !== 'Recovered by poll') {
+    fail(name, 'ordinary state sync did not apply authoritative plan', JSON.stringify(app.state.currentPlan));
+    return;
+  }
+  pass(name);
+}
+
+async function testSessionStatePlanRequestsIgnoreOlderOverlaps() {
+  const name = 'session plan state ignores older overlapping responses';
+  const pending = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/session-plan-race/state') {
+        return new Promise((resolve) => pending.push(resolve));
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: 'session-plan-race', title: 'Race', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.resetCurrentPlanForSession(session.id);
+
+  const older = app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+  const newer = app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+  if (pending.length !== 2) {
+    fail(name, `expected two overlapping state requests, got ${pending.length}`);
+    return;
+  }
+  pending[1](new Response(JSON.stringify({
+    active_run: true,
+    current_plan: { version: 2, steps: [{ step: 'Newer', status: 'in_progress' }] },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  await newer;
+  pending[0](new Response(JSON.stringify({ active_run: false, current_plan: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  await older;
+
+  if (app.state.currentPlan?.version !== 2 || app.state.currentPlan?.steps?.[0]?.step !== 'Newer') {
+    fail(name, 'older authoritative clear overwrote newer plan', JSON.stringify(app.state.currentPlan));
+    return;
+  }
+  pass(name);
+}
+
+async function testSessionStatePlanRequestsKeepNewerAuthoritativeClear() {
+  const name = 'session plan state keeps a newer clear over an older present response';
+  const pending = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/session-plan-clear-race/state') {
+        return new Promise((resolve) => pending.push(resolve));
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: 'session-plan-clear-race', title: 'Clear race', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.resetCurrentPlanForSession(session.id);
+  app.applyCurrentPlanState(session.id, { current_plan: { version: 9, steps: [{ step: 'Existing', status: 'in_progress' }] } });
+
+  const older = app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+  const newer = app.refreshCurrentPlanFromServer(session);
+  pending[1](new Response(JSON.stringify({ active_run: true, current_plan: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  await newer;
+  pending[0](new Response(JSON.stringify({
+    active_run: true,
+    current_plan: { version: 10, steps: [{ step: 'Stale present', status: 'completed' }] },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  await older;
+
+  if (app.state.currentPlan !== null || !app.state.currentPlanInitialized) {
+    fail(name, 'older present response overwrote newer authoritative clear', JSON.stringify(app.state.currentPlan));
+    return;
+  }
+  pass(name);
+}
+
+async function testSessionSwitchClearsPlanBeforeRejectingOldResponse() {
+  const name = 'session switch clears plan immediately and rejects previous session response';
+  let resolveOldState;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/session-old/state') {
+        return new Promise((resolve) => { resolveOldState = resolve; });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const oldSession = { id: 'session-old', title: 'Old', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  const nextSession = { id: 'session-next', title: 'Next', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [oldSession, nextSession];
+  app.state.activeSessionId = oldSession.id;
+  app.state.draftSessionActive = false;
+  app.resetCurrentPlanForSession(oldSession.id);
+  app.applyCurrentPlanState(oldSession.id, { current_plan: { version: 4, steps: [{ step: 'Old plan', status: 'in_progress' }] } });
+
+  const oldRequest = app.syncActiveSessionFromServer(oldSession, false, { skipMessagesFetch: true });
+  await app.switchToSession(nextSession.id, { sync: false, closeSidebar: false });
+  if (app.state.currentPlan !== null || app.state.currentPlanSessionId !== nextSession.id || !app.elements.planToggleBtn.hidden) {
+    fail(name, 'old plan remained visible during switch', JSON.stringify({ plan: app.state.currentPlan, owner: app.state.currentPlanSessionId }));
+    return;
+  }
+
+  resolveOldState(new Response(JSON.stringify({
+    active_run: false,
+    current_plan: { version: 5, steps: [{ step: 'Late old plan', status: 'completed' }] },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  await oldRequest;
+  if (app.state.currentPlan !== null || app.state.currentPlanSessionId !== nextSession.id) {
+    fail(name, 'late response from previous session populated plan', JSON.stringify(app.state.currentPlan));
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
+  await testSanitizeMessagePreservesPlanExecutionEvidence();
   await testSkillProvenanceEventConvertsToLinkedRunBlock();
   await testSessionSwitchRefreshesSkillsAndDraftClearsThem();
+  await testOrdinaryStateSyncConvergesMissedPlanUpdate();
+  await testSessionStatePlanRequestsIgnoreOlderOverlaps();
+  await testSessionStatePlanRequestsKeepNewerAuthoritativeClear();
+  await testSessionSwitchClearsPlanBeforeRejectingOldResponse();
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
   await testNewChatClearsExistingDraftComposer();
@@ -4998,11 +5242,13 @@ async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
   await testConvertServerMessagesAttachesToolResultImages();
   await testConvertServerMessagesAttachesToolErrorsWithoutPhantoms();
+  await testConvertServerMessagesCorrelatesSuccessfulPlanResults();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags();
   await testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStaleServerAssistant();
   await testMergeServerMessagesDropsLocalToolGroupRecordedInServerTurn();
+  await testMergeServerMessagesReconcilesSuccessfulPlanResultOnce();
   await testMergeServerMessagesMatchesToolGroupByNameWhenCallIdsAreSynthetic();
   await testMergeServerMessagesPreservesLocalToolGroupWhenServerHasNoToolRecord();
   await testSessionHistoryInitialLoadRequestsTailOnly();

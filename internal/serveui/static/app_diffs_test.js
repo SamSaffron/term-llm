@@ -147,6 +147,7 @@ function createHarness(options = {}) {
 
   const timers = [];
   const fetchCalls = [];
+  let planCloseCalls = 0;
   const fetchImpl = options.fetch || (async (url) => ({
     ok: true,
     json: async () => (String(url).includes('/diff?')
@@ -182,6 +183,7 @@ function createHarness(options = {}) {
     state,
     elements,
     clipboardWrites: [],
+    closeCurrentPlanSurface() { planCloseCalls += 1; },
     getClipboardWriter() {
       const writes = this.clipboardWrites;
       return { writeText: (text) => { writes.push(String(text)); return Promise.resolve(); } };
@@ -297,7 +299,10 @@ function createHarness(options = {}) {
     await new Promise((resolve) => setImmediate(resolve));
   };
 
-  return { app, elements, state, localStorage, storage, timers, fetchCalls, flushTimers, setDrawer, media, windowObj: context.window };
+  return {
+    app, elements, state, localStorage, storage, timers, fetchCalls, flushTimers, setDrawer, media, windowObj: context.window,
+    get planCloseCalls() { return planCloseCalls; }
+  };
 }
 
 function elementText(node) {
@@ -358,6 +363,17 @@ async function run(name, fn) {
     assert(!elements.diffSidebar.hidden, 'explicit toggle reveals sidebar');
     assert(elements.appShell.classList.contains('diff-open'), 'explicit toggle opens third column');
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'one file row rendered after toggle');
+  });
+
+  await run('opening Changes closes the Plan surface in wide and drawer modes', () => {
+    for (const drawer of [false, true]) {
+      const harness = createHarness({ drawer });
+      harness.app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+      harness.app.toggleDiffSidebar();
+      assertEqual(harness.planCloseCalls, 1, `opening ${drawer ? 'drawer' : 'wide panel'} closes plan`);
+      harness.app.toggleDiffSidebar();
+      assertEqual(harness.planCloseCalls, 1, `closing ${drawer ? 'drawer' : 'wide panel'} does not close plan again`);
+    }
   });
 
   await run('stale seq replays are idempotent', () => {

@@ -300,6 +300,12 @@ const stageCurrentComposerForSession = (sessionId) => {
   clearDraftMessageForSession(sessionId);
 };
 
+const invalidateSessionStateForSelection = (sessionId = '') => {
+  state.sessionStateRequestGeneration = Number(state.sessionStateRequestGeneration || 0) + 1;
+  state.lastAppliedSessionStateRequestGeneration = state.sessionStateRequestGeneration;
+  app.resetCurrentPlanForSession?.(sessionId);
+};
+
 const switchToDraftSession = async (options = {}) => {
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
   const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
@@ -312,6 +318,7 @@ const switchToDraftSession = async (options = {}) => {
   }
 
   state.sessionSwitchGeneration = Number(state.sessionSwitchGeneration || 0) + 1;
+  invalidateSessionStateForSelection('');
 
   stopSessionStatePoll();
   closeRenameSessionModal();
@@ -428,6 +435,7 @@ const switchToSession = async (sessionId, options = {}) => {
 
   const switchGeneration = (Number(state.sessionSwitchGeneration || 0) + 1);
   state.sessionSwitchGeneration = switchGeneration;
+  invalidateSessionStateForSelection(nextId);
   const isCurrentSwitch = () => state.sessionSwitchGeneration === switchGeneration
     && String(state.activeSessionId || '').trim() === nextId
     && !state.draftSessionActive;
@@ -765,7 +773,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     return currentGroup;
   };
 
-  const attachToolResultImages = (part, created, msg, partIndex) => {
+  const attachToolResultState = (part, created, msg, partIndex) => {
     const images = normalizeImages(part.images);
     const callId = part.tool_call_id || '';
     let group = currentGroup;
@@ -773,7 +781,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     if (!tool && group && part.tool_name) {
       tool = group.tools.find((entry) => entry.name === part.tool_name);
     }
-    // Error-only results can be separated from their call by a page boundary.
+    // Result-only rows can be separated from their call by a page boundary.
     // Do not invent a generic row; conversion will correlate them once the page
     // containing the call is loaded. Image results still need a fallback card.
     if (!tool && images.length === 0) return;
@@ -788,7 +796,9 @@ const convertServerMessages = (serverMessages, options = {}) => {
       };
       group.tools.push(tool);
     }
-    tool.status = (part.tool_error || part.is_error) ? 'error' : 'done';
+    const failed = Boolean(part.tool_error || part.is_error);
+    tool.status = failed ? 'error' : 'done';
+    tool.resultStatus = failed ? 'error' : 'success';
     appendUniqueImages(tool, images);
   };
 
@@ -922,6 +932,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
             name: part.tool_name || 'tool',
             arguments: part.tool_arguments || '',
             status: part.tool_error ? 'error' : 'done',
+            ...(part.tool_error ? { resultStatus: 'error' } : {}),
             created
           };
           group.tools.push(toolEntry);
@@ -929,10 +940,11 @@ const convertServerMessages = (serverMessages, options = {}) => {
           toolEntry.name = part.tool_name || toolEntry.name || 'tool';
           toolEntry.arguments = part.tool_arguments || toolEntry.arguments || '';
           toolEntry.status = part.tool_error ? 'error' : 'done';
+          if (part.tool_error) toolEntry.resultStatus = 'error';
         }
         appendUniqueImages(toolEntry, normalizeImages(part.images));
       } else if (part.type === 'tool_result') {
-        attachToolResultImages(part, created, msg, partIndex);
+        attachToolResultState(part, created, msg, partIndex);
       }
     }
 
@@ -1801,21 +1813,35 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false, expectedSwitchGeneration = null } = {}) => {
   if (!session) return SESSION_STATE_RETRY_RESULT;
 
+  const requestSessionId = String(session.id || '').trim();
+  if (!requestSessionId) return SESSION_STATE_RETRY_RESULT;
+  const requestGeneration = Number(state.sessionStateRequestGeneration || 0) + 1;
+  state.sessionStateRequestGeneration = requestGeneration;
+  const requestSwitchGeneration = Number(state.sessionSwitchGeneration || 0);
+  const expectedGeneration = Number(expectedSwitchGeneration);
+  const hasExpectedGeneration = Number.isFinite(expectedGeneration) && expectedGeneration > 0;
+  const isStillActive = () => requestSessionId === String(state.activeSessionId || '').trim()
+    && !state.draftSessionActive
+    && state.sessionSwitchGeneration === requestSwitchGeneration
+    && (!hasExpectedGeneration || state.sessionSwitchGeneration === expectedGeneration);
+  const selectedResponseApplies = () => isStillActive()
+    && requestGeneration >= Number(state.lastAppliedSessionStateRequestGeneration || 0);
+
   const busyBefore = sessionHasInProgressState(session);
 
-  const loadResult = await loadServerSessionState(session.id);
+  const loadResult = await loadServerSessionState(requestSessionId);
   if (loadResult.kind === 'auth') {
     stopSessionStatePoll();
     return loadResult;
   }
   if (loadResult.kind !== 'ok') return SESSION_STATE_RETRY_RESULT;
   const runtimeState = loadResult.state;
-
-  const expectedGeneration = Number(expectedSwitchGeneration);
-  const hasExpectedGeneration = Number.isFinite(expectedGeneration) && expectedGeneration > 0;
-  const isStillActive = () => session.id === state.activeSessionId
-    && !state.draftSessionActive
-    && (!hasExpectedGeneration || state.sessionSwitchGeneration === expectedGeneration);
+  const belongsToSelectedSession = requestSessionId === String(state.activeSessionId || '').trim() && !state.draftSessionActive;
+  if (belongsToSelectedSession && !selectedResponseApplies()) return loadResult;
+  if (selectedResponseApplies()) {
+    state.lastAppliedSessionStateRequestGeneration = requestGeneration;
+    app.applyCurrentPlanState?.(requestSessionId, runtimeState);
+  }
 
   let sessionChanged = false;
   if (applyMCPStateToSession(session, runtimeState)) {
@@ -1997,6 +2023,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   return loadResult;
 };
 
+const refreshCurrentPlanFromServer = async (session = getActiveSession()) => {
+  if (!session || session.id !== state.activeSessionId || state.draftSessionActive) return null;
+  return syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+};
+
 const applyServerSessionSummary = (target, serverSession) => {
   if (!target || !serverSession) return target;
   target.name = String(serverSession.name || '');
@@ -2045,6 +2076,7 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
   if (state.activeSessionId === previousId) state.activeSessionId = nextId;
   if (state.renameSessionId === previousId) state.renameSessionId = nextId;
   if (state.currentStreamSessionId === previousId) state.currentStreamSessionId = nextId;
+  if (state.currentPlanSessionId === previousId) state.currentPlanSessionId = nextId;
   if (state.askUser?.sessionId === previousId) state.askUser.sessionId = nextId;
   if (state.approval?.sessionId === previousId) state.approval.sessionId = nextId;
   for (const entry of state.queuedInterrupts) {
@@ -3448,6 +3480,8 @@ Object.assign(app, {
   stopSessionStatePoll,
   scheduleSessionStatePoll,
   syncActiveSessionFromServer,
+  refreshCurrentPlanFromServer,
+  invalidateSessionStateForSelection,
   syncSelectedRuntimeFromSession,
   applyServerSessionSummary,
   mergeServerSessions,

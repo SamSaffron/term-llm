@@ -125,6 +125,7 @@
   </style>
   <link rel="stylesheet" href="app.css">
   <link rel="preload" as="script" href="app-core.js">
+  <link rel="preload" as="script" href="app-plan.js">
   <link rel="preload" as="script" href="app-render.js">
   <link rel="preload" as="script" href="app-attachments.js">
   <link rel="preload" as="script" href="app-stream.js">
@@ -200,7 +201,7 @@
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <main class="main">
-      <header class="main-header">
+      <header class="main-header" tabindex="-1">
         <div class="header-title-row">
           <div class="header-left">
             <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" title="Open sidebar">☰</button>
@@ -249,16 +250,24 @@
                   <option value="max">max</option>
                 </select>
               </div>
-              <span class="chip-sep" id="chipSepEffortWorktree" data-sep="effort-worktree" hidden>·</span>
-              <div class="model-chip" data-chip="worktree" id="chipWorktree" hidden>
-                <button type="button" class="chip-trigger" id="chipWorktreeTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Worktree">
-                  <span class="chip-label" id="chipWorktreeLabel">root</span>
-                </button>
-              </div>
             </div>
             <button type="button" class="mcp-status header-action" id="mcpStatus" hidden aria-label="Manage MCP servers"></button>
             <span class="chip-sep header-tokens-sep" id="headerTokensSep" hidden>·</span>
             <span class="header-tokens" id="headerTokens"></span>
+          </div>
+          <div class="header-context-actions">
+            <span class="chip-sep" id="chipSepEffortWorktree" data-sep="context-worktree" hidden>·</span>
+            <div class="model-chip" data-chip="worktree" id="chipWorktree" hidden>
+              <button type="button" class="chip-trigger worktree-trigger" id="chipWorktreeTrigger" aria-haspopup="menu" aria-expanded="false" aria-label="Worktree">
+                <span class="worktree-compact-icon" aria-hidden="true">⌥</span>
+                <span class="chip-label" id="chipWorktreeLabel">root</span>
+              </button>
+            </div>
+            <button class="header-action plan-toggle" id="planToggleBtn" type="button" hidden aria-expanded="false" aria-label="Open current plan">
+              <span class="plan-toggle-word" id="planToggleWord">Plan</span>
+              <span class="plan-toggle-progress" id="planToggleProgress"></span>
+              <span class="plan-unseen-dot" id="planUnseenDot" hidden aria-hidden="true">•</span>
+            </button>
           </div>
           </div>
           <button class="icon-btn diff-toggle header-action" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
@@ -340,7 +349,34 @@
       </div>
       <div class="diff-file-list" id="diffFileList" aria-label="Changed files"></div>
     </aside>
+
+    <aside class="plan-panel" id="planPanel" hidden role="complementary" aria-labelledby="planPanelTitle">
+      <div class="plan-surface-header">
+        <h2 id="planPanelTitle">Current plan</h2>
+        <span class="plan-surface-progress" id="planPanelProgress"></span>
+        <button class="icon-btn" id="planPanelCloseBtn" type="button" aria-label="Close current plan" title="Close current plan">✕</button>
+      </div>
+      <div class="plan-surface-body" id="planPanelBody">
+        <p class="current-plan-explanation" id="planPanelExplanation" hidden></p>
+        <div class="current-plan-checklist" id="planPanelChecklist"></div>
+      </div>
+    </aside>
   </div>
+
+  <div class="plan-sheet-backdrop" id="planSheetBackdrop" hidden></div>
+  <section class="plan-sheet" id="planSheet" hidden role="dialog" aria-modal="true" aria-labelledby="planSheetTitle">
+    <div class="plan-sheet-handle" aria-hidden="true"></div>
+    <div class="plan-surface-header">
+      <h2 id="planSheetTitle">Current plan</h2>
+      <span class="plan-surface-progress" id="planSheetProgress"></span>
+      <button class="icon-btn" id="planSheetCloseBtn" type="button" aria-label="Close current plan" title="Close current plan">✕</button>
+    </div>
+    <div class="plan-surface-body" id="planSheetBody">
+      <p class="current-plan-explanation" id="planSheetExplanation" hidden></p>
+      <div class="current-plan-checklist" id="planSheetChecklist"></div>
+    </div>
+  </section>
+  <div class="visually-hidden" id="planAnnouncement" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <div class="side-question-overlay hidden" id="sideQuestionOverlay" role="dialog" aria-modal="true" aria-labelledby="sideQuestionTitle">
     <div class="side-question-panel">
@@ -559,6 +595,7 @@
   <script src="markdown-streaming.js"></script>
   <script src="decoration.js"></script>
   <script src="app-core.js"></script>
+  <script src="app-plan.js"></script>
   <script src="slash-commands.js"></script>
   <script src="app-render.js"></script>
   <script src="app-attachments.js"></script>

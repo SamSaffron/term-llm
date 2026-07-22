@@ -35,9 +35,11 @@
       --sidebar-width: 280px;
       --sidebar-rail-width: 56px;
       --diff-sidebar-width: clamp(300px, 28vw, 460px);
+      --plan-sidebar-width: clamp(300px, 27vw, 430px);
       --header-action-height: 34px;
       --header-action-radius: 10px;
       --header-action-padding-x: 0.65rem;
+      --header-cluster-gap: 0.35rem;
       --header-action-bg: var(--surface-2);
       --header-action-bg-hover: var(--surface-3);
       --header-action-border: var(--border);
@@ -238,8 +240,16 @@
       grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--diff-sidebar-user-width, var(--diff-sidebar-width));
     }
 
+    .app.plan-open {
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--plan-sidebar-width);
+    }
+
     .app.sidebar-collapsed.diff-open {
       grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) var(--diff-sidebar-user-width, var(--diff-sidebar-width));
+    }
+
+    .app.sidebar-collapsed.plan-open {
+      grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) var(--plan-sidebar-width);
     }
 
     /* Disable the column transition while dragging the resize handle so the
@@ -792,6 +802,316 @@
       .diff-sidebar.open {
         transform: translateX(var(--panel-swipe-offset-x, 0px));
         box-shadow: -4px 0 20px rgba(0, 0, 0, 0.28);
+      }
+    }
+
+    /* ===== Current plan surface ===== */
+    .header-context-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      flex: 0 0 auto;
+      margin-left: 0;
+      min-width: 0;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .header-context-actions .model-chip[data-chip="worktree"] {
+      max-width: 150px;
+    }
+
+    .worktree-trigger {
+      min-height: var(--header-action-height);
+    }
+
+    .worktree-compact-icon {
+      display: none;
+    }
+
+    .plan-toggle {
+      position: relative;
+      gap: 0.28rem;
+      margin-left: var(--header-cluster-gap);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .plan-toggle-progress {
+      font-weight: 800;
+    }
+
+    .plan-unseen-dot {
+      color: var(--accent-amber);
+      font-size: 1rem;
+      line-height: 0;
+      margin-left: -0.08rem;
+    }
+
+    .plan-unseen-dot[hidden] {
+      display: none;
+    }
+
+    .plan-panel {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border-left: 1px solid var(--border);
+      background: var(--surface);
+      padding-right: var(--safe-right);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--panel-fade-duration) ease;
+    }
+
+    .app.plan-open .plan-panel,
+    .plan-panel.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .plan-panel[hidden],
+    .plan-sheet[hidden],
+    .plan-sheet-backdrop[hidden] {
+      display: none;
+    }
+
+    .plan-surface-header {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      flex: none;
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .plan-surface-header h2 {
+      flex: 1;
+      margin: 0;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+
+    .plan-surface-progress {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .plan-surface-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 0.85rem 0.8rem calc(1rem + var(--safe-bottom));
+      scrollbar-gutter: stable;
+    }
+
+    .current-plan-explanation {
+      margin: 0 0 0.8rem;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .current-plan-explanation[hidden] {
+      display: none;
+    }
+
+    .current-plan-checklist {
+      display: grid;
+      gap: 0.42rem;
+    }
+
+    .current-plan-step {
+      display: grid;
+      grid-template-columns: 1.15rem minmax(0, 1fr);
+      gap: 0.45rem;
+      align-items: start;
+      padding: 0.45rem 0.4rem;
+      border-radius: 8px;
+      color: var(--text-muted);
+    }
+
+    .current-plan-step-marker {
+      text-align: center;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .current-plan-step-text {
+      color: var(--text);
+      font-size: 0.86rem;
+      line-height: 1.4;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .current-plan-step-state {
+      margin-top: 0.08rem;
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      font-weight: 650;
+    }
+
+    .current-plan-step-completed .current-plan-step-marker {
+      color: var(--accent-green);
+    }
+
+    .current-plan-step-completed .current-plan-step-text {
+      color: var(--text-muted);
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--text-muted) 55%, transparent);
+    }
+
+    .current-plan-step-in_progress {
+      background: color-mix(in srgb, var(--accent-amber) 8%, transparent);
+    }
+
+    .current-plan-step-in_progress .current-plan-step-marker {
+      color: var(--accent-amber);
+    }
+
+    .plan-sheet,
+    .plan-sheet-backdrop {
+      display: none;
+    }
+
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
+
+    @media (max-width: 1099px) and (min-width: 768px) {
+      .app.plan-open,
+      .app.sidebar-collapsed.plan-open {
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0px;
+      }
+
+      .app.sidebar-collapsed.plan-open {
+        grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 0px;
+      }
+
+      .plan-panel {
+        position: fixed;
+        top: var(--app-offset-top);
+        right: 0;
+        width: min(430px, calc(100vw - var(--safe-left)), 90vw);
+        height: var(--app-height);
+        z-index: 60;
+        transform: translateX(100%);
+        padding: var(--safe-top) var(--safe-right) var(--safe-bottom) 0;
+        box-shadow: none;
+        transition: transform var(--panel-transition-duration) var(--panel-transition-easing),
+                    opacity var(--panel-fade-duration) ease;
+      }
+
+      .app.plan-open .plan-panel {
+        transform: translateX(0);
+        box-shadow: -4px 0 20px rgba(0, 0, 0, 0.28);
+      }
+    }
+
+    @media (max-width: 767px) {
+      .app.plan-open,
+      .app.sidebar-collapsed.plan-open {
+        grid-template-columns: 1fr;
+      }
+
+      .plan-panel {
+        display: none !important;
+      }
+
+      .plan-sheet-backdrop {
+        position: fixed;
+        top: var(--app-offset-top);
+        left: 0;
+        width: 100%;
+        height: var(--app-height);
+        z-index: 1000;
+        display: block;
+        background: rgba(0, 0, 0, 0.42);
+        opacity: 1;
+      }
+
+      .plan-sheet {
+        position: fixed;
+        left: var(--safe-left);
+        right: var(--safe-right);
+        bottom: 0;
+        z-index: 1001;
+        display: flex;
+        flex-direction: column;
+        min-height: min(280px, calc(var(--app-height) - var(--safe-top) - 1rem));
+        max-height: calc(var(--app-height) - var(--safe-top) - 1rem);
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-bottom: 0;
+        border-radius: 18px 18px 0 0;
+        background: var(--surface);
+        box-shadow: 0 -10px 34px rgba(0, 0, 0, 0.35);
+        transform: translateY(100%);
+        transition: transform var(--panel-transition-duration) var(--panel-transition-easing);
+      }
+
+      .plan-sheet.open {
+        transform: translateY(0);
+      }
+
+      .plan-sheet-handle {
+        flex: none;
+        width: 42px;
+        height: 4px;
+        margin: 0.45rem auto 0;
+        border-radius: 999px;
+        background: var(--border-strong);
+      }
+
+      .plan-sheet .plan-surface-header {
+        padding-top: 0.55rem;
+      }
+
+      .plan-sheet .plan-surface-body {
+        padding-bottom: calc(1rem + var(--safe-bottom));
+      }
+    }
+
+    @media (max-width: 520px) {
+      .header-context-actions .model-chip[data-chip="worktree"] {
+        max-width: none;
+      }
+
+      .worktree-trigger .chip-label {
+        display: none;
+      }
+
+      .worktree-compact-icon {
+        display: inline;
+      }
+
+      .header-context-actions .chip-sep {
+        display: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .plan-panel,
+      .plan-sheet {
+        transition: none;
       }
     }
 
@@ -1940,6 +2260,10 @@
       gap: 0.45rem;
     }
 
+    .message[hidden] {
+      display: none;
+    }
+
     .message.user {
       align-self: flex-end;
       width: min(78%, 820px);
@@ -2568,70 +2892,6 @@
       font-size: 0.83rem;
       white-space: pre-wrap;
       word-break: break-word;
-    }
-
-    .plan-card {
-      padding: 0.75rem;
-      border-top: 1px solid var(--border);
-      background: color-mix(in srgb, var(--surface-2) 55%, transparent);
-    }
-
-    .plan-card-header {
-      color: var(--text);
-      font-size: 0.9rem;
-      font-weight: 650;
-    }
-
-    .plan-card.running .plan-card-header {
-      color: var(--accent-amber);
-    }
-
-    .plan-explanation {
-      margin-top: 0.2rem;
-      color: var(--text-muted);
-      font-size: 0.8rem;
-      line-height: 1.4;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }
-
-    .plan-checklist {
-      display: grid;
-      gap: 0.3rem;
-      margin-top: 0.55rem;
-    }
-
-    .plan-step {
-      display: grid;
-      grid-template-columns: 1.1rem minmax(0, 1fr);
-      gap: 0.35rem;
-      align-items: start;
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      line-height: 1.4;
-    }
-
-    .plan-step-marker {
-      text-align: center;
-      font-weight: 700;
-    }
-
-    .plan-step-completed .plan-step-marker {
-      color: var(--accent-green);
-    }
-
-    .plan-step-completed .plan-step-text {
-      color: var(--text-muted);
-      text-decoration: line-through;
-      text-decoration-color: color-mix(in srgb, var(--text-muted) 55%, transparent);
-    }
-
-    .plan-step-in_progress {
-      color: var(--text);
-    }
-
-    .plan-step-in_progress .plan-step-marker {
-      color: var(--accent-amber);
     }
 
     .tool-group-card {
@@ -4192,6 +4452,10 @@
         flex-shrink: 1;
       }
 
+      .header-context-actions {
+        font-size: 0.78rem;
+      }
+
       .header-controls-row .chip-trigger:not(.header-action):not(.narrow-header-action) {
         padding-left: 0;
         padding-right: 0;
@@ -4382,6 +4646,15 @@
 
       .ask-user-question {
         padding: 0.9rem;
+      }
+    }
+
+    @media (max-width: 480px) {
+      /* Preserve direct navigation, worktree, Plan, and Changes targets when
+         the full provider/model/MCP cluster no longer fits. Runtime settings
+         remain available from Settings. */
+      .header-stats {
+        display: none;
       }
     }
 

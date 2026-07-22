@@ -458,6 +458,54 @@ func TestResponseRunCompactionKeepsReplayWindowInOrder(t *testing.T) {
 	}
 }
 
+func TestResponseRunRecoveryPreservesToolExecutionResults(t *testing.T) {
+	run := newResponseRun("resp_plan_results", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	for _, tc := range []struct {
+		callID  string
+		success bool
+	}{
+		{callID: "call_plan_ok", success: true},
+		{callID: "call_plan_failed", success: false},
+	} {
+		if err := run.appendEvent("response.output_item.added", map[string]any{
+			"item": map[string]any{
+				"type":      "function_call",
+				"call_id":   tc.callID,
+				"name":      "update_plan",
+				"arguments": `{"plan":[]}`,
+			},
+		}); err != nil {
+			t.Fatalf("append %s tool call: %v", tc.callID, err)
+		}
+		if err := run.appendEvent("response.tool_exec.end", map[string]any{
+			"call_id":   tc.callID,
+			"tool_name": "update_plan",
+			"success":   tc.success,
+		}); err != nil {
+			t.Fatalf("append %s tool end: %v", tc.callID, err)
+		}
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("recovery messages = %#v", recovery["messages"])
+	}
+	tools, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("recovery tools = %#v", messages[0]["tools"])
+	}
+	if tools[0]["status"] != "done" || tools[0]["resultStatus"] != "success" {
+		t.Fatalf("successful recovered tool = %#v", tools[0])
+	}
+	if tools[1]["status"] != "error" || tools[1]["resultStatus"] != "error" {
+		t.Fatalf("failed recovered tool = %#v", tools[1])
+	}
+	if messages[0]["status"] != "done" {
+		t.Fatalf("recovered group status = %v, want done", messages[0]["status"])
+	}
+}
+
 func TestResponseRunRecoveryStoresToolImagesAsArtifacts(t *testing.T) {
 	run := newResponseRun("resp_images", "sess_test", "", "mock", time.Now().Unix(), func() {})
 

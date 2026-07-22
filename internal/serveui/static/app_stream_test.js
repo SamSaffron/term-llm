@@ -427,6 +427,12 @@ function createHarness(options = {}) {
       }
       return {};
     },
+    refreshCurrentPlanFromServer: async (session) => {
+      if (typeof options.onRefreshCurrentPlanFromServer === 'function') {
+        return options.onRefreshCurrentPlanFromServer(session);
+      }
+      return {};
+    },
     scheduleSessionStatePoll() {},
     setSessionOptimisticBusy(sessionOrId, busy) {
       const id = typeof sessionOrId === 'string'
@@ -2356,8 +2362,13 @@ async function testDrainInterruptQueueIgnoresOtherSessionEntries() {
 async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   const name = 'resumeActiveResponse recovers from snapshot before replaying tool events';
   const responseId = 'resp_recover';
+  let planRefreshes = 0;
   const harness = createHarness({
     responseId,
+    onRefreshCurrentPlanFromServer() {
+      planRefreshes += 1;
+      return {};
+    },
     snapshotPayload: {
       id: responseId,
       status: 'in_progress',
@@ -2369,10 +2380,10 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
             id: `${responseId}_tool_group_1`,
             role: 'tool-group',
             created: 1001,
-            status: 'running',
+            status: 'done',
             tools: [
-              { id: 'call_1', name: 'read_file', arguments: '{"path":"a.txt"}', status: 'done', created: 1001 },
-              { id: 'call_2', name: 'grep', arguments: '{"pattern":"needle"}', status: 'running', created: 1002 },
+              { id: 'call_1', name: 'update_plan', arguments: '{"plan":[{"step":"Recovered","status":"completed"}]}', status: 'done', resultStatus: 'success', created: 1001 },
+              { id: 'call_2', name: 'update_plan', arguments: '{"plan":[]}', status: 'error', resultStatus: 'error', created: 1002 },
             ],
           },
         ],
@@ -2439,13 +2450,25 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   }
 
   const toolGroups = session.messages.filter((message) => message.role === 'tool-group');
-  if (toolGroups.length !== 1) {
-    fail(name, `expected exactly 1 tool group after recovery, got ${toolGroups.length}`, JSON.stringify(toolGroups));
+  if (toolGroups.length !== 2) {
+    fail(name, `expected recovered and replayed tool groups, got ${toolGroups.length}`, JSON.stringify(toolGroups));
     await cleanup();
     return;
   }
-  if (toolGroups[0].tools.length !== 3) {
-    fail(name, `expected recovered tool group to contain 3 tools, got ${toolGroups[0].tools.length}`, JSON.stringify(toolGroups[0]));
+  if (toolGroups.reduce((total, group) => total + group.tools.length, 0) !== 3) {
+    fail(name, 'expected recovered and replayed groups to contain 3 tools total', JSON.stringify(toolGroups));
+    await cleanup();
+    return;
+  }
+  if (toolGroups[0].tools[0].resultStatus !== 'success'
+    || toolGroups[0].tools[1].resultStatus !== 'error'
+    || toolGroups[0].tools[1].status !== 'error') {
+    fail(name, 'recovery lost successful or failed tool execution evidence', JSON.stringify(toolGroups[0]));
+    await cleanup();
+    return;
+  }
+  if (planRefreshes !== 2) {
+    fail(name, `expected snapshot recovery and terminal fallback to refetch plan state, got ${planRefreshes}`);
     await cleanup();
     return;
   }
@@ -4465,6 +4488,98 @@ async function testSeededToolArgumentsIgnoreReplayDeltas() {
   pass(name);
 }
 
+async function testSuccessfulPlanToolCompletionRefetchesAuthoritativeState() {
+  const name = 'successful update_plan completion alone refetches authoritative plan state';
+  let refreshes = 0;
+  const harness = createHarness({
+    onRefreshCurrentPlanFromServer() {
+      refreshes += 1;
+      return {};
+    },
+  });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_plan_refresh',
+    title: 'plan refresh',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_plan_refresh',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+  const args = '{"plan":[{"step":"Wait for server","status":"in_progress"}]}';
+
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_plan', name: 'update_plan' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 0,
+    delta: args,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.done', {
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_plan', name: 'update_plan', arguments: args },
+  });
+  if (refreshes !== 0) {
+    fail(name, 'finalized streamed arguments triggered a state refresh');
+    await cleanup();
+    return;
+  }
+
+  app.applyResponseStreamEvent(session, streamState, 'response.tool_exec.end', {
+    call_id: 'call_plan',
+    tool_name: 'update_plan',
+    success: true,
+  });
+  const tool = session.messages.find((message) => message.role === 'tool-group')?.tools?.[0];
+  if (refreshes !== 1 || tool?.resultStatus !== 'success') {
+    fail(name, 'successful execution did not record positive evidence and refetch once', JSON.stringify({ refreshes, tool }));
+    await cleanup();
+    return;
+  }
+
+  const failedState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, failedState, 'response.output_item.added', {
+    output_index: 1,
+    item: { type: 'function_call', call_id: 'call_plan_failed', name: 'update_plan', arguments: args },
+  });
+  app.applyResponseStreamEvent(session, failedState, 'response.tool_exec.end', {
+    call_id: 'call_plan_failed',
+    tool_name: 'update_plan',
+    success: false,
+  });
+  const failedTool = session.messages.findLast((message) => message.role === 'tool-group')?.tools?.[0];
+  if (refreshes !== 1 || failedTool?.resultStatus !== 'error' || failedTool?.status !== 'error') {
+    fail(name, 'failed execution refetched or lost generic error evidence', JSON.stringify({ refreshes, failedTool }));
+    await cleanup();
+    return;
+  }
+
+  state.activeSessionId = 'another-session';
+  const inactiveState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, inactiveState, 'response.output_item.added', {
+    output_index: 2,
+    item: { type: 'function_call', call_id: 'call_plan_inactive', name: 'update_plan', arguments: args },
+  });
+  app.applyResponseStreamEvent(session, inactiveState, 'response.tool_exec.end', {
+    call_id: 'call_plan_inactive',
+    tool_name: 'update_plan',
+    success: true,
+  });
+  if (refreshes !== 1) {
+    fail(name, 'inactive session completion refetched selected plan state');
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testToolExecImagesAttachToToolArtifactNotAssistantMarkdown() {
   const name = 'tool_exec.end images attach to tool artifact instead of assistant markdown';
   const harness = createHarness();
@@ -5809,6 +5924,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testArgumentDeltaWithoutOutputIndexUsesLastRunningTool();
   await testArgumentDeltasContinueUntilOutputItemDone();
   await testSeededToolArgumentsIgnoreReplayDeltas();
+  await testSuccessfulPlanToolCompletionRefetchesAuthoritativeState();
   await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
   await testToolExecImagesUseHubAssetRebase();
   await testResumeActiveResponseHeartbeatAbortSlowsAndRecovers();

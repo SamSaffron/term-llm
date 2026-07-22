@@ -119,6 +119,21 @@ func TestHeaderControlsUseSharedActionPill(t *testing.T) {
 			}
 		}
 	}
+	contextBlock := cssRuleBlock(cssSrc, ".header-context-actions")
+	if !strings.Contains(contextBlock, "font-size: 0.8rem;") || !strings.Contains(contextBlock, "color: var(--text-muted);") {
+		t.Fatalf("context actions should share header stat typography: %s", contextBlock)
+	}
+	if !strings.Contains(contextBlock, "gap: 0;") || !strings.Contains(contextBlock, "margin-left: 0;") {
+		t.Fatalf("context actions should preserve the same spacing around every header separator: %s", contextBlock)
+	}
+	planBlock := cssRuleBlock(cssSrc, ".plan-toggle")
+	if !strings.Contains(cssSrc, "--header-cluster-gap:") || !strings.Contains(planBlock, "margin-left: var(--header-cluster-gap);") {
+		t.Fatalf("Plan should use the shared cluster gap instead of widening the preceding separator: %s", planBlock)
+	}
+	worktreeBlock := cssRuleBlock(cssSrc, ".worktree-trigger")
+	if strings.Contains(worktreeBlock, "font-size:") {
+		t.Fatalf("worktree trigger should inherit shared context typography, not override it: %s", worktreeBlock)
+	}
 }
 
 func cssRuleBlock(cssSrc, selector string) string {
@@ -351,6 +366,28 @@ func TestAppSessionsJS(t *testing.T) {
 	}
 }
 
+func TestAppPlanJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-plan tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_plan_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("app_plan_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_plan_test.js failed: %v", err)
+	}
+}
+
 func TestSlashCommandsJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -480,6 +517,79 @@ func TestAppWebRTCDoesNotReferenceLexicalApp(t *testing.T) {
 	}
 	if !strings.Contains(src, "window.TermLLMApp") {
 		t.Fatalf("app-webrtc.js should access app exports through window.TermLLMApp")
+	}
+}
+
+func TestStaticAssetsSupportCurrentPlanSurface(t *testing.T) {
+	indexHTML, err := StaticAsset("index.html")
+	if err != nil {
+		t.Fatalf("StaticAsset(index.html): %v", err)
+	}
+	indexSrc := string(indexHTML)
+	for _, want := range []string{
+		`id="planToggleBtn"`,
+		`id="planToggleWord"`,
+		`id="planPanel"`,
+		`role="complementary"`,
+		`id="planSheet"`,
+		`role="dialog" aria-modal="true"`,
+		`src="app-plan.js"`,
+	} {
+		if !strings.Contains(indexSrc, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+
+	planJS, err := StaticAsset("app-plan.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-plan.js): %v", err)
+	}
+	planSrc := string(planJS)
+	for _, want := range []string{
+		"applyCurrentPlanState",
+		"resetCurrentPlanForSession",
+		"openCurrentPlanSurface",
+		"closeCurrentPlanSurface",
+		"currentPlanUnseen",
+		"PLAN_MOBILE_QUERY",
+	} {
+		if !strings.Contains(planSrc, want) {
+			t.Fatalf("app-plan.js missing %q", want)
+		}
+	}
+
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+	cssSrc := string(css)
+	for _, want := range []string{
+		".app.plan-open",
+		".plan-panel",
+		".plan-sheet",
+		".current-plan-step",
+		"@media (prefers-reduced-motion: reduce)",
+	} {
+		if !strings.Contains(cssSrc, want) {
+			t.Fatalf("app.css missing %q", want)
+		}
+	}
+
+	sw, err := StaticAsset("sw.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(sw.js): %v", err)
+	}
+	if !strings.Contains(string(sw), "'./app-plan.js'") {
+		t.Fatal("service worker does not precache app-plan.js")
+	}
+
+	renderedHTML := string(RenderIndexHTML("/ui", "", RenderOptions{}))
+	if !strings.Contains(renderedHTML, `src="app-plan.js?v=`) || !strings.Contains(renderedHTML, `href="app-plan.js?v=`) {
+		t.Fatal("rendered index does not version app-plan.js script and preload")
+	}
+	renderedSW := string(RenderServiceWorker(RenderOptions{}))
+	if !strings.Contains(renderedSW, "'./app-plan.js?v=") {
+		t.Fatal("rendered service worker does not version app-plan.js")
 	}
 }
 

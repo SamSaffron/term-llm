@@ -15,7 +15,7 @@ import (
 
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
-//go:embed static/app-core.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-sidebar.js
+//go:embed static/app-core.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-sidebar.js
 //go:embed static/app-attachments.js static/app-stream.js static/side-question.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
 //go:embed static/vendor
@@ -91,6 +91,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="manifest.webmanifest"`, `href="` + versioned("manifest.webmanifest") + `"`},
 		{`href="app.css"`, `href="` + versioned("app.css") + `"`},
 		{`href="app-core.js"`, `href="` + versioned("app-core.js") + `"`},
+		{`href="app-plan.js"`, `href="` + versioned("app-plan.js") + `"`},
 		{`href="slash-commands.js"`, `href="` + versioned("slash-commands.js") + `"`},
 		{`href="app-render.js"`, `href="` + versioned("app-render.js") + `"`},
 		{`href="app-attachments.js"`, `href="` + versioned("app-attachments.js") + `"`},
@@ -104,6 +105,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="markdown-streaming.js"`, `src="` + versioned("markdown-streaming.js") + `"`},
 		{`src="decoration.js"`, `src="` + versioned("decoration.js") + `"`},
 		{`src="app-core.js"`, `src="` + versioned("app-core.js") + `"`},
+		{`src="app-plan.js"`, `src="` + versioned("app-plan.js") + `"`},
 		{`src="slash-commands.js"`, `src="` + versioned("slash-commands.js") + `"`},
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
 		{`src="app-attachments.js"`, `src="` + versioned("app-attachments.js") + `"`},
@@ -173,6 +175,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./markdown-streaming.js'", "'./" + versioned("markdown-streaming.js") + "'"},
 		{"'./decoration.js'", "'./" + versioned("decoration.js") + "'"},
 		{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
+		{"'./app-plan.js'", "'./" + versioned("app-plan.js") + "'"},
 		{"'./slash-commands.js'", "'./" + versioned("slash-commands.js") + "'"},
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
 		{"'./app-attachments.js'", "'./" + versioned("app-attachments.js") + "'"},

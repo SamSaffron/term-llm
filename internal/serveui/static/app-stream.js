@@ -1066,17 +1066,25 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.tool_exec.end') {
+    let completedEntry = null;
     if (streamState.currentToolGroup) {
       const callId = payload.call_id;
       const entry = streamState.currentToolGroup.tools.find((tool) => tool.id === callId);
       if (entry) {
         entry.status = payload.success === false ? 'error' : 'done';
+        entry.resultStatus = payload.success === false ? 'error' : 'success';
+        completedEntry = entry;
         updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
       if (streamState.currentToolGroup.tools.every((tool) => tool.status !== 'running')) {
         streamState.currentToolGroup.status = 'done';
         updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
+    }
+    const completedToolName = String(payload.tool_name || completedEntry?.name || '').trim();
+    if (payload.success !== false && completedToolName === 'update_plan'
+      && session.id === state.activeSessionId && !state.draftSessionActive) {
+      void app.refreshCurrentPlanFromServer?.(session);
     }
     if (payload.images && payload.images.length > 0 && streamState.currentToolGroup) {
       const callId = payload.call_id;
@@ -1206,6 +1214,9 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
     app.refreshFileChangesAfterRun?.(session);
+    if (session.id === state.activeSessionId && !state.draftSessionActive) {
+      void app.refreshCurrentPlanFromServer?.(session);
+    }
     scrollVisibleStreamToBottom(session);
     return { terminal: true };
   }
@@ -1390,6 +1401,9 @@ const fetchResponseSnapshot = async (session, responseId) => {
 const recoverResponseStateFromSnapshot = async (session, responseId) => {
   const snapshot = await fetchResponseSnapshot(session, responseId);
   applyResponseRecoverySnapshot(session, snapshot);
+  if (session?.id === state.activeSessionId && !state.draftSessionActive) {
+    await app.refreshCurrentPlanFromServer?.(session);
+  }
   return snapshot;
 };
 

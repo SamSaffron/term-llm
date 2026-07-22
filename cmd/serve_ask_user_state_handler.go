@@ -5,12 +5,51 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+type webCurrentPlan struct {
+	Version     int64          `json:"version"`
+	Steps       []planpkg.Step `json:"steps"`
+	Explanation string         `json:"explanation,omitempty"`
+}
+
+func planSnapshotStoreForWeb(store session.Store) (session.PlanSnapshotStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	// LoggingStore implements PlanSnapshotStore so it can preserve logging for
+	// capable stores, but its embedded store remains the source of truth for
+	// whether the optional capability exists at all.
+	if loggingStore, ok := store.(*session.LoggingStore); ok {
+		if _, supported := planSnapshotStoreForWeb(loggingStore.Store); !supported {
+			return nil, false
+		}
+	}
+	planStore, ok := store.(session.PlanSnapshotStore)
+	return planStore, ok
+}
 
 func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request, sessionID string) {
 	resp := map[string]any{
 		"active_run": false,
+	}
+	if planStore, ok := planSnapshotStoreForWeb(s.store); ok {
+		snapshot, version, err := planStore.LoadPlanSnapshot(r.Context(), sessionID)
+		switch {
+		case err != nil:
+			// Omit the field rather than turning a transient read failure into an
+			// authoritative clear on the client.
+		case version <= 0:
+			resp["current_plan"] = nil
+		case snapshot.NormalizeAndValidate() == nil && len(snapshot.Plan) > 0:
+			resp["current_plan"] = webCurrentPlan{
+				Version:     version,
+				Steps:       snapshot.Plan,
+				Explanation: snapshot.Explanation,
+			}
+		}
 	}
 
 	var persistedProvider, persistedModel, persistedEffort, persistedReasoningMode string
