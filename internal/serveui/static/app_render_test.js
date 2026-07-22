@@ -433,7 +433,7 @@ function createHarness(appOverrides = {}) {
   windowObj.localStorage = context.localStorage;
 
   vm.runInNewContext(source, context, { filename: 'app-render.js' });
-  return { app, session, messages, document, timers, copied, parseCalls };
+  return { app, session, messages, document, windowObj, timers, copied, parseCalls };
 }
 
 function messageNode(id, role) {
@@ -1199,6 +1199,76 @@ async function run(name, fn) {
     assert(tail.innerHTML.includes('more tail content'), 'tail rerendered with appended content');
   });
 
+  await run('stable-prefix hash detects middle replacement and rebuilds promoted markdown', () => {
+    const { app, session, messages, timers } = createHarness();
+    const stablePrefix = Array.from(
+      { length: 20 },
+      (_, index) => `Stable paragraph ${index} with enough prose for promotion.\n\n`
+    ).join('');
+    const message = {
+      id: 'stream-stable-middle-replacement',
+      role: 'assistant',
+      content: `${stablePrefix}${'mutable **tail** '.repeat(30)}`,
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    const body = messages.children[0].querySelector('.message-body');
+    const stable = body.querySelector('.markdown-stream-stable');
+    assertEqual(stable.children.length, 1, 'stable prefix promoted before replacement');
+    const originalPiece = stable.children[0];
+    const divergence = Math.floor(stablePrefix.length / 2);
+    assert(divergence > 64 && divergence < stablePrefix.length - 64, 'divergence is outside the old edge guards');
+
+    const replacementPrefix = `${stablePrefix.slice(0, divergence)}X${stablePrefix.slice(divergence + 1)}`;
+    message.content = `${replacementPrefix}${'mutable **tail** '.repeat(30)}`;
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    assertEqual(stable.children.length, 1, 'corrected stable prefix is promoted again');
+    assert(stable.children[0] !== originalPiece, 'middle divergence invalidates the old stable DOM piece');
+    assert(stable.children[0].innerHTML.includes(replacementPrefix.slice(divergence - 12, divergence + 12)), 'rebuilt stable DOM contains replacement content');
+  });
+
+  await run('plain fallback resets stale stable DOM before slicing a divergent snapshot', () => {
+    const { app, session, messages, timers, parseCalls } = createHarness();
+    const stablePrefix = Array.from(
+      { length: 20 },
+      (_, index) => `Promoted paragraph ${index} with enough prose for recovery.\n\n`
+    ).join('');
+    const message = {
+      id: 'stream-fallback-stable-recovery',
+      role: 'assistant',
+      content: `${stablePrefix}${'mutable **tail** '.repeat(30)}`,
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    const body = messages.children[0].querySelector('.message-body');
+    const stable = body.querySelector('.markdown-stream-stable');
+    assertEqual(stable.children.length, 1, 'stable prefix promoted before fallback');
+
+    const oversizedTail = '```txt\n' + 'unfinished **markdown** inside fence\n'.repeat(2500);
+    assert(oversizedTail.length > markdownStreaming.MAX_MUTABLE_MARKDOWN_CHARS, 'fallback fixture exceeds mutable limit');
+    const divergence = Math.floor(stablePrefix.length / 2);
+    const replacementPrefix = `${stablePrefix.slice(0, divergence)}X${stablePrefix.slice(divergence + 1)}`;
+    const parsesBeforeRecovery = parseCalls.length;
+    message.content = `${replacementPrefix}${oversizedTail}`;
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    const recoveredTail = body.querySelector('.markdown-stream-tail');
+    assertEqual(stable.children.length, 0, 'stale stable DOM is cleared on fallback prefix mismatch');
+    assertEqual(recoveredTail.children[0].textContent, message.content, 'fallback restarts from the full corrected snapshot');
+    assertEqual(parseCalls.length, parsesBeforeRecovery, 'fallback recovery does not parse the oversized snapshot as Markdown');
+  });
+
   await run('finalizing streaming markdown replaces streaming containers with full render', () => {
     const { app, session, messages, timers } = createHarness();
     const message = {
@@ -1221,6 +1291,56 @@ async function run(name, fn) {
     assert(body.innerHTML.includes('First paragraph'), 'full markdown render remains');
   });
 
+  await run('oversized incomplete markdown tail uses bounded incremental fallback and finalizes correctly', () => {
+    const observedScheduleLengths = [];
+    const streamingHelpers = {
+      ...markdownStreaming,
+      nextStreamingRenderDelay(length) {
+        observedScheduleLengths.push(length);
+        return markdownStreaming.nextStreamingRenderDelay(length);
+      },
+    };
+    const { app, session, messages, timers, parseCalls, windowObj } = createHarness({ markdownStreaming: streamingHelpers });
+    windowObj.__TERM_LLM_DIAGNOSTICS__ = true;
+    const oversizedFence = '```txt\n' + 'unfinished **markdown** inside fence\n'.repeat(2500);
+    assert(oversizedFence.length > markdownStreaming.MAX_MUTABLE_MARKDOWN_CHARS, 'fixture must exceed mutable markdown limit');
+    const message = {
+      id: 'stream-oversized-fence',
+      role: 'assistant',
+      content: oversizedFence,
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    let body = messages.children[0].querySelector('.message-body');
+    const tail = body.querySelector('.markdown-stream-tail');
+    assert(tail.className.includes('streaming-plain-text'), 'oversized incomplete tail falls back to plain streaming');
+    assertEqual(tail.dataset.streamRenderMode, 'plain-fallback', 'fallback mode is exposed for diagnostics');
+    assertEqual(Number(tail.dataset.mutableMarkdownTailSize), 0, 'no oversized tail remains mutable markdown work');
+    const parsesBeforeAppend = parseCalls.length;
+    const textNode = tail.children[0];
+    observedScheduleLengths.length = 0;
+
+    message.content += 'one more streamed delta';
+    app.enqueueAssistantStreamUpdate(message);
+    const fallbackScheduleLength = observedScheduleLengths[observedScheduleLengths.length - 1];
+    assert(fallbackScheduleLength > markdownStreaming.MAX_MUTABLE_MARKDOWN_CHARS, 'fallback scheduler receives the actual huge mutable tail length');
+    assert(markdownStreaming.nextStreamingRenderDelay(fallbackScheduleLength) > 33, 'huge fallback tail retains slow render cadence');
+    runAllPendingTimers(timers);
+
+    assertEqual(parseCalls.length, parsesBeforeAppend, 'fallback append does not reparse the oversized markdown source');
+    assert(textNode.textContent.endsWith('one more streamed delta'), 'fallback appends only the streamed delta');
+
+    message.content += '\n```';
+    app.finalizeAssistantStreamRender(message);
+    body = messages.children[0].querySelector('.message-body');
+    assert(!body.querySelector('.markdown-stream-tail'), 'streaming fallback removed after final render');
+    assertEqual(parseCalls[parseCalls.length - 1], message.content, 'final render reparses the complete source for correctness');
+  });
+
   await run('plain text streaming renders tail as text node and stays in that mode across extends', () => {
     const { app, session, messages, timers } = createHarness();
     const message = {
@@ -1239,6 +1359,7 @@ async function run(name, fn) {
     const tail = body.querySelector('.markdown-stream-tail');
     assert(tail, 'tail container exists');
     assert(tail.className.includes('streaming-plain-text'), 'tail uses plain-text mode for plain text');
+    assertEqual(tail.dataset.streamRenderMode, undefined, 'stream diagnostics stay unset without opt-in');
 
     // Extend with more plain text (no markdown chars) — cache fast path
     message.content += ' More words with no special characters at all.';
@@ -1707,6 +1828,22 @@ async function run(name, fn) {
     assertEqual(messages.children.length, 3, 'three nodes after incremental render');
     assert(messages.children[0] === firstNode, 'first node is the same object (not recreated)');
     assertEqual(messages.children[2].dataset.messageId, 'm3', 'new node has correct id');
+  });
+
+  await run('renderMessages exposes gated mounted-count and duration diagnostics', () => {
+    const { app, session, messages, windowObj } = createHarness();
+    windowObj.__TERM_LLM_DIAGNOSTICS__ = true;
+    session.messages = [
+      { id: 'diag-u1', role: 'user', content: 'hello', created: Date.now() },
+      { id: 'diag-a1', role: 'assistant', content: 'hi', created: Date.now() },
+    ];
+
+    app.renderMessages();
+
+    assertEqual(messages.dataset.mountedMessageCount, '2', 'mounted message count');
+    assert(Number(messages.dataset.mountedElementCount) >= 2, 'mounted element count should include message DOM');
+    assert(Number(messages.dataset.renderDurationMs) >= 0, 'render duration should be numeric');
+    assertEqual(messages.dataset.renderMode, 'rebuild', 'render mode diagnostic');
   });
 
   await run('renderMessages: full rebuild on session switch', () => {

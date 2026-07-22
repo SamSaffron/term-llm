@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -108,6 +109,109 @@ func TestRunDataChannel_IdleTimeoutClosesTransportToWakeReader(t *testing.T) {
 	case <-transportClosed:
 	default:
 		t.Fatal("idle timeout did not close the underlying transport")
+	}
+}
+
+type streamingReadDataChannel struct {
+	request       []byte
+	requestOnce   sync.Once
+	readUnblock   chan struct{}
+	closed        chan struct{}
+	closeOnce     sync.Once
+	transportOnce sync.Once
+	writes        chan responseFrame
+}
+
+func (d *streamingReadDataChannel) ReadDataChannel(buf []byte) (int, bool, error) {
+	read := false
+	d.requestOnce.Do(func() {
+		copy(buf, d.request)
+		read = true
+	})
+	if read {
+		return len(d.request), true, nil
+	}
+	<-d.readUnblock
+	return 0, false, io.EOF
+}
+
+func (d *streamingReadDataChannel) WriteDataChannel(data []byte, _ bool) (int, error) {
+	var frame responseFrame
+	if err := json.Unmarshal(data, &frame); err == nil {
+		d.writes <- frame
+	}
+	return len(data), nil
+}
+
+func (d *streamingReadDataChannel) Close() error {
+	d.closeOnce.Do(func() { close(d.closed) })
+	return nil
+}
+
+func TestRunDataChannel_SuccessfulOutboundStreamingResetsIdleTimeout(t *testing.T) {
+	const idleTimeout = 100 * time.Millisecond
+	allowNextChunk := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("response writer does not implement http.Flusher")
+			return
+		}
+		for i := 0; i < 6; i++ {
+			_, _ = io.WriteString(w, "stream activity\n")
+			flusher.Flush()
+			if i < 5 {
+				<-allowNextChunk
+			}
+		}
+	})
+	p := newTestPeer("/ui", handler)
+	p.cfg.IdleTimeout = idleTimeout
+
+	dc := &streamingReadDataChannel{
+		request:     encodeRequest("stream-idle", http.MethodGet, "/ui/v1/stream", nil, ""),
+		readUnblock: make(chan struct{}),
+		closed:      make(chan struct{}),
+		writes:      make(chan responseFrame, 64),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.runDataChannel(context.Background(), dc, func() {
+			dc.transportOnce.Do(func() { close(dc.readUnblock) })
+		})
+	}()
+
+	chunks := 0
+	deadline := time.After(3 * time.Second)
+	for chunks < 6 {
+		select {
+		case frame := <-dc.writes:
+			if frame.Type != "chunk" {
+				continue
+			}
+			chunks++
+			select {
+			case <-dc.closed:
+				t.Fatalf("idle timer closed active stream after %d outbound chunks", chunks)
+			default:
+			}
+			if chunks < 6 {
+				// Keep every gap comfortably below IdleTimeout while making total
+				// stream duration exceed it. Each next chunk is synchronized by
+				// its observed outbound frame rather than an unsignaled sleep loop.
+				time.Sleep(idleTimeout / 4)
+				allowNextChunk <- struct{}{}
+			}
+		case <-deadline:
+			t.Fatalf("timed out after %d outbound chunks", chunks)
+		}
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("connection did not become truly idle after outbound stream completed")
 	}
 }
 

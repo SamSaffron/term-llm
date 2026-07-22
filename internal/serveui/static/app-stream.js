@@ -248,7 +248,7 @@ const streamReconnectDelay = (attempt) => {
 
 const streamReconnectLabel = (attempt) => (
   attempt >= STREAM_FAST_RETRY_LIMIT
-    ? 'Connection unstable; retrying once a minute…'
+    ? 'Connection unstable; next retry within one minute (online or returning to this page retries now)…'
     : (attempt < 3 ? 'Reconnecting…' : `Reconnecting (attempt ${attempt + 1})…`)
 );
 
@@ -458,7 +458,54 @@ const scheduleStreamScroll = () => {
 };
 
 // Guards against multiple concurrent resumeActiveResponse loops for the same response.
-const activeResumeKeys = new Set();
+// The per-loop owner prevents a detached loop's eventual cleanup from deleting a
+// replacement loop's registration for the same session and response.
+const activeResumeKeys = new Map();
+const responseReconnectWaiters = new Map();
+
+const streamDiagnosticsEnabled = () => Boolean(
+  window.__TERM_LLM_DIAGNOSTICS__ || window.__WEBRTC_DIAGNOSTICS__
+);
+
+const setReconnectDiagnostic = (reconnectState, reason = '', delay = 0) => {
+  if (!streamDiagnosticsEnabled()) return;
+  const dataset = elements.connectionState?.dataset;
+  if (!dataset) return;
+  dataset.reconnectState = String(reconnectState || '');
+  dataset.reconnectReason = String(reason || '');
+  dataset.reconnectDelayMs = String(Math.max(0, Number(delay) || 0));
+};
+
+const waitForResponseReconnect = (delay, resumeKey, reason) => new Promise((resolve) => {
+  let settled = false;
+  let timerId = 0;
+  const finish = (wakeReason) => {
+    if (settled) return;
+    settled = true;
+    if (timerId) window.clearTimeout(timerId);
+    if (responseReconnectWaiters.get(resumeKey)?.finish === finish) {
+      responseReconnectWaiters.delete(resumeKey);
+    }
+    resolve(String(wakeReason || 'timer'));
+  };
+  timerId = window.setTimeout(() => finish('timer'), delay);
+  responseReconnectWaiters.set(resumeKey, { finish, timerId });
+  setReconnectDiagnostic('waiting', reason, delay);
+});
+
+// Public wake requests use a named object and require both identifiers. A
+// response id alone is ambiguous across sessions and must never wake a waiter.
+const wakeResponseReconnect = ({ reason = '', sessionId = '', responseId = '' } = {}) => {
+  const normalizedSessionId = String(sessionId || '').trim();
+  const normalizedResponseId = String(responseId || '').trim();
+  if (!normalizedSessionId || !normalizedResponseId) return false;
+  const key = `${normalizedSessionId}:${normalizedResponseId}`;
+  const waiter = responseReconnectWaiters.get(key);
+  if (!waiter) return false;
+  setReconnectDiagnostic('waking', reason, 0);
+  waiter.finish(reason);
+  return true;
+};
 
 const attachResponseStream = (session, responseId = '', controller = null) => {
   state.currentStreamSessionId = String(session?.id || '').trim();
@@ -471,8 +518,13 @@ const attachResponseStream = (session, responseId = '', controller = null) => {
 
 const clearResumeKeysForSession = (sessionId) => {
   const prefix = sessionId + ':';
-  for (const key of activeResumeKeys) {
+  for (const key of activeResumeKeys.keys()) {
     if (key.startsWith(prefix)) activeResumeKeys.delete(key);
+  }
+  // A reconnect sleep has no AbortController to settle. Resolve it explicitly
+  // so detaching cannot leave the old loop asleep until its backoff expires.
+  for (const [key, waiter] of responseReconnectWaiters) {
+    if (key.startsWith(prefix)) waiter.finish('detached');
   }
 };
 
@@ -1462,18 +1514,25 @@ const resumeActiveResponse = async (session, options = {}) => {
   if (!responseId) return false;
 
   // Prevent multiple concurrent resume loops for the same session+response.
+  // Cleanup may run after detach has already registered a replacement loop, so
+  // it must remove the key only while it still owns that registration.
   const resumeKey = `${session.id}:${responseId}`;
   if (activeResumeKeys.has(resumeKey)) return false;
-  activeResumeKeys.add(resumeKey);
+  const resumeOwner = {};
+  activeResumeKeys.set(resumeKey, resumeOwner);
 
   try {
-    return await resumeActiveResponseInner(session, responseId, options);
+    return await resumeActiveResponseInner(session, responseId, options, resumeOwner);
   } finally {
-    activeResumeKeys.delete(resumeKey);
+    if (activeResumeKeys.get(resumeKey) === resumeOwner) {
+      activeResumeKeys.delete(resumeKey);
+    }
   }
 };
 
-const resumeActiveResponseInner = async (session, responseId, options) => {
+const resumeActiveResponseInner = async (session, responseId, options, resumeOwner) => {
+  const resumeKey = `${session.id}:${responseId}`;
+  const ownsResumeKey = () => activeResumeKeys.get(resumeKey) === resumeOwner;
   if (state.currentStreamSessionId && state.currentStreamSessionId !== session.id) {
     detachResponseStream();
   }
@@ -1507,6 +1566,10 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       // event replay path rather than failing the reconnect outright.
     }
   }
+  if (!ownsResumeKey()) {
+    setStreaming(Boolean(state.currentStreamResponseId));
+    return false;
+  }
 
   let streamState = recoveredFromSnapshot
     ? createResponseStreamState(session)
@@ -1514,8 +1577,13 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
   let consecutiveHttpFailures = 0;
   let consecutiveHeartbeatAborts = 0;
   let retryAttempt = 0;
+  let reconnectReason = 'stream-ended';
 
   for (;;) {
+    if (!ownsResumeKey()) {
+      setStreaming(Boolean(state.currentStreamResponseId));
+      return false;
+    }
     if (session.activeResponseId !== responseId) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return true;
@@ -1529,7 +1597,8 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
     if (consecutiveHttpFailures >= 5 || consecutiveHeartbeatAborts >= 5) {
       consecutiveHttpFailures = 0;
       consecutiveHeartbeatAborts = 0;
-      setConnectionState('Checking session state\u2026');
+      setConnectionState('Checking session state\u2026', 'bad');
+      setReconnectDiagnostic('checking-state', reconnectReason, 0);
       // Temporarily clear the abort controller so syncActiveSessionFromServer
       // can act on the server state.  The !activeRun && !state.abortController
       // branch inside sync refuses to clear tracking while a controller is set,
@@ -1539,6 +1608,10 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
         state.abortController = null;
       }
       await app.syncActiveSessionFromServer(session, false);
+      if (!ownsResumeKey()) {
+        setStreaming(Boolean(state.currentStreamResponseId));
+        return false;
+      }
       if (session.activeResponseId !== responseId) {
         // Run completed/changed while we were polling — exit.
         setStreaming(Boolean(state.currentStreamResponseId));
@@ -1561,6 +1634,12 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
         headers: requestHeaders(session.id),
         signal: controller.signal
       });
+      if (!ownsResumeKey()) {
+        if (state.abortController === controller) state.abortController = null;
+        try { await response.body?.cancel(); } catch (_) { /* response may already be closed */ }
+        setStreaming(Boolean(state.currentStreamResponseId));
+        return false;
+      }
       if (!response.ok) {
         throw await normalizeError(response);
       }
@@ -1570,6 +1649,7 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
 
       consecutiveHttpFailures = 0;
       setConnectionState('', '');
+      setReconnectDiagnostic('connected', '', 0);
       const streamGeneration = state.streamGeneration;
       streamActivityBaseline = Number(state.lastEventTime || 0);
       const result = await consumeResponseStream(response.body, session, streamState, { generation: streamGeneration, responseId });
@@ -1636,9 +1716,11 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
         // HTTP failure.  Some browsers reject aborted fetches with the custom
         // abort reason instead of a DOMException, so key off the controller.
         consecutiveHeartbeatAborts += 1;
+        reconnectReason = 'heartbeat-stale';
       } else {
         consecutiveHttpFailures += 1;
         consecutiveHeartbeatAborts = 0;
+        reconnectReason = err?.status ? `http-${err.status}` : 'network-error';
       }
       if (err?.status === 401) {
         handleAuthFailure();
@@ -1680,14 +1762,18 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       }
     }
 
-    setConnectionState(streamReconnectLabel(retryAttempt));
+    setConnectionState(streamReconnectLabel(retryAttempt), 'bad');
     if (session.activeResponseId !== responseId) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return true;
     }
     const retryDelay = streamReconnectDelay(retryAttempt);
     retryAttempt += 1;
-    await sleep(retryDelay);
+    const wakeReason = await waitForResponseReconnect(retryDelay, resumeKey, reconnectReason);
+    if (wakeReason === 'detached' || !ownsResumeKey()) {
+      setStreaming(Boolean(state.currentStreamResponseId));
+      return false;
+    }
   }
 };
 
@@ -3869,12 +3955,18 @@ const interruptActiveRun = async (session, prompt, messageId, contentParts = nul
   return action;
 };
 
-const runtimeHasActiveRun = (runtimeState) => {
+const runtimeStateFromSyncResult = (result) => (
+  result?.kind === 'ok' ? result.state : (result?.kind ? null : result)
+);
+
+const runtimeHasActiveRun = (syncResult) => {
+  const runtimeState = runtimeStateFromSyncResult(syncResult);
   if (!runtimeState || typeof runtimeState !== 'object') return false;
   return Boolean(runtimeState.active_run || String(runtimeState.active_response_id || '').trim());
 };
 
-const runtimeHasPendingAskUser = (runtimeState, callId) => {
+const runtimeHasPendingAskUser = (syncResult, callId) => {
+  const runtimeState = runtimeStateFromSyncResult(syncResult);
   const normalizedCallId = String(callId || '').trim();
   if (!normalizedCallId || !runtimeState || typeof runtimeState !== 'object') return false;
   const prompts = Array.isArray(runtimeState.pending_ask_users)
@@ -3883,7 +3975,8 @@ const runtimeHasPendingAskUser = (runtimeState, callId) => {
   return prompts.some((item) => String(item?.call_id || '').trim() === normalizedCallId);
 };
 
-const runtimeHasPendingApproval = (runtimeState, approvalId) => {
+const runtimeHasPendingApproval = (syncResult, approvalId) => {
+  const runtimeState = runtimeStateFromSyncResult(syncResult);
   const normalizedApprovalId = String(approvalId || '').trim();
   if (!normalizedApprovalId || !runtimeState || typeof runtimeState !== 'object') return false;
   const approvals = Array.isArray(runtimeState.pending_approvals)
@@ -3898,7 +3991,8 @@ const refreshSessionFromServerTruth = async (session, pollOnActive = false) => {
 };
 
 const recoverInterruptFailure = async (session, prompt, messageId, attachments = []) => {
-  const runtimeState = await refreshSessionFromServerTruth(session, true);
+  const syncResult = await refreshSessionFromServerTruth(session, true);
+  const runtimeState = runtimeStateFromSyncResult(syncResult);
   if (!runtimeState) {
     return false;
   }
@@ -4861,6 +4955,7 @@ Object.assign(app, {
   scheduleStreamScroll,
   HEARTBEAT_STALE_THRESHOLD,
   HEARTBEAT_ABORT_REASON,
+  wakeResponseReconnect,
   resumeActiveResponse,
   cancelActiveResponse,
   closeAskUserModal,

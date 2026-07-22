@@ -44,7 +44,7 @@ expectTrue(
   'createStreamingState starts with stable and tail streaming containers unset',
   (() => {
     const state = streaming.createStreamingState();
-    return state && state.stableContainer === null && state.stableLength === 0 && state.stableSource === '' && state.tailContainer === null;
+    return state && state.stableContainer === null && state.stableLength === 0 && state.tailContainer === null;
   })()
 );
 
@@ -181,15 +181,66 @@ expectEqual(
   0
 );
 expectEqual(
-  'findStableMarkdownBoundary is conservative for lists',
+  'findStableMarkdownBoundary stabilizes completed lists',
   streaming.findStableMarkdownBoundary('- one\n- two\n\nrest of response', 5),
+  '- one\n- two\n\n'.length
+);
+expectEqual(
+  'findStableMarkdownBoundary does not split a loose list before another item',
+  streaming.findStableMarkdownBoundary('- one\n\n- two continues the same list with enough text', 5),
   0
 );
 expectEqual(
-  'findStableMarkdownBoundary is conservative for tables',
-  streaming.findStableMarkdownBoundary('| a | b |\n| - | - |\n\nrest of response', 5),
+  'findStableMarkdownBoundary preserves indentation when checking loose-list continuation',
+  streaming.findStableMarkdownBoundary('- one\n\n  continued paragraph in the same loose list item with enough text', 5),
   0
 );
+expectEqual(
+  'findStableMarkdownBoundary preserves indentation when checking list-item code',
+  streaming.findStableMarkdownBoundary('- one\n\n    indented code in the same list item with enough text', 5),
+  0
+);
+expectEqual(
+  'findStableMarkdownBoundary stabilizes completed tables',
+  streaming.findStableMarkdownBoundary('| a | b |\n| - | - |\n\nrest of response', 5),
+  '| a | b |\n| - | - |\n\n'.length
+);
+expectEqual(
+  'findStableMarkdownBoundary stabilizes GFM tables without outer pipes',
+  streaming.findStableMarkdownBoundary('a | b\n--- | ---\n1 | 2\n\nrest of response', 5),
+  'a | b\n--- | ---\n1 | 2\n\n'.length
+);
+expectEqual(
+  'findStableMarkdownBoundary stabilizes closed tilde fences with markdown-like code',
+  streaming.findStableMarkdownBoundary('~~~txt\n* literal marker\n~~~\n\nrest of response', 5),
+  '~~~txt\n* literal marker\n~~~\n\n'.length
+);
+
+expectEqual(
+  'findStableMarkdownBoundary rejects fence-like lines with trailing info as closers',
+  streaming.findStableMarkdownBoundary('```txt\ncode\n```not-a-close\n\nrest of response', 5),
+  0
+);
+
+const bounded = streaming.analyzeStableMarkdownBoundary(
+  '```txt\n' + 'unfinished * fenced text\n'.repeat(5000),
+  256
+);
+expectTrue('stable-boundary analysis reports oversized incomplete tails', bounded.overBudget);
+expectEqual('oversized stable-boundary analysis does not scan past its budget', bounded.operations, 0);
+expectTrue(
+  'stable-boundary analysis exposes a fixed mutable markdown limit',
+  Number(streaming.MAX_MUTABLE_MARKDOWN_CHARS) > 0
+    && bounded.mutableTailLength > streaming.MAX_MUTABLE_MARKDOWN_CHARS
+);
+
+const operationLimited = streaming.analyzeStableMarkdownBoundary(
+  'Paragraph one.\n\n' + 'tail '.repeat(100),
+  10,
+  { maxOperations: 32 }
+);
+expectTrue('stable-boundary analysis falls back on deterministic operation budget', operationLimited.overBudget);
+expectTrue('operation-budget fallback stays within the declared budget', operationLimited.operations <= 32);
 
 if (failures > 0) {
   console.error('\n' + failures + ' test(s) failed');

@@ -529,6 +529,12 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 
 	// Signal idle resets via channel so we avoid concurrent Timer.Reset / Timer.C access.
 	activity := make(chan struct{}, 1)
+	noteActivity := func() {
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
 	requestSlots := make(chan struct{}, maxDataChannelConcurrentRequests)
 	stop := make(chan struct{})
 	var stopOnce sync.Once
@@ -551,6 +557,10 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 		_, err := dc.WriteDataChannel([]byte(text), true)
 		if err != nil {
 			stopDataChannel()
+		} else {
+			// Successful response frames, including long-lived SSE chunks, are
+			// connection activity just as much as inbound requests are.
+			noteActivity()
 		}
 		return err
 	}
@@ -574,10 +584,7 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 			}
 			data := make([]byte, n)
 			copy(data, buf[:n])
-			select {
-			case activity <- struct{}{}:
-			default:
-			}
+			noteActivity()
 			if !tryAcquireDataChannelRequestSlot(dataChannelCtx, stop, requestSlots) {
 				select {
 				case <-dataChannelCtx.Done():
@@ -626,6 +633,14 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 			}
 			idle.Reset(p.cfg.IdleTimeout)
 		case <-idle.C:
+			// If a successful outbound write raced with the timer delivery,
+			// honor that queued activity rather than closing an active stream.
+			select {
+			case <-activity:
+				idle.Reset(p.cfg.IdleTimeout)
+				continue
+			default:
+			}
 			log.Printf("webrtc: connection idle timeout, closing data channel")
 			stopDataChannel()
 			<-readDone

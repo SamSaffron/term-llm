@@ -442,6 +442,28 @@ func TestWorktreePopoverUsesResponsiveChipUI(t *testing.T) {
 	}
 }
 
+func TestAppWebRTCJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-webrtc tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_webrtc_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("app_webrtc_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_webrtc_test.js failed: %v", err)
+	}
+}
+
 func TestAppWebRTCDoesNotReferenceLexicalApp(t *testing.T) {
 	webrtcJS, err := StaticAsset("app-webrtc.js")
 	if err != nil {
@@ -765,6 +787,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 		"function nextStreamingRenderDelay(",
 		"function areMathDelimitersBalanced(",
 		"function findStableMarkdownBoundary(",
+		"function analyzeStableMarkdownBoundary(",
 		"function canStreamPlainTextTail(",
 	} {
 		if !strings.Contains(streamingSrc, want) {
@@ -780,7 +803,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	for _, want := range []string{
 		"const enqueueAssistantStreamUpdate = (message) => {",
 		"const finalizeAssistantStreamRender = (message) => {",
-		"const renderAssistantTailPlainText = (streamState, tail) => {",
+		"const renderAssistantTailPlainText = (streamState, tail, mode = 'plain') => {",
 		"markdown-stream-stable",
 	} {
 		if !strings.Contains(renderSrc, want) {

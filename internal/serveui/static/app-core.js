@@ -2040,8 +2040,17 @@ const loadSessions = () => {
 // after switchToSession() saves state.
 const MAX_CACHED_MESSAGE_SESSIONS = 10;
 
+const sessionHasCachedTranscript = (session) => Boolean(
+  session
+  && !session._serverOnly
+  && (
+    (Array.isArray(session.messages) && session.messages.length > 0)
+    || (Array.isArray(session._history?.rawMessages) && session._history.rawMessages.length > 0)
+  )
+);
+
 const evictStaleSessionMessages = () => {
-  const withMessages = state.sessions.filter(s => s.messages && s.messages.length > 0 && !s._serverOnly);
+  const withMessages = state.sessions.filter(sessionHasCachedTranscript);
   if (withMessages.length <= MAX_CACHED_MESSAGE_SESSIONS) return;
 
   const keep = new Set();
@@ -2060,10 +2069,14 @@ const evictStaleSessionMessages = () => {
     keep.add(session.id);
   }
 
-  for (const s of state.sessions) {
-    if (!keep.has(s.id) && s.messages && s.messages.length > 0) {
-      s.messages = [];
-      s._serverOnly = true;
+  for (const session of state.sessions) {
+    if (!keep.has(session.id) && sessionHasCachedTranscript(session)) {
+      session.messages = [];
+      // Converted display messages and raw server history hold duplicate copies
+      // of large transcript strings/attachments. Dropping only messages leaves
+      // the raw representation reachable, so evict the complete hydration cache.
+      delete session._history;
+      session._serverOnly = true;
     }
   }
 };

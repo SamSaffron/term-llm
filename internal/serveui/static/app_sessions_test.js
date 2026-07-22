@@ -320,8 +320,16 @@ async function createSessionsHarness(options = {}) {
     },
     navigator: { standalone: false, mediaDevices: null, serviceWorker: null, geolocation: options.geolocation || null },
     visualViewport: null,
-    addEventListener() {},
-    removeEventListener() {},
+    listeners: {},
+    addEventListener(type, handler) {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(handler);
+    },
+    removeEventListener(type, handler) {
+      const list = this.listeners[type] || [];
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    },
     requestAnimationFrame(callback) { return timerSetTimeout(callback, 0); },
     cancelAnimationFrame(handle) { timerClearTimeout(handle); },
     setTimeout: timerSetTimeout,
@@ -1125,6 +1133,44 @@ async function testConvertServerMessagesSuppressesCompactionRetainedRawTail() {
   ], { compactionSeq: 4, compactionCount: 1 });
   if (JSON.stringify(convertedWithAck.map((message) => `${message.role}:${message.content}`)) !== JSON.stringify(want)) {
     fail(name, 'synthetic ack and retained tail should both be suppressed', JSON.stringify(convertedWithAck));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testCompactionDuplicateTailRangeIsLinear() {
+  const name = 'legacy compaction tail overlap is correct with linear bounded work';
+  const { app } = await createSessionsHarness();
+  const prefixLength = 3000;
+  const overlapLength = 1400;
+  const messages = Array.from({ length: prefixLength }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `message-${index}`,
+  }));
+  const markerIndex = messages.length;
+  messages.push({ role: 'compaction', content: 'Context compacted' });
+  messages.push({
+    role: 'assistant',
+    content: "I've reviewed the context summary. I'll continue from where we left off.",
+  });
+  for (let index = prefixLength - overlapLength; index < prefixLength; index += 1) {
+    messages.push({ ...messages[index] });
+  }
+  messages.push({ role: 'assistant', content: 'new content after duplicated tail' });
+
+  const metrics = { operations: 0, fingerprints: 0 };
+  const match = app.compactionDuplicateTailRange(messages, markerIndex, null, metrics);
+  if (match.start !== markerIndex + 2 || match.length !== overlapLength) {
+    fail(name, 'incorrect longest overlap', JSON.stringify(match));
+    return;
+  }
+  if (metrics.fingerprints !== messages.length) {
+    fail(name, `expected one precomputed fingerprint per message, got ${metrics.fingerprints}`);
+    return;
+  }
+  if (metrics.operations > messages.length * 8) {
+    fail(name, `overlap work scaled beyond a linear bound: ${metrics.operations} operations for ${messages.length} messages`);
     return;
   }
 
@@ -2692,10 +2738,10 @@ async function testSessionState404ClearsStaleActiveResponse() {
   app.state.streaming = true;
   app.state.draftSessionActive = false;
 
-  const runtimeState = await app.syncActiveSessionFromServer(session, false);
+  const syncResult = await app.syncActiveSessionFromServer(session, false);
 
-  if (!runtimeState || runtimeState.active_run !== false) {
-    fail(name, 'expected state 404 to produce inactive runtime state', JSON.stringify(runtimeState));
+  if (syncResult?.kind !== 'ok' || syncResult.state?.active_run !== false) {
+    fail(name, 'expected state 404 to produce an explicit successful inactive result', JSON.stringify(syncResult));
     return;
   }
   if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_state_404'))) {
@@ -3371,6 +3417,190 @@ async function testSanitizeSessionPreservesTranscriptUpdatedAt() {
   pass(name);
 }
 
+async function testSidebarStatusPollRecoversIdempotentlyAfterPageShow() {
+  const name = 'pageshow and transport recovery restart one immediate sidebar poll';
+  const scheduled = [];
+  let statusCalls = 0;
+  let holdRecoveryStatus = false;
+  let resolveRecoveryStatus = null;
+  const { app, windowObj } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false, fired: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        statusCalls += 1;
+        if (holdRecoveryStatus && statusCalls === 1) {
+          return new Promise((resolve) => {
+            resolveRecoveryStatus = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }));
+          });
+        }
+      }
+      if (url.endsWith('/state')) {
+        return new Response(JSON.stringify({ active_run: false, active_response_id: '' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  await app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+  statusCalls = 0;
+  holdRecoveryStatus = true;
+
+  const session = {
+    id: 'sess_pageshow_poll',
+    title: 'Page show poll',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const pageshowHandlers = windowObj.listeners.pageshow || [];
+  const pageshowHandler = pageshowHandlers[pageshowHandlers.length - 1];
+  if (!visibilityHandler || !pageshowHandler) {
+    fail(name, 'expected visibilitychange and pageshow listeners');
+    return;
+  }
+
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  // BFCache restoration does not reliably emit another visibilitychange.
+  pageshowHandler({ type: 'pageshow', persisted: true });
+
+  if (typeof app.handleFetchTransportFallback !== 'function') {
+    fail(name, 'expected an app-level transport fallback hook');
+    return;
+  }
+  const repeatedRecovery = app.handleFetchTransportFallback();
+  app.handleFetchTransportFallback();
+
+  if (statusCalls !== 1 || typeof resolveRecoveryStatus !== 'function') {
+    fail(name, `expected exactly one immediate status request, got ${statusCalls}`);
+    return;
+  }
+  const liveBeforeResolve = scheduled.filter((handle) => !handle.cleared && !handle.fired);
+  if (liveBeforeResolve.length !== 0) {
+    fail(name, 'status timer was scheduled while the immediate request was in flight', JSON.stringify(liveBeforeResolve.map(({ delay }) => delay)));
+    return;
+  }
+
+  resolveRecoveryStatus();
+  await repeatedRecovery;
+  await Promise.resolve();
+
+  let liveTimers = scheduled.filter((handle) => !handle.cleared && !handle.fired);
+  if (liveTimers.length !== 1 || liveTimers[0].delay !== 5000) {
+    fail(name, 'expected exactly one continued visible-session poll timer', JSON.stringify(liveTimers.map(({ delay }) => delay)));
+    return;
+  }
+
+  const nextTimer = liveTimers[0];
+  nextTimer.fired = true;
+  await nextTimer.fn();
+  await Promise.resolve();
+  if (statusCalls !== 2) {
+    fail(name, `continued polling issued ${statusCalls} total requests, want 2`);
+    return;
+  }
+  liveTimers = scheduled.filter((handle) => !handle.cleared && !handle.fired);
+  if (liveTimers.length !== 1 || liveTimers[0].delay !== 5000) {
+    fail(name, 'continued poll did not leave exactly one next timer', JSON.stringify(liveTimers.map(({ delay }) => delay)));
+    return;
+  }
+
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
+async function testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus() {
+  const name = 'hidden in-flight sidebar status callback is stale and cannot restart polling';
+  const scheduled = [];
+  let statusCalls = 0;
+  let resolveStatus = null;
+  let staleSidebarUpdates = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    appOverrides: {
+      updateSidebarStatus(sessions) {
+        if (sessions.some((session) => session.id === 'stale_session')) staleSidebarUpdates += 1;
+      },
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        statusCalls += 1;
+        if (statusCalls > 1) {
+          return new Promise((resolve) => {
+            resolveStatus = () => resolve(new Response(JSON.stringify({
+              sessions: [{ id: 'stale_session', short_title: 'Stale' }],
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          });
+        }
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  await app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+  staleSidebarUpdates = 0;
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const pollPromise = app.startSidebarStatusPoll();
+  await Promise.resolve();
+  if (typeof resolveStatus !== 'function') {
+    fail(name, 'expected a status request to remain in flight');
+    return;
+  }
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  resolveStatus();
+  await pollPromise;
+  await Promise.resolve();
+
+  if (staleSidebarUpdates !== 0) {
+    fail(name, `hidden stale response applied ${staleSidebarUpdates} sidebar updates`);
+    return;
+  }
+  const liveTimers = scheduled.filter((handle) => !handle.cleared);
+  if (liveTimers.length !== 0) {
+    fail(name, 'hidden stale response restarted the background poll loop', JSON.stringify(liveTimers.map(({ delay }) => delay)));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testStatusPollAdvancementRefreshesActiveMessagesOnce() {
   const name = 'status poll transcript advancement refreshes active messages exactly once';
   const fetchCalls = [];
@@ -3623,6 +3853,116 @@ async function testLateActiveMessagesResponseIgnoredAfterSessionSwitch() {
   pass(name);
 }
 
+async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
+  const name = 'online visibility and pageshow wake the existing response reconnect loop';
+  const wakeReasons = [];
+  let resumeCalls = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    appOverrides: {
+      wakeResponseReconnect({ reason, sessionId, responseId }) {
+        wakeReasons.push(`${reason}:${sessionId}:${responseId}`);
+        return true;
+      },
+      resumeActiveResponse: async () => { resumeCalls += 1; },
+    },
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_wake_signals',
+    title: 'Wake signals',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: 'resp_wake_signals',
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.abortController = null;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const onlineHandler = (windowObj.listeners.online || [])[0];
+  const pageshowHandlers = windowObj.listeners.pageshow || [];
+  const pageshowHandler = pageshowHandlers[pageshowHandlers.length - 1];
+  if (!visibilityHandler || !onlineHandler || !pageshowHandler) {
+    fail(name, 'expected all reconnect wake listeners to be registered');
+    return;
+  }
+
+  await visibilityHandler({ type: 'visibilitychange' });
+  await onlineHandler({ type: 'online' });
+  pageshowHandler({ type: 'pageshow', persisted: false });
+
+  const want = [
+    'visibility:sess_wake_signals:resp_wake_signals',
+    'online:sess_wake_signals:resp_wake_signals',
+    'pageshow:sess_wake_signals:resp_wake_signals',
+  ];
+  if (JSON.stringify(wakeReasons) !== JSON.stringify(want)) {
+    fail(name, 'unexpected reconnect wake calls', JSON.stringify(wakeReasons));
+    return;
+  }
+  if (resumeCalls !== 0) {
+    fail(name, `wake listeners started ${resumeCalls} duplicate resume loops`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testLoadServerSessionStateUsesExplicitResultContract() {
+  const name = 'session state loader returns explicit ok auth and retry results';
+  let authFailures = 0;
+  const { app } = await createSessionsHarness({
+    appOverrides: {
+      handleAuthFailure() { authFailures += 1; },
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/sess_contract_ok/state') {
+        return new Response(JSON.stringify({ active_run: true, active_response_id: 'resp_contract' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_contract_auth/state') {
+        return new Response('unauthorized', { status: 401 });
+      }
+      if (url === '/ui/v1/sessions/sess_contract_retry/state') {
+        return new Response('unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  app.stopSidebarStatusPoll();
+
+  const ok = await app.loadServerSessionState('sess_contract_ok');
+  const auth = await app.loadServerSessionState('sess_contract_auth');
+  const retry = await app.loadServerSessionState('sess_contract_retry');
+
+  if (ok?.kind !== 'ok' || ok.state?.active_response_id !== 'resp_contract') {
+    fail(name, 'successful state did not use the ok result contract', JSON.stringify(ok));
+    return;
+  }
+  if (auth?.kind !== 'auth' || Object.prototype.hasOwnProperty.call(auth, 'state')) {
+    fail(name, '401 did not use the distinct auth result contract', JSON.stringify(auth));
+    return;
+  }
+  if (retry?.kind !== 'retry' || Object.prototype.hasOwnProperty.call(retry, 'state')) {
+    fail(name, 'transient failure did not use the distinct retry result contract', JSON.stringify(retry));
+    return;
+  }
+  if (authFailures !== 1) {
+    fail(name, `expected one auth failure callback, got ${authFailures}`);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionStatePollRetriesAfterTransientFailure() {
   const name = 'session state poll retries after transient failure';
   const scheduled = [];
@@ -3689,6 +4029,60 @@ async function testSessionStatePollRetriesAfterTransientFailure() {
   const extraRetry = scheduled.find((item) => item !== retry && item.delay === 5000 && !item.cleared);
   if (extraRetry) {
     fail(name, 'expected successful retry to stop the transient retry loop', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSessionStatePollTreats401AsAuthFailure() {
+  const name = 'session state 401 triggers auth failure without retry';
+  const scheduled = [];
+  let authFailures = 0;
+  let stateCalls = 0;
+  const { app } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      if (handle) handle.cleared = true;
+    },
+    appOverrides: {
+      handleAuthFailure() { authFailures += 1; },
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/sess_auth/state') {
+        stateCalls += 1;
+        return new Response('unauthorized', { status: 401 });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  scheduled.length = 0;
+
+  const session = { id: 'sess_auth', title: 'Auth', origin: 'web', created: 1, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = true;
+
+  app.scheduleSessionStatePoll(session.id, 0);
+  const first = scheduled.find((item) => item.delay === 0 && !item.cleared);
+  if (!first) {
+    fail(name, 'expected initial state poll');
+    return;
+  }
+  await first.fn();
+
+  if (stateCalls !== 1 || authFailures !== 1) {
+    fail(name, `expected one request and one auth failure, got requests=${stateCalls} authFailures=${authFailures}`);
+    return;
+  }
+  const retry = scheduled.find((item) => item !== first && item.delay === 5000 && !item.cleared);
+  if (retry) {
+    fail(name, '401 was treated as a transient failure and retried');
     return;
   }
 
@@ -4598,6 +4992,7 @@ async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
   await testRunErrorEventsConvertToErrorMessages();
   await testConvertServerMessagesCompactionSummariesBecomeMarkers();
   await testConvertServerMessagesSuppressesCompactionRetainedRawTail();
+  await testCompactionDuplicateTailRangeIsLinear();
   await testConvertServerMessagesSuppressesAuthoritativeCompactionTailFlag();
   await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
@@ -4633,11 +5028,16 @@ async function testSessionSwitchRefreshesSkillsAndDraftClearsThem() {
   await testMergeServerMessagesBumpsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
   await testSanitizeSessionPreservesTranscriptUpdatedAt();
+  await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();
+  await testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus();
   await testStatusPollAdvancementRefreshesActiveMessagesOnce();
   await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
   await testActiveTranscriptRefreshSkipsBusyStates();
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
+  await testReconnectBackoffWakeSignalsReuseExistingLoop();
+  await testLoadServerSessionStateUsesExplicitResultContract();
   await testSessionStatePollRetriesAfterTransientFailure();
+  await testSessionStatePollTreats401AsAuthFailure();
   await testSessionStatePollDoesNotRetryAfterSessionSwitch();
   await testLateActiveRunSyncDoesNotMarkDraftStreaming();
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();

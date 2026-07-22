@@ -26,6 +26,7 @@
 // ?webrtc_diag=1 in the URL) to enable console.log timeline output:
 //   [webrtc] connection lifecycle events with timestamps
 //   [webrtc] per-request: method, path, body size, status, latency
+//   [webrtc] pending queue size and HTTPS/stream-close fallback state
 //
 // Force TURN relay: pass ?webrtc_turn=1 to set iceTransportPolicy=relay,
 // which forces all traffic through the TURN server (ignores host/srflx).
@@ -90,6 +91,11 @@
     console.log('[webrtc] +' + elapsed + 'ms ' + msg);
   }
 
+  function diagQueue(state, fallback) {
+    diag('queue state=' + state + ' pending=' + pendingRequests.size +
+      ' fallback=' + (fallback || 'none'));
+  }
+
   function termApp() {
     return window.TermLLMApp || null;
   }
@@ -98,6 +104,22 @@
     const app = termApp();
     if (app && typeof app.maybeReloadForUIVersion === 'function') {
       app.maybeReloadForUIVersion(response);
+    }
+  }
+
+  function restoreHTTPSFetch(reason) {
+    const wasWebRTCTransport = window.fetch === patchedFetch;
+    window.fetch = originalFetch;
+    if (!wasWebRTCTransport) return;
+
+    diag(reason + ' — restoring original fetch');
+    const app = termApp();
+    if (app && typeof app.handleFetchTransportFallback === 'function') {
+      try {
+        app.handleFetchTransportFallback();
+      } catch (_e) {
+        diag('app transport fallback hook failed');
+      }
     }
   }
 
@@ -222,8 +244,8 @@
       // 8. Connected — wire up handlers and patch fetch.
       dataChannel = dc;
       dc.onmessage = handleMessage;
-      dc.onclose = onChannelClose;
-      dc.onerror = onChannelClose;
+      dc.onclose = () => onChannelClose(dc);
+      dc.onerror = () => onChannelClose(dc);
 
       window.fetch = patchedFetch;
 
@@ -294,7 +316,7 @@
   // consumer will see a truncated stream and can retry at the app layer.
   function drainPendingToHTTPS(reason) {
     if (pendingRequests.size === 0) return;
-    diag(reason + ' — draining ' + pendingRequests.size + ' pending request(s) to HTTPS');
+    diagQueue('draining', reason + ':https-before-response-or-stream-close');
 
     // Snapshot the entries; fallback() deletes its own key.
     const entries = Array.from(pendingRequests.values());
@@ -307,10 +329,10 @@
   // Channel close / error
   // ---------------------------------------------------------------------------
 
-  function onChannelClose() {
+  function onChannelClose(closedChannel) {
+    if (closedChannel !== dataChannel) return;
     dataChannel = null;
-    diag('data channel closed — restoring original fetch');
-    window.fetch = originalFetch;
+    restoreHTTPSFetch('data channel closed');
     drainPendingToHTTPS('channel closed');
   }
 
@@ -323,11 +345,12 @@
     renegotiating = true;
 
     // Tear down the current channel so new requests route to HTTPS immediately.
-    if (dataChannel) {
-      try { dataChannel.close(); } catch (_e) { /* ignore */ }
-    }
+    const previousChannel = dataChannel;
     dataChannel = null;
-    window.fetch = originalFetch;
+    if (previousChannel) {
+      try { previousChannel.close(); } catch (_e) { /* ignore */ }
+    }
+    restoreHTTPSFetch('data channel degraded');
 
     // Rescue any other in-flight requests stuck on the dead channel.
     drainPendingToHTTPS('renegotiation');
@@ -412,6 +435,7 @@
           try { options.signal.removeEventListener('abort', abortHandler); } catch (_e) { /* */ }
         }
         diag('cleanup ' + method + ' ' + path + ' reason=' + reason);
+        diagQueue('settled', reason.includes('fallback') || reason.includes('timeout') ? 'https' : 'none');
       }
 
       function closeStream() {
@@ -501,6 +525,8 @@
 
       // fallback: called by drainPendingToHTTPS() when the channel dies.
       function fallback() {
+        const fallbackState = !gotResponse ? 'https' : 'stream-close';
+        diagQueue('fallback', fallbackState);
         cleanup('drain-fallback');
         if (!gotResponse) {
           // Haven't received anything yet — retry via HTTPS. Mutation endpoints
@@ -546,6 +572,7 @@
         },
         fallback,
       });
+      diagQueue('queued', 'none');
 
       // Build and send the request frame.
       const headersObj = {};
