@@ -4649,15 +4649,6 @@
       }
     }
 
-    @media (max-width: 480px) {
-      /* Preserve direct navigation, worktree, Plan, and Changes targets when
-         the full provider/model/MCP cluster no longer fits. Runtime settings
-         remain available from Settings. */
-      .header-stats {
-        display: none;
-      }
-    }
-
 /* Side questions stay compact so the main conversation remains visible. */
 .side-question-overlay {
   position: fixed;
