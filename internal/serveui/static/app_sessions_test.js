@@ -4040,6 +4040,175 @@ async function testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun
   pass(name);
 }
 
+async function testForegroundCatchUpRetriesBeforeAttachingExternalRun() {
+  const name = 'failed foreground catch-up retries before attaching another tab run';
+  let appRef = null;
+  let testReady = false;
+  let messageCalls = 0;
+  let stateCalls = 0;
+  let resumeCalls = 0;
+  const harness = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({
+          sessions: testReady ? [{
+            id: 'sess_retry_cross_tab',
+            short_title: 'Retry cross tab',
+            active_run: true,
+            transcript_updated_at: 2000,
+          }] : []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_retry_cross_tab')) {
+        messageCalls += 1;
+        if (messageCalls === 1) {
+          return new Response('temporary failure', { status: 503 });
+        }
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 'msg_retry_caught_up',
+            sequence: 2,
+            role: 'assistant',
+            created_at: 1710000000002,
+            parts: [{ type: 'text', text: 'caught up after retry' }],
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_retry_cross_tab/state') {
+        stateCalls += 1;
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_retry_cross_tab',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      updateSidebarStatus(entries) {
+        if (!appRef) return;
+        for (const entry of entries) {
+          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
+        }
+      },
+      async resumeActiveResponse() { resumeCalls += 1; },
+    },
+  });
+  const { app, windowObj } = harness;
+  appRef = app;
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_retry_cross_tab',
+    title: 'Retry cross tab',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 1000,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+
+  if (messageCalls !== 1 || stateCalls !== 0 || resumeCalls !== 0 || session.activeResponseId) {
+    fail(name, 'failed catch-up attached the external response instead of leaving it pending', JSON.stringify({ messageCalls, stateCalls, resumeCalls, activeResponseId: session.activeResponseId }));
+    return;
+  }
+
+  await app.startSidebarStatusPoll();
+  await Promise.resolve();
+  await Promise.resolve();
+  app.stopSidebarStatusPoll();
+
+  if (messageCalls !== 2 || stateCalls !== 1 || resumeCalls !== 1) {
+    fail(name, 'successful retry did not catch up and attach exactly once', JSON.stringify({ messageCalls, stateCalls, resumeCalls }));
+    return;
+  }
+  if (session.messages.length !== 1 || session.messages[0].content !== 'caught up after retry') {
+    fail(name, 'successful retry attached without applying the authoritative transcript', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testForegroundCatchUpStopsWhenPageIsRehidden() {
+  const name = 'foreground catch-up does not attach after page is hidden again';
+  let testReady = false;
+  let resolveStatus = null;
+  let stateCalls = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status' && testReady) {
+        return new Promise((resolve) => {
+          resolveStatus = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_rehidden/state') {
+        stateCalls += 1;
+        return new Response(JSON.stringify({ active_run: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+  });
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_rehidden',
+    title: 'Rehidden',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'visible';
+  const foregroundPromise = visibilityHandler({ type: 'visibilitychange' });
+  await Promise.resolve();
+  if (typeof resolveStatus !== 'function') {
+    fail(name, 'expected foreground reconciliation to wait on status');
+    return;
+  }
+
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  resolveStatus();
+  await foregroundPromise;
+  await Promise.resolve();
+
+  if (stateCalls !== 0) {
+    fail(name, `stale foreground handler issued ${stateCalls} hidden state requests`);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   const name = 'online visibility and pageshow wake the existing response reconnect loop';
   const wakeReasons = [];
@@ -5396,6 +5565,8 @@ async function testSessionSwitchClearsPlanBeforeRejectingOldResponse() {
   await testActiveTranscriptRefreshSkipsBusyStates();
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
   await testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun();
+  await testForegroundCatchUpRetriesBeforeAttachingExternalRun();
+  await testForegroundCatchUpStopsWhenPageIsRehidden();
   await testReconnectBackoffWakeSignalsReuseExistingLoop();
   await testLoadServerSessionStateUsesExplicitResultContract();
   await testSessionStatePollRetriesAfterTransientFailure();

@@ -1734,6 +1734,16 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
   return refreshPromise;
 };
 
+const attachExternallyActiveResponseAfterCatchUp = async (session, refreshed) => {
+  if (!refreshed || !session || session.id !== state.activeSessionId) return false;
+  if (document.visibilityState === 'hidden' || state.draftSessionActive) return false;
+  if (state.abortController || state.streaming || session.activeResponseId) return false;
+  const progress = state.sessionProgressById?.[session.id] || null;
+  if (!progress?.serverActiveRun || progress?.optimisticBusy) return false;
+  await syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
+  return true;
+};
+
 const reconcilePendingActiveTranscriptRefresh = async () => {
   const active = getActiveSession();
   if (!active) return false;
@@ -1745,13 +1755,16 @@ const reconcilePendingActiveTranscriptRefresh = async () => {
     return false;
   }
 
+  const progress = state.sessionProgressById?.[active.id] || null;
   const refreshed = await refreshActiveSessionMessagesFromServer(active, {
     transcriptUpdatedAt: pendingTranscriptUpdatedAt,
-    forceScroll: false
+    forceScroll: false,
+    allowServerActiveRun: Boolean(progress?.serverActiveRun)
   });
   if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === pendingTranscriptUpdatedAt) {
     delete active._pendingTranscriptUpdatedAt;
   }
+  await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
   return refreshed;
 };
 
@@ -1784,6 +1797,7 @@ const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
   if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === incomingTranscriptUpdatedAt) {
     delete active._pendingTranscriptUpdatedAt;
   }
+  await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
   return refreshed;
 };
 
@@ -3356,8 +3370,18 @@ document.addEventListener('visibilitychange', async () => {
   // one while this page was hidden; attaching first would only replay the new
   // response and leave the earlier turns missing.
   await startSidebarStatusPoll();
+  if (document.visibilityState !== 'visible') return;
   const session = getActiveSession();
   if (!session) return;
+
+  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt);
+  if (pendingTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+    // Do not attach a newer response onto a stale transcript. The visible
+    // status poll retains the pending version and retries the tail fetch; once
+    // it succeeds, reconciliation attaches the external response itself.
+    setConnectionState('Catching up with this session\u2026', 'bad');
+    return;
+  }
 
   if (session.activeResponseId && app.wakeResponseReconnect?.({
     reason: 'visibility',
