@@ -3925,6 +3925,290 @@ async function testLateActiveMessagesResponseIgnoredAfterSessionSwitch() {
   pass(name);
 }
 
+async function testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun() {
+  const name = 'foreground catch-up refreshes missed turns before resuming another tab run';
+  let appRef = null;
+  let testReady = false;
+  const order = [];
+  let resumeMessages = [];
+  const harness = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        order.push('status');
+        return new Response(JSON.stringify({
+          sessions: testReady ? [{
+            id: 'sess_cross_tab',
+            short_title: 'Cross tab',
+            active_run: true,
+            message_count: 3,
+            last_message_at: 1710000000003,
+            transcript_updated_at: 2000,
+          }] : []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_cross_tab')) {
+        order.push('messages');
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              id: 'msg_user_other_tab',
+              sequence: 2,
+              role: 'user',
+              created_at: 1710000000002,
+              parts: [{ type: 'text', text: 'continued in the other tab' }],
+            },
+            {
+              id: 'msg_assistant_other_tab',
+              sequence: 3,
+              role: 'assistant',
+              created_at: 1710000000003,
+              parts: [{ type: 'text', text: 'completed there' }],
+            },
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"cross-tab-tail"' } });
+      }
+      if (url === '/ui/v1/sessions/sess_cross_tab/state') {
+        order.push('state');
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_other_tab',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      updateSidebarStatus(entries) {
+        if (!appRef) return;
+        for (const entry of entries) {
+          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
+        }
+      },
+      async resumeActiveResponse(session) {
+        order.push('resume');
+        resumeMessages = session.messages.map((message) => message.content);
+      },
+    },
+  });
+  const { app, windowObj } = harness;
+  appRef = app;
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_cross_tab',
+    title: 'Cross tab',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 1000,
+    messages: [{ id: 'old_local', role: 'user', content: 'original tab', created: 1710000000000 }],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+  order.length = 0;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+  await Promise.resolve();
+  await Promise.resolve();
+  app.stopSidebarStatusPoll();
+
+  const messagesIndex = order.indexOf('messages');
+  const stateIndex = order.indexOf('state');
+  const resumeIndex = order.indexOf('resume');
+  if (messagesIndex < 0 || stateIndex < 0 || resumeIndex < 0 || !(messagesIndex < stateIndex && stateIndex < resumeIndex)) {
+    fail(name, 'expected status transcript catch-up before state attach and resume', JSON.stringify(order));
+    return;
+  }
+  if (!resumeMessages.includes('continued in the other tab') || !resumeMessages.includes('completed there')) {
+    fail(name, 'resumed stream did not retain turns committed by the other tab', JSON.stringify(resumeMessages));
+    return;
+  }
+  if (session.activeResponseId !== 'resp_other_tab') {
+    fail(name, `expected external response to be attached, got ${session.activeResponseId}`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testForegroundCatchUpRetriesBeforeAttachingExternalRun() {
+  const name = 'failed foreground catch-up retries before attaching another tab run';
+  let appRef = null;
+  let testReady = false;
+  let messageCalls = 0;
+  let stateCalls = 0;
+  let resumeCalls = 0;
+  const harness = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({
+          sessions: testReady ? [{
+            id: 'sess_retry_cross_tab',
+            short_title: 'Retry cross tab',
+            active_run: true,
+            transcript_updated_at: 2000,
+          }] : []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_retry_cross_tab')) {
+        messageCalls += 1;
+        if (messageCalls === 1) {
+          return new Response('temporary failure', { status: 503 });
+        }
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 'msg_retry_caught_up',
+            sequence: 2,
+            role: 'assistant',
+            created_at: 1710000000002,
+            parts: [{ type: 'text', text: 'caught up after retry' }],
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_retry_cross_tab/state') {
+        stateCalls += 1;
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_retry_cross_tab',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      updateSidebarStatus(entries) {
+        if (!appRef) return;
+        for (const entry of entries) {
+          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
+        }
+      },
+      async resumeActiveResponse() { resumeCalls += 1; },
+    },
+  });
+  const { app, windowObj } = harness;
+  appRef = app;
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_retry_cross_tab',
+    title: 'Retry cross tab',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 1000,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+
+  if (messageCalls !== 1 || stateCalls !== 0 || resumeCalls !== 0 || session.activeResponseId) {
+    fail(name, 'failed catch-up attached the external response instead of leaving it pending', JSON.stringify({ messageCalls, stateCalls, resumeCalls, activeResponseId: session.activeResponseId }));
+    return;
+  }
+
+  await app.startSidebarStatusPoll();
+  await Promise.resolve();
+  await Promise.resolve();
+  app.stopSidebarStatusPoll();
+
+  if (messageCalls !== 2 || stateCalls !== 1 || resumeCalls !== 1) {
+    fail(name, 'successful retry did not catch up and attach exactly once', JSON.stringify({ messageCalls, stateCalls, resumeCalls }));
+    return;
+  }
+  if (session.messages.length !== 1 || session.messages[0].content !== 'caught up after retry') {
+    fail(name, 'successful retry attached without applying the authoritative transcript', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testForegroundCatchUpStopsWhenPageIsRehidden() {
+  const name = 'foreground catch-up does not attach after page is hidden again';
+  let testReady = false;
+  let resolveStatus = null;
+  let stateCalls = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/status' && testReady) {
+        return new Promise((resolve) => {
+          resolveStatus = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_rehidden/state') {
+        stateCalls += 1;
+        return new Response(JSON.stringify({ active_run: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+  });
+  await app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_rehidden',
+    title: 'Rehidden',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: null,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  testReady = true;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'visible';
+  const foregroundPromise = visibilityHandler({ type: 'visibilitychange' });
+  await Promise.resolve();
+  if (typeof resolveStatus !== 'function') {
+    fail(name, 'expected foreground reconciliation to wait on status');
+    return;
+  }
+
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  resolveStatus();
+  await foregroundPromise;
+  await Promise.resolve();
+
+  if (stateCalls !== 0) {
+    fail(name, `stale foreground handler issued ${stateCalls} hidden state requests`);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   const name = 'online visibility and pageshow wake the existing response reconnect loop';
   const wakeReasons = [];
@@ -5280,6 +5564,9 @@ async function testSessionSwitchClearsPlanBeforeRejectingOldResponse() {
   await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
   await testActiveTranscriptRefreshSkipsBusyStates();
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
+  await testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun();
+  await testForegroundCatchUpRetriesBeforeAttachingExternalRun();
+  await testForegroundCatchUpStopsWhenPageIsRehidden();
   await testReconnectBackoffWakeSignalsReuseExistingLoop();
   await testLoadServerSessionStateUsesExplicitResultContract();
   await testSessionStatePollRetriesAfterTransientFailure();

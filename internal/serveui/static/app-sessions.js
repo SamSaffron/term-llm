@@ -1635,14 +1635,20 @@ const recordTranscriptVersionsFromStatus = (statusSessions) => {
   }
 };
 
-const canRefreshActiveSessionMessages = (session) => {
+const canRefreshActiveSessionMessages = (session, options = {}) => {
   if (!session || session.id !== state.activeSessionId) return false;
   if (document.visibilityState === 'hidden') return false;
   if (state.draftSessionActive) return false;
   if (state.abortController || state.streaming) return false;
   if (session.activeResponseId) return false;
   if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) return false;
-  if (sessionHasInProgressState(session)) return false;
+  const progress = state.sessionProgressById?.[session.id] || null;
+  const onlyServerRunIsActive = Boolean(
+    options.allowServerActiveRun
+    && progress?.serverActiveRun
+    && !progress?.optimisticBusy
+  );
+  if (sessionHasInProgressState(session) && !onlyServerRunIsActive) return false;
   const history = ensureSessionHistory(session);
   if (!history || history.loadingOlder) return false;
   return true;
@@ -1669,7 +1675,7 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
     return false;
   }
 
-  if (!canRefreshActiveSessionMessages(session)) return false;
+  if (!canRefreshActiveSessionMessages(session, options)) return false;
 
   const refreshSessionId = session.id;
   const refreshPromise = (async () => {
@@ -1692,7 +1698,7 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
       }
       if (!page) return false;
 
-      if (!canRefreshActiveSessionMessages(session) || session.id !== state.activeSessionId) {
+      if (!canRefreshActiveSessionMessages(session, options) || session.id !== state.activeSessionId) {
         return false;
       }
 
@@ -1728,6 +1734,16 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
   return refreshPromise;
 };
 
+const attachExternallyActiveResponseAfterCatchUp = async (session, refreshed) => {
+  if (!refreshed || !session || session.id !== state.activeSessionId) return false;
+  if (document.visibilityState === 'hidden' || state.draftSessionActive) return false;
+  if (state.abortController || state.streaming || session.activeResponseId) return false;
+  const progress = state.sessionProgressById?.[session.id] || null;
+  if (!progress?.serverActiveRun || progress?.optimisticBusy) return false;
+  await syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
+  return true;
+};
+
 const reconcilePendingActiveTranscriptRefresh = async () => {
   const active = getActiveSession();
   if (!active) return false;
@@ -1739,13 +1755,16 @@ const reconcilePendingActiveTranscriptRefresh = async () => {
     return false;
   }
 
+  const progress = state.sessionProgressById?.[active.id] || null;
   const refreshed = await refreshActiveSessionMessagesFromServer(active, {
     transcriptUpdatedAt: pendingTranscriptUpdatedAt,
-    forceScroll: false
+    forceScroll: false,
+    allowServerActiveRun: Boolean(progress?.serverActiveRun)
   });
   if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === pendingTranscriptUpdatedAt) {
     delete active._pendingTranscriptUpdatedAt;
   }
+  await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
   return refreshed;
 };
 
@@ -1766,17 +1785,19 @@ const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
   }
 
   active._pendingTranscriptUpdatedAt = incomingTranscriptUpdatedAt;
-  if (entry.active_run) {
-    return false;
-  }
-
   const refreshed = await refreshActiveSessionMessagesFromServer(active, {
     transcriptUpdatedAt: incomingTranscriptUpdatedAt,
-    forceScroll: false
+    forceScroll: false,
+    // A foreground tab can discover that another tab has already advanced the
+    // transcript and started the next response. Catch up the committed tail
+    // before attaching that response's event stream; the stream snapshot only
+    // reconstructs its own turn and cannot fill gaps from earlier turns.
+    allowServerActiveRun: Boolean(entry.active_run)
   });
   if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === incomingTranscriptUpdatedAt) {
     delete active._pendingTranscriptUpdatedAt;
   }
+  await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
   return refreshed;
 };
 
@@ -3344,9 +3365,23 @@ document.addEventListener('visibilitychange', async () => {
     stopSidebarStatusPoll();
     return;
   }
-  startSidebarStatusPoll();
+  // Reconcile the authoritative transcript before looking for an active
+  // response. Another tab may have completed several turns and started a new
+  // one while this page was hidden; attaching first would only replay the new
+  // response and leave the earlier turns missing.
+  await startSidebarStatusPoll();
+  if (document.visibilityState !== 'visible') return;
   const session = getActiveSession();
   if (!session) return;
+
+  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt);
+  if (pendingTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+    // Do not attach a newer response onto a stale transcript. The visible
+    // status poll retains the pending version and retries the tail fetch; once
+    // it succeeds, reconciliation attaches the external response itself.
+    setConnectionState('Catching up with this session\u2026', 'bad');
+    return;
+  }
 
   if (session.activeResponseId && app.wakeResponseReconnect?.({
     reason: 'visibility',
