@@ -94,6 +94,11 @@ func TestHeaderControlsUseSharedActionPill(t *testing.T) {
 		t.Fatalf("StaticAsset(app.css): %v", err)
 	}
 	cssSrc := string(css)
+	for _, block := range cssRuleBlocks(cssSrc, ".header-stats") {
+		if strings.Contains(block, "display: none;") {
+			t.Fatalf("mobile header must keep the model picker visible: %s", block)
+		}
+	}
 	for _, want := range []string{
 		"--header-action-height:",
 		"--header-action-radius:",
@@ -137,17 +142,29 @@ func TestHeaderControlsUseSharedActionPill(t *testing.T) {
 }
 
 func cssRuleBlock(cssSrc, selector string) string {
+	blocks := cssRuleBlocks(cssSrc, selector)
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks[0]
+}
+
+func cssRuleBlocks(cssSrc, selector string) []string {
 	needle := selector + " {"
-	start := strings.Index(cssSrc, needle)
-	if start < 0 {
-		return ""
+	var blocks []string
+	for {
+		start := strings.Index(cssSrc, needle)
+		if start < 0 {
+			return blocks
+		}
+		bodyStart := start + len(needle)
+		end := strings.Index(cssSrc[bodyStart:], "}")
+		if end < 0 {
+			return blocks
+		}
+		blocks = append(blocks, cssSrc[bodyStart:bodyStart+end])
+		cssSrc = cssSrc[bodyStart+end+1:]
 	}
-	bodyStart := start + len(needle)
-	end := strings.Index(cssSrc[bodyStart:], "}")
-	if end < 0 {
-		return ""
-	}
-	return cssSrc[bodyStart : bodyStart+end]
 }
 
 func TestStaticAssetsEmbedProductionFilesOnly(t *testing.T) {
