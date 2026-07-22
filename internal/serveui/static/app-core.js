@@ -1617,33 +1617,103 @@ const scrollToBottom = (force = false) => {
   }, remaining);
 };
 
+let legacyConnectionWarning = '';
+let legacyConnectionWarningOwner = null;
+let providerRetryStatus = null;
+
 function hideConnectionState() {
   const el = elements.connectionState;
   if (!el) return;
   el.textContent = '';
-  el.classList.remove('ok', 'bad');
+  el.classList.remove('ok', 'bad', 'retry');
   el.hidden = true;
 }
 
-const setConnectionState = (text, mode = '') => {
+const visibleResponseIdForSession = (sessionId) => {
+  const ownerSessionId = String(sessionId || '').trim();
+  if (!ownerSessionId || state.draftSessionActive || String(state.activeSessionId || '').trim() !== ownerSessionId) {
+    return '';
+  }
+  const session = state.sessions.find((item) => String(item?.id || '').trim() === ownerSessionId) || null;
+  const trackedResponseId = String(session?.activeResponseId || '').trim();
+  if (trackedResponseId) return trackedResponseId;
+  if (String(state.currentStreamSessionId || '').trim() === ownerSessionId) {
+    return String(state.currentStreamResponseId || '').trim();
+  }
+  return '';
+};
+
+const providerRetryOwnerIsVisible = (status = providerRetryStatus) => Boolean(
+  status
+  && status.sessionId
+  && status.responseId
+  && visibleResponseIdForSession(status.sessionId) === status.responseId
+);
+
+const renderHeaderStatus = () => {
   const el = elements.connectionState;
   if (!el) return;
 
-  // Keep the header quiet during normal operation. The connection state is
-  // intentionally reserved for actionable warnings, so success/progress
-  // updates (including WebRTC "direct" status) do not compete with the
-  // session title and model chips.
   const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
-  const warningText = offline ? 'Network offline' : (mode === 'bad' ? String(text || '').trim() : '');
-  if (!warningText) {
+  const warningText = offline ? 'Network offline' : legacyConnectionWarning;
+  const retryText = !warningText && providerRetryOwnerIsVisible()
+    ? String(providerRetryStatus.text || '').trim()
+    : '';
+  if (!warningText && !retryText) {
     hideConnectionState();
     return;
   }
 
-  el.textContent = warningText;
-  el.classList.remove('ok');
-  el.classList.add('bad');
+  el.textContent = warningText || retryText;
+  el.classList.remove('ok', 'bad', 'retry');
+  el.classList.add(warningText ? 'bad' : 'retry');
   el.hidden = false;
+};
+
+const setConnectionState = (text, mode = '') => {
+  // Keep the header quiet during normal operation. The legacy connection state
+  // remains reserved for actionable warnings, while provider retries use their
+  // own lower-priority source below.
+  const owner = {};
+  legacyConnectionWarning = mode === 'bad' ? String(text || '').trim() : '';
+  legacyConnectionWarningOwner = owner;
+  renderHeaderStatus();
+  return owner;
+};
+
+const clearConnectionStateOwner = (owner) => {
+  if (!owner || legacyConnectionWarningOwner !== owner) return false;
+  legacyConnectionWarning = '';
+  legacyConnectionWarningOwner = null;
+  renderHeaderStatus();
+  return true;
+};
+
+const setProviderRetryStatus = (sessionId, responseId, text) => {
+  const next = {
+    sessionId: String(sessionId || '').trim(),
+    responseId: String(responseId || '').trim(),
+    text: String(text || '').trim(),
+  };
+  if (!next.sessionId || !next.responseId || !next.text || !providerRetryOwnerIsVisible(next)) {
+    return false;
+  }
+  providerRetryStatus = next;
+  renderHeaderStatus();
+  return true;
+};
+
+const clearProviderRetryStatus = (sessionId, responseId) => {
+  const ownerSessionId = String(sessionId || '').trim();
+  const ownerResponseId = String(responseId || '').trim();
+  if (!providerRetryStatus
+      || providerRetryStatus.sessionId !== ownerSessionId
+      || providerRetryStatus.responseId !== ownerResponseId) {
+    return false;
+  }
+  providerRetryStatus = null;
+  renderHeaderStatus();
+  return true;
 };
 
 const setStartupStatus = (text) => {
@@ -2431,6 +2501,9 @@ Object.assign(app, {
   shouldDisableAutoScrollForKey,
   scrollToBottom,
   setConnectionState,
+  clearConnectionStateOwner,
+  setProviderRetryStatus,
+  clearProviderRetryStatus,
   setStartupStatus,
   hideStartupSplash,
   updateDocumentTitle,

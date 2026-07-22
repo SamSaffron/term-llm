@@ -310,6 +310,7 @@ function createHarness(options = {}) {
   state.activeSessionId = activeSessionIdValue;
 
   const connectionStates = [];
+  let providerRetryStatus = null;
   let modelSwapUpdateCount = 0;
   const app = {
     UI_PREFIX: '/ui',
@@ -366,7 +367,63 @@ function createHarness(options = {}) {
       return app.isConversationMounted(sessionOrId) ? elements.messages : null;
     },
     scrollToBottom() {},
-    setConnectionState: (text) => { connectionStates.push(String(text || '')); },
+    setConnectionState(text, mode = '') {
+      connectionStates.push({ source: 'legacy', text: String(text || ''), mode: String(mode || '') });
+    },
+    // Mirrors production's strict visible session/response ownership rules.
+    setProviderRetryStatus(sessionId, responseId, text) {
+      const ownerSessionId = String(sessionId || '').trim();
+      const ownerResponseId = String(responseId || '').trim();
+      const activeSession = state.sessions.find((session) => session.id === state.activeSessionId) || null;
+      const visibleResponseId = String(activeSession?.activeResponseId || (
+        state.currentStreamSessionId === ownerSessionId ? state.currentStreamResponseId : ''
+      ) || '').trim();
+      const applied = Boolean(
+        ownerSessionId
+        && ownerResponseId
+        && ownerSessionId === state.activeSessionId
+        && !state.draftSessionActive
+        && ownerResponseId === visibleResponseId
+      );
+      connectionStates.push({
+        source: 'provider-retry',
+        action: 'set',
+        sessionId: ownerSessionId,
+        responseId: ownerResponseId,
+        text: String(text || ''),
+        mode: 'retry',
+        applied,
+      });
+      if (applied) {
+        providerRetryStatus = {
+          sessionId: ownerSessionId,
+          responseId: ownerResponseId,
+          text: String(text || ''),
+          mode: 'retry',
+        };
+      }
+      return applied;
+    },
+    clearProviderRetryStatus(sessionId, responseId) {
+      const ownerSessionId = String(sessionId || '').trim();
+      const ownerResponseId = String(responseId || '').trim();
+      const applied = Boolean(
+        providerRetryStatus
+        && providerRetryStatus.sessionId === ownerSessionId
+        && providerRetryStatus.responseId === ownerResponseId
+      );
+      connectionStates.push({
+        source: 'provider-retry',
+        action: 'clear',
+        sessionId: ownerSessionId,
+        responseId: ownerResponseId,
+        text: '',
+        mode: 'retry',
+        applied,
+      });
+      if (applied) providerRetryStatus = null;
+      return applied;
+    },
     sessionSlug(s) { return s ? s.id : ''; },
     updateURL() {},
     persistAndRefreshShell() {},
@@ -658,6 +715,7 @@ function createHarness(options = {}) {
     getEventsStarted: () => getEventsStarted,
     postStreamCanceled: () => postStreamCanceled,
     connectionStates,
+    getProviderRetryStatus: () => providerRetryStatus ? { ...providerRetryStatus } : null,
     getModelSwapUpdateCount: () => modelSwapUpdateCount,
     getCancelRequested: () => cancelRequested,
     releaseCancel: () => {
@@ -3010,7 +3068,7 @@ async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
     fail(name, `expected one resumed fetch after wake, got ${eventsCount} total fetches`);
     return;
   }
-  if (!connectionStates.some((text) => text.includes('within one minute'))) {
+  if (!connectionStates.some((status) => status.source === 'legacy' && status.text.includes('within one minute'))) {
     fail(name, 'slow reconnect status was not exposed to the UI', JSON.stringify(connectionStates));
     return;
   }
@@ -3514,101 +3572,207 @@ function testResponsePhaseEventUpdatesTransientMarker() {
   pass(name);
 }
 
-function testResponseRetryEventUpdatesTransientMarker() {
-  const name = 'response retry event updates transient marker without assistant text';
+function createRetryProjectionHarness(suffix = 'retry') {
   const harness = createHarness();
-  const { app, state } = harness;
+  const responseId = `resp_${suffix}`;
   const session = {
-    id: 'session_retry',
+    id: `session_${suffix}`,
     title: 'Retry test',
     messages: [],
     lastResponseId: null,
-    activeResponseId: null,
+    activeResponseId: responseId,
     lastSequenceNumber: 0,
     number: 1,
   };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  const streamState = app.createResponseStreamState(session);
+  harness.state.sessions.push(session);
+  harness.state.activeSessionId = session.id;
+  harness.state.currentStreamSessionId = session.id;
+  harness.state.currentStreamResponseId = responseId;
+  return {
+    ...harness,
+    responseId,
+    session,
+    streamState: harness.app.createResponseStreamState(session),
+  };
+}
 
-  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
-    message: 'Model stream interrupted; reconnecting (2/6)…',
-    attempt: 2,
+function projectRetry(harness, sequenceNumber = 1, message = 'Model stream interrupted; reconnecting (2/6)…') {
+  harness.app.applyResponseStreamEvent(harness.session, harness.streamState, 'response.retry', {
+    message,
+    attempt: sequenceNumber + 1,
     max_attempts: 6,
     wait_seconds: 0.5,
-    sequence_number: 1,
+    sequence_number: sequenceNumber,
   });
-  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
-    message: 'Model stream interrupted; reconnecting (3/6)…',
-    attempt: 3,
-    max_attempts: 6,
-    wait_seconds: 1,
-    sequence_number: 2,
-  });
+}
 
-  const markers = session.messages.filter((message) => message.role === 'phase');
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
-  if (markers.length !== 1) {
-    fail(name, `expected one retry marker, got ${markers.length}`, JSON.stringify(session.messages));
+function testResponseRetryEventUpdatesOwnedHeaderStatus() {
+  const name = 'response retry updates one owned header status without transcript messages';
+  const harness = createRetryProjectionHarness('retry_status');
+
+  projectRetry(harness, 1, 'Model stream interrupted; reconnecting (2/6)…');
+  projectRetry(harness, 2, 'Model stream interrupted; reconnecting (3/6)…');
+
+  const status = harness.getProviderRetryStatus();
+  const sets = harness.connectionStates.filter((entry) => entry.source === 'provider-retry' && entry.action === 'set' && entry.applied);
+  if (harness.session.messages.length !== 0) {
+    fail(name, 'retry event created transcript messages', JSON.stringify(harness.session.messages));
     return;
   }
-  if (!markers[0].transient || markers[0].content !== 'Model stream interrupted; reconnecting (3/6)…') {
-    fail(name, 'retry marker was not updated in place', JSON.stringify(markers[0]));
+  if (!status || status.sessionId !== harness.session.id || status.responseId !== harness.responseId
+      || status.text !== 'Model stream interrupted; reconnecting (3/6)…') {
+    fail(name, 'retry attempts did not update the owned header status in place', JSON.stringify(status));
     return;
   }
-  if (assistants.length !== 0) {
-    fail(name, 'retry event should not create assistant messages', JSON.stringify(assistants));
+  if (sets.length !== 2 || sets.some((entry) => entry.mode !== 'retry')) {
+    fail(name, 'header status calls were not source/mode aware', JSON.stringify(sets));
     return;
   }
-  if (session.lastSequenceNumber !== 2) {
-    fail(name, `lastSequenceNumber = ${session.lastSequenceNumber}, want 2`);
+  if (harness.session.lastSequenceNumber !== 2) {
+    fail(name, `lastSequenceNumber = ${harness.session.lastSequenceNumber}, want 2`);
     return;
   }
   pass(name);
 }
 
-function testResponseRetryAfterResumedOutputStaysAtNewInterruption() {
-  const name = 'response retry after resumed output creates a marker at the new interruption';
-  const harness = createHarness();
-  const { app, state } = harness;
-  const session = {
-    id: 'session_retry_order',
-    title: 'Retry ordering test',
-    messages: [],
-    lastResponseId: null,
-    activeResponseId: null,
-    lastSequenceNumber: 0,
-    number: 1,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  const streamState = app.createResponseStreamState(session);
+function testProviderRetryClearsOnMeaningfulProgress() {
+  const name = 'provider retry clears on every meaningful progress category';
+  const cases = [
+    ['non-empty text delta', 'response.output_text.delta', { delta: 'resumed' }],
+    ['new text segment', 'response.output_text.new_segment', {}],
+    ['output item added', 'response.output_item.added', { item: { type: 'message' } }],
+    ['function arguments delta', 'response.function_call_arguments.delta', { delta: '{' }],
+    ['output item done', 'response.output_item.done', { item: { type: 'message' } }],
+  ];
 
-  app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
-    delta: 'first attempt',
-    sequence_number: 1,
-  });
-  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
-    message: 'Model stream interrupted; reconnecting (2/6)…',
-    sequence_number: 2,
-  });
-  app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
-    delta: 'second attempt',
-    sequence_number: 3,
-  });
-  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
-    message: 'Model stream interrupted; reconnecting (3/6)…',
-    sequence_number: 4,
-  });
+  for (const [label, event, payload] of cases) {
+    const harness = createRetryProjectionHarness(`progress_${event.replace(/[^a-z]+/g, '_')}`);
+    projectRetry(harness, 1);
+    harness.app.applyResponseStreamEvent(harness.session, harness.streamState, event, {
+      ...payload,
+      sequence_number: 2,
+    });
+    if (harness.getProviderRetryStatus() !== null) {
+      fail(name, `${label} did not clear retry`, JSON.stringify(harness.getProviderRetryStatus()));
+      return;
+    }
+  }
+  pass(name);
+}
 
-  const roles = session.messages.map((message) => message.role);
-  if (roles.join(',') !== 'assistant,phase,assistant,phase') {
-    fail(name, `unexpected message roles/order: ${roles.join(',')}`, JSON.stringify(session.messages));
+function testProviderRetryPersistsAcrossNonProgressEvents() {
+  const name = 'provider retry persists across heartbeat phase model-swap and recoverable stream errors';
+  const cases = [
+    ['heartbeat', 'response.heartbeat', {}],
+    ['phase', 'response.phase', { text: 'Compacting context…' }],
+    ['model swap progress', 'response.model_swap.progress', { stage: 'starting' }],
+    ['recoverable stream error', 'response.stream_error', { error: { type: 'temporary_stream_error' } }],
+    ['snapshot recovery', 'response.stream_error', {
+      error: { type: 'stream_buffer_overflow' },
+      recovery: { sequence_number: 2, messages: [] },
+    }],
+  ];
+
+  for (const [label, event, payload] of cases) {
+    const harness = createRetryProjectionHarness(`nonprogress_${event.replace(/[^a-z]+/g, '_')}`);
+    projectRetry(harness, 1);
+    harness.app.applyResponseStreamEvent(harness.session, harness.streamState, event, {
+      ...payload,
+      sequence_number: 2,
+    });
+    const status = harness.getProviderRetryStatus();
+    if (!status || status.responseId !== harness.responseId) {
+      fail(name, `${label} incorrectly cleared retry`, JSON.stringify(status));
+      return;
+    }
+  }
+  pass(name);
+}
+
+function testProviderRetryClearsOnTerminalEvents() {
+  const name = 'provider retry clears on completion failure and cancellation';
+  const cases = [
+    ['response.completed', (responseId) => ({ response: { id: responseId, status: 'completed' } })],
+    ['response.failed', () => ({ error: { message: 'terminal provider failure' } })],
+    ['response.cancelled', () => ({})],
+  ];
+
+  for (const [event, makePayload] of cases) {
+    const harness = createRetryProjectionHarness(`terminal_${event.replace(/[^a-z]+/g, '_')}`);
+    projectRetry(harness, 1);
+    harness.app.applyResponseStreamEvent(harness.session, harness.streamState, event, {
+      ...makePayload(harness.responseId),
+      sequence_number: 2,
+    });
+    if (harness.getProviderRetryStatus() !== null) {
+      fail(name, `${event} did not clear retry`, JSON.stringify(harness.getProviderRetryStatus()));
+      return;
+    }
+  }
+  pass(name);
+}
+
+function testActiveResponseTransitionClearsObsoleteRetryOwner() {
+  const name = 'active response transitions clear only the obsolete retry owner';
+  const harness = createRetryProjectionHarness('response_transition');
+  projectRetry(harness, 1, 'Old response retry');
+
+  const oldResponseId = harness.responseId;
+  const newResponseId = 'resp_response_transition_new';
+  harness.app.setActiveResponseTracking(harness.session, newResponseId, 0);
+  harness.state.currentStreamResponseId = newResponseId;
+  if (harness.getProviderRetryStatus() !== null) {
+    fail(name, 'obsolete retry remained visible after the active response changed', JSON.stringify(harness.getProviderRetryStatus()));
     return;
   }
-  if (session.messages[1].content !== 'Model stream interrupted; reconnecting (2/6)…'
-      || session.messages[3].content !== 'Model stream interrupted; reconnecting (3/6)…') {
-    fail(name, 'retry markers did not remain at their interruption points', JSON.stringify(session.messages));
+
+  projectRetry(harness, 2, 'New response retry');
+  harness.app.clearActiveResponseTracking(harness.session, oldResponseId);
+  const status = harness.getProviderRetryStatus();
+  if (status?.responseId !== newResponseId || harness.session.activeResponseId !== newResponseId) {
+    fail(name, 'stale clear affected the newer response owner', JSON.stringify({ status, activeResponseId: harness.session.activeResponseId }));
+    return;
+  }
+  pass(name);
+}
+
+function testProviderRetryOwnershipGuardsBackgroundDetachAndStaleClear() {
+  const name = 'provider retry ownership guards background events detach and stale clears';
+  const harness = createRetryProjectionHarness('ownership');
+  const background = {
+    id: 'session_background',
+    title: 'Background',
+    messages: [],
+    activeResponseId: 'resp_background',
+    lastSequenceNumber: 0,
+  };
+  harness.state.sessions.push(background);
+  const backgroundState = harness.app.createResponseStreamState(background);
+
+  harness.app.applyResponseStreamEvent(background, backgroundState, 'response.retry', {
+    message: 'Background retry',
+    sequence_number: 1,
+  });
+  if (harness.getProviderRetryStatus() !== null) {
+    fail(name, 'background stream set visible retry status', JSON.stringify(harness.getProviderRetryStatus()));
+    return;
+  }
+
+  projectRetry(harness, 1, 'Old response retry');
+  const oldResponseId = harness.responseId;
+  const newResponseId = 'resp_ownership_new';
+  harness.session.activeResponseId = newResponseId;
+  harness.state.currentStreamResponseId = newResponseId;
+  projectRetry(harness, 2, 'New response retry');
+  harness.app.clearProviderRetryStatus(harness.session.id, oldResponseId);
+  if (harness.getProviderRetryStatus()?.responseId !== newResponseId) {
+    fail(name, 'stale owner cleared newer response retry', JSON.stringify(harness.getProviderRetryStatus()));
+    return;
+  }
+
+  harness.app.detachResponseStream();
+  if (harness.getProviderRetryStatus() !== null) {
+    fail(name, 'detach did not clear matching retry status', JSON.stringify(harness.getProviderRetryStatus()));
     return;
   }
   pass(name);
@@ -3782,7 +3946,7 @@ async function testCancelActiveResponseTearsDownLocallyBeforeServerPost() {
     return;
   }
 
-  if (!connectionStates.includes('Cancelling\u2026')) {
+  if (!connectionStates.some((status) => status.source === 'legacy' && status.text === 'Cancelling\u2026')) {
     fail(name, 'expected "Cancelling\u2026" connection state after click', JSON.stringify(connectionStates));
     releaseCancel();
     await cancelPromise.catch(() => {});
@@ -6055,8 +6219,12 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   testCompletedResponseClearsUnappliedQueuedEffort();
   testModelSwapProgressEventUpdatesTransientMarker();
   testResponsePhaseEventUpdatesTransientMarker();
-  testResponseRetryEventUpdatesTransientMarker();
-  testResponseRetryAfterResumedOutputStaysAtNewInterruption();
+  testResponseRetryEventUpdatesOwnedHeaderStatus();
+  testProviderRetryClearsOnMeaningfulProgress();
+  testProviderRetryPersistsAcrossNonProgressEvents();
+  testProviderRetryClearsOnTerminalEvents();
+  testActiveResponseTransitionClearsObsoleteRetryOwner();
+  testProviderRetryOwnershipGuardsBackgroundDetachAndStaleClear();
   testResponsePhaseUpdateCanStraddleResumedOutput();
   testResponsePhaseSeparatesAssistantSegments();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();

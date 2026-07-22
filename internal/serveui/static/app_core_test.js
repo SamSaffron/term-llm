@@ -793,6 +793,133 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
     fail(name, 'offline warning should have bad class');
     return;
   }
+  const session = { id: 'session_offline', activeResponseId: 'resp_offline', messages: [] };
+  testApp.state.sessions = [session];
+  testApp.state.activeSessionId = session.id;
+  testApp.state.draftSessionActive = false;
+  testApp.setProviderRetryStatus(session.id, 'resp_offline', 'Retrying provider…');
+  testApp.clearProviderRetryStatus(session.id, 'resp_offline');
+  if (connectionNode.hidden || connectionNode.textContent !== 'Network offline' || !classes.has('bad')) {
+    fail(name, 'provider retry set/clear changed the offline warning', connectionNode.textContent);
+    return;
+  }
+  pass(name);
+})();
+
+(function testConnectionStateOwnerCannotClearNewerWarning() {
+  const name = 'connection state owners clear only the warning they set';
+  const connectionNode = Object.assign(makeNode(), { hidden: true });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: true },
+  });
+
+  const staleCatchUpOwner = testApp.setConnectionState('Catching up with this session…', 'bad');
+  const currentCatchUpOwner = testApp.setConnectionState('Catching up with this session…', 'bad');
+  if (testApp.clearConnectionStateOwner(staleCatchUpOwner)) {
+    fail(name, 'stale owner reported clearing a newer warning');
+    return;
+  }
+  if (connectionNode.hidden || connectionNode.textContent !== 'Catching up with this session…') {
+    fail(name, 'stale owner cleared a newer same-text catch-up warning', connectionNode.textContent);
+    return;
+  }
+
+  testApp.setConnectionState('Transport unavailable', 'bad');
+  if (testApp.clearConnectionStateOwner(currentCatchUpOwner)) {
+    fail(name, 'superseded catch-up owner reported clearing a transport warning');
+    return;
+  }
+  if (connectionNode.hidden || connectionNode.textContent !== 'Transport unavailable') {
+    fail(name, 'catch-up owner cleared a newer transport warning', connectionNode.textContent);
+    return;
+  }
+
+  const ownedWarning = testApp.setConnectionState('Catching up with this session…', 'bad');
+  if (!testApp.clearConnectionStateOwner(ownedWarning)) {
+    fail(name, 'current owner did not clear its warning');
+    return;
+  }
+  if (!connectionNode.hidden || connectionNode.textContent) {
+    fail(name, 'matching owner left its warning visible', connectionNode.textContent);
+    return;
+  }
+  pass(name);
+})();
+
+(function testProviderRetryStatusIsOwnedAndLegacyWarningHasPriority() {
+  const name = 'provider retry status is response-owned and lower priority than legacy warnings';
+  const classes = new Set();
+  const connectionNode = Object.assign(makeNode(), {
+    hidden: true,
+    classList: {
+      add(...names) { names.forEach((n) => classes.add(n)); },
+      remove(...names) { names.forEach((n) => classes.delete(n)); },
+      contains(name) { return classes.has(name); },
+    },
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: true },
+  });
+  const session = { id: 'session_retry', activeResponseId: 'resp_retry', messages: [] };
+  testApp.state.sessions = [session];
+  testApp.state.activeSessionId = session.id;
+  testApp.state.draftSessionActive = false;
+
+  testApp.setProviderRetryStatus(session.id, 'resp_retry', 'Retrying provider (2/6)…');
+  if (connectionNode.hidden || connectionNode.textContent !== 'Retrying provider (2/6)…') {
+    fail(name, 'owned retry status was not shown', JSON.stringify(connectionNode));
+    return;
+  }
+  if (!classes.has('retry') || classes.has('bad')) {
+    fail(name, 'retry status should use neutral retry mode', JSON.stringify(Array.from(classes)));
+    return;
+  }
+
+  testApp.setConnectionState('Catching up session…', 'bad');
+  testApp.setProviderRetryStatus(session.id, 'resp_retry', 'Retrying provider (3/6)…');
+  if (connectionNode.textContent !== 'Catching up session…' || !classes.has('bad')) {
+    fail(name, 'provider retry overwrote the legacy warning', connectionNode.textContent);
+    return;
+  }
+  testApp.clearProviderRetryStatus(session.id, 'resp_retry');
+  if (connectionNode.textContent !== 'Catching up session…' || connectionNode.hidden) {
+    fail(name, 'clearing provider retry erased the legacy warning', connectionNode.textContent);
+    return;
+  }
+  pass(name);
+})();
+
+(function testProviderRetryStatusRejectsStaleOwners() {
+  const name = 'provider retry status ignores background sets and stale clears';
+  const connectionNode = Object.assign(makeNode(), { hidden: true });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: true },
+  });
+  const visible = { id: 'session_visible', activeResponseId: 'resp_new', messages: [] };
+  testApp.state.sessions = [visible];
+  testApp.state.activeSessionId = visible.id;
+  testApp.state.draftSessionActive = false;
+
+  testApp.setProviderRetryStatus('session_background', 'resp_old', 'Background retry');
+  if (!connectionNode.hidden || connectionNode.textContent) {
+    fail(name, 'background retry changed the visible header', connectionNode.textContent);
+    return;
+  }
+
+  testApp.setProviderRetryStatus(visible.id, 'resp_new', 'Current retry');
+  testApp.clearProviderRetryStatus(visible.id, 'resp_old');
+  if (connectionNode.hidden || connectionNode.textContent !== 'Current retry') {
+    fail(name, 'stale response cleared the current retry status', connectionNode.textContent);
+    return;
+  }
+  testApp.clearProviderRetryStatus(visible.id, 'resp_new');
+  if (!connectionNode.hidden || connectionNode.textContent) {
+    fail(name, 'matching response did not clear retry status', connectionNode.textContent);
+    return;
+  }
   pass(name);
 })();
 

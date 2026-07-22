@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, clearConnectionStateOwner, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -69,6 +69,8 @@ const SIDEBAR_POLL_IDLE = 30000;
 // Retry selected-session state after transient upstream/proxy failures so a
 // single hub/reverse blip does not permanently stop active-session updates.
 const SESSION_STATE_POLL_RETRY = 5000;
+const ACTIVE_TRANSCRIPT_CATCH_UP_TEXT = 'Catching up with this session\u2026';
+let activeTranscriptCatchUpWarning = null;
 let sidebarStatusTimer = null;
 let sidebarStatusEtag = null;
 let sidebarHasActive = false;
@@ -300,6 +302,46 @@ const stageCurrentComposerForSession = (sessionId) => {
   clearDraftMessageForSession(sessionId);
 };
 
+const showActiveTranscriptCatchUpWarning = (session, transcriptUpdatedAt) => {
+  const sessionId = String(session?.id || '').trim();
+  const targetTranscriptUpdatedAt = Number(transcriptUpdatedAt || 0);
+  if (!sessionId || !Number.isFinite(targetTranscriptUpdatedAt) || targetTranscriptUpdatedAt <= 0) return false;
+
+  activeTranscriptCatchUpWarning = {
+    sessionId,
+    transcriptUpdatedAt: targetTranscriptUpdatedAt,
+    connectionStateOwner: setConnectionState(ACTIVE_TRANSCRIPT_CATCH_UP_TEXT, 'bad'),
+  };
+  return true;
+};
+
+const clearActiveTranscriptCatchUpWarning = (sessionId, reconciledTranscriptUpdatedAt = null) => {
+  const ownerSessionId = String(sessionId || '').trim();
+  const warning = activeTranscriptCatchUpWarning;
+  if (!warning || warning.sessionId !== ownerSessionId) return false;
+
+  if (reconciledTranscriptUpdatedAt !== null) {
+    const reconciled = Number(reconciledTranscriptUpdatedAt || 0);
+    if (!Number.isFinite(reconciled) || reconciled < warning.transcriptUpdatedAt) return false;
+  }
+
+  activeTranscriptCatchUpWarning = null;
+  return clearConnectionStateOwner(warning.connectionStateOwner);
+};
+
+const clearSessionProviderRetryOwner = (sessionId) => {
+  const ownerSessionId = String(sessionId || '').trim();
+  if (!ownerSessionId) return false;
+  const session = state.sessions.find((item) => String(item?.id || '').trim() === ownerSessionId) || null;
+  const responseId = String(session?.activeResponseId || (
+    String(state.currentStreamSessionId || '').trim() === ownerSessionId
+      ? state.currentStreamResponseId
+      : ''
+  ) || '').trim();
+  if (!responseId) return false;
+  return clearProviderRetryStatus(ownerSessionId, responseId);
+};
+
 const invalidateSessionStateForSelection = (sessionId = '') => {
   state.sessionStateRequestGeneration = Number(state.sessionStateRequestGeneration || 0) + 1;
   state.lastAppliedSessionStateRequestGeneration = state.sessionStateRequestGeneration;
@@ -325,6 +367,8 @@ const switchToDraftSession = async (options = {}) => {
   closeAskUserModal();
   closeApprovalModal();
   closeMCPModal();
+  clearActiveTranscriptCatchUpWarning(previousActiveSessionId);
+  clearSessionProviderRetryOwner(previousActiveSessionId);
   if (state.currentStreamSessionId) {
     detachResponseStream();
   } else if (previousActiveSessionId && state.currentStreamSessionId !== previousActiveSessionId) {
@@ -450,6 +494,10 @@ const switchToSession = async (sessionId, options = {}) => {
   }
   if (mcpModalSessionId && mcpModalSessionId !== nextId) {
     closeMCPModal();
+  }
+  if (previousActiveSessionId && previousActiveSessionId !== nextId) {
+    clearActiveTranscriptCatchUpWarning(previousActiveSessionId);
+    clearSessionProviderRetryOwner(previousActiveSessionId);
   }
   if (state.currentStreamSessionId && state.currentStreamSessionId !== nextId) {
     detachResponseStream();
@@ -1736,12 +1784,24 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
 
 const attachExternallyActiveResponseAfterCatchUp = async (session, refreshed) => {
   if (!refreshed || !session || session.id !== state.activeSessionId) return false;
+  if (numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt) > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+    return false;
+  }
   if (document.visibilityState === 'hidden' || state.draftSessionActive) return false;
   if (state.abortController || state.streaming || session.activeResponseId) return false;
   const progress = state.sessionProgressById?.[session.id] || null;
   if (!progress?.serverActiveRun || progress?.optimisticBusy) return false;
   await syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
   return true;
+};
+
+const clearReconciledActiveTranscriptCatchUp = (session) => {
+  if (!session) return false;
+  const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(session.transcriptUpdatedAt);
+  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt);
+  if (pendingTranscriptUpdatedAt > currentTranscriptUpdatedAt) return false;
+  if (pendingTranscriptUpdatedAt > 0) delete session._pendingTranscriptUpdatedAt;
+  return clearActiveTranscriptCatchUpWarning(session.id, currentTranscriptUpdatedAt);
 };
 
 const reconcilePendingActiveTranscriptRefresh = async () => {
@@ -1751,7 +1811,7 @@ const reconcilePendingActiveTranscriptRefresh = async () => {
   if (pendingTranscriptUpdatedAt <= 0) return false;
   const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(active.transcriptUpdatedAt);
   if (pendingTranscriptUpdatedAt <= currentTranscriptUpdatedAt) {
-    delete active._pendingTranscriptUpdatedAt;
+    clearReconciledActiveTranscriptCatchUp(active);
     return false;
   }
 
@@ -1761,9 +1821,7 @@ const reconcilePendingActiveTranscriptRefresh = async () => {
     forceScroll: false,
     allowServerActiveRun: Boolean(progress?.serverActiveRun)
   });
-  if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === pendingTranscriptUpdatedAt) {
-    delete active._pendingTranscriptUpdatedAt;
-  }
+  clearReconciledActiveTranscriptCatchUp(active);
   await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
   return refreshed;
 };
@@ -1780,11 +1838,14 @@ const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
 
   const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(active.transcriptUpdatedAt);
   if (incomingTranscriptUpdatedAt <= currentTranscriptUpdatedAt) {
-    delete active._pendingTranscriptUpdatedAt;
+    clearReconciledActiveTranscriptCatchUp(active);
     return false;
   }
 
-  active._pendingTranscriptUpdatedAt = incomingTranscriptUpdatedAt;
+  active._pendingTranscriptUpdatedAt = Math.max(
+    numericTranscriptUpdatedAt(active._pendingTranscriptUpdatedAt),
+    incomingTranscriptUpdatedAt
+  );
   const refreshed = await refreshActiveSessionMessagesFromServer(active, {
     transcriptUpdatedAt: incomingTranscriptUpdatedAt,
     forceScroll: false,
@@ -1794,9 +1855,7 @@ const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
     // reconstructs its own turn and cannot fill gaps from earlier turns.
     allowServerActiveRun: Boolean(entry.active_run)
   });
-  if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === incomingTranscriptUpdatedAt) {
-    delete active._pendingTranscriptUpdatedAt;
-  }
+  clearReconciledActiveTranscriptCatchUp(active);
   await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
   return refreshed;
 };
@@ -3379,7 +3438,7 @@ document.addEventListener('visibilitychange', async () => {
     // Do not attach a newer response onto a stale transcript. The visible
     // status poll retains the pending version and retries the tail fetch; once
     // it succeeds, reconciliation attaches the external response itself.
-    setConnectionState('Catching up with this session\u2026', 'bad');
+    showActiveTranscriptCatchUpWarning(session, pendingTranscriptUpdatedAt);
     return;
   }
 

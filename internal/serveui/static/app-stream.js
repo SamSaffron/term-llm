@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
+  getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
@@ -378,7 +378,11 @@ const setActiveResponseTracking = (session, responseId, sequenceNumber = null) =
   const normalized = String(responseId || '').trim();
   if (!normalized) return;
 
-  if (session.activeResponseId !== normalized) {
+  const currentId = String(session.activeResponseId || '').trim();
+  if (currentId && currentId !== normalized) {
+    clearProviderRetryStatus(String(session.id || '').trim(), currentId);
+  }
+  if (currentId !== normalized) {
     session.activeResponseId = normalized;
     if (sequenceNumber === null) {
       session.lastSequenceNumber = 0;
@@ -572,9 +576,13 @@ const detachResponseStream = () => {
   state.streamGeneration += 1;
   const controller = state.abortController;
   const detachedSessionId = state.currentStreamSessionId;
+  const detachedResponseId = state.currentStreamResponseId;
   state.abortController = null;
   state.currentStreamSessionId = '';
   state.currentStreamResponseId = '';
+  if (detachedSessionId && detachedResponseId) {
+    clearProviderRetryStatus(detachedSessionId, detachedResponseId);
+  }
   if (controller) {
     try { controller.abort(); } catch (_) { /* stream may already be closed */ }
   }
@@ -592,6 +600,10 @@ const clearActiveResponseTracking = (session, responseId = '') => {
   if (!session) return;
   const currentId = String(session.activeResponseId || '').trim();
   const targetId = String(responseId || '').trim();
+  const retryOwnerId = targetId || currentId;
+  if (retryOwnerId) {
+    clearProviderRetryStatus(String(session.id || '').trim(), retryOwnerId);
+  }
 
   if (!targetId || currentId === targetId || targetId.startsWith('resp_msg_')) {
     session.activeResponseId = null;
@@ -696,13 +708,29 @@ const scheduleVisibleStreamScroll = (session) => {
   if (isSessionVisible(session)) scheduleStreamScroll();
 };
 
+const responseStreamOwnerId = (session, payload = null) => {
+  const payloadResponseId = String(payload?.response?.id || payload?.response_id || '').trim();
+  if (payloadResponseId) return payloadResponseId;
+  const activeResponseId = String(session?.activeResponseId || '').trim();
+  if (activeResponseId) return activeResponseId;
+  if (String(state.currentStreamSessionId || '').trim() === String(session?.id || '').trim()) {
+    return String(state.currentStreamResponseId || '').trim();
+  }
+  return '';
+};
+
+const clearProviderRetryForEvent = (session, payload = null) => {
+  const responseId = responseStreamOwnerId(session, payload);
+  if (!responseId) return false;
+  return clearProviderRetryStatus(String(session?.id || '').trim(), responseId);
+};
+
 const createResponseStreamState = (session) => {
   let currentToolGroup = session.messages.findLast((message) => (
     message.role === 'tool-group' && message.status === 'running'
   )) || null;
   let currentAssistantMessage = null;
   let currentPhaseMessage = null;
-  let currentPhaseKind = '';
 
   if (!currentToolGroup) {
     const lastMessage = session.messages[session.messages.length - 1];
@@ -755,13 +783,6 @@ const createResponseStreamState = (session) => {
     },
     set currentPhaseMessage(value) {
       currentPhaseMessage = value;
-      if (!value) currentPhaseKind = '';
-    },
-    get currentPhaseKind() {
-      return currentPhaseKind;
-    },
-    set currentPhaseKind(value) {
-      currentPhaseKind = String(value || '');
     }
   };
 };
@@ -772,12 +793,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (seq > session.lastSequenceNumber) session.lastSequenceNumber = seq;
     const delta = payload.delta || '';
     if (delta) {
+      clearProviderRetryForEvent(session, payload);
       streamState.closeToolGroup();
-      // A later retry belongs after resumed output rather than updating an
-      // older interruption marker. Non-retry phase updates may span output.
-      if (streamState.currentPhaseKind === 'retry') {
-        streamState.currentPhaseMessage = null;
-      }
       const msg = streamState.ensureAssistantMessage();
       msg.content += delta;
       scheduleStreamPersistence();
@@ -917,9 +934,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
       }
       streamState.currentAssistantMessage = null;
-      let marker = streamState.currentPhaseKind === 'phase'
-        ? (streamState.currentPhaseMessage || null)
-        : null;
+      let marker = streamState.currentPhaseMessage || null;
       if (!marker) {
         marker = {
           id: generateId('phase'),
@@ -929,7 +944,6 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           transient: true
         };
         streamState.currentPhaseMessage = marker;
-        streamState.currentPhaseKind = 'phase';
         session.messages.push(marker);
         appendStreamMessageNode(session, marker);
       } else {
@@ -944,36 +958,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 
   if (event === 'response.retry') {
     const message = String(payload?.message || '').trim() || 'Model stream interrupted; reconnecting…';
-    if (streamState.currentAssistantMessage?.content) {
-      finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
+    const responseId = responseStreamOwnerId(session, payload);
+    if (responseId) {
+      setProviderRetryStatus(String(session?.id || '').trim(), responseId, message);
     }
-    streamState.currentAssistantMessage = null;
-    let marker = streamState.currentPhaseKind === 'retry'
-      ? (streamState.currentPhaseMessage || null)
-      : null;
-    if (!marker) {
-      marker = {
-        id: generateId('phase'),
-        role: 'phase',
-        content: message,
-        created: Date.now(),
-        transient: true
-      };
-      streamState.currentPhaseMessage = marker;
-      streamState.currentPhaseKind = 'retry';
-      session.messages.push(marker);
-      appendStreamMessageNode(session, marker);
-    } else {
-      marker.content = message;
-      updateVisibleUserNode(session, marker);
-    }
-    setConnectionState(message);
-    scheduleStreamPersistence();
-    scrollVisibleStreamToBottom(session);
     return { terminal: false };
   }
 
   if (event === 'response.output_text.new_segment') {
+    clearProviderRetryForEvent(session, payload);
     streamState.closeToolGroup();
     if (streamState.currentAssistantMessage?.content) {
       finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
@@ -983,6 +976,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.output_item.added') {
+    clearProviderRetryForEvent(session, payload);
     const item = payload.item;
     if (item?.type === 'function_call') {
       if (streamState.currentAssistantMessage?.content) {
@@ -1025,6 +1019,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.function_call_arguments.delta') {
+    clearProviderRetryForEvent(session, payload);
     if (streamState.currentToolGroup) {
       const outputIndex = payload.output_index;
       const delta = String(payload.delta || '');
@@ -1047,6 +1042,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.output_item.done') {
+    clearProviderRetryForEvent(session, payload);
     const item = payload.item;
     if (item?.type === 'function_call' && streamState.currentToolGroup) {
       const callId = item.call_id || item.id;

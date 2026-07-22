@@ -1789,6 +1789,10 @@
       color: var(--danger);
     }
 
+    .connection-state.retry {
+      color: var(--muted);
+    }
+
     .header-right {
       margin-left: auto;
       display: flex;
