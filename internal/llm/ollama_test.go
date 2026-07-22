@@ -181,6 +181,52 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 	}
 }
 
+func TestOllamaProviderStreamReplaysAssistantThinking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []map[string]json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.Messages) != 3 {
+			t.Errorf("request messages = %#v, want 3", req.Messages)
+		} else {
+			if _, ok := req.Messages[0]["thinking"]; ok {
+				t.Errorf("user message unexpectedly contains thinking: %#v", req.Messages[0])
+			}
+			var thinking string
+			if err := json.Unmarshal(req.Messages[1]["thinking"], &thinking); err != nil {
+				t.Errorf("Decode assistant thinking: %v", err)
+			} else if thinking != "preserved trace" {
+				t.Errorf("assistant thinking = %q, want preserved trace", thinking)
+			}
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprintln(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":"ok"},"done":false}`)
+		fmt.Fprintln(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":""},"done":true}`)
+	}))
+	defer srv.Close()
+
+	p := NewOllamaChatProvider(srv.URL, "qwen3:14b", OllamaOptions{})
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{
+		UserText("first"),
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, ReasoningContent: "preserved trace"}}},
+		UserText("second"),
+	}})
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	defer stream.Close()
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+}
+
 func TestOllamaProviderStreamSuppressesLeadingReasoningWhitespaceArtifact(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
@@ -431,6 +477,75 @@ func TestBuildOllamaMessages(t *testing.T) {
 	}
 	if result[2].Role != "assistant" || result[2].Content != "Hi there" {
 		t.Errorf("bad assistant: %+v", result[2])
+	}
+}
+
+func TestOllamaChatMsgMarshalThinking(t *testing.T) {
+	got, err := json.Marshal(ollamaChatMsg{
+		Role:     "assistant",
+		Content:  "answer",
+		Thinking: "reasoning trace",
+	})
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	want := `{"role":"assistant","content":"answer","thinking":"reasoning trace"}`
+	if string(got) != want {
+		t.Fatalf("marshaled message = %s, want %s", got, want)
+	}
+
+	got, err = json.Marshal(ollamaChatMsg{Role: "user", Content: "question"})
+	if err != nil {
+		t.Fatalf("Marshal without thinking error: %v", err)
+	}
+	if strings.Contains(string(got), `"thinking"`) {
+		t.Fatalf("empty thinking should be omitted: %s", got)
+	}
+}
+
+func TestBuildOllamaMessagesReplaysAssistantThinking(t *testing.T) {
+	messages := []Message{
+		{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: "system", ReasoningContent: "ignore system reasoning"}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "developer", ReasoningContent: "ignore developer reasoning"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "first", ReasoningContent: "ignore user reasoning"}}},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "answer", ReasoningContent: "answer reasoning"}}},
+		UserText("second"),
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, ReasoningContent: "reasoning only"}}},
+		UserText("use a tool"),
+		{Role: RoleAssistant, Parts: []Part{
+			{Type: PartText, Text: "checking", ReasoningContent: "tool reasoning"},
+			{Type: PartToolCall, ToolCall: &ToolCall{ID: "call-1", Name: "inspect", Arguments: json.RawMessage(`{"path":"."}`)}},
+		}},
+		{Role: RoleTool, Parts: []Part{{
+			Type:             PartToolResult,
+			ReasoningContent: "ignore tool reasoning",
+			ToolResult:       &ToolResult{ID: "call-1", Name: "inspect", Content: "done"},
+		}}},
+	}
+
+	got := buildOllamaMessages(messages)
+	if len(got) != 8 {
+		t.Fatalf("messages = %#v, want 8 messages", got)
+	}
+
+	wantRoles := []string{"system", "user", "assistant", "user", "assistant", "user", "assistant", "tool"}
+	wantThinking := []string{"", "", "answer reasoning", "", "reasoning only", "", "tool reasoning", ""}
+	for i := range got {
+		if got[i].Role != wantRoles[i] {
+			t.Fatalf("message %d role = %q, want %q", i, got[i].Role, wantRoles[i])
+		}
+		if got[i].Thinking != wantThinking[i] {
+			t.Errorf("message %d thinking = %q, want %q", i, got[i].Thinking, wantThinking[i])
+		}
+	}
+	if got[4].Content != "" {
+		t.Errorf("reasoning-only assistant content = %q, want empty", got[4].Content)
+	}
+	if len(got[6].ToolCalls) != 1 || got[6].ToolCalls[0].Function.Name != "inspect" {
+		t.Errorf("assistant tool calls = %#v, want inspect call", got[6].ToolCalls)
+	}
+	if !strings.Contains(got[1].Content, "developer") {
+		t.Errorf("developer text was not folded into user message: %q", got[1].Content)
 	}
 }
 

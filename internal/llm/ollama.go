@@ -105,6 +105,7 @@ type ollamaChatOpts struct {
 type ollamaChatMsg struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content"`
+	Thinking  string           `json:"thinking,omitempty"`
 	Images    []string         `json:"images,omitempty"` // raw base64, no data: prefix
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 }
@@ -191,7 +192,7 @@ func buildOllamaMessages(messages []Message) []ollamaChatMsg {
 			}
 			result = append(result, ollamaChatMsg{Role: "user", Content: text, Images: images})
 		case RoleAssistant:
-			text, oaiCalls, _ := splitParts(msg.Parts)
+			text, oaiCalls, reasoning := splitParts(msg.Parts)
 			if len(oaiCalls) > 0 {
 				var calls []ollamaToolCall
 				for _, tc := range oaiCalls {
@@ -203,9 +204,9 @@ func buildOllamaMessages(messages []Message) []ollamaChatMsg {
 						Function: ollamaToolCallFn{Name: tc.Function.Name, Arguments: args},
 					})
 				}
-				result = append(result, ollamaChatMsg{Role: "assistant", Content: text, ToolCalls: calls})
-			} else if text != "" {
-				result = append(result, ollamaChatMsg{Role: "assistant", Content: text})
+				result = append(result, ollamaChatMsg{Role: "assistant", Content: text, Thinking: reasoning, ToolCalls: calls})
+			} else if text != "" || reasoning != "" {
+				result = append(result, ollamaChatMsg{Role: "assistant", Content: text, Thinking: reasoning})
 			}
 		case RoleTool:
 			var toolImages []string
