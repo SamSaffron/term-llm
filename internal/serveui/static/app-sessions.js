@@ -1635,14 +1635,20 @@ const recordTranscriptVersionsFromStatus = (statusSessions) => {
   }
 };
 
-const canRefreshActiveSessionMessages = (session) => {
+const canRefreshActiveSessionMessages = (session, options = {}) => {
   if (!session || session.id !== state.activeSessionId) return false;
   if (document.visibilityState === 'hidden') return false;
   if (state.draftSessionActive) return false;
   if (state.abortController || state.streaming) return false;
   if (session.activeResponseId) return false;
   if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) return false;
-  if (sessionHasInProgressState(session)) return false;
+  const progress = state.sessionProgressById?.[session.id] || null;
+  const onlyServerRunIsActive = Boolean(
+    options.allowServerActiveRun
+    && progress?.serverActiveRun
+    && !progress?.optimisticBusy
+  );
+  if (sessionHasInProgressState(session) && !onlyServerRunIsActive) return false;
   const history = ensureSessionHistory(session);
   if (!history || history.loadingOlder) return false;
   return true;
@@ -1669,7 +1675,7 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
     return false;
   }
 
-  if (!canRefreshActiveSessionMessages(session)) return false;
+  if (!canRefreshActiveSessionMessages(session, options)) return false;
 
   const refreshSessionId = session.id;
   const refreshPromise = (async () => {
@@ -1692,7 +1698,7 @@ const refreshActiveSessionMessagesFromServer = async (session, options = {}) => 
       }
       if (!page) return false;
 
-      if (!canRefreshActiveSessionMessages(session) || session.id !== state.activeSessionId) {
+      if (!canRefreshActiveSessionMessages(session, options) || session.id !== state.activeSessionId) {
         return false;
       }
 
@@ -1766,13 +1772,14 @@ const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
   }
 
   active._pendingTranscriptUpdatedAt = incomingTranscriptUpdatedAt;
-  if (entry.active_run) {
-    return false;
-  }
-
   const refreshed = await refreshActiveSessionMessagesFromServer(active, {
     transcriptUpdatedAt: incomingTranscriptUpdatedAt,
-    forceScroll: false
+    forceScroll: false,
+    // A foreground tab can discover that another tab has already advanced the
+    // transcript and started the next response. Catch up the committed tail
+    // before attaching that response's event stream; the stream snapshot only
+    // reconstructs its own turn and cannot fill gaps from earlier turns.
+    allowServerActiveRun: Boolean(entry.active_run)
   });
   if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === incomingTranscriptUpdatedAt) {
     delete active._pendingTranscriptUpdatedAt;
@@ -3344,7 +3351,11 @@ document.addEventListener('visibilitychange', async () => {
     stopSidebarStatusPoll();
     return;
   }
-  startSidebarStatusPoll();
+  // Reconcile the authoritative transcript before looking for an active
+  // response. Another tab may have completed several turns and started a new
+  // one while this page was hidden; attaching first would only replay the new
+  // response and leave the earlier turns missing.
+  await startSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;
 
