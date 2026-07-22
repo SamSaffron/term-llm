@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,15 @@ type trackingMemoryMineStore struct {
 		fromSeq int
 		limit   int
 	}
+}
+
+type candidateMemoryMineStore struct {
+	session.NoopStore
+	sessions map[string]*session.Session
+}
+
+func (s *candidateMemoryMineStore) Get(_ context.Context, id string) (*session.Session, error) {
+	return s.sessions[id], nil
 }
 
 func (s *trackingMemoryMineStore) GetMessages(_ context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
@@ -185,6 +195,53 @@ func TestValidateFragmentPath(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("validateFragmentPath(%q) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestCollectMineCandidatesDoesNotApplyLimitBeforeMiningStateCheck(t *testing.T) {
+	oldLimit := memoryMineLimit
+	oldAgent := memoryAgent
+	oldSince := memoryMineSince
+	oldIncludeSubagents := memoryMineIncludeSubagents
+	memoryMineLimit = 50
+	memoryAgent = "jarvis"
+	memoryMineSince = 0
+	memoryMineIncludeSubagents = false
+	t.Cleanup(func() {
+		memoryMineLimit = oldLimit
+		memoryAgent = oldAgent
+		memoryMineSince = oldSince
+		memoryMineIncludeSubagents = oldIncludeSubagents
+	})
+
+	store := &candidateMemoryMineStore{sessions: make(map[string]*session.Session, 51)}
+	complete := make([]session.SessionSummary, 0, 51)
+	for number := int64(51); number >= 1; number-- {
+		id := fmt.Sprintf("session-%d", number)
+		updatedAt := time.Now().Add(-time.Duration(51-number) * time.Minute)
+		store.sessions[id] = &session.Session{
+			ID:        id,
+			Number:    number,
+			Agent:     "jarvis",
+			Status:    session.StatusComplete,
+			UpdatedAt: updatedAt,
+		}
+		complete = append(complete, session.SessionSummary{
+			ID:        id,
+			Number:    number,
+			UpdatedAt: updatedAt,
+		})
+	}
+
+	got, err := collectMineCandidates(context.Background(), store, complete, "")
+	if err != nil {
+		t.Fatalf("collectMineCandidates: %v", err)
+	}
+	if len(got) != 51 {
+		t.Fatalf("len(got) = %d, want all 51 candidates available for mining-state checks", len(got))
+	}
+	if got[50].Session.ID != "session-1" {
+		t.Fatalf("oldest candidate = %q, want session-1", got[50].Session.ID)
 	}
 }
 

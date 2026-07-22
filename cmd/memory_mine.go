@@ -283,10 +283,15 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 
 	var totalCreated, totalUpdated, totalSkipped int
+	var mineAttempts int
 	var summaryStats memoryMineSummaryStats
 	fragmentCache := newMemoryAgentFragmentCache(memoryMineTaxonomyMaxTokens)
 
 	for i, candidate := range candidates {
+		if memoryMineLimit > 0 && mineAttempts >= memoryMineLimit {
+			break
+		}
+
 		state, err := memStore.GetState(ctx, candidate.Session.ID)
 		if err != nil {
 			return fmt.Errorf("get mining state for session %s: %w", candidate.Session.ID, err)
@@ -310,6 +315,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			fmt.Printf("[%d/%d] #%d no new messages to mine\n", i+1, len(candidates), candidate.Summary.Number)
 			continue
 		}
+		mineAttempts++
 
 		promptParts := buildExtractionPromptParts(candidate, startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
 		batchStats := newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
@@ -513,10 +519,6 @@ func collectMineCandidates(ctx context.Context, store session.Store, complete []
 		}
 
 		out = append(out, candidate)
-
-		if memoryMineLimit > 0 && len(out) >= memoryMineLimit {
-			break
-		}
 	}
 
 	return out, nil
