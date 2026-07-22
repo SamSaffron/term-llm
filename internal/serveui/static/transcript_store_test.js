@@ -1,0 +1,228 @@
+'use strict';
+
+const assert = require('assert');
+const {
+  TranscriptStore,
+  TRANSCRIPT_FLAG_EMPTY_BODY,
+  transcriptStoreFromMessages,
+  __transcriptStats
+} = require('./transcript-store.js');
+
+const envelope = (ids, options = {}) => ({
+  rev: options.rev ?? 1,
+  compaction_seq: options.compactionSeq ?? -1,
+  compaction_count: options.compactionCount ?? 0,
+  rows: {
+    ids: ids.slice(),
+    seqs: options.seqs || ids.map((_, index) => index),
+    roles: options.roles || 'u'.repeat(ids.length),
+    flags: options.flags || ids.map(() => 0)
+  }
+});
+
+const body = (id, sequence, role = 'user', parts = null) => ({
+  id,
+  sequence,
+  role,
+  parts: parts || [{ type: 'text', text: `${role}-${id}` }]
+});
+
+const materializeOrdinals = (store, ordinals, estHeight = 20) => {
+  for (const ordinal of ordinals) {
+    const segmentIndex = store.segmentForOrdinal(ordinal);
+    const segment = store.segments[segmentIndex];
+    const messages = [];
+    for (let i = segment.startOrdinal; i <= segment.endOrdinal; i += 1) {
+      if ((store.flags[i] & TRANSCRIPT_FLAG_EMPTY_BODY) === 0) {
+        messages.push(body(store.ids[i], store.seqs[i], ({ u: 'user', a: 'assistant', t: 'tool', e: 'event' })[store.roles[i]]));
+      }
+    }
+    store.materializeSegment(segmentIndex, messages, estHeight);
+  }
+};
+
+(() => {
+  const store = new TranscriptStore('diffs', { maxMaterializedTurns: 20, overscanTurns: 0 });
+  let result = store.applyIndex(envelope([1, 2], { rev: 1, roles: 'ua' }), 'etag-1');
+  assert.equal(result.appendOnly, true);
+  materializeOrdinals(store, [0]);
+  result = store.applyIndex(envelope([1, 2, 3], { rev: 2, roles: 'uau' }), 'etag-2');
+  assert.equal(result.appendOnly, true);
+  assert.equal(store.bodies.has(1), true);
+  result = store.applyIndex(envelope([1, 9, 3], { rev: 3, roles: 'uau' }));
+  assert.equal(result.appendOnly, false);
+  assert.equal(result.divergence, 1);
+  assert.equal(store.bodies.has(2), false);
+  result = store.applyIndex(envelope([1], { rev: 4, roles: 'u', compactionCount: 1, compactionSeq: 7 }));
+  assert.equal(result.appendOnly, false);
+  assert.equal(store.ids.length, 1);
+  assert.equal(store.compactionCount, 1);
+  store.noteIndexFetch(true, 'etag-4');
+  assert.equal(store.etag, 'etag-4');
+  assert.equal(store.stats.indexFetches, 1);
+  assert.equal(store.stats.rewrites, 2);
+  store._checkInvariants();
+})();
+
+(() => {
+  const ids = Array.from({ length: 200 }, (_, index) => index + 1);
+  const store = new TranscriptStore('explicit-gap', { maxMaterializedTurns: 250, overscanTurns: 0 });
+  store.applyIndex(envelope(ids));
+  materializeOrdinals(store, [
+    ...Array.from({ length: 50 }, (_, index) => index),
+    ...Array.from({ length: 51 }, (_, index) => index + 149)
+  ]);
+  const gaps = store.renderRuns().filter((run) => run.type === 'gap');
+  assert.equal(gaps.length, 1, 'rows 1-50 and 150-200 must have one explicit interior gap');
+  assert.deepEqual([gaps[0].startOrdinal + 1, gaps[0].endOrdinal + 1], [51, 149]);
+  const rendered = store.renderedMessages();
+  const gapIndex = rendered.findIndex((entry) => entry.transcriptGap);
+  assert(gapIndex > 0 && gapIndex < rendered.length - 1, 'loaded ranges must never appear adjacent across unloaded rows');
+  assert.equal(rendered[gapIndex - 1].id, 50);
+  assert.equal(rendered[gapIndex + 1].id, 150);
+  store._checkInvariants();
+})();
+
+(() => {
+  const ids = Array.from({ length: 40 }, (_, index) => index + 1);
+  const store = new TranscriptStore('row-22-anchor', { maxMaterializedTurns: 50, overscanTurns: 1 });
+  store.applyIndex(envelope(ids));
+  materializeOrdinals(store, ids.map((_, index) => index), 20);
+  store.setViewport(21, 21);
+  let scrollTop = 320;
+  let currentStore = store;
+  const absoluteTop = (id) => {
+    const ordinal = currentStore.ordinalForID(id);
+    if (ordinal < 0) return NaN;
+    let top = 0;
+    for (const run of currentStore.renderRuns()) {
+      if (ordinal < run.startOrdinal) break;
+      if (run.type === 'gap') {
+        if (ordinal <= run.endOrdinal) return top;
+        top += run.height;
+      } else {
+        const segment = currentStore.segments[run.segmentIndex];
+        if (ordinal <= run.endOrdinal) return top + (ordinal - run.startOrdinal) * (segment.estHeight / (run.endOrdinal - run.startOrdinal + 1));
+        top += segment.estHeight;
+      }
+    }
+    return top;
+  };
+  const adapter = {
+    capture: () => ({ id: 22, top: absoluteTop(22) - scrollTop }),
+    render: (next) => { currentStore = next; },
+    topForID: (id) => absoluteTop(id) - scrollTop,
+    adjustScroll: (delta) => { scrollTop += delta; }
+  };
+  const assertAnchor = (label, mutate) => {
+    const before = adapter.capture().top;
+    store.withViewportAnchor(adapter, mutate);
+    const after = absoluteTop(22) - scrollTop;
+    assert(Math.abs(after - before) <= 1, `${label} moved row 22: before=${before} after=${after}`);
+    assert(store.pinnedSegments.has(store.segmentForID(22)), `${label} evicted visible row 22`);
+  };
+
+  assertAnchor('append', () => store.applyIndex(envelope([...ids, 41, 42], { rev: 2 })));
+  store.evictSegment(store.segmentForID(10));
+  store.segments[store.segmentForID(10)].estHeight = 55;
+  assertAnchor('interior gap fill', () => materializeOrdinals(store, [9], 20));
+  assertAnchor('eviction', () => store.evictSegment(store.segmentForID(5), 35));
+  const rewritten = [1001, 1002, ...store.ids];
+  assertAnchor('rewrite', () => store.applyIndex(envelope(rewritten, { rev: 3 })));
+  store._checkInvariants();
+})();
+
+(() => {
+  const ids = Array.from({ length: 120 }, (_, index) => index + 1);
+  const store = new TranscriptStore('random-budget', { maxMaterializedTurns: 12, overscanTurns: 2 });
+  store.applyIndex(envelope(ids));
+  let seed = 123456789;
+  const random = () => {
+    seed = (1103515245 * seed + 12345) & 0x7fffffff;
+    return seed / 0x80000000;
+  };
+  for (let step = 0; step < 300; step += 1) {
+    const ordinal = Math.floor(random() * ids.length);
+    if (random() < 0.7) materializeOrdinals(store, [ordinal]);
+    const first = Math.floor(random() * ids.length);
+    store.setViewport(first, Math.min(ids.length - 1, first + Math.floor(random() * 3)));
+    store.enforceBudget();
+    store._checkInvariants();
+  }
+  const materialized = store.segments.filter((segment) => segment.state === 'materialized').length;
+  const pinnedMaterialized = [...store.pinnedSegments].filter((index) => store.segments[index]?.state === 'materialized').length;
+  assert(materialized <= Math.max(12, pinnedMaterialized));
+  assert(store.bodies.size <= materialized, 'one-row turns must bound bodies with turns');
+  assert(store.renderRuns().length <= materialized + store.segments.length, 'DOM descriptors must remain sparse');
+})();
+
+(() => {
+  const store = new TranscriptStore('optimistic', { maxMaterializedTurns: 20, overscanTurns: 0 });
+  store.applyIndex(envelope([1], { rev: 1 }));
+  materializeOrdinals(store, [0]);
+  store.addOptimistic({ id: 'local-user', clientKey: 'send-1-user', role: 'user' });
+  store.addOptimistic({ id: 'local-assistant', clientKey: 'send-1-assistant', role: 'assistant' });
+  store.addOptimistic({ id: 'duplicate', clientKey: 'send-1-assistant', role: 'assistant' });
+  assert.equal(store.optimistic.length, 2, 'duplicate SSE replay must not duplicate optimistic rows');
+  store.setActiveRun('resp-1', 1);
+  assert.deepEqual(store.activeRun, { id: 'resp-1', startedRev: 1 });
+  store.applyIndex(envelope([1, 2, 3], { rev: 3, roles: 'uua' }));
+  materializeOrdinals(store, [1]);
+  const removed = store.reconcileOptimistic();
+  assert.equal(removed.length, 2);
+  assert.equal(store.optimistic.length, 0);
+
+  const stopped = new TranscriptStore('stopped');
+  stopped.applyIndex(envelope([10], { rev: 5 }));
+  stopped.addOptimistic({ clientKey: 'stopped-user', role: 'user' });
+  stopped.reconcileOptimistic();
+  assert.equal(stopped.optimistic.length, 1, 'stop-before-flush must preserve local rows');
+
+  const tools = new TranscriptStore('tools');
+  tools.applyIndex(envelope([20], { rev: 1 }));
+  tools.addOptimistic({ clientKey: 'tools', role: 'tool-group', tools: [{ id: 'call-a' }, { id: 'call-b' }] });
+  tools.applyIndex(envelope([20, 21, 22], { rev: 2, roles: 'uat' }));
+  tools.materialize([
+    body(20, 0, 'user'),
+    body(21, 1, 'assistant', [{ type: 'tool_call', tool_call_id: 'call-a' }, { type: 'tool_call', tool_call_id: 'call-b' }]),
+    body(22, 2, 'tool', [{ type: 'tool_result', tool_call_id: 'call-a' }, { type: 'tool_result', tool_call_id: 'call-b' }])
+  ]);
+  assert.equal(tools.reconcileOptimistic().length, 1, 'interleaved durable tool evidence must replace optimistic group');
+})();
+
+(() => {
+  const fixture = [
+    body(1, 0, 'user'),
+    body(2, 1, 'assistant'),
+    { id: 3, sequence: 2, role: 'event', parts: [], compaction_tail: true }
+  ];
+  const direct = new TranscriptStore('direct-fallback', { maxMaterializedTurns: 10 });
+  direct.applyIndex(envelope([1, 2, 3], {
+    rev: 0,
+    roles: 'uae',
+    flags: [0, 0, 3],
+    compactionSeq: 2,
+    compactionCount: 1
+  }));
+  direct.materialize(fixture, { countFetch: false });
+  const fallback = transcriptStoreFromMessages('converted-fallback', [{
+    messages: fixture.slice(1),
+    has_more: true,
+    compaction_seq: 2,
+    compaction_count: 1
+  }, {
+    messages: fixture.slice(0, 1),
+    has_more: false,
+    compaction_seq: 2,
+    compaction_count: 1
+  }], { maxMaterializedTurns: 10 });
+  assert.deepEqual(fallback.ids, direct.ids);
+  assert.deepEqual(fallback.seqs, direct.seqs);
+  assert.equal(fallback.roles, direct.roles);
+  assert.deepEqual(fallback.flags, direct.flags);
+  assert.deepEqual(fallback.renderedMessages().map((entry) => entry.id || entry.role), direct.renderedMessages().map((entry) => entry.id || entry.role));
+  assert(__transcriptStats('converted-fallback'));
+  fallback._checkInvariants();
+})();
+
+console.log('transcript-store tests passed');

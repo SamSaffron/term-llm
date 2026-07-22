@@ -17,7 +17,7 @@ import (
 //go:embed static/app.css
 //go:embed static/app-core.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-sidebar.js
 //go:embed static/app-attachments.js static/app-stream.js static/side-question.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
-//go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
+//go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js static/transcript-store.js
 //go:embed static/vendor
 var staticFiles embed.FS
 
