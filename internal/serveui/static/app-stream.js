@@ -182,57 +182,80 @@ const fetchModels = async (tokenOverride = '', provider = '') => {
 const parseSSEStream = async (stream, onEvent, options = {}) => {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
+  const abortController = options.abortController || null;
+  let heartbeatCancelPromise = null;
+  const cancelForHeartbeat = abortController
+    ? () => {
+        if (!heartbeatCancelPromise) {
+          heartbeatCancelPromise = reader.cancel();
+        }
+        return heartbeatCancelPromise;
+      }
+    : null;
+  if (abortController) {
+    // This remains sticky for the controller's lifetime. Once a fetch body has
+    // been exposed, heartbeat recovery must never fall back to aborting that
+    // fetch, even after the reader has finished unwinding.
+    abortController._responseBodyAttached = true;
+    abortController._heartbeatCancelStream = cancelForHeartbeat;
+  }
   let buffer = '';
 
-  const processBlock = async (block) => {
-    let eventName = '';
-    let data = '';
-    let start = 0;
-    const len = block.length;
+  try {
+    const processBlock = async (block) => {
+      let eventName = '';
+      let data = '';
+      let start = 0;
+      const len = block.length;
 
-    while (start < len) {
-      let end = block.indexOf('\n', start);
-      if (end === -1) end = len;
-      const c = block.charCodeAt(start);
-      if (c === 101 /* 'e' */ && block.startsWith('event:', start)) {
-        eventName = block.slice(start + 6, end).trim();
-      } else if (c === 100 /* 'd' */ && block.startsWith('data:', start)) {
-        const chunk = block.slice(start + 5, end).trimStart();
-        data = data ? data + '\n' + chunk : chunk;
+      while (start < len) {
+        let end = block.indexOf('\n', start);
+        if (end === -1) end = len;
+        const c = block.charCodeAt(start);
+        if (c === 101 /* 'e' */ && block.startsWith('event:', start)) {
+          eventName = block.slice(start + 6, end).trim();
+        } else if (c === 100 /* 'd' */ && block.startsWith('data:', start)) {
+          const chunk = block.slice(start + 5, end).trimStart();
+          data = data ? data + '\n' + chunk : chunk;
+        }
+        start = end + 1;
       }
-      start = end + 1;
+
+      return onEvent(eventName, data);
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const decoded = decoder.decode(value, { stream: true });
+      buffer += decoded.includes('\r') ? decoded.replace(/\r/g, '') : decoded;
+      if (options.trackHeartbeat !== false) {
+        state.lastEventTime = Date.now();
+        if (state.abortController) {
+          state.abortController._heartbeatStaleThreshold = HEARTBEAT_STALE_THRESHOLD;
+        }
+      }
+
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const keepGoing = await processBlock(block);
+        if (keepGoing === false) {
+          reader.cancel().catch(() => {});
+          return;
+        }
+      }
     }
 
-    return onEvent(eventName, data);
-  };
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    const decoded = decoder.decode(value, { stream: true });
-    buffer += decoded.includes('\r') ? decoded.replace(/\r/g, '') : decoded;
-    if (options.trackHeartbeat !== false) {
-      state.lastEventTime = Date.now();
-      if (state.abortController) {
-        state.abortController._heartbeatStaleThreshold = HEARTBEAT_STALE_THRESHOLD;
-      }
+    if (buffer.trim()) {
+      await processBlock(buffer);
     }
-
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const block = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const keepGoing = await processBlock(block);
-      if (keepGoing === false) {
-        reader.cancel().catch(() => {});
-        return;
-      }
+  } finally {
+    if (abortController?._heartbeatCancelStream === cancelForHeartbeat) {
+      delete abortController._heartbeatCancelStream;
     }
-  }
-
-  if (buffer.trim()) {
-    await processBlock(buffer);
   }
 };
 
@@ -405,9 +428,24 @@ const startHeartbeatMonitor = () => {
         Number(state.abortController?._heartbeatStaleThreshold || 0) || 0
       );
       if (Date.now() - state.lastEventTime > staleThreshold) {
-        if (state.abortController) {
-          state.abortController._heartbeatAbort = true;
-          state.abortController.abort();
+        const controller = state.abortController;
+        if (controller) {
+          controller._heartbeatAbort = true;
+          if (typeof controller._heartbeatCancelStream === 'function') {
+            // Once fetch has delivered a response body, cancel its reader instead
+            // of aborting fetch. Chromium can otherwise report an unhandled
+            // BodyStreamBuffer AbortError even though the read itself is awaited.
+            Promise.resolve(controller._heartbeatCancelStream()).catch((err) => {
+              // Cancellation has already transitioned the stream out of its
+              // readable state in compliant implementations. Do not fall back
+              // to aborting a fetch whose body was attached: that recreates the
+              // Chromium BodyStreamBuffer rejection this path is avoiding.
+              console.warn('[stream] heartbeat body cancellation failed', err);
+            });
+          } else if (!controller._responseBodyAttached) {
+            // Before response headers arrive there is no body reader to cancel.
+            controller.abort();
+          }
         }
       }
     } catch (err) {
@@ -1383,7 +1421,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
       return false;
     }
     return true;
-  });
+  }, { abortController: options.abortController });
 
   return { terminal: sawTerminal || sawDone || !session.activeResponseId, stale, error: stale ? null : terminalError };
 };
@@ -1666,10 +1704,20 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
       setReconnectDiagnostic('connected', '', 0);
       const streamGeneration = state.streamGeneration;
       streamActivityBaseline = Number(state.lastEventTime || 0);
-      const result = await consumeResponseStream(response.body, session, streamState, { generation: streamGeneration, responseId });
+      const result = await consumeResponseStream(response.body, session, streamState, {
+        generation: streamGeneration,
+        responseId,
+        abortController: controller
+      });
       if (streamHadActivitySince(streamActivityBaseline)) {
         retryAttempt = 0;
         consecutiveHeartbeatAborts = 0;
+      }
+      if (controller._heartbeatAbort) {
+        // Reader cancellation ends the stream without throwing. Preserve the
+        // same reconnect accounting used by the pre-response abort path.
+        consecutiveHeartbeatAborts += 1;
+        reconnectReason = 'heartbeat-stale';
       }
       if (state.abortController === controller) {
         state.abortController = null;
@@ -1718,7 +1766,7 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
         consecutiveHeartbeatAborts = 0;
       }
 
-      const controllerAborted = Boolean(controller.signal?.aborted || err?.name === 'AbortError');
+      const controllerAborted = Boolean(controller.signal?.aborted || controller._heartbeatAbort || err?.name === 'AbortError');
       if (controllerAborted) {
         // Only retry if this was a heartbeat-triggered abort.
         // Intentional detach/session-switch aborts should exit immediately.
@@ -4759,11 +4807,24 @@ const sendMessage = async (options = {}) => {
       await resumeActiveResponse(session, { streamState, responseId: headerResponseId || session.activeResponseId });
     } else {
       const responseId = headerResponseId || session.activeResponseId;
-      const result = await consumeResponseStream(response.body, session, streamState, { generation: sendGeneration, responseId });
+      const result = await consumeResponseStream(response.body, session, streamState, {
+        generation: sendGeneration,
+        responseId,
+        abortController: controller
+      });
       if (!result.stale && result.error) {
         throw result.error;
       }
-      if (!result.stale && !result.terminal && sendGeneration === state.streamGeneration && session.activeResponseId) {
+      if (!result.stale && controller._heartbeatAbort && !session.activeResponseId) {
+        // A body can be attached without an x-response-id. Reader cancellation
+        // then completes normally, so route it through the pre-response retry
+        // path instead of treating the send as terminal.
+        throw new Error('Heartbeat timed out before the response ID was received.');
+      }
+      if (!result.stale
+        && (controller._heartbeatAbort || !result.terminal)
+        && sendGeneration === state.streamGeneration
+        && session.activeResponseId) {
         await resumeActiveResponse(session, { streamState, responseId });
       }
     }
@@ -4778,7 +4839,7 @@ const sendMessage = async (options = {}) => {
     streamState.closeToolGroup();
     markToolGroupsDone(session);
 
-    const controllerAborted = Boolean(controller.signal?.aborted || err?.name === 'AbortError');
+    const controllerAborted = Boolean(controller.signal?.aborted || controller._heartbeatAbort || err?.name === 'AbortError');
     if (controllerAborted && !controller._heartbeatAbort) {
       persistAndRefreshShell();
       return;

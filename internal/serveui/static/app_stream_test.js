@@ -1231,8 +1231,8 @@ async function testParseSSEStreamUpdatesHeartbeatOnCommentFrame() {
   pass(name);
 }
 
-async function testSendMessageHeartbeatAbortResumesPostStream() {
-  const name = 'heartbeat abort of POST stream resumes from events without custom abort reason';
+async function testSendMessageHeartbeatCancelsPostStreamWithoutAbortingFetch() {
+  const name = 'heartbeat timeout cancels an attached POST body without aborting fetch';
   const intervalCallbacks = [];
   const harness = createHarness({
     postKeepOpen: true,
@@ -1250,7 +1250,7 @@ async function testSendMessageHeartbeatAbortResumesPostStream() {
     },
     clearInterval() {},
   });
-  const { app, elements, state, getEventsStarted, cleanup } = harness;
+  const { app, elements, state, getEventsStarted, postStreamCanceled, cleanup } = harness;
   elements.promptInput.value = 'hello';
 
   const sendPromise = app.sendMessage();
@@ -1273,14 +1273,14 @@ async function testSendMessageHeartbeatAbortResumesPostStream() {
   state.lastEventTime = Date.now() - staleThreshold - 1;
   intervalCallbacks[intervalCallbacks.length - 1]();
 
-  if (!controller.signal.aborted) {
-    fail(name, 'heartbeat callback did not abort the controller');
+  if (controller.signal.aborted) {
+    fail(name, 'heartbeat aborted fetch after its response body was attached');
     await cleanup();
     await sendPromise.catch(() => {});
     return;
   }
-  if (controller.signal.reason === app.HEARTBEAT_ABORT_REASON) {
-    fail(name, 'heartbeat abort used the custom string reason');
+  if (!postStreamCanceled()) {
+    fail(name, 'heartbeat did not cancel the attached response body');
     await cleanup();
     await sendPromise.catch(() => {});
     return;
@@ -1288,12 +1288,98 @@ async function testSendMessageHeartbeatAbortResumesPostStream() {
 
   const resumed = await waitFor(() => getEventsStarted(), 1000);
   await sendPromise.catch((err) => {
-    fail(name, 'sendMessage rejected after heartbeat abort', String(err));
+    fail(name, 'sendMessage rejected after heartbeat cancellation', String(err));
   });
+  if (controller.signal.aborted) {
+    fail(name, 'heartbeat recovery later aborted the attached fetch');
+    await cleanup();
+    return;
+  }
   await cleanup();
 
   if (!resumed) {
     fail(name, 'heartbeat abort did not resume via /events');
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost() {
+  const name = 'heartbeat cancellation without a response ID retries the POST';
+  const intervalCallbacks = [];
+  let firstSignal = null;
+  let firstBodyCanceled = false;
+  let postCount = 0;
+  const harness = createHarness({
+    setTimeout(callback) { return setTimeout(callback, 0); },
+    clearTimeout(handle) { clearTimeout(handle); },
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      if (postCount === 1) {
+        firstSignal = requestOptions.signal;
+        return new Response(new ReadableStream({
+          cancel() {
+            firstBodyCanceled = true;
+          },
+        }), { status: 200 });
+      }
+      const encoder = new TextEncoder();
+      const body = [
+        'event: response.created\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+        'event: response.completed\n',
+        'data: {"response":{"id":"resp_test","model":"test-model","status":"completed"},"sequence_number":2}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(body));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: { 'x-response-id': 'resp_test' },
+      });
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  const sendPromise = app.sendMessage();
+  const attached = await waitFor(() => (
+    postCount === 1
+    && typeof state.abortController?._heartbeatCancelStream === 'function'
+  ), 1000);
+  if (!attached) {
+    fail(name, 'first POST body reader was not attached');
+    await cleanup();
+    await sendPromise.catch(() => {});
+    return;
+  }
+
+  state.lastEventTime = Date.now() - app.HEARTBEAT_STALE_THRESHOLD - 1;
+  intervalCallbacks[intervalCallbacks.length - 1]();
+  const retried = await waitFor(() => postCount === 2, 1000);
+  await sendPromise.catch((err) => {
+    fail(name, 'sendMessage rejected instead of retrying', String(err));
+  });
+  await cleanup();
+
+  if (!retried || postCount !== 2) {
+    fail(name, `expected one POST retry, got ${postCount}`);
+    return;
+  }
+  if (!firstBodyCanceled || firstSignal?.aborted) {
+    fail(name, 'first POST was not soft-canceled cleanly');
     return;
   }
 
@@ -2672,12 +2758,14 @@ async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
   pass(name);
 }
 
-async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
-  const name = 'resumeActiveResponse heartbeat aborts keep recovering with slow backoff';
+async function testResumeActiveResponseHeartbeatCancelSlowsAndRecovers() {
+  const name = 'resumeActiveResponse heartbeat cancellations keep recovering with slow backoff';
   const responseId = 'resp_events_heartbeat_retry';
   const intervalCallbacks = [];
   const retryDelays = [];
+  const eventSignals = [];
   let eventsCount = 0;
+  let eventsCancelCount = 0;
   let syncCalls = 0;
   const harness = createHarness({
     responseId,
@@ -2696,11 +2784,15 @@ async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
         eventsCount += 1;
         if (eventsCount <= 6) {
           const signal = requestOptions.signal;
+          eventSignals.push(signal);
           return new Response(new ReadableStream({
             start(controller) {
               signal.addEventListener('abort', () => {
                 try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch (_err) { /* ignore */ }
               });
+            },
+            cancel() {
+              eventsCancelCount += 1;
             },
           }), {
             status: 200,
@@ -2749,15 +2841,33 @@ async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
 
   const resumePromise = app.resumeActiveResponse(session, { responseId });
   for (let attempt = 1; attempt <= 6; attempt += 1) {
-    const attached = await waitFor(() => eventsCount === attempt && state.abortController && !state.abortController.signal.aborted, 1000);
+    const attached = await waitFor(() => (
+      eventsCount === attempt
+      && state.abortController
+      && !state.abortController.signal.aborted
+      && typeof state.abortController._heartbeatCancelStream === 'function'
+    ), 1000);
     if (!attached) {
       fail(name, `events attempt ${attempt} did not attach heartbeat controller; eventsCount=${eventsCount}`);
       await cleanup();
       await resumePromise.catch(() => {});
       return;
     }
+    const controller = state.abortController;
     state.lastEventTime = Date.now() - app.HEARTBEAT_STALE_THRESHOLD - 1;
     intervalCallbacks[intervalCallbacks.length - 1]();
+    if (controller.signal.aborted) {
+      fail(name, `events attempt ${attempt} aborted fetch after its body was attached`);
+      await cleanup();
+      await resumePromise.catch(() => {});
+      return;
+    }
+    if (eventsCancelCount !== attempt) {
+      fail(name, `events attempt ${attempt} did not cancel its response body; cancels=${eventsCancelCount}`);
+      await cleanup();
+      await resumePromise.catch(() => {});
+      return;
+    }
   }
 
   const recovered = await waitFor(() => eventsCount === 7 && !session.activeResponseId, 1000);
@@ -2775,7 +2885,11 @@ async function testResumeActiveResponseHeartbeatAbortSlowsAndRecovers() {
     return;
   }
   if (syncCalls === 0) {
-    fail(name, 'events retry loop did not poll server state after repeated heartbeat aborts');
+    fail(name, 'events retry loop did not poll server state after repeated heartbeat cancellations');
+    return;
+  }
+  if (eventSignals.some((signal) => signal.aborted)) {
+    fail(name, 'an attached events fetch was aborted instead of canceling its body');
     return;
   }
   if (Object.prototype.hasOwnProperty.call(elements.connectionState.dataset, 'reconnectState')) {
@@ -5881,7 +5995,8 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testParseSSEStreamUpdatesHeartbeatOnCommentFrame();
-  await testSendMessageHeartbeatAbortResumesPostStream();
+  await testSendMessageHeartbeatCancelsPostStreamWithoutAbortingFetch();
+  await testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost();
   await testSendMessageHeartbeatAbortRetriesBeforeResponseId();
   await testSendMessageLargeUploadUsesLongerPreResponseHeartbeatGrace();
   await testSendMessageTransientPreResponseFailureRetries();
@@ -5927,7 +6042,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testSuccessfulPlanToolCompletionRefetchesAuthoritativeState();
   await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
   await testToolExecImagesUseHubAssetRebase();
-  await testResumeActiveResponseHeartbeatAbortSlowsAndRecovers();
+  await testResumeActiveResponseHeartbeatCancelSlowsAndRecovers();
   await testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop();
   await testDetachDuringSlowReconnectTransfersResumeOwnership();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
