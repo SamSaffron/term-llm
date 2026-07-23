@@ -213,13 +213,25 @@ type TranscriptSnapshot struct {
 	Items           []TranscriptIndexItem
 }
 
+// TranscriptRange identifies one complete, contiguous UI transcript segment by
+// its inclusive durable ordering bounds. Sequence alone is not assumed unique,
+// so IDs disambiguate both endpoints.
+type TranscriptRange struct {
+	StartSeq int
+	StartID  int64
+	EndSeq   int
+	EndID    int64
+}
+
+const TranscriptMaterializationMaxRanges = 32
+
 // TranscriptIndexer is an optional Store capability for coherent revisioned
 // transcript reads. Implementations return each revision and its rows from one
 // read transaction.
 type TranscriptIndexer interface {
 	GetTranscriptIndex(ctx context.Context, sessionID string) (rev int64, items []TranscriptIndexItem, err error)
 	GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error)
-	GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (rev int64, messages []Message, err error)
+	GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (rev int64, messages []Message, err error)
 	TranscriptRev(ctx context.Context, sessionID string) (int64, error)
 }
 

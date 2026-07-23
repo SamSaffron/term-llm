@@ -5,14 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-const transcriptBodiesMaxIDs = 512
+const (
+	transcriptBodiesMaxAnchors    = session.TranscriptMaterializationMaxRanges
+	transcriptBodiesMaxQueryBytes = 4096
+)
 
 type transcriptRowsResponse struct {
 	Seqs  []int   `json:"seqs"`
@@ -142,81 +144,67 @@ func (s *serveServer) handleSessionTranscript(w http.ResponseWriter, r *http.Req
 	})
 }
 
-func parseTranscriptBodyIDs(raw string) ([]int64, error) {
+func parseTranscriptBodyAnchors(raw string) ([]int64, error) {
+	if len(raw) > transcriptBodiesMaxQueryBytes {
+		return nil, fmt.Errorf("transcript bodies query is too long")
+	}
 	parts := strings.Split(strings.TrimSpace(raw), ",")
-	seen := make(map[int64]struct{})
-	ids := make([]int64, 0)
+	seen := make(map[int64]struct{}, len(parts))
+	anchors := make([]int64, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-		startText, endText := part, part
-		if dash := strings.IndexByte(part, '-'); dash >= 0 {
-			startText = strings.TrimSpace(part[:dash])
-			endText = strings.TrimSpace(part[dash+1:])
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid transcript body anchor %q", part)
 		}
-		start, err := strconv.ParseInt(startText, 10, 64)
-		if err != nil || start <= 0 {
-			return nil, fmt.Errorf("invalid transcript body id %q", part)
+		if _, ok := seen[id]; ok {
+			continue
 		}
-		end, err := strconv.ParseInt(endText, 10, 64)
-		if err != nil || end < start {
-			return nil, fmt.Errorf("invalid transcript body id range %q", part)
-		}
-		if end-start+1 > transcriptBodiesMaxIDs {
-			return nil, fmt.Errorf("transcript bodies request exceeds %d IDs", transcriptBodiesMaxIDs)
-		}
-		for id := start; ; id++ {
-			if _, ok := seen[id]; !ok {
-				seen[id] = struct{}{}
-				ids = append(ids, id)
-				if len(ids) > transcriptBodiesMaxIDs {
-					return nil, fmt.Errorf("transcript bodies request exceeds %d IDs", transcriptBodiesMaxIDs)
-				}
-			}
-			if id == end {
-				break
-			}
+		seen[id] = struct{}{}
+		anchors = append(anchors, id)
+		if len(anchors) > transcriptBodiesMaxAnchors {
+			return nil, fmt.Errorf("transcript bodies request exceeds %d turn anchors", transcriptBodiesMaxAnchors)
 		}
 	}
-	if len(ids) == 0 {
+	if len(anchors) == 0 {
 		return nil, fmt.Errorf("ids is required")
 	}
-	return ids, nil
+	return anchors, nil
 }
 
-func expandTranscriptTurnIDs(items []session.TranscriptIndexItem, requested []int64) []int64 {
+func expandTranscriptTurnRanges(items []session.TranscriptIndexItem, requested []int64) []session.TranscriptRange {
 	requestedSet := make(map[int64]struct{}, len(requested))
 	for _, id := range requested {
 		requestedSet[id] = struct{}{}
 	}
-	selected := make(map[int64]struct{})
-	for ordinal, item := range items {
-		if _, ok := requestedSet[item.ID]; !ok {
-			continue
-		}
-		start := ordinal
-		for start > 0 && items[start].Role != "user" {
-			start--
-		}
-		if items[start].Role != "user" {
-			start = 0
-		}
-		end := ordinal + 1
+	ranges := make([]session.TranscriptRange, 0, len(requested))
+	for start := 0; start < len(items); {
+		end := start + 1
 		for end < len(items) && items[end].Role != "user" {
 			end++
 		}
-		for i := start; i < end; i++ {
-			selected[items[i].ID] = struct{}{}
+		selected := false
+		for ordinal := start; ordinal < end; ordinal++ {
+			if _, ok := requestedSet[items[ordinal].ID]; ok {
+				selected = true
+				break
+			}
 		}
+		if selected {
+			last := end - 1
+			ranges = append(ranges, session.TranscriptRange{
+				StartSeq: items[start].Seq,
+				StartID:  items[start].ID,
+				EndSeq:   items[last].Seq,
+				EndID:    items[last].ID,
+			})
+		}
+		start = end
 	}
-	ids := make([]int64, 0, len(selected))
-	for id := range selected {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ids
+	return ranges
 }
 
 func (s *serveServer) handleSessionTranscriptBodies(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -225,7 +213,7 @@ func (s *serveServer) handleSessionTranscriptBodies(w http.ResponseWriter, r *ht
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "revisioned transcript is unavailable")
 		return
 	}
-	requested, err := parseTranscriptBodyIDs(r.URL.Query().Get("ids"))
+	requested, err := parseTranscriptBodyAnchors(r.URL.Query().Get("ids"))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -241,12 +229,8 @@ func (s *serveServer) handleSessionTranscriptBodies(w http.ResponseWriter, r *ht
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get transcript")
 			return
 		}
-		expanded := expandTranscriptTurnIDs(snapshot.Items, requested)
-		if len(expanded) > transcriptBodiesMaxIDs {
-			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", fmt.Sprintf("transcript turn exceeds %d display rows", transcriptBodiesMaxIDs))
-			return
-		}
-		rev, messages, err := indexer.GetMessagesByIDs(r.Context(), sessionID, expanded)
+		ranges := expandTranscriptTurnRanges(snapshot.Items, requested)
+		rev, messages, err := indexer.GetMessagesByTranscriptRanges(r.Context(), sessionID, ranges)
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get transcript bodies")
 			return

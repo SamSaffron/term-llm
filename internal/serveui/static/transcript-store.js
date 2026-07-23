@@ -8,8 +8,6 @@
   const TRANSCRIPT_FLAG_COMPACTION_TAIL = 1;
   const TRANSCRIPT_FLAG_EMPTY_BODY = 2;
   const TRANSCRIPT_MATERIALIZE_BATCH_TURNS = 32;
-  const TRANSCRIPT_MATERIALIZE_BATCH_ROWS = 256;
-  const TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS = 512;
   const DEFAULT_TRANSCRIPT_BUDGETS = Object.freeze({
     maxMaterializedTurns: 60,
     overscanTurns: 8,
@@ -195,12 +193,6 @@
       return ids;
     }
 
-    bodyRequestIDsForSegment(segmentIndex) {
-      const segment = this.segments[segmentIndex];
-      if (!segment) return [];
-      return this.ids.slice(segment.startOrdinal, segment.endOrdinal + 1);
-    }
-
     refreshSegmentState(segment) {
       const index = this.segments.indexOf(segment);
       const required = this.requiredBodyIDs(index);
@@ -289,6 +281,11 @@
       for (let i = 0; i < this.segments.length; i += 1) {
         if (this.segments[i].state === 'materialized') materialized.push(i);
       }
+      // This is deliberately a turn/segment budget, never a durable-row or byte
+      // budget. A visible pinned turn may contain arbitrarily many tool rows and
+      // can exceed practical memory/DOM byte targets; preserving complete visible
+      // content and conversion context wins. Unpinned distant turns are still
+      // evicted so the rest of the transcript remains bounded.
       const allowed = Math.max(this.budgets.maxMaterializedTurns, [...this.pinnedSegments].filter((i) => this.segments[i]?.state === 'materialized').length);
       if (materialized.length <= allowed) return;
       const viewportCenter = this.viewport.firstOrdinal >= 0
@@ -322,24 +319,14 @@
       const target = Math.max(start, Math.min(end, this.segmentForOrdinal(targetOrdinal)));
       const direction = String(options.direction || 'center');
       const selected = [];
-      let selectedRows = 0;
       const consider = (index) => {
         const segment = this.segments[index];
         if (!segment || segment.state !== 'evicted') return true;
-        const rows = segment.endOrdinal - segment.startOrdinal + 1;
         if (selected.length >= TRANSCRIPT_MATERIALIZE_BATCH_TURNS) return false;
-        if (selectedRows + rows > TRANSCRIPT_MATERIALIZE_BATCH_ROWS) {
-          // A single valid turn cannot be split because the server expands every
-          // requested row to its whole turn. Permit that one turn, but never
-          // combine it with neighbors or exceed the server protocol limit.
-          if (selected.length === 0 && rows <= TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS) {
-            selected.push(index);
-            selectedRows = rows;
-          }
-          return false;
-        }
+        // Each selected segment is represented on the wire by one turn anchor.
+        // Expanded durable row count is intentionally irrelevant: the server
+        // returns the complete user-bounded turn and the UI never splits it.
         selected.push(index);
-        selectedRows += rows;
         return selected.length < TRANSCRIPT_MATERIALIZE_BATCH_TURNS;
       };
 
@@ -675,7 +662,6 @@
     TranscriptStore,
     TRANSCRIPT_BUDGETS,
     TRANSCRIPT_MATERIALIZE_BATCH_TURNS,
-    TRANSCRIPT_MATERIALIZE_BATCH_ROWS,
     TRANSCRIPT_FLAG_COMPACTION_TAIL,
     TRANSCRIPT_FLAG_EMPTY_BODY,
     transcriptStoreFromMessages,

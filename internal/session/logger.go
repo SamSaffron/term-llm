@@ -303,14 +303,14 @@ func (s *LoggingStore) GetTranscriptSnapshot(ctx context.Context, sessionID stri
 	return snapshot, err
 }
 
-// GetMessagesByIDs delegates coherent transcript body reads.
-func (s *LoggingStore) GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (int64, []Message, error) {
+// GetMessagesByTranscriptRanges delegates coherent complete-segment body reads.
+func (s *LoggingStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (int64, []Message, error) {
 	indexer, ok := s.Store.(TranscriptIndexer)
 	if !ok {
 		return 0, nil, ErrNotFound
 	}
-	rev, messages, err := indexer.GetMessagesByIDs(ctx, sessionID, ids)
-	s.logOnce("GetMessagesByIDs", err)
+	rev, messages, err := indexer.GetMessagesByTranscriptRanges(ctx, sessionID, ranges)
+	s.logOnce("GetMessagesByTranscriptRanges", err)
 	return rev, messages, err
 }
 

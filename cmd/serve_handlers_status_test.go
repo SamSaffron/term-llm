@@ -93,8 +93,8 @@ func (s *countingStatusTranscriptStore) GetTranscriptSnapshot(ctx context.Contex
 	return s.indexer.GetTranscriptSnapshot(ctx, sessionID)
 }
 
-func (s *countingStatusTranscriptStore) GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (int64, []session.Message, error) {
-	return s.indexer.GetMessagesByIDs(ctx, sessionID, ids)
+func (s *countingStatusTranscriptStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []session.TranscriptRange) (int64, []session.Message, error) {
+	return s.indexer.GetMessagesByTranscriptRanges(ctx, sessionID, ranges)
 }
 
 func (s *countingStatusTranscriptStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {

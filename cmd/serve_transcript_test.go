@@ -161,14 +161,33 @@ func TestHandleSessionTranscriptBodiesExpandsWholeTurnAndMarksToolError(t *testi
 	}
 }
 
-func TestHandleSessionTranscriptBodiesRejectsExpandedTurnAboveProtocolLimit(t *testing.T) {
+func TestHandleSessionTranscriptBodiesLoadsLargeTurnAtomicallyWithFarEndToolContext(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
-	messages := make([]*session.Message, 0, transcriptBodiesMaxIDs+1)
-	messages = append(messages, session.NewMessage(sess.ID, llm.UserText("large turn"), -1))
-	for i := 1; i <= transcriptBodiesMaxIDs; i++ {
-		messages = append(messages, session.NewMessage(sess.ID, llm.AssistantText(fmt.Sprintf("part-%d", i)), -1))
+	const toolRows = 700
+	const toolCalls = toolRows / 2
+	messages := make([]*session.Message, 0, toolRows+2)
+	messages = append(messages, session.NewMessage(sess.ID, llm.UserText("large tool turn"), -1))
+	for i := 0; i < toolCalls; i++ {
+		callID := fmt.Sprintf("call-%03d", i)
+		name := "read_file"
+		if i == toolCalls-1 {
+			name = "update_plan"
+		}
+		messages = append(messages, session.NewMessage(sess.ID, llm.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+				ID: callID, Name: name,
+			}}},
+		}, -1))
+		messages = append(messages, session.NewMessage(sess.ID, llm.Message{
+			Role: llm.RoleTool,
+			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+				ID: callID, Name: name, IsError: i == toolCalls-1,
+			}}},
+		}, -1))
 	}
+	messages = append(messages, session.NewMessage(sess.ID, llm.UserText("next turn"), -1))
 	for i, msg := range messages {
 		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
 			t.Fatalf("AddMessage %d: %v", i, err)
@@ -179,15 +198,33 @@ func TestHandleSessionTranscriptBodiesRejectsExpandedTurnAboveProtocolLimit(t *t
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	rr := httptest.NewRecorder()
 	srv.handleSessionByID(rr, req)
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status=%d, want %d; body=%s", rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "turn exceeds") || !strings.Contains(rr.Body.String(), strconv.Itoa(transcriptBodiesMaxIDs)) {
-		t.Fatalf("body does not explain expanded turn limit: %s", rr.Body.String())
+	var body struct {
+		Rev      int64                 `json:"rev"`
+		Messages []sessionMessageEntry `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(body.Messages), toolRows+1; got != want {
+		t.Fatalf("large turn rows=%d want=%d", got, want)
+	}
+	if body.Messages[0].ID != messages[0].ID || body.Messages[len(body.Messages)-1].ID != messages[len(messages)-2].ID {
+		t.Fatalf("response did not preserve the complete user-bounded turn: first=%d last=%d", body.Messages[0].ID, body.Messages[len(body.Messages)-1].ID)
+	}
+	farCall := body.Messages[len(body.Messages)-2]
+	farResult := body.Messages[len(body.Messages)-1]
+	if len(farCall.Parts) != 1 || farCall.Parts[0].ToolName != "update_plan" || !farCall.Parts[0].ToolError {
+		t.Fatalf("far-end tool call lost result/error context: %+v", farCall)
+	}
+	if len(farResult.Parts) != 1 || farResult.Parts[0].ToolName != "update_plan" || !farResult.Parts[0].ToolError {
+		t.Fatalf("far-end update_plan result lost conversion semantics: %+v", farResult)
 	}
 }
 
-func TestHandleSessionTranscriptBodiesParsesRangesAndCapsExpansion(t *testing.T) {
+func TestHandleSessionTranscriptBodiesCapsTurnAnchorsAndMalformedQuerySize(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
@@ -195,22 +232,23 @@ func TestHandleSessionTranscriptBodiesParsesRangesAndCapsExpansion(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	_, index, err := store.(session.TranscriptIndexer).GetTranscriptIndex(ctx, sess.ID)
-	if err != nil {
-		t.Fatal(err)
+
+	anchors := make([]string, transcriptBodiesMaxAnchors+1)
+	for i := range anchors {
+		anchors[i] = strconv.Itoa(i + 1)
 	}
-	ids := fmt.Sprintf("%d-%d", index[0].ID, index[2].ID)
-	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript/bodies?ids="+ids, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript/bodies?ids="+strings.Join(anchors, ","), nil)
 	rr := httptest.NewRecorder()
 	srv.handleSessionByID(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("range status=%d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), strconv.Itoa(transcriptBodiesMaxAnchors)) {
+		t.Fatalf("anchor cap status=%d body=%s", rr.Code, rr.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript/bodies?ids=1-513", nil)
+	oversized := strings.Repeat("1,", transcriptBodiesMaxQueryBytes) + "1"
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript/bodies?ids="+oversized, nil)
 	rr = httptest.NewRecorder()
 	srv.handleSessionByID(rr, req)
-	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "512") {
-		t.Fatalf("cap status=%d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "too long") {
+		t.Fatalf("query size status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }

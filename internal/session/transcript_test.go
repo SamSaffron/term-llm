@@ -132,9 +132,12 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 		t.Fatalf("empty rows lack empty-body flags: %#v", items)
 	}
 
-	bodyRev, bodies, err := store.GetMessagesByIDs(ctx, sess.ID, []int64{messages[3].ID, messages[1].ID, 999999})
+	bodyRev, bodies, err := store.GetMessagesByTranscriptRanges(ctx, sess.ID, []TranscriptRange{
+		{StartSeq: items[2].Seq, StartID: items[2].ID, EndSeq: items[2].Seq, EndID: items[2].ID},
+		{StartSeq: items[0].Seq, StartID: items[0].ID, EndSeq: items[0].Seq, EndID: items[0].ID},
+	})
 	if err != nil {
-		t.Fatalf("GetMessagesByIDs: %v", err)
+		t.Fatalf("GetMessagesByTranscriptRanges: %v", err)
 	}
 	if bodyRev != rev {
 		t.Fatalf("body rev=%d index rev=%d", bodyRev, rev)

@@ -82,7 +82,7 @@ func (s *deadlineTranscriptStore) GetTranscriptSnapshot(context.Context, string)
 	return session.TranscriptSnapshot{}, nil
 }
 
-func (s *deadlineTranscriptStore) GetMessagesByIDs(context.Context, string, []int64) (int64, []session.Message, error) {
+func (s *deadlineTranscriptStore) GetMessagesByTranscriptRanges(context.Context, string, []session.TranscriptRange) (int64, []session.Message, error) {
 	return 0, nil, nil
 }
 

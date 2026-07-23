@@ -3350,11 +3350,12 @@ func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) 
 	return snapshot.Rev, snapshot.Items, nil
 }
 
-const transcriptBodiesQueryMaxIDs = 512
-
-// GetMessagesByIDs returns requested durable rows in authoritative sequence
-// order and the revision describing them from one SQLite read transaction.
-func (s *SQLiteStore) GetMessagesByIDs(ctx context.Context, sessionID string, ids []int64) (int64, []Message, error) {
+// GetMessagesByTranscriptRanges returns complete durable transcript segments in
+// authoritative order and the revision describing them from one SQLite read
+// transaction. Each segment uses four bind variables regardless of how many
+// durable rows it expands to, so a giant tool turn never approaches SQLite's
+// variable limit.
+func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (int64, []Message, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return 0, nil, fmt.Errorf("begin transcript bodies read: %w", err)
@@ -3372,30 +3373,36 @@ func (s *SQLiteStore) GetMessagesByIDs(ctx context.Context, sessionID string, id
 		return 0, nil, fmt.Errorf("read transcript revision: %w", err)
 	}
 
-	seen := make(map[int64]struct{}, len(ids))
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, sessionID)
-	placeholders := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		if len(seen) > transcriptBodiesQueryMaxIDs {
-			return 0, nil, fmt.Errorf("transcript bodies query exceeds %d IDs", transcriptBodiesQueryMaxIDs)
-		}
-		placeholders = append(placeholders, "?")
-		args = append(args, id)
+	if len(ranges) > TranscriptMaterializationMaxRanges {
+		return 0, nil, fmt.Errorf("transcript bodies query exceeds %d ranges", TranscriptMaterializationMaxRanges)
 	}
+	clauses := make([]string, 0, len(ranges))
+	args := make([]any, 0, 1+len(ranges)*4)
+	args = append(args, sessionID)
+	seen := make(map[TranscriptRange]struct{}, len(ranges))
+	for _, transcriptRange := range ranges {
+		if transcriptRange.StartID <= 0 || transcriptRange.EndID <= 0 {
+			continue
+		}
+		if transcriptRange.EndSeq < transcriptRange.StartSeq || (transcriptRange.EndSeq == transcriptRange.StartSeq && transcriptRange.EndID < transcriptRange.StartID) {
+			continue
+		}
+		if _, ok := seen[transcriptRange]; ok {
+			continue
+		}
+		seen[transcriptRange] = struct{}{}
+		clauses = append(clauses, "((sequence, id) >= (?, ?) AND (sequence, id) <= (?, ?))")
+		args = append(args, transcriptRange.StartSeq, transcriptRange.StartID, transcriptRange.EndSeq, transcriptRange.EndID)
+	}
+
 	messages := make([]Message, 0)
-	if len(placeholders) > 0 {
+	if len(clauses) > 0 {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT `+s.messageSelectCols()+`
 			FROM messages
-			WHERE session_id = ? AND id IN (`+strings.Join(placeholders, ",")+`)
+			WHERE session_id = ?
+				AND role NOT IN ('system', 'developer')
+				AND (`+strings.Join(clauses, " OR ")+`)
 			ORDER BY sequence ASC, id ASC`, args...)
 		if err != nil {
 			return 0, nil, fmt.Errorf("query transcript bodies: %w", err)

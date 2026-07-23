@@ -1204,8 +1204,6 @@ const touchTranscriptSkeleton = (session) => {
 };
 
 const TRANSCRIPT_MATERIALIZE_BATCH_TURNS = Math.max(1, Number(window.TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || 32);
-const TRANSCRIPT_MATERIALIZE_BATCH_ROWS = Math.max(1, Number(window.TRANSCRIPT_MATERIALIZE_BATCH_ROWS) || 256);
-const TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS = 512;
 
 const boundedTranscriptSegmentIndexes = (transcript, request) => {
   if (!transcript) return [];
@@ -1218,21 +1216,14 @@ const boundedTranscriptSegmentIndexes = (transcript, request) => {
   }
   const selected = [];
   const seen = new Set();
-  let selectedRows = 0;
   for (const value of request) {
     const index = Math.trunc(Number(value));
     if (!Number.isFinite(index) || seen.has(index)) continue;
     seen.add(index);
     const segment = transcript.segments[index];
     if (!segment || segment.state !== 'evicted') continue;
-    const rows = segment.endOrdinal - segment.startOrdinal + 1;
     if (selected.length >= TRANSCRIPT_MATERIALIZE_BATCH_TURNS) break;
-    if (selectedRows + rows > TRANSCRIPT_MATERIALIZE_BATCH_ROWS) {
-      if (selected.length === 0 && rows <= TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS) selected.push(index);
-      break;
-    }
     selected.push(index);
-    selectedRows += rows;
   }
   return selected.sort((a, b) => a - b);
 };
@@ -1241,7 +1232,11 @@ const fetchTranscriptSegments = async (session, segmentIndexes, options = {}) =>
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
   const requested = [];
-  for (const index of boundedTranscriptSegmentIndexes(transcript, segmentIndexes)) {
+  const boundedIndexes = boundedTranscriptSegmentIndexes(transcript, segmentIndexes);
+  for (const index of boundedIndexes) {
+    // Transport one anchor per conversational turn. The server expands each
+    // anchor to the complete user-bounded segment; durable row count is not a
+    // request or materialization budget and partial turns are never rendered.
     const id = transcript.ids[transcript.segments[index]?.startOrdinal];
     if (id != null) requested.push(id);
   }
@@ -1253,7 +1248,9 @@ const fetchTranscriptSegments = async (session, segmentIndexes, options = {}) =>
   const data = await resp.json().catch(() => null);
   if (!data || !Array.isArray(data.messages) || Number(data.rev) !== transcript.rev) return false;
   transcript.materialize(data.messages, { deferBudget: options.deferBudget === true });
-  return true;
+  // materialize() retires every body in an incomplete segment, so this check
+  // guarantees callers never render a partial conversational turn.
+  return boundedIndexes.every((index) => ['materialized', 'empty'].includes(transcript.segments[index]?.state));
 };
 
 const materializeTranscriptSegmentsOnce = async (session, request) => {

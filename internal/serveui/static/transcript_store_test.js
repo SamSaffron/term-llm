@@ -209,21 +209,48 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
 })();
 
 (() => {
+  const giantRows = 701;
+  const trailingTurns = 80;
+  const ids = Array.from({ length: giantRows + trailingTurns }, (_, index) => index + 1);
+  const roles = `u${'at'.repeat(350)}${'u'.repeat(trailingTurns)}`;
+  const store = new TranscriptStore('giant-atomic-turn', { maxMaterializedTurns: 60, overscanTurns: 0 });
+  store.applyIndex(envelope(ids, { roles }));
+  assert.equal(store.segments.length, trailingTurns + 1, '700 tool rows must remain one user-bounded segment');
+  assert.deepEqual(
+    [store.segments[0].startOrdinal, store.segments[0].endOrdinal],
+    [0, giantRows - 1],
+    'giant turn boundaries must include every following assistant/tool row'
+  );
+  const giantBatch = store.selectGapBatch(0, 0, { targetOrdinal: giantRows - 1, direction: 'center' });
+  assert.deepEqual(giantBatch, [0], 'an arbitrarily large single turn must remain requestable atomically');
+  materializeOrdinals(store, [0]);
+  assert.equal(store.segments[0].state, 'materialized');
+  assert.equal(store.bodies.size, giantRows, 'all durable rows in the giant turn must be retained together');
+  assert.equal(store.segments.filter((segment) => segment.state === 'materialized').length, 1, 'giant turn consumes one materialized-turn budget unit');
+
+  store.setViewport(0, giantRows - 1);
+  materializeOrdinals(store, Array.from({ length: trailingTurns }, (_, index) => giantRows + index));
+  store.enforceBudget();
+  const materialized = store.segments.filter((segment) => segment.state === 'materialized').length;
+  const pinnedMaterialized = [...store.pinnedSegments].filter((index) => store.segments[index]?.state === 'materialized').length;
+  assert.equal(store.segments[0].state, 'materialized', 'visible giant turn must remain pinned despite its practical byte size');
+  assert(materialized <= Math.max(60, pinnedMaterialized), 'distant turns must still be evicted around pinned correctness exceptions');
+  assert.equal(store.bodies.size, giantRows + materialized - 1, 'row count must not be mistaken for the materialized-turn count');
+  store._checkInvariants();
+})();
+
+(() => {
   const ids = Array.from({ length: 1000 }, (_, index) => index + 1);
   const roles = ids.map((_, index) => index % 10 === 0 ? 'u' : 'a').join('');
-  const store = new TranscriptStore('expanded-row-cap', { maxMaterializedTurns: 60, overscanTurns: 8 });
+  const store = new TranscriptStore('turn-anchor-cap', { maxMaterializedTurns: 60, overscanTurns: 8 });
   store.applyIndex(envelope(ids, { roles }));
   const gap = store.renderRuns()[0];
   const batch = store.selectGapBatch(gap.startSegmentIndex, gap.endSegmentIndex, {
     targetOrdinal: 500,
     direction: 'center'
   });
-  const expandedRows = batch.reduce((count, index) => {
-    const segment = store.segments[index];
-    return count + segment.endOrdinal - segment.startOrdinal + 1;
-  }, 0);
-  assert(batch.length <= 32, `multi-row batch exceeded turn cap: ${batch.length}`);
-  assert(expandedRows <= 256, `multi-row batch exceeded expanded-row cap: ${expandedRows}`);
+  assert.equal(batch.length, 32, 'batch planning must be bounded only by conversational turn anchors');
+  assert(batch.every((index) => store.segments[index].endOrdinal - store.segments[index].startOrdinal + 1 === 10));
 })();
 
 (() => {

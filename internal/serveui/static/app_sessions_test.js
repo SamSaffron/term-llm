@@ -3648,6 +3648,108 @@ async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
   pass(name);
 }
 
+async function testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping() {
+  const name = '700 tool rows load atomically as one turn with far-end grouping context';
+  const toolCalls = 350;
+  const raw = [{
+    id: 1,
+    sequence: 0,
+    role: 'user',
+    created_at: 1000,
+    parts: [{ type: 'text', text: 'run many tools' }]
+  }];
+  for (let index = 0; index < toolCalls; index += 1) {
+    const callID = `call-${index}`;
+    const toolName = index === toolCalls - 1 ? 'update_plan' : 'read_file';
+    const failed = index === toolCalls - 1;
+    raw.push({
+      id: raw.length + 1,
+      sequence: raw.length,
+      role: 'assistant',
+      created_at: 1001 + raw.length,
+      parts: [{
+        type: 'tool_call',
+        tool_name: toolName,
+        tool_call_id: callID,
+        tool_arguments: '{}',
+        tool_error: failed
+      }]
+    });
+    raw.push({
+      id: raw.length + 1,
+      sequence: raw.length,
+      role: 'tool',
+      created_at: 1001 + raw.length,
+      parts: [{
+        type: 'tool_result',
+        tool_name: toolName,
+        tool_call_id: callID,
+        tool_error: failed
+      }]
+    });
+  }
+  const requestedAnchors = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptBodiesURL(url, 'large-tool-turn')) {
+        const parsed = parsedTestURL(url);
+        requestedAnchors.push(...String(parsed.searchParams.get('ids') || '').split(',').filter(Boolean).map(Number));
+        return new Response(JSON.stringify({ rev: raw.length, messages: raw }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: 'large-tool-turn', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id, { maxMaterializedTurns: 60, overscanTurns: 0 });
+  session.transcript.applyIndex({
+    rev: raw.length,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: {
+      ids: raw.map((entry) => entry.id),
+      seqs: raw.map((entry) => entry.sequence),
+      roles: `u${'at'.repeat(toolCalls)}`,
+      flags: raw.map(() => 0)
+    }
+  });
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const loaded = await app.materializeTranscriptSegments(session, [0]);
+  const materialized = session.transcript.segments.filter((segment) => segment.state === 'materialized');
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const farTool = group?.tools?.find((tool) => tool.id === `call-${toolCalls - 1}`);
+  if (!loaded || requestedAnchors.length !== 1 || requestedAnchors[0] !== 1) {
+    fail(name, 'client did not request exactly one turn anchor', JSON.stringify({ loaded, requestedAnchors }));
+    return;
+  }
+  if (session.transcript.segments.length !== 1 || materialized.length !== 1 || session.transcript.bodies.size !== raw.length) {
+    fail(name, 'giant turn was split, rejected, or budgeted by durable rows', JSON.stringify({
+      segments: session.transcript.segments.length,
+      materialized: materialized.length,
+      bodies: session.transcript.bodies.size
+    }));
+    return;
+  }
+  if (!group || group.tools.length !== toolCalls || group.durableRowEndId !== raw[raw.length - 1].id) {
+    fail(name, 'tool conversion lost full-turn context at the far end', JSON.stringify(group));
+    return;
+  }
+  if (!farTool || farTool.name !== 'update_plan' || farTool.status !== 'error' || farTool.resultStatus !== 'error') {
+    fail(name, 'far-end update_plan result/error semantics were not preserved', JSON.stringify(farTool));
+    return;
+  }
+  pass(name);
+}
+
 async function testTerminalTranscriptSyncQueuesBehindInflightRequest() {
   const name = 'terminal transcript sync follows an in-flight request until final revision';
   let resolveFirst;
@@ -3904,8 +4006,10 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
       return;
     }
     const materialized = transcript.segments.filter((segment) => segment.state === 'materialized');
-    if (materialized.length > materializeBudget || transcript.bodies.size > materializeBudget) {
-      fail(name, `materialized transcript exceeded budget at step ${step}`, `turns=${materialized.length} bodies=${transcript.bodies.size}`);
+    const pinnedMaterialized = [...transcript.pinnedSegments].filter((index) => transcript.segments[index]?.state === 'materialized').length;
+    const allowedMaterialized = Math.max(materializeBudget, pinnedMaterialized);
+    if (materialized.length > allowedMaterialized || transcript.bodies.size > allowedMaterialized) {
+      fail(name, `materialized transcript exceeded turn budget plus pinned exceptions at step ${step}`, `turns=${materialized.length} pinned=${pinnedMaterialized} bodies=${transcript.bodies.size}`);
       return;
     }
     if (session.messages.length > materializeBudget + 3 || renderedDescriptorCount > materializeBudget + 3 || messages.children.length > materializeBudget + 3) {
@@ -3974,6 +4078,7 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
   await testSessionPruningDestroysTranscriptStores();
   await testOptimisticTranscriptStorageIsPerSession();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
+  await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
   await testTerminalTranscriptSyncQueuesBehindInflightRequest();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
