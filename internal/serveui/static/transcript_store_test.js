@@ -157,6 +157,20 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
 })();
 
 (() => {
+  const ids = Array.from({ length: 5000 }, (_, index) => index + 1);
+  const store = new TranscriptStore('five-thousand-row-budget', { maxMaterializedTurns: 60, overscanTurns: 8 });
+  store.applyIndex(envelope(ids));
+  store.setViewport(4999, 4999);
+  materializeOrdinals(store, Array.from({ length: 100 }, (_, index) => 4900 + index));
+  store.enforceBudget();
+  assert.equal(store.ids.length, 5000, 'complete durable identity skeleton must not be truncated');
+  assert(store.segments.filter((segment) => segment.state === 'materialized').length <= 60);
+  assert(store.bodies.size <= 60, 'one-row turn bodies must remain within the configured budget');
+  assert(store.renderRuns().length <= 61, '5000 durable rows should render as bounded turns plus one coalesced gap');
+  store._checkInvariants();
+})();
+
+(() => {
   const store = new TranscriptStore('optimistic', { maxMaterializedTurns: 20, overscanTurns: 0 });
   store.applyIndex(envelope([1], { rev: 1 }));
   materializeOrdinals(store, [0]);
