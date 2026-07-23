@@ -75,6 +75,17 @@ func TestHandleSessionTranscriptReturnsCompleteCompactIdentityIndex(t *testing.T
 	if len(body.Rows.Seqs) != len(body.Rows.IDs) || len(body.Rows.Flags) != len(body.Rows.IDs) {
 		t.Fatalf("parallel arrays differ: seqs=%d ids=%d flags=%d", len(body.Rows.Seqs), len(body.Rows.IDs), len(body.Rows.Flags))
 	}
+	var wireBody struct {
+		Rows struct {
+			Flags json.RawMessage `json:"flags"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &wireBody); err != nil {
+		t.Fatalf("decode wire shape: %v", err)
+	}
+	if len(wireBody.Rows.Flags) == 0 || wireBody.Rows.Flags[0] != '[' {
+		t.Fatalf("flags must be a JSON number array for browser clients, got %s", wireBody.Rows.Flags)
+	}
 	if got := rr.Header().Get("X-Transcript-Rev"); got != "4" {
 		t.Fatalf("X-Transcript-Rev=%q", got)
 	}

@@ -20,7 +20,7 @@ type transcriptRowsResponse struct {
 	Seqs  []int   `json:"seqs"`
 	IDs   []int64 `json:"ids"`
 	Roles string  `json:"roles"`
-	Flags []uint8 `json:"flags"`
+	Flags []int   `json:"flags"`
 }
 
 type transcriptResponse struct {
@@ -122,14 +122,14 @@ func (s *serveServer) handleSessionTranscript(w http.ResponseWriter, r *http.Req
 	rows := transcriptRowsResponse{
 		Seqs:  make([]int, 0, len(snapshot.Items)),
 		IDs:   make([]int64, 0, len(snapshot.Items)),
-		Flags: make([]uint8, 0, len(snapshot.Items)),
+		Flags: make([]int, 0, len(snapshot.Items)),
 	}
 	var roles strings.Builder
 	roles.Grow(len(snapshot.Items))
 	for _, item := range snapshot.Items {
 		rows.Seqs = append(rows.Seqs, item.Seq)
 		rows.IDs = append(rows.IDs, item.ID)
-		rows.Flags = append(rows.Flags, item.Flags)
+		rows.Flags = append(rows.Flags, int(item.Flags))
 		roles.WriteByte(transcriptRoleCode(item.Role))
 	}
 	rows.Roles = roles.String()
