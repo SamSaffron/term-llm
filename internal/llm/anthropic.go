@@ -281,6 +281,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		}
 
 		var lastUsage *Usage
+		sawMessageStop := false
 		var streamOpts []option.RequestOption
 		if p.use1m {
 			streamOpts = append(streamOpts, option.WithHeaderAdd("anthropic-beta", the1mBetaHeader))
@@ -342,10 +343,15 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 						lastUsage.CacheWriteTokens = int(variant.Usage.CacheCreationInputTokens)
 					}
 				}
+			case anthropic.MessageStopEvent:
+				sawMessageStop = true
 			}
 		}
 		if err := stream.Err(); err != nil {
 			return fmt.Errorf("anthropic streaming error: %w", err)
+		}
+		if !sawMessageStop {
+			return &StreamIncompleteError{Transport: "Anthropic SSE", Terminal: "message_stop"}
 		}
 		if lastUsage != nil {
 			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
@@ -441,6 +447,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		currentServerTool := ""
 		currentServerToolIndex := int64(-1)
 		var lastUsage *Usage
+		sawMessageStop := false
 
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
@@ -526,10 +533,15 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 						lastUsage.CacheWriteTokens = int(variant.Usage.CacheCreationInputTokens)
 					}
 				}
+			case anthropic.BetaRawMessageStopEvent:
+				sawMessageStop = true
 			}
 		}
 		if err := stream.Err(); err != nil {
 			return fmt.Errorf("anthropic streaming error: %w", err)
+		}
+		if !sawMessageStop {
+			return &StreamIncompleteError{Transport: "Anthropic SSE", Terminal: "message_stop"}
 		}
 		if currentServerTool != "" {
 			if err := send.Send(Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}); err != nil {
