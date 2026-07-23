@@ -4238,6 +4238,123 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
   pass(name);
 }
 
+async function testTranscriptSyncCommitsOneRenderedProjection() {
+  const name = 'transcript sync commits one rendered projection after index and bodies';
+  const sessionId = 'single-render-sync';
+  let renders = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [101, 102], seqs: [0, 1], roles: 'ua', flags: [0, 0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"single-render-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          messages: [
+            { id: 101, sequence: 0, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'question' }] },
+            { id: 102, sequence: 1, role: 'assistant', created_at: 2000, parts: [{ type: 'text', text: 'answer' }] }
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      renderMessages() { renders += 1; }
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+  renders = 0;
+
+  const loaded = await app.syncTranscript(session, { reason: 'activation' });
+  if (!loaded || session.messages.map((message) => message.content).join(',') !== 'question,answer') {
+    fail(name, 'sync did not commit the complete projected transcript', JSON.stringify({ loaded, messages: session.messages }));
+    return;
+  }
+  if (renders !== 1) {
+    fail(name, `sync rendered ${renders} intermediate projections instead of one`);
+    return;
+  }
+  pass(name);
+}
+
+async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
+  const name = 'in-flight sync absorbs status target satisfied by its response';
+  const sessionId = 'coalesced-revision-sync';
+  let indexRequests = 0;
+  let releaseFirstIndex;
+  let markFirstIndexStarted;
+  const firstIndexStarted = new Promise((resolve) => { markFirstIndexStarted = resolve; });
+  const firstIndexGate = new Promise((resolve) => { releaseFirstIndex = resolve; });
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        indexRequests += 1;
+        if (indexRequests === 1) {
+          markFirstIndexStarted();
+          await firstIndexGate;
+          return new Response(JSON.stringify({
+            rev: 2,
+            compaction_seq: -1,
+            compaction_count: 0,
+            rows: { ids: [201, 202], seqs: [0, 1], roles: 'ua', flags: [0, 0] }
+          }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"coalesced-2"' } });
+        }
+        return new Response(null, { status: 304, headers: { ETag: '"coalesced-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          messages: [
+            { id: 201, sequence: 0, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'question' }] },
+            { id: 202, sequence: 1, role: 'assistant', created_at: 2000, parts: [{ type: 'text', text: 'answer' }] }
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+
+  const activation = app.syncTranscript(session, { reason: 'activation' });
+  await firstIndexStarted;
+  const statusSync = app.reconcileTranscriptFromStatus([{
+    id: sessionId,
+    transcript_rev: 2,
+    active_response_id: '',
+    started_rev: 0
+  }]);
+  releaseFirstIndex();
+  const [loaded] = await Promise.all([activation, statusSync]);
+  if (!loaded || session.transcript.rev !== 2) {
+    fail(name, 'the first response did not satisfy the queued target revision', JSON.stringify({ loaded, rev: session.transcript.rev }));
+    return;
+  }
+  if (indexRequests !== 1) {
+    fail(name, `satisfied revision caused ${indexRequests} transcript index requests`);
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -4276,6 +4393,8 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
   await testSessionPruningDestroysTranscriptStores();
   await testOptimisticTranscriptStorageIsPerSession();
   await testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconciliation();
+  await testTranscriptSyncCommitsOneRenderedProjection();
+  await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
   await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
   await testTerminalTranscriptSyncQueuesBehindInflightRequest();

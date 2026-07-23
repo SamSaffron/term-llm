@@ -556,45 +556,55 @@
       const anchor = adapter?.capture?.() || null;
       const oldIDs = this.ids.slice();
       const oldOrdinal = anchor ? oldIDs.indexOf(normalizedID(anchor.id)) : -1;
-      const result = mutation();
-      if (!anchor) {
-        adapter?.render?.(this);
-        return result;
-      }
-      let targetID = normalizedID(anchor.id);
-      if (!this.ids.includes(targetID)) {
-        targetID = null;
-        for (let ordinal = oldOrdinal - 1; ordinal >= 0; ordinal -= 1) {
-          if (this.ids.includes(oldIDs[ordinal])) {
-            targetID = oldIDs[ordinal];
-            break;
-          }
-        }
-        if (targetID == null) {
-          for (let ordinal = oldOrdinal + 1; ordinal < oldIDs.length; ordinal += 1) {
+      const finish = (result) => {
+        let targetID = anchor ? normalizedID(anchor.id) : null;
+        if (anchor && !this.ids.includes(targetID)) {
+          targetID = null;
+          for (let ordinal = oldOrdinal - 1; ordinal >= 0; ordinal -= 1) {
             if (this.ids.includes(oldIDs[ordinal])) {
               targetID = oldIDs[ordinal];
               break;
             }
           }
+          if (targetID == null) {
+            for (let ordinal = oldOrdinal + 1; ordinal < oldIDs.length; ordinal += 1) {
+              if (this.ids.includes(oldIDs[ordinal])) {
+                targetID = oldIDs[ordinal];
+                break;
+              }
+            }
+          }
         }
+        const targetSegment = this.segmentForID(targetID);
+        if (targetSegment >= 0) {
+          const targetOrdinal = this.ordinalForID(targetID);
+          const span = Math.max(0, this.viewport.lastOrdinal - this.viewport.firstOrdinal);
+          this.viewport = {
+            firstOrdinal: targetOrdinal,
+            lastOrdinal: Math.min(this.ids.length - 1, targetOrdinal + span)
+          };
+        }
+        // Finalize the body budget before projecting the store into the DOM. The
+        // previous implementation rendered inside each intermediate mutation,
+        // then evicted after rendering and needed another reconciliation pass to
+        // make the DOM agree with the store. A transcript transaction now has one
+        // observable commit: resolve the viewport, enforce the final budget, and
+        // render exactly once.
+        this.refreshPinnedSegments();
+        this.enforceBudget();
+        adapter?.render?.(this);
+        if (anchor) {
+          const top = targetID == null ? null : adapter?.topForID?.(targetID);
+          if (Number.isFinite(top) && Number.isFinite(anchor.top)) adapter?.adjustScroll?.(top - anchor.top);
+        }
+        return result;
+      };
+
+      const result = mutation();
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).then(finish);
       }
-      const targetSegment = this.segmentForID(targetID);
-      if (targetSegment >= 0) {
-        const targetOrdinal = this.ordinalForID(targetID);
-        const span = Math.max(0, this.viewport.lastOrdinal - this.viewport.firstOrdinal);
-        this.viewport = {
-          firstOrdinal: targetOrdinal,
-          lastOrdinal: Math.min(this.ids.length - 1, targetOrdinal + span)
-        };
-        this.pinnedSegments.add(targetSegment);
-      }
-      adapter?.render?.(this);
-      const top = targetID == null ? null : adapter?.topForID?.(targetID);
-      if (Number.isFinite(top) && Number.isFinite(anchor.top)) adapter?.adjustScroll?.(top - anchor.top);
-      this.refreshPinnedSegments();
-      this.enforceBudget();
-      return result;
+      return finish(result);
     }
 
     releaseBodies() {

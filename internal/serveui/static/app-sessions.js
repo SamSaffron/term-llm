@@ -1073,7 +1073,7 @@ const noteTranscriptTerminal = (session, finalRev) => {
   });
 };
 
-const transcriptViewportAdapter = (session) => {
+const transcriptViewportAdapter = (session, forceScroll = false) => {
   if (!session || session.id !== state.activeSessionId || !elements.messages || !elements.chatScroll) return null;
   const scrollRect = () => elements.chatScroll.getBoundingClientRect?.() || { top: 0, bottom: Number(elements.chatScroll.clientHeight) || 0 };
   const durableNodeForID = (id) => {
@@ -1100,8 +1100,12 @@ const transcriptViewportAdapter = (session) => {
       return { id: Number(node.dataset.durableId), top: rect.top - viewport.top };
     },
     render: () => {
+      // TranscriptStore is the durable/body/optimistic source of truth. Publish
+      // its bounded display projection only at the transaction's single render
+      // boundary so session.messages and the DOM cannot observe half-applied
+      // index/body/reconciliation state.
       refreshSessionMessagesFromTranscript(session);
-      renderMessages(false);
+      renderMessages(forceScroll);
     },
     topForID: (id) => {
       const node = durableNodeForID(id);
@@ -1293,18 +1297,20 @@ const materializeTranscriptSegmentsOnce = async (session, request) => {
 
   transcript.enforceBudget();
   transcript.reconcileOptimistic();
-  refreshSessionMessagesFromTranscript(session);
+  persistTranscriptOptimistic(session);
   if (adapter) {
+    // adapter.render publishes the bounded store projection and reconciles the
+    // DOM once; do not build session.messages separately before that commit.
     adapter.render?.(transcript);
     const top = anchor == null ? null : adapter.topForID?.(anchor.id);
     if (Number.isFinite(top) && Number.isFinite(anchor.top)) adapter.adjustScroll?.(top - anchor.top);
   } else {
+    refreshSessionMessagesFromTranscript(session);
     renderMessages(false);
   }
   // Drop the temporary anchor pin after the anchored render. The viewport stays
   // on the newly loaded batch so the next fill can evict the old region.
   transcript.refreshPinnedSegments();
-  persistTranscriptOptimistic(session);
   return true;
 };
 
@@ -1328,21 +1334,6 @@ const syncTranscriptOnce = async (session, options = {}) => {
   if (transcript.etag && !options.force) headers['If-None-Match'] = transcript.etag;
   const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
   transcript.noteIndexFetch(resp.status === 304, resp.headers?.get?.('ETag') || '');
-  if (resp.status === 304) {
-    if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
-      const last = transcript.ids.length - 1;
-      transcript.setViewport(last, last);
-    }
-    const loaded = await fetchTranscriptSegments(session, transcriptSyncSegmentIndexes(transcript), { deferBudget: true });
-    if (loaded) {
-      transcript.reconcileOptimistic();
-      persistTranscriptOptimistic(session);
-      transcript.enforceBudget();
-      refreshSessionMessagesFromTranscript(session);
-      if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
-    }
-    return loaded;
-  }
   if (resp.status === 404) {
     const pages = await fetchLegacyTranscriptPages(session.id);
     if (!pages) return false;
@@ -1351,34 +1342,47 @@ const syncTranscriptOnce = async (session, options = {}) => {
     session.transcript.setViewport(Math.max(0, session.transcript.ids.length - 1), Math.max(0, session.transcript.ids.length - 1));
     session.transcript.enforceBudget();
     refreshSessionMessagesFromTranscript(session);
-    renderMessages(options.forceScroll === true);
+    if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
     touchTranscriptSkeleton(session);
     return true;
   }
-  if (!resp.ok) return false;
-  const data = await resp.json().catch(() => null);
-  if (!data?.rows) return false;
-  const adapter = transcriptViewportAdapter(session);
-  transcript.withViewportAnchor(adapter, () => transcript.applyIndex(data, resp.headers?.get?.('ETag') || ''));
-  if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
+  if (resp.status !== 304 && !resp.ok) return false;
 
-  if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
-    const last = transcript.ids.length - 1;
-    transcript.setViewport(last, last);
+  let data = null;
+  if (resp.status !== 304) {
+    data = await resp.json().catch(() => null);
+    if (!data?.rows) return false;
   }
-  const loaded = await fetchTranscriptSegments(session, transcriptSyncSegmentIndexes(transcript), { deferBudget: true });
-  if (!loaded) {
-    transcript.etag = '';
-    return false;
-  }
-  transcript.withViewportAnchor(adapter, () => {
+
+  const adapter = transcriptViewportAdapter(session, options.forceScroll === true);
+  const loaded = await transcript.withViewportAnchor(adapter, async () => {
+    if (data) {
+      transcript.applyIndex(data, resp.headers?.get?.('ETag') || '');
+      if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
+    }
+    if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
+      const last = transcript.ids.length - 1;
+      transcript.setViewport(last, last, { deferBudget: true });
+    }
+    const bodiesLoaded = await fetchTranscriptSegments(
+      session,
+      transcriptSyncSegmentIndexes(transcript),
+      { deferBudget: true }
+    );
+    if (!bodiesLoaded) {
+      transcript.etag = '';
+      return false;
+    }
+    // Reconcile while all requested bodies are present, then persist the
+    // optimistic source before the transaction's final budget can evict a
+    // distant turn. withViewportAnchor publishes one bounded projection after
+    // this callback resolves.
     transcript.reconcileOptimistic();
     persistTranscriptOptimistic(session);
-    transcript.enforceBudget();
-    refreshSessionMessagesFromTranscript(session);
+    return true;
   });
+  if (!loaded) return false;
   touchTranscriptSkeleton(session);
-  if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
   return true;
 };
 
@@ -1409,6 +1413,19 @@ const syncTranscript = async (session, options = {}) => {
       const targetRev = Math.max(Number(request.targetRev) || 0, queuedTarget);
       if (transcript && transcript.rev < targetRev) {
         mergeTranscriptSyncRequest(session, { reason: 'target-revision', force: true, targetRev });
+      }
+      const pending = session._transcriptSyncPending;
+      if (pending
+          && !pending.force
+          && !pending.forceScroll
+          && Number(pending.targetRev) > 0
+          && transcript
+          && transcript.rev >= Number(pending.targetRev)) {
+        // A status poll can discover a revision while an activation request is
+        // already in flight. If that response reached the queued target, the
+        // queued request carries no new work and must not manufacture a 304
+        // index round-trip plus another client reconciliation.
+        delete session._transcriptSyncPending;
       }
       if (!session._transcriptSyncPending) return true;
     }
