@@ -307,6 +307,38 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   );
   assert.deepEqual(scopedTools.optimistic.map((entry) => entry.clientKey), ['persisted-tools']);
 
+  const terminalTools = new TranscriptStore('terminal-tools');
+  terminalTools.applyIndex(envelope([40], { rev: 5 }));
+  terminalTools.addOptimistic({
+    clientKey: 'completed-tool-tail',
+    role: 'tool-group',
+    status: 'done',
+    tools: [{ id: 'local-only-call', status: 'done' }]
+  }, 5, { persisted: true });
+  terminalTools.addOptimistic({ clientKey: 'completed-standalone-tool', role: 'tool', status: 'error' }, 5, { persisted: true });
+  terminalTools.addOptimistic({ clientKey: 'queued-user', role: 'user', durableSeqAtSend: 99 }, 5, { persisted: true });
+  terminalTools.addOptimistic({
+    clientKey: 'running-tool',
+    role: 'tool-group',
+    status: 'running',
+    tools: [{ id: 'active-call', status: 'running' }]
+  }, 5, { persisted: true });
+  terminalTools.setActiveRun('resp-active', 5);
+  terminalTools.applyIndex(envelope([40, 41], { rev: 6, roles: 'ua' }));
+  materializeOrdinals(terminalTools, [1]);
+  assert.equal(terminalTools.reconcileOptimistic().length, 0, 'active runs must retain unmatched completed tool UI');
+  terminalTools.setActiveRun('', 0);
+  assert.deepEqual(
+    terminalTools.reconcileOptimistic().map((entry) => entry.clientKey),
+    ['completed-tool-tail', 'completed-standalone-tool'],
+    'an authoritative terminal revision must retire unmatched completed tool UI'
+  );
+  assert.deepEqual(
+    terminalTools.optimistic.map((entry) => entry.clientKey),
+    ['queued-user', 'running-tool'],
+    'queued user messages and running tools must survive terminal tool cleanup'
+  );
+
   const displayOnly = new TranscriptStore('display-only');
   displayOnly.addOptimistic({ clientKey: 'guardian', role: 'event', transient: true });
   displayOnly.addOptimistic({ clientKey: 'pending-user', role: 'user' });

@@ -3612,8 +3612,8 @@ async function testOptimisticTranscriptStorageIsPerSession() {
   pass(name);
 }
 
-async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconciliation() {
-  const name = 'reload reconciles persisted tool turns within their target segment beyond the materialization budget';
+async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalReconciliation() {
+  const name = 'reload reconciles matched persisted tools and retires unmatched completed tool UI at the terminal revision';
   const sessionId = 'stale-tool-reload';
   const storageKey = 'term_llm_optimistic_transcript';
   let nextID = 201;
@@ -3665,6 +3665,15 @@ async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconcili
       tools: [{ id: 'never-durable-call', name: 'write_file', status: 'done' }],
       revAtSend: 5,
       durableSeqAtSend: staleTurn[staleTurn.length - 1].sequence,
+      optimistic: true
+    },
+    {
+      id: 'local-queued-user',
+      clientKey: 'local-queued-user',
+      role: 'user',
+      content: 'queued after the active run',
+      revAtSend: 5,
+      durableSeqAtSend: raw[raw.length - 1].sequence,
       optimistic: true
     }
   ];
@@ -3747,14 +3756,14 @@ async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconcili
     return;
   }
   let optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
-  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
-    fail(name, '200 reconciliation did not retire only the target-segment match before budget enforcement', JSON.stringify(optimisticKeys));
+  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-queued-user'])) {
+    fail(name, '200 terminal reconciliation retained stale completed tool UI or dropped the queued user', JSON.stringify(optimisticKeys));
     return;
   }
   let saved = JSON.parse(storage.get(storageKey) || 'null');
   let savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
-  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
-    fail(name, '200 reconciliation was not persisted before budget enforcement', JSON.stringify(saved));
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-queued-user'])) {
+    fail(name, '200 terminal reconciliation was not persisted without the stale tool tail', JSON.stringify(saved));
     return;
   }
   if (session.transcript.segments[0]?.state !== 'evicted'
@@ -3784,14 +3793,14 @@ async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconcili
     fail(name, '304 sync did not rematerialize the evicted reconciliation target', JSON.stringify({ loadedNotModified, targetStatesAtFetch, bodyRequests }));
     return;
   }
-  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
-    fail(name, '304 reconciliation did not retire its target-segment match before budget enforcement', JSON.stringify(optimisticKeys));
+  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-queued-user'])) {
+    fail(name, '304 reconciliation retained completed tool UI or dropped the queued user', JSON.stringify(optimisticKeys));
     return;
   }
   saved = JSON.parse(storage.get(storageKey) || 'null');
   savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
-  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
-    fail(name, '304 reconciliation was not persisted before budget enforcement', JSON.stringify(saved));
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-queued-user'])) {
+    fail(name, '304 reconciliation persistence did not retain only the queued user', JSON.stringify(saved));
     return;
   }
   const finalMaterialized = session.transcript.segments.filter((segment) => segment.state === 'materialized').length;
@@ -4392,7 +4401,7 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionPruningDestroysTranscriptStores();
   await testOptimisticTranscriptStorageIsPerSession();
-  await testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconciliation();
+  await testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalReconciliation();
   await testTranscriptSyncCommitsOneRenderedProjection();
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();

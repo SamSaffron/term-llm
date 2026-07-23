@@ -539,7 +539,12 @@
             }
           }
         }
-        if (matched) removed.push(local);
+        // Reaching a newer durable revision with no active run is the terminal
+        // authority for completed tool UI. An unmatched completed tool cannot
+        // represent queued input and must not remain persisted at the tail.
+        const completedTool = (local.role === 'tool-group' || local.role === 'tool')
+          && ['done', 'error', 'failed', 'cancelled'].includes(String(local.status || '').toLowerCase());
+        if (matched || (!this.activeRun && completedTool)) removed.push(local);
         else kept.push(local);
       }
       this.optimistic = kept;
