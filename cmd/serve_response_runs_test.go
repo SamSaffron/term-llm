@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,153 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-run-revisions", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	server := &serveServer{store: store}
+	run := newResponseRun("resp-revisions", sess.ID, "", "test", time.Now().Unix(), nil)
+	server.configureResponseRunRevision(run, sess.ID)
+	if run.startedRev != 0 {
+		t.Fatalf("startedRev=%d before triggering row, want 0", run.startedRev)
+	}
+	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("trigger"), -1)); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
+		t.Fatalf("append created: %v", err)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if len(run.events) != 2 {
+		t.Fatalf("events=%d want 2", len(run.events))
+	}
+	var created, completed map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(run.events[1].Data, &completed); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := created["started_rev"].(float64); int64(got) != 0 {
+		t.Fatalf("created started_rev=%v", got)
+	}
+	if got, _ := completed["final_rev"].(float64); int64(got) < 1 {
+		t.Fatalf("completed final_rev=%v, want >= triggering row rev", got)
+	}
+	snapshot := run.snapshot()
+	if got, _ := snapshot["started_rev"].(int64); got != 0 {
+		t.Fatalf("snapshot started_rev=%d", got)
+	}
+	if got, _ := snapshot["final_rev"].(int64); got < 1 {
+		t.Fatalf("snapshot final_rev=%d", got)
+	}
+}
+
+type deadlineTranscriptStore struct {
+	*serveRuntimeTestStore
+	deadlineSeen chan bool
+}
+
+func (s *deadlineTranscriptStore) GetTranscriptIndex(context.Context, string) (int64, []session.TranscriptIndexItem, error) {
+	return 0, nil, nil
+}
+
+func (s *deadlineTranscriptStore) GetTranscriptSnapshot(context.Context, string) (session.TranscriptSnapshot, error) {
+	return session.TranscriptSnapshot{}, nil
+}
+
+func (s *deadlineTranscriptStore) GetMessagesByTranscriptRanges(context.Context, string, []session.TranscriptRange) (int64, []session.Message, error) {
+	return 0, nil, nil
+}
+
+func (s *deadlineTranscriptStore) TranscriptRev(ctx context.Context, _ string) (int64, error) {
+	_, ok := ctx.Deadline()
+	s.deadlineSeen <- ok
+	return 7, nil
+}
+
+func TestConfigureResponseRunRevisionBoundsStartedRevisionRead(t *testing.T) {
+	store := &deadlineTranscriptStore{
+		serveRuntimeTestStore: newServeRuntimeTestStore(),
+		deadlineSeen:          make(chan bool, 1),
+	}
+	run := newResponseRun("resp-started-timeout", "sess-timeout", "", "test", time.Now().Unix(), nil)
+	(&serveServer{store: store}).configureResponseRunRevision(run, run.sessionID)
+	if !<-store.deadlineSeen {
+		t.Fatal("started revision read had no context deadline")
+	}
+	if run.startedRev != 7 {
+		t.Fatalf("startedRev=%d, want 7", run.startedRev)
+	}
+}
+
+func TestResponseRunFinalRevisionReadDoesNotBlockEventMutex(t *testing.T) {
+	run := newResponseRun("resp-final-rev-lock", "sess-lock", "", "test", time.Now().Unix(), nil)
+	readerStarted := make(chan struct{})
+	releaseReader := make(chan struct{})
+	run.finalRevReader = func() int64 {
+		close(readerStarted)
+		<-releaseReader
+		return 11
+	}
+
+	completeDone := make(chan error, 1)
+	go func() {
+		completeDone <- run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{})
+	}()
+	<-readerStarted
+
+	appendDone := make(chan error, 1)
+	go func() {
+		appendDone <- run.appendEvent("response.phase", map[string]any{"text": "persisting"})
+	}()
+	appendCompletedBeforeRead := false
+	select {
+	case err := <-appendDone:
+		if err != nil {
+			t.Fatalf("append phase: %v", err)
+		}
+		appendCompletedBeforeRead = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseReader)
+	if !appendCompletedBeforeRead {
+		if err := <-appendDone; err != nil {
+			t.Fatalf("append phase after release: %v", err)
+		}
+	}
+	if err := <-completeDone; err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if !appendCompletedBeforeRead {
+		t.Fatal("final revision I/O held responseRun.mu")
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 2 || run.events[0].Event != "response.phase" || run.events[1].Event != "response.completed" {
+		t.Fatalf("terminal ordering = %#v", run.events)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[1].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["final_rev"] != float64(11) {
+		t.Fatalf("final_rev=%v, want 11", payload["final_rev"])
+	}
+}
 
 func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
 	delta := string([]byte{'o', 'k', 0xff, '!'})

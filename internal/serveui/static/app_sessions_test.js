@@ -7,6 +7,7 @@ const vm = require('vm');
 const { webcrypto } = require('crypto');
 
 const dir = __dirname;
+const transcriptStoreSource = fs.readFileSync(path.join(dir, 'transcript-store.js'), 'utf8');
 const coreSource = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
 const planSource = fs.readFileSync(path.join(dir, 'app-plan.js'), 'utf8');
 const sessionsSource = fs.readFileSync(path.join(dir, 'app-sessions.js'), 'utf8')
@@ -132,6 +133,16 @@ function parsedTestURL(url) {
   } catch (_) {
     return null;
   }
+}
+
+function isTranscriptIndexURL(url, sessionId) {
+  const parsed = parsedTestURL(url);
+  return Boolean(parsed && parsed.pathname === `/ui/v1/sessions/${sessionId}/transcript`);
+}
+
+function isTranscriptBodiesURL(url, sessionId) {
+  const parsed = parsedTestURL(url);
+  return Boolean(parsed && parsed.pathname === `/ui/v1/sessions/${sessionId}/transcript/bodies`);
 }
 
 function isSessionMessagesURL(url, sessionId) {
@@ -385,6 +396,10 @@ async function createSessionsHarness(options = {}) {
   context.globalThis = context;
 
   vm.createContext(context);
+  vm.runInContext(transcriptStoreSource, context, { filename: 'transcript-store.js' });
+  windowObj.TranscriptStore = context.TranscriptStore;
+  windowObj.transcriptStoreFromMessages = context.transcriptStoreFromMessages;
+  windowObj.TRANSCRIPT_BUDGETS = context.TRANSCRIPT_BUDGETS;
   vm.runInContext(coreSource, context, { filename: 'app-core.js' });
   vm.runInContext(planSource, context, { filename: 'app-plan.js' });
 
@@ -763,7 +778,7 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
 async function testNumericDeepLinkResolvesRealSessionId() {
   const name = 'numeric deep link resolves server session id';
   const fetchCalls = [];
-  const { app } = await createSessionsHarness({
+  const { app, storage } = await createSessionsHarness({
     pathname: '/ui/1291',
     fetchImpl: async (url) => {
       fetchCalls.push(url);
@@ -783,13 +798,18 @@ async function testNumericDeepLinkResolvesRealSessionId() {
           }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (isTailMessagesURL(url, 'sess_real')) {
+      if (isTranscriptIndexURL(url, 'sess_real')) {
         return new Response(JSON.stringify({
-          messages: [{
-            role: 'user',
-            created_at: 1710000000000,
-            parts: [{ type: 'text', text: 'hello from server' }],
-          }]
+          rev: 1,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [11], seqs: [0], roles: 'u', flags: [0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"rev-1"' } });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_real')) {
+        return new Response(JSON.stringify({
+          rev: 1,
+          messages: [{ id: 11, sequence: 0, role: 'user', created_at: 1710000000000, parts: [{ type: 'text', text: 'hello from server' }] }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/sess_real/state') {
@@ -815,12 +835,16 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     fail(name, 'active session id should be reconciled to real server id', `got ${app.state.activeSessionId}`);
     return;
   }
-  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_real'))) {
-    fail(name, 'should load tail messages via resolved server session id', JSON.stringify(fetchCalls));
+  if (!fetchCalls.some((url) => isTranscriptIndexURL(url, 'sess_real'))) {
+    fail(name, 'should load transcript index via resolved server session id', JSON.stringify(fetchCalls));
     return;
   }
   if (fetchCalls.some((url) => isSessionMessagesURL(url, 'pending_1291'))) {
     fail(name, 'should not use pending_ prefix in session id', JSON.stringify(fetchCalls));
+    return;
+  }
+  if ([...storage.values()].some((value) => String(value).includes('hello from server'))) {
+    fail(name, 'durable transcript bodies must not be written to localStorage', JSON.stringify([...storage.entries()]));
     return;
   }
   pass(name);
@@ -984,24 +1008,32 @@ async function testDeveloperMessagesAreHidden() {
           }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (isTailMessagesURL(url, 'sess_dev')) {
+      if (isTranscriptIndexURL(url, 'sess_dev')) {
         return new Response(JSON.stringify({
+          rev: 1,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [21, 22], seqs: [1, 2], roles: 'ua', flags: [0, 0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"dev-1"' } });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_dev')) {
+        return new Response(JSON.stringify({
+          rev: 1,
           messages: [
             {
-              role: 'developer',
-              created_at: 1710000000000,
-              parts: [{ type: 'text', text: 'You are Jarvis, a personal assistant.' }],
-            },
-            {
+              id: 21,
+              sequence: 1,
               role: 'user',
               created_at: 1710000001000,
-              parts: [{ type: 'text', text: 'hello' }],
+              parts: [{ type: 'text', text: 'hello' }]
             },
             {
+              id: 22,
+              sequence: 2,
               role: 'assistant',
               created_at: 1710000002000,
-              parts: [{ type: 'text', text: 'hi there' }],
-            },
+              parts: [{ type: 'text', text: 'hi there' }]
+            }
           ]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
@@ -1503,836 +1535,6 @@ async function testConvertServerMessagesSuppressesNonBubbleAssistantRows() {
   pass(name);
 }
 
-async function testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags() {
-  const name = 'mergeServerMessagesWithLocalState preserves local stopped assistant tail when server tail lags';
-  const { app } = await createSessionsHarness();
-  const session = {
-    id: 'sess_stop_lag',
-    title: 'Stopped lag',
-    messages: [
-      { id: 'u_local', role: 'user', content: 'question', created: 1000 },
-      { id: 'a_local', role: 'assistant', content: 'partial streamed answer', created: 1100 },
-    ],
-  };
-
-  app.mergeServerMessagesWithLocalState(session, [
-    { id: 'u_server', role: 'user', content: 'question', created: 1000 },
-  ]);
-
-  const contents = session.messages.map((message) => `${message.role}:${message.content || ''}`);
-  const want = ['user:question', 'assistant:partial streamed answer'];
-  if (JSON.stringify(contents) !== JSON.stringify(want)) {
-    fail(name, 'expected local streamed assistant text to survive stale server refresh', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStaleServerAssistant() {
-  const name = 'mergeServerMessagesWithLocalState prefers longer local stopped assistant over stale server assistant';
-  const { app } = await createSessionsHarness();
-  const session = {
-    id: 'sess_stop_lag_longer',
-    title: 'Stopped lag longer',
-    messages: [
-      { id: 'u_local', role: 'user', content: 'question', created: 1000 },
-      { id: 'a_local', role: 'assistant', content: 'partial plus more', created: 1100 },
-    ],
-  };
-
-  app.mergeServerMessagesWithLocalState(session, [
-    { id: 'u_server', role: 'user', content: 'question', created: 1000 },
-    { id: 'a_server', role: 'assistant', content: 'partial', created: 1100 },
-  ]);
-
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
-  if (assistants.length !== 1 || assistants[0].content !== 'partial plus more') {
-    fail(name, 'expected stale shorter server assistant to be replaced, not duplicated', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testMergeServerMessagesDropsLocalToolGroupRecordedInServerTurn() {
-  const name = 'mergeServerMessagesWithLocalState drops local tool-group already recorded in server turn';
-  const { app } = await createSessionsHarness();
-  const session = {
-    id: 'sess_tool_dup',
-    title: 'Tool dup',
-    messages: [
-      { id: 'u_local', role: 'user', content: 'do things', created: 1000 },
-      {
-        id: 'msg_local_group',
-        role: 'tool-group',
-        status: 'done',
-        expanded: false,
-        created: 1100,
-        tools: [
-          { id: 'call_7', name: 'glob', arguments: '{"pattern":"**/*.go"}', status: 'done' },
-          { id: 'call_8', name: 'grep', arguments: '{"pattern":"tool"}', status: 'done' },
-          { id: 'call_9', name: 'read_file', arguments: '{"path":"main.go"}', status: 'done' },
-        ],
-      },
-      { id: 'a_local', role: 'assistant', content: 'final reply', created: 1200 },
-    ],
-  };
-
-  // Server transcript of the same turn: identical call ids, but arguments and
-  // images as recorded by the server drift from the locally streamed copies.
-  app.mergeServerMessagesWithLocalState(session, [
-    { id: 'u_server', role: 'user', content: 'do things', created: 1000 },
-    {
-      id: 'srv_group',
-      role: 'tool-group',
-      status: 'done',
-      expanded: false,
-      created: 1100,
-      tools: [
-        { id: 'call_7', name: 'glob', arguments: '{"pattern":"**/*.go"}', status: 'done', images: ['/ui/assets/shot.png'] },
-        { id: 'call_8', name: 'grep', arguments: '{ "pattern": "tool" }', status: 'done' },
-        { id: 'call_9', name: 'read_file', arguments: '', status: 'done' },
-      ],
-    },
-    { id: 'a_server', role: 'assistant', content: 'final reply', created: 1200 },
-  ]);
-
-  const shape = session.messages.map((message) => message.role);
-  if (JSON.stringify(shape) !== JSON.stringify(['user', 'tool-group', 'assistant'])) {
-    fail(name, 'tool calls must not repeat after the reply', JSON.stringify(shape));
-    return;
-  }
-  if (session.messages[1].id !== 'srv_group') {
-    fail(name, 'server copy of the tool-group should win', JSON.stringify(session.messages[1]));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testMergeServerMessagesReconcilesSuccessfulPlanResultOnce() {
-  const name = 'mergeServerMessagesWithLocalState reconciles successful plan result exactly once';
-  const { app } = await createSessionsHarness();
-  const args = '{"plan":[{"step":"Done","status":"completed"}]}';
-  const session = {
-    id: 'sess_plan_dup',
-    title: 'Plan dup',
-    messages: [
-      { id: 'u_local_plan', role: 'user', content: 'plan it', created: 1000 },
-      {
-        id: 'plan_local_group', role: 'tool-group', status: 'done', expanded: false, created: 1100,
-        tools: [{ id: 'call_plan_dup', name: 'update_plan', arguments: args, status: 'done', resultStatus: 'success' }],
-      },
-      { id: 'a_local_plan', role: 'assistant', content: 'planned', created: 1200 },
-    ],
-  };
-  app.mergeServerMessagesWithLocalState(session, [
-    { id: 'u_server_plan', role: 'user', content: 'plan it', created: 1000 },
-    {
-      id: 'plan_server_group', role: 'tool-group', status: 'done', expanded: false, created: 1100,
-      tools: [{ id: 'call_plan_dup', name: 'update_plan', arguments: args, status: 'done', resultStatus: 'success' }],
-    },
-    { id: 'a_server_plan', role: 'assistant', content: 'planned', created: 1200 },
-  ]);
-
-  const groups = session.messages.filter((message) => message.role === 'tool-group');
-  if (groups.length !== 1 || groups[0].id !== 'plan_server_group' || groups[0].tools[0]?.resultStatus !== 'success') {
-    fail(name, 'local and persisted plan results did not reconcile to the server copy', JSON.stringify(session.messages));
-    return;
-  }
-  if (session.messages.map((message) => message.role).join(',') !== 'user,tool-group,assistant') {
-    fail(name, 'successful plan result moved out of turn chronology', JSON.stringify(session.messages));
-    return;
-  }
-  pass(name);
-}
-
-async function testMergeServerMessagesMatchesToolGroupByNameWhenCallIdsAreSynthetic() {
-  const name = 'mergeServerMessagesWithLocalState matches tool-group by name when call ids are synthetic';
-  const { app } = await createSessionsHarness();
-  const session = {
-    id: 'sess_tool_synth',
-    title: 'Tool synth ids',
-    messages: [
-      { id: 'u_local', role: 'user', content: 'run it', created: 1000 },
-      {
-        id: 'msg_local_group',
-        role: 'tool-group',
-        status: 'done',
-        expanded: false,
-        created: 1100,
-        tools: [
-          { id: 'tool_1f2e3d4c', name: 'shell', arguments: '{"command":"ls"}', status: 'done' },
-        ],
-      },
-      { id: 'a_local', role: 'assistant', content: 'done', created: 1200 },
-    ],
-  };
-
-  app.mergeServerMessagesWithLocalState(session, [
-    { id: 'u_server', role: 'user', content: 'run it', created: 1000 },
-    {
-      id: 'srv_group',
-      role: 'tool-group',
-      status: 'done',
-      expanded: false,
-      created: 1100,
-      tools: [
-        { id: 'srv_msg_9_tool_0', name: 'shell', arguments: '{"command":"ls -la"}', status: 'done' },
-      ],
-    },
-    { id: 'a_server', role: 'assistant', content: 'done', created: 1200 },
-  ]);
-
-  const groups = session.messages.filter((message) => message.role === 'tool-group');
-  if (groups.length !== 1 || groups[0].id !== 'srv_group') {
-    fail(name, 'expected single server tool-group when ids are synthetic on both sides', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testMergeServerMessagesPreservesLocalToolGroupWhenServerHasNoToolRecord() {
-  const name = 'mergeServerMessagesWithLocalState preserves local tool-group when server tail lacks tool record';
-  const { app } = await createSessionsHarness();
-  const session = {
-    id: 'sess_tool_stop_lag',
-    title: 'Tool stop lag',
-    messages: [
-      { id: 'u_local', role: 'user', content: 'question', created: 1000 },
-      {
-        id: 'msg_local_group',
-        role: 'tool-group',
-        status: 'done',
-        expanded: false,
-        created: 1100,
-        tools: [
-          { id: 'call_7', name: 'spawn_agent', arguments: '{"prompt":"go"}', status: 'done' },
-        ],
-      },
-      { id: 'a_local', role: 'assistant', content: 'partial streamed answer', created: 1200 },
-    ],
-  };
-
-  // Server tail has no trace of the turn's tools (stopped before the
-  // transcript flushed): the locally streamed group must survive.
-  app.mergeServerMessagesWithLocalState(session, [
-    { id: 'u_server', role: 'user', content: 'question', created: 1000 },
-  ]);
-
-  const shape = session.messages.map((message) => message.role);
-  if (JSON.stringify(shape) !== JSON.stringify(['user', 'tool-group', 'assistant'])) {
-    fail(name, 'expected local tool-group and assistant tail to survive stale server refresh', JSON.stringify(shape));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testSessionHistoryInitialLoadRequestsTailOnly() {
-  const name = 'initial session history load requests tail only';
-  const fetchCalls = [];
-  const { app } = await createSessionsHarness({
-    pathname: '/ui/77',
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({
-          sessions: [{
-            id: 'sess_page',
-            number: 77,
-            short_title: 'Paged session',
-            long_title: 'Paged session',
-            mode: 'chat',
-            origin: 'web',
-            archived: false,
-            pinned: false,
-            created_at: 1710000000000,
-            message_count: 201,
-          }]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_page')) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 201,
-            sequence: 200,
-            role: 'user',
-            created_at: 1710000000000,
-            parts: [{ type: 'text', text: 'tail page' }],
-          }],
-          has_more: true,
-          next_before_seq: 200,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isSessionMessagesURL(url, 'sess_page')) {
-        return new Response('unexpected non-tail messages request', { status: 500 });
-      }
-      if (url === '/ui/v1/sessions/sess_page/state') {
-        return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-
-  const messageFetches = fetchCalls.filter((url) => isSessionMessagesURL(url, 'sess_page'));
-  if (messageFetches.length !== 1 || !isTailMessagesURL(messageFetches[0], 'sess_page')) {
-    fail(name, 'expected exactly one tail messages fetch', JSON.stringify(fetchCalls));
-    return;
-  }
-  const offsetFetches = messageFetches.filter((url) => parsedTestURL(url)?.searchParams.has('offset'));
-  if (offsetFetches.length !== 0) {
-    fail(name, 'expected no offset pagination requests during initial load', JSON.stringify(fetchCalls));
-    return;
-  }
-
-  const session = app.state.sessions.find((item) => item.id === 'sess_page');
-  if (!session) {
-    fail(name, 'session not found after tail load');
-    return;
-  }
-  if (session.messages.length !== 1 || session.messages[0].content !== 'tail page') {
-    fail(name, 'expected tail page to hydrate session messages', JSON.stringify(session.messages));
-    return;
-  }
-  if (!session._history?.hasMoreOlder || session._history.oldestSeq !== 200) {
-    fail(name, 'expected runtime history cursor to track older pages', JSON.stringify(session._history));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testScrollNearTopLoadsOlderPageAndPreservesViewport() {
-  const name = 'scroll near top loads older session page and preserves viewport';
-  const fetchCalls = [];
-  let appRef = null;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_scroll')) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 200,
-            sequence: 200,
-            role: 'assistant',
-            created_at: 1710000002000,
-            parts: [{ type: 'text', text: 'newest tail' }],
-          }],
-          has_more: true,
-          next_before_seq: 200,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isOlderMessagesURL(url, 'sess_scroll', 200)) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 199,
-            sequence: 199,
-            role: 'user',
-            created_at: 1710000001000,
-            parts: [{ type: 'text', text: 'older message' }],
-          }],
-          has_more: false,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-    appOverrides: {
-      renderMessages() {
-        if (!appRef) return;
-        const active = appRef.state.sessions.find((session) => session.id === appRef.state.activeSessionId);
-        appRef.elements.chatScroll.scrollHeight = active && active.messages.length > 1 ? 1600 : 1000;
-      }
-    }
-  });
-  appRef = app;
-
-  const session = {
-    id: 'sess_scroll',
-    title: 'Scroll session',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  const tail = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, tail);
-  app.elements.chatScroll.scrollHeight = 1000;
-  app.elements.chatScroll.scrollTop = 100;
-  app.elements.chatScroll.clientHeight = 400;
-  fetchCalls.length = 0;
-
-  const loaded = await app.maybeLoadOlderSessionMessages();
-  if (!loaded) {
-    fail(name, 'expected near-top scroll to load older history');
-    return;
-  }
-  if (!fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_scroll', 200))) {
-    fail(name, 'expected older page request with before_seq cursor', JSON.stringify(fetchCalls));
-    return;
-  }
-  if (session.messages.length !== 2 || session.messages[0].content !== 'older message' || session.messages[1].content !== 'newest tail') {
-    fail(name, 'expected older messages to be prepended before tail', JSON.stringify(session.messages));
-    return;
-  }
-  if (app.elements.chatScroll.scrollTop !== 700) {
-    fail(name, `expected scrollTop to preserve viewport at 700, got ${app.elements.chatScroll.scrollTop}`);
-    return;
-  }
-  if (session._history.hasMoreOlder) {
-    fail(name, 'expected hasMoreOlder=false after final older page', JSON.stringify(session._history));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testScrollNearTopDrainsToolOnlyPagesUntilVisibleHistory() {
-  const name = 'scroll near top drains tool-only older pages until visible history appears';
-  const fetchCalls = [];
-  let appRef = null;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_tool_boundary')) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 300,
-            sequence: 300,
-            role: 'assistant',
-            created_at: 1710000003000,
-            parts: [{ type: 'tool_call', tool_name: 'shell', tool_call_id: 'tool-300', tool_arguments: '{"command":"tail"}' }],
-          }],
-          has_more: true,
-          next_before_seq: 300,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isOlderMessagesURL(url, 'sess_tool_boundary', 300)) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 250,
-            sequence: 250,
-            role: 'assistant',
-            created_at: 1710000002500,
-            parts: [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'tool-250', tool_arguments: '{"path":"a"}' }],
-          }],
-          has_more: true,
-          next_before_seq: 200,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isOlderMessagesURL(url, 'sess_tool_boundary', 200)) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 150,
-            sequence: 150,
-            role: 'user',
-            created_at: 1710000001500,
-            parts: [{ type: 'text', text: 'visible prompt before the tool storm' }],
-          }],
-          has_more: false,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-    appOverrides: {
-      renderMessages() {
-        if (!appRef) return;
-        const active = appRef.state.sessions.find((session) => session.id === appRef.state.activeSessionId);
-        const visibleMessages = active ? active.messages.length : 0;
-        appRef.elements.chatScroll.scrollHeight = visibleMessages > 1 ? 1600 : 1000;
-      }
-    }
-  });
-  appRef = app;
-
-  const session = {
-    id: 'sess_tool_boundary',
-    title: 'Tool boundary session',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  const tail = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, tail);
-  app.elements.chatScroll.scrollHeight = 1000;
-  app.elements.chatScroll.scrollTop = 0;
-  app.elements.chatScroll.clientHeight = 400;
-  fetchCalls.length = 0;
-
-  const loaded = await app.maybeLoadOlderSessionMessages();
-  if (!loaded) {
-    fail(name, 'expected near-top scroll to load through tool-only pages');
-    return;
-  }
-  if (!fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_tool_boundary', 300))
-      || !fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_tool_boundary', 200))) {
-    fail(name, 'expected chained older-page requests across tool-only boundary', JSON.stringify(fetchCalls));
-    return;
-  }
-  if (session.messages.length !== 2 || session.messages[0].role !== 'user' || session.messages[0].content !== 'visible prompt before the tool storm' || session.messages[1].role !== 'tool-group') {
-    fail(name, 'expected visible prompt to be prepended before collapsed tool group', JSON.stringify(session.messages));
-    return;
-  }
-  if (session._history.hasMoreOlder) {
-    fail(name, 'expected chained drain to stop after final page', JSON.stringify(session._history));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testTailRefreshPreservesOlderHistoryCursor() {
-  const name = 'tail refresh preserves older history cursor after older pages load';
-  const fetchCalls = [];
-  let tailCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_cursor')) {
-        tailCalls += 1;
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 100,
-            sequence: 100,
-            role: 'assistant',
-            created_at: 1710000002000,
-            parts: [{ type: 'text', text: `tail refresh ${tailCalls}` }],
-          }],
-          has_more: true,
-          next_before_seq: 100,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isOlderMessagesURL(url, 'sess_cursor', 100)) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 55,
-            sequence: 55,
-            role: 'user',
-            created_at: 1710000001000,
-            parts: [{ type: 'text', text: 'older cursor page' }],
-          }],
-          has_more: true,
-          next_before_seq: 50,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isOlderMessagesURL(url, 'sess_cursor', 50)) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 25,
-            sequence: 25,
-            role: 'user',
-            created_at: 1710000000500,
-            parts: [{ type: 'text', text: 'oldest page' }],
-          }],
-          has_more: false,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-
-  const session = {
-    id: 'sess_cursor',
-    title: 'Cursor session',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  app.elements.chatScroll.scrollTop = 0;
-  app.elements.chatScroll.scrollHeight = 1000;
-  app.elements.chatScroll.clientHeight = 400;
-
-  let loaded = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, loaded);
-  if (session._history.oldestSeq !== 100) {
-    fail(name, `initial tail cursor = ${session._history.oldestSeq}, want 100`);
-    return;
-  }
-
-  const olderLoaded = await app.loadOlderSessionMessages(session);
-  if (!olderLoaded || session._history.oldestSeq !== 50) {
-    fail(name, 'expected older page to set cursor from server response', JSON.stringify(session._history));
-    return;
-  }
-
-  loaded = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, loaded);
-  if (session._history.oldestSeq !== 50) {
-    fail(name, 'tail refresh should preserve already-loaded older cursor', JSON.stringify(session._history));
-    return;
-  }
-
-  fetchCalls.length = 0;
-  const finalLoaded = await app.maybeLoadOlderSessionMessages();
-  if (!finalLoaded) {
-    fail(name, 'expected next older load to use the preserved cursor');
-    return;
-  }
-  if (!fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_cursor', 50))
-      || fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_cursor', 100))) {
-    fail(name, 'expected next older request to use before_seq=50, not repeat before_seq=100', JSON.stringify(fetchCalls));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testCompactedTailRefreshPreservesPreCompactionScrollback() {
-  const name = 'compacted tail refresh preserves loaded pre-compaction scrollback without overlap';
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_compacted_refresh')) {
-        return new Response(JSON.stringify({
-          messages: [
-            {
-              id: 50,
-              sequence: 50,
-              role: 'user',
-              created_at: 1710000050000,
-              parts: [{ type: 'text', text: '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>' }],
-            },
-            {
-              id: 51,
-              sequence: 51,
-              role: 'assistant',
-              created_at: 1710000051000,
-              parts: [{ type: 'text', text: 'post compact answer' }],
-            },
-          ],
-          has_more: false,
-          compaction_seq: 50,
-          compaction_count: 1,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-
-  const session = {
-    id: 'sess_compacted_refresh',
-    title: 'Compacted refresh',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  // Seed history like a user who already had pre-compaction scrollback loaded.
-  session._history = {
-    rawMessages: [
-      { id: 1, sequence: 1, role: 'user', created_at: 1710000001000, parts: [{ type: 'text', text: 'pre compact prompt' }] },
-      { id: 2, sequence: 2, role: 'assistant', created_at: 1710000002000, parts: [{ type: 'text', text: 'pre compact reply' }] },
-    ],
-    oldestSeq: 1,
-    hasMoreOlder: false,
-    loadingOlder: false,
-    loadedTail: true,
-    lastResponseId: '',
-    compactionSeq: -1,
-    compactionCount: 0,
-  };
-
-  const refreshed = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, refreshed);
-
-  const contents = session.messages.map((message) => `${message.role}:${message.content}`);
-  const want = [
-    'user:pre compact prompt',
-    'assistant:pre compact reply',
-    'compaction:Context compacted',
-    'assistant:post compact answer',
-  ];
-  if (JSON.stringify(contents) !== JSON.stringify(want)) {
-    fail(name, 'expected pre-compaction messages to survive non-overlapping compacted tail refresh', JSON.stringify(session.messages));
-    return;
-  }
-  if (session._history.oldestSeq !== 1 || session._history.hasMoreOlder) {
-    fail(name, 'expected old scrollback cursor to remain intact', JSON.stringify(session._history));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testCompactedTailRefreshPreservesLocalScrollbackWithoutRawHistory() {
-  const name = 'compacted tail refresh preserves local scrollback when raw history was never loaded';
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_local_compacted_refresh')) {
-        return new Response(JSON.stringify({
-          messages: [
-            {
-              id: 50,
-              sequence: 50,
-              role: 'user',
-              created_at: 1710000050000,
-              parts: [{ type: 'text', text: '[Context Compaction]\n\n<SUMMARY_AND_NEXT_ACTIONS>\ncontinue\n</SUMMARY_AND_NEXT_ACTIONS>' }],
-            },
-            {
-              id: 51,
-              sequence: 51,
-              role: 'assistant',
-              created_at: 1710000051000,
-              parts: [{ type: 'text', text: 'post compact answer' }],
-            },
-          ],
-          has_more: false,
-          compaction_seq: 50,
-          compaction_count: 1,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-
-  const session = {
-    id: 'sess_local_compacted_refresh',
-    title: 'Local compacted refresh',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [
-      { id: 'local_1', role: 'user', content: 'local pre compact prompt', created: 1710000001000 },
-      { id: 'local_2', role: 'assistant', content: 'local pre compact reply', created: 1710000002000 },
-    ],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  const refreshed = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, refreshed);
-
-  const contents = session.messages.map((message) => `${message.role}:${message.content}`);
-  const want = [
-    'user:local pre compact prompt',
-    'assistant:local pre compact reply',
-    'compaction:Context compacted',
-    'assistant:post compact answer',
-  ];
-  if (JSON.stringify(contents) !== JSON.stringify(want)) {
-    fail(name, 'expected visible local scrollback to survive compacted tail refresh', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testOlderPageFailureAllowsRetryWithoutCorruptingTail() {
-  const name = 'failed older-page fetch allows retry without corrupting loaded tail';
-  const fetchCalls = [];
-  let olderCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_retry')) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 200,
-            sequence: 200,
-            role: 'assistant',
-            created_at: 1710000002000,
-            parts: [{ type: 'text', text: 'tail survives' }],
-          }],
-          has_more: true,
-          next_before_seq: 200,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isOlderMessagesURL(url, 'sess_retry', 200)) {
-        olderCalls += 1;
-        if (olderCalls === 1) {
-          return new Response('temporary failure', { status: 500 });
-        }
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 199,
-            sequence: 199,
-            role: 'user',
-            created_at: 1710000001000,
-            parts: [{ type: 'text', text: 'retry older' }],
-          }],
-          has_more: false,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-
-  const session = {
-    id: 'sess_retry',
-    title: 'Retry session',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  const tail = await app.loadServerSessionMessages(session.id);
-  app.mergeServerMessagesWithLocalState(session, tail);
-  app.elements.chatScroll.scrollTop = 0;
-  app.elements.chatScroll.scrollHeight = 1000;
-  app.elements.chatScroll.clientHeight = 400;
-
-  const failed = await app.maybeLoadOlderSessionMessages();
-  if (failed) {
-    fail(name, 'expected first older-page load to fail');
-    return;
-  }
-  if (session._history.loadingOlder) {
-    fail(name, 'expected loadingOlder=false after failure', JSON.stringify(session._history));
-    return;
-  }
-  if (session.messages.length !== 1 || session.messages[0].content !== 'tail survives') {
-    fail(name, 'expected failed older load not to corrupt tail messages', JSON.stringify(session.messages));
-    return;
-  }
-
-  const retried = await app.maybeLoadOlderSessionMessages();
-  if (!retried || olderCalls !== 2) {
-    fail(name, 'expected retry to fetch older page successfully', JSON.stringify({ olderCalls, fetchCalls }));
-    return;
-  }
-  if (session.messages.length !== 2 || session.messages[0].content !== 'retry older') {
-    fail(name, 'expected retry older page to prepend successfully', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
 async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
   const name = 'sidebar session switch syncs with server and resumes without token';
   const fetchCalls = [];
@@ -2400,6 +1602,22 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
         return new Response(JSON.stringify({
           active_run: true,
           active_response_id: 'resp_resume_123',
+          transcript_rev: 2,
+          started_rev: 2
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTranscriptIndexURL(url, 'sess_resume')) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [31], seqs: [0], roles: 'u', flags: [0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"resume-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_resume')) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          messages: [{ id: 31, sequence: 0, role: 'user', created_at: 1710000001000, parts: [{ type: 'text', text: 'check status' }] }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/status') {
@@ -2439,8 +1657,8 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
   pass(name);
 }
 
-async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
-  const name = 'sidebar session switch requests snapshot recovery when runtime reports a different active response';
+async function testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision() {
+  const name = 'sidebar session switch attaches a changed active response after started_rev reconciliation';
   const resumeCalls = [];
   const initialSessions = [
     {
@@ -2516,6 +1734,22 @@ async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
         return new Response(JSON.stringify({
           active_run: true,
           active_response_id: 'resp_resume_123',
+          transcript_rev: 2,
+          started_rev: 2
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTranscriptIndexURL(url, 'sess_resume')) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [31], seqs: [0], roles: 'u', flags: [0] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"resume-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_resume')) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          messages: [{ id: 31, sequence: 0, role: 'user', created_at: 1710000001000, parts: [{ type: 'text', text: 'check status' }] }]
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/status') {
@@ -2546,300 +1780,13 @@ async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
     fail(name, 'expected session switch to trigger exactly one resume', JSON.stringify(resumeCalls));
     return;
   }
-  if (!resumeCalls[0].recoverFromSnapshot) {
-    fail(name, 'expected resumeActiveResponse to request snapshot recovery', JSON.stringify(resumeCalls[0]));
+  if (resumeCalls[0].recoverFromSnapshot) {
+    fail(name, 'new active run should replay from event sequence zero instead of attaching a stale local prefix', JSON.stringify(resumeCalls[0]));
     return;
   }
-
-  pass(name);
-}
-
-async function testSwitchToLazyLoadedSessionFetchesMessagesOnce() {
-  const name = 'sidebar session switch fetches lazy-loaded session messages once';
-  const fetchCalls = [];
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (url === '/ui/v1/sessions/sess_lazy/state') {
-        return new Response(JSON.stringify({ active_run: false }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (isTailMessagesURL(url, 'sess_lazy')) {
-        return new Response(JSON.stringify({
-          messages: [
-            {
-              role: 'user',
-              created_at: 1710000002000,
-              parts: [{ type: 'text', text: 'lazy hello' }],
-            },
-            {
-              role: 'assistant',
-              created_at: 1710000003000,
-              parts: [{ type: 'text', text: 'loaded once' }],
-            },
-          ]
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(JSON.stringify({ messages: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-  });
-
-  app.state.sessions = [
-    {
-      id: 'sess_other',
-      title: 'Other session',
-      origin: 'web',
-      created: 1710000000000,
-      messages: [],
-    },
-    {
-      id: 'sess_lazy',
-      title: 'Lazy session',
-      origin: 'tui',
-      created: 1710000001000,
-      messages: [],
-      _serverOnly: true,
-    },
-  ];
-  app.state.activeSessionId = 'sess_other';
-  app.state.draftSessionActive = false;
-  fetchCalls.length = 0;
-
-  await app.switchToSession('sess_lazy');
-
-  const messageFetches = fetchCalls.filter((url) => isSessionMessagesURL(url, 'sess_lazy'));
-  if (messageFetches.length !== 1 || !isTailMessagesURL(messageFetches[0], 'sess_lazy')) {
-    fail(name, 'expected exactly one lazy session tail messages fetch during switch', JSON.stringify(fetchCalls));
-    return;
-  }
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_lazy/state')) {
-    fail(name, 'expected lazy session switch to still sync runtime state', JSON.stringify(fetchCalls));
-    return;
-  }
-
-  const session = app.state.sessions.find((item) => item.id === 'sess_lazy');
-  if (!session) {
-    fail(name, 'lazy session missing after switch');
-    return;
-  }
-  if (session._serverOnly) {
-    fail(name, 'expected lazy session to be hydrated after message preload');
-    return;
-  }
-  if (session.messages.length !== 2 || session.messages[1].content !== 'loaded once') {
-    fail(name, 'expected preloaded lazy session messages to be preserved', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
-  const name = 'sidebar session switch clears stale active response without token';
-  const fetchCalls = [];
-  const initialSessions = [
-    {
-      id: 'sess_other',
-      title: 'Other session',
-      origin: 'web',
-      created: 1710000000000,
-      messages: [],
-    },
-    {
-      id: 'sess_stale',
-      title: 'Stale session',
-      origin: 'tui',
-      created: 1710000001000,
-      messages: [],
-      activeResponseId: 'resp_stale_123',
-      lastSequenceNumber: 17,
-    },
-  ];
-
-  const { app } = await createSessionsHarness({
-    initialStorage: {
-      term_llm_active_session: 'sess_other',
-    },
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({
-          sessions: [
-            {
-              id: 'sess_other',
-              short_title: 'Other session',
-              long_title: 'Other session',
-              mode: 'chat',
-              origin: 'web',
-              archived: false,
-              pinned: false,
-              created_at: 1710000000000,
-              message_count: 0,
-            },
-            {
-              id: 'sess_stale',
-              short_title: 'Stale session',
-              long_title: 'Stale session',
-              mode: 'chat',
-              origin: 'tui',
-              archived: false,
-              pinned: false,
-              created_at: 1710000001000,
-              message_count: 2,
-            },
-          ]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/sess_other/state') {
-        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_other')) {
-        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/sess_stale/state') {
-        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_stale')) {
-        return new Response(JSON.stringify({
-          messages: [
-            {
-              role: 'user',
-              created_at: 1710000002000,
-              parts: [{ type: 'text', text: 'hello from another tab' }],
-            },
-            {
-              role: 'assistant',
-              created_at: 1710000003000,
-              parts: [{ type: 'text', text: 'synced reply' }],
-            },
-          ]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-
-  await app.switchToSession('sess_stale');
-
-  if (!fetchCalls.includes('/ui/v1/sessions/sess_stale/state')) {
-    fail(name, 'expected session switch to fetch runtime state without a token', JSON.stringify(fetchCalls));
-    return;
-  }
-
-  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_stale'))) {
-    fail(name, 'expected completed session sync to reload tail messages from server', JSON.stringify(fetchCalls));
-    return;
-  }
-
-  const session = app.state.sessions.find((item) => item.id === 'sess_stale');
-  if (!session) {
-    fail(name, 'session missing after switch');
-    return;
-  }
-  if (session.activeResponseId !== null || session.lastSequenceNumber !== 0) {
-    fail(name, 'expected stale local active response tracking to be cleared', `activeResponseId=${session.activeResponseId}, lastSequenceNumber=${session.lastSequenceNumber}`);
-    return;
-  }
-  if (session.messages.length !== 2 || session.messages[1].content !== 'synced reply') {
-    fail(name, 'expected local messages to refresh from server after stale run cleared', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testSessionState404ClearsStaleActiveResponse() {
-  const name = 'session state 404 is treated as inactive and clears stale active response';
-  const fetchCalls = [];
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (url === '/ui/v1/sessions/sess_state_404/state') {
-        return new Response(JSON.stringify({ error: { message: 'runtime not found' } }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (isTailMessagesURL(url, 'sess_state_404')) {
-        return new Response(JSON.stringify({ messages: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-  });
-
-  const session = {
-    id: 'sess_state_404',
-    title: 'State 404',
-    origin: 'web',
-    created: 1710000000000,
-    messages: [],
-    activeResponseId: 'resp_stale_state_404',
-    lastSequenceNumber: 42,
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.currentStreamSessionId = session.id;
-  app.state.currentStreamResponseId = session.activeResponseId;
-  app.state.streaming = true;
-  app.state.draftSessionActive = false;
-
-  const syncResult = await app.syncActiveSessionFromServer(session, false);
-
-  if (syncResult?.kind !== 'ok' || syncResult.state?.active_run !== false) {
-    fail(name, 'expected state 404 to produce an explicit successful inactive result', JSON.stringify(syncResult));
-    return;
-  }
-  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_state_404'))) {
-    fail(name, 'expected inactive 404 sync to continue through tail message refresh', JSON.stringify(fetchCalls));
-    return;
-  }
-  if (session.activeResponseId !== null || session.lastSequenceNumber !== 0) {
-    fail(name, 'expected stale active response tracking to be cleared', `activeResponseId=${session.activeResponseId}, lastSequenceNumber=${session.lastSequenceNumber}`);
-    return;
-  }
-  if (app.state.streaming || app.state.currentStreamResponseId) {
-    fail(name, 'expected global streaming state to be cleared', JSON.stringify({ streaming: app.state.streaming, currentStreamResponseId: app.state.currentStreamResponseId }));
+  const active = app.state.sessions.find((session) => session.id === 'sess_resume');
+  if (Number(active?.transcript?.rev || 0) < 2) {
+    fail(name, 'active response attached before transcript reached started_rev', JSON.stringify(active?.transcript || null));
     return;
   }
 
@@ -3309,39 +2256,6 @@ async function testSyncUsesServerProvidedPendingInterjectionId() {
   pass(name);
 }
 
-async function testApplyServerSessionSummaryMapsTranscriptUpdatedAt() {
-  const name = 'applyServerSessionSummary maps transcript_updated_at into transcriptUpdatedAt';
-  const { app } = await createSessionsHarness();
-
-  const target = {
-    id: 'sess_transcript_summary',
-    title: 'existing',
-    created: 1000,
-    messages: [],
-  };
-  app.applyServerSessionSummary(target, {
-    id: 'sess_transcript_summary',
-    short_title: 'Updated',
-    created_at: 1000,
-    transcript_updated_at: 987654321,
-    message_count: 2,
-  });
-
-  if (target.transcriptUpdatedAt !== 987654321) {
-    fail(name, `expected transcriptUpdatedAt=987654321, got ${target.transcriptUpdatedAt}`);
-    return;
-  }
-
-  const omitted = { id: 'sess_omitted', created: 1000, transcriptUpdatedAt: 123, messages: [] };
-  app.applyServerSessionSummary(omitted, { id: 'sess_omitted', created_at: 1000 });
-  if (omitted.transcriptUpdatedAt !== 123) {
-    fail(name, `existing transcriptUpdatedAt should be preserved when server omits field, got ${omitted.transcriptUpdatedAt}`);
-    return;
-  }
-
-  pass(name);
-}
-
 async function testApplyServerSessionSummaryMapsLastMessageAt() {
   const name = 'applyServerSessionSummary maps last_message_at into lastMessageAt';
   const { app } = await createSessionsHarness();
@@ -3376,43 +2290,6 @@ async function testApplyServerSessionSummaryMapsLastMessageAt() {
   app.applyServerSessionSummary(freshTarget, { id: 'sess3', created_at: 3000 });
   if (freshTarget.lastMessageAt !== 3000) {
     fail(name, `lastMessageAt should fall back to created when absent on both sides, got ${freshTarget.lastMessageAt}`);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testMergeServerMessagesBumpsLastMessageAt() {
-  const name = 'mergeServerMessagesWithLocalState advances lastMessageAt to newest visible message';
-  const { app } = await createSessionsHarness();
-
-  const session = {
-    id: 'sess1',
-    title: 'Existing',
-    created: 1000,
-    lastMessageAt: 2000,
-    messages: [],
-  };
-  const serverShaped = [
-    { role: 'user', created: 3000 },
-    { role: 'assistant', created: 5000 },
-    { role: 'tool-group', created: 9000 },
-  ];
-  app.mergeServerMessagesWithLocalState(session, serverShaped);
-  if (session.lastMessageAt !== 5000) {
-    fail(name, `expected lastMessageAt to advance to newest visible (5000), got ${session.lastMessageAt}`);
-    return;
-  }
-
-  const stale = {
-    id: 'sess2',
-    created: 1000,
-    lastMessageAt: 9999,
-    messages: [],
-  };
-  app.mergeServerMessagesWithLocalState(stale, [{ role: 'user', created: 3000 }]);
-  if (stale.lastMessageAt !== 9999) {
-    fail(name, `existing newer lastMessageAt must not be regressed, got ${stale.lastMessageAt}`);
     return;
   }
 
@@ -3455,48 +2332,6 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   });
   if (fallback.lastMessageAt !== 4000) {
     fail(name, `expected lastMessageAt to fall back to created=4000, got ${fallback.lastMessageAt}`);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testSanitizeSessionPreservesTranscriptUpdatedAt() {
-  const name = 'sanitizeSession preserves transcriptUpdatedAt from stored and server-shaped payloads';
-  const { app } = await createSessionsHarness();
-
-  const stored = app.sanitizeSession({
-    id: 'sess_transcript_stored',
-    title: 'Stored',
-    created: 1000,
-    transcriptUpdatedAt: 3210,
-    messages: [],
-  });
-  if (stored.transcriptUpdatedAt !== 3210) {
-    fail(name, `expected transcriptUpdatedAt=3210 from camelCase, got ${stored.transcriptUpdatedAt}`);
-    return;
-  }
-
-  const serverShaped = app.sanitizeSession({
-    id: 'sess_transcript_server',
-    title: 'Server',
-    created: 1000,
-    transcript_updated_at: 6540,
-    messages: [],
-  });
-  if (serverShaped.transcriptUpdatedAt !== 6540) {
-    fail(name, `expected transcriptUpdatedAt=6540 from snake_case, got ${serverShaped.transcriptUpdatedAt}`);
-    return;
-  }
-
-  const absent = app.sanitizeSession({
-    id: 'sess_transcript_absent',
-    title: 'Absent',
-    created: 1000,
-    messages: [],
-  });
-  if (Object.prototype.hasOwnProperty.call(absent, 'transcriptUpdatedAt')) {
-    fail(name, 'transcriptUpdatedAt should remain absent when no version was provided', JSON.stringify(absent));
     return;
   }
 
@@ -3681,795 +2516,6 @@ async function testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus()
   const liveTimers = scheduled.filter((handle) => !handle.cleared);
   if (liveTimers.length !== 0) {
     fail(name, 'hidden stale response restarted the background poll loop', JSON.stringify(liveTimers.map(({ delay }) => delay)));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testStatusPollAdvancementRefreshesActiveMessagesOnce() {
-  const name = 'status poll transcript advancement refreshes active messages exactly once';
-  const fetchCalls = [];
-  let statusSessions = [];
-  let messageCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(String(url));
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({ sessions: statusSessions }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_status_active')) {
-        messageCalls += 1;
-        return new Response(JSON.stringify({
-          messages: [{
-            id: `msg_${messageCalls}`,
-            sequence: messageCalls,
-            role: 'assistant',
-            created_at: 1710000000000 + messageCalls,
-            parts: [{ type: 'text', text: `server transcript ${messageCalls}` }],
-          }]
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: `"tail-${messageCalls}"` } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_status_active',
-    title: 'Status active',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 1000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  statusSessions = [{
-    id: session.id,
-    short_title: 'Status active',
-    long_title: 'Status active',
-    active_run: false,
-    message_count: 1,
-    last_message_at: 1710000000001,
-    transcript_updated_at: 2000,
-  }];
-  fetchCalls.length = 0;
-
-  await app.startSidebarStatusPoll();
-  app.stopSidebarStatusPoll();
-
-  if (messageCalls !== 1) {
-    fail(name, `expected one messages refresh after transcript advancement, got ${messageCalls}`, JSON.stringify(fetchCalls));
-    return;
-  }
-  if (session.messages.length !== 1 || session.messages[0].content !== 'server transcript 1') {
-    fail(name, 'expected active session messages to be replaced by server tail', JSON.stringify(session.messages));
-    return;
-  }
-  if (session.transcriptUpdatedAt !== 2000 || session._history?.tailTranscriptUpdatedAt !== 2000) {
-    fail(name, 'expected transcript version to be marked synced after refresh', JSON.stringify({ transcriptUpdatedAt: session.transcriptUpdatedAt, history: session._history }));
-    return;
-  }
-
-  await app.startSidebarStatusPoll();
-  app.stopSidebarStatusPoll();
-  if (messageCalls !== 1) {
-    fail(name, `unchanged transcript version should not fetch messages again, got ${messageCalls}`, JSON.stringify(fetchCalls));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testStatusPollUnchangedTranscriptDoesNotFetchMessages() {
-  const name = 'status poll with unchanged active transcript version does not fetch messages';
-  let messageCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({
-          sessions: [{
-            id: 'sess_status_unchanged',
-            short_title: 'Unchanged',
-            active_run: false,
-            message_count: 1,
-            last_message_at: 1710000001000,
-            transcript_updated_at: 5000,
-          }]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_status_unchanged')) {
-        messageCalls += 1;
-        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_status_unchanged',
-    title: 'Unchanged',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 5000,
-    messages: [{ id: 'local_msg', role: 'assistant', content: 'already synced', created: 1710000000000 }],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  await app.startSidebarStatusPoll();
-  app.stopSidebarStatusPoll();
-
-  if (messageCalls !== 0) {
-    fail(name, `expected zero message fetches for unchanged transcript version, got ${messageCalls}`);
-    return;
-  }
-  if (session.messages.length !== 1 || session.messages[0].content !== 'already synced') {
-    fail(name, 'unchanged status should not alter active messages', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testActiveTranscriptRefreshSkipsBusyStates() {
-  const name = 'active transcript refresh skips while active session is busy';
-  let messageCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_busy_refresh')) {
-        messageCalls += 1;
-        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_busy_refresh',
-    title: 'Busy refresh',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 1000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  app.state.streaming = true;
-  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
-  app.state.streaming = false;
-
-  app.state.abortController = new AbortController();
-  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
-  app.state.abortController = null;
-
-  session.activeResponseId = 'resp_busy';
-  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
-  session.activeResponseId = null;
-
-  app.setSessionServerActiveRun(session, true);
-  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
-  app.setSessionServerActiveRun(session, false);
-
-  if (messageCalls !== 0) {
-    fail(name, `expected no message fetches while busy, got ${messageCalls}`);
-    return;
-  }
-  if (session.transcriptUpdatedAt !== 1000) {
-    fail(name, `skipped refresh should leave transcriptUpdatedAt pending at 1000, got ${session.transcriptUpdatedAt}`);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testLateActiveMessagesResponseIgnoredAfterSessionSwitch() {
-  const name = 'late active messages response is ignored after switching sessions';
-  let resolveMessages;
-  let messageCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_late_a')) {
-        messageCalls += 1;
-        return new Promise((resolve) => {
-          resolveMessages = () => resolve(new Response(JSON.stringify({
-            messages: [{
-              id: 'late_msg',
-              sequence: 1,
-              role: 'assistant',
-              created_at: 1710000000001,
-              parts: [{ type: 'text', text: 'late server message' }],
-            }]
-          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-        });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const sessionA = { id: 'sess_late_a', title: 'A', origin: 'web', created: 1, transcriptUpdatedAt: 1000, messages: [] };
-  const sessionB = { id: 'sess_late_b', title: 'B', origin: 'web', created: 2, messages: [] };
-  app.state.sessions = [sessionA, sessionB];
-  app.state.activeSessionId = sessionA.id;
-  app.state.draftSessionActive = false;
-
-  const refreshPromise = app.refreshActiveSessionMessagesFromServer(sessionA, { transcriptUpdatedAt: 2000 });
-  if (messageCalls !== 1 || typeof resolveMessages !== 'function') {
-    fail(name, 'expected refresh to start one tail request before switching', `calls=${messageCalls}`);
-    return;
-  }
-
-  app.state.activeSessionId = sessionB.id;
-  resolveMessages();
-  const applied = await refreshPromise;
-
-  if (applied) {
-    fail(name, 'refresh should report false when active session changed before response applied');
-    return;
-  }
-  if (sessionA.messages.length !== 0) {
-    fail(name, 'late response should not mutate inactive session messages through active refresh', JSON.stringify(sessionA.messages));
-    return;
-  }
-  if (sessionA.transcriptUpdatedAt !== 1000) {
-    fail(name, `late response should not mark transcript synced, got ${sessionA.transcriptUpdatedAt}`);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun() {
-  const name = 'foreground catch-up refreshes missed turns before resuming another tab run';
-  let appRef = null;
-  let testReady = false;
-  const order = [];
-  let resumeMessages = [];
-  const harness = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/status') {
-        order.push('status');
-        return new Response(JSON.stringify({
-          sessions: testReady ? [{
-            id: 'sess_cross_tab',
-            short_title: 'Cross tab',
-            active_run: true,
-            message_count: 3,
-            last_message_at: 1710000000003,
-            transcript_updated_at: 2000,
-          }] : []
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_cross_tab')) {
-        order.push('messages');
-        return new Response(JSON.stringify({
-          messages: [
-            {
-              id: 'msg_user_other_tab',
-              sequence: 2,
-              role: 'user',
-              created_at: 1710000000002,
-              parts: [{ type: 'text', text: 'continued in the other tab' }],
-            },
-            {
-              id: 'msg_assistant_other_tab',
-              sequence: 3,
-              role: 'assistant',
-              created_at: 1710000000003,
-              parts: [{ type: 'text', text: 'completed there' }],
-            },
-          ]
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"cross-tab-tail"' } });
-      }
-      if (url === '/ui/v1/sessions/sess_cross_tab/state') {
-        order.push('state');
-        return new Response(JSON.stringify({
-          active_run: true,
-          active_response_id: 'resp_other_tab',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-    appOverrides: {
-      updateSidebarStatus(entries) {
-        if (!appRef) return;
-        for (const entry of entries) {
-          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
-        }
-      },
-      async resumeActiveResponse(session) {
-        order.push('resume');
-        resumeMessages = session.messages.map((message) => message.content);
-      },
-    },
-  });
-  const { app, windowObj } = harness;
-  appRef = app;
-  await app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_cross_tab',
-    title: 'Cross tab',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 1000,
-    messages: [{ id: 'old_local', role: 'user', content: 'original tab', created: 1710000000000 }],
-    activeResponseId: null,
-    lastSequenceNumber: 0,
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  testReady = true;
-  order.length = 0;
-
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
-  windowObj.document.visibilityState = 'hidden';
-  await visibilityHandler({ type: 'visibilitychange' });
-  windowObj.document.visibilityState = 'visible';
-  await visibilityHandler({ type: 'visibilitychange' });
-  await Promise.resolve();
-  await Promise.resolve();
-  app.stopSidebarStatusPoll();
-
-  const messagesIndex = order.indexOf('messages');
-  const stateIndex = order.indexOf('state');
-  const resumeIndex = order.indexOf('resume');
-  if (messagesIndex < 0 || stateIndex < 0 || resumeIndex < 0 || !(messagesIndex < stateIndex && stateIndex < resumeIndex)) {
-    fail(name, 'expected status transcript catch-up before state attach and resume', JSON.stringify(order));
-    return;
-  }
-  if (!resumeMessages.includes('continued in the other tab') || !resumeMessages.includes('completed there')) {
-    fail(name, 'resumed stream did not retain turns committed by the other tab', JSON.stringify(resumeMessages));
-    return;
-  }
-  if (session.activeResponseId !== 'resp_other_tab') {
-    fail(name, `expected external response to be attached, got ${session.activeResponseId}`);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testForegroundCatchUpRetriesBeforeAttachingExternalRun() {
-  const name = 'failed foreground catch-up retries before attaching another tab run';
-  let appRef = null;
-  let testReady = false;
-  let messageCalls = 0;
-  let stateCalls = 0;
-  let resumeCalls = 0;
-  const harness = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({
-          sessions: testReady ? [{
-            id: 'sess_retry_cross_tab',
-            short_title: 'Retry cross tab',
-            active_run: true,
-            transcript_updated_at: 2000,
-          }] : []
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_retry_cross_tab')) {
-        messageCalls += 1;
-        if (messageCalls === 1) {
-          return new Response('temporary failure', { status: 503 });
-        }
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 'msg_retry_caught_up',
-            sequence: 2,
-            role: 'assistant',
-            created_at: 1710000000002,
-            parts: [{ type: 'text', text: 'caught up after retry' }],
-          }]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/sess_retry_cross_tab/state') {
-        stateCalls += 1;
-        return new Response(JSON.stringify({
-          active_run: true,
-          active_response_id: 'resp_retry_cross_tab',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-    appOverrides: {
-      updateSidebarStatus(entries) {
-        if (!appRef) return;
-        for (const entry of entries) {
-          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
-        }
-      },
-      async resumeActiveResponse() { resumeCalls += 1; },
-    },
-  });
-  const { app, windowObj } = harness;
-  appRef = app;
-  await app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_retry_cross_tab',
-    title: 'Retry cross tab',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 1000,
-    messages: [],
-    activeResponseId: null,
-    lastSequenceNumber: 0,
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  testReady = true;
-
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
-  windowObj.document.visibilityState = 'hidden';
-  await visibilityHandler({ type: 'visibilitychange' });
-  windowObj.document.visibilityState = 'visible';
-  await visibilityHandler({ type: 'visibilitychange' });
-
-  if (messageCalls !== 1 || stateCalls !== 0 || resumeCalls !== 0 || session.activeResponseId) {
-    fail(name, 'failed catch-up attached the external response instead of leaving it pending', JSON.stringify({ messageCalls, stateCalls, resumeCalls, activeResponseId: session.activeResponseId }));
-    return;
-  }
-  if (app.elements.connectionState.hidden || app.elements.connectionState.textContent !== 'Catching up with this session…') {
-    fail(name, 'failed catch-up did not show its pending header warning', app.elements.connectionState.textContent);
-    return;
-  }
-
-  await app.startSidebarStatusPoll();
-  await Promise.resolve();
-  await Promise.resolve();
-  app.stopSidebarStatusPoll();
-
-  if (messageCalls !== 2 || stateCalls !== 1 || resumeCalls !== 1) {
-    fail(name, 'successful retry did not catch up and attach exactly once', JSON.stringify({ messageCalls, stateCalls, resumeCalls }));
-    return;
-  }
-  if (session.messages.length !== 1 || session.messages[0].content !== 'caught up after retry') {
-    fail(name, 'successful retry attached without applying the authoritative transcript', JSON.stringify(session.messages));
-    return;
-  }
-  if (!app.elements.connectionState.hidden || app.elements.connectionState.textContent) {
-    fail(name, 'successful catch-up retry left its header warning visible', app.elements.connectionState.textContent);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testAlreadyReconciledPendingCatchUpClearsWarning() {
-  const name = 'already-reconciled pending catch-up marker clears its owned warning';
-  let testReady = false;
-  let statusCalls = 0;
-  let messageCalls = 0;
-  const { app, windowObj } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/status') {
-        statusCalls += 1;
-        if (statusCalls > 1) {
-          return new Response(null, { status: 304 });
-        }
-        return new Response(JSON.stringify({
-          sessions: testReady ? [{
-            id: 'sess_already_reconciled',
-            short_title: 'Already reconciled',
-            active_run: false,
-            transcript_updated_at: 2000,
-          }] : []
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"status-v1"' } });
-      }
-      if (isTailMessagesURL(url, 'sess_already_reconciled')) {
-        messageCalls += 1;
-        return new Response('temporary failure', { status: 503 });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-  });
-  await app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_already_reconciled',
-    title: 'Already reconciled',
-    origin: 'web',
-    created: 1,
-    transcriptUpdatedAt: 1000,
-    messages: [],
-    activeResponseId: null,
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  testReady = true;
-  statusCalls = 0;
-
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
-  windowObj.document.visibilityState = 'hidden';
-  await visibilityHandler({ type: 'visibilitychange' });
-  windowObj.document.visibilityState = 'visible';
-  await visibilityHandler({ type: 'visibilitychange' });
-
-  if (messageCalls !== 1 || session._pendingTranscriptUpdatedAt !== 2000
-      || app.elements.connectionState.textContent !== 'Catching up with this session…') {
-    fail(name, 'failed catch-up did not leave the expected marker and warning', JSON.stringify({ messageCalls, pending: session._pendingTranscriptUpdatedAt, warning: app.elements.connectionState.textContent }));
-    return;
-  }
-
-  // Another authoritative path can reconcile the same transcript while the
-  // status marker remains. A subsequent 304 must retire both without refetching.
-  session.transcriptUpdatedAt = 2000;
-  await app.startSidebarStatusPoll();
-  app.stopSidebarStatusPoll();
-
-  if (Object.prototype.hasOwnProperty.call(session, '_pendingTranscriptUpdatedAt')) {
-    fail(name, 'already-reconciled pending marker was not removed', String(session._pendingTranscriptUpdatedAt));
-    return;
-  }
-  if (messageCalls !== 1) {
-    fail(name, `already-reconciled marker unexpectedly fetched messages again (${messageCalls})`);
-    return;
-  }
-  if (!app.elements.connectionState.hidden || app.elements.connectionState.textContent) {
-    fail(name, 'already-reconciled marker left its catch-up warning visible', app.elements.connectionState.textContent);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testStaleCatchUpCompletionPreservesNewerPendingMarker() {
-  const name = 'stale catch-up completion preserves a newer pending transcript before attach';
-  let appRef = null;
-  let testReady = false;
-  let resolveMessages = null;
-  let stateCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({
-          sessions: testReady ? [{
-            id: 'sess_newer_pending',
-            short_title: 'Newer pending',
-            active_run: true,
-            transcript_updated_at: 2000,
-          }] : []
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_newer_pending')) {
-        return new Promise((resolve) => {
-          resolveMessages = () => resolve(new Response(JSON.stringify({ messages: [] }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' }
-          }));
-        });
-      }
-      if (url === '/ui/v1/sessions/sess_newer_pending/state') {
-        stateCalls += 1;
-        return new Response(JSON.stringify({
-          active_run: true,
-          active_response_id: 'resp_newer_pending',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-    appOverrides: {
-      updateSidebarStatus(entries) {
-        if (!appRef) return;
-        for (const entry of entries) {
-          appRef.setSessionServerActiveRun(entry.id, Boolean(entry.active_run));
-        }
-      },
-    },
-  });
-  appRef = app;
-  await app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_newer_pending',
-    title: 'Newer pending',
-    origin: 'web',
-    created: 1,
-    transcriptUpdatedAt: 1000,
-    messages: [],
-    activeResponseId: null,
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  testReady = true;
-
-  const pollPromise = app.startSidebarStatusPoll();
-  for (let i = 0; i < 20 && typeof resolveMessages !== 'function'; i += 1) {
-    await Promise.resolve();
-  }
-  if (typeof resolveMessages !== 'function' || session._pendingTranscriptUpdatedAt !== 2000) {
-    fail(name, 'expected the older transcript refresh to be in flight', JSON.stringify({ pending: session._pendingTranscriptUpdatedAt }));
-    return;
-  }
-
-  session._pendingTranscriptUpdatedAt = 3000;
-  resolveMessages();
-  await pollPromise;
-  app.stopSidebarStatusPoll();
-
-  if (session.transcriptUpdatedAt !== 2000 || session._pendingTranscriptUpdatedAt !== 3000) {
-    fail(name, 'older completion erased or regressed the newer pending marker', JSON.stringify({ transcriptUpdatedAt: session.transcriptUpdatedAt, pending: session._pendingTranscriptUpdatedAt }));
-    return;
-  }
-  if (stateCalls !== 0 || session.activeResponseId) {
-    fail(name, 'older completion attached a response before the newer transcript caught up', JSON.stringify({ stateCalls, activeResponseId: session.activeResponseId }));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testCatchUpWarningClearsOnSessionSwitchWithoutClearingNewerWarning() {
-  const name = 'session switch retires only the previous session catch-up warning';
-  let testReady = false;
-  const { app, windowObj } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({
-          sessions: testReady ? [{
-            id: 'sess_switch_catch_up_a',
-            short_title: 'Catch-up A',
-            active_run: false,
-            transcript_updated_at: 2000,
-          }] : []
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_switch_catch_up_a')) {
-        return new Response('temporary failure', { status: 503 });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-  });
-  await app.stopSidebarStatusPoll();
-
-  const sessionA = {
-    id: 'sess_switch_catch_up_a', title: 'Catch-up A', origin: 'web', created: 1,
-    transcriptUpdatedAt: 1000, messages: [], activeResponseId: null,
-  };
-  const sessionB = {
-    id: 'sess_switch_catch_up_b', title: 'Catch-up B', origin: 'web', created: 2,
-    transcriptUpdatedAt: 1000, messages: [], activeResponseId: null,
-  };
-  app.state.sessions = [sessionA, sessionB];
-  app.state.activeSessionId = sessionA.id;
-  app.state.draftSessionActive = false;
-  testReady = true;
-
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
-  windowObj.document.visibilityState = 'hidden';
-  await visibilityHandler({ type: 'visibilitychange' });
-  windowObj.document.visibilityState = 'visible';
-  await visibilityHandler({ type: 'visibilitychange' });
-  app.stopSidebarStatusPoll();
-
-  if (app.elements.connectionState.textContent !== 'Catching up with this session…') {
-    fail(name, 'expected session A catch-up warning before switching', app.elements.connectionState.textContent);
-    return;
-  }
-  await app.switchToSession(sessionB.id, { sync: false });
-  if (!app.elements.connectionState.hidden || app.elements.connectionState.textContent) {
-    fail(name, 'session A catch-up warning leaked into session B', app.elements.connectionState.textContent);
-    return;
-  }
-
-  // A warning established after catch-up ownership changed must survive stale
-  // cleanup from that old owner.
-  app.state.activeSessionId = sessionA.id;
-  app.state.draftSessionActive = false;
-  windowObj.document.visibilityState = 'visible';
-  await visibilityHandler({ type: 'visibilitychange' });
-  app.stopSidebarStatusPoll();
-  app.setConnectionState('Transport unavailable', 'bad');
-  await app.switchToSession(sessionB.id, { sync: false });
-  if (app.elements.connectionState.hidden || app.elements.connectionState.textContent !== 'Transport unavailable') {
-    fail(name, 'session switch catch-up cleanup erased a newer transport warning', app.elements.connectionState.textContent);
-    return;
-  }
-
-  pass(name);
-}
-
-async function testForegroundCatchUpStopsWhenPageIsRehidden() {
-  const name = 'foreground catch-up does not attach after page is hidden again';
-  let testReady = false;
-  let resolveStatus = null;
-  let stateCalls = 0;
-  const { app, windowObj } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/status' && testReady) {
-        return new Promise((resolve) => {
-          resolveStatus = () => resolve(new Response(JSON.stringify({ sessions: [] }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' }
-          }));
-        });
-      }
-      if (url === '/ui/v1/sessions/sess_rehidden/state') {
-        stateCalls += 1;
-        return new Response(JSON.stringify({ active_run: false }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-  });
-  await app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_rehidden',
-    title: 'Rehidden',
-    origin: 'web',
-    created: 1,
-    messages: [],
-    activeResponseId: null,
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-  testReady = true;
-
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
-  windowObj.document.visibilityState = 'visible';
-  const foregroundPromise = visibilityHandler({ type: 'visibilitychange' });
-  await Promise.resolve();
-  if (typeof resolveStatus !== 'function') {
-    fail(name, 'expected foreground reconciliation to wait on status');
-    return;
-  }
-
-  windowObj.document.visibilityState = 'hidden';
-  await visibilityHandler({ type: 'visibilitychange' });
-  resolveStatus();
-  await foregroundPromise;
-  await Promise.resolve();
-
-  if (stateCalls !== 0) {
-    fail(name, `stale foreground handler issued ${stateCalls} hidden state requests`);
     return;
   }
 
@@ -4795,328 +2841,6 @@ async function testLateActiveRunSyncDoesNotMarkDraftStreaming() {
   }
   if (!app.sessionHasInProgressState(session)) {
     fail(name, 'inactive session should still retain its sidebar busy state');
-    return;
-  }
-
-  pass(name);
-}
-
-async function testOlderPendingTranscriptVersionIsIgnoredOnStatus304() {
-  const name = 'older pending transcript version is ignored on status 304';
-  let messageCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(null, { status: 304, headers: { ETag: '"unchanged"' } });
-      }
-      if (isTailMessagesURL(url, 'sess_pending_old')) {
-        messageCalls += 1;
-        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_pending_old',
-    title: 'Pending old',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 3000,
-    _pendingTranscriptUpdatedAt: 2000,
-    _history: {
-      rawMessages: [],
-      oldestSeq: 0,
-      hasMoreOlder: false,
-      loadingOlder: false,
-      loadedTail: true,
-      lastResponseId: '',
-      compactionSeq: -1,
-      compactionCount: 0,
-      tailEtag: '"tail-current"',
-      tailTranscriptUpdatedAt: 3000,
-      refreshingTail: false,
-    },
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  await app.startSidebarStatusPoll();
-  app.stopSidebarStatusPoll();
-
-  if (messageCalls !== 0) {
-    fail(name, `expected no tail refresh for stale pending version, got ${messageCalls}`);
-    return;
-  }
-  if (session.transcriptUpdatedAt !== 3000 || session._history.tailTranscriptUpdatedAt !== 3000) {
-    fail(name, 'stale pending version should not regress transcript markers', JSON.stringify({ transcriptUpdatedAt: session.transcriptUpdatedAt, history: session._history }));
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(session, '_pendingTranscriptUpdatedAt')) {
-    fail(name, 'stale pending marker should be cleared', JSON.stringify(session));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testSyncActiveSessionIdleUsesTranscriptRefreshHelper() {
-  const name = 'syncActiveSessionFromServer idle branch refreshes through active transcript helper';
-  let messageCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/sess_sync_helper/state') {
-        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_sync_helper')) {
-        messageCalls += 1;
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 'sync_msg',
-            sequence: 1,
-            role: 'assistant',
-            created_at: 1710000000001,
-            parts: [{ type: 'text', text: 'synced through helper' }],
-          }]
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"sync-helper"' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_sync_helper',
-    title: 'Sync helper',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 7000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  await app.syncActiveSessionFromServer(session, false);
-
-  if (messageCalls !== 1) {
-    fail(name, `expected idle sync to fetch active messages once, got ${messageCalls}`);
-    return;
-  }
-  if (session.messages.length !== 1 || session.messages[0].content !== 'synced through helper') {
-    fail(name, 'expected idle sync to apply refreshed server transcript', JSON.stringify(session.messages));
-    return;
-  }
-  if (session._history?.tailTranscriptUpdatedAt !== 7000 || session._history?.tailEtag !== '"sync-helper"') {
-    fail(name, 'expected helper to mark transcript version and tail ETag after idle sync', JSON.stringify(session._history));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testIdleSyncDoesNotDuplicatePersistedRunError() {
-  const name = 'idle session sync does not append last_error already present in durable history';
-  let addErrorCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/sess_error_dedupe/state') {
-        return new Response(JSON.stringify({ active_run: false, last_error: 'provider failed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_error_dedupe')) {
-        return new Response(JSON.stringify({
-          messages: [{
-            id: 'error_event',
-            sequence: 2,
-            role: 'event',
-            created_at: 1710000000002,
-            parts: [{ type: 'error', text: 'provider failed' }],
-          }]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-    appOverrides: {
-      addErrorMessage(text, session) {
-        addErrorCalls += 1;
-        session.messages.push({ id: `local_error_${addErrorCalls}`, role: 'error', content: text });
-      }
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_error_dedupe',
-    title: 'Error dedupe',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 7000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  await app.syncActiveSessionFromServer(session, false);
-
-  const errors = session.messages.filter((message) => message.role === 'error');
-  if (addErrorCalls !== 0 || errors.length !== 1 || errors[0].content !== 'provider failed') {
-    fail(name, 'expected only the durable run error after sync', JSON.stringify({ addErrorCalls, messages: session.messages }));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testIdleSyncKeepsSameTextErrorForNewTurn() {
-  const name = 'idle session sync scopes last_error dedupe to the current turn';
-  let addErrorCalls = 0;
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url === '/ui/v1/sessions/sess_error_repeat/state') {
-        return new Response(JSON.stringify({ active_run: false, last_error: 'provider failed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_error_repeat')) {
-        return new Response(JSON.stringify({
-          messages: [
-            {
-              id: 'prior_error',
-              sequence: 1,
-              role: 'event',
-              created_at: 1710000000001,
-              parts: [{ type: 'error', text: 'provider failed' }],
-            },
-            {
-              id: 'new_user',
-              sequence: 2,
-              role: 'user',
-              created_at: 1710000000002,
-              parts: [{ type: 'text', text: 'try again' }],
-            },
-          ]
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-    appOverrides: {
-      addErrorMessage(text, session) {
-        addErrorCalls += 1;
-        session.messages.push({ id: `local_error_${addErrorCalls}`, role: 'error', content: text });
-      }
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = {
-    id: 'sess_error_repeat',
-    title: 'Repeated error',
-    origin: 'web',
-    created: 1710000000000,
-    transcriptUpdatedAt: 7000,
-    messages: [],
-  };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  await app.syncActiveSessionFromServer(session, false);
-
-  const errors = session.messages.filter((message) => message.role === 'error');
-  if (addErrorCalls !== 1 || errors.length !== 2) {
-    fail(name, 'expected the new turn to retain its identical error text', JSON.stringify({ addErrorCalls, messages: session.messages }));
-    return;
-  }
-
-  pass(name);
-}
-
-async function testSwitchToSearchOnlySessionHydratesResult() {
-  const name = 'switching to a search-only session adds it to local state before hydration';
-  const fetchCalls = [];
-  const { app } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      fetchCalls.push(String(url));
-      if (url === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (isTailMessagesURL(url, 'sess_search_only')) {
-        return new Response(JSON.stringify({
-          messages: [
-            { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'waterparks' }], created_at: 1710000000000 },
-            { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'loaded from server' }], created_at: 1710000001000 }
-          ]
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-  });
-
-  app.state.sessions = Array.from({ length: 101 }, (_, index) => ({
-    id: `sess_existing_${index}`,
-    title: `Existing ${index}`,
-    created: 1800000000000 + index,
-    lastMessageAt: 1800000000000 + index,
-    messages: [],
-    origin: 'web',
-  }));
-  app.state.sidebarSearchQuery = 'waterparks';
-  app.state.sidebarSearchResults = [{
-    id: 'sess_search_only',
-    title: 'top 10 waterparks in the us',
-    created: 1710000000000,
-    lastMessageAt: 1710000001000,
-    messages: [],
-    _serverOnly: true,
-  }];
-
-  const session = await app.switchToSession('sess_search_only', { sync: false });
-
-  if (!session) {
-    fail(name, 'expected switchToSession to return the search result session');
-    return;
-  }
-  if (!app.state.sessions.some((item) => item.id === 'sess_search_only')) {
-    fail(name, 'expected search-only session to be added to state.sessions');
-    return;
-  }
-  if (app.state.activeSessionId !== 'sess_search_only') {
-    fail(name, `activeSessionId=${app.state.activeSessionId}, want sess_search_only`);
-    return;
-  }
-  if (session._serverOnly) {
-    fail(name, 'expected search-only session to be hydrated and no longer server-only');
-    return;
-  }
-  if (session.messages.length !== 2 || session.messages[1].content !== 'loaded from server') {
-    fail(name, 'expected hydrated server messages to be loaded', JSON.stringify(session.messages));
-    return;
-  }
-  if (!fetchCalls.some((url) => isTailMessagesURL(url, 'sess_search_only'))) {
-    fail(name, 'expected tail messages endpoint to be fetched', JSON.stringify(fetchCalls));
     return;
   }
 
@@ -5844,6 +3568,478 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   pass(name);
 }
 
+async function testSessionPruningDestroysTranscriptStores() {
+  const name = 'session pruning destroys transcript stores for removed sessions';
+  const { app } = await createSessionsHarness();
+  const destroyed = [];
+  app.state.sessions = Array.from({ length: 101 }, (_, index) => ({
+    id: `prune-${index}`,
+    created: index,
+    messages: [],
+    transcript: { destroy() { destroyed.push(index); } }
+  }));
+  app.state.activeSessionId = 'prune-100';
+  app.state.draftSessionActive = false;
+  app.saveSessions();
+  if (app.state.sessions.length !== 100 || destroyed.length !== 1 || destroyed[0] !== 0) {
+    fail(name, 'removed session retained its transcript store', JSON.stringify({ count: app.state.sessions.length, destroyed }));
+    return;
+  }
+  pass(name);
+}
+
+async function testOptimisticTranscriptStorageIsPerSession() {
+  const name = 'optimistic transcript storage keeps independent per-session entries';
+  const { app, storage } = await createSessionsHarness();
+  const first = { id: 'optimistic-a', messages: [] };
+  const second = { id: 'optimistic-b', messages: [] };
+  app.trackTranscriptOptimistic(first, { id: 'local-a', clientKey: 'send-a', role: 'user', content: 'a' });
+  app.trackTranscriptOptimistic(second, { id: 'local-b', clientKey: 'send-b', role: 'user', content: 'b' });
+  app.trackTranscriptOptimistic(first, { id: 'guardian-a', clientKey: 'guardian-a', role: 'event', content: 'review' });
+
+  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  const firstEntries = saved?.sessions?.[first.id] || [];
+  const secondEntries = saved?.sessions?.[second.id] || [];
+  if (firstEntries.length !== 1 || firstEntries[0].clientKey !== 'send-a' || secondEntries.length !== 1 || secondEntries[0].clientKey !== 'send-b') {
+    fail(name, 'one session clobbered another or persisted a display-only row', JSON.stringify(saved));
+    return;
+  }
+  pass(name);
+}
+
+async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
+  const name = 'grouped tool conversion preserves source range and later durable anchors';
+  const { app, windowObj } = await createSessionsHarness();
+  const raw = [
+    { id: 101, sequence: 1, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'run it' }] },
+    { id: 102, sequence: 2, role: 'assistant', created_at: 2000, parts: [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'call-1' }] },
+    { id: 103, sequence: 3, role: 'tool', created_at: 3000, parts: [{ type: 'tool_result', tool_name: 'read_file', tool_call_id: 'call-1' }] },
+    { id: 104, sequence: 4, role: 'assistant', created_at: 4000, parts: [{ type: 'text', text: 'done' }] },
+  ];
+  const session = { id: 'durable-groups', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript.applyIndex({
+    rev: 4,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: { ids: [101, 102, 103, 104], seqs: [1, 2, 3, 4], roles: 'uata', flags: [0, 0, 2, 0] }
+  });
+  session.transcript.materialize(raw);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.refreshSessionMessagesFromTranscript(session);
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const later = session.messages.find((message) => message.role === 'assistant' && message.content === 'done');
+  const anchorIDs = session.messages.map((message) => message.durableRowId).filter((id) => id != null);
+  if (!group || group.durableRowStartId !== 102 || group.durableRowEndId !== 103) {
+    fail(name, 'tool group did not retain its complete durable source range', JSON.stringify(session.messages));
+    return;
+  }
+  if (!later || later.durableRowId !== 104) {
+    fail(name, 'later assistant inherited the grouped tool result row ID', JSON.stringify(session.messages));
+    return;
+  }
+  if (new Set(anchorIDs).size !== anchorIDs.length) {
+    fail(name, 'DOM durable anchors are not unique', JSON.stringify(anchorIDs));
+    return;
+  }
+  pass(name);
+}
+
+async function testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping() {
+  const name = '700 tool rows load atomically as one turn with far-end grouping context';
+  const toolCalls = 350;
+  const raw = [{
+    id: 1,
+    sequence: 0,
+    role: 'user',
+    created_at: 1000,
+    parts: [{ type: 'text', text: 'run many tools' }]
+  }];
+  for (let index = 0; index < toolCalls; index += 1) {
+    const callID = `call-${index}`;
+    const toolName = index === toolCalls - 1 ? 'update_plan' : 'read_file';
+    const failed = index === toolCalls - 1;
+    raw.push({
+      id: raw.length + 1,
+      sequence: raw.length,
+      role: 'assistant',
+      created_at: 1001 + raw.length,
+      parts: [{
+        type: 'tool_call',
+        tool_name: toolName,
+        tool_call_id: callID,
+        tool_arguments: '{}',
+        tool_error: failed
+      }]
+    });
+    raw.push({
+      id: raw.length + 1,
+      sequence: raw.length,
+      role: 'tool',
+      created_at: 1001 + raw.length,
+      parts: [{
+        type: 'tool_result',
+        tool_name: toolName,
+        tool_call_id: callID,
+        tool_error: failed
+      }]
+    });
+  }
+  const requestedAnchors = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptBodiesURL(url, 'large-tool-turn')) {
+        const parsed = parsedTestURL(url);
+        requestedAnchors.push(...String(parsed.searchParams.get('ids') || '').split(',').filter(Boolean).map(Number));
+        return new Response(JSON.stringify({ rev: raw.length, messages: raw }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: 'large-tool-turn', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id, { maxMaterializedTurns: 60, overscanTurns: 0 });
+  session.transcript.applyIndex({
+    rev: raw.length,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: {
+      ids: raw.map((entry) => entry.id),
+      seqs: raw.map((entry) => entry.sequence),
+      roles: `u${'at'.repeat(toolCalls)}`,
+      flags: raw.map(() => 0)
+    }
+  });
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const loaded = await app.materializeTranscriptSegments(session, [0]);
+  const materialized = session.transcript.segments.filter((segment) => segment.state === 'materialized');
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const farTool = group?.tools?.find((tool) => tool.id === `call-${toolCalls - 1}`);
+  if (!loaded || requestedAnchors.length !== 1 || requestedAnchors[0] !== 1) {
+    fail(name, 'client did not request exactly one turn anchor', JSON.stringify({ loaded, requestedAnchors }));
+    return;
+  }
+  if (session.transcript.segments.length !== 1 || materialized.length !== 1 || session.transcript.bodies.size !== raw.length) {
+    fail(name, 'giant turn was split, rejected, or budgeted by durable rows', JSON.stringify({
+      segments: session.transcript.segments.length,
+      materialized: materialized.length,
+      bodies: session.transcript.bodies.size
+    }));
+    return;
+  }
+  if (!group || group.tools.length !== toolCalls || group.durableRowEndId !== raw[raw.length - 1].id) {
+    fail(name, 'tool conversion lost full-turn context at the far end', JSON.stringify(group));
+    return;
+  }
+  if (!farTool || farTool.name !== 'update_plan' || farTool.status !== 'error' || farTool.resultStatus !== 'error') {
+    fail(name, 'far-end update_plan result/error semantics were not preserved', JSON.stringify(farTool));
+    return;
+  }
+  pass(name);
+}
+
+async function testTerminalTranscriptSyncQueuesBehindInflightRequest() {
+  const name = 'terminal transcript sync follows an in-flight request until final revision';
+  let resolveFirst;
+  const transcriptRequests = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      if (isTranscriptIndexURL(url, 'sync-race')) {
+        transcriptRequests.push({ url: String(url), headers: options.headers || {} });
+        if (transcriptRequests.length === 1) {
+          return new Promise((resolve) => { resolveFirst = resolve; });
+        }
+        return new Response(JSON.stringify({
+          rev: 2, compaction_seq: -1, compaction_count: 0,
+          rows: { ids: [], seqs: [], roles: '', flags: [] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"rev-2"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'sync-race', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const ordinary = app.syncTranscript(session, { reason: 'ordinary' });
+  while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
+  const terminal = app.noteTranscriptTerminal(session, 2);
+  resolveFirst(new Response(JSON.stringify({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [], seqs: [], roles: '', flags: [] }
+  }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"rev-1"' } }));
+
+  const [ordinaryResult, terminalResult] = await Promise.all([ordinary, terminal]);
+  if (!ordinaryResult || !terminalResult || session.transcript.rev !== 2 || transcriptRequests.length !== 2) {
+    fail(name, 'coalescing swallowed the forced final revision sync', JSON.stringify({ ordinaryResult, terminalResult, rev: session.transcript.rev, requests: transcriptRequests.length }));
+    return;
+  }
+  if (Object.keys(transcriptRequests[1].headers).some((key) => key.toLowerCase() === 'if-none-match')) {
+    fail(name, 'queued terminal follow-up was not forced', JSON.stringify(transcriptRequests[1].headers));
+    return;
+  }
+  pass(name);
+}
+
+async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
+  const name = 'active status attaches at started_rev without reconciling in-run revisions';
+  const fetchCalls = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      if (isTranscriptIndexURL(url, 'sess_active_rev')) {
+        return new Response(JSON.stringify({
+          rev: 9,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: { ids: [], seqs: [], roles: '', flags: [] }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"active-9"' } });
+      }
+      if (String(url) === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  const session = { id: 'sess_active_rev', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript.applyIndex({ rev: 5, compaction_seq: -1, compaction_count: 0, rows: { ids: [], seqs: [], roles: '', flags: [] } });
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.streaming = true;
+  fetchCalls.length = 0;
+
+  await app.reconcileTranscriptFromStatus([{
+    id: session.id,
+    active_response_id: 'resp_active',
+    started_rev: 5,
+    transcript_rev: 9,
+    active_run: true
+  }]);
+  if (fetchCalls.some((url) => isTranscriptIndexURL(url, session.id))) {
+    fail(name, 'status poll reconciled rows persisted after started_rev while the run was active', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.transcript.activeRun?.startedRev !== 5) {
+    fail(name, 'active run attachment did not retain started_rev', JSON.stringify(session.transcript.activeRun));
+    return;
+  }
+  pass(name);
+}
+
+async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
+  const name = 'huge transcript gaps materialize incrementally while traversal stays bounded and anchored';
+  const rowCount = 5200;
+  const materializeBudget = 60;
+  const fetchBatchSizes = [];
+  let appRef = null;
+  let durableNodes = [];
+  let absoluteTops = new Map();
+  let renderedDescriptorCount = 0;
+
+  const renderTranscriptDOM = () => {
+    if (!appRef) return;
+    const session = appRef.state.sessions.find((item) => item?.id === appRef.state.activeSessionId);
+    const transcript = session?.transcript;
+    if (!transcript) return;
+    const messages = appRef.elements.messages;
+    const chatScroll = appRef.elements.chatScroll;
+    const topLevel = [];
+    durableNodes = [];
+    absoluteTops = new Map();
+    let top = 0;
+    for (const run of transcript.renderRuns()) {
+      const node = makeNode(run.type === 'gap' ? 'div' : 'section');
+      if (run.type === 'gap') {
+        node.classList.add('transcript-gap');
+        node.dataset.startSegmentIndex = String(run.startSegmentIndex);
+        node.dataset.endSegmentIndex = String(run.endSegmentIndex);
+        top += run.height;
+      } else {
+        node.classList.add('transcript-turn');
+        node.dataset.segmentIndex = String(run.segmentIndex);
+        const height = 52 + (run.segmentIndex % 3) * 7;
+        for (let ordinal = run.startOrdinal; ordinal <= run.endOrdinal; ordinal += 1) {
+          if (!transcript.bodies.has(transcript.ids[ordinal])) continue;
+          const durable = makeNode('article');
+          const nodeTop = top;
+          durable.dataset.durableId = String(transcript.ids[ordinal]);
+          durable.getBoundingClientRect = () => ({
+            top: nodeTop - (Number(chatScroll.scrollTop) || 0),
+            bottom: nodeTop + height - (Number(chatScroll.scrollTop) || 0)
+          });
+          node.appendChild(durable);
+          durableNodes.push(durable);
+          absoluteTops.set(transcript.ids[ordinal], nodeTop);
+        }
+        top += height;
+      }
+      topLevel.push(node);
+    }
+    messages.replaceChildren(...topLevel);
+    renderedDescriptorCount = topLevel.length;
+    chatScroll.scrollHeight = top;
+  };
+
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptBodiesURL(url, 'sess_huge_scroll')) {
+        const parsed = parsedTestURL(url);
+        const ids = String(parsed.searchParams.get('ids') || '').split(',').filter(Boolean).map(Number);
+        fetchBatchSizes.push(ids.length);
+        if (ids.length > 32) {
+          return new Response(JSON.stringify({ error: { message: 'client batch exceeded test cap' } }), {
+            status: 413,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({
+          rev: 1,
+          messages: ids.map((id) => ({
+            id,
+            sequence: id - 1,
+            role: 'user',
+            created_at: 1710000000000 + id,
+            parts: [{ type: 'text', text: `row-${id}` }]
+          }))
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      renderMessages() { renderTranscriptDOM(); }
+    }
+  });
+  appRef = app;
+  const messages = app.elements.messages;
+  const chatScroll = app.elements.chatScroll;
+  chatScroll.clientHeight = 400;
+  chatScroll.scrollTop = 0;
+  chatScroll.getBoundingClientRect = () => ({ top: 0, bottom: chatScroll.clientHeight });
+  messages.querySelectorAll = (selector) => selector === '[data-durable-id]' ? durableNodes.slice() : [];
+  messages.querySelector = (selector) => {
+    const match = String(selector).match(/^\[data-durable-id="([^"]+)"\]$/);
+    return match ? durableNodes.find((node) => node.dataset.durableId === match[1]) || null : null;
+  };
+
+  const session = { id: 'sess_huge_scroll', messages: [] };
+  const transcript = new windowObj.TranscriptStore(session.id, { maxMaterializedTurns: materializeBudget, overscanTurns: 8 });
+  const ids = Array.from({ length: rowCount }, (_, index) => index + 1);
+  transcript.applyIndex({
+    rev: 1,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: { ids, seqs: ids.map((id) => id - 1), roles: 'u'.repeat(rowCount), flags: ids.map(() => 0) }
+  });
+  transcript.setViewport(rowCount - 1, rowCount - 1);
+  transcript.materialize(ids.slice(-materializeBudget).map((id) => ({
+    id,
+    sequence: id - 1,
+    role: 'user',
+    parts: [{ type: 'text', text: `row-${id}` }]
+  })), { countFetch: false });
+  session.transcript = transcript;
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.autoScroll = false;
+  app.refreshSessionMessagesFromTranscript(session);
+  renderTranscriptDOM();
+
+  let previousFirst = rowCount - materializeBudget;
+  for (let step = 0; step < 40; step += 1) {
+    const gap = transcript.renderRuns()
+      .filter((run) => run.type === 'gap' && run.endSegmentIndex < previousFirst)
+      .sort((a, b) => b.endSegmentIndex - a.endSegmentIndex)[0];
+    if (!gap) {
+      fail(name, `lost the next coalesced gap at traversal step ${step}`);
+      return;
+    }
+    const anchorID = gap.endOrdinal + 2;
+    renderTranscriptDOM();
+    const anchorAbsoluteTop = absoluteTops.get(anchorID);
+    if (!Number.isFinite(anchorAbsoluteTop)) {
+      fail(name, `missing materialized anchor row ${anchorID} at traversal step ${step}`);
+      return;
+    }
+    chatScroll.scrollTop = anchorAbsoluteTop - 100;
+    const anchorNode = messages.querySelector(`[data-durable-id="${anchorID}"]`);
+    const beforeTop = anchorNode?.getBoundingClientRect?.().top;
+
+    const loaded = await app.materializeTranscriptSegments(session, {
+      startSegmentIndex: gap.startSegmentIndex,
+      endSegmentIndex: gap.endSegmentIndex,
+      targetOrdinal: gap.endOrdinal,
+      direction: 'backward'
+    });
+    if (!loaded) {
+      fail(name, `bounded gap materialization failed at traversal step ${step}`);
+      return;
+    }
+    if (transcript.viewport.lastOrdinal !== gap.endOrdinal
+      || transcript.viewport.lastOrdinal - transcript.viewport.firstOrdinal + 1 > 32) {
+      fail(name, `viewport did not follow the bounded batch at traversal step ${step}`, JSON.stringify(transcript.viewport));
+      return;
+    }
+
+    const afterNode = messages.querySelector(`[data-durable-id="${anchorID}"]`);
+    const afterTop = afterNode?.getBoundingClientRect?.().top;
+    if (!Number.isFinite(beforeTop) || !Number.isFinite(afterTop) || Math.abs(afterTop - beforeTop) > 1) {
+      fail(name, `anchored row ${anchorID} jumped during fill ${step}`, `before=${beforeTop} after=${afterTop}`);
+      return;
+    }
+    const materialized = transcript.segments.filter((segment) => segment.state === 'materialized');
+    const pinnedMaterialized = [...transcript.pinnedSegments].filter((index) => transcript.segments[index]?.state === 'materialized').length;
+    const allowedMaterialized = Math.max(materializeBudget, pinnedMaterialized);
+    if (materialized.length > allowedMaterialized || transcript.bodies.size > allowedMaterialized) {
+      fail(name, `materialized transcript exceeded turn budget plus pinned exceptions at step ${step}`, `turns=${materialized.length} pinned=${pinnedMaterialized} bodies=${transcript.bodies.size}`);
+      return;
+    }
+    if (session.messages.length > materializeBudget + 3 || renderedDescriptorCount > materializeBudget + 3 || messages.children.length > materializeBudget + 3) {
+      fail(name, `rendered transcript exceeded sparse DOM bounds at step ${step}`, `messages=${session.messages.length} descriptors=${renderedDescriptorCount} DOM=${messages.children.length}`);
+      return;
+    }
+    const first = Math.min(...materialized.map((segment) => segment.startOrdinal));
+    if (!(first < previousFirst)) {
+      fail(name, `traversal made no progress at step ${step}`, `first=${first} previous=${previousFirst}`);
+      return;
+    }
+    previousFirst = first;
+  }
+
+  if (fetchBatchSizes.length !== 40 || fetchBatchSizes.some((size) => size < 1 || size > 32)) {
+    fail(name, 'body fetch batches were not uniformly bounded', JSON.stringify(fetchBatchSizes));
+    return;
+  }
+  if (transcript.bodies.has(rowCount)) {
+    fail(name, 'distant initial tail body was not evicted while traversing older batches');
+    return;
+  }
+  if (transcript.stats.evictions === 0 || previousFirst >= rowCount - materializeBudget - 32 * 30) {
+    fail(name, 'multi-batch traversal did not progressively load and evict distant turns', `first=${previousFirst} evictions=${transcript.stats.evictions}`);
+    return;
+  }
+  transcript._checkInvariants();
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -5879,57 +4075,30 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   await testConvertServerMessagesCorrelatesSuccessfulPlanResults();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
-  await testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags();
-  await testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStaleServerAssistant();
-  await testMergeServerMessagesDropsLocalToolGroupRecordedInServerTurn();
-  await testMergeServerMessagesReconcilesSuccessfulPlanResultOnce();
-  await testMergeServerMessagesMatchesToolGroupByNameWhenCallIdsAreSynthetic();
-  await testMergeServerMessagesPreservesLocalToolGroupWhenServerHasNoToolRecord();
-  await testSessionHistoryInitialLoadRequestsTailOnly();
-  await testScrollNearTopLoadsOlderPageAndPreservesViewport();
-  await testScrollNearTopDrainsToolOnlyPagesUntilVisibleHistory();
-  await testTailRefreshPreservesOlderHistoryCursor();
-  await testCompactedTailRefreshPreservesPreCompactionScrollback();
-  await testCompactedTailRefreshPreservesLocalScrollbackWithoutRawHistory();
-  await testOlderPageFailureAllowsRetryWithoutCorruptingTail();
+  await testSessionPruningDestroysTranscriptStores();
+  await testOptimisticTranscriptStorageIsPerSession();
+  await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
+  await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
+  await testTerminalTranscriptSyncQueuesBehindInflightRequest();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
-  await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
-  await testSwitchToLazyLoadedSessionFetchesMessagesOnce();
-  await testSwitchToSearchOnlySessionHydratesResult();
-  await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
-  await testSessionState404ClearsStaleActiveResponse();
+  await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
+  await testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal();
+  await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
   await testTerminalSyncRequeuesPendingInterjectionAsFollowUp();
   await testSyncUsesServerProvidedPendingInterjectionId();
-  await testApplyServerSessionSummaryMapsTranscriptUpdatedAt();
   await testApplyServerSessionSummaryMapsLastMessageAt();
-  await testMergeServerMessagesBumpsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
-  await testSanitizeSessionPreservesTranscriptUpdatedAt();
   await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();
   await testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus();
-  await testStatusPollAdvancementRefreshesActiveMessagesOnce();
-  await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
-  await testActiveTranscriptRefreshSkipsBusyStates();
-  await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
-  await testForegroundCatchUpRefreshesTranscriptBeforeResumingExternalRun();
-  await testForegroundCatchUpRetriesBeforeAttachingExternalRun();
-  await testAlreadyReconciledPendingCatchUpClearsWarning();
-  await testStaleCatchUpCompletionPreservesNewerPendingMarker();
-  await testCatchUpWarningClearsOnSessionSwitchWithoutClearingNewerWarning();
-  await testForegroundCatchUpStopsWhenPageIsRehidden();
   await testReconnectBackoffWakeSignalsReuseExistingLoop();
   await testLoadServerSessionStateUsesExplicitResultContract();
   await testSessionStatePollRetriesAfterTransientFailure();
   await testSessionStatePollTreats401AsAuthFailure();
   await testSessionStatePollDoesNotRetryAfterSessionSwitch();
   await testLateActiveRunSyncDoesNotMarkDraftStreaming();
-  await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
-  await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
-  await testIdleSyncDoesNotDuplicatePersistedRunError();
-  await testIdleSyncKeepsSameTextErrorForNewTurn();
   await testAddMenuAttachOptionTriggersFileInput();
   await testAddMenuLocationAddsReviewableDraft();
   await testLocationSharingCanBeDisabled();

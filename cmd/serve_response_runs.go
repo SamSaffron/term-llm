@@ -63,6 +63,7 @@ type responseRunSubscribeResult struct {
 
 type responseRun struct {
 	mu                 sync.Mutex
+	terminalMu         sync.Mutex
 	id                 string
 	sessionID          string
 	previousResponseID string
@@ -70,6 +71,9 @@ type responseRun struct {
 	reasoningEffort    string
 	reasoningEffortSet bool
 	created            int64
+	startedRev         int64
+	finalRev           int64
+	finalRevReader     func() int64
 	status             string
 	errorType          string
 	errorMessage       string
@@ -131,9 +135,20 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 	return r.appendEventLocked(event, payload, false)
 }
 
+func (r *responseRun) readFinalRev() int64 {
+	if r.finalRevReader == nil {
+		return 0
+	}
+	return r.finalRevReader()
+}
+
 func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	finalRev := r.readFinalRev()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.finalRev = finalRev
 	if r.cancelRequested {
 		r.status = "cancelled"
 		r.errorType = ""
@@ -158,11 +173,21 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 }
 
 func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	r.mu.Lock()
+	if !r.cancelRequested {
+		r.mu.Unlock()
+		return false, nil
+	}
+	r.mu.Unlock()
+	finalRev := r.readFinalRev()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.cancelRequested {
 		return false, nil
 	}
+	r.finalRev = finalRev
 	r.status = "cancelled"
 	r.errorType = ""
 	r.errorMessage = ""
@@ -172,8 +197,12 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 }
 
 func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (bool, error) {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	finalRev := r.readFinalRev()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.finalRev = finalRev
 	hadSubscribers := len(r.subscribers) > 0
 	r.status = "failed"
 	r.errorType = errType
@@ -208,6 +237,18 @@ func (r *responseRun) applyRuntimeMetadataLocked(event string, payload map[strin
 func (r *responseRun) appendEventLocked(event string, payload map[string]any, terminal bool) error {
 	if payload == nil {
 		payload = map[string]any{}
+	}
+	if event == "response.created" {
+		payload["started_rev"] = r.startedRev
+		if response := mapValue(payload["response"]); len(response) > 0 {
+			response["started_rev"] = r.startedRev
+		}
+	}
+	if terminal {
+		payload["final_rev"] = r.finalRev
+		if response := mapValue(payload["response"]); len(response) > 0 {
+			response["final_rev"] = r.finalRev
+		}
 	}
 	r.lastSequenceNumber++
 	payload["sequence_number"] = r.lastSequenceNumber
@@ -649,6 +690,10 @@ func (r *responseRun) snapshot() map[string]any {
 		"session_id":           r.sessionID,
 		"previous_response_id": r.previousResponseID,
 		"last_sequence_number": r.lastSequenceNumber,
+		"started_rev":          r.startedRev,
+	}
+	if r.status != "in_progress" {
+		payload["final_rev"] = r.finalRev
 	}
 	if r.reasoningEffortSet {
 		payload["reasoning_effort"] = r.reasoningEffort
@@ -1535,6 +1580,7 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 
 	respID := "resp_" + randomSuffix()
 	run := newResponseRun(respID, sessionID, previousResponseID, model, created, nil)
+	s.configureResponseRunRevision(run, sessionID)
 	if err := mgr.create(run); err != nil {
 		return "", err
 	}
@@ -1601,6 +1647,7 @@ func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.Respon
 	respID := "resp_" + randomSuffix()
 	created := time.Now().Unix()
 	run := newResponseRun(respID, sessionID, previousResponseID, model, created, nil)
+	s.configureResponseRunRevision(run, sessionID)
 	if err := mgr.create(run); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -1845,6 +1892,34 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	}
 }
 
+func (s *serveServer) transcriptRevBestEffort(ctx context.Context, sessionID string) int64 {
+	indexer, ok := transcriptIndexerForWeb(s.store)
+	if !ok {
+		return 0
+	}
+	rev, err := indexer.TranscriptRev(ctx, sessionID)
+	if err != nil {
+		return 0
+	}
+	return rev
+}
+
+const responseRunRevisionReadTimeout = 5 * time.Second
+
+func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID string) {
+	if run == nil {
+		return
+	}
+	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
+	run.startedRev = s.transcriptRevBestEffort(startedCtx, sessionID)
+	startedCancel()
+	run.finalRevReader = func() int64 {
+		ctx, cancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
+		defer cancel()
+		return s.transcriptRevBestEffort(ctx, sessionID)
+	}
+}
+
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	mgr := s.ensureResponseRuns()
 
@@ -1865,6 +1940,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - serve.response_timeout bounds orphan-run lifetime.
 	runCtx, cancel := context.WithTimeout(context.Background(), s.responseTimeout())
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	s.configureResponseRunRevision(run, sessionID)
 	createdRun, duplicate, err := mgr.createOrGetByIdempotency(run, options.idempotencyKey)
 	if err != nil {
 		cancel()
@@ -1974,6 +2050,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			} else if errors.Is(err, errServeSessionBusy) {
 				errType = "conflict_error"
 			}
+			if !errors.Is(err, context.Canceled) {
+				s.persistResponseRunErrorEvent(runtime, sessionID, respID, errType, errMessage)
+			}
 			hadSubscribers, failErr := run.fail(map[string]any{
 				"error": map[string]any{
 					"message": errMessage,
@@ -1989,9 +2068,6 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 				default:
 					runtime.setLastUIRunError(errMessage)
 				}
-			}
-			if !errors.Is(err, context.Canceled) {
-				s.persistResponseRunErrorEvent(runtime, sessionID, respID, errType, errMessage)
 			}
 			if failErr != nil {
 				log.Printf("response run %s failed to append terminal event: %v", respID, failErr)

@@ -826,13 +826,43 @@ async function testModelEffortOptionsFollowMetadata() {
   pass(name);
 }
 
+async function testResponseCreatedRecordsStartedTranscriptRevision() {
+  const name = 'response.created records started_rev before active stream attachment';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const calls = [];
+  app.noteTranscriptRunCreated = (session, responseId, startedRev) => {
+    calls.push({ sessionId: session.id, responseId, startedRev });
+  };
+  const session = { id: 'session_started_rev', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.created', {
+    response: { id: 'resp_started', status: 'in_progress' },
+    started_rev: 17,
+    sequence_number: 1
+  });
+  if (calls.length !== 1 || calls[0].responseId !== 'resp_started' || calls[0].startedRev !== 17) {
+    fail(name, 'started_rev was not forwarded to transcript attachment', JSON.stringify(calls));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
 async function testResponseCompletedForcesSidebarStatusRefresh() {
   const name = 'response.completed forces a sidebar status refresh';
   const harness = createHarness();
   const { app, state, cleanup } = harness;
   const refreshCalls = [];
+  const terminalCalls = [];
   app.refreshSidebarStatusPoll = (forceNow) => {
     refreshCalls.push(forceNow);
+  };
+  app.noteTranscriptTerminal = (session, finalRev) => {
+    terminalCalls.push({ sessionId: session.id, finalRev });
   };
 
   const session = {
@@ -853,11 +883,17 @@ async function testResponseCompletedForcesSidebarStatusRefresh() {
   app.applyResponseStreamEvent(session, streamState, 'response.completed', {
     response: { id: 'resp_status_refresh', model: 'test-model', status: 'completed' },
     sequence_number: 3,
+    final_rev: 9
   });
 
   const refreshed = await waitFor(() => refreshCalls.length === 1, 75);
   if (!refreshed || refreshCalls[0] !== true) {
     fail(name, 'expected one forced status refresh after completion', JSON.stringify(refreshCalls));
+    await cleanup();
+    return;
+  }
+  if (terminalCalls.length !== 1 || terminalCalls[0].sessionId !== session.id || terminalCalls[0].finalRev !== 9) {
+    fail(name, 'terminal event must reconcile the durable transcript at final_rev', JSON.stringify(terminalCalls));
     await cleanup();
     return;
   }
@@ -3579,6 +3615,27 @@ function testModelSwapProgressEventUpdatesTransientMarker() {
   pass(name);
 }
 
+function testGuardianReviewEventIsDisplayOnlyTransient() {
+  const name = 'guardian review event is display-only and transient';
+  const { app, state } = createHarness();
+  const session = {
+    id: 'session_guardian', title: 'Guardian', messages: [], lastResponseId: null,
+    activeResponseId: null, lastSequenceNumber: 0, number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.guardian.review', {
+    message: 'Guardian approved command', sequence_number: 1,
+  });
+  const marker = session.messages[0];
+  if (!marker || marker.role !== 'event' || !marker.transient) {
+    fail(name, 'guardian marker can leak into durable optimistic recovery', JSON.stringify(marker));
+    return;
+  }
+  pass(name);
+}
+
 function testResponsePhaseEventUpdatesTransientMarker() {
   const name = 'response phase event updates transient marker without assistant text';
   const harness = createHarness();
@@ -6242,6 +6299,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testMainSkillUsesStructuredInvocationAndResponseStream();
   await testIsolatedSkillStreamsIndependentlyAndCancelsIndependently();
   await testModelEffortOptionsFollowMetadata();
+  await testResponseCreatedRecordsStartedTranscriptRevision();
   await testResponseCompletedForcesSidebarStatusRefresh();
   await testResponseCompletedPreservesFailedToolStatus();
   await testStaleTerminalStreamDoesNotRefreshStatus();
@@ -6313,6 +6371,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   testResponseModelSwitchStabilizesEffortAndClearsPending();
   testCompletedResponseClearsUnappliedQueuedEffort();
   testModelSwapProgressEventUpdatesTransientMarker();
+  testGuardianReviewEventIsDisplayOnlyTransient();
   testResponsePhaseEventUpdatesTransientMarker();
   testResponseRetryEventUpdatesOwnedHeaderStatus();
   testProviderRetryClearsOnMeaningfulProgress();

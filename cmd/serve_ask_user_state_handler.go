@@ -189,10 +189,20 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		resp["lastResponseId"] = lastResponseID
 	}
 
+	if indexer, ok := transcriptIndexerForWeb(s.store); ok {
+		if rev, err := indexer.TranscriptRev(r.Context(), sessionID); err == nil {
+			resp["transcript_rev"] = rev
+		}
+	}
 	if s.responseRuns != nil {
 		if activeResponseID := s.responseRuns.activeRunID(sessionID); activeResponseID != "" {
 			resp["active_run"] = true
 			resp["active_response_id"] = activeResponseID
+			if run, ok := s.responseRuns.get(activeResponseID); ok && run != nil {
+				run.mu.Lock()
+				resp["started_rev"] = run.startedRev
+				run.mu.Unlock()
+			}
 		}
 	}
 

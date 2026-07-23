@@ -43,21 +43,27 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// Collect active session IDs from in-memory state without touching runtimes.
 	activeIDs := s.activeSessionIDs()
 
-	// transcript_updated_at is the transcript-change marker consumed by the web
-	// UI. It is currently backed by SessionSummary.UpdatedAt because all message
-	// insert/update paths bump updated_at even when message_count or
-	// last_message_at do not change.
+	// transcript_updated_at remains for older cached clients and hub dashboards.
+	// Revision-aware clients use transcript_rev as the correctness signal.
 	type statusEntry struct {
 		ID                  string `json:"id"`
 		ShortTitle          string `json:"short_title"`
 		LongTitle           string `json:"long_title"`
 		ActiveRun           bool   `json:"active_run,omitempty"`
+		ActiveResponseID    string `json:"active_response_id,omitempty"`
+		StartedRev          int64  `json:"started_rev,omitempty"`
+		TranscriptRev       int64  `json:"transcript_rev"`
 		MsgCount            int    `json:"message_count"`
 		LastMessageAt       int64  `json:"last_message_at"`
 		TranscriptUpdatedAt int64  `json:"transcript_updated_at"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
+	indexer, revisioned := transcriptIndexerForWeb(s.store)
+	summaryRevisions := false
+	if reporter, ok := s.store.(session.SessionSummaryTranscriptRevisionReporter); ok {
+		summaryRevisions = reporter.SessionSummariesIncludeTranscriptRev()
+	}
 	for _, sess := range sessions {
 		lastMessageAt := sess.LastMessageAt
 		if lastMessageAt.IsZero() {
@@ -67,11 +73,21 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		if transcriptUpdatedAt.IsZero() {
 			transcriptUpdatedAt = sess.CreatedAt
 		}
+		transcriptRev := sess.TranscriptRev
+		if revisioned && !summaryRevisions {
+			if rev, revErr := indexer.TranscriptRev(r.Context(), sess.ID); revErr == nil {
+				transcriptRev = rev
+			}
+		}
+		activeResponseID, startedRev := s.activeTranscriptRun(sess.ID)
 		result = append(result, statusEntry{
 			ID:                  sess.ID,
 			ShortTitle:          sess.PreferredShortTitle(),
 			LongTitle:           sess.PreferredLongTitle(),
 			ActiveRun:           activeIDs[sess.ID],
+			ActiveResponseID:    activeResponseID,
+			StartedRev:          startedRev,
+			TranscriptRev:       transcriptRev,
 			MsgCount:            sess.MessageCount,
 			LastMessageAt:       lastMessageAt.UnixMilli(),
 			TranscriptUpdatedAt: transcriptUpdatedAt.UnixMilli(),

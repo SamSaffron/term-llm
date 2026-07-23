@@ -265,6 +265,66 @@ func (s *LoggingStore) GetMessagesPageDescending(ctx context.Context, sessionID 
 	return page, nil
 }
 
+// GetTranscriptIndex delegates coherent transcript identity reads.
+func (s *LoggingStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []TranscriptIndexItem, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return 0, nil, ErrNotFound
+	}
+	rev, items, err := indexer.GetTranscriptIndex(ctx, sessionID)
+	s.logOnce("GetTranscriptIndex", err)
+	return rev, items, err
+}
+
+// TranscriptVersioned reports whether the wrapped store has a revisioned schema.
+func (s *LoggingStore) TranscriptVersioned() bool {
+	if reporter, ok := s.Store.(TranscriptVersionReporter); ok {
+		return reporter.TranscriptVersioned()
+	}
+	_, ok := s.Store.(TranscriptIndexer)
+	return ok
+}
+
+// SessionSummariesIncludeTranscriptRev preserves the wrapped store's list-query
+// capability through the logging decorator.
+func (s *LoggingStore) SessionSummariesIncludeTranscriptRev() bool {
+	reporter, ok := s.Store.(SessionSummaryTranscriptRevisionReporter)
+	return ok && reporter.SessionSummariesIncludeTranscriptRev()
+}
+
+// GetTranscriptSnapshot delegates coherent transcript envelope reads.
+func (s *LoggingStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return TranscriptSnapshot{}, ErrNotFound
+	}
+	snapshot, err := indexer.GetTranscriptSnapshot(ctx, sessionID)
+	s.logOnce("GetTranscriptSnapshot", err)
+	return snapshot, err
+}
+
+// GetMessagesByTranscriptRanges delegates coherent complete-segment body reads.
+func (s *LoggingStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (int64, []Message, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return 0, nil, ErrNotFound
+	}
+	rev, messages, err := indexer.GetMessagesByTranscriptRanges(ctx, sessionID, ranges)
+	s.logOnce("GetMessagesByTranscriptRanges", err)
+	return rev, messages, err
+}
+
+// TranscriptRev delegates durable transcript revision reads.
+func (s *LoggingStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
+	indexer, ok := s.Store.(TranscriptIndexer)
+	if !ok {
+		return 0, nil
+	}
+	rev, err := indexer.TranscriptRev(ctx, sessionID)
+	s.logOnce("TranscriptRev", err)
+	return rev, err
+}
+
 // PreviousUserPrompt delegates the optional PromptHistoryStore capability when
 // the wrapped store supports it.
 func (s *LoggingStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {

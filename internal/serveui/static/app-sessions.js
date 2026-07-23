@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, clearConnectionStateOwner, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -32,36 +32,6 @@ const resumeAndDrain = (session, options) => {
   });
 };
 
-const shouldRecoverActiveResponseFromSnapshot = (session, responseId, responseChanged = false) => {
-  if (!session || !String(responseId || '').trim()) return false;
-  if (responseChanged) return true;
-
-  const currentSeq = Number(session.lastSequenceNumber || 0);
-  // Once we have replayed at least one event for this response, resume from
-  // that sequence number rather than re-fetching the full snapshot. This relies
-  // on the invariant that local message state up to lastSequenceNumber already
-  // reflects the replayed event stream.
-  if (currentSeq > 0) return false;
-
-  let lastUserIndex = -1;
-  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-    if (session.messages[i]?.role === 'user') {
-      lastUserIndex = i;
-      break;
-    }
-  }
-  if (lastUserIndex < 0) return false;
-
-  for (let i = lastUserIndex + 1; i < session.messages.length; i += 1) {
-    const role = session.messages[i]?.role;
-    if (role === 'assistant' || role === 'tool' || role === 'tool-group' || role === 'error') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
 // ===== Sidebar status polling =====
 const SIDEBAR_POLL_ACTIVE = 2000;
 const SIDEBAR_POLL_VISIBLE_ACTIVE = 5000;
@@ -69,8 +39,6 @@ const SIDEBAR_POLL_IDLE = 30000;
 // Retry selected-session state after transient upstream/proxy failures so a
 // single hub/reverse blip does not permanently stop active-session updates.
 const SESSION_STATE_POLL_RETRY = 5000;
-const ACTIVE_TRANSCRIPT_CATCH_UP_TEXT = 'Catching up with this session\u2026';
-let activeTranscriptCatchUpWarning = null;
 let sidebarStatusTimer = null;
 let sidebarStatusEtag = null;
 let sidebarHasActive = false;
@@ -176,14 +144,7 @@ const pollSidebarStatus = (isRecovery = false) => {
       });
       if (!isCurrent()) return false;
 
-      if (resp.status === 304) {
-        // No metadata change. If a prior status response revealed an active
-        // transcript update but the detail fetch was deferred or failed, retry the
-        // pending active-session reconciliation without issuing another status
-        // request.
-        await reconcilePendingActiveTranscriptRefresh();
-        return isCurrent();
-      }
+      if (resp.status === 304) return isCurrent();
       if (!resp.ok) return false;
 
       const data = await resp.json();
@@ -192,9 +153,8 @@ const pollSidebarStatus = (isRecovery = false) => {
       if (etag) sidebarStatusEtag = etag;
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
-        await reconcileActiveTranscriptFromStatus(data.sessions);
+        await reconcileTranscriptFromStatus(data.sessions);
         if (!isCurrent()) return false;
-        recordTranscriptVersionsFromStatus(data.sessions);
         // Discover sessions created in other tabs/devices
         const localIds = new Set(state.sessions.map((s) => s.id));
         const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));
@@ -302,33 +262,6 @@ const stageCurrentComposerForSession = (sessionId) => {
   clearDraftMessageForSession(sessionId);
 };
 
-const showActiveTranscriptCatchUpWarning = (session, transcriptUpdatedAt) => {
-  const sessionId = String(session?.id || '').trim();
-  const targetTranscriptUpdatedAt = Number(transcriptUpdatedAt || 0);
-  if (!sessionId || !Number.isFinite(targetTranscriptUpdatedAt) || targetTranscriptUpdatedAt <= 0) return false;
-
-  activeTranscriptCatchUpWarning = {
-    sessionId,
-    transcriptUpdatedAt: targetTranscriptUpdatedAt,
-    connectionStateOwner: setConnectionState(ACTIVE_TRANSCRIPT_CATCH_UP_TEXT, 'bad'),
-  };
-  return true;
-};
-
-const clearActiveTranscriptCatchUpWarning = (sessionId, reconciledTranscriptUpdatedAt = null) => {
-  const ownerSessionId = String(sessionId || '').trim();
-  const warning = activeTranscriptCatchUpWarning;
-  if (!warning || warning.sessionId !== ownerSessionId) return false;
-
-  if (reconciledTranscriptUpdatedAt !== null) {
-    const reconciled = Number(reconciledTranscriptUpdatedAt || 0);
-    if (!Number.isFinite(reconciled) || reconciled < warning.transcriptUpdatedAt) return false;
-  }
-
-  activeTranscriptCatchUpWarning = null;
-  return clearConnectionStateOwner(warning.connectionStateOwner);
-};
-
 const clearSessionProviderRetryOwner = (sessionId) => {
   const ownerSessionId = String(sessionId || '').trim();
   if (!ownerSessionId) return false;
@@ -367,7 +300,6 @@ const switchToDraftSession = async (options = {}) => {
   closeAskUserModal();
   closeApprovalModal();
   closeMCPModal();
-  clearActiveTranscriptCatchUpWarning(previousActiveSessionId);
   clearSessionProviderRetryOwner(previousActiveSessionId);
   if (state.currentStreamSessionId) {
     detachResponseStream();
@@ -375,6 +307,11 @@ const switchToDraftSession = async (options = {}) => {
     setStreaming(false);
   }
 
+  if (previousActiveSessionId) {
+    const previousSession = findSessionById(previousActiveSessionId);
+    previousSession?.transcript?.releaseBodies?.();
+    if (previousSession) previousSession.messages = [];
+  }
   state.activeSessionId = '';
   state.draftSessionActive = true;
   updateURL('');
@@ -496,8 +433,7 @@ const switchToSession = async (sessionId, options = {}) => {
     closeMCPModal();
   }
   if (previousActiveSessionId && previousActiveSessionId !== nextId) {
-    clearActiveTranscriptCatchUpWarning(previousActiveSessionId);
-    clearSessionProviderRetryOwner(previousActiveSessionId);
+      clearSessionProviderRetryOwner(previousActiveSessionId);
   }
   if (state.currentStreamSessionId && state.currentStreamSessionId !== nextId) {
     detachResponseStream();
@@ -510,6 +446,11 @@ const switchToSession = async (sessionId, options = {}) => {
     discardPendingAttachments();
   }
 
+  if (previousActiveSessionId && previousActiveSessionId !== nextId) {
+    const previousSession = findSessionById(previousActiveSessionId);
+    previousSession?.transcript?.releaseBodies?.();
+    if (previousSession) previousSession.messages = [];
+  }
   state.activeSessionId = nextId;
   state.draftSessionActive = false;
   updateURL(sessionSlug(session));
@@ -530,7 +471,6 @@ const switchToSession = async (sessionId, options = {}) => {
     const msgs = await preloadServerMessagesPromise;
     if (!isCurrentSwitch()) return null;
     if (Array.isArray(msgs)) {
-      mergeServerMessagesWithLocalState(session, msgs);
       persistAndRefreshShell();
       if (isCurrentSwitch()) {
         renderMessages(true);
@@ -777,6 +717,20 @@ const convertServerMessages = (serverMessages, options = {}) => {
       : []
   );
 
+  const durableSourceID = (msg) => {
+    const id = msg?.id ?? msg?.ID;
+    return id == null || id === '' ? null : id;
+  };
+
+  const addDurableSource = (entry, msg) => {
+    if (!entry) return entry;
+    const id = durableSourceID(msg);
+    if (id == null) return entry;
+    if (!Array.isArray(entry.durableSourceRowIds)) entry.durableSourceRowIds = [];
+    if (!entry.durableSourceRowIds.includes(id)) entry.durableSourceRowIds.push(id);
+    return entry;
+  };
+
   const appendUniqueImages = (tool, images) => {
     if (!tool || images.length === 0) return;
     const existing = Array.isArray(tool.images) ? tool.images : [];
@@ -818,6 +772,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
         ...(serverMessageSequence(msg) !== null ? { serverSeq: serverMessageSequence(msg) } : {})
       };
     }
+    addDurableSource(currentGroup, msg);
     return currentGroup;
   };
 
@@ -825,6 +780,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     const images = normalizeImages(part.images);
     const callId = part.tool_call_id || '';
     let group = currentGroup;
+    if (group) addDurableSource(group, msg);
     let tool = group && callId ? group.tools.find((entry) => entry.id === callId) : null;
     if (!tool && group && part.tool_name) {
       tool = group.tools.find((entry) => entry.name === part.tool_name);
@@ -862,6 +818,10 @@ const convertServerMessages = (serverMessages, options = {}) => {
       markAuthoritativeCompactionTailSuppressed();
       continue;
     }
+    if (msg.transcriptEmptyBody && msg.role !== 'tool') {
+      if (msg.role === 'user' || msg.role === 'event') flushGroup();
+      continue;
+    }
     clearPendingCompactionTail();
 
     if (msg.role === 'event') {
@@ -888,30 +848,37 @@ const convertServerMessages = (serverMessages, options = {}) => {
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
         };
+        addDurableSource(skillRun, msg);
         const previousIndex = result.findIndex((entry) => entry.role === 'skill-run' && entry.runId === provenance.run_id);
-        if (previousIndex >= 0) result[previousIndex] = skillRun;
-        else result.push(skillRun);
+        if (previousIndex >= 0) {
+          const previous = result[previousIndex];
+          if (!Array.isArray(skillRun.durableSourceRowIds)) skillRun.durableSourceRowIds = [];
+          for (const id of previous?.durableSourceRowIds || []) {
+            if (!skillRun.durableSourceRowIds.includes(id)) skillRun.durableSourceRowIds.unshift(id);
+          }
+          result[previousIndex] = skillRun;
+        } else result.push(skillRun);
         continue;
       }
       const errorMarker = parts.find((part) => part.type === 'error');
       if (errorMarker) {
-        result.push({
+        result.push(addDurableSource({
           id: baseId,
           role: 'error',
           content: errorMarker.text || 'The response failed.',
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
-        });
+        }, msg));
         continue;
       }
       const marker = parts.find((part) => part.type === 'model_swap') || parts.find((part) => part.type === 'text');
-      result.push({
+      result.push(addDurableSource({
         id: baseId,
         role: 'model-swap',
         content: marker?.text || '↔ Model switch',
         created,
         ...(seq !== null ? { serverSeq: seq } : {})
-      });
+      }, msg));
       continue;
     }
 
@@ -934,7 +901,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
       const content = textParts.join('\n');
       if (isInternalCompactionSummaryText(content)) {
-        result.push({
+        result.push(addDurableSource({
           id: baseId,
           role: 'compaction',
           content: 'Context compacted',
@@ -942,19 +909,19 @@ const convertServerMessages = (serverMessages, options = {}) => {
           lineCount: lineCount(compactionSummaryDisplayText(content)),
           created,
           ...(seq !== null ? { serverSeq: seq, compactionSeq: seq } : {})
-        });
+        }, msg));
         pendingCompactionMarkerIndex = result.length - 1;
         continue;
       }
 
-      result.push({
+      result.push(addDurableSource({
         id: baseId,
         role: 'user',
         content,
         created,
         ...(seq !== null ? { serverSeq: seq } : {}),
         ...(attachments.length > 0 ? { attachments } : {})
-      });
+      }, msg));
       continue;
     }
 
@@ -963,13 +930,13 @@ const convertServerMessages = (serverMessages, options = {}) => {
       const part = parts[partIndex];
       if (part.type === 'text' && part.text && String(part.text).trim() !== '') {
         flushGroup();
-        result.push({
+        result.push(addDurableSource({
           id: `${baseId}_text_${partIndex}`,
           role: 'assistant',
           content: part.text,
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
-        });
+        }, msg));
       } else if (part.type === 'tool_call') {
         const group = ensureToolGroup(created, msg, partIndex);
         const toolId = part.tool_call_id || fallbackToolId(msg, partIndex);
@@ -1002,336 +969,465 @@ const convertServerMessages = (serverMessages, options = {}) => {
   return annotateCompactionBoundary(suppressCompactionTailMessages(result), options);
 };
 
-const SESSION_MESSAGES_PAGE_SIZE = 200;
-const SESSION_OLDER_LOAD_TOP_THRESHOLD_PX = 600;
-const SESSION_OLDER_LOAD_CHAIN_LIMIT = 25;
-
+const TRANSCRIPT_RECENT_SKELETONS = [];
+const TRANSCRIPT_OPTIMISTIC_LIMIT = 256;
+const TRANSCRIPT_EMPTY_BODY_FLAG = Number(window.TRANSCRIPT_FLAG_EMPTY_BODY || 2);
 const findSessionById = (sessionId) => state.sessions.find((item) => item?.id === sessionId) || null;
 
-const ensureSessionHistory = (session) => {
-  if (!session || typeof session !== 'object') return null;
-  if (!session._history || typeof session._history !== 'object') {
-    session._history = {
-      rawMessages: [],
-      oldestSeq: 0,
-      hasMoreOlder: false,
-      loadingOlder: false,
-      loadedTail: false,
-      lastResponseId: '',
-      compactionSeq: -1,
-      compactionCount: 0,
-      tailEtag: '',
-      tailTranscriptUpdatedAt: 0,
-      refreshingTail: false
-    };
+const readTranscriptOptimisticRegistry = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.optimisticTranscript) || 'null');
+    if (saved?.sessions && typeof saved.sessions === 'object') return saved.sessions;
+    if (saved?.sessionId && Array.isArray(saved.entries)) {
+      return { [saved.sessionId]: saved.entries };
+    }
+  } catch {
+    // Optimistic recovery is best-effort; durable transcript bodies never live here.
   }
-  const history = session._history;
-  if (!Array.isArray(history.rawMessages)) history.rawMessages = [];
-  history.oldestSeq = Number.isFinite(Number(history.oldestSeq)) ? Number(history.oldestSeq) : 0;
-  history.compactionSeq = Number.isFinite(Number(history.compactionSeq)) ? Number(history.compactionSeq) : -1;
-  history.compactionCount = Number.isFinite(Number(history.compactionCount)) ? Number(history.compactionCount) : 0;
-  history.hasMoreOlder = history.hasMoreOlder === true;
-  history.loadingOlder = history.loadingOlder === true;
-  history.loadedTail = history.loadedTail === true;
-  history.lastResponseId = String(history.lastResponseId || '').trim();
-  history.tailEtag = String(history.tailEtag || '').trim();
-  history.tailTranscriptUpdatedAt = Number.isFinite(Number(history.tailTranscriptUpdatedAt)) ? Number(history.tailTranscriptUpdatedAt) : 0;
-  history.refreshingTail = history.refreshingTail === true;
-  return history;
+  return {};
 };
 
-const oldestSequenceFromRawMessages = (messages) => {
-  let oldest = null;
-  for (const msg of Array.isArray(messages) ? messages : []) {
-    const seq = serverMessageSequence(msg);
-    if (seq === null) continue;
-    if (oldest === null || seq < oldest) oldest = seq;
+const rekeyTranscriptOptimisticStorage = (previousId, nextId) => {
+  if (!previousId || !nextId || previousId === nextId) return;
+  try {
+    const sessions = readTranscriptOptimisticRegistry();
+    if (!Array.isArray(sessions[previousId])) return;
+    const merged = [...(sessions[nextId] || []), ...sessions[previousId]];
+    const unique = new Map(merged.map((entry) => [String(entry?.clientKey || entry?.id || ''), entry]));
+    sessions[nextId] = [...unique.values()].slice(-TRANSCRIPT_OPTIMISTIC_LIMIT);
+    delete sessions[previousId];
+    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ version: 1, sessions }));
+  } catch {
+    // Identity reconciliation must succeed even when storage is unavailable.
   }
-  return oldest;
 };
 
-const nextBeforeSeqFromResponse = (data) => {
-  const seq = Number(data?.next_before_seq);
-  return Number.isFinite(seq) && seq >= 0 ? seq : null;
-};
-
-const sortRawServerMessagesChronological = (messages) => messages
-  .map((msg, index) => ({ msg, index }))
-  .sort((a, b) => {
-    const aSeq = serverMessageSequence(a.msg);
-    const bSeq = serverMessageSequence(b.msg);
-    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
-    const aCreated = Number(a.msg?.created_at) || 0;
-    const bCreated = Number(b.msg?.created_at) || 0;
-    if (aCreated !== bCreated) return aCreated - bCreated;
-    return a.index - b.index;
-  })
-  .map((entry) => entry.msg);
-
-const mergeRawServerMessages = (...messageLists) => {
-  const keyed = new Map();
-  const unkeyed = [];
-  for (const list of messageLists) {
-    for (const msg of Array.isArray(list) ? list : []) {
-      const key = serverMessageRawKey(msg);
-      if (key) {
-        keyed.set(key, msg);
-      } else {
-        unkeyed.push(msg);
-      }
+const ensureSessionTranscript = (session) => {
+  if (!session || typeof window.TranscriptStore !== 'function') return null;
+  if (!(session.transcript instanceof window.TranscriptStore)) {
+    session.transcript = new window.TranscriptStore(session.id);
+    const saved = readTranscriptOptimisticRegistry()[session.id];
+    if (Array.isArray(saved)) {
+      saved.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).forEach((entry) => session.transcript.addOptimistic(entry, entry.revAtSend));
     }
   }
-  return sortRawServerMessagesChronological([...keyed.values(), ...unkeyed]);
+  return session.transcript;
 };
 
-const rawServerMessagesOverlap = (left, right) => {
-  const keys = new Set((Array.isArray(left) ? left : []).map(serverMessageRawKey).filter(Boolean));
-  if (keys.size === 0) return false;
-  return (Array.isArray(right) ? right : []).some((msg) => {
-    const key = serverMessageRawKey(msg);
-    return key && keys.has(key);
+const persistTranscriptOptimistic = (session) => {
+  const transcript = session?.transcript;
+  if (!session?.id) return;
+  try {
+    const sessions = readTranscriptOptimisticRegistry();
+    const entries = transcript?.optimistic
+      ?.filter((entry) => !entry?.transient)
+      .slice(-TRANSCRIPT_OPTIMISTIC_LIMIT)
+      .map((entry) => ({ ...entry, optimistic: true })) || [];
+    if (entries.length > 0) sessions[session.id] = entries;
+    else delete sessions[session.id];
+    if (Object.keys(sessions).length === 0) {
+      localStorage.removeItem(STORAGE_KEYS.optimisticTranscript);
+      return;
+    }
+    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ version: 1, sessions }));
+  } catch {
+    // Storage pressure must not interrupt a response.
+  }
+};
+
+const trackTranscriptOptimistic = (session, message) => {
+  if (!session || !message || message.durable) return null;
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return null;
+  if (!['user', 'assistant', 'tool', 'tool-group'].includes(message.role)) message.transient = true;
+  const tracked = transcript.addOptimistic(message, transcript.rev);
+  persistTranscriptOptimistic(session);
+  return tracked;
+};
+
+const noteTranscriptRunCreated = (session, responseId, startedRev) => {
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return Promise.resolve(false);
+  transcript.setActiveRun(responseId, startedRev);
+  const target = Math.max(0, Number(startedRev) || 0);
+  if (target > transcript.rev) return syncTranscript(session, { reason: 'run-created', targetRev: target });
+  return Promise.resolve(true);
+};
+
+const noteTranscriptTerminal = (session, finalRev) => {
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return Promise.resolve(false);
+  transcript.clearTransientOptimistic();
+  transcript.setActiveRun('', 0);
+  persistTranscriptOptimistic(session);
+  return syncTranscript(session, {
+    reason: 'terminal',
+    targetRev: Math.max(0, Number(finalRev) || 0),
+    force: true
   });
 };
 
-const convertedMessagesFromHistory = (history) => {
-  const converted = convertServerMessages(history?.rawMessages || [], {
-    compactionSeq: history?.compactionSeq,
-    compactionCount: history?.compactionCount
-  });
-  const lastResponseId = String(history?.lastResponseId || '').trim();
-  if (lastResponseId) converted.lastResponseId = lastResponseId;
-  return converted;
-};
-
-const compactedTailRefreshPreservedPrefix = (previousRaw, rawTail, compactionSeq) => {
-  const boundary = Number(compactionSeq);
-  if (!Number.isFinite(boundary) || boundary < 0) return [];
-  if (!Array.isArray(previousRaw) || previousRaw.length === 0) return [];
-  if (!Array.isArray(rawTail) || rawTail.length === 0) return [];
-
-  // A compaction appends a new active-context suffix to the server log. During
-  // the completion/state refresh that follows, the tail window may no longer
-  // overlap the scrollback the browser already loaded. Do not throw away the
-  // pre-compaction transcript in that case; it is still valid display history
-  // and may be the only copy the user can scroll back through without another
-  // page fetch.
-  return previousRaw.filter((msg) => {
-    const seq = serverMessageSequence(msg);
-    return seq !== null && seq < boundary;
-  });
-};
-
-const applyTailMessagesToSessionHistory = (sessionId, data) => {
-  const rawTail = Array.isArray(data?.messages) ? data.messages.slice() : [];
-  const lastResponseId = String(data?.lastResponseId || '').trim();
-  const compactionMeta = responseCompactionMetadata(data);
-  const session = findSessionById(sessionId);
-  if (!session) {
-    const converted = convertServerMessages(rawTail, compactionMeta);
-    if (lastResponseId) converted.lastResponseId = lastResponseId;
-    return converted;
-  }
-
-  const history = ensureSessionHistory(session);
-  const hadRawMessages = history.rawMessages.length > 0;
-  const previousRawMessages = hadRawMessages ? history.rawMessages.slice() : [];
-  const overlapsExisting = hadRawMessages && rawServerMessagesOverlap(history.rawMessages, rawTail);
-  const preservedCompactionPrefix = overlapsExisting
-    ? []
-    : compactedTailRefreshPreservedPrefix(previousRawMessages, rawTail, compactionMeta.compactionSeq);
-  const preservesExistingScrollback = preservedCompactionPrefix.length > 0;
-  const previousHasMoreOlder = history.hasMoreOlder === true;
-  const previousOldestSeq = Number(history.oldestSeq) || 0;
-
-  history.rawMessages = overlapsExisting
-    ? mergeRawServerMessages(history.rawMessages, rawTail)
-    : mergeRawServerMessages(preservedCompactionPrefix, rawTail);
-  history.loadedTail = true;
-  history.loadingOlder = false;
-  history.lastResponseId = lastResponseId;
-  history.compactionSeq = compactionMeta.compactionSeq;
-  history.compactionCount = compactionMeta.compactionCount;
-
-  if (overlapsExisting || preservesExistingScrollback) {
-    history.hasMoreOlder = previousHasMoreOlder || data?.has_more === true;
-  } else {
-    history.hasMoreOlder = data?.has_more === true;
-  }
-
-  const oldestSeq = oldestSequenceFromRawMessages(history.rawMessages);
-  const responseCursor = nextBeforeSeqFromResponse(data);
-  if ((overlapsExisting || preservesExistingScrollback) && previousOldestSeq > 0) {
-    // Tail refreshes can overlap the loaded window after older pages have been
-    // prepended. Keep the existing older cursor; the tail page cursor only
-    // describes the oldest row in the tail page, not the oldest row already
-    // loaded in the combined window. The same applies after compaction: a
-    // non-overlapping compacted tail must not make the browser forget the
-    // pre-compaction scrollback it already has.
-    history.oldestSeq = previousOldestSeq;
-  } else {
-    history.oldestSeq = history.hasMoreOlder && responseCursor !== null
-      ? responseCursor
-      : (oldestSeq !== null ? oldestSeq : (responseCursor !== null ? responseCursor : 0));
-  }
-
-  const converted = convertedMessagesFromHistory(history);
-  if (!overlapsExisting && compactionMeta.compactionSeq >= 0) {
-    converted.preserveLocalCompactionScrollback = true;
-  }
-  return converted;
-};
-
-const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0, tail = false, beforeSeq = 0, etag = '' } = {}) => {
-  const headers = {};
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  if (etag) headers['If-None-Match'] = etag;
-
-  const params = new URLSearchParams();
-  if (tail) params.set('tail', '1');
-  if (beforeSeq > 0) params.set('before_seq', String(beforeSeq));
-  if (limit > 0) params.set('limit', String(limit));
-  if (offset > 0) params.set('offset', String(offset));
-  const query = params.toString();
-
-  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ''}`, { headers });
-  if (resp.status === 304) return false;
-  if (!resp.ok) return null;
-
-  const data = await resp.json().catch(() => null);
-  if (!data || !Array.isArray(data.messages)) return null;
+const transcriptViewportAdapter = (session) => {
+  if (!session || session.id !== state.activeSessionId || !elements.messages || !elements.chatScroll) return null;
+  const scrollRect = () => elements.chatScroll.getBoundingClientRect?.() || { top: 0, bottom: Number(elements.chatScroll.clientHeight) || 0 };
+  const durableNodeForID = (id) => {
+    const exact = elements.messages.querySelector?.(`[data-durable-id="${String(id)}"]`);
+    if (exact) return exact;
+    const target = Number(id);
+    if (!Number.isFinite(target)) return null;
+    return Array.from(elements.messages.querySelectorAll?.('[data-durable-start-id]') || []).find((candidate) => {
+      const start = Number(candidate.dataset?.durableStartId);
+      const end = Number(candidate.dataset?.durableEndId);
+      return Number.isFinite(start) && Number.isFinite(end) && target >= start && target <= end;
+    }) || null;
+  };
   return {
-    data,
-    etag: resp.headers.get('ETag') || ''
+    capture: () => {
+      const viewport = scrollRect();
+      const nodes = Array.from(elements.messages.querySelectorAll?.('[data-durable-id]') || []);
+      const node = nodes.find((candidate) => {
+        const rect = candidate.getBoundingClientRect?.();
+        return rect && rect.bottom > viewport.top && rect.top < viewport.bottom;
+      });
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return { id: Number(node.dataset.durableId), top: rect.top - viewport.top };
+    },
+    render: () => {
+      refreshSessionMessagesFromTranscript(session);
+      renderMessages(false);
+    },
+    topForID: (id) => {
+      const node = durableNodeForID(id);
+      if (!node) return null;
+      return node.getBoundingClientRect().top - scrollRect().top;
+    },
+    adjustScroll: (delta) => {
+      elements.chatScroll.scrollTop = (Number(elements.chatScroll.scrollTop) || 0) + delta;
+    }
   };
 };
 
-const loadServerSessionMessages = async (sessionId, options = {}) => {
-  try {
-    const session = findSessionById(sessionId);
-    const history = session ? ensureSessionHistory(session) : null;
-    const explicitEtag = String(options.etag || '').trim();
-    const etag = explicitEtag || (options.useEtag && history ? history.tailEtag : '');
-    const page = await fetchServerSessionMessagesPage(sessionId, {
-      tail: true,
-      limit: SESSION_MESSAGES_PAGE_SIZE,
-      etag
-    });
-    if (page === false) return false;
-    if (!page) return null;
-    if (history && page.etag) history.tailEtag = page.etag;
-    const converted = applyTailMessagesToSessionHistory(sessionId, page.data);
-    const transcriptUpdatedAt = numericTranscriptUpdatedAt(options.transcriptUpdatedAt);
-    if (history && transcriptUpdatedAt > 0) {
-      history.tailTranscriptUpdatedAt = Math.max(history.tailTranscriptUpdatedAt || 0, transcriptUpdatedAt);
-      if (transcriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
-        session.transcriptUpdatedAt = transcriptUpdatedAt;
-      }
+const refreshSessionMessagesFromTranscript = (session) => {
+  const transcript = session?.transcript;
+  if (!transcript) return false;
+  const display = [];
+  for (const run of transcript.renderRuns()) {
+    if (run.type === 'gap') {
+      display.push({
+        id: `transcript_gap_${run.startOrdinal}_${run.endOrdinal}`,
+        role: 'transcript-gap',
+        transcriptGap: true,
+        startOrdinal: run.startOrdinal,
+        endOrdinal: run.endOrdinal,
+        startSegmentIndex: run.startSegmentIndex,
+        endSegmentIndex: run.endSegmentIndex,
+        estimatedHeight: run.height
+      });
+      continue;
     }
-    return converted;
-  } catch {
-    return null;
+    const raw = [];
+    for (let ordinal = run.startOrdinal; ordinal <= run.endOrdinal; ordinal += 1) {
+      const entry = transcript.bodies.get(transcript.ids[ordinal]);
+      if (!entry) continue;
+      raw.push((transcript.flags[ordinal] & TRANSCRIPT_EMPTY_BODY_FLAG) !== 0
+        ? { ...entry, transcriptEmptyBody: true }
+        : entry);
+    }
+    const converted = convertServerMessages(raw, {
+      compactionSeq: transcript.compactionSeq,
+      compactionCount: transcript.compactionCount
+    });
+    const claimedAnchors = new Set();
+    converted.forEach((message) => {
+      const sourceIDs = Array.isArray(message.durableSourceRowIds)
+        ? message.durableSourceRowIds.filter((id) => id != null)
+        : [];
+      const durableRowId = sourceIDs.find((id) => !claimedAnchors.has(String(id)));
+      sourceIDs.forEach((id) => claimedAnchors.add(String(id)));
+      display.push({
+        ...message,
+        durable: true,
+        ...(durableRowId != null ? { durableRowId } : {}),
+        ...(sourceIDs.length > 0 ? {
+          durableRowStartId: sourceIDs[0],
+          durableRowEndId: sourceIDs[sourceIDs.length - 1]
+        } : {}),
+        transcriptSegmentIndex: run.segmentIndex
+      });
+    });
+  }
+  display.push(...transcript.optimistic);
+  session.messages = display;
+  delete session._serverOnly;
+  return true;
+};
+
+const fetchLegacyTranscriptPages = async (sessionId) => {
+  const pages = [];
+  let beforeSeq = 0;
+  for (let pageCount = 0; pageCount < 10000; pageCount += 1) {
+    const params = new URLSearchParams({ tail: '1', limit: '200' });
+    if (beforeSeq > 0) params.set('before_seq', String(beforeSeq));
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/messages?${params}`, {
+      headers: requestHeaders(sessionId)
+    });
+    if (!resp.ok) return null;
+    const page = await resp.json().catch(() => null);
+    if (!page || !Array.isArray(page.messages)) return null;
+    pages.push(page);
+    if (!page.has_more) break;
+    const next = Number(page.next_before_seq);
+    if (!Number.isFinite(next) || next <= 0 || next === beforeSeq) return null;
+    beforeSeq = next;
+  }
+  return pages;
+};
+
+const touchTranscriptSkeleton = (session) => {
+  const id = String(session?.id || '');
+  const existing = TRANSCRIPT_RECENT_SKELETONS.indexOf(id);
+  if (existing >= 0) TRANSCRIPT_RECENT_SKELETONS.splice(existing, 1);
+  TRANSCRIPT_RECENT_SKELETONS.push(id);
+  const max = Number(window.TRANSCRIPT_BUDGETS?.maxRecentSkeletons || 2);
+  while (TRANSCRIPT_RECENT_SKELETONS.length > max) {
+    const retired = TRANSCRIPT_RECENT_SKELETONS.shift();
+    if (!retired || retired === state.activeSessionId) continue;
+    const stale = findSessionById(retired);
+    stale?.transcript?.destroy?.();
+    if (stale) {
+      delete stale.transcript;
+      stale.messages = [];
+      stale._serverOnly = true;
+    }
   }
 };
+
+const TRANSCRIPT_MATERIALIZE_BATCH_TURNS = Math.max(1, Number(window.TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || 32);
+
+const boundedTranscriptSegmentIndexes = (transcript, request) => {
+  if (!transcript) return [];
+  if (!Array.isArray(request)) {
+    return transcript.selectGapBatch?.(
+      request?.startSegmentIndex,
+      request?.endSegmentIndex,
+      { targetOrdinal: request?.targetOrdinal, direction: request?.direction }
+    ) || [];
+  }
+  const selected = [];
+  const seen = new Set();
+  for (const value of request) {
+    const index = Math.trunc(Number(value));
+    if (!Number.isFinite(index) || seen.has(index)) continue;
+    seen.add(index);
+    const segment = transcript.segments[index];
+    if (!segment || segment.state !== 'evicted') continue;
+    if (selected.length >= TRANSCRIPT_MATERIALIZE_BATCH_TURNS) break;
+    selected.push(index);
+  }
+  return selected.sort((a, b) => a - b);
+};
+
+const fetchTranscriptSegments = async (session, segmentIndexes, options = {}) => {
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return false;
+  const requested = [];
+  const boundedIndexes = boundedTranscriptSegmentIndexes(transcript, segmentIndexes);
+  for (const index of boundedIndexes) {
+    // Transport one anchor per conversational turn. The server expands each
+    // anchor to the complete user-bounded segment; durable row count is not a
+    // request or materialization budget and partial turns are never rendered.
+    const id = transcript.ids[transcript.segments[index]?.startOrdinal];
+    if (id != null) requested.push(id);
+  }
+  if (requested.length === 0) return true;
+  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript/bodies?ids=${requested.join(',')}`, {
+    headers: requestHeaders(session.id)
+  });
+  if (!resp.ok) return false;
+  const data = await resp.json().catch(() => null);
+  if (!data || !Array.isArray(data.messages) || Number(data.rev) !== transcript.rev) return false;
+  transcript.materialize(data.messages, { deferBudget: options.deferBudget === true });
+  // materialize() retires every body in an incomplete segment, so this check
+  // guarantees callers never render a partial conversational turn.
+  return boundedIndexes.every((index) => ['materialized', 'empty'].includes(transcript.segments[index]?.state));
+};
+
+const materializeTranscriptSegmentsOnce = async (session, request) => {
+  if (!session || session.id !== state.activeSessionId) return false;
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return false;
+  const indexes = boundedTranscriptSegmentIndexes(transcript, request);
+  if (indexes.length === 0) return true;
+
+  const adapter = transcriptViewportAdapter(session);
+  const anchor = adapter?.capture?.() || null;
+  const previousViewport = { ...transcript.viewport };
+  const first = transcript.segments[indexes[0]];
+  const last = transcript.segments[indexes[indexes.length - 1]];
+  transcript.setViewport(first.startOrdinal, last.endOrdinal, { deferBudget: true });
+  const anchorSegment = anchor ? transcript.segmentForID(anchor.id) : -1;
+  if (anchorSegment >= 0) transcript.pinnedSegments.add(anchorSegment);
+
+  const loaded = await fetchTranscriptSegments(session, indexes, { deferBudget: true });
+  if (!loaded) {
+    transcript.setViewport(previousViewport.firstOrdinal, previousViewport.lastOrdinal);
+    return syncTranscript(session, { reason: 'stale-bodies', force: true });
+  }
+
+  transcript.enforceBudget();
+  transcript.reconcileOptimistic();
+  refreshSessionMessagesFromTranscript(session);
+  if (adapter) {
+    adapter.render?.(transcript);
+    const top = anchor == null ? null : adapter.topForID?.(anchor.id);
+    if (Number.isFinite(top) && Number.isFinite(anchor.top)) adapter.adjustScroll?.(top - anchor.top);
+  } else {
+    renderMessages(false);
+  }
+  // Drop the temporary anchor pin after the anchored render. The viewport stays
+  // on the newly loaded batch so the next fill can evict the old region.
+  transcript.refreshPinnedSegments();
+  persistTranscriptOptimistic(session);
+  return true;
+};
+
+const materializeTranscriptSegments = (session, request) => {
+  if (!session) return Promise.resolve(false);
+  const previous = session._transcriptMaterializePromise || Promise.resolve();
+  const queued = previous.then(
+    () => materializeTranscriptSegmentsOnce(session, request),
+    () => materializeTranscriptSegmentsOnce(session, request)
+  );
+  session._transcriptMaterializePromise = queued;
+  return queued.finally(() => {
+    if (session._transcriptMaterializePromise === queued) delete session._transcriptMaterializePromise;
+  });
+};
+
+const syncTranscriptOnce = async (session, options = {}) => {
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return false;
+  const headers = requestHeaders(session.id);
+  if (transcript.etag && !options.force) headers['If-None-Match'] = transcript.etag;
+  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
+  transcript.noteIndexFetch(resp.status === 304, resp.headers?.get?.('ETag') || '');
+  if (resp.status === 304) {
+    if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
+      const last = transcript.ids.length - 1;
+      transcript.setViewport(last, last);
+    }
+    const wanted = new Set(transcript.pinnedSegments);
+    if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
+    const loaded = await fetchTranscriptSegments(session, [...wanted]);
+    if (loaded) {
+      refreshSessionMessagesFromTranscript(session);
+      if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
+    }
+    return loaded;
+  }
+  if (resp.status === 404) {
+    const pages = await fetchLegacyTranscriptPages(session.id);
+    if (!pages) return false;
+    transcript.destroy();
+    session.transcript = window.transcriptStoreFromMessages(session.id, pages);
+    session.transcript.setViewport(Math.max(0, session.transcript.ids.length - 1), Math.max(0, session.transcript.ids.length - 1));
+    session.transcript.enforceBudget();
+    refreshSessionMessagesFromTranscript(session);
+    renderMessages(options.forceScroll === true);
+    touchTranscriptSkeleton(session);
+    return true;
+  }
+  if (!resp.ok) return false;
+  const data = await resp.json().catch(() => null);
+  if (!data?.rows) return false;
+  const adapter = transcriptViewportAdapter(session);
+  transcript.withViewportAnchor(adapter, () => transcript.applyIndex(data, resp.headers?.get?.('ETag') || ''));
+  if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
+
+  if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
+    const last = transcript.ids.length - 1;
+    transcript.setViewport(last, last);
+  }
+  const wanted = new Set(transcript.pinnedSegments);
+  if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
+  const loaded = await fetchTranscriptSegments(session, [...wanted]);
+  if (!loaded) {
+    transcript.etag = '';
+    return false;
+  }
+  transcript.withViewportAnchor(adapter, () => {
+    transcript.reconcileOptimistic();
+    refreshSessionMessagesFromTranscript(session);
+  });
+  persistTranscriptOptimistic(session);
+  touchTranscriptSkeleton(session);
+  if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
+  return true;
+};
+
+const mergeTranscriptSyncRequest = (session, options = {}) => {
+  const pending = session._transcriptSyncPending || { force: false, forceScroll: false, targetRev: 0, reason: '' };
+  pending.force = pending.force || options.force === true;
+  pending.forceScroll = pending.forceScroll || options.forceScroll === true;
+  pending.targetRev = Math.max(Number(pending.targetRev) || 0, Number(options.targetRev) || 0);
+  if (options.reason) pending.reason = String(options.reason);
+  session._transcriptSyncPending = pending;
+  return pending;
+};
+
+const syncTranscript = async (session, options = {}) => {
+  if (!session || !ensureSessionTranscript(session)) return false;
+  mergeTranscriptSyncRequest(session, options);
+  if (session._transcriptSyncPromise) return session._transcriptSyncPromise;
+
+  const promise = (async () => {
+    for (;;) {
+      const request = session._transcriptSyncPending || { force: false, forceScroll: false, targetRev: 0 };
+      delete session._transcriptSyncPending;
+      const loaded = await syncTranscriptOnce(session, request);
+      if (!loaded) return false;
+
+      const transcript = ensureSessionTranscript(session);
+      const queuedTarget = Number(session._transcriptSyncPending?.targetRev) || 0;
+      const targetRev = Math.max(Number(request.targetRev) || 0, queuedTarget);
+      if (transcript && transcript.rev < targetRev) {
+        mergeTranscriptSyncRequest(session, { reason: 'target-revision', force: true, targetRev });
+      }
+      if (!session._transcriptSyncPending) return true;
+    }
+  })().finally(() => {
+    if (session._transcriptSyncPromise === promise) delete session._transcriptSyncPromise;
+  });
+  session._transcriptSyncPromise = promise;
+  return promise;
+};
+
+const loadServerSessionMessages = async (sessionId) => {
+  const session = findSessionById(sessionId);
+  if (!session) return null;
+  return (await syncTranscript(session, { reason: 'activation' })) ? session.messages : null;
+};
+
+const refreshActiveSessionMessagesFromServer = async (session, options = {}) => syncTranscript(session, {
+  reason: options.reason || 'refresh',
+  force: options.force === true || options.useEtag === false,
+  forceScroll: options.forceScroll === true,
+  targetRev: options.targetRev
+});
 
 const loadOlderSessionMessages = async (session) => {
-  if (!session || session.id !== state.activeSessionId) return false;
-  if (state.abortController || sessionHasInProgressState(session)) return false;
-
-  const history = ensureSessionHistory(session);
-  if (!history.loadedTail || !history.hasMoreOlder || history.loadingOlder) return false;
-
-  const beforeSeq = Number(history.oldestSeq);
-  if (!Number.isFinite(beforeSeq) || beforeSeq <= 0) {
-    history.hasMoreOlder = false;
-    return false;
-  }
-
-  const chatScroll = elements.chatScroll;
-  const oldHeight = Number(chatScroll?.scrollHeight) || 0;
-  const oldTop = Number(chatScroll?.scrollTop) || 0;
-
-  history.loadingOlder = true;
-  try {
-    const page = await fetchServerSessionMessagesPage(session.id, {
-      beforeSeq,
-      limit: SESSION_MESSAGES_PAGE_SIZE
-    });
-    if (!page || page === false) return false;
-
-    const rawOlder = Array.isArray(page.data.messages) ? page.data.messages.slice() : [];
-    if (rawOlder.length === 0) {
-      const emptyPageCursor = nextBeforeSeqFromResponse(page.data);
-      if (page.data.has_more === true && emptyPageCursor !== null && emptyPageCursor < beforeSeq) {
-        history.oldestSeq = emptyPageCursor;
-        history.hasMoreOlder = true;
-      } else {
-        history.hasMoreOlder = false;
-      }
-      return false;
-    }
-
-    const previousRaw = history.rawMessages.slice();
-    history.rawMessages = mergeRawServerMessages(rawOlder, previousRaw);
-    const oldestSeq = oldestSequenceFromRawMessages(history.rawMessages);
-    const responseCursor = nextBeforeSeqFromResponse(page.data);
-    history.oldestSeq = page.data.has_more === true && responseCursor !== null
-      ? responseCursor
-      : (oldestSeq !== null ? oldestSeq : (responseCursor !== null ? responseCursor : beforeSeq));
-    history.hasMoreOlder = page.data.has_more === true;
-    const lastResponseId = String(page.data.lastResponseId || '').trim();
-    if (lastResponseId) history.lastResponseId = lastResponseId;
-    const compactionMeta = responseCompactionMetadata(page.data);
-    history.compactionSeq = compactionMeta.compactionSeq;
-    history.compactionCount = compactionMeta.compactionCount;
-
-    const converted = convertedMessagesFromHistory(history);
-    mergeServerMessagesWithLocalState(session, converted);
-    renderSidebar();
-
-    if (session.id === state.activeSessionId) {
-      noteUserScrollIntent();
-      renderMessages(false);
-      const newHeight = Number(chatScroll?.scrollHeight) || oldHeight;
-      chatScroll.scrollTop = oldTop + Math.max(0, newHeight - oldHeight);
-    }
-    return true;
-  } catch {
-    return false;
-  } finally {
-    history.loadingOlder = false;
-  }
-};
-
-const shouldLoadOlderForSession = (session) => {
-  if (!session || session.id !== state.activeSessionId) return false;
-  const history = ensureSessionHistory(session);
-  if (!history.loadedTail || !history.hasMoreOlder || history.loadingOlder) return false;
-  if (state.abortController || sessionHasInProgressState(session)) return false;
-
-  const chatScroll = elements.chatScroll;
-  const scrollTop = Number(chatScroll?.scrollTop) || 0;
-  const clientHeight = Number(chatScroll?.clientHeight) || 0;
-  const threshold = Math.max(SESSION_OLDER_LOAD_TOP_THRESHOLD_PX, clientHeight * 2);
-  return scrollTop <= threshold;
+  const transcript = ensureSessionTranscript(session);
+  if (!transcript) return false;
+  const first = transcript.segmentForOrdinal(transcript.viewport.firstOrdinal);
+  if (first <= 0) return false;
+  return materializeTranscriptSegments(session, [first - 1]);
 };
 
 const maybeLoadOlderSessionMessages = async () => {
   const session = getActiveSession();
-  if (!shouldLoadOlderForSession(session)) return false;
-
-  let loadedAny = false;
-  for (let attempts = 0; attempts < SESSION_OLDER_LOAD_CHAIN_LIMIT; attempts += 1) {
-    const loaded = await loadOlderSessionMessages(session);
-    if (!loaded) return loadedAny;
-    loadedAny = true;
-
-    // A page containing only tool calls can merge into the existing collapsed
-    // tool group at the top of the viewport, so the rendered height barely
-    // changes and no follow-up scroll event fires. Keep draining while we are
-    // still near the top so scrollback can cross tool-only page boundaries.
-    if (!shouldLoadOlderForSession(session)) break;
-  }
-  return loadedAny;
+  if (!session || (Number(elements.chatScroll?.scrollTop) || 0) > 600) return false;
+  return loadOlderSessionMessages(session);
 };
 
 const normalizeMCPServerView = (server) => {
@@ -1447,416 +1543,36 @@ const loadServerSessionState = async (sessionId) => {
   }
 };
 
-const localCompactionScrollbackPrefix = (session, serverMessages) => {
-  if (!session || !Array.isArray(session.messages) || session.messages.length === 0) return [];
-  if (!Array.isArray(serverMessages) || serverMessages.preserveLocalCompactionScrollback !== true) return [];
-
-  const existingKeys = new Set(serverMessages.map(messageDedupeKey).filter(Boolean));
-  const prefix = [];
-  for (const message of session.messages) {
-    if (!message || message.transient || message.role === 'phase' || message.role === 'error') continue;
-    const key = messageDedupeKey(message);
-    if (key && existingKeys.has(key)) continue;
-    prefix.push({ ...message });
-    if (key) existingKeys.add(key);
-  }
-  return prefix;
-};
-
-const isPreservableLocalTailMessage = (message) => {
-  if (!message || message.transient) return false;
-  if (message.role === 'assistant') {
-    return String(message.content || '').length > 0
-      || (Array.isArray(message.attachments) && message.attachments.length > 0);
-  }
-  if (message.role === 'tool-group') {
-    return Array.isArray(message.tools) && message.tools.length > 0;
-  }
-  if (message.role === 'skill-run') {
-    return Boolean(message.runId);
-  }
-  if (message.role === 'model-swap') {
-    return String(message.content || '').trim().length > 0;
-  }
-  return false;
-};
-
-// Identity keys for reconciling a locally streamed tool call with the server
-// transcript's copy of the same call. The rendered content of the two copies
-// (arguments accumulated from deltas vs stored arguments, stream-rebased vs
-// history-rebased image URLs) rarely matches byte-for-byte, so content-based
-// messageDedupeKey comparison cannot pair them up. Provider call ids are
-// shared by both sides when available; the tool name covers entries where
-// either side only has a synthetic id (generateId('tool') locally,
-// "<msgid>_tool_<n>" from the history converter). Name matches are only
-// meaningful because coverage checks are scoped to a single turn.
-const toolCallIdentityKeys = (tool) => {
-  const keys = [];
-  const id = String(tool?.id || '').trim();
-  if (id) keys.push(`id:${id}`);
-  const name = String(tool?.name || '').trim();
-  if (name) keys.push(`name:${name}`);
-  return keys;
-};
-
-// True when the server's copy of the current turn already records any of the
-// local tool-group's calls. The server transcript is authoritative once it
-// contains the calls, so the local group must be dropped rather than
-// re-appended after the reply. A group the server has no trace of (a stop
-// before the transcript flushed) is still preserved by the caller.
-const localToolGroupCoveredByServerTurn = (merged, turnStart, turnEnd, localGroup) => {
-  const serverToolKeys = new Set();
-  for (let i = turnStart; i < turnEnd; i += 1) {
-    const message = merged[i];
-    if (message?.role !== 'tool-group' || !Array.isArray(message.tools)) continue;
-    for (const tool of message.tools) {
-      toolCallIdentityKeys(tool).forEach((key) => serverToolKeys.add(key));
-    }
-  }
-  if (serverToolKeys.size === 0) return false;
-  const localTools = Array.isArray(localGroup?.tools) ? localGroup.tools : [];
-  return localTools.some((tool) => (
-    toolCallIdentityKeys(tool).some((key) => serverToolKeys.has(key))
-  ));
-};
-
-const assistantContentExtensionState = (serverMessage, localMessage) => {
-  if (serverMessage?.role !== 'assistant' || localMessage?.role !== 'assistant') return '';
-  const serverContent = String(serverMessage.content || '');
-  const localContent = String(localMessage.content || '');
-  if (!serverContent || !localContent || serverContent === localContent) return '';
-  if (localContent.startsWith(serverContent)) return 'local-longer';
-  if (serverContent.startsWith(localContent)) return 'server-longer';
-  return '';
-};
-
-const preserveLocalTailAfterStoppedRefresh = (merged, session) => {
-  if (!session || !Array.isArray(session.messages) || session.messages.length === 0 || !Array.isArray(merged)) return;
-
-  let localUserIndex = -1;
-  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-    const message = session.messages[i];
-    if (message?.role === 'user' && !message.askUser) {
-      localUserIndex = i;
-      break;
-    }
-  }
-  if (localUserIndex < 0 || localUserIndex >= session.messages.length - 1) return;
-
-  const localUserKey = messageDedupeKey(session.messages[localUserIndex]);
-  if (!localUserKey) return;
-
-  let mergedUserIndex = -1;
-  for (let i = merged.length - 1; i >= 0; i -= 1) {
-    const message = merged[i];
-    if (message?.role === 'user' && !message.askUser && messageDedupeKey(message) === localUserKey) {
-      mergedUserIndex = i;
-      break;
-    }
-  }
-  if (mergedUserIndex < 0) return;
-
-  let turnEnd = merged.length;
-  for (let i = mergedUserIndex + 1; i < merged.length; i += 1) {
-    const message = merged[i];
-    if (message?.role === 'user' && !message.askUser) {
-      turnEnd = i;
-      break;
-    }
-  }
-
-  const existingKeys = new Set(merged.map(messageDedupeKey).filter(Boolean));
-  const additions = [];
-  for (const localMessage of session.messages.slice(localUserIndex + 1)) {
-    if (!isPreservableLocalTailMessage(localMessage)) continue;
-    const localKey = messageDedupeKey(localMessage);
-    if (!localKey || existingKeys.has(localKey)) continue;
-
-    let handledByServerMessage = false;
-    for (let i = mergedUserIndex + 1; i < turnEnd; i += 1) {
-      const state = assistantContentExtensionState(merged[i], localMessage);
-      if (state === 'server-longer') {
-        handledByServerMessage = true;
-        break;
-      }
-      if (state === 'local-longer') {
-        const serverIdentity = {
-          id: merged[i].id,
-          created: merged[i].created,
-          serverSeq: merged[i].serverSeq,
-        };
-        merged[i] = { ...merged[i], ...localMessage, ...serverIdentity };
-        existingKeys.add(localKey);
-        handledByServerMessage = true;
-        break;
-      }
-    }
-    if (handledByServerMessage) continue;
-
-    if (localMessage.role === 'tool-group'
-      && localToolGroupCoveredByServerTurn(merged, mergedUserIndex + 1, turnEnd, localMessage)) {
-      continue;
-    }
-
-    // If assistant text diverged rather than extending a stale server prefix,
-    // keep the local bubble as a separate tail entry. Stop must never delete
-    // text the user already saw, even when reconciliation is ambiguous.
-    additions.push({ ...localMessage });
-    existingKeys.add(localKey);
-  }
-
-  if (additions.length > 0) {
-    merged.splice(turnEnd, 0, ...additions);
-  }
-};
-
-const mergeServerMessagesWithLocalState = (session, serverMessages) => {
-  if (!session || !Array.isArray(serverMessages)) return;
-
-  const syntheticAskUserMessages = session.messages
-    .filter((message) => message?.askUser && message.role === 'user' && message.content)
-    .map((message) => ({ ...message }));
-
-  const preservedCompactionScrollback = localCompactionScrollbackPrefix(session, serverMessages);
-  const merged = [
-    ...preservedCompactionScrollback,
-    ...serverMessages.map((message) => ({ ...message }))
-  ];
-  preserveLocalTailAfterStoppedRefresh(merged, session);
-  if (syntheticAskUserMessages.length > 0) {
-    const insertAfter = (() => {
-      for (let i = merged.length - 1; i >= 0; i -= 1) {
-        if (merged[i].role === 'tool-group') return i + 1;
-      }
-      for (let i = merged.length - 1; i >= 0; i -= 1) {
-        if (merged[i].role === 'user') return i + 1;
-      }
-      return merged.length;
-    })();
-    merged.splice(insertAfter, 0, ...syntheticAskUserMessages.filter((message) => !merged.some((existing) => existing.askUser && existing.content === message.content)));
-  }
-
-  if (serverMessages.lastResponseId) {
-    session.lastResponseId = String(serverMessages.lastResponseId);
-  }
-  session.messages = merged;
-  delete session._serverOnly;
-  if (merged.length > 0 && (!session.title || session.title === 'New chat')) {
-    const firstUserMsg = merged.find((message) => message.role === 'user' && !message.askUser);
-    if (firstUserMsg?.content) {
-      session.title = truncate(firstUserMsg.content, 60);
-    }
-  }
-
-  // Derive lastMessageAt from the newest visible (user/assistant) message so the
-  // sidebar's relative time and ordering stay current even if the /v1/sessions/status
-  // poll hasn't fired yet after a stale-run reconciliation.
-  let newestVisible = 0;
-  for (const message of merged) {
-    if (message.role !== 'user' && message.role !== 'assistant') continue;
-    const created = Number(message.created);
-    if (Number.isFinite(created) && created > newestVisible) {
-      newestVisible = created;
-    }
-  }
-  if (newestVisible > 0 && newestVisible > (Number(session.lastMessageAt) || 0)) {
-    session.lastMessageAt = newestVisible;
-  }
-};
-
-const numericTranscriptUpdatedAt = (value) => {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-};
-
-const recordTranscriptVersionsFromStatus = (statusSessions) => {
-  if (!Array.isArray(statusSessions)) return;
-  const localById = new Map(state.sessions.map((session) => [session.id, session]));
-  const activeId = String(state.activeSessionId || '').trim();
-  for (const entry of statusSessions) {
-    const local = localById.get(entry?.id) || null;
-    if (!local || local.id === activeId) continue;
-    const transcriptUpdatedAt = numericTranscriptUpdatedAt(entry.transcript_updated_at);
-    if (transcriptUpdatedAt > 0) {
-      local.transcriptUpdatedAt = transcriptUpdatedAt;
-    }
-  }
-};
-
-const canRefreshActiveSessionMessages = (session, options = {}) => {
-  if (!session || session.id !== state.activeSessionId) return false;
-  if (document.visibilityState === 'hidden') return false;
-  if (state.draftSessionActive) return false;
-  if (state.abortController || state.streaming) return false;
-  if (session.activeResponseId) return false;
-  if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) return false;
-  const progress = state.sessionProgressById?.[session.id] || null;
-  const onlyServerRunIsActive = Boolean(
-    options.allowServerActiveRun
-    && progress?.serverActiveRun
-    && !progress?.optimisticBusy
-  );
-  if (sessionHasInProgressState(session) && !onlyServerRunIsActive) return false;
-  const history = ensureSessionHistory(session);
-  if (!history || history.loadingOlder) return false;
-  return true;
-};
-
-let activeMessagesRefreshPromise = null;
-let activeMessagesRefreshSessionId = '';
-
-const refreshActiveSessionMessagesFromServer = async (session, options = {}) => {
-  if (!session || session.id !== state.activeSessionId) return false;
-
-  if (activeMessagesRefreshPromise && activeMessagesRefreshSessionId === session.id) {
-    return activeMessagesRefreshPromise;
-  }
-
-  const history = ensureSessionHistory(session);
-  if (!history) return false;
-
-  const targetTranscriptUpdatedAt = numericTranscriptUpdatedAt(options.transcriptUpdatedAt || session.transcriptUpdatedAt);
-  if (options.force !== true && targetTranscriptUpdatedAt > 0 && history.tailTranscriptUpdatedAt >= targetTranscriptUpdatedAt) {
-    if (targetTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
-      session.transcriptUpdatedAt = targetTranscriptUpdatedAt;
-    }
-    return false;
-  }
-
-  if (!canRefreshActiveSessionMessages(session, options)) return false;
-
-  const refreshSessionId = session.id;
-  const refreshPromise = (async () => {
-    history.refreshingTail = true;
-    try {
-      const page = await fetchServerSessionMessagesPage(refreshSessionId, {
-        tail: true,
-        limit: SESSION_MESSAGES_PAGE_SIZE,
-        etag: options.useEtag === false ? '' : history.tailEtag
-      });
-
-      if (page === false) {
-        if (session.id === state.activeSessionId && targetTranscriptUpdatedAt > 0) {
-          history.tailTranscriptUpdatedAt = Math.max(history.tailTranscriptUpdatedAt || 0, targetTranscriptUpdatedAt);
-          if (targetTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
-            session.transcriptUpdatedAt = targetTranscriptUpdatedAt;
-          }
-        }
-        return true;
-      }
-      if (!page) return false;
-
-      if (!canRefreshActiveSessionMessages(session, options) || session.id !== state.activeSessionId) {
-        return false;
-      }
-
-      const serverMessages = applyTailMessagesToSessionHistory(refreshSessionId, page.data);
-      if (!Array.isArray(serverMessages)) return false;
-
-      mergeServerMessagesWithLocalState(session, serverMessages);
-      if (page.etag) history.tailEtag = page.etag;
-      if (targetTranscriptUpdatedAt > 0) {
-        history.tailTranscriptUpdatedAt = Math.max(history.tailTranscriptUpdatedAt || 0, targetTranscriptUpdatedAt);
-        if (targetTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
-          session.transcriptUpdatedAt = targetTranscriptUpdatedAt;
-        }
-      }
-      persistAndRefreshShell();
-      if (options.render !== false && session.id === state.activeSessionId) {
-        renderMessages(options.forceScroll === true);
-      }
-      return true;
-    } catch {
-      return false;
-    } finally {
-      history.refreshingTail = false;
-      if (activeMessagesRefreshPromise === refreshPromise) {
-        activeMessagesRefreshPromise = null;
-        activeMessagesRefreshSessionId = '';
-      }
-    }
-  })();
-
-  activeMessagesRefreshPromise = refreshPromise;
-  activeMessagesRefreshSessionId = refreshSessionId;
-  return refreshPromise;
-};
-
-const attachExternallyActiveResponseAfterCatchUp = async (session, refreshed) => {
-  if (!refreshed || !session || session.id !== state.activeSessionId) return false;
-  if (numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt) > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
-    return false;
-  }
-  if (document.visibilityState === 'hidden' || state.draftSessionActive) return false;
-  if (state.abortController || state.streaming || session.activeResponseId) return false;
-  const progress = state.sessionProgressById?.[session.id] || null;
-  if (!progress?.serverActiveRun || progress?.optimisticBusy) return false;
-  await syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
-  return true;
-};
-
-const clearReconciledActiveTranscriptCatchUp = (session) => {
-  if (!session) return false;
-  const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(session.transcriptUpdatedAt);
-  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt);
-  if (pendingTranscriptUpdatedAt > currentTranscriptUpdatedAt) return false;
-  if (pendingTranscriptUpdatedAt > 0) delete session._pendingTranscriptUpdatedAt;
-  return clearActiveTranscriptCatchUpWarning(session.id, currentTranscriptUpdatedAt);
-};
-
-const reconcilePendingActiveTranscriptRefresh = async () => {
-  const active = getActiveSession();
-  if (!active) return false;
-  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(active._pendingTranscriptUpdatedAt);
-  if (pendingTranscriptUpdatedAt <= 0) return false;
-  const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(active.transcriptUpdatedAt);
-  if (pendingTranscriptUpdatedAt <= currentTranscriptUpdatedAt) {
-    clearReconciledActiveTranscriptCatchUp(active);
-    return false;
-  }
-
-  const progress = state.sessionProgressById?.[active.id] || null;
-  const refreshed = await refreshActiveSessionMessagesFromServer(active, {
-    transcriptUpdatedAt: pendingTranscriptUpdatedAt,
-    forceScroll: false,
-    allowServerActiveRun: Boolean(progress?.serverActiveRun)
-  });
-  clearReconciledActiveTranscriptCatchUp(active);
-  await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
-  return refreshed;
-};
-
-const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
+const reconcileTranscriptFromStatus = async (statusSessions) => {
   if (!Array.isArray(statusSessions)) return false;
   const active = getActiveSession();
   if (!active) return false;
   const entry = statusSessions.find((item) => item?.id === active.id) || null;
   if (!entry) return false;
-
-  const incomingTranscriptUpdatedAt = numericTranscriptUpdatedAt(entry.transcript_updated_at);
-  if (incomingTranscriptUpdatedAt <= 0) return false;
-
-  const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(active.transcriptUpdatedAt);
-  if (incomingTranscriptUpdatedAt <= currentTranscriptUpdatedAt) {
-    clearReconciledActiveTranscriptCatchUp(active);
-    return false;
+  const transcript = ensureSessionTranscript(active);
+  if (!transcript) return false;
+  const incomingRev = Math.max(0, Number(entry.transcript_rev) || 0);
+  const activeResponseId = String(entry.active_response_id || '').trim();
+  const startedRev = Math.max(0, Number(entry.started_rev) || 0);
+  const targetRev = activeResponseId ? startedRev : incomingRev;
+  let refreshed = false;
+  if (targetRev > transcript.rev) {
+    refreshed = await syncTranscript(active, {
+      reason: activeResponseId ? 'attach' : 'status',
+      targetRev,
+      force: Boolean(activeResponseId)
+    });
   }
-
-  active._pendingTranscriptUpdatedAt = Math.max(
-    numericTranscriptUpdatedAt(active._pendingTranscriptUpdatedAt),
-    incomingTranscriptUpdatedAt
-  );
-  const refreshed = await refreshActiveSessionMessagesFromServer(active, {
-    transcriptUpdatedAt: incomingTranscriptUpdatedAt,
-    forceScroll: false,
-    // A foreground tab can discover that another tab has already advanced the
-    // transcript and started the next response. Catch up the committed tail
-    // before attaching that response's event stream; the stream snapshot only
-    // reconstructs its own turn and cannot fill gaps from earlier turns.
-    allowServerActiveRun: Boolean(entry.active_run)
-  });
-  clearReconciledActiveTranscriptCatchUp(active);
-  await attachExternallyActiveResponseAfterCatchUp(active, refreshed);
+  if (activeResponseId) {
+    transcript.setActiveRun(activeResponseId, startedRev);
+    if (transcript.rev >= startedRev
+      && !state.abortController
+      && !state.streaming
+      && !active.activeResponseId
+      && document.visibilityState !== 'hidden') {
+      await syncActiveSessionFromServer(active, true, { skipMessagesFetch: true });
+    }
+  }
   return refreshed;
 };
 
@@ -2019,7 +1735,19 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     }
   }
 
+  const transcript = ensureSessionTranscript(session);
+  const runtimeTranscriptRev = Math.max(0, Number(runtimeState.transcript_rev) || 0);
   const activeResponseId = String(runtimeState.active_response_id || '').trim();
+  const startedRev = Math.max(0, Number(runtimeState.started_rev) || 0);
+  const targetTranscriptRev = activeResponseId ? startedRev : runtimeTranscriptRev;
+  if (transcript && targetTranscriptRev > transcript.rev && isStillActive()) {
+    await syncTranscript(session, {
+      reason: activeResponseId ? 'attach' : 'state',
+      targetRev: targetTranscriptRev,
+      force: Boolean(activeResponseId)
+    });
+  }
+
   const activeRun = Boolean(runtimeState.active_run);
   setSessionServerActiveRun(session, activeRun || Boolean(activeResponseId));
   const updateBusySidebar = () => {
@@ -2030,8 +1758,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   };
 
   if (activeResponseId) {
+    if (transcript) {
+      transcript.setActiveRun(activeResponseId, startedRev);
+    }
     const responseChanged = session.activeResponseId !== activeResponseId;
-    const recoverFromSnapshot = shouldRecoverActiveResponseFromSnapshot(session, activeResponseId, responseChanged);
+    const recoverFromSnapshot = false;
     setActiveResponseTracking(session, activeResponseId, responseChanged ? 0 : session.lastSequenceNumber);
     saveSessions();
 
@@ -2070,7 +1801,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     if (isStillActive()) setStreaming(false);
     if (isStillActive() && !skipMessagesFetch) {
       await refreshActiveSessionMessagesFromServer(session, {
-        transcriptUpdatedAt: session.transcriptUpdatedAt,
+        targetRev: runtimeTranscriptRev,
         forceScroll: true
       });
     }
@@ -2127,10 +1858,8 @@ const applyServerSessionSummary = (target, serverSession) => {
     target.lastMessageAt = target.created;
   }
   target.messageCount = Number(serverSession.message_count || target.messageCount || 0);
-  const transcriptUpdatedAt = numericTranscriptUpdatedAt(serverSession.transcript_updated_at);
-  if (transcriptUpdatedAt > 0) {
-    target.transcriptUpdatedAt = transcriptUpdatedAt;
-  }
+  const transcriptRev = Number(serverSession.transcript_rev);
+  if (Number.isFinite(transcriptRev) && transcriptRev >= 0) target.transcriptRev = transcriptRev;
   target.number = Number(serverSession.number || target.number || 0);
   if (serverSession.provider) {
     target.provider = serverSession.provider;
@@ -2152,6 +1881,8 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
   const previousId = String(session.id || '').trim();
   if (!nextId || nextId === previousId) return session;
 
+  session.transcript?.rekey?.(nextId);
+  rekeyTranscriptOptimisticStorage(previousId, nextId);
   session.id = nextId;
   if (state.activeSessionId === previousId) state.activeSessionId = nextId;
   if (state.renameSessionId === previousId) state.renameSessionId = nextId;
@@ -2530,7 +2261,6 @@ const hydrateActiveSessionAfterStartup = async () => {
   if (preloadMessagesPromise) {
     const msgs = await preloadMessagesPromise;
     if (Array.isArray(msgs)) {
-      mergeServerMessagesWithLocalState(active, msgs);
       saveSessions();
       renderSidebar();
       renderMessages(true);
@@ -3433,15 +3163,6 @@ document.addEventListener('visibilitychange', async () => {
   const session = getActiveSession();
   if (!session) return;
 
-  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(session._pendingTranscriptUpdatedAt);
-  if (pendingTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
-    // Do not attach a newer response onto a stale transcript. The visible
-    // status poll retains the pending version and retries the tail fetch; once
-    // it succeeds, reconciliation attaches the external response itself.
-    showActiveTranscriptCatchUpWarning(session, pendingTranscriptUpdatedAt);
-    return;
-  }
-
   if (session.activeResponseId && app.wakeResponseReconnect?.({
     reason: 'visibility',
     sessionId: session.id,
@@ -3455,7 +3176,7 @@ document.addEventListener('visibilitychange', async () => {
     setStreaming(true);
     resumeAndDrain(session, {
       responseId: session.activeResponseId,
-      recoverFromSnapshot: shouldRecoverActiveResponseFromSnapshot(session, session.activeResponseId)
+      recoverFromSnapshot: false
     });
     return;
   }
@@ -3497,7 +3218,7 @@ window.addEventListener('online', async () => {
     setStreaming(true);
     resumeAndDrain(session, {
       responseId: session.activeResponseId,
-      recoverFromSnapshot: shouldRecoverActiveResponseFromSnapshot(session, session.activeResponseId)
+      recoverFromSnapshot: false
     });
   } else if (!state.streaming) {
     await syncActiveSessionFromServer(session, true);
@@ -3526,7 +3247,7 @@ window.addEventListener('pageshow', (event) => {
     setStreaming(true);
     resumeAndDrain(session, {
       responseId: session.activeResponseId,
-      recoverFromSnapshot: shouldRecoverActiveResponseFromSnapshot(session, session.activeResponseId)
+      recoverFromSnapshot: false
     });
   } else {
     void syncActiveSessionFromServer(session, true);
@@ -3553,6 +3274,14 @@ Object.assign(app, {
   convertServerMessages,
   compactionDuplicateTailRange,
   loadServerSessionMessages,
+  syncTranscript,
+  reconcileTranscriptFromStatus,
+  materializeTranscriptSegments,
+  trackTranscriptOptimistic,
+  persistTranscriptOptimistic,
+  noteTranscriptRunCreated,
+  noteTranscriptTerminal,
+  refreshSessionMessagesFromTranscript,
   refreshActiveSessionMessagesFromServer,
   loadOlderSessionMessages,
   maybeLoadOlderSessionMessages,
@@ -3570,7 +3299,6 @@ Object.assign(app, {
   applySessionMCP,
   openSessionMCPModal,
   closeMCPModal,
-  mergeServerMessagesWithLocalState,
   stopSessionStatePoll,
   scheduleSessionStatePoll,
   syncActiveSessionFromServer,

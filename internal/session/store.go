@@ -188,6 +188,66 @@ type ProviderStateStore interface {
 	DeleteProviderState(ctx context.Context, sessionID, providerKey string) error
 }
 
+// Transcript index flags describe durable rows without materializing bodies.
+const (
+	TranscriptFlagCompactionTail uint8 = 1 << iota
+	TranscriptFlagEmptyBody
+)
+
+// TranscriptIndexItem is the compact durable identity and ordering metadata for
+// one UI-visible transcript row. IDs are stable identities; Seq is only the
+// current ordering key.
+type TranscriptIndexItem struct {
+	Seq   int
+	ID    int64
+	Role  string
+	Flags uint8
+}
+
+// TranscriptSnapshot is the complete compact identity stream and its session
+// envelope read from one database snapshot.
+type TranscriptSnapshot struct {
+	Rev             int64
+	CompactionSeq   int
+	CompactionCount int
+	Items           []TranscriptIndexItem
+}
+
+// TranscriptRange identifies one complete, contiguous UI transcript segment by
+// its inclusive durable ordering bounds. Sequence alone is not assumed unique,
+// so IDs disambiguate both endpoints.
+type TranscriptRange struct {
+	StartSeq int
+	StartID  int64
+	EndSeq   int
+	EndID    int64
+}
+
+const TranscriptMaterializationMaxRanges = 32
+
+// TranscriptIndexer is an optional Store capability for coherent revisioned
+// transcript reads. Implementations return each revision and its rows from one
+// read transaction.
+type TranscriptIndexer interface {
+	GetTranscriptIndex(ctx context.Context, sessionID string) (rev int64, items []TranscriptIndexItem, err error)
+	GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error)
+	GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (rev int64, messages []Message, err error)
+	TranscriptRev(ctx context.Context, sessionID string) (int64, error)
+}
+
+// TranscriptVersionReporter distinguishes a current revisioned schema from an
+// older read-only database where TranscriptIndexer exposes revision zero only.
+type TranscriptVersionReporter interface {
+	TranscriptVersioned() bool
+}
+
+// SessionSummaryTranscriptRevisionReporter reports whether Store.List populates
+// SessionSummary.TranscriptRev directly, allowing callers to avoid one revision
+// query per listed session.
+type SessionSummaryTranscriptRevisionReporter interface {
+	SessionSummariesIncludeTranscriptRev() bool
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.

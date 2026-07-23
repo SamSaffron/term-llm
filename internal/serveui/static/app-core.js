@@ -28,7 +28,8 @@ const STORAGE_BASE_KEYS = {
   showWidgetsSidebar: 'term_llm_show_widgets_sidebar',
   notificationsEnabled: 'term_llm_notifications_enabled',
   lastNotifiedResponseId: 'term_llm_last_notified_response_id',
-  draftMessages: 'term_llm_draft_messages'
+  draftMessages: 'term_llm_draft_messages',
+  optimisticTranscript: 'term_llm_optimistic_transcript'
 };
 
 const parseSidebarSessionCategories = (raw) => {
@@ -2181,6 +2182,7 @@ let _savedActiveSessionId = /** @type {string|null} */ (null);
 let _savedDraftActive = /** @type {string|null} */ (null);
 
 const saveSessions = () => {
+  const sessionsBeforePrune = state.sessions.slice();
   if (state.sessions.length > 100) {
     const activeSessionId = state.activeSessionId || '';
     const activeSession = activeSessionId
@@ -2200,6 +2202,10 @@ const saveSessions = () => {
     if (!state.draftSessionActive && !state.sessions.find((s) => s.id === state.activeSessionId)) {
       state.activeSessionId = '';
     }
+  }
+  const retainedSessionIDs = new Set(state.sessions.map((session) => session.id));
+  for (const removed of sessionsBeforePrune) {
+    if (!retainedSessionIDs.has(removed.id)) removed.transcript?.destroy?.();
   }
   evictStaleSessionMessages();
   const nextActiveId = state.activeSessionId || '';

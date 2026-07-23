@@ -41,6 +41,7 @@ type SQLiteStore struct {
 	hasWorktreeDir           bool // true if sessions table has worktree_dir column
 	hasGoal                  bool // true if sessions table has goal column
 	hasShare                 bool // true if sessions table has share column
+	hasTranscriptRev         bool // true if sessions table has transcript_rev column
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
@@ -93,7 +94,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     goal TEXT,
     share TEXT,
     compaction_seq INTEGER DEFAULT -1,
-    compaction_count INTEGER DEFAULT 0
+    compaction_count INTEGER DEFAULT 0,
+    transcript_rev INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -263,7 +265,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 40
+const schemaVersion = 41
 
 // migration represents a schema migration.
 type migration struct {
@@ -1103,6 +1105,17 @@ var migrations = []migration{
 				version INTEGER NOT NULL DEFAULT 1,
 				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			)`)
+			return err
+		},
+	},
+	{
+		version:     41,
+		description: "add durable transcript revision",
+		up: func(db schemaExecutor) error {
+			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN transcript_rev INTEGER NOT NULL DEFAULT 0"); err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err := db.Exec("UPDATE sessions SET transcript_rev = COALESCE(message_count, 0)")
 			return err
 		},
 	},
@@ -2072,6 +2085,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasWorktreeDir {
 		worktreeDirCol = "COALESCE(s.worktree_dir, '')"
 	}
+	transcriptRevCol := "0"
+	if s.hasTranscriptRev {
+		transcriptRevCol = "COALESCE(s.transcript_rev, 0)"
+	}
 	fromClause := "FROM sessions s"
 	if opts.SortByNumberDesc {
 		// Completed-session walks page by descending session number. Force the
@@ -2082,7 +2099,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
-		       ` + messageCountCol + ` as message_count,
+		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + `
 		WHERE 1=1`
@@ -2202,7 +2219,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw, shareRaw sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
-			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount,
+			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags, &worktreeDir, &goalRaw, &shareRaw)
 		if err != nil {
@@ -2510,7 +2527,31 @@ type sqliteExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func (s *SQLiteStore) insertMessageAndBumpSession(ctx context.Context, execer sqliteExecer, sessionID string, msg *Message, partsJSON string, sequence int) (int64, error) {
+type sqliteQueryExecer interface {
+	sqliteExecer
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *SQLiteStore) bumpTranscriptRev(ctx context.Context, execer sqliteQueryExecer, sessionID string) (int64, error) {
+	if !s.hasTranscriptRev {
+		return 0, nil
+	}
+	var rev int64
+	err := execer.QueryRowContext(ctx, `
+		UPDATE sessions
+		SET transcript_rev = transcript_rev + 1
+		WHERE id = ?
+		RETURNING transcript_rev`, sessionID).Scan(&rev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("bump transcript revision: %w", err)
+	}
+	return rev, nil
+}
+
+func (s *SQLiteStore) insertMessageAndBumpSession(ctx context.Context, execer sqliteQueryExecer, sessionID string, msg *Message, partsJSON string, sequence int) (int64, error) {
 	result, err := execer.ExecContext(ctx, `
 		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2536,6 +2577,9 @@ func (s *SQLiteStore) insertMessageAndBumpSession(ctx context.Context, execer sq
 	}
 	if err != nil {
 		return 0, fmt.Errorf("update session timestamp: %w", err)
+	}
+	if _, err := s.bumpTranscriptRev(ctx, execer, sessionID); err != nil {
+		return 0, err
 	}
 	return id, nil
 }
@@ -2606,6 +2650,9 @@ func (s *SQLiteStore) updateMessage(ctx context.Context, sessionID string, msg *
 			time.Now(), sessionID); err != nil {
 			return fmt.Errorf("update session timestamp: %w", err)
 		}
+		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
+			return err
+		}
 
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit transaction: %w", err)
@@ -2646,11 +2693,26 @@ func (s *SQLiteStore) PersistCompactionTailHints(ctx context.Context, sessionID 
 		  AND id IN (` + strings.Join(placeholders, ",") + `)`
 
 	return retryOnBusy(ctx, 5, func() error {
-		_, err := s.db.ExecContext(ctx, query, args...)
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+		result, err := tx.ExecContext(ctx, query, args...)
 		if err != nil {
 			return fmt.Errorf("persist compaction tail hints: %w", err)
 		}
-		return nil
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count compaction tail hints: %w", err)
+		}
+		if changed == 0 {
+			return tx.Commit()
+		}
+		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
+			return err
+		}
+		return tx.Commit()
 	})
 }
 
@@ -2663,8 +2725,25 @@ func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) er
 		query = "UPDATE sessions SET compaction_seq = -1, compaction_count = 0, updated_at = ? WHERE id = ?"
 	}
 	return retryOnBusy(ctx, 5, func() error {
-		_, err := s.db.ExecContext(ctx, query, time.Now(), id)
-		return err
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+		result, err := tx.ExecContext(ctx, query, time.Now(), id)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count cleared compaction boundaries: %w", err)
+		}
+		if changed > 0 {
+			if _, err := s.bumpTranscriptRev(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
 	})
 }
 
@@ -2736,6 +2815,9 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now, true); err != nil {
 			return err
 		}
+		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
+			return err
+		}
 
 		return tx.Commit()
 	})
@@ -2801,6 +2883,9 @@ func (s *SQLiteStore) ReplaceCompactedMessages(ctx context.Context, sessionID st
 
 		now := time.Now()
 		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now, false); err != nil {
+			return err
+		}
+		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
 			return err
 		}
 
@@ -3088,6 +3173,9 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 			startSeq, now, sessionID); err != nil {
 			return fmt.Errorf("update compaction_seq: %w", err)
 		}
+		if _, err := s.bumpTranscriptRev(ctx, tx, sessionID); err != nil {
+			return err
+		}
 
 		return tx.Commit()
 	})
@@ -3099,6 +3187,239 @@ func (s *SQLiteStore) messageSelectCols() string {
 		compactionTailCol = "COALESCE(compaction_tail, FALSE) AS compaction_tail"
 	}
 	return `id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, ` + compactionTailCol
+}
+
+// TranscriptVersioned reports whether this database has durable transcript
+// revisions. It is false only for old schemas opened read-only without migration.
+func (s *SQLiteStore) TranscriptVersioned() bool {
+	return s != nil && s.hasTranscriptRev
+}
+
+// SessionSummariesIncludeTranscriptRev reports whether List can read revisions
+// from the sessions row without compatibility fallbacks.
+func (s *SQLiteStore) SessionSummariesIncludeTranscriptRev() bool {
+	return s != nil && s.hasTranscriptRev
+}
+
+// TranscriptRev returns the current durable transcript revision. Old read-only
+// databases without the revision column are explicitly unversioned (revision 0).
+func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
+	if !s.hasTranscriptRev {
+		var exists int
+		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	var rev int64
+	err := s.db.QueryRowContext(ctx, "SELECT transcript_rev FROM sessions WHERE id = ?", sessionID).Scan(&rev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get transcript revision: %w", err)
+	}
+	return rev, nil
+}
+
+func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls map[string]bool) bool {
+	if role == llm.RoleEvent {
+		msg := llm.Message{Role: role, Parts: parts}
+		if _, ok := llm.ParseModelSwapMarker(msg); ok {
+			return true
+		}
+		if _, ok := llm.ParseRunErrorMarker(msg); ok {
+			return true
+		}
+	}
+	for _, part := range parts {
+		switch part.Type {
+		case llm.PartText:
+			if part.Text != "" {
+				return true
+			}
+		case llm.PartImage:
+			return true
+		case llm.PartSkillActivation:
+			if role == llm.RoleEvent && part.SkillActivation != nil {
+				return true
+			}
+		case llm.PartToolCall:
+			if part.ToolCall != nil {
+				return true
+			}
+		case llm.PartToolResult:
+			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || part.ToolResult.Name == "update_plan" || planToolCalls[part.ToolResult.ID]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetTranscriptSnapshot returns the complete transcript envelope from one
+// SQLite read transaction.
+func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return TranscriptSnapshot{}, fmt.Errorf("begin transcript index read: %w", err)
+	}
+	defer tx.Rollback()
+
+	revExpr := "0"
+	if s.hasTranscriptRev {
+		revExpr = "transcript_rev"
+	}
+	compactionSeqExpr := "-1"
+	if s.hasCompactionSeq {
+		compactionSeqExpr = "COALESCE(compaction_seq, -1)"
+	}
+	compactionCountExpr := "0"
+	if s.hasCompactionCount {
+		compactionCountExpr = "COALESCE(compaction_count, 0)"
+	}
+	snapshot := TranscriptSnapshot{CompactionSeq: -1}
+	if err := tx.QueryRowContext(ctx, "SELECT "+revExpr+", "+compactionSeqExpr+", "+compactionCountExpr+" FROM sessions WHERE id = ?", sessionID).Scan(&snapshot.Rev, &snapshot.CompactionSeq, &snapshot.CompactionCount); errors.Is(err, sql.ErrNoRows) {
+		return TranscriptSnapshot{}, ErrNotFound
+	} else if err != nil {
+		return TranscriptSnapshot{}, fmt.Errorf("read transcript revision: %w", err)
+	}
+	compactionTailCol := "FALSE"
+	if s.hasMessageCompactionTail {
+		compactionTailCol = "COALESCE(compaction_tail, FALSE)"
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, sequence, role, parts, `+compactionTailCol+`
+		FROM messages
+		WHERE session_id = ? AND role NOT IN ('system', 'developer')
+		ORDER BY sequence ASC, id ASC`, sessionID)
+	if err != nil {
+		return TranscriptSnapshot{}, fmt.Errorf("query transcript index: %w", err)
+	}
+	defer rows.Close()
+	snapshot.Items = make([]TranscriptIndexItem, 0)
+	partsByItem := make([][]llm.Part, 0)
+	planToolCalls := make(map[string]bool)
+	for rows.Next() {
+		var item TranscriptIndexItem
+		var partsJSON string
+		var compactionTail bool
+		if err := rows.Scan(&item.ID, &item.Seq, &item.Role, &partsJSON, &compactionTail); err != nil {
+			return TranscriptSnapshot{}, fmt.Errorf("scan transcript index: %w", err)
+		}
+		if compactionTail {
+			item.Flags |= TranscriptFlagCompactionTail
+		}
+		var parts []llm.Part
+		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
+			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
+		}
+		for _, part := range parts {
+			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
+				planToolCalls[part.ToolCall.ID] = true
+			}
+		}
+		snapshot.Items = append(snapshot.Items, item)
+		partsByItem = append(partsByItem, parts)
+	}
+	if err := rows.Err(); err != nil {
+		return TranscriptSnapshot{}, fmt.Errorf("iterate transcript index: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return TranscriptSnapshot{}, fmt.Errorf("close transcript index: %w", err)
+	}
+	for i := range snapshot.Items {
+		if !transcriptRowHasDisplayBody(llm.Role(snapshot.Items[i].Role), partsByItem[i], planToolCalls) {
+			snapshot.Items[i].Flags |= TranscriptFlagEmptyBody
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return TranscriptSnapshot{}, fmt.Errorf("commit transcript index read: %w", err)
+	}
+	return snapshot, nil
+}
+
+// GetTranscriptIndex returns every durable non-internal row and the revision
+// describing it from one SQLite read transaction.
+func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []TranscriptIndexItem, error) {
+	snapshot, err := s.GetTranscriptSnapshot(ctx, sessionID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return snapshot.Rev, snapshot.Items, nil
+}
+
+// GetMessagesByTranscriptRanges returns complete durable transcript segments in
+// authoritative order and the revision describing them from one SQLite read
+// transaction. Each segment uses four bind variables regardless of how many
+// durable rows it expands to, so a giant tool turn never approaches SQLite's
+// variable limit.
+func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (int64, []Message, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, nil, fmt.Errorf("begin transcript bodies read: %w", err)
+	}
+	defer tx.Rollback()
+
+	revExpr := "0"
+	if s.hasTranscriptRev {
+		revExpr = "transcript_rev"
+	}
+	var rev int64
+	if err := tx.QueryRowContext(ctx, "SELECT "+revExpr+" FROM sessions WHERE id = ?", sessionID).Scan(&rev); errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, ErrNotFound
+	} else if err != nil {
+		return 0, nil, fmt.Errorf("read transcript revision: %w", err)
+	}
+
+	if len(ranges) > TranscriptMaterializationMaxRanges {
+		return 0, nil, fmt.Errorf("transcript bodies query exceeds %d ranges", TranscriptMaterializationMaxRanges)
+	}
+	clauses := make([]string, 0, len(ranges))
+	args := make([]any, 0, 1+len(ranges)*4)
+	args = append(args, sessionID)
+	seen := make(map[TranscriptRange]struct{}, len(ranges))
+	for _, transcriptRange := range ranges {
+		if transcriptRange.StartID <= 0 || transcriptRange.EndID <= 0 {
+			continue
+		}
+		if transcriptRange.EndSeq < transcriptRange.StartSeq || (transcriptRange.EndSeq == transcriptRange.StartSeq && transcriptRange.EndID < transcriptRange.StartID) {
+			continue
+		}
+		if _, ok := seen[transcriptRange]; ok {
+			continue
+		}
+		seen[transcriptRange] = struct{}{}
+		clauses = append(clauses, "((sequence, id) >= (?, ?) AND (sequence, id) <= (?, ?))")
+		args = append(args, transcriptRange.StartSeq, transcriptRange.StartID, transcriptRange.EndSeq, transcriptRange.EndID)
+	}
+
+	messages := make([]Message, 0)
+	if len(clauses) > 0 {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT `+s.messageSelectCols()+`
+			FROM messages
+			WHERE session_id = ?
+				AND role NOT IN ('system', 'developer')
+				AND (`+strings.Join(clauses, " OR ")+`)
+			ORDER BY sequence ASC, id ASC`, args...)
+		if err != nil {
+			return 0, nil, fmt.Errorf("query transcript bodies: %w", err)
+		}
+		messages, err = scanMessageRows(rows)
+		closeErr := rows.Close()
+		if err != nil {
+			return 0, nil, err
+		}
+		if closeErr != nil {
+			return 0, nil, fmt.Errorf("close transcript bodies: %w", closeErr)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, fmt.Errorf("commit transcript bodies read: %w", err)
+	}
+	return rev, messages, nil
 }
 
 // GetMessagesFrom retrieves messages for a session starting from a given
@@ -3474,6 +3795,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasWorktreeDir = true
 	s.hasGoal = true
 	s.hasShare = true
+	s.hasTranscriptRev = true
 	s.hasMessageCompactionTail = true
 }
 
@@ -3534,6 +3856,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasGoal = true
 		case "share":
 			s.hasShare = true
+		case "transcript_rev":
+			s.hasTranscriptRev = true
 		}
 	}
 }

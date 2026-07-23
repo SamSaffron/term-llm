@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'term-llm-shell-v2';
+const SHELL_CACHE = 'term-llm-shell-v3';
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const SHELL_ASSETS = [
   './markdown-setup.js',
   './markdown-streaming.js',
   './decoration.js',
+  './transcript-store.js',
   './app-core.js',
   './app-plan.js',
   './slash-commands.js',

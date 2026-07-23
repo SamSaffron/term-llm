@@ -1539,6 +1539,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "transcript" || suffix == "transcript/bodies" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if suffix == "transcript" {
+			s.handleSessionTranscript(w, r, sessionID)
+		} else {
+			s.handleSessionTranscriptBodies(w, r, sessionID)
+		}
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET, POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -1549,6 +1563,10 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
+	// Keep the legacy messages endpoint for non-UI consumers and cache-first
+	// service-worker skew: an older cached web shell may run briefly against a
+	// revision-aware server. New clients use /transcript (and only fall back here
+	// when that endpoint is absent on an older server).
 	if s.store == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
 		return

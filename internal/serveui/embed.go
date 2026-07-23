@@ -17,7 +17,7 @@ import (
 //go:embed static/app.css
 //go:embed static/app-core.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-sidebar.js
 //go:embed static/app-attachments.js static/app-stream.js static/side-question.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
-//go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
+//go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js static/transcript-store.js
 //go:embed static/vendor
 var staticFiles embed.FS
 
@@ -104,6 +104,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="markdown-setup.js"`, `src="` + versioned("markdown-setup.js") + `"`},
 		{`src="markdown-streaming.js"`, `src="` + versioned("markdown-streaming.js") + `"`},
 		{`src="decoration.js"`, `src="` + versioned("decoration.js") + `"`},
+		{`src="transcript-store.js"`, `src="` + versioned("transcript-store.js") + `"`},
 		{`src="app-core.js"`, `src="` + versioned("app-core.js") + `"`},
 		{`src="app-plan.js"`, `src="` + versioned("app-plan.js") + `"`},
 		{`src="slash-commands.js"`, `src="` + versioned("slash-commands.js") + `"`},
@@ -167,13 +168,14 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		return nil
 	}
 	replacements := []struct{ old, new string }{
-		{"term-llm-shell-v2", "term-llm-shell-" + AssetVersion()},
+		{"term-llm-shell-v3", "term-llm-shell-" + AssetVersion()},
 		{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
 		{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
 		{"'./app.css'", "'./" + versioned("app.css") + "'"},
 		{"'./markdown-setup.js'", "'./" + versioned("markdown-setup.js") + "'"},
 		{"'./markdown-streaming.js'", "'./" + versioned("markdown-streaming.js") + "'"},
 		{"'./decoration.js'", "'./" + versioned("decoration.js") + "'"},
+		{"'./transcript-store.js'", "'./" + versioned("transcript-store.js") + "'"},
 		{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
 		{"'./app-plan.js'", "'./" + versioned("app-plan.js") + "'"},
 		{"'./slash-commands.js'", "'./" + versioned("slash-commands.js") + "'"},

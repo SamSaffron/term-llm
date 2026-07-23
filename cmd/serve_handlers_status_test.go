@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -42,6 +43,9 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 
 	first := readStatusEntryForSession(t, store, sess.ID)
+	if first.TranscriptRev <= 0 {
+		t.Fatalf("transcript_rev = %d, want positive", first.TranscriptRev)
+	}
 	if first.TranscriptUpdatedAt <= 0 {
 		t.Fatalf("transcript_updated_at = %d, want positive", first.TranscriptUpdatedAt)
 	}
@@ -61,6 +65,9 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 
 	second := readStatusEntryForSession(t, store, sess.ID)
+	if second.TranscriptRev <= first.TranscriptRev {
+		t.Fatalf("transcript_rev did not advance after UpdateMessage: before=%d after=%d", first.TranscriptRev, second.TranscriptRev)
+	}
 	if second.TranscriptUpdatedAt <= first.TranscriptUpdatedAt {
 		t.Fatalf("transcript_updated_at did not advance after UpdateMessage: before=%d after=%d", first.TranscriptUpdatedAt, second.TranscriptUpdatedAt)
 	}
@@ -69,6 +76,79 @@ func TestHandleSessionsStatusTranscriptUpdatedAtChangesOnMessageUpdate(t *testin
 	}
 	if second.LastMessageAt != first.LastMessageAt {
 		t.Fatalf("last_message_at changed after UpdateMessage: before=%d after=%d", first.LastMessageAt, second.LastMessageAt)
+	}
+}
+
+type countingStatusTranscriptStore struct {
+	session.Store
+	indexer  session.TranscriptIndexer
+	revCalls int
+}
+
+func (s *countingStatusTranscriptStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []session.TranscriptIndexItem, error) {
+	return s.indexer.GetTranscriptIndex(ctx, sessionID)
+}
+
+func (s *countingStatusTranscriptStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (session.TranscriptSnapshot, error) {
+	return s.indexer.GetTranscriptSnapshot(ctx, sessionID)
+}
+
+func (s *countingStatusTranscriptStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []session.TranscriptRange) (int64, []session.Message, error) {
+	return s.indexer.GetMessagesByTranscriptRanges(ctx, sessionID, ranges)
+}
+
+func (s *countingStatusTranscriptStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
+	s.revCalls++
+	return s.indexer.TranscriptRev(ctx, sessionID)
+}
+
+func (s *countingStatusTranscriptStore) TranscriptVersioned() bool { return true }
+func (s *countingStatusTranscriptStore) SessionSummariesIncludeTranscriptRev() bool {
+	return true
+}
+
+func TestHandleSessionsStatusUsesListTranscriptRevisionsWithoutNPlusOne(t *testing.T) {
+	ctx := context.Background()
+	base, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer base.Close()
+	indexer := base.(session.TranscriptIndexer)
+	for i := 0; i < 3; i++ {
+		sess := &session.Session{ID: fmt.Sprintf("status-list-%d", i), Provider: "test", Model: "test", Mode: session.ModeChat}
+		if err := base.Create(ctx, sess); err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+		if err := base.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("hello"), -1)); err != nil {
+			t.Fatalf("AddMessage %d: %v", i, err)
+		}
+	}
+	counting := &countingStatusTranscriptStore{Store: base, indexer: indexer}
+	logged := session.NewLoggingStore(counting, nil)
+	srv := &serveServer{store: logged}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/status", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionsStatus(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if counting.revCalls != 0 {
+		t.Fatalf("TranscriptRev called %d times; list summaries should supply revisions", counting.revCalls)
+	}
+	var payload struct {
+		Sessions []sessionsStatusTestEntry `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Sessions) != 3 {
+		t.Fatalf("sessions=%d, want 3", len(payload.Sessions))
+	}
+	for _, entry := range payload.Sessions {
+		if entry.TranscriptRev <= 0 {
+			t.Fatalf("session %s transcript_rev=%d", entry.ID, entry.TranscriptRev)
+		}
 	}
 }
 
@@ -131,6 +211,7 @@ type sessionsStatusTestEntry struct {
 	ID                  string `json:"id"`
 	MsgCount            int    `json:"message_count"`
 	LastMessageAt       int64  `json:"last_message_at"`
+	TranscriptRev       int64  `json:"transcript_rev"`
 	TranscriptUpdatedAt int64  `json:"transcript_updated_at"`
 }
 

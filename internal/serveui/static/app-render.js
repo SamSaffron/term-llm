@@ -1610,7 +1610,83 @@ const createSkillRunNode = (message) => {
   return article;
 };
 
+let transcriptGapObserver = null;
+
+const transcriptGapRequest = (node, pointerY = null, observedRect = null) => {
+  const startOrdinal = Number(node?.dataset?.startOrdinal);
+  const endOrdinal = Number(node?.dataset?.endOrdinal);
+  const startSegmentIndex = Number(node?.dataset?.startSegmentIndex);
+  const endSegmentIndex = Number(node?.dataset?.endSegmentIndex);
+  if (![startOrdinal, endOrdinal, startSegmentIndex, endSegmentIndex].every(Number.isFinite)) return null;
+
+  const rect = observedRect || node.getBoundingClientRect?.() || null;
+  const viewport = elements.chatScroll?.getBoundingClientRect?.() || null;
+  let targetOrdinal = endOrdinal;
+  let direction = 'backward';
+  if (rect && Number.isFinite(rect.top) && Number.isFinite(rect.bottom) && rect.bottom > rect.top) {
+    const viewportCenter = viewport && Number.isFinite(viewport.top) && Number.isFinite(viewport.bottom)
+      ? (viewport.top + viewport.bottom) / 2
+      : (rect.top + rect.bottom) / 2;
+    const pointer = pointerY == null ? NaN : Number(pointerY);
+    const targetY = Number.isFinite(pointer) && pointer >= rect.top && pointer <= rect.bottom
+      ? pointer
+      : viewportCenter;
+    const clampedY = Math.max(rect.top, Math.min(rect.bottom, targetY));
+    const ratio = Math.max(0, Math.min(1, (clampedY - rect.top) / (rect.bottom - rect.top)));
+    targetOrdinal = Math.min(endOrdinal, startOrdinal + Math.floor((endOrdinal - startOrdinal + 1) * ratio));
+    direction = targetY <= rect.top ? 'forward' : (targetY >= rect.bottom ? 'backward' : 'center');
+  }
+  return { startSegmentIndex, endSegmentIndex, targetOrdinal, direction };
+};
+
+const loadTranscriptGap = (node, sessionId, pointerY = null, observedRect = null) => {
+  if (node?.dataset?.materializing === 'true') return;
+  const request = transcriptGapRequest(node, pointerY, observedRect);
+  if (!request) return;
+  const session = state.sessions.find((item) => item?.id === sessionId) || null;
+  if (!session) return;
+  node.dataset.materializing = 'true';
+  const pending = app.materializeTranscriptSegments?.(session, request);
+  void Promise.resolve(pending).finally(() => {
+    if (node?.dataset) delete node.dataset.materializing;
+  });
+};
+
+const observeTranscriptGap = (node, _message, sessionId) => {
+  node.addEventListener?.('click', (event) => loadTranscriptGap(node, sessionId, event?.clientY));
+  if (typeof IntersectionObserver !== 'function') return;
+  if (!transcriptGapObserver) {
+    transcriptGapObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        transcriptGapObserver.unobserve(entry.target);
+        loadTranscriptGap(entry.target, entry.target.dataset?.sessionId, null, entry.boundingClientRect);
+      });
+    }, { root: elements.chatScroll || null, rootMargin: '800px 0px' });
+  }
+  transcriptGapObserver.observe(node);
+};
+
+const createTranscriptGapNode = (message) => {
+  const gap = document.createElement('div');
+  gap.className = 'transcript-gap';
+  gap.dataset.messageId = message.id;
+  gap.dataset.startOrdinal = String(message.startOrdinal);
+  gap.dataset.endOrdinal = String(message.endOrdinal);
+  gap.dataset.startSegmentIndex = String(message.startSegmentIndex);
+  gap.dataset.endSegmentIndex = String(message.endSegmentIndex);
+  gap.style.height = `${Math.max(1, Number(message.estimatedHeight) || 1)}px`;
+  gap.setAttribute('role', 'button');
+  gap.setAttribute('tabindex', '0');
+  gap.setAttribute('aria-label', `Load transcript rows ${Number(message.startOrdinal) + 1} through ${Number(message.endOrdinal) + 1}`);
+  const label = document.createElement('span');
+  label.textContent = 'Load earlier transcript';
+  gap.appendChild(label);
+  return gap;
+};
+
 const createMessageNode = (message) => {
+  if (message.role === 'transcript-gap') return createTranscriptGapNode(message);
   if (message.role === 'skill-run') return createSkillRunNode(message);
   if (message.role === 'tool') return createToolCard(message);
   if (message.role === 'tool-group') return createToolGroupNode(message);
@@ -2584,10 +2660,131 @@ const recordMountedConversationDiagnostics = (startedAt, messageCount, renderMod
   elements.messages.dataset.renderMode = renderMode;
 };
 
+const stampTranscriptDurableRange = (node, message) => {
+  if (!node?.dataset) return;
+  if (message.durableRowId != null) node.dataset.durableId = String(message.durableRowId);
+  else delete node.dataset.durableId;
+  if (message.durableRowStartId != null) node.dataset.durableStartId = String(message.durableRowStartId);
+  else delete node.dataset.durableStartId;
+  if (message.durableRowEndId != null) node.dataset.durableEndId = String(message.durableRowEndId);
+  else delete node.dataset.durableEndId;
+};
+
+const reconcileTranscriptMessageNode = (existing, message, sessionId) => {
+  const renderKey = messageRenderKey(message);
+  let node = existing;
+  if (!node || !messageNodeMatchesRole(node, message) || _lastRenderedMessageKeys.get(message.id) !== renderKey) {
+    const replacement = stampMessageNodeSession(createMessageNode(message), sessionId);
+    if (node) node.replaceWith(replacement);
+    node = replacement;
+  } else {
+    stampMessageNodeSession(node, sessionId);
+  }
+  stampTranscriptDurableRange(node, message);
+  return node;
+};
+
+const reconcileTranscriptTurn = (turn, descriptor, sessionId) => {
+  const existing = new Map(Array.from(turn.children || [])
+    .filter((node) => node.dataset?.messageId)
+    .map((node) => [node.dataset.messageId, node]));
+  descriptor.messages.forEach((message, index) => {
+    const node = reconcileTranscriptMessageNode(existing.get(message.id) || null, message, sessionId);
+    const current = turn.children[index] || null;
+    if (current !== node) turn.insertBefore(node, current);
+    existing.delete(message.id);
+  });
+  existing.forEach((node) => node.remove());
+};
+
+const transcriptRenderDescriptors = (messages) => {
+  const descriptors = [];
+  let currentTurn = null;
+  for (const message of messages) {
+    if (message.role === 'transcript-gap') {
+      currentTurn = null;
+      descriptors.push({ key: `gap:${message.startOrdinal}:${message.endOrdinal}`, type: 'gap', message });
+    } else if (message.durable && message.transcriptSegmentIndex != null) {
+      const key = `turn:${message.transcriptSegmentIndex}`;
+      if (!currentTurn || currentTurn.key !== key) {
+        currentTurn = { key, type: 'turn', segmentIndex: message.transcriptSegmentIndex, messages: [] };
+        descriptors.push(currentTurn);
+      }
+      currentTurn.messages.push(message);
+    } else {
+      currentTurn = null;
+      descriptors.push({ key: `message:${message.id}`, type: 'message', message });
+    }
+  }
+  return descriptors;
+};
+
+const transcriptTopLevelKey = (node) => {
+  if (node?.dataset?.transcriptKey) return node.dataset.transcriptKey;
+  if (node?.classList?.contains('transcript-turn')) return `turn:${node.dataset?.segmentIndex || ''}`;
+  if (node?.classList?.contains('transcript-gap')) return `gap:${node.dataset?.startOrdinal || ''}:${node.dataset?.endOrdinal || ''}`;
+  if (node?.dataset?.messageId) return `message:${node.dataset.messageId}`;
+  return '';
+};
+
+const renderTranscriptMessages = (session, messages, forceScroll, renderStartedAt) => {
+  if (_lastRenderedSessionId !== null && _lastRenderedSessionId !== session.id) {
+    elements.messages.replaceChildren();
+  }
+  const descriptors = transcriptRenderDescriptors(messages);
+  const existing = new Map(Array.from(elements.messages.children || [])
+    .map((node) => [transcriptTopLevelKey(node), node])
+    .filter(([key]) => key));
+  const retained = new Set();
+
+  descriptors.forEach((descriptor, index) => {
+    let node = existing.get(descriptor.key) || null;
+    if (descriptor.type === 'gap') {
+      if (!node || !node.classList?.contains('transcript-gap')) {
+        node = stampMessageNodeSession(createTranscriptGapNode(descriptor.message), session.id);
+        observeTranscriptGap(node, descriptor.message, session.id);
+      } else {
+        node.style.height = `${Math.max(1, Number(descriptor.message.estimatedHeight) || 1)}px`;
+        node.dataset.startOrdinal = String(descriptor.message.startOrdinal);
+        node.dataset.endOrdinal = String(descriptor.message.endOrdinal);
+        node.dataset.startSegmentIndex = String(descriptor.message.startSegmentIndex);
+        node.dataset.endSegmentIndex = String(descriptor.message.endSegmentIndex);
+      }
+    } else if (descriptor.type === 'turn') {
+      if (!node || !node.classList?.contains('transcript-turn')) {
+        node = document.createElement('section');
+        node.className = 'transcript-turn';
+        node.dataset.segmentIndex = String(descriptor.segmentIndex);
+      }
+      stampMessageNodeSession(node, session.id);
+      reconcileTranscriptTurn(node, descriptor, session.id);
+    } else {
+      node = reconcileTranscriptMessageNode(node, descriptor.message, session.id);
+    }
+    node.dataset.transcriptKey = descriptor.key;
+    retained.add(node);
+    const current = elements.messages.children[index] || null;
+    if (current !== node) elements.messages.insertBefore(node, current);
+    existing.delete(descriptor.key);
+  });
+  Array.from(elements.messages.children || []).forEach((node) => {
+    if (!retained.has(node)) node.remove();
+  });
+
+  _lastRenderedSessionId = session.id;
+  _lastRenderedMessageIds = messages.map((message) => message.id);
+  _lastRenderedMessageKeys = new Map(messages.map((message) => [message.id, messageRenderKey(message)]));
+  syncTurnActionPanels();
+  refreshRelativeTimes();
+  scrollToBottom(forceScroll);
+  updateHeader();
+  recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'transcript-reconcile');
+};
+
 const renderMessages = (forceScroll = false) => {
   const renderStartedAt = renderDiagnosticsNow();
   const session = ensureActiveSession();
-  resetAssistantStreamRenders();
+  if (!session?.transcript) resetAssistantStreamRenders();
 
   const sessionId = session ? session.id : '';
   const messages = session ? session.messages : [];
@@ -2610,6 +2807,11 @@ const renderMessages = (forceScroll = false) => {
     scrollToBottom(forceScroll);
     updateHeader();
     recordMountedConversationDiagnostics(renderStartedAt, messages.length, 'empty');
+    return;
+  }
+
+  if (session?.transcript) {
+    renderTranscriptMessages(session, messages, forceScroll, renderStartedAt);
     return;
   }
 

@@ -4818,3 +4818,31 @@
   }
   .side-question-transcript { max-height: 58vh; }
 }
+
+/* Revisioned transcript virtualization. Durable turns are mounted as bounded
+   containers; each contiguous unloaded interval is one explicit spacer. */
+.transcript-turn {
+  display: contents;
+}
+
+.transcript-gap {
+  box-sizing: border-box;
+  min-height: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.transcript-gap span {
+  position: sticky;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface, var(--bg));
+}

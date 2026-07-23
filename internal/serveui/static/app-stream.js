@@ -494,6 +494,7 @@ const scheduleStreamPersistence = () => {
     if (!streamPersistDirty) return;
     streamPersistDirty = false;
     saveSessions();
+    app.persistTranscriptOptimistic?.(getActiveSession());
   }, STREAM_PERSIST_INTERVAL);
 };
 
@@ -505,6 +506,7 @@ const flushStreamPersistence = () => {
   if (!streamPersistDirty) return;
   streamPersistDirty = false;
   saveSessions();
+  app.persistTranscriptOptimistic?.(getActiveSession());
 };
 
 const scheduleStreamScroll = () => {
@@ -764,6 +766,7 @@ const createResponseStreamState = (session) => {
       created: Date.now()
     };
     session.messages.push(msg);
+    app.trackTranscriptOptimistic?.(session, msg);
     appendStreamMessageNode(session, msg);
     currentAssistantMessage = msg;
     return msg;
@@ -854,6 +857,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     setSessionOptimisticBusy(session, true);
     if (responseId) {
       setActiveResponseTracking(session, responseId, payload?.sequence_number ?? null);
+      void app.noteTranscriptRunCreated?.(session, responseId, payload?.started_rev ?? payload?.response?.started_rev ?? 0);
       saveSessions();
     }
     const model = payload?.response?.model;
@@ -931,6 +935,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         };
         streamState.modelSwapProgressMessage = marker;
         session.messages.push(marker);
+        app.trackTranscriptOptimistic?.(session, marker);
         appendStreamMessageNode(session, marker);
       } else {
         marker.content = message;
@@ -961,6 +966,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         };
         streamState.currentPhaseMessage = marker;
         session.messages.push(marker);
+        app.trackTranscriptOptimistic?.(session, marker);
         appendStreamMessageNode(session, marker);
       } else {
         marker.content = text;
@@ -1021,6 +1027,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           created: Date.now()
         };
         session.messages.push(streamState.currentToolGroup);
+        app.trackTranscriptOptimistic?.(session, streamState.currentToolGroup);
         appendStreamMessageNode(session, streamState.currentToolGroup, createToolGroupNode);
       } else {
         streamState.currentToolGroup.tools.push(toolEntry);
@@ -1096,9 +1103,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         id: generateId('msg'),
         role: 'event',
         content: text,
-        created: Date.now()
+        created: Date.now(),
+        transient: true
       };
       session.messages.push(message);
+      app.trackTranscriptOptimistic?.(session, message);
       appendStreamMessageNode(session, message);
       saveSessions();
       scrollVisibleStreamToBottom(session, true);
@@ -1210,6 +1219,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       }
       if (!existingMessage) {
         session.messages.push(message);
+        app.trackTranscriptOptimistic?.(session, message);
         appendStreamMessageNode(session, message);
       } else {
         updateVisibleUserNode(session, message);
@@ -1268,6 +1278,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       void app.refreshCurrentPlanFromServer?.(session);
     }
     scrollVisibleStreamToBottom(session);
+    void app.noteTranscriptTerminal?.(session, payload?.final_rev ?? payload?.response?.final_rev ?? 0);
     return { terminal: true };
   }
 
@@ -1292,6 +1303,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
+    void app.noteTranscriptTerminal?.(session, payload?.final_rev ?? payload?.response?.final_rev ?? 0);
     return { terminal: true };
   }
 
@@ -1334,6 +1346,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
+    void app.noteTranscriptTerminal?.(session, payload?.final_rev ?? payload?.response?.final_rev ?? 0);
     return {
       terminal: true,
       error: recoverableContinuationFailure
@@ -2270,6 +2283,7 @@ const submitAskUserModal = async (cancelled = false) => {
             askUser: true
           };
           session.messages.push(message);
+          app.trackTranscriptOptimistic?.(session, message);
           if (isSessionVisible(session)) {
             const empty = elements.messages.querySelector('.empty-state');
             if (empty) empty.remove();
@@ -3831,6 +3845,7 @@ const addInlineInterruptMessage = (session, prompt, messageId, interruptState, a
     message.attachments = attachments.map(cloneAttachmentForMessage);
   }
   session.messages.push(message);
+  app.trackTranscriptOptimistic?.(session, message);
 
   if (isSessionVisible(session)) {
     const emptyState = elements.messages.querySelector('.empty-state');
@@ -4121,9 +4136,11 @@ const addErrorMessage = (text, session) => {
     id: generateId('msg'),
     role: 'error',
     content: text,
-    created: Date.now()
+    created: Date.now(),
+    transient: true
   };
   session.messages.push(message);
+  app.trackTranscriptOptimistic?.(session, message);
   appendStreamMessageNode(session, message);
 };
 
@@ -4163,6 +4180,7 @@ const skillRunMessageFor = (session, run) => {
       created: run.startedAt ? Date.parse(run.startedAt) || Date.now() : Date.now(),
     };
     session.messages.push(message);
+    app.trackTranscriptOptimistic?.(session, message);
     appendStreamMessageNode(session, message);
   }
   return message;
@@ -4334,6 +4352,7 @@ const appendSkillInvocationMessage = (session, invocation, reuseMessageId = '') 
       created: Date.now(),
     };
     session.messages.push(message);
+    app.trackTranscriptOptimistic?.(session, message);
     appendStreamMessageNode(session, message);
   }
   delete message.interruptState;
@@ -4665,6 +4684,7 @@ const sendMessage = async (options = {}) => {
       created: Date.now()
     };
     session.messages.push(userMessage);
+    app.trackTranscriptOptimistic?.(session, userMessage);
   } else {
     userMessage.content = prompt;
     delete userMessage.interruptState;
