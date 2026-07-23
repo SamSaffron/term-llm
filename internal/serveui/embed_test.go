@@ -893,10 +893,16 @@ func TestStaticAssetsSupportEffortDropdown(t *testing.T) {
 			t.Fatalf("app-stream.js missing %q", want)
 		}
 	}
-	// Effort must not commit on change — Cancel has to discard the pending
-	// value. Commit happens only inside connectToken() on Save.
-	if strings.Contains(streamSrc, "elements.effortSelect?.addEventListener('change'") {
-		t.Fatalf("app-stream.js must not wire a change listener on effortSelect (would persist pending value on Cancel)")
+	// Modal effort changes must not commit live — Cancel still discards the
+	// pending value. The listener records user intent only; connectToken commits
+	// the value on Save and uses that intent to authorize a runtime swap.
+	for _, want := range []string{
+		"elements.effortSelect?.addEventListener('change'",
+		"modalEffortSelectionDirty = true",
+	} {
+		if !strings.Contains(streamSrc, want) {
+			t.Fatalf("app-stream.js missing modal effort intent marker %q", want)
+		}
 	}
 }
 

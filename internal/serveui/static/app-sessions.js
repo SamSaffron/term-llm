@@ -344,6 +344,10 @@ const switchToDraftSession = async (options = {}) => {
 
 const syncSelectedRuntimeFromSession = (session) => {
   if (!session) return false;
+  // Selecting/synchronizing a session restores its applied runtime. Any unsent
+  // runtime-control intent belonged to the previous view and must not authorize
+  // a later metadata-driven model swap.
+  delete session.runtimeSelectionIntent;
   const provider = String(session.provider || '').trim();
   let model = String(session.activeModel || '').trim();
   let effort = String(session.activeEffort || '').trim();

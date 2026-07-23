@@ -115,6 +115,20 @@ const clearSessionPendingEffort = (session) => {
   delete session.pendingEffortQueued;
 };
 
+// Runtime controls are global UI state, while the applied runtime belongs to a
+// session. Only an explicit control action may authorize carrying global state
+// into an existing conversation; metadata refreshes and session polling also
+// mutate the global selection and must never cause a model swap on their own.
+const markRuntimeSelectionIntent = (session = getActiveSession()) => {
+  if (!session) return;
+  session.runtimeSelectionIntent = true;
+};
+
+const clearRuntimeSelectionIntent = (session) => {
+  if (!session) return;
+  delete session.runtimeSelectionIntent;
+};
+
 const clearTerminalPendingEffort = (session) => {
   if (session?.pendingEffortQueued) {
     clearSessionPendingEffort(session);
@@ -2443,7 +2457,10 @@ const submitApprovalModal = async (denied = false) => {
 };
 
 // ===== Settings modal =====
+let modalEffortSelectionDirty = false;
+
 const openAuthModal = (errorText = '', required = !state.token) => {
+  modalEffortSelectionDirty = false;
   state.authRequired = required;
   elements.authError.textContent = errorText;
   elements.authTokenInput.value = state.token || '';
@@ -2484,6 +2501,7 @@ const openAuthModal = (errorText = '', required = !state.token) => {
 
 const closeAuthModal = () => {
   if (state.authRequired && !state.token) return;
+  modalEffortSelectionDirty = false;
   elements.authModal.classList.add('hidden');
   elements.authError.textContent = '';
   elements.providerSelect.setAttribute('tabindex', '-1');
@@ -2524,6 +2542,9 @@ const connectToken = async () => {
   state.selectedReasoningMode = newReasoningMode === 'pro' ? 'pro' : 'standard';
   localStorage.setItem(STORAGE_KEYS.selectedReasoningMode, state.selectedReasoningMode);
   canonicalizeSelectedModelEffort();
+  if (modalEffortSelectionDirty) {
+    markRuntimeSelectionIntent();
+  }
   persistRuntimeSelection();
   const showHiddenChanged = nextShowHiddenSessions !== state.showHiddenSessions;
   state.showHiddenSessions = nextShowHiddenSessions;
@@ -2657,6 +2678,7 @@ let providerChangeSequence = 0;
 
 const applyProviderChange = async (provider) => {
   const changeSequence = ++providerChangeSequence;
+  markRuntimeSelectionIntent();
   state.selectedProvider = provider;
   if (provider) {
     localStorage.setItem(STORAGE_KEYS.selectedProvider, provider);
@@ -2786,6 +2808,7 @@ const canonicalizeSelectedModelEffort = () => {
 };
 
 const applyModelChange = (model) => {
+  markRuntimeSelectionIntent();
   state.selectedModel = model;
   canonicalizeSelectedModelEffort();
   renderEffortOptions();
@@ -2856,6 +2879,7 @@ const applyEffortChange = async (effort) => {
       return;
     }
   }
+  markRuntimeSelectionIntent(session);
   state.selectedEffort = effort;
   canonicalizeSelectedModelEffort();
   persistRuntimeSelection();
@@ -2882,8 +2906,12 @@ elements.modelSelect?.addEventListener('change', () => {
   applyModelChange(elements.modelSelect.value);
 });
 
-// Modal effort intentionally has no change listener: Cancel must discard the
-// pending value. The settings modal commits effort only on Save (connectToken).
+// Modal effort does not commit live: Cancel must discard the pending value.
+// Its change listener records explicit user intent; settings Save commits it.
+elements.effortSelect?.addEventListener('change', () => {
+  modalEffortSelectionDirty = true;
+});
+
 // The header chip below commits live, matching provider/model behavior.
 
 elements.chipProviderSelect?.addEventListener('change', () => {
@@ -4763,11 +4791,13 @@ const sendMessage = async (options = {}) => {
     const currentProvider = session.provider || '';
     const currentModel = session.activeModel || '';
     const currentEffort = session.activeEffort || '';
-    const targetProvider = state.selectedProvider || currentProvider;
-    const targetModel = state.selectedModel || currentModel;
-    const targetEffort = state.selectedEffort || '';
     const hasPriorContext = Boolean(session.messages.length > 1);
-    const targetDiffers = hasPriorContext && Boolean(
+    const hasRuntimeSelectionIntent = Boolean(session.runtimeSelectionIntent);
+    const useSelectedRuntime = !hasPriorContext || hasRuntimeSelectionIntent;
+    const targetProvider = useSelectedRuntime ? (state.selectedProvider || currentProvider) : currentProvider;
+    const targetModel = useSelectedRuntime ? (state.selectedModel || currentModel) : currentModel;
+    const targetEffort = useSelectedRuntime ? (state.selectedEffort || '') : currentEffort;
+    const targetDiffers = hasPriorContext && hasRuntimeSelectionIntent && Boolean(
       (targetProvider || '') !== (currentProvider || '')
       || (targetModel || '') !== (currentModel || '')
       || effectiveEffortForCompare(targetModel || currentModel, targetEffort)
@@ -4800,7 +4830,7 @@ const sendMessage = async (options = {}) => {
       }
       body.model_swap = { mode: 'auto', fallback: 'handover' };
     } else {
-      const activeEffort = currentEffort || state.selectedEffort;
+      const activeEffort = useSelectedRuntime ? targetEffort : currentEffort;
       if (activeEffort) {
         body.reasoning_effort = activeEffort;
       }
@@ -4841,6 +4871,7 @@ const sendMessage = async (options = {}) => {
 
     if (headerResponseId) {
       setActiveResponseTracking(session, headerResponseId, 0);
+      clearRuntimeSelectionIntent(session);
       attachResponseStream(session, headerResponseId, controller);
       saveSessions();
     }
@@ -4873,6 +4904,11 @@ const sendMessage = async (options = {}) => {
         await resumeActiveResponse(session, { streamState, responseId });
       }
     }
+
+    // Keep explicit runtime intent across any pre-response POST rebuild. Once
+    // this request has completed or attached to a durable response, subsequent
+    // sends should use the server-confirmed session runtime again.
+    clearRuntimeSelectionIntent(session);
 
     if (sendGeneration === state.streamGeneration) {
       const lastAssistant = session.messages.findLast(m => m.role === 'assistant');
@@ -4935,6 +4971,7 @@ const sendMessage = async (options = {}) => {
     if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
 
     if (session.activeResponseId) {
+      clearRuntimeSelectionIntent(session);
       await resumeActiveResponse(session, { streamState });
       persistAndRefreshShell();
       return;

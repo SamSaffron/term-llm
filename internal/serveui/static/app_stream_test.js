@@ -42,6 +42,7 @@ function makeClassList() {
 }
 
 function makeNode() {
+  const listeners = new Map();
   const node = {
     classList: makeClassList(),
     children: [],
@@ -55,7 +56,16 @@ function makeNode() {
     setAttribute() {},
     removeAttribute() {},
     remove() {},
-    addEventListener() {},
+    addEventListener(type, handler) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(handler);
+    },
+    async dispatchEvent(event) {
+      for (const handler of listeners.get(event?.type) || []) {
+        await handler.call(this, event);
+      }
+      return true;
+    },
     focus() {},
     value: '',
     textContent: '',
@@ -1410,6 +1420,7 @@ async function testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost(
   let firstSignal = null;
   let firstBodyCanceled = false;
   let postCount = 0;
+  const postBodies = [];
   const harness = createHarness({
     setTimeout(callback) { return setTimeout(callback, 0); },
     clearTimeout(handle) { clearTimeout(handle); },
@@ -1423,6 +1434,7 @@ async function testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost(
         throw new Error(`unexpected fetch: ${url}`);
       }
       postCount += 1;
+      postBodies.push(String(requestOptions.body || ''));
       if (postCount === 1) {
         firstSignal = requestOptions.signal;
         return new Response(new ReadableStream({
@@ -1451,7 +1463,27 @@ async function testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost(
     },
   });
   const { app, elements, state, cleanup } = harness;
-  elements.promptInput.value = 'hello';
+  const session = {
+    id: 'session_retry_runtime_swap',
+    provider: 'chatgpt',
+    activeModel: 'old-model',
+    activeEffort: 'medium',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.draftSessionActive = false;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'new-model';
+  state.selectedEffort = 'high';
+  app.applyModelChange('new-model');
+  elements.promptInput.value = 'continue';
 
   const sendPromise = app.sendMessage();
   const attached = await waitFor(() => (
@@ -1475,6 +1507,15 @@ async function testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost(
 
   if (!retried || postCount !== 2) {
     fail(name, `expected one POST retry, got ${postCount}`);
+    return;
+  }
+  if (postBodies.length !== 2 || postBodies[0] !== postBodies[1]) {
+    fail(name, 'explicit runtime swap changed across attached-body retry', JSON.stringify(postBodies));
+    return;
+  }
+  const retryBody = JSON.parse(postBodies[1]);
+  if (!retryBody.model_swap || retryBody.model !== 'new-model' || retryBody.reasoning_effort !== 'high') {
+    fail(name, 'retry dropped explicit runtime swap target', postBodies[1]);
     return;
   }
   if (!firstBodyCanceled || firstSignal?.aborted) {
@@ -3385,6 +3426,7 @@ async function testSendMessageIncludesModelSwapForChangedTarget() {
   state.selectedProvider = 'new-provider';
   state.selectedModel = 'new-model';
   state.selectedEffort = 'high';
+  app.applyModelChange('new-model');
   elements.promptInput.value = 'continue';
 
   await app.sendMessage();
@@ -3452,6 +3494,141 @@ async function testSendMessageOmitsModelSwapWhenTargetUnchanged() {
   }
   if (body.provider !== 'old-provider' || body.model !== 'old-model' || body.reasoning_effort !== 'medium') {
     fail(name, 'request should stay pinned to current runtime', postCall.body);
+    return;
+  }
+  pass(name);
+}
+
+async function testSendMessageIgnoresAutomaticEffortDriftWithoutUserIntent() {
+  const name = 'sendMessage ignores automatic effort drift without user intent';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_automatic_effort_drift',
+    title: 'Automatic effort drift test',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5.6-sol',
+    activeEffort: 'medium',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.6-sol';
+  state.selectedEffort = '';
+  state.modelInfoByID = {};
+  elements.promptInput.value = 'continue';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall?.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (body.model_swap) {
+    fail(name, 'automatic selected-effort drift requested a model swap', postCall.body);
+    return;
+  }
+  if (body.reasoning_effort !== 'medium') {
+    fail(name, `request effort = ${JSON.stringify(body.reasoning_effort)}, want persisted medium`, postCall.body);
+    return;
+  }
+  pass(name);
+}
+
+async function testSendMessageIgnoresAutomaticExplicitEffortDriftWithoutUserIntent() {
+  const name = 'sendMessage ignores automatic explicit effort drift without user intent';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_automatic_explicit_effort_drift',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5.6-sol',
+    activeEffort: '',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.6-sol';
+  state.selectedEffort = 'high';
+  elements.promptInput.value = 'continue';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = postCall?.body ? JSON.parse(postCall.body) : null;
+  if (!body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (body.model_swap || Object.prototype.hasOwnProperty.call(body, 'reasoning_effort')) {
+    fail(name, 'automatic explicit effort drift leaked into pinned request', postCall.body);
+    return;
+  }
+  pass(name);
+}
+
+async function testExplicitAutoEffortStillRequestsModelSwap() {
+  const name = 'explicit Auto effort still requests a model swap';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_explicit_auto_effort',
+    title: 'Explicit auto effort test',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5.6-sol',
+    activeEffort: 'medium',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.6-sol';
+  state.selectedEffort = 'medium';
+  state.modelInfoByID = {};
+
+  await app.applyEffortChange('');
+  elements.promptInput.value = 'continue';
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall?.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (!body.model_swap) {
+    fail(name, 'explicit Auto selection did not request a model swap', postCall.body);
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'reasoning_effort')) {
+    fail(name, 'Auto swap should omit reasoning_effort', postCall.body);
     return;
   }
   pass(name);
@@ -3964,6 +4141,79 @@ function testResponsePhaseSeparatesAssistantSegments() {
   }
   if (session.messages[0].content !== 'checkpoint' || session.messages[2].content !== 'continued answer') {
     fail(name, 'assistant segments were not separated around phase marker', JSON.stringify(session.messages));
+    return;
+  }
+  pass(name);
+}
+
+const runtimeIntentTestSession = (id) => ({
+  id,
+  provider: 'chatgpt',
+  activeModel: 'gpt-5.6-sol',
+  activeEffort: 'medium',
+  messages: [
+    { id: `${id}_u1`, role: 'user', content: 'hello', created: 1 },
+    { id: `${id}_a1`, role: 'assistant', content: 'hi', created: 2 },
+  ],
+  lastResponseId: `${id}_previous`,
+  activeResponseId: null,
+  number: 1,
+});
+
+async function testSettingsEffortCancelDoesNotAuthorizeSwap() {
+  const name = 'settings effort Cancel does not authorize a runtime swap';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = runtimeIntentTestSession('settings_cancel');
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.token = 'token-123';
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.6-sol';
+  state.selectedEffort = 'medium';
+  elements.authTokenInput.value = 'token-123';
+
+  elements.effortSelect.value = 'high';
+  await elements.effortSelect.dispatchEvent({ type: 'change' });
+  app.closeAuthModal();
+  elements.promptInput.value = 'continue';
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = postCall?.body ? JSON.parse(postCall.body) : null;
+  if (!body || body.model_swap || body.reasoning_effort !== 'medium') {
+    fail(name, 'Cancel leaked modal effort intent into the request', postCall?.body || JSON.stringify(fetchCalls));
+    return;
+  }
+  pass(name);
+}
+
+async function testSettingsEffortSaveAuthorizesSwap() {
+  const name = 'settings effort Save authorizes a runtime swap';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = runtimeIntentTestSession('settings_save');
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.token = 'token-123';
+  state.connected = true;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.6-sol';
+  state.selectedEffort = 'medium';
+  elements.authTokenInput.value = 'token-123';
+
+  elements.effortSelect.value = 'high';
+  await elements.effortSelect.dispatchEvent({ type: 'change' });
+  await app.connectToken();
+  elements.promptInput.value = 'continue';
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = postCall?.body ? JSON.parse(postCall.body) : null;
+  if (!body?.model_swap || body.reasoning_effort !== 'high') {
+    fail(name, 'Save did not carry explicit modal effort into a model swap', postCall?.body || JSON.stringify(fetchCalls));
     return;
   }
   pass(name);
@@ -6364,6 +6614,9 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();
   await testSendMessageOmitsModelSwapWhenTargetUnchanged();
+  await testSendMessageIgnoresAutomaticEffortDriftWithoutUserIntent();
+  await testSendMessageIgnoresAutomaticExplicitEffortDriftWithoutUserIntent();
+  await testExplicitAutoEffortStillRequestsModelSwap();
   await testSendMessageTreatsImplicitDefaultEffortAsEquivalent();
   await testSendMessageGatesReasoningModeByModelMetadata();
   await testQueueEffortWhileStreamingPostsRuntimeEffortAndShowsPending();
@@ -6381,6 +6634,8 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   testProviderRetryOwnershipGuardsBackgroundDetachAndStaleClear();
   testResponsePhaseUpdateCanStraddleResumedOutput();
   testResponsePhaseSeparatesAssistantSegments();
+  await testSettingsEffortCancelDoesNotAuthorizeSwap();
+  await testSettingsEffortSaveAuthorizesSwap();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
   await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();

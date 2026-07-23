@@ -735,6 +735,7 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
     lastResponseId: 'resp_msg_1',
     activeResponseId: null,
     lastSequenceNumber: 0,
+    runtimeSelectionIntent: true,
   };
   app.state.sessions = [session];
   app.state.selectedProvider = 'chatgpt';
@@ -744,6 +745,10 @@ async function testSwitchToSessionSyncsSelectedRuntime() {
 
   await app.switchToSession(session.id, { sync: false });
 
+  if (session.runtimeSelectionIntent) {
+    fail(name, 'switching back to a session retained stale runtime-selection intent');
+    return;
+  }
   if (app.state.selectedProvider !== 'chatgpt') {
     fail(name, `selectedProvider = ${JSON.stringify(app.state.selectedProvider)}, want chatgpt`);
     return;
