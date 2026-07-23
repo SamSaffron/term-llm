@@ -2023,21 +2023,37 @@ async function run(name, fn) {
     assertEqual(messages.children[1].dataset.messageId, 'stream-tail', 'stream tail should append after materialized turn');
   });
 
-  await run('renderMessages bounds transcript DOM by turn containers and explicit gaps', () => {
-    const { app, session, messages } = createHarness();
+  await run('renderMessages bounds transcript DOM with compact clickable gap ranges', async () => {
+    const loads = [];
+    const { app, session, messages } = createHarness({
+      materializeTranscriptSegments(targetSession, range) { loads.push({ targetSession, range }); }
+    });
     session.transcript = {};
     session.messages = [
       { id: 'u1', role: 'user', content: 'one', durable: true, durableRowId: 1, transcriptSegmentIndex: 0, created: Date.now() },
       { id: 'a1', role: 'assistant', content: 'answer', durable: true, durableRowId: 2, transcriptSegmentIndex: 0, created: Date.now() },
-      { id: 'gap', role: 'transcript-gap', transcriptGap: true, startOrdinal: 2, endOrdinal: 1000, estimatedHeight: 5000, segmentIndexes: [1, 2, 3] },
-      { id: 'u2', role: 'user', content: 'later', durable: true, durableRowId: 1002, transcriptSegmentIndex: 4, created: Date.now() },
+      { id: 'gap', role: 'transcript-gap', transcriptGap: true, startOrdinal: 2, endOrdinal: 1000, estimatedHeight: 5000, startSegmentIndex: 1, endSegmentIndex: 999 },
+      { id: 'u2', role: 'user', content: 'later', durable: true, durableRowId: 1002, transcriptSegmentIndex: 1000, created: Date.now() },
     ];
     app.renderMessages();
     assertEqual(messages.children.length, 3, 'two materialized turns plus one contiguous gap are the only top-level DOM nodes');
     assert(messages.children[0].classList.contains('transcript-turn'), 'first durable turn is grouped');
     assertEqual(messages.children[0].children.length, 2, 'rows in one turn share a container');
-    assert(messages.children[1].classList.contains('transcript-gap'), 'unloaded ordinals render as an explicit gap');
-    assertEqual(messages.children[1].dataset.segmentIndexes, '1,2,3', 'gap retains materialization target segments');
+    const gap = messages.children[1];
+    assert(gap.classList.contains('transcript-gap'), 'unloaded ordinals render as an explicit gap');
+    assertEqual(gap.dataset.startSegmentIndex, '1', 'gap serializes only its first segment bound');
+    assertEqual(gap.dataset.endSegmentIndex, '999', 'gap serializes only its last segment bound');
+    assertEqual(gap.dataset.segmentIndexes, undefined, 'gap must not serialize an unbounded segment CSV');
+    app.elements.chatScroll = { getBoundingClientRect: () => ({ top: 0, bottom: 600 }) };
+    gap.getBoundingClientRect = () => ({ top: 100, bottom: 1100 });
+    await gap.dispatchEvent({ type: 'click', clientY: 350 });
+    assertEqual(loads.length, 1, 'clicking a transcript gap requests one bounded materialization');
+    assertEqual(loads[0].targetSession, session, 'gap click targets the active session');
+    assertEqual(loads[0].range.startSegmentIndex, 1, 'gap click forwards the compact first segment bound');
+    assertEqual(loads[0].range.endSegmentIndex, 999, 'gap click forwards the compact last segment bound');
+    assertEqual(loads[0].range.targetOrdinal, 251, 'gap click targets the pointer position within the estimated gap');
+    assertEqual(loads[0].range.direction, 'center', 'gap click centered inside the viewport loads nearby turns');
+    assert(!Array.isArray(loads[0].range), 'gap click must not expand bounds into a segment list');
   });
 
   if (failures > 0) {

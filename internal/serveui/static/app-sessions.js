@@ -1120,8 +1120,9 @@ const refreshSessionMessagesFromTranscript = (session) => {
         transcriptGap: true,
         startOrdinal: run.startOrdinal,
         endOrdinal: run.endOrdinal,
-        estimatedHeight: run.height,
-        segmentIndexes: run.segmentIndexes.filter((index) => transcript.requiredBodyIDs(index).length > 0)
+        startSegmentIndex: run.startSegmentIndex,
+        endSegmentIndex: run.endSegmentIndex,
+        estimatedHeight: run.height
       });
       continue;
     }
@@ -1202,48 +1203,109 @@ const touchTranscriptSkeleton = (session) => {
   }
 };
 
-const fetchTranscriptSegments = async (session, segmentIndexes) => {
+const TRANSCRIPT_MATERIALIZE_BATCH_TURNS = Math.max(1, Number(window.TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || 32);
+const TRANSCRIPT_MATERIALIZE_BATCH_ROWS = Math.max(1, Number(window.TRANSCRIPT_MATERIALIZE_BATCH_ROWS) || 256);
+const TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS = 512;
+
+const boundedTranscriptSegmentIndexes = (transcript, request) => {
+  if (!transcript) return [];
+  if (!Array.isArray(request)) {
+    return transcript.selectGapBatch?.(
+      request?.startSegmentIndex,
+      request?.endSegmentIndex,
+      { targetOrdinal: request?.targetOrdinal, direction: request?.direction }
+    ) || [];
+  }
+  const selected = [];
+  const seen = new Set();
+  let selectedRows = 0;
+  for (const value of request) {
+    const index = Math.trunc(Number(value));
+    if (!Number.isFinite(index) || seen.has(index)) continue;
+    seen.add(index);
+    const segment = transcript.segments[index];
+    if (!segment || segment.state !== 'evicted') continue;
+    const rows = segment.endOrdinal - segment.startOrdinal + 1;
+    if (selected.length >= TRANSCRIPT_MATERIALIZE_BATCH_TURNS) break;
+    if (selectedRows + rows > TRANSCRIPT_MATERIALIZE_BATCH_ROWS) {
+      if (selected.length === 0 && rows <= TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS) selected.push(index);
+      break;
+    }
+    selected.push(index);
+    selectedRows += rows;
+  }
+  return selected.sort((a, b) => a - b);
+};
+
+const fetchTranscriptSegments = async (session, segmentIndexes, options = {}) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
   const requested = [];
-  for (const index of new Set(segmentIndexes)) {
-    if (transcript.segments[index]?.state === 'materialized' || transcript.requiredBodyIDs(index).length === 0) continue;
+  for (const index of boundedTranscriptSegmentIndexes(transcript, segmentIndexes)) {
     const id = transcript.ids[transcript.segments[index]?.startOrdinal];
     if (id != null) requested.push(id);
   }
   if (requested.length === 0) return true;
-  for (let offset = 0; offset < requested.length; offset += 512) {
-    const ids = requested.slice(offset, offset + 512);
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript/bodies?ids=${ids.join(',')}`, {
-      headers: requestHeaders(session.id)
-    });
-    if (!resp.ok) return false;
-    const data = await resp.json().catch(() => null);
-    if (!data || !Array.isArray(data.messages) || Number(data.rev) !== transcript.rev) return false;
-    transcript.materialize(data.messages);
-  }
+  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript/bodies?ids=${requested.join(',')}`, {
+    headers: requestHeaders(session.id)
+  });
+  if (!resp.ok) return false;
+  const data = await resp.json().catch(() => null);
+  if (!data || !Array.isArray(data.messages) || Number(data.rev) !== transcript.rev) return false;
+  transcript.materialize(data.messages, { deferBudget: options.deferBudget === true });
   return true;
 };
 
-const materializeTranscriptSegments = async (session, segmentIndexes) => {
+const materializeTranscriptSegmentsOnce = async (session, request) => {
   if (!session || session.id !== state.activeSessionId) return false;
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
+  const indexes = boundedTranscriptSegmentIndexes(transcript, request);
+  if (indexes.length === 0) return true;
+
   const adapter = transcriptViewportAdapter(session);
-  const indexes = [...new Set(segmentIndexes)].filter((index) => transcript.segments[index]);
-  if (indexes.length > 0) {
-    const first = transcript.segments[Math.min(...indexes)];
-    const last = transcript.segments[Math.max(...indexes)];
-    transcript.withViewportAnchor(adapter, () => transcript.setViewport(first.startOrdinal, last.endOrdinal));
+  const anchor = adapter?.capture?.() || null;
+  const previousViewport = { ...transcript.viewport };
+  const first = transcript.segments[indexes[0]];
+  const last = transcript.segments[indexes[indexes.length - 1]];
+  transcript.setViewport(first.startOrdinal, last.endOrdinal, { deferBudget: true });
+  const anchorSegment = anchor ? transcript.segmentForID(anchor.id) : -1;
+  if (anchorSegment >= 0) transcript.pinnedSegments.add(anchorSegment);
+
+  const loaded = await fetchTranscriptSegments(session, indexes, { deferBudget: true });
+  if (!loaded) {
+    transcript.setViewport(previousViewport.firstOrdinal, previousViewport.lastOrdinal);
+    return syncTranscript(session, { reason: 'stale-bodies', force: true });
   }
-  const loaded = await fetchTranscriptSegments(session, indexes);
-  if (!loaded) return syncTranscript(session, { reason: 'stale-bodies', force: true });
-  transcript.withViewportAnchor(adapter, () => {
-    transcript.reconcileOptimistic();
-    refreshSessionMessagesFromTranscript(session);
-  });
+
+  transcript.enforceBudget();
+  transcript.reconcileOptimistic();
+  refreshSessionMessagesFromTranscript(session);
+  if (adapter) {
+    adapter.render?.(transcript);
+    const top = anchor == null ? null : adapter.topForID?.(anchor.id);
+    if (Number.isFinite(top) && Number.isFinite(anchor.top)) adapter.adjustScroll?.(top - anchor.top);
+  } else {
+    renderMessages(false);
+  }
+  // Drop the temporary anchor pin after the anchored render. The viewport stays
+  // on the newly loaded batch so the next fill can evict the old region.
+  transcript.refreshPinnedSegments();
   persistTranscriptOptimistic(session);
   return true;
+};
+
+const materializeTranscriptSegments = (session, request) => {
+  if (!session) return Promise.resolve(false);
+  const previous = session._transcriptMaterializePromise || Promise.resolve();
+  const queued = previous.then(
+    () => materializeTranscriptSegmentsOnce(session, request),
+    () => materializeTranscriptSegmentsOnce(session, request)
+  );
+  session._transcriptMaterializePromise = queued;
+  return queued.finally(() => {
+    if (session._transcriptMaterializePromise === queued) delete session._transcriptMaterializePromise;
+  });
 };
 
 const syncTranscriptOnce = async (session, options = {}) => {

@@ -1612,23 +1612,55 @@ const createSkillRunNode = (message) => {
 
 let transcriptGapObserver = null;
 
-const observeTranscriptGap = (node, message, sessionId) => {
-  const segmentIndexes = Array.isArray(message.segmentIndexes) ? message.segmentIndexes : [];
-  if (segmentIndexes.length === 0) return;
-  const load = () => {
-    const session = state.sessions.find((item) => item?.id === sessionId) || null;
-    if (session) void app.materializeTranscriptSegments?.(session, segmentIndexes);
-  };
-  node.addEventListener?.('click', load);
+const transcriptGapRequest = (node, pointerY = null, observedRect = null) => {
+  const startOrdinal = Number(node?.dataset?.startOrdinal);
+  const endOrdinal = Number(node?.dataset?.endOrdinal);
+  const startSegmentIndex = Number(node?.dataset?.startSegmentIndex);
+  const endSegmentIndex = Number(node?.dataset?.endSegmentIndex);
+  if (![startOrdinal, endOrdinal, startSegmentIndex, endSegmentIndex].every(Number.isFinite)) return null;
+
+  const rect = observedRect || node.getBoundingClientRect?.() || null;
+  const viewport = elements.chatScroll?.getBoundingClientRect?.() || null;
+  let targetOrdinal = endOrdinal;
+  let direction = 'backward';
+  if (rect && Number.isFinite(rect.top) && Number.isFinite(rect.bottom) && rect.bottom > rect.top) {
+    const viewportCenter = viewport && Number.isFinite(viewport.top) && Number.isFinite(viewport.bottom)
+      ? (viewport.top + viewport.bottom) / 2
+      : (rect.top + rect.bottom) / 2;
+    const pointer = pointerY == null ? NaN : Number(pointerY);
+    const targetY = Number.isFinite(pointer) && pointer >= rect.top && pointer <= rect.bottom
+      ? pointer
+      : viewportCenter;
+    const clampedY = Math.max(rect.top, Math.min(rect.bottom, targetY));
+    const ratio = Math.max(0, Math.min(1, (clampedY - rect.top) / (rect.bottom - rect.top)));
+    targetOrdinal = Math.min(endOrdinal, startOrdinal + Math.floor((endOrdinal - startOrdinal + 1) * ratio));
+    direction = targetY <= rect.top ? 'forward' : (targetY >= rect.bottom ? 'backward' : 'center');
+  }
+  return { startSegmentIndex, endSegmentIndex, targetOrdinal, direction };
+};
+
+const loadTranscriptGap = (node, sessionId, pointerY = null, observedRect = null) => {
+  if (node?.dataset?.materializing === 'true') return;
+  const request = transcriptGapRequest(node, pointerY, observedRect);
+  if (!request) return;
+  const session = state.sessions.find((item) => item?.id === sessionId) || null;
+  if (!session) return;
+  node.dataset.materializing = 'true';
+  const pending = app.materializeTranscriptSegments?.(session, request);
+  void Promise.resolve(pending).finally(() => {
+    if (node?.dataset) delete node.dataset.materializing;
+  });
+};
+
+const observeTranscriptGap = (node, _message, sessionId) => {
+  node.addEventListener?.('click', (event) => loadTranscriptGap(node, sessionId, event?.clientY));
   if (typeof IntersectionObserver !== 'function') return;
   if (!transcriptGapObserver) {
     transcriptGapObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
         transcriptGapObserver.unobserve(entry.target);
-        const session = state.sessions.find((item) => item?.id === entry.target.dataset?.sessionId) || null;
-        const indexes = String(entry.target.dataset?.segmentIndexes || '').split(',').map(Number).filter(Number.isFinite);
-        if (session) void app.materializeTranscriptSegments?.(session, indexes);
+        loadTranscriptGap(entry.target, entry.target.dataset?.sessionId, null, entry.boundingClientRect);
       });
     }, { root: elements.chatScroll || null, rootMargin: '800px 0px' });
   }
@@ -1641,7 +1673,8 @@ const createTranscriptGapNode = (message) => {
   gap.dataset.messageId = message.id;
   gap.dataset.startOrdinal = String(message.startOrdinal);
   gap.dataset.endOrdinal = String(message.endOrdinal);
-  gap.dataset.segmentIndexes = (message.segmentIndexes || []).join(',');
+  gap.dataset.startSegmentIndex = String(message.startSegmentIndex);
+  gap.dataset.endSegmentIndex = String(message.endSegmentIndex);
   gap.style.height = `${Math.max(1, Number(message.estimatedHeight) || 1)}px`;
   gap.setAttribute('role', 'button');
   gap.setAttribute('tabindex', '0');
@@ -2714,7 +2747,8 @@ const renderTranscriptMessages = (session, messages, forceScroll, renderStartedA
         node.style.height = `${Math.max(1, Number(descriptor.message.estimatedHeight) || 1)}px`;
         node.dataset.startOrdinal = String(descriptor.message.startOrdinal);
         node.dataset.endOrdinal = String(descriptor.message.endOrdinal);
-        node.dataset.segmentIndexes = (descriptor.message.segmentIndexes || []).join(',');
+        node.dataset.startSegmentIndex = String(descriptor.message.startSegmentIndex);
+        node.dataset.endSegmentIndex = String(descriptor.message.endSegmentIndex);
       }
     } else if (descriptor.type === 'turn') {
       if (!node || !node.classList?.contains('transcript-turn')) {

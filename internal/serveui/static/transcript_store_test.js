@@ -98,6 +98,8 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   const gaps = store.renderRuns().filter((run) => run.type === 'gap');
   assert.equal(gaps.length, 1, 'rows 1-50 and 150-200 must have one explicit interior gap');
   assert.deepEqual([gaps[0].startOrdinal + 1, gaps[0].endOrdinal + 1], [51, 149]);
+  assert.deepEqual([gaps[0].startSegmentIndex, gaps[0].endSegmentIndex], [50, 148]);
+  assert.equal(Object.hasOwn(gaps[0], 'segmentIndexes'), false, 'coalesced gaps must not retain per-segment lists');
   const rendered = store.renderedMessages();
   const gapIndex = rendered.findIndex((entry) => entry.transcriptGap);
   assert(gapIndex > 0 && gapIndex < rendered.length - 1, 'loaded ranges must never appear adjacent across unloaded rows');
@@ -189,8 +191,39 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   assert.equal(store.ids.length, 5000, 'complete durable identity skeleton must not be truncated');
   assert(store.segments.filter((segment) => segment.state === 'materialized').length <= 60);
   assert(store.bodies.size <= 60, 'one-row turn bodies must remain within the configured budget');
-  assert(store.renderRuns().length <= 61, '5000 durable rows should render as bounded turns plus one coalesced gap');
+  const runs = store.renderRuns();
+  assert(runs.length <= 61, '5000 durable rows should render as bounded turns plus one coalesced gap');
+  const gap = runs.find((run) => run.type === 'gap');
+  assert(gap, '5000 durable rows should retain a compact unloaded gap');
+  assert.equal(Object.hasOwn(gap, 'segmentIndexes'), false, 'huge gaps must not allocate a segment index per turn');
+  assert(JSON.stringify(gap).length < 200, 'serialized huge-gap metadata must remain constant-sized');
+  const batch = store.selectGapBatch(gap.startSegmentIndex, gap.endSegmentIndex, {
+    targetOrdinal: gap.endOrdinal,
+    direction: 'backward'
+  });
+  assert(batch.length > 0, 'a huge gap should yield a nearby materialization batch');
+  assert(batch.length <= 32, `gap batch exceeded the client turn cap: ${batch.length}`);
+  assert(batch.every((index) => index >= gap.startSegmentIndex && index <= gap.endSegmentIndex));
+  assert.equal(batch[batch.length - 1], gap.endSegmentIndex, 'backward traversal should begin at the nearest gap edge');
   store._checkInvariants();
+})();
+
+(() => {
+  const ids = Array.from({ length: 1000 }, (_, index) => index + 1);
+  const roles = ids.map((_, index) => index % 10 === 0 ? 'u' : 'a').join('');
+  const store = new TranscriptStore('expanded-row-cap', { maxMaterializedTurns: 60, overscanTurns: 8 });
+  store.applyIndex(envelope(ids, { roles }));
+  const gap = store.renderRuns()[0];
+  const batch = store.selectGapBatch(gap.startSegmentIndex, gap.endSegmentIndex, {
+    targetOrdinal: 500,
+    direction: 'center'
+  });
+  const expandedRows = batch.reduce((count, index) => {
+    const segment = store.segments[index];
+    return count + segment.endOrdinal - segment.startOrdinal + 1;
+  }, 0);
+  assert(batch.length <= 32, `multi-row batch exceeded turn cap: ${batch.length}`);
+  assert(expandedRows <= 256, `multi-row batch exceeded expanded-row cap: ${expandedRows}`);
 })();
 
 (() => {

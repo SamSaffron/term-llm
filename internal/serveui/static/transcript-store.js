@@ -7,6 +7,9 @@
 
   const TRANSCRIPT_FLAG_COMPACTION_TAIL = 1;
   const TRANSCRIPT_FLAG_EMPTY_BODY = 2;
+  const TRANSCRIPT_MATERIALIZE_BATCH_TURNS = 32;
+  const TRANSCRIPT_MATERIALIZE_BATCH_ROWS = 256;
+  const TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS = 512;
   const DEFAULT_TRANSCRIPT_BUDGETS = Object.freeze({
     maxMaterializedTurns: 60,
     overscanTurns: 8,
@@ -225,7 +228,7 @@
         if (segmentIndex >= 0) touched.add(segmentIndex);
       }
       for (const segmentIndex of touched) this.refreshSegmentState(this.segments[segmentIndex]);
-      this.enforceBudget();
+      if (!options.deferBudget) this.enforceBudget();
       return [...touched];
     }
 
@@ -250,13 +253,13 @@
       return true;
     }
 
-    setViewport(firstOrdinal, lastOrdinal) {
+    setViewport(firstOrdinal, lastOrdinal, options = {}) {
       this.viewport = {
         firstOrdinal: Math.max(-1, finiteInt(firstOrdinal, -1)),
         lastOrdinal: Math.max(-1, finiteInt(lastOrdinal, -1))
       };
       this.refreshPinnedSegments();
-      this.enforceBudget();
+      if (!options.deferBudget) this.enforceBudget();
     }
 
     refreshPinnedSegments() {
@@ -307,13 +310,67 @@
       }
     }
 
+    selectGapBatch(startSegmentIndex, endSegmentIndex, options = {}) {
+      if (this.segments.length === 0) return [];
+      const requestedStart = finiteInt(startSegmentIndex, -1);
+      const requestedEnd = finiteInt(endSegmentIndex, -1);
+      if (requestedStart < 0 || requestedEnd < requestedStart) return [];
+      const start = Math.min(this.segments.length - 1, requestedStart);
+      const end = Math.max(start, Math.min(this.segments.length - 1, requestedEnd));
+
+      const targetOrdinal = finiteInt(options.targetOrdinal, this.segments[start].startOrdinal);
+      const target = Math.max(start, Math.min(end, this.segmentForOrdinal(targetOrdinal)));
+      const direction = String(options.direction || 'center');
+      const selected = [];
+      let selectedRows = 0;
+      const consider = (index) => {
+        const segment = this.segments[index];
+        if (!segment || segment.state !== 'evicted') return true;
+        const rows = segment.endOrdinal - segment.startOrdinal + 1;
+        if (selected.length >= TRANSCRIPT_MATERIALIZE_BATCH_TURNS) return false;
+        if (selectedRows + rows > TRANSCRIPT_MATERIALIZE_BATCH_ROWS) {
+          // A single valid turn cannot be split because the server expands every
+          // requested row to its whole turn. Permit that one turn, but never
+          // combine it with neighbors or exceed the server protocol limit.
+          if (selected.length === 0 && rows <= TRANSCRIPT_SERVER_MAX_EXPANDED_ROWS) {
+            selected.push(index);
+            selectedRows = rows;
+          }
+          return false;
+        }
+        selected.push(index);
+        selectedRows += rows;
+        return selected.length < TRANSCRIPT_MATERIALIZE_BATCH_TURNS;
+      };
+
+      if (direction === 'backward') {
+        for (let index = target; index >= start && consider(index); index -= 1) {}
+      } else if (direction === 'forward') {
+        for (let index = target; index <= end && consider(index); index += 1) {}
+      } else {
+        if (consider(target)) {
+          for (let distance = 1; selected.length < TRANSCRIPT_MATERIALIZE_BATCH_TURNS; distance += 1) {
+            const before = target - distance;
+            const after = target + distance;
+            if (before < start && after > end) break;
+            if (before >= start && !consider(before)) break;
+            if (after <= end && !consider(after)) break;
+          }
+        }
+      }
+      return selected.sort((a, b) => a - b);
+    }
+
     renderRuns() {
       const runs = [];
       for (let index = 0; index < this.segments.length; index += 1) {
         const segment = this.segments[index];
         if (segment.state === 'empty') {
           const previous = runs[runs.length - 1];
-          if (previous?.type === 'gap') previous.endOrdinal = segment.endOrdinal;
+          if (previous?.type === 'gap') {
+            previous.endOrdinal = segment.endOrdinal;
+            previous.endSegmentIndex = index;
+          }
           continue;
         }
         if (segment.state === 'materialized') {
@@ -329,15 +386,16 @@
         const previous = runs[runs.length - 1];
         if (previous?.type === 'gap' && previous.endOrdinal + 1 === segment.startOrdinal) {
           previous.endOrdinal = segment.endOrdinal;
+          previous.endSegmentIndex = index;
           previous.height += segment.estHeight;
-          previous.segmentIndexes.push(index);
         } else {
           runs.push({
             type: 'gap',
             startOrdinal: segment.startOrdinal,
             endOrdinal: segment.endOrdinal,
-            height: segment.estHeight,
-            segmentIndexes: [index]
+            startSegmentIndex: index,
+            endSegmentIndex: index,
+            height: segment.estHeight
           });
         }
       }
@@ -353,8 +411,9 @@
             transcriptGap: true,
             startOrdinal: run.startOrdinal,
             endOrdinal: run.endOrdinal,
-            estimatedHeight: run.height,
-            segmentIndexes: run.segmentIndexes
+            startSegmentIndex: run.startSegmentIndex,
+            endSegmentIndex: run.endSegmentIndex,
+            estimatedHeight: run.height
           });
           continue;
         }
@@ -615,6 +674,8 @@
   return {
     TranscriptStore,
     TRANSCRIPT_BUDGETS,
+    TRANSCRIPT_MATERIALIZE_BATCH_TURNS,
+    TRANSCRIPT_MATERIALIZE_BATCH_ROWS,
     TRANSCRIPT_FLAG_COMPACTION_TAIL,
     TRANSCRIPT_FLAG_EMPTY_BODY,
     transcriptStoreFromMessages,

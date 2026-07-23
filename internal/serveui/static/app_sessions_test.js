@@ -3740,6 +3740,202 @@ async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
   pass(name);
 }
 
+async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
+  const name = 'huge transcript gaps materialize incrementally while traversal stays bounded and anchored';
+  const rowCount = 5200;
+  const materializeBudget = 60;
+  const fetchBatchSizes = [];
+  let appRef = null;
+  let durableNodes = [];
+  let absoluteTops = new Map();
+  let renderedDescriptorCount = 0;
+
+  const renderTranscriptDOM = () => {
+    if (!appRef) return;
+    const session = appRef.state.sessions.find((item) => item?.id === appRef.state.activeSessionId);
+    const transcript = session?.transcript;
+    if (!transcript) return;
+    const messages = appRef.elements.messages;
+    const chatScroll = appRef.elements.chatScroll;
+    const topLevel = [];
+    durableNodes = [];
+    absoluteTops = new Map();
+    let top = 0;
+    for (const run of transcript.renderRuns()) {
+      const node = makeNode(run.type === 'gap' ? 'div' : 'section');
+      if (run.type === 'gap') {
+        node.classList.add('transcript-gap');
+        node.dataset.startSegmentIndex = String(run.startSegmentIndex);
+        node.dataset.endSegmentIndex = String(run.endSegmentIndex);
+        top += run.height;
+      } else {
+        node.classList.add('transcript-turn');
+        node.dataset.segmentIndex = String(run.segmentIndex);
+        const height = 52 + (run.segmentIndex % 3) * 7;
+        for (let ordinal = run.startOrdinal; ordinal <= run.endOrdinal; ordinal += 1) {
+          if (!transcript.bodies.has(transcript.ids[ordinal])) continue;
+          const durable = makeNode('article');
+          const nodeTop = top;
+          durable.dataset.durableId = String(transcript.ids[ordinal]);
+          durable.getBoundingClientRect = () => ({
+            top: nodeTop - (Number(chatScroll.scrollTop) || 0),
+            bottom: nodeTop + height - (Number(chatScroll.scrollTop) || 0)
+          });
+          node.appendChild(durable);
+          durableNodes.push(durable);
+          absoluteTops.set(transcript.ids[ordinal], nodeTop);
+        }
+        top += height;
+      }
+      topLevel.push(node);
+    }
+    messages.replaceChildren(...topLevel);
+    renderedDescriptorCount = topLevel.length;
+    chatScroll.scrollHeight = top;
+  };
+
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptBodiesURL(url, 'sess_huge_scroll')) {
+        const parsed = parsedTestURL(url);
+        const ids = String(parsed.searchParams.get('ids') || '').split(',').filter(Boolean).map(Number);
+        fetchBatchSizes.push(ids.length);
+        if (ids.length > 32) {
+          return new Response(JSON.stringify({ error: { message: 'client batch exceeded test cap' } }), {
+            status: 413,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({
+          rev: 1,
+          messages: ids.map((id) => ({
+            id,
+            sequence: id - 1,
+            role: 'user',
+            created_at: 1710000000000 + id,
+            parts: [{ type: 'text', text: `row-${id}` }]
+          }))
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      renderMessages() { renderTranscriptDOM(); }
+    }
+  });
+  appRef = app;
+  const messages = app.elements.messages;
+  const chatScroll = app.elements.chatScroll;
+  chatScroll.clientHeight = 400;
+  chatScroll.scrollTop = 0;
+  chatScroll.getBoundingClientRect = () => ({ top: 0, bottom: chatScroll.clientHeight });
+  messages.querySelectorAll = (selector) => selector === '[data-durable-id]' ? durableNodes.slice() : [];
+  messages.querySelector = (selector) => {
+    const match = String(selector).match(/^\[data-durable-id="([^"]+)"\]$/);
+    return match ? durableNodes.find((node) => node.dataset.durableId === match[1]) || null : null;
+  };
+
+  const session = { id: 'sess_huge_scroll', messages: [] };
+  const transcript = new windowObj.TranscriptStore(session.id, { maxMaterializedTurns: materializeBudget, overscanTurns: 8 });
+  const ids = Array.from({ length: rowCount }, (_, index) => index + 1);
+  transcript.applyIndex({
+    rev: 1,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: { ids, seqs: ids.map((id) => id - 1), roles: 'u'.repeat(rowCount), flags: ids.map(() => 0) }
+  });
+  transcript.setViewport(rowCount - 1, rowCount - 1);
+  transcript.materialize(ids.slice(-materializeBudget).map((id) => ({
+    id,
+    sequence: id - 1,
+    role: 'user',
+    parts: [{ type: 'text', text: `row-${id}` }]
+  })), { countFetch: false });
+  session.transcript = transcript;
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.autoScroll = false;
+  app.refreshSessionMessagesFromTranscript(session);
+  renderTranscriptDOM();
+
+  let previousFirst = rowCount - materializeBudget;
+  for (let step = 0; step < 40; step += 1) {
+    const gap = transcript.renderRuns()
+      .filter((run) => run.type === 'gap' && run.endSegmentIndex < previousFirst)
+      .sort((a, b) => b.endSegmentIndex - a.endSegmentIndex)[0];
+    if (!gap) {
+      fail(name, `lost the next coalesced gap at traversal step ${step}`);
+      return;
+    }
+    const anchorID = gap.endOrdinal + 2;
+    renderTranscriptDOM();
+    const anchorAbsoluteTop = absoluteTops.get(anchorID);
+    if (!Number.isFinite(anchorAbsoluteTop)) {
+      fail(name, `missing materialized anchor row ${anchorID} at traversal step ${step}`);
+      return;
+    }
+    chatScroll.scrollTop = anchorAbsoluteTop - 100;
+    const anchorNode = messages.querySelector(`[data-durable-id="${anchorID}"]`);
+    const beforeTop = anchorNode?.getBoundingClientRect?.().top;
+
+    const loaded = await app.materializeTranscriptSegments(session, {
+      startSegmentIndex: gap.startSegmentIndex,
+      endSegmentIndex: gap.endSegmentIndex,
+      targetOrdinal: gap.endOrdinal,
+      direction: 'backward'
+    });
+    if (!loaded) {
+      fail(name, `bounded gap materialization failed at traversal step ${step}`);
+      return;
+    }
+    if (transcript.viewport.lastOrdinal !== gap.endOrdinal
+      || transcript.viewport.lastOrdinal - transcript.viewport.firstOrdinal + 1 > 32) {
+      fail(name, `viewport did not follow the bounded batch at traversal step ${step}`, JSON.stringify(transcript.viewport));
+      return;
+    }
+
+    const afterNode = messages.querySelector(`[data-durable-id="${anchorID}"]`);
+    const afterTop = afterNode?.getBoundingClientRect?.().top;
+    if (!Number.isFinite(beforeTop) || !Number.isFinite(afterTop) || Math.abs(afterTop - beforeTop) > 1) {
+      fail(name, `anchored row ${anchorID} jumped during fill ${step}`, `before=${beforeTop} after=${afterTop}`);
+      return;
+    }
+    const materialized = transcript.segments.filter((segment) => segment.state === 'materialized');
+    if (materialized.length > materializeBudget || transcript.bodies.size > materializeBudget) {
+      fail(name, `materialized transcript exceeded budget at step ${step}`, `turns=${materialized.length} bodies=${transcript.bodies.size}`);
+      return;
+    }
+    if (session.messages.length > materializeBudget + 3 || renderedDescriptorCount > materializeBudget + 3 || messages.children.length > materializeBudget + 3) {
+      fail(name, `rendered transcript exceeded sparse DOM bounds at step ${step}`, `messages=${session.messages.length} descriptors=${renderedDescriptorCount} DOM=${messages.children.length}`);
+      return;
+    }
+    const first = Math.min(...materialized.map((segment) => segment.startOrdinal));
+    if (!(first < previousFirst)) {
+      fail(name, `traversal made no progress at step ${step}`, `first=${first} previous=${previousFirst}`);
+      return;
+    }
+    previousFirst = first;
+  }
+
+  if (fetchBatchSizes.length !== 40 || fetchBatchSizes.some((size) => size < 1 || size > 32)) {
+    fail(name, 'body fetch batches were not uniformly bounded', JSON.stringify(fetchBatchSizes));
+    return;
+  }
+  if (transcript.bodies.has(rowCount)) {
+    fail(name, 'distant initial tail body was not evicted while traversing older batches');
+    return;
+  }
+  if (transcript.stats.evictions === 0 || previousFirst >= rowCount - materializeBudget - 32 * 30) {
+    fail(name, 'multi-batch traversal did not progressively load and evict distant turns', `first=${previousFirst} evictions=${transcript.stats.evictions}`);
+    return;
+  }
+  transcript._checkInvariants();
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -3782,6 +3978,7 @@ async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
   await testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal();
+  await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
