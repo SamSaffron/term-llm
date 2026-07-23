@@ -3612,6 +3612,199 @@ async function testOptimisticTranscriptStorageIsPerSession() {
   pass(name);
 }
 
+async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconciliation() {
+  const name = 'reload reconciles persisted tool turns within their target segment beyond the materialization budget';
+  const sessionId = 'stale-tool-reload';
+  const storageKey = 'term_llm_optimistic_transcript';
+  let nextID = 201;
+  let nextSeq = 10;
+  const message = (role, parts) => ({
+    id: nextID++,
+    sequence: nextSeq++,
+    role,
+    created_at: nextSeq * 1000,
+    parts
+  });
+  const staleTurn = [
+    message('user', [{ type: 'text', text: 'run the old tool' }]),
+    message('assistant', [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'stale-call' }]),
+    message('tool', [{ type: 'tool_result', tool_name: 'read_file', tool_call_id: 'stale-call' }]),
+    message('assistant', [{ type: 'text', text: 'Old turn done.' }])
+  ];
+  const turns = [staleTurn];
+  for (let index = 0; index < 72; index += 1) {
+    turns.push([
+      message('user', [{ type: 'text', text: `filler ${index}` }]),
+      message('assistant', [{ type: 'text', text: `answer ${index}` }])
+    ]);
+  }
+  const unrelatedTurn = [
+    message('user', [{ type: 'text', text: 'run a later tool' }]),
+    message('assistant', [{ type: 'tool_call', tool_name: 'grep', tool_call_id: 'never-durable-call' }]),
+    message('tool', [{ type: 'tool_result', tool_name: 'grep', tool_call_id: 'never-durable-call' }]),
+    message('assistant', [{ type: 'text', text: 'Later turn done.' }])
+  ];
+  turns.push(unrelatedTurn);
+  const raw = turns.flat();
+  const persistedEntries = [
+    {
+      id: 'local-stale-tool-group',
+      clientKey: 'local-stale-tool-group',
+      role: 'tool-group',
+      status: 'done',
+      tools: [{ id: 'stale-call', name: 'read_file', status: 'done' }],
+      revAtSend: 5,
+      durableSeqAtSend: staleTurn[0].sequence,
+      optimistic: true
+    },
+    {
+      id: 'local-unmatched-tool-group',
+      clientKey: 'local-unmatched-tool-group',
+      role: 'tool-group',
+      status: 'done',
+      tools: [{ id: 'never-durable-call', name: 'write_file', status: 'done' }],
+      revAtSend: 5,
+      durableSeqAtSend: staleTurn[staleTurn.length - 1].sequence,
+      optimistic: true
+    }
+  ];
+  const persisted = JSON.stringify({
+    version: 1,
+    sessions: { [sessionId]: persistedEntries }
+  });
+  const bodyRequests = [];
+  const targetStatesAtFetch = [];
+  let indexRequests = 0;
+  let primedMaterializationBudget = false;
+  let session = null;
+  const { app, storage } = await createSessionsHarness({
+    initialStorage: { [storageKey]: persisted },
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        indexRequests += 1;
+        if (indexRequests > 1) {
+          return new Response(null, { status: 304, headers: { ETag: '"stale-tool-rev-8"' } });
+        }
+        return new Response(JSON.stringify({
+          rev: 8,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: {
+            ids: raw.map((entry) => entry.id),
+            seqs: raw.map((entry) => entry.sequence),
+            roles: raw.map((entry) => ({ user: 'u', assistant: 'a', tool: 't' })[entry.role]).join(''),
+            flags: raw.map(() => 0)
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"stale-tool-rev-8"' } });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        targetStatesAtFetch.push(session?.transcript?.segments?.[0]?.state || '');
+        if (!primedMaterializationBudget) {
+          primedMaterializationBudget = true;
+          session.transcript.materialize(turns.slice(-60).flat(), { countFetch: false });
+        }
+        const requested = (parsedTestURL(url)?.searchParams.get('ids') || '')
+          .split(',')
+          .filter(Boolean)
+          .map(Number);
+        bodyRequests.push(requested);
+        const requestedAnchors = new Set(requested);
+        const messages = turns
+          .filter((turn) => requestedAnchors.has(turn[0].id))
+          .flat();
+        return new Response(JSON.stringify({ rev: 8, messages }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const loaded = await app.syncTranscript(session, { reason: 'reload' });
+  const requested = bodyRequests[0] || [];
+  if (!loaded || targetStatesAtFetch[0] !== 'evicted') {
+    fail(name, 'stale turn was not initially evicted before body materialization', JSON.stringify({ loaded, targetStatesAtFetch }));
+    return;
+  }
+  if (turns.length <= 60) {
+    fail(name, 'regression transcript did not exceed the materialized-turn budget', String(turns.length));
+    return;
+  }
+  if (!requested.includes(staleTurn[0].id) || !requested.includes(unrelatedTurn[0].id)) {
+    fail(name, 'reload did not fetch both the stale original turn and the pinned later turn', JSON.stringify(bodyRequests));
+    return;
+  }
+  if (requested.length > 32 || requested.length >= turns.length) {
+    fail(name, 'reload body fetch was not bounded to selected turn anchors', JSON.stringify({ requested: requested.length, turns: turns.length }));
+    return;
+  }
+  let optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
+  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
+    fail(name, '200 reconciliation did not retire only the target-segment match before budget enforcement', JSON.stringify(optimisticKeys));
+    return;
+  }
+  let saved = JSON.parse(storage.get(storageKey) || 'null');
+  let savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
+    fail(name, '200 reconciliation was not persisted before budget enforcement', JSON.stringify(saved));
+    return;
+  }
+  if (session.transcript.segments[0]?.state !== 'evicted'
+      || session.transcript.segments.filter((segment) => segment.state === 'materialized').length > 60) {
+    fail(name, 'post-reconciliation budget did not evict the distant target turn', JSON.stringify({
+      targetState: session.transcript.segments[0]?.state || 'missing',
+      materialized: session.transcript.segments.filter((segment) => segment.state === 'materialized').length
+    }));
+    return;
+  }
+
+  session.transcript.addOptimistic({
+    id: 'local-304-tool-group',
+    clientKey: 'local-304-tool-group',
+    role: 'tool-group',
+    status: 'done',
+    tools: [{ id: 'stale-call', name: 'read_file', status: 'done' }],
+    revAtSend: 5,
+    durableSeqAtSend: staleTurn[0].sequence,
+    optimistic: true
+  }, 5, { persisted: true });
+  app.persistTranscriptOptimistic(session);
+
+  const loadedNotModified = await app.syncTranscript(session, { reason: 'not-modified' });
+  optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
+  if (!loadedNotModified || targetStatesAtFetch[1] !== 'evicted' || !bodyRequests[1]?.includes(staleTurn[0].id)) {
+    fail(name, '304 sync did not rematerialize the evicted reconciliation target', JSON.stringify({ loadedNotModified, targetStatesAtFetch, bodyRequests }));
+    return;
+  }
+  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
+    fail(name, '304 reconciliation did not retire its target-segment match before budget enforcement', JSON.stringify(optimisticKeys));
+    return;
+  }
+  saved = JSON.parse(storage.get(storageKey) || 'null');
+  savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-unmatched-tool-group'])) {
+    fail(name, '304 reconciliation was not persisted before budget enforcement', JSON.stringify(saved));
+    return;
+  }
+  const finalMaterialized = session.transcript.segments.filter((segment) => segment.state === 'materialized').length;
+  if (session.transcript.segments[0]?.state !== 'evicted' || finalMaterialized > 60) {
+    fail(name, '304 sync did not enforce the budget after reconciliation', JSON.stringify({
+      targetState: session.transcript.segments[0]?.state || 'missing',
+      materialized: finalMaterialized
+    }));
+    return;
+  }
+  pass(name);
+}
+
 async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
   const name = 'grouped tool conversion preserves source range and later durable anchors';
   const { app, windowObj } = await createSessionsHarness();
@@ -4082,6 +4275,7 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionPruningDestroysTranscriptStores();
   await testOptimisticTranscriptStorageIsPerSession();
+  await testReloadMaterializesPersistedOptimisticToolTurnsBeforeReconciliation();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
   await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
   await testTerminalTranscriptSyncQueuesBehindInflightRequest();

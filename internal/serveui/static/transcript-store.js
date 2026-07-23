@@ -52,6 +52,7 @@
       this.bodies = new Map();
       this.segments = [];
       this.optimistic = [];
+      this.persistedOptimistic = new WeakSet();
       this.activeRun = null;
       this.etag = '';
       this.viewport = { firstOrdinal: -1, lastOrdinal: -1 };
@@ -414,17 +415,21 @@
       return result;
     }
 
-    addOptimistic(entry, revAtSend = this.rev) {
+    addOptimistic(entry, revAtSend = this.rev, options = {}) {
       if (!entry || typeof entry !== 'object') return null;
       const clientKey = String(entry.clientKey || entry.id || `optimistic-${Date.now()}-${this.optimistic.length}`);
       const existing = this.optimistic.find((item) => String(item.clientKey || item.id || '') === clientKey);
-      if (existing) return existing;
+      if (existing) {
+        if (options.persisted === true) this.persistedOptimistic.add(existing);
+        return existing;
+      }
       const optimistic = entry;
       optimistic.clientKey = clientKey;
       optimistic.optimistic = true;
       optimistic.revAtSend = finiteInt(entry.revAtSend, finiteInt(revAtSend, this.rev));
       optimistic.durableSeqAtSend = finiteInt(entry.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1);
       this.optimistic.push(optimistic);
+      if (options.persisted === true) this.persistedOptimistic.add(optimistic);
       return optimistic;
     }
 
@@ -432,6 +437,48 @@
       const normalized = String(id || '').trim();
       this.activeRun = normalized ? { id: normalized, startedRev: finiteInt(startedRev, 0) } : null;
       return this.activeRun;
+    }
+
+    segmentAfterSequence(sequence) {
+      const boundary = finiteInt(sequence, -1);
+      let low = 0;
+      let high = this.seqs.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (this.seqs[mid] <= boundary) low = mid + 1;
+        else high = mid;
+      }
+      return low < this.seqs.length ? this.segmentForOrdinal(low) : -1;
+    }
+
+    persistedOptimisticToolSegmentIndexes(limit = TRANSCRIPT_MATERIALIZE_BATCH_TURNS) {
+      if (this.activeRun || this.optimistic.length === 0) return [];
+      const max = Math.max(1, finiteInt(limit, TRANSCRIPT_MATERIALIZE_BATCH_TURNS));
+      const selected = new Set();
+      for (const local of this.optimistic) {
+        if (selected.size >= max) break;
+        if (!this.persistedOptimistic.has(local)) continue;
+        if (local.role !== 'tool-group' && local.role !== 'tool') continue;
+        if (this.rev <= finiteInt(local.revAtSend, this.rev)) continue;
+        const segmentIndex = this.segmentAfterSequence(local.durableSeqAtSend);
+        if (segmentIndex >= 0 && this.segments[segmentIndex]?.state === 'evicted') selected.add(segmentIndex);
+      }
+      return [...selected];
+    }
+
+    durableToolIDsInSegment(segmentIndex, afterSequence = -1) {
+      const ids = new Set();
+      const segment = this.segments[segmentIndex];
+      if (!segment) return ids;
+      for (let ordinal = segment.startOrdinal; ordinal <= segment.endOrdinal; ordinal += 1) {
+        if (this.seqs[ordinal] <= afterSequence) continue;
+        const entry = this.bodies.get(this.ids[ordinal]);
+        for (const part of entry?.parts || []) {
+          const id = partToolID(part);
+          if (id) ids.add(id);
+        }
+      }
+      return ids;
     }
 
     durableToolIDsAfter(sequence) {
@@ -478,7 +525,9 @@
             const id = partToolID(part);
             if (id) localIDs.add(id);
           }
-          const durableIDs = this.durableToolIDsAfter(afterSeq);
+          const durableIDs = this.persistedOptimistic.has(local)
+            ? this.durableToolIDsInSegment(this.segmentAfterSequence(afterSeq), afterSeq)
+            : this.durableToolIDsAfter(afterSeq);
           matched = localIDs.size > 0 && [...localIDs].every((id) => durableIDs.has(id));
         } else if (local.role === 'assistant') {
           for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {

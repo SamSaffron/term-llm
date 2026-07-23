@@ -286,6 +286,27 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   ]);
   assert.equal(tools.reconcileOptimistic().length, 1, 'interleaved durable tool evidence must replace optimistic group');
 
+  const scopedTools = new TranscriptStore('scoped-persisted-tools');
+  scopedTools.applyIndex(envelope([30, 31], { rev: 1, roles: 'ua' }));
+  scopedTools.addOptimistic({ clientKey: 'persisted-tools', role: 'tool-group', tools: [{ id: 'shared-call' }] }, 1, { persisted: true });
+  scopedTools.addOptimistic({ clientKey: 'live-tools', role: 'tool-group', tools: [{ id: 'shared-call' }] });
+  scopedTools.applyIndex(envelope([30, 31, 32, 33, 34, 35, 36], { rev: 2, roles: 'uauauat' }));
+  scopedTools.materialize([
+    body(30, 0, 'user'),
+    body(31, 1, 'assistant'),
+    body(32, 2, 'user'),
+    body(33, 3, 'assistant'),
+    body(34, 4, 'user'),
+    body(35, 5, 'assistant', [{ type: 'tool_call', tool_call_id: 'shared-call' }]),
+    body(36, 6, 'tool', [{ type: 'tool_result', tool_call_id: 'shared-call' }])
+  ]);
+  assert.deepEqual(
+    scopedTools.reconcileOptimistic().map((entry) => entry.clientKey),
+    ['live-tools'],
+    'persisted tool IDs must match only their target segment while live entries retain later-turn matching'
+  );
+  assert.deepEqual(scopedTools.optimistic.map((entry) => entry.clientKey), ['persisted-tools']);
+
   const displayOnly = new TranscriptStore('display-only');
   displayOnly.addOptimistic({ clientKey: 'guardian', role: 'event', transient: true });
   displayOnly.addOptimistic({ clientKey: 'pending-user', role: 'user' });

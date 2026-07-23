@@ -1012,7 +1012,9 @@ const ensureSessionTranscript = (session) => {
     session.transcript = new window.TranscriptStore(session.id);
     const saved = readTranscriptOptimisticRegistry()[session.id];
     if (Array.isArray(saved)) {
-      saved.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).forEach((entry) => session.transcript.addOptimistic(entry, entry.revAtSend));
+      saved.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).forEach((entry) => {
+        session.transcript.addOptimistic(entry, entry.revAtSend, { persisted: true });
+      });
     }
   }
   return session.transcript;
@@ -1232,6 +1234,16 @@ const boundedTranscriptSegmentIndexes = (transcript, request) => {
   return selected.sort((a, b) => a - b);
 };
 
+const transcriptSyncSegmentIndexes = (transcript) => {
+  if (!transcript) return [];
+  const wanted = new Set(transcript.pinnedSegments);
+  if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
+  for (const index of transcript.persistedOptimisticToolSegmentIndexes?.(TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || []) {
+    wanted.add(index);
+  }
+  return [...wanted];
+};
+
 const fetchTranscriptSegments = async (session, segmentIndexes, options = {}) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
@@ -1321,10 +1333,11 @@ const syncTranscriptOnce = async (session, options = {}) => {
       const last = transcript.ids.length - 1;
       transcript.setViewport(last, last);
     }
-    const wanted = new Set(transcript.pinnedSegments);
-    if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
-    const loaded = await fetchTranscriptSegments(session, [...wanted]);
+    const loaded = await fetchTranscriptSegments(session, transcriptSyncSegmentIndexes(transcript), { deferBudget: true });
     if (loaded) {
+      transcript.reconcileOptimistic();
+      persistTranscriptOptimistic(session);
+      transcript.enforceBudget();
       refreshSessionMessagesFromTranscript(session);
       if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
     }
@@ -1353,18 +1366,17 @@ const syncTranscriptOnce = async (session, options = {}) => {
     const last = transcript.ids.length - 1;
     transcript.setViewport(last, last);
   }
-  const wanted = new Set(transcript.pinnedSegments);
-  if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
-  const loaded = await fetchTranscriptSegments(session, [...wanted]);
+  const loaded = await fetchTranscriptSegments(session, transcriptSyncSegmentIndexes(transcript), { deferBudget: true });
   if (!loaded) {
     transcript.etag = '';
     return false;
   }
   transcript.withViewportAnchor(adapter, () => {
     transcript.reconcileOptimistic();
+    persistTranscriptOptimistic(session);
+    transcript.enforceBudget();
     refreshSessionMessagesFromTranscript(session);
   });
-  persistTranscriptOptimistic(session);
   touchTranscriptSkeleton(session);
   if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
   return true;
