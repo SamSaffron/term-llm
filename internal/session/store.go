@@ -229,6 +229,13 @@ type TranscriptVersionReporter interface {
 	TranscriptVersioned() bool
 }
 
+// SessionSummaryTranscriptRevisionReporter reports whether Store.List populates
+// SessionSummary.TranscriptRev directly, allowing callers to avoid one revision
+// query per listed session.
+type SessionSummaryTranscriptRevisionReporter interface {
+	SessionSummariesIncludeTranscriptRev() bool
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.

@@ -161,6 +161,32 @@ func TestHandleSessionTranscriptBodiesExpandsWholeTurnAndMarksToolError(t *testi
 	}
 }
 
+func TestHandleSessionTranscriptBodiesRejectsExpandedTurnAboveProtocolLimit(t *testing.T) {
+	srv, store, sess := newTranscriptHandlerServer(t)
+	ctx := context.Background()
+	messages := make([]*session.Message, 0, transcriptBodiesMaxIDs+1)
+	messages = append(messages, session.NewMessage(sess.ID, llm.UserText("large turn"), -1))
+	for i := 1; i <= transcriptBodiesMaxIDs; i++ {
+		messages = append(messages, session.NewMessage(sess.ID, llm.AssistantText(fmt.Sprintf("part-%d", i)), -1))
+	}
+	for i, msg := range messages {
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage %d: %v", i, err)
+		}
+	}
+
+	url := "/v1/sessions/" + sess.ID + "/transcript/bodies?ids=" + strconv.FormatInt(messages[0].ID, 10)
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d, want %d; body=%s", rr.Code, http.StatusRequestEntityTooLarge, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "turn exceeds") || !strings.Contains(rr.Body.String(), strconv.Itoa(transcriptBodiesMaxIDs)) {
+		t.Fatalf("body does not explain expanded turn limit: %s", rr.Body.String())
+	}
+}
+
 func TestHandleSessionTranscriptBodiesParsesRangesAndCapsExpansion(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()

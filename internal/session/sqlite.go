@@ -2085,6 +2085,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasWorktreeDir {
 		worktreeDirCol = "COALESCE(s.worktree_dir, '')"
 	}
+	transcriptRevCol := "0"
+	if s.hasTranscriptRev {
+		transcriptRevCol = "COALESCE(s.transcript_rev, 0)"
+	}
 	fromClause := "FROM sessions s"
 	if opts.SortByNumberDesc {
 		// Completed-session walks page by descending session number. Force the
@@ -2095,7 +2099,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
-		       ` + messageCountCol + ` as message_count,
+		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + `
 		WHERE 1=1`
@@ -2215,7 +2219,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw, shareRaw sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
-			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount,
+			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags, &worktreeDir, &goalRaw, &shareRaw)
 		if err != nil {
@@ -3191,6 +3195,12 @@ func (s *SQLiteStore) TranscriptVersioned() bool {
 	return s != nil && s.hasTranscriptRev
 }
 
+// SessionSummariesIncludeTranscriptRev reports whether List can read revisions
+// from the sessions row without compatibility fallbacks.
+func (s *SQLiteStore) SessionSummariesIncludeTranscriptRev() bool {
+	return s != nil && s.hasTranscriptRev
+}
+
 // TranscriptRev returns the current durable transcript revision. Old read-only
 // databases without the revision column are explicitly unversioned (revision 0).
 func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
@@ -3213,7 +3223,7 @@ func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int6
 	return rev, nil
 }
 
-func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part) bool {
+func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls map[string]bool) bool {
 	if role == llm.RoleEvent {
 		msg := llm.Message{Role: role, Parts: parts}
 		if _, ok := llm.ParseModelSwapMarker(msg); ok {
@@ -3240,7 +3250,7 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part) bool {
 				return true
 			}
 		case llm.PartToolResult:
-			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || part.ToolResult.Name == "update_plan") {
+			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || part.ToolResult.Name == "update_plan" || planToolCalls[part.ToolResult.ID]) {
 				return true
 			}
 		}
@@ -3289,6 +3299,8 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 	}
 	defer rows.Close()
 	snapshot.Items = make([]TranscriptIndexItem, 0)
+	partsByItem := make([][]llm.Part, 0)
+	planToolCalls := make(map[string]bool)
 	for rows.Next() {
 		var item TranscriptIndexItem
 		var partsJSON string
@@ -3303,16 +3315,24 @@ func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID strin
 		if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
 			return TranscriptSnapshot{}, fmt.Errorf("decode transcript index parts: %w", err)
 		}
-		if !transcriptRowHasDisplayBody(llm.Role(item.Role), parts) {
-			item.Flags |= TranscriptFlagEmptyBody
+		for _, part := range parts {
+			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
+				planToolCalls[part.ToolCall.ID] = true
+			}
 		}
 		snapshot.Items = append(snapshot.Items, item)
+		partsByItem = append(partsByItem, parts)
 	}
 	if err := rows.Err(); err != nil {
 		return TranscriptSnapshot{}, fmt.Errorf("iterate transcript index: %w", err)
 	}
 	if err := rows.Close(); err != nil {
 		return TranscriptSnapshot{}, fmt.Errorf("close transcript index: %w", err)
+	}
+	for i := range snapshot.Items {
+		if !transcriptRowHasDisplayBody(llm.Role(snapshot.Items[i].Role), partsByItem[i], planToolCalls) {
+			snapshot.Items[i].Flags |= TranscriptFlagEmptyBody
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return TranscriptSnapshot{}, fmt.Errorf("commit transcript index read: %w", err)
@@ -3329,6 +3349,8 @@ func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) 
 	}
 	return snapshot.Rev, snapshot.Items, nil
 }
+
+const transcriptBodiesQueryMaxIDs = 512
 
 // GetMessagesByIDs returns requested durable rows in authoritative sequence
 // order and the revision describing them from one SQLite read transaction.
@@ -3362,6 +3384,9 @@ func (s *SQLiteStore) GetMessagesByIDs(ctx context.Context, sessionID string, id
 			continue
 		}
 		seen[id] = struct{}{}
+		if len(seen) > transcriptBodiesQueryMaxIDs {
+			return 0, nil, fmt.Errorf("transcript bodies query exceeds %d IDs", transcriptBodiesQueryMaxIDs)
+		}
 		placeholders = append(placeholders, "?")
 		args = append(args, id)
 	}

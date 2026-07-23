@@ -60,6 +60,10 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 
 	result := make([]statusEntry, 0, len(sessions))
 	indexer, revisioned := transcriptIndexerForWeb(s.store)
+	summaryRevisions := false
+	if reporter, ok := s.store.(session.SessionSummaryTranscriptRevisionReporter); ok {
+		summaryRevisions = reporter.SessionSummariesIncludeTranscriptRev()
+	}
 	for _, sess := range sessions {
 		lastMessageAt := sess.LastMessageAt
 		if lastMessageAt.IsZero() {
@@ -69,8 +73,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		if transcriptUpdatedAt.IsZero() {
 			transcriptUpdatedAt = sess.CreatedAt
 		}
-		transcriptRev := int64(0)
-		if revisioned {
+		transcriptRev := sess.TranscriptRev
+		if revisioned && !summaryRevisions {
 			if rev, revErr := indexer.TranscriptRev(r.Context(), sess.ID); revErr == nil {
 				transcriptRev = rev
 			}

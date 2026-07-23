@@ -242,6 +242,10 @@ func (s *serveServer) handleSessionTranscriptBodies(w http.ResponseWriter, r *ht
 			return
 		}
 		expanded := expandTranscriptTurnIDs(snapshot.Items, requested)
+		if len(expanded) > transcriptBodiesMaxIDs {
+			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", fmt.Sprintf("transcript turn exceeds %d display rows", transcriptBodiesMaxIDs))
+			return
+		}
 		rev, messages, err := indexer.GetMessagesByIDs(r.Context(), sessionID, expanded)
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get transcript bodies")

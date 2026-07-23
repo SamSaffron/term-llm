@@ -285,6 +285,13 @@ func (s *LoggingStore) TranscriptVersioned() bool {
 	return ok
 }
 
+// SessionSummariesIncludeTranscriptRev preserves the wrapped store's list-query
+// capability through the logging decorator.
+func (s *LoggingStore) SessionSummariesIncludeTranscriptRev() bool {
+	reporter, ok := s.Store.(SessionSummaryTranscriptRevisionReporter)
+	return ok && reporter.SessionSummariesIncludeTranscriptRev()
+}
+
 // GetTranscriptSnapshot delegates coherent transcript envelope reads.
 func (s *LoggingStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
 	indexer, ok := s.Store.(TranscriptIndexer)

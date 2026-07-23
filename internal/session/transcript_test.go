@@ -144,6 +144,36 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreTranscriptIndexMatchesPlanResultDisplayVisibility(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	callID := "call-plan"
+	messages := []*Message{
+		NewMessage(sess.ID, llm.UserText("make a plan"), -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
+			Type:     llm.PartToolCall,
+			ToolCall: &llm.ToolCall{ID: callID, Name: "update_plan"},
+		}}}, -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
+			Type:       llm.PartToolResult,
+			ToolResult: &llm.ToolResult{ID: callID},
+		}}}, -1),
+	}
+	for _, msg := range messages {
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+
+	_, items, err := store.GetTranscriptIndex(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetTranscriptIndex: %v", err)
+	}
+	if got := items[2].Flags & TranscriptFlagEmptyBody; got != 0 {
+		t.Fatalf("inferred update_plan result flagged empty: flags=%d", items[2].Flags)
+	}
+}
+
 func TestSQLiteStoreTranscriptSnapshotIsCoherentDuringConcurrentWrites(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()

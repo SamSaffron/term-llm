@@ -63,6 +63,7 @@ type responseRunSubscribeResult struct {
 
 type responseRun struct {
 	mu                 sync.Mutex
+	terminalMu         sync.Mutex
 	id                 string
 	sessionID          string
 	previousResponseID string
@@ -134,9 +135,20 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 	return r.appendEventLocked(event, payload, false)
 }
 
+func (r *responseRun) readFinalRev() int64 {
+	if r.finalRevReader == nil {
+		return 0
+	}
+	return r.finalRevReader()
+}
+
 func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	finalRev := r.readFinalRev()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.finalRev = finalRev
 	if r.cancelRequested {
 		r.status = "cancelled"
 		r.errorType = ""
@@ -161,11 +173,21 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 }
 
 func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	r.mu.Lock()
+	if !r.cancelRequested {
+		r.mu.Unlock()
+		return false, nil
+	}
+	r.mu.Unlock()
+	finalRev := r.readFinalRev()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.cancelRequested {
 		return false, nil
 	}
+	r.finalRev = finalRev
 	r.status = "cancelled"
 	r.errorType = ""
 	r.errorMessage = ""
@@ -175,8 +197,12 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 }
 
 func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (bool, error) {
+	r.terminalMu.Lock()
+	defer r.terminalMu.Unlock()
+	finalRev := r.readFinalRev()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.finalRev = finalRev
 	hadSubscribers := len(r.subscribers) > 0
 	r.status = "failed"
 	r.errorType = errType
@@ -219,9 +245,6 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		}
 	}
 	if terminal {
-		if r.finalRevReader != nil {
-			r.finalRev = r.finalRevReader()
-		}
 		payload["final_rev"] = r.finalRev
 		if response := mapValue(payload["response"]); len(response) > 0 {
 			response["final_rev"] = r.finalRev
@@ -1881,13 +1904,17 @@ func (s *serveServer) transcriptRevBestEffort(ctx context.Context, sessionID str
 	return rev
 }
 
+const responseRunRevisionReadTimeout = 5 * time.Second
+
 func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID string) {
 	if run == nil {
 		return
 	}
-	run.startedRev = s.transcriptRevBestEffort(context.Background(), sessionID)
+	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
+	run.startedRev = s.transcriptRevBestEffort(startedCtx, sessionID)
+	startedCancel()
 	run.finalRevReader = func() int64 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
 		defer cancel()
 		return s.transcriptRevBestEffort(ctx, sessionID)
 	}

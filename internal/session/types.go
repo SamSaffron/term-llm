@@ -141,6 +141,7 @@ type SessionSummary struct {
 	Archived            bool               `json:"archived,omitempty"`
 	Pinned              bool               `json:"pinned,omitempty"`
 	MessageCount        int                `json:"message_count"`
+	TranscriptRev       int64              `json:"transcript_rev"`
 	UserTurns           int                `json:"user_turns,omitempty"`
 	LLMTurns            int                `json:"llm_turns,omitempty"`
 	ToolCalls           int                `json:"tool_calls,omitempty"`
