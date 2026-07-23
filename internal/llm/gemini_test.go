@@ -172,6 +172,7 @@ func TestGeminiStreamUsesMinimalRESTClient(t *testing.T) {
 	}
 	var text string
 	var usage *Usage
+	sawDone := false
 	for {
 		event, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -189,6 +190,12 @@ func TestGeminiStreamUsesMinimalRESTClient(t *testing.T) {
 		if event.Type == EventUsage {
 			usage = event.Use
 		}
+		if event.Type == EventDone {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Fatal("stream did not emit EventDone")
 	}
 	if text != "hello world" {
 		t.Fatalf("text = %q", text)
@@ -205,6 +212,54 @@ func TestGeminiStreamUsesMinimalRESTClient(t *testing.T) {
 	}
 	if config.MaxOutputTokens != 99 || config.Temperature == nil || *config.Temperature != 0 || config.TopP == nil || *config.TopP != 0.75 {
 		t.Fatalf("generation controls = %+v", config)
+	}
+}
+
+func TestGeminiStreamRejectsTruncatedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"partial\"}]}}]}\n\n")
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider("test-key", "gemini-test")
+	provider.baseURL = server.URL
+	provider.client = server.Client()
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sawText, sawError bool
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			sawText = event.Text == "partial"
+		case EventDone:
+			t.Fatal("truncated stream emitted EventDone")
+		case EventError:
+			var incomplete *StreamIncompleteError
+			if !errors.As(event.Err, &incomplete) {
+				t.Fatalf("error = %T %v, want StreamIncompleteError", event.Err, event.Err)
+			}
+			if incomplete.Transport != "Gemini SSE" || incomplete.Terminal != "candidate finishReason" {
+				t.Fatalf("incomplete error = %+v", incomplete)
+			}
+			sawError = true
+		}
+	}
+	if !sawText {
+		t.Fatal("stream did not emit partial candidate text")
+	}
+	if !sawError {
+		t.Fatal("truncated stream did not emit EventError")
 	}
 }
 
@@ -249,7 +304,7 @@ func TestReadGeminiSSEAllowsTruncationAndIgnoresSecondaryCandidates(t *testing.T
 func TestReadGeminiSSEHandlesMultilineAndLargeEvents(t *testing.T) {
 	largeText := strings.Repeat("x", 5*1024*1024)
 	payload := "data: {\"candidates\":[{\"content\":{\"parts\":[\n" +
-		"data: {\"text\":" + string(mustJSONMarshal(t, largeText)) + "}]}}]}\n\n"
+		"data: {\"text\":" + string(mustJSONMarshal(t, largeText)) + "}]},\"finishReason\":\"STOP\"}]}\n\n"
 	var got string
 	err := readGeminiSSE(strings.NewReader(payload), func(resp *geminiGenerateContentResponse) error {
 		got = resp.Candidates[0].Content.Parts[0].Text
@@ -314,7 +369,7 @@ func TestGeminiStreamReturnsTypedSSEError(t *testing.T) {
 func TestGeminiStreamRejectsEmptyCandidateResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"usageMetadata\":{\"promptTokenCount\":1,\"totalTokenCount\":1}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"totalTokenCount\":1}}\n\n")
 	}))
 	defer server.Close()
 
