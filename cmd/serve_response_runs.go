@@ -1784,9 +1784,14 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		return
 	}
 
+	replay := subscription.replay
+	replayThrough := after
+	if len(replay) > 0 {
+		replayThrough = replay[len(replay)-1].Sequence
+	}
+	w.Header().Set("X-Term-LLM-Replay-Through", strconv.FormatInt(replayThrough, 10))
 	setSSEHeaders(w)
 	flusher.Flush()
-	replay := subscription.replay
 	ch := subscription.ch
 	subscriberID := subscription.id
 

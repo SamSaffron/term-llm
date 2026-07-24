@@ -62,6 +62,11 @@
   // consulted after that match solely to retain a not-yet-durable suffix.
   const assistantProjectionCanCover = (local, context = null) => {
     if (!local || local.role !== 'assistant' || local.durable) return false;
+    if (local.historicalReplay === true) {
+      const localResponseID = String(local.responseId || '').trim();
+      const activeResponseID = String(context?.activeRun?.id || '').trim();
+      return !localResponseID || !activeResponseID || localResponseID === activeResponseID;
+    }
     const revAtSend = finiteInt(local.revAtSend, -1);
     const durableSeqAtSend = finiteInt(local.durableSeqAtSend, -1);
     if (revAtSend < 0 || durableSeqAtSend < 0) return false;
@@ -89,6 +94,18 @@
     return '';
   };
 
+  const assistantContentsOverlap = (durableContent, optimisticContent) => {
+    const durable = String(durableContent || '');
+    const optimistic = String(optimisticContent || '');
+    if (!durable || !optimistic) return false;
+    if (optimistic.startsWith(durable) || durable.startsWith(optimistic)) return true;
+    const maxOverlap = Math.min(durable.length, optimistic.length);
+    for (let length = maxOverlap; length > 0; length -= 1) {
+      if (durable.endsWith(optimistic.slice(0, length))) return true;
+    }
+    return false;
+  };
+
   const reconcileTranscriptProjection = (messages, context = null) => {
     if (!Array.isArray(messages) || messages.length === 0) return Array.isArray(messages) ? messages : [];
     const durableIDs = new Set();
@@ -103,8 +120,26 @@
 
     const assistantMatches = new Map();
     const claimedAssistants = new Set();
+    const historicalAssistants = [...messages.entries()].filter(([, message]) => (
+      message?.historicalReplay === true && assistantProjectionCanCover(message, context)
+    ));
+    let historicalCeiling = Number.POSITIVE_INFINITY;
+    for (let offset = historicalAssistants.length - 1; offset >= 0; offset -= 1) {
+      const [index, message] = historicalAssistants[offset];
+      const optimisticContent = assistantSourceContent(message);
+      const match = durableAssistants.findLast((candidate) => (
+        candidate.index < historicalCeiling
+        && !claimedAssistants.has(candidate.index)
+        && assistantContentsOverlap(candidate.message.content, optimisticContent)
+      ));
+      if (!match) continue;
+      historicalCeiling = match.index;
+      claimedAssistants.add(match.index);
+      const crossesUserBoundary = messages.slice(match.index + 1, index).some((candidate) => candidate?.role === 'user');
+      assistantMatches.set(index, { ...match, crossesUserBoundary });
+    }
     for (const [index, message] of messages.entries()) {
-      if (!assistantProjectionCanCover(message, context)) continue;
+      if (message?.historicalReplay === true || !assistantProjectionCanCover(message, context)) continue;
       const afterSeq = finiteInt(message.durableSeqAtSend, -1);
       const match = durableAssistants.find((candidate) => (
         candidate.serverSeq > afterSeq && !claimedAssistants.has(candidate.index)
@@ -148,11 +183,9 @@
 
       if (message.role === 'tool-group') {
         const tools = Array.isArray(message.tools) ? message.tools : [];
-        let stableCount = 0;
         const retained = tools.filter((tool) => {
           const id = toolEntryID(tool);
           if (!id) return true;
-          stableCount += 1;
           if (message.durable) {
             if (claimed.has(id)) return false;
             claimed.add(id);
@@ -163,7 +196,7 @@
           return true;
         });
         if (retained.length !== tools.length) message.tools = retained;
-        if (stableCount > 0 && retained.length === 0) continue;
+        if (retained.length === 0) continue;
         result.push(message);
         continue;
       }
@@ -676,6 +709,25 @@
       const durableAssistantParts = this.durableAssistantParts();
       const durableToolIDs = this.durableToolIDs();
       const claimedOptimisticToolIDs = new Set();
+      const historicalAssistantMatches = new WeakMap();
+      const historicalAssistants = this.optimistic.filter((local) => (
+        local?.historicalReplay === true && assistantProjectionCanCover(local, this)
+      ));
+      let historicalCeiling = durableAssistantParts.length;
+      for (let offset = historicalAssistants.length - 1; offset >= 0; offset -= 1) {
+        const local = historicalAssistants[offset];
+        const optimisticContent = assistantSourceContent(local);
+        let matchIndex = -1;
+        for (let index = historicalCeiling - 1; index >= 0; index -= 1) {
+          if (assistantContentsOverlap(durableAssistantParts[index].content, optimisticContent)) {
+            matchIndex = index;
+            break;
+          }
+        }
+        if (matchIndex < 0) continue;
+        historicalCeiling = matchIndex;
+        historicalAssistantMatches.set(local, durableAssistantParts[matchIndex]);
+      }
       for (const local of this.optimistic) {
         const localIsTool = local.role === 'tool-group' || local.role === 'tool';
         if (localIsTool) {
@@ -705,10 +757,13 @@
 
         const afterSeq = finiteInt(local.durableSeqAtSend, -1);
         if (local.role === 'assistant' && assistantProjectionCanCover(local, this)) {
-          const durablePart = durableAssistantParts.find((candidate) => (
-            candidate.sequence > afterSeq && !consumedAssistantParts.has(candidate.key)
+          const historicalMatch = historicalAssistantMatches.get(local);
+          const durablePart = historicalMatch || durableAssistantParts.find((candidate) => (
+            local.historicalReplay !== true
+            && candidate.sequence > afterSeq
+            && !consumedAssistantParts.has(candidate.key)
           ));
-          if (durablePart) {
+          if (durablePart && !consumedAssistantParts.has(durablePart.key)) {
             consumedAssistantParts.add(durablePart.key);
             const suffix = assistantSuffixAfterDurable(durablePart.content, assistantSourceContent(local));
             if (suffix) {

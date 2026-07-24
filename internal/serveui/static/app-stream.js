@@ -763,11 +763,15 @@ const clearProviderRetryForEvent = (session, payload = null) => {
 const rehydrateResponseStreamState = (session, streamState) => {
   if (!session || !streamState) return;
   const currentToolGroup = session.messages.findLast((message) => (
-    message.role === 'tool-group' && message.status === 'running'
+    message.role === 'tool-group'
+    && message.status === 'running'
+    && (!message.durable || !streamState.historicalReplayEvent)
   )) || null;
   streamState.currentToolGroup = currentToolGroup;
   const lastMessage = session.messages[session.messages.length - 1];
-  streamState.currentAssistantMessage = !currentToolGroup && lastMessage?.role === 'assistant'
+  streamState.currentAssistantMessage = !currentToolGroup
+    && lastMessage?.role === 'assistant'
+    && (!lastMessage.durable || !streamState.historicalReplayEvent)
     ? lastMessage
     : null;
 };
@@ -778,6 +782,8 @@ const createResponseStreamState = (session) => {
   )) || null;
   let currentAssistantMessage = null;
   let currentPhaseMessage = null;
+  let historicalReplayEvent = false;
+  let assistantSegmentOrdinal = 0;
 
   if (!currentToolGroup) {
     const lastMessage = session.messages[session.messages.length - 1];
@@ -788,15 +794,23 @@ const createResponseStreamState = (session) => {
 
   const ensureAssistantMessage = () => {
     if (currentAssistantMessage) return currentAssistantMessage;
-    const msg = {
+    const responseId = responseStreamOwnerId(session);
+    const replayClientKey = historicalReplayEvent && responseId
+      ? `${responseId}:replay-assistant:${assistantSegmentOrdinal}`
+      : '';
+    let msg = {
       id: generateId('msg'),
+      ...(replayClientKey ? { clientKey: replayClientKey, historicalReplay: true } : {}),
       role: 'assistant',
       content: '',
       created: Date.now()
     };
-    session.messages.push(msg);
-    app.trackTranscriptOptimistic?.(session, msg);
-    appendStreamMessageNode(session, msg);
+    const tracked = app.trackTranscriptOptimistic?.(session, msg);
+    if (tracked) msg = tracked;
+    if (!session.messages.includes(msg)) {
+      session.messages.push(msg);
+      appendStreamMessageNode(session, msg);
+    }
     currentAssistantMessage = msg;
     return msg;
   };
@@ -814,6 +828,15 @@ const createResponseStreamState = (session) => {
   return {
     ensureAssistantMessage,
     closeToolGroup,
+    get historicalReplayEvent() {
+      return historicalReplayEvent;
+    },
+    set historicalReplayEvent(value) {
+      historicalReplayEvent = Boolean(value);
+    },
+    advanceAssistantSegment() {
+      assistantSegmentOrdinal += 1;
+    },
     get currentToolGroup() {
       return currentToolGroup;
     },
@@ -844,7 +867,13 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       clearProviderRetryForEvent(session, payload);
       streamState.closeToolGroup();
       const msg = streamState.ensureAssistantMessage();
-      msg.content += delta;
+      const lastResponseSequence = Number(msg.lastResponseSequence || 0);
+      if (!streamState.historicalReplayEvent || !Number.isFinite(Number(seq)) || Number(seq) > lastResponseSequence) {
+        msg.content += delta;
+        if (streamState.historicalReplayEvent && Number.isFinite(Number(seq))) {
+          msg.lastResponseSequence = Number(seq);
+        }
+      }
       scheduleStreamPersistence();
       enqueueVisibleAssistantStreamUpdate(session, msg);
     }
@@ -1023,6 +1052,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
     }
     streamState.currentAssistantMessage = null;
+    streamState.advanceAssistantSegment?.();
     return { terminal: false };
   }
 
@@ -1049,6 +1079,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       if (!streamState.currentToolGroup) {
         streamState.currentToolGroup = {
           id: generateId('msg'),
+          ...(streamState.historicalReplayEvent ? { historicalReplay: true } : {}),
           role: 'tool-group',
           tools: [toolEntry],
           expanded: false,
@@ -1387,6 +1418,16 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   return { terminal: false };
 };
 
+const reconcileHistoricalReplayBatch = (session, streamState) => {
+  app.reconcileSessionTranscriptProjection?.(session, { trackOptimisticTail: true });
+  rehydrateResponseStreamState(session, streamState);
+  if (isSessionVisible(session)) {
+    renderMessages(false);
+  } else {
+    persistAndRefreshShell();
+  }
+};
+
 const consumeResponseStream = async (stream, session, streamState, options = {}) => {
   let sawTerminal = false;
   let sawDone = false;
@@ -1396,6 +1437,25 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   const generation = Number.isFinite(Number(options.generation)) ? Number(options.generation) : state.streamGeneration;
   const sessionId = String(session?.id || '').trim();
   const expectedResponseId = String(options.responseId || '').trim();
+  const replayAfterSequence = Math.max(0, Number(options.replayAfterSequence) || 0);
+  const replayThroughSequence = Math.max(0, Number(options.replayThroughSequence) || 0);
+  let replayBoundaryPending = replayThroughSequence > replayAfterSequence;
+
+  const completeReplayBoundary = () => {
+    if (!replayBoundaryPending || stale) return false;
+    replayBoundaryPending = false;
+    streamState.historicalReplayEvent = false;
+    reconcileHistoricalReplayBatch(session, streamState);
+    return true;
+  };
+
+  if (replayBoundaryPending) {
+    // Stream state may have been hydrated from the already-durable selected
+    // projection before the response headers identified this transport batch as
+    // historical. Detach durable cursors once so replay cannot mutate them.
+    streamState.historicalReplayEvent = true;
+    rehydrateResponseStreamState(session, streamState);
+  }
 
   const eventSequenceNumber = (payload) => {
     const seq = Number(payload?.sequence_number);
@@ -1418,6 +1478,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     }
 
     if (data === '[DONE]') {
+      completeReplayBoundary();
       if (!sawRecoverableStreamError) {
         sawDone = true;
         streamState.closeToolGroup();
@@ -1442,6 +1503,10 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     }
     const seq = eventSequenceNumber(payload);
     const currentSeq = Number(session.lastSequenceNumber || 0);
+    const historicalReplayEvent = replayBoundaryPending
+      && seq > 0
+      && seq <= replayThroughSequence;
+    streamState.historicalReplayEvent = historicalReplayEvent;
     // Reconnects and overlapping POST/event streams can replay an event that is
     // already reflected in the local projection. Applying it again duplicates
     // text and can append phase/tool nodes after newer output. Stream overflow
@@ -1452,6 +1517,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
       // replayed event. Align its mutable cursor with the shared transcript so
       // the next fresh delta continues the existing assistant/tool node.
       rehydrateResponseStreamState(session, streamState);
+      if (historicalReplayEvent && seq >= replayThroughSequence) completeReplayBoundary();
       return true;
     }
     if (seq > currentSeq + 1) {
@@ -1473,6 +1539,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
       };
       return false;
     }
+    if (historicalReplayEvent && seq >= replayThroughSequence) completeReplayBoundary();
     if (result?.terminal) {
       sawTerminal = true;
     }
@@ -1749,7 +1816,8 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
     let streamActivityBaseline = Number(state.lastEventTime || 0);
 
     try {
-      const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(session.lastSequenceNumber || 0)}`, {
+      const replayAfterSequence = Math.max(0, Number(session.lastSequenceNumber) || 0);
+      const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(replayAfterSequence)}`, {
         headers: requestHeaders(session.id),
         signal: controller.signal
       });
@@ -1771,10 +1839,16 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
       setReconnectDiagnostic('connected', '', 0);
       const streamGeneration = state.streamGeneration;
       streamActivityBaseline = Number(state.lastEventTime || 0);
+      const replayThroughSequence = Math.max(
+        replayAfterSequence,
+        Number(response.headers?.get?.('X-Term-LLM-Replay-Through')) || 0
+      );
       const result = await consumeResponseStream(response.body, session, streamState, {
         generation: streamGeneration,
         responseId,
-        abortController: controller
+        abortController: controller,
+        replayAfterSequence,
+        replayThroughSequence
       });
       if (streamHadActivitySince(streamActivityBaseline)) {
         retryAttempt = 0;

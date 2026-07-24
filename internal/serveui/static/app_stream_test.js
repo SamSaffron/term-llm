@@ -11,7 +11,7 @@ const { webcrypto } = require('crypto');
 const dir = __dirname;
 const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const source = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
-const { reconcileTranscriptProjection } = require('./transcript-store.js');
+const { TranscriptStore, reconcileTranscriptProjection } = require('./transcript-store.js');
 
 let failures = 0;
 
@@ -480,9 +480,27 @@ function createHarness(options = {}) {
     },
     renderSidebar() {},
     renderWidgetSidebar() {},
-    renderMessages() {},
-    reconcileSessionTranscriptProjection(session) {
-      session.messages = reconcileTranscriptProjection(session.messages);
+    renderMessages() {
+      if (typeof options.onRenderMessages === 'function') {
+        const session = state.sessions.find((item) => item.id === state.activeSessionId) || null;
+        options.onRenderMessages(session, elements.messages);
+      }
+    },
+    trackTranscriptOptimistic(session, message) {
+      return session?.transcript?.addOptimistic?.(message, session.transcript.rev) || null;
+    },
+    persistTranscriptOptimistic() {},
+    reconcileSessionTranscriptProjection(session, reconcileOptions = {}) {
+      const transcript = session?.transcript || null;
+      if (reconcileOptions.trackOptimisticTail === true && transcript) {
+        for (const [index, message] of session.messages.entries()) {
+          if (message?.durable || !['assistant', 'tool-group', 'tool'].includes(message?.role)) continue;
+          const tracked = transcript.addOptimistic(message, transcript.rev);
+          if (tracked && tracked !== message) session.messages[index] = tracked;
+        }
+        transcript.reconcileOptimistic();
+      }
+      session.messages = reconcileTranscriptProjection(session.messages, transcript);
       if (typeof options.onReconcileSessionTranscriptProjection === 'function') {
         options.onReconcileSessionTranscriptProjection(session);
       }
@@ -712,7 +730,12 @@ function createHarness(options = {}) {
         },
       }), {
         status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
+        headers: {
+          'Content-Type': 'text/event-stream',
+          ...(options.eventsReplayThrough != null
+            ? { 'X-Term-LLM-Replay-Through': String(options.eventsReplayThrough) }
+            : {})
+        },
       });
     }
     throw new Error(`unexpected fetch: ${url}`);
@@ -1030,7 +1053,10 @@ async function testStaleTerminalStreamDoesNotRefreshStatus() {
 
 async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
   const name = 'response stream ignores replayed events that would duplicate or reorder messages';
-  const harness = createHarness();
+  let reconciliations = 0;
+  const harness = createHarness({
+    onReconcileSessionTranscriptProjection() { reconciliations += 1; }
+  });
   const { app, state, cleanup } = harness;
   const session = {
     id: 'session_replayed_events',
@@ -1076,6 +1102,11 @@ async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
   }
   if (session.lastSequenceNumber !== 2) {
     fail(name, `last sequence = ${session.lastSequenceNumber}, want 2`);
+    await cleanup();
+    return;
+  }
+  if (reconciliations !== 0) {
+    fail(name, `fresh/live event handling performed ${reconciliations} full transcript reconciliations`);
     await cleanup();
     return;
   }
@@ -2949,6 +2980,179 @@ async function testRecoverySnapshotReconcilesDurableToolCallsIdempotently() {
   }
 
   await cleanup();
+  pass(name);
+}
+
+async function testReplayCompletionReconcilesDurableSelectedProjection() {
+  const name = 'replay completion reconciles durable selected tools and assistant before publishing';
+  const responseId = 'resp_inverse_replay';
+  const calls = ['call_A', 'call_B', 'call_C', 'call_D'];
+  let renders = 0;
+  let reconciliations = 0;
+  const harness = createHarness({
+    responseId,
+    eventsReplayThrough: 7,
+    onReconcileSessionTranscriptProjection() { reconciliations += 1; },
+    snapshotPayload: {
+      id: responseId,
+      status: 'in_progress',
+      last_sequence_number: 0,
+    },
+    eventsBody: [
+      'id: 1\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":"durable assistant prefix plus replay suffix","sequence_number":1}\n\n',
+      'id: 2\n',
+      'event: response.output_text.new_segment\n',
+      'data: {"sequence_number":2}\n\n',
+      ...calls.map((callID, index) => [
+        `id: ${index + 3}\n`,
+        'event: response.output_item.added\n',
+        `data: {"item":{"type":"function_call","call_id":"${callID}","name":"tool_${callID.at(-1)}","arguments":"{}"},"output_index":${index},"sequence_number":${index + 3}}\n\n`,
+      ].join('')),
+      'id: 7\n',
+      'event: response.output_item.done\n',
+      'data: {"item":{"type":"function_call","call_id":"call_D","name":"tool_D","arguments":"{}"},"output_index":3,"sequence_number":7}\n\n',
+      'id: 8\n',
+      'event: response.completed\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":8}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''),
+    onRenderMessages(session, container) {
+      renders += 1;
+      container.children = [];
+      for (const message of session?.messages || []) {
+        if (message.role === 'assistant') {
+          container.children.push({ dataset: { messageId: message.id }, role: 'assistant', content: message.content });
+        }
+        if (message.role === 'tool-group') {
+          for (const tool of message.tools || []) {
+            container.children.push({ dataset: { toolId: tool.id }, role: 'tool' });
+          }
+        }
+      }
+    },
+  });
+  const { app, state, elements, cleanup } = harness;
+  elements.messages.querySelectorAll = (selector) => {
+    const toolMatch = String(selector || '').match(/^\[data-tool-id="([^"]+)"\]$/);
+    if (toolMatch) return elements.messages.children.filter((node) => node.dataset?.toolId === toolMatch[1]);
+    if (selector === '[data-message-id]') return elements.messages.children.filter((node) => node.dataset?.messageId);
+    return [];
+  };
+
+  const transcript = new TranscriptStore('session_inverse_replay');
+  transcript.applyIndex({
+    rev: 7,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: {
+      ids: [491, 492],
+      seqs: [491, 492],
+      roles: 'ua',
+      flags: [0, 0],
+    },
+  }, '"inverse-7"');
+  transcript.setViewport(0, 1, { deferBudget: true });
+  transcript.materialize([
+    { id: 491, sequence: 491, role: 'user', parts: [{ type: 'text', text: 'run tools' }] },
+    {
+      id: 492,
+      sequence: 492,
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'durable assistant prefix' },
+        ...calls.slice(0, 3).map((callID) => ({ type: 'tool_call', tool_call_id: callID })),
+      ],
+    },
+  ], { countFetch: false });
+  transcript.setActiveRun(responseId, 6);
+
+  const session = {
+    id: 'session_inverse_replay',
+    title: 'Inverse replay',
+    transcript,
+    messages: [
+      { id: 'srv_seq_491_user_0', role: 'user', content: 'run tools', durable: true, serverSeq: 491 },
+      { id: 'srv_seq_492_text_0', role: 'assistant', content: 'durable assistant prefix', durable: true, serverSeq: 492 },
+      {
+        id: 'srv_seq_492_tools_0',
+        role: 'tool-group',
+        durable: true,
+        status: 'done',
+        tools: calls.slice(0, 3).map((callID) => ({ id: callID, name: `tool_${callID.at(-1)}`, status: 'done' })),
+      },
+    ],
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const assertProjection = (phase) => {
+    const projectedCalls = session.messages.flatMap((message) => message.role === 'tool-group'
+      ? (message.tools || []).map((tool) => tool.id)
+      : []);
+    const optimisticCalls = transcript.optimistic.flatMap((message) => message.role === 'tool-group'
+      ? (message.tools || []).map((tool) => tool.id)
+      : []);
+    if (projectedCalls.join(',') !== calls.join(',')) {
+      fail(name, `${phase}: session projection did not contain A/B/C durable and D optimistic once`, JSON.stringify(session.messages));
+      return false;
+    }
+    if (optimisticCalls.join(',') !== 'call_D') {
+      fail(name, `${phase}: transcript optimistic tail did not retain only D`, JSON.stringify(transcript.optimistic));
+      return false;
+    }
+    if (session.messages.some((message) => message.role === 'tool-group' && (message.tools || []).length === 0)) {
+      fail(name, `${phase}: empty tool group remained`, JSON.stringify(session.messages));
+      return false;
+    }
+    const assistants = session.messages.filter((message) => message.role === 'assistant');
+    if (assistants.length !== 1
+        || assistants[0].id !== 'srv_seq_492_text_0'
+        || assistants[0].content !== 'durable assistant prefix plus replay suffix') {
+      fail(name, `${phase}: durable assistant did not own the replay suffix exactly once`, JSON.stringify(assistants));
+      return false;
+    }
+    for (const callID of calls) {
+      if (elements.messages.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
+        fail(name, `${phase}: mounted DOM did not contain ${callID} exactly once`, JSON.stringify(elements.messages.children));
+        return false;
+      }
+    }
+    const assistantNodes = elements.messages.querySelectorAll('[data-message-id]')
+      .filter((node) => node.role === 'assistant');
+    if (assistantNodes.length !== 1 || assistantNodes[0].content !== 'durable assistant prefix plus replay suffix') {
+      fail(name, `${phase}: mounted assistant was duplicated or lost its suffix`, JSON.stringify(assistantNodes));
+      return false;
+    }
+    return true;
+  };
+
+  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
+  if (!assertProjection('first resume')) {
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+
+  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
+  if (!assertProjection('repeated resume')) {
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+  if (reconciliations !== 2 || renders !== 4) {
+    fail(name, `expected one replay reconciliation plus snapshot/boundary renders per resume, got ${reconciliations} reconciliations and ${renders} renders`);
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+
+  await cleanup();
+  transcript.destroy();
   pass(name);
 }
 
@@ -6850,6 +7054,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testDrainInterruptQueueIgnoresOtherSessionEntries();
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
   await testRecoverySnapshotReconcilesDurableToolCallsIdempotently();
+  await testReplayCompletionReconcilesDurableSelectedProjection();
   await testResumeActiveResponseRepairsSequenceGapWithSnapshot();
   await testRecoverySnapshotClearsSyntheticPendingInterjectionByText();
   await testRecoverySnapshotDoesNotDuplicateOptimisticInterjection();

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -421,6 +422,39 @@ func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
 	}
 	if !sawFileChange {
 		t.Fatalf("events = %+v, want response.file_change for non-server tool", run.events)
+	}
+}
+
+func TestStreamResponseRunEventsReportsAuthoritativeReplayBoundary(t *testing.T) {
+	run := newResponseRun("resp_replay_boundary", "sess_replay_boundary", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
+		t.Fatalf("append created event: %v", err)
+	}
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "historical"}); err != nil {
+		t.Fatalf("append text event: %v", err)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
+
+	for _, tc := range []struct {
+		name  string
+		after int64
+		want  string
+	}{
+		{name: "replayed events", after: 0, want: "2"},
+		{name: "empty replay", after: 2, want: "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server := &serveServer{}
+			server.streamResponseRunEvents(context.Background(), recorder, run, tc.after)
+			response := recorder.Result()
+			defer response.Body.Close()
+			if got := response.Header.Get("X-Term-LLM-Replay-Through"); got != tc.want {
+				t.Fatalf("X-Term-LLM-Replay-Through = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
