@@ -255,6 +255,9 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	if got := store.db.Stats().MaxOpenConnections; got != 1 {
 		t.Fatalf("MaxOpenConnections = %d, want 1 for :memory: databases", got)
 	}
+	if store.readDB != nil {
+		t.Fatal(":memory: database unexpectedly has a separate read connection")
+	}
 }
 
 func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
@@ -266,6 +269,42 @@ func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
 
 	if got := store.db.Stats().MaxOpenConnections; got != 1 {
 		t.Fatalf("MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	}
+	if store.readDB == nil {
+		t.Fatal("file-backed database has no transcript read connection")
+	}
+	if got := store.readDB.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("read MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	}
+}
+
+func TestSQLiteStoreTranscriptReadDoesNotOccupyWriterConnection(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	readTx, err := store.transcriptReadDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin transcript read: %v", err)
+	}
+	defer readTx.Rollback()
+	var id string
+	if err := readTx.QueryRowContext(ctx, "SELECT id FROM sessions WHERE id = ?", sess.ID).Scan(&id); err != nil {
+		t.Fatalf("establish transcript snapshot: %v", err)
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := store.AddMessage(writeCtx, sess.ID, NewMessage(sess.ID, llm.UserText("concurrent write"), -1)); err != nil {
+		t.Fatalf("AddMessage while transcript read is open: %v", err)
 	}
 }
 

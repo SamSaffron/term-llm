@@ -22,6 +22,7 @@ import (
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
 	db                       *sql.DB
+	readDB                   *sql.DB
 	cfg                      Config
 	hasGeneratedTitles       bool // true if sessions table has generated title columns
 	hasCompactionSeq         bool // true if sessions table has compaction_seq column
@@ -268,6 +269,26 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 			// Log but don't fail
 			fmt.Fprintf(os.Stderr, "warning: session cleanup failed: %v\n", err)
 		}
+	}
+
+	// File-backed WAL databases can serve reads while the single writer is
+	// active. Keep transcript scans on one dedicated read-only connection so
+	// decoding long tool-heavy histories cannot occupy the writer connection.
+	if dbPath != ":memory:" && !cfg.ReadOnly {
+		readDSN := "file:" + filepath.ToSlash(dbPath) + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)&_pragma=mmap_size(134217728)"
+		readDB, err := sql.Open("sqlite", readDSN)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("open transcript read database: %w", err)
+		}
+		readDB.SetMaxOpenConns(1)
+		readDB.SetMaxIdleConns(1)
+		if err := readDB.Ping(); err != nil {
+			readDB.Close()
+			db.Close()
+			return nil, fmt.Errorf("connect transcript read database: %w", err)
+		}
+		store.readDB = readDB
 	}
 
 	return store, nil
@@ -3320,10 +3341,17 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 	return false
 }
 
+func (s *SQLiteStore) transcriptReadDB() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
+}
+
 // GetTranscriptSnapshot returns the complete transcript envelope from one
 // SQLite read transaction.
 func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.transcriptReadDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return TranscriptSnapshot{}, fmt.Errorf("begin transcript index read: %w", err)
 	}
@@ -3422,7 +3450,7 @@ func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) 
 // durable rows it expands to, so a giant tool turn never approaches SQLite's
 // variable limit.
 func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (int64, []Message, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.transcriptReadDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return 0, nil, fmt.Errorf("begin transcript bodies read: %w", err)
 	}
@@ -3867,9 +3895,13 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 	return subs, rows.Err()
 }
 
-// Close closes the database connection.
+// Close closes the database connections.
 func (s *SQLiteStore) Close() error {
-	return s.db.Close()
+	var readErr error
+	if s.readDB != nil {
+		readErr = s.readDB.Close()
+	}
+	return errors.Join(readErr, s.db.Close())
 }
 
 // setCurrentColumns records optional columns that are guaranteed to exist after
