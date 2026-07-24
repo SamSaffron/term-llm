@@ -113,16 +113,20 @@ type Session struct {
 // The Parts field stores the full llm.Message.Parts as JSON to preserve tool
 // calls, uploaded images/files, and provider replay state exactly.
 type Message struct {
-	ID             int64      `json:"id"`
-	SessionID      string     `json:"session_id"`
-	Role           llm.Role   `json:"role"`
-	Parts          []llm.Part `json:"parts"`        // Full parts array
-	TextContent    string     `json:"text_content"` // Extracted text for display/FTS
-	DurationMs     int64      `json:"duration_ms,omitempty"`
-	TurnIndex      int        `json:"turn_index,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	Sequence       int        `json:"sequence"`
-	CompactionTail bool       `json:"compaction_tail,omitempty"` // Persisted display hint: retained post-compaction context already visible before the marker
+	ID                      int64      `json:"id"`
+	SessionID               string     `json:"session_id"`
+	Role                    llm.Role   `json:"role"`
+	Parts                   []llm.Part `json:"parts"`        // Full parts array
+	TextContent             string     `json:"text_content"` // Extracted text for display/FTS
+	DurationMs              int64      `json:"duration_ms,omitempty"`
+	TurnIndex               int        `json:"turn_index,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	Sequence                int        `json:"sequence"`
+	CompactionTail          bool       `json:"compaction_tail,omitempty"` // Persisted display hint: retained post-compaction context already visible before the marker
+	ResponseID              string     `json:"response_id,omitempty"`
+	AssistantSegmentOrdinal int        `json:"assistant_segment_ordinal"` // Response-scoped; -1 when the row is not an assistant segment.
+	SegmentStartSequence    int64      `json:"segment_start_sequence,omitempty"`
+	SegmentEndSequence      int64      `json:"segment_end_sequence,omitempty"`
 }
 
 // SessionSummary is a lightweight view of a session for listing.
@@ -214,11 +218,18 @@ type SearchResult struct {
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.
 func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 	m := &Message{
-		SessionID: sessionID,
-		Role:      msg.Role,
-		Parts:     msg.Parts,
-		CreatedAt: time.Now(),
-		Sequence:  sequence,
+		SessionID:               sessionID,
+		Role:                    msg.Role,
+		Parts:                   msg.Parts,
+		CreatedAt:               time.Now(),
+		Sequence:                sequence,
+		ResponseID:              msg.ResponseID,
+		AssistantSegmentOrdinal: msg.AssistantSegmentOrdinal,
+		SegmentStartSequence:    msg.SegmentStartSequence,
+		SegmentEndSequence:      msg.SegmentEndSequence,
+	}
+	if msg.Role != llm.RoleAssistant && msg.AssistantSegmentOrdinal == 0 {
+		m.AssistantSegmentOrdinal = -1
 	}
 	m.TextContent = m.ExtractTextContent()
 	return m
@@ -244,8 +255,12 @@ func (m *Message) ToLLMMessage() llm.Message {
 		return llm.Message{}
 	}
 	msg := llm.Message{
-		Role:  m.Role,
-		Parts: providerMessageParts(m.Parts),
+		Role:                    m.Role,
+		Parts:                   providerMessageParts(m.Parts),
+		ResponseID:              m.ResponseID,
+		AssistantSegmentOrdinal: m.AssistantSegmentOrdinal,
+		SegmentStartSequence:    m.SegmentStartSequence,
+		SegmentEndSequence:      m.SegmentEndSequence,
 	}
 	if m.isInternalCompactionSummary() {
 		msg.CacheAnchor = true

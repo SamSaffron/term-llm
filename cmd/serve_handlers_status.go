@@ -51,6 +51,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		LongTitle           string `json:"long_title"`
 		ActiveRun           bool   `json:"active_run,omitempty"`
 		ActiveResponseID    string `json:"active_response_id,omitempty"`
+		RunEpoch            int64  `json:"run_epoch,omitempty"`
 		StartedRev          int64  `json:"started_rev,omitempty"`
 		TranscriptRev       int64  `json:"transcript_rev"`
 		MsgCount            int    `json:"message_count"`
@@ -79,13 +80,14 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 				transcriptRev = rev
 			}
 		}
-		activeResponseID, startedRev := s.activeTranscriptRun(sess.ID)
+		activeResponseID, startedRev, runEpoch := s.activeTranscriptRun(sess.ID)
 		result = append(result, statusEntry{
 			ID:                  sess.ID,
 			ShortTitle:          sess.PreferredShortTitle(),
 			LongTitle:           sess.PreferredLongTitle(),
 			ActiveRun:           activeIDs[sess.ID],
 			ActiveResponseID:    activeResponseID,
+			RunEpoch:            runEpoch,
 			StartedRev:          startedRev,
 			TranscriptRev:       transcriptRev,
 			MsgCount:            sess.MessageCount,

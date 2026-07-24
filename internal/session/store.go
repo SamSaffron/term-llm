@@ -205,10 +205,12 @@ const (
 // one UI-visible transcript row. IDs are stable identities; Seq is only the
 // current ordering key.
 type TranscriptIndexItem struct {
-	Seq   int
-	ID    int64
-	Role  string
-	Flags uint8
+	Seq                     int
+	ID                      int64
+	Role                    string
+	Flags                   uint8
+	ResponseID              string
+	AssistantSegmentOrdinal int
 }
 
 // TranscriptSnapshot is the complete compact identity stream and its session

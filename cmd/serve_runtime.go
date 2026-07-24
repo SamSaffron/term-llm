@@ -1501,6 +1501,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// Snapshot fires before each EventToolCall so partial content survives a
 	// consumer cancellation mid-turn.
 	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message) error {
+		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		upsertPendingAssistantLocked(cbCtx, assistantMsg, false)
@@ -1512,6 +1513,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
 
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		upsertPendingAssistantLocked(cbCtx, assistantMsg, true)
@@ -1526,6 +1528,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+		for i := range msgs {
+			msgs[i] = tagResponseRunMessage(cbCtx, msgs[i], callbackTurnIndex)
+		}
 		func() {
 			producedMu.Lock()
 			defer producedMu.Unlock()

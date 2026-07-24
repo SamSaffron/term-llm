@@ -656,6 +656,59 @@ const clearActiveResponseTracking = (session, responseId = '') => {
   }
 };
 
+const responseEventCursor = (session, responseId, create = true) => {
+  if (!session) return null;
+  const id = String(responseId || '').trim();
+  if (!id) return null;
+  if (!session.responseEventCursors || typeof session.responseEventCursors !== 'object') {
+    if (!create) return null;
+    session.responseEventCursors = {};
+  }
+  if (!session.responseEventCursors[id] && create) {
+    session.responseEventCursors[id] = { appliedSequence: 0, terminalSequence: 0, finalized: false };
+    const ids = Object.keys(session.responseEventCursors);
+    if (ids.length > 16) {
+      for (const staleID of ids.slice(0, ids.length - 16)) delete session.responseEventCursors[staleID];
+    }
+  }
+  return session.responseEventCursors[id] || null;
+};
+
+const responseEventSequence = (session, responseId) => Math.max(
+  0,
+  Number(responseEventCursor(session, responseId, false)?.appliedSequence) || 0,
+  String(session?.activeResponseId || '') === String(responseId || '') ? Number(session?.lastSequenceNumber) || 0 : 0
+);
+
+const markResponseEventApplied = (session, responseId, sequence) => {
+  const cursor = responseEventCursor(session, responseId);
+  const seq = Math.max(0, Number(sequence) || 0);
+  if (cursor) cursor.appliedSequence = Math.max(Number(cursor.appliedSequence) || 0, seq);
+  if (String(session?.activeResponseId || '') === String(responseId || '') || !session?.activeResponseId) {
+    session.lastSequenceNumber = Math.max(Number(session.lastSequenceNumber) || 0, seq);
+  }
+  return cursor;
+};
+
+const notifyTranscriptTerminal = (session, responseId, finalRev, runEpoch = 0) => {
+  const handler = app.noteTranscriptTerminal;
+  if (typeof handler !== 'function') return Promise.resolve(false);
+  if (handler.length <= 2) return handler(session, finalRev);
+  return handler(session, responseId, finalRev, runEpoch);
+};
+
+const beginResponseFinalization = (session, responseId, sequence, source = '') => {
+  const cursor = responseEventCursor(session, responseId);
+  if (!cursor) return true;
+  const seq = Math.max(0, Number(sequence) || 0);
+  cursor.appliedSequence = Math.max(Number(cursor.appliedSequence) || 0, seq);
+  cursor.terminalSequence = Math.max(Number(cursor.terminalSequence) || 0, seq);
+  if (cursor.finalized) return false;
+  cursor.finalized = true;
+  cursor.finalizedSource = String(source || 'stream');
+  return true;
+};
+
 const updateResponseSequence = (session, payload) => {
   if (!session || !payload || typeof payload !== 'object') return;
   const seq = Number(payload.sequence_number);
@@ -744,7 +797,7 @@ const scheduleVisibleStreamScroll = (session) => {
 };
 
 const responseStreamOwnerId = (session, payload = null) => {
-  const payloadResponseId = String(payload?.response?.id || payload?.response_id || '').trim();
+  const payloadResponseId = String(payload?.response_id || payload?.response?.id || '').trim();
   if (payloadResponseId) return payloadResponseId;
   const activeResponseId = String(session?.activeResponseId || '').trim();
   if (activeResponseId) return activeResponseId;
@@ -762,51 +815,77 @@ const clearProviderRetryForEvent = (session, payload = null) => {
 
 const rehydrateResponseStreamState = (session, streamState) => {
   if (!session || !streamState) return;
-  const currentToolGroup = session.messages.findLast((message) => (
+  const transcript = session.transcript;
+  const responseId = streamState.responseId || responseStreamOwnerId(session);
+  const currentToolGroup = transcript?.optimistic?.findLast((message) => (
     message.role === 'tool-group'
     && message.status === 'running'
-    && (!message.durable || !streamState.historicalReplayEvent)
+    && message.optimistic === true
+    && message.durable !== true
+    && (!responseId || String(message.responseId || '') === responseId)
   )) || null;
   streamState.currentToolGroup = currentToolGroup;
-  const lastMessage = session.messages[session.messages.length - 1];
-  streamState.currentAssistantMessage = !currentToolGroup
-    && lastMessage?.role === 'assistant'
-    && (!lastMessage.durable || !streamState.historicalReplayEvent)
-    ? lastMessage
-    : null;
+  const currentAssistant = transcript?.optimisticAssistant?.(responseId, streamState.assistantSegmentOrdinal)
+    || transcript?.optimistic?.findLast((message) => (
+      message.role === 'assistant'
+      && message.optimistic === true
+      && message.durable !== true
+      && (!responseId || String(message.responseId || '') === responseId)
+    ))
+    || null;
+  streamState.currentAssistantMessage = currentToolGroup ? null : currentAssistant;
 };
 
-const createResponseStreamState = (session) => {
-  let currentToolGroup = session.messages.findLast((message) => (
-    message.role === 'tool-group' && message.status === 'running'
-  )) || null;
+const createResponseStreamState = (session, options = {}) => {
+  if (session && !session.transcript && typeof window.TranscriptStore === 'function') {
+    session.transcript = new window.TranscriptStore(session.id || 'stream');
+  }
+  if (session?.transcript) {
+    for (const [index, message] of (session.messages || []).entries()) {
+      if (message?.durable === true || message?.optimistic === true || !['assistant', 'tool-group', 'tool'].includes(message?.role)) continue;
+      const tracked = session.transcript.addOptimistic(message, session.transcript.rev);
+      if (tracked) session.messages[index] = tracked;
+    }
+  }
+  let currentToolGroup = null;
   let currentAssistantMessage = null;
   let currentPhaseMessage = null;
   let historicalReplayEvent = false;
-  let assistantSegmentOrdinal = 0;
+  let assistantSegmentOrdinal = Math.max(0, Number(options.assistantSegmentOrdinal) || 0);
+  let responseId = String(options.responseId || responseStreamOwnerId(session) || '').trim();
 
-  if (!currentToolGroup) {
-    const lastMessage = session.messages[session.messages.length - 1];
-    if (lastMessage?.role === 'assistant') {
-      currentAssistantMessage = lastMessage;
+  const ensureAssistantMessage = (payload = null) => {
+    const payloadResponseId = String(payload?.response_id || payload?.response?.id || '').trim();
+    if (payloadResponseId) responseId = payloadResponseId;
+    if (!responseId) responseId = responseStreamOwnerId(session, payload);
+    const payloadOrdinal = Number(payload?.assistant_segment_ordinal);
+    if (Number.isFinite(payloadOrdinal) && payloadOrdinal >= 0) assistantSegmentOrdinal = Math.trunc(payloadOrdinal);
+    if (currentAssistantMessage) {
+      session.transcript?.assertMutableOverlay?.(currentAssistantMessage, 'ensure-assistant');
+      const currentKey = window.assistantSegmentKey?.(currentAssistantMessage) || '';
+      const wantedKey = window.assistantSegmentKey?.(responseId, assistantSegmentOrdinal) || '';
+      if (!wantedKey || currentKey === wantedKey) return currentAssistantMessage;
+      currentAssistantMessage = null;
     }
-  }
-
-  const ensureAssistantMessage = () => {
-    if (currentAssistantMessage) return currentAssistantMessage;
-    const responseId = responseStreamOwnerId(session);
-    const replayClientKey = historicalReplayEvent && responseId
-      ? `${responseId}:replay-assistant:${assistantSegmentOrdinal}`
-      : '';
+    const existing = session.transcript?.optimisticAssistant?.(responseId, assistantSegmentOrdinal) || null;
+    if (existing) {
+      session.transcript.assertMutableOverlay(existing, 'identity-lookup');
+      currentAssistantMessage = existing;
+      return existing;
+    }
     let msg = {
       id: generateId('msg'),
-      ...(replayClientKey ? { clientKey: replayClientKey, historicalReplay: true } : {}),
+      clientKey: responseId ? `${responseId}:assistant:${assistantSegmentOrdinal}` : generateId('assistant'),
       role: 'assistant',
+      responseId,
+      assistantSegmentOrdinal,
       content: '',
       created: Date.now()
     };
     const tracked = app.trackTranscriptOptimistic?.(session, msg);
-    if (tracked) msg = tracked;
+    if (!tracked) throw new Error('assistant stream overlay is not transcript-owned');
+    msg = tracked;
+    session.transcript?.assertMutableOverlay?.(msg, 'new-assistant');
     if (!session.messages.includes(msg)) {
       session.messages.push(msg);
       appendStreamMessageNode(session, msg);
@@ -817,6 +896,7 @@ const createResponseStreamState = (session) => {
 
   const closeToolGroup = () => {
     if (!currentToolGroup) return;
+    session.transcript?.assertMutableOverlay?.(currentToolGroup, 'close-tool-group');
     currentToolGroup.tools.forEach((tool) => {
       if (tool.status === 'running') tool.status = 'done';
     });
@@ -825,7 +905,7 @@ const createResponseStreamState = (session) => {
     currentToolGroup = null;
   };
 
-  return {
+  const result = {
     ensureAssistantMessage,
     closeToolGroup,
     get historicalReplayEvent() {
@@ -834,8 +914,16 @@ const createResponseStreamState = (session) => {
     set historicalReplayEvent(value) {
       historicalReplayEvent = Boolean(value);
     },
-    advanceAssistantSegment() {
-      assistantSegmentOrdinal += 1;
+    advanceAssistantSegment(nextOrdinal = null) {
+      assistantSegmentOrdinal = Number.isFinite(Number(nextOrdinal))
+        ? Math.max(0, Math.trunc(Number(nextOrdinal)))
+        : assistantSegmentOrdinal + 1;
+    },
+    get responseId() {
+      return responseId;
+    },
+    get assistantSegmentOrdinal() {
+      return assistantSegmentOrdinal;
     },
     get currentToolGroup() {
       return currentToolGroup;
@@ -847,6 +935,7 @@ const createResponseStreamState = (session) => {
       return currentAssistantMessage;
     },
     set currentAssistantMessage(value) {
+      if (value) session.transcript?.assertMutableOverlay?.(value, 'cursor-set');
       currentAssistantMessage = value;
     },
     get currentPhaseMessage() {
@@ -856,6 +945,8 @@ const createResponseStreamState = (session) => {
       currentPhaseMessage = value;
     }
   };
+  rehydrateResponseStreamState(session, result);
+  return result;
 };
 
 const applyResponseStreamEvent = (session, streamState, event, payload) => {
@@ -866,11 +957,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (delta) {
       clearProviderRetryForEvent(session, payload);
       streamState.closeToolGroup();
-      const msg = streamState.ensureAssistantMessage();
+      const msg = streamState.ensureAssistantMessage(payload);
+      session.transcript?.assertMutableOverlay?.(msg, 'text-delta');
+      const segmentStartSequence = Number(payload.segment_start_sequence);
+      if (Number.isFinite(segmentStartSequence) && segmentStartSequence > 0) msg.segmentStartSequence = Math.trunc(segmentStartSequence);
+      if (Number.isFinite(Number(seq)) && Number(seq) > 0) msg.segmentEndSequence = Math.trunc(Number(seq));
       const lastResponseSequence = Number(msg.lastResponseSequence || 0);
       if (!streamState.historicalReplayEvent || !Number.isFinite(Number(seq)) || Number(seq) > lastResponseSequence) {
         msg.content += delta;
-        if (streamState.historicalReplayEvent && Number.isFinite(Number(seq))) {
+        if (Number.isFinite(Number(seq))) {
           msg.lastResponseSequence = Number(seq);
         }
       }
@@ -896,14 +991,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         last_sequence_number: payload.sequence_number,
         recovery: payload.recovery || null
       });
-      streamState.currentToolGroup = session.messages.findLast((message) => (
-        message.role === 'tool-group' && message.status === 'running'
-      )) || null;
-      streamState.currentAssistantMessage = streamState.currentToolGroup
-        ? null
-        : (session.messages[session.messages.length - 1]?.role === 'assistant'
-          ? session.messages[session.messages.length - 1]
-          : null);
+      rehydrateResponseStreamState(session, streamState);
       streamState.currentPhaseMessage = null;
       return { terminal: false, recoverableStreamError: true };
     }
@@ -911,11 +999,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.created') {
-    const responseId = String(payload?.response?.id || '').trim();
+    const responseId = String(payload?.response_id || payload?.response?.id || '').trim();
+    const runEpoch = Math.max(0, Number(payload?.run_epoch ?? payload?.response?.run_epoch) || 0);
     setSessionOptimisticBusy(session, true);
     if (responseId) {
+      const cursor = responseEventCursor(session, responseId);
+      if (cursor) cursor.finalized = false;
+      if (runEpoch > 0) session.latestRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, runEpoch);
       setActiveResponseTracking(session, responseId, payload?.sequence_number ?? null);
-      void app.noteTranscriptRunCreated?.(session, responseId, payload?.started_rev ?? payload?.response?.started_rev ?? 0);
+      void app.noteTranscriptRunCreated?.(session, responseId, payload?.started_rev ?? payload?.response?.started_rev ?? 0, runEpoch);
       saveSessions();
     }
     const model = payload?.response?.model;
@@ -1052,7 +1144,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
     }
     streamState.currentAssistantMessage = null;
-    streamState.advanceAssistantSegment?.();
+    streamState.advanceAssistantSegment?.(payload?.assistant_segment_ordinal);
     return { terminal: false };
   }
 
@@ -1077,19 +1169,27 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       };
 
       if (!streamState.currentToolGroup) {
-        streamState.currentToolGroup = {
+        let group = {
           id: generateId('msg'),
-          ...(streamState.historicalReplayEvent ? { historicalReplay: true } : {}),
+          clientKey: `${String(payload?.response_id || streamState.responseId || responseStreamOwnerId(session))}:tool:${String(item.call_id || item.id || payload.output_index || '')}`,
           role: 'tool-group',
+          responseId: String(payload?.response_id || streamState.responseId || responseStreamOwnerId(session)),
           tools: [toolEntry],
           expanded: false,
           status: 'running',
           created: Date.now()
         };
-        session.messages.push(streamState.currentToolGroup);
-        app.trackTranscriptOptimistic?.(session, streamState.currentToolGroup);
-        appendStreamMessageNode(session, streamState.currentToolGroup, createToolGroupNode);
+        const tracked = app.trackTranscriptOptimistic?.(session, group);
+        if (!tracked) throw new Error('tool stream overlay is not transcript-owned');
+        group = tracked;
+        session.transcript?.assertMutableOverlay?.(group, 'new-tool-group');
+        streamState.currentToolGroup = group;
+        if (!session.messages.includes(group)) {
+          session.messages.push(group);
+          appendStreamMessageNode(session, group, createToolGroupNode);
+        }
       } else {
+        session.transcript?.assertMutableOverlay?.(streamState.currentToolGroup, 'tool-added');
         streamState.currentToolGroup.tools.push(toolEntry);
         updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
@@ -1104,6 +1204,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (event === 'response.function_call_arguments.delta') {
     clearProviderRetryForEvent(session, payload);
     if (streamState.currentToolGroup) {
+      session.transcript?.assertMutableOverlay?.(streamState.currentToolGroup, 'tool-arguments-delta');
       const outputIndex = payload.output_index;
       const delta = String(payload.delta || '');
       if (delta) {
@@ -1296,14 +1397,18 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.completed') {
+    const responseId = String(payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+    if (!beginResponseFinalization(session, responseId, payload?.sequence_number, streamState.historicalReplayEvent ? 'replay' : 'live')) {
+      return { terminal: true, repeatedTerminal: true };
+    }
     const usage = payload?.response?.usage;
     streamState.closeToolGroup();
     markToolGroupsDone(session);
     requeuePendingInterjections(session);
 
-    const responseId = String(payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
-    if (responseId) {
-      session.lastResponseId = responseId;
+    const durableResponseId = String(payload?.response?.id || responseId).trim();
+    if (durableResponseId) {
+      session.lastResponseId = durableResponseId;
     }
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
@@ -1338,11 +1443,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       void app.refreshCurrentPlanFromServer?.(session);
     }
     scrollVisibleStreamToBottom(session);
-    void app.noteTranscriptTerminal?.(session, payload?.final_rev ?? payload?.response?.final_rev ?? 0);
+    void notifyTranscriptTerminal(session, responseId, payload?.final_rev ?? payload?.response?.final_rev ?? 0, payload?.run_epoch ?? payload?.response?.run_epoch ?? 0);
     return { terminal: true };
   }
 
   if (event === 'response.cancelled') {
+    const responseId = String(payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+    if (!beginResponseFinalization(session, responseId, payload?.sequence_number, streamState.historicalReplayEvent ? 'replay' : 'live')) {
+      return { terminal: true, repeatedTerminal: true };
+    }
     streamState.closeToolGroup();
     markToolGroupsDone(session);
     if (state.expectCanceledRun) {
@@ -1352,7 +1461,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       requeuePendingInterjections(session);
     }
     clearTerminalPendingEffort(session);
-    clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     const lastAssistant = session.messages.findLast((message) => message.role === 'assistant');
@@ -1363,11 +1472,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
-    void app.noteTranscriptTerminal?.(session, payload?.final_rev ?? payload?.response?.final_rev ?? 0);
+    void notifyTranscriptTerminal(session, responseId, payload?.final_rev ?? payload?.response?.final_rev ?? 0, payload?.run_epoch ?? payload?.response?.run_epoch ?? 0);
     return { terminal: true };
   }
 
   if (event === 'response.failed') {
+    const responseId = String(payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+    if (!beginResponseFinalization(session, responseId, payload?.sequence_number, streamState.historicalReplayEvent ? 'replay' : 'live')) {
+      return { terminal: true, repeatedTerminal: true };
+    }
     const errorMessage = payload?.error?.message || 'The response failed.';
     const lowered = errorMessage.toLowerCase();
     const recoverableContinuationFailure = classifyRecoverableContinuationFailure(
@@ -1394,7 +1507,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       requeuePendingInterjections(session);
     }
     clearTerminalPendingEffort(session);
-    clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
 
@@ -1406,7 +1519,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
-    void app.noteTranscriptTerminal?.(session, payload?.final_rev ?? payload?.response?.final_rev ?? 0);
+    void notifyTranscriptTerminal(session, responseId, payload?.final_rev ?? payload?.response?.final_rev ?? 0, payload?.run_epoch ?? payload?.response?.run_epoch ?? 0);
     return {
       terminal: true,
       error: recoverableContinuationFailure
@@ -1418,14 +1531,235 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   return { terminal: false };
 };
 
-const reconcileHistoricalReplayBatch = (session, streamState) => {
-  app.reconcileSessionTranscriptProjection?.(session, { trackOptimisticTail: true });
-  rehydrateResponseStreamState(session, streamState);
-  if (isSessionVisible(session)) {
-    renderMessages(false);
-  } else {
-    persistAndRefreshShell();
+const replayPayloadResponseID = (payload, fallback = '') => String(
+  payload?.response_id || payload?.response?.id || fallback || ''
+).trim();
+
+const createHistoricalReplayStage = (responseId, after, replayThrough, runEpoch = 0) => ({
+  responseId: String(responseId || '').trim(),
+  after: Math.max(0, Number(after) || 0),
+  replayThrough: Math.max(0, Number(replayThrough) || 0),
+  runEpoch: Math.max(0, Number(runEpoch) || 0),
+  appliedSequence: Math.max(0, Number(after) || 0),
+  seen: new Set(),
+  ordered: [],
+  segments: new Map(),
+  toolGroups: new Map(),
+  terminal: null,
+  eventCount: 0,
+});
+
+const reduceHistoricalReplayEvent = (stage, event, payload) => {
+  const sequence = Math.max(0, Number(payload?.sequence_number) || 0);
+  if (!sequence || sequence <= stage.after || stage.seen.has(sequence)) return true;
+  if (sequence !== stage.appliedSequence + 1) {
+    throw new Error(`historical replay gap at ${sequence}`);
   }
+  const responseId = replayPayloadResponseID(payload, stage.responseId);
+  const runEpoch = Math.max(0, Number(payload?.run_epoch ?? payload?.response?.run_epoch) || 0);
+  if (runEpoch > 0) stage.runEpoch = Math.max(stage.runEpoch, runEpoch);
+  if (stage.responseId && responseId && responseId !== stage.responseId) {
+    throw new Error('historical replay response identity changed');
+  }
+  stage.seen.add(sequence);
+  stage.appliedSequence = sequence;
+  stage.eventCount += 1;
+
+  if (event === 'response.output_text.delta') {
+    const ordinal = Math.max(0, Number(payload.assistant_segment_ordinal) || 0);
+    const key = window.assistantSegmentKey?.(responseId, ordinal) || `${responseId}:assistant:${ordinal}`;
+    let segment = stage.segments.get(key);
+    if (!segment) {
+      segment = {
+        type: 'assistant', key, responseId, assistantSegmentOrdinal: ordinal,
+        segmentStartSequence: Math.max(0, Number(payload.segment_start_sequence) || sequence),
+        firstSequence: sequence, lastSequence: sequence, chunks: [], content: '',
+      };
+      stage.segments.set(key, segment);
+      stage.ordered.push(segment);
+    }
+    const delta = String(payload.delta || '');
+    segment.chunks.push({ sequence, delta });
+    segment.content += delta;
+    segment.lastSequence = sequence;
+  } else if (event === 'response.output_item.added' && payload?.item?.type === 'function_call') {
+    const callId = String(payload.item.call_id || payload.item.id || '').trim();
+    const key = window.transcriptToolIdentityKey?.(responseId, callId) || `${responseId}:tool:${callId}`;
+    let group = stage.toolGroups.get(key);
+    if (!group) {
+      group = {
+        type: 'tool-group', key, responseId, callId,
+        id: `${responseId}_replay_tool_${callId}`,
+        role: 'tool-group', status: 'running', expanded: false, created: Date.now(),
+        tools: [{
+          id: callId, name: String(payload.item.name || 'tool'),
+          arguments: String(payload.item.arguments || ''), status: 'running',
+          created: Date.now(), outputIndex: payload.output_index,
+          argumentsFinalized: Boolean(String(payload.item.arguments || '').trim()),
+        }],
+      };
+      stage.toolGroups.set(key, group);
+      stage.ordered.push(group);
+    }
+  } else if (event === 'response.function_call_arguments.delta') {
+    const group = [...stage.toolGroups.values()].findLast((candidate) => (
+      candidate.tools[0]?.outputIndex === payload.output_index || candidate.tools[0]?.status === 'running'
+    ));
+    const tool = group?.tools?.[0];
+    if (tool && !tool.argumentsFinalized) tool.arguments += String(payload.delta || '');
+  } else if (event === 'response.output_item.done' && payload?.item?.type === 'function_call') {
+    const callId = String(payload.item.call_id || payload.item.id || '').trim();
+    const key = window.transcriptToolIdentityKey?.(responseId, callId) || `${responseId}:tool:${callId}`;
+    const tool = stage.toolGroups.get(key)?.tools?.[0];
+    if (tool) {
+      tool.arguments = String(payload.item.arguments || tool.arguments || '');
+      tool.argumentsFinalized = true;
+    }
+  } else if (event === 'response.tool_exec.end') {
+    const callId = String(payload.call_id || '').trim();
+    const key = window.transcriptToolIdentityKey?.(responseId, callId) || `${responseId}:tool:${callId}`;
+    const group = stage.toolGroups.get(key);
+    const tool = group?.tools?.[0];
+    if (tool) {
+      tool.status = payload.success === false ? 'error' : 'done';
+      tool.resultStatus = payload.success === false ? 'error' : 'success';
+      if (Array.isArray(payload.images)) tool.images = payload.images.map(rebaseStreamAssetURL).filter(Boolean);
+      group.status = 'done';
+    }
+  } else if (event === 'response.interjection') {
+    const id = String(payload.interjection_id || `${responseId}_interjection_${sequence}`);
+    stage.ordered.push({
+      type: 'user', id, clientKey: id, role: 'user', responseId,
+      content: String(payload.text || ''), interruptState: 'interject', created: Date.now(),
+    });
+  } else if (event === 'response.completed' || event === 'response.cancelled' || event === 'response.failed') {
+    stage.terminal = { event, payload };
+  }
+  return true;
+};
+
+const mergeHistoricalReplayStage = (session, streamState, stage) => {
+  const transcript = session?.transcript;
+  if (!transcript) throw new Error('historical replay requires a transcript store');
+  let coveredCount = 0;
+  let retainedCount = 0;
+  for (const staged of stage.ordered) {
+    if (staged.type === 'assistant') {
+      let overlay = transcript.optimisticAssistant?.(staged.responseId, staged.assistantSegmentOrdinal) || null;
+      const durable = transcript.durableAssistant?.(staged.responseId, staged.assistantSegmentOrdinal) || null;
+      if (durable && !window.assistantSegmentKey?.(durable.body)) {
+        transcript.bindLegacyAssistantIdentity?.(staged.responseId, staged.assistantSegmentOrdinal, durable);
+        durable.body.responseId = staged.responseId;
+        durable.body.assistantSegmentOrdinal = staged.assistantSegmentOrdinal;
+        const durableRowID = transcript.ids?.[durable.ordinal];
+        const durableSequence = transcript.seqs?.[durable.ordinal];
+        const projected = (session.messages || []).find((message) => (
+          message?.durable === true
+          && message.role === 'assistant'
+          && !window.assistantSegmentKey?.(message)
+          && ((Array.isArray(message.durableSourceRowIds) && message.durableSourceRowIds.includes(durableRowID))
+            || Number(message.serverSeq) === Number(durableSequence))
+        ));
+        if (projected) {
+          projected.responseId = staged.responseId;
+          projected.assistantSegmentOrdinal = staged.assistantSegmentOrdinal;
+        }
+      }
+      if (!overlay) {
+        let content = staged.content;
+        if (durable) {
+          const durableContent = String(durable.content || '');
+          if (content.startsWith(durableContent)) {
+            // Complete replay includes the durable prefix.
+          } else if (durableContent.startsWith(content)) {
+            content = durableContent;
+            coveredCount += 1;
+          } else if (staged.firstSequence > staged.segmentStartSequence) {
+            content = durableContent + content;
+          } else {
+            window.transcriptDiagnostic?.('divergent_content', {
+              responseId: staged.responseId, segmentKey: staged.key, transcriptRev: transcript.rev,
+            });
+            content = durableContent;
+          }
+        }
+        overlay = transcript.addOptimistic({
+          id: `${staged.responseId}_assistant_${staged.assistantSegmentOrdinal}`,
+          clientKey: staged.key,
+          role: 'assistant', responseId: staged.responseId,
+          assistantSegmentOrdinal: staged.assistantSegmentOrdinal,
+          segmentStartSequence: staged.segmentStartSequence,
+          segmentEndSequence: staged.lastSequence,
+          lastResponseSequence: staged.lastSequence,
+          ...(durable == null && staged.firstSequence > staged.segmentStartSequence ? { replaySuffixOnly: true } : {}),
+          content, created: Date.now(), historicalReplay: true,
+        }, transcript.rev);
+      } else {
+        transcript.assertMutableOverlay(overlay, 'replay-merge');
+        for (const chunk of staged.chunks) {
+          if (chunk.sequence <= Number(overlay.lastResponseSequence || 0)) {
+            coveredCount += 1;
+            continue;
+          }
+          overlay.content += chunk.delta;
+          overlay.lastResponseSequence = chunk.sequence;
+          overlay.segmentEndSequence = chunk.sequence;
+        }
+      }
+      transcript.assertMutableOverlay(overlay, 'replay-cursor');
+      retainedCount += 1;
+      continue;
+    }
+    if (staged.type === 'tool-group') {
+      const existing = transcript.optimistic.find((entry) => (
+        entry.role === 'tool-group'
+        && String(entry.responseId || '') === staged.responseId
+        && entry.tools?.some((tool) => String(tool.id || '') === staged.callId)
+      ));
+      if (existing) {
+        transcript.assertMutableOverlay(existing, 'replay-tool-merge');
+        Object.assign(existing.tools.find((tool) => String(tool.id || '') === staged.callId), staged.tools[0]);
+        existing.status = staged.status;
+        coveredCount += 1;
+      } else {
+        transcript.addOptimistic(staged, transcript.rev);
+        retainedCount += 1;
+      }
+      continue;
+    }
+    if (staged.type === 'user') {
+      transcript.addOptimistic(staged, transcript.rev);
+      retainedCount += 1;
+    }
+  }
+  markResponseEventApplied(session, stage.responseId, stage.appliedSequence);
+  transcript.reconcileOptimistic();
+  app.persistTranscriptOptimistic?.(session);
+  if (typeof app.refreshSessionMessagesFromTranscript === 'function') {
+    app.refreshSessionMessagesFromTranscript(session);
+  } else {
+    session.messages = window.reconcileTranscriptProjection([
+      ...(session.messages || []).filter((message) => message?.durable === true),
+      ...transcript.optimistic,
+    ], transcript);
+  }
+  app.reconcileSessionTranscriptProjection?.(session, { trackOptimisticTail: false });
+  rehydrateResponseStreamState(session, streamState);
+  window.transcriptDiagnostic?.('replay_commit', {
+    responseId: stage.responseId,
+    streamGeneration: state.streamGeneration,
+    transcriptRev: transcript.rev,
+    startRev: transcript.activeRun?.startedRev,
+    after: stage.after,
+    replayThrough: stage.replayThrough,
+    appliedSequence: stage.appliedSequence,
+    stagedCount: stage.eventCount,
+    coveredCount,
+    retainedCount,
+  });
+  if (isSessionVisible(session)) renderMessages(false);
+  else persistAndRefreshShell();
+  return stage.terminal;
 };
 
 const consumeResponseStream = async (stream, session, streamState, options = {}) => {
@@ -1440,21 +1774,29 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   const replayAfterSequence = Math.max(0, Number(options.replayAfterSequence) || 0);
   const replayThroughSequence = Math.max(0, Number(options.replayThroughSequence) || 0);
   let replayBoundaryPending = replayThroughSequence > replayAfterSequence;
+  const replayStage = replayBoundaryPending
+    ? createHistoricalReplayStage(expectedResponseId, replayAfterSequence, replayThroughSequence, options.runEpoch)
+    : null;
 
   const completeReplayBoundary = () => {
-    if (!replayBoundaryPending || stale) return false;
+    if (!replayBoundaryPending || stale || !replayStage || replayStage.appliedSequence < replayThroughSequence) return false;
     replayBoundaryPending = false;
     streamState.historicalReplayEvent = false;
-    reconcileHistoricalReplayBatch(session, streamState);
+    const stagedTerminal = mergeHistoricalReplayStage(session, streamState, replayStage);
+    if (stagedTerminal) {
+      streamState.historicalReplayEvent = true;
+      const result = applyResponseStreamEvent(session, streamState, stagedTerminal.event, stagedTerminal.payload);
+      streamState.historicalReplayEvent = false;
+      if (result?.terminal) sawTerminal = true;
+      if (result?.error) terminalError = result.error;
+    }
     return true;
   };
 
   if (replayBoundaryPending) {
-    // Stream state may have been hydrated from the already-durable selected
-    // projection before the response headers identified this transport batch as
-    // historical. Detach durable cursors once so replay cannot mutate them.
+    // Replay remains detached until the ordered response header boundary is
+    // observed. No stream cursor points at durable/session/DOM state here.
     streamState.historicalReplayEvent = true;
-    rehydrateResponseStreamState(session, streamState);
   }
 
   const eventSequenceNumber = (payload) => {
@@ -1478,13 +1820,17 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     }
 
     if (data === '[DONE]') {
-      completeReplayBoundary();
-      if (!sawRecoverableStreamError) {
+      if (replayBoundaryPending) {
+        terminalError = {
+          message: 'historical replay ended before its ordered boundary',
+          recoverableReplayInterrupted: true,
+        };
+      } else if (!sawRecoverableStreamError) {
         sawDone = true;
         streamState.closeToolGroup();
         markToolGroupsDone(session);
+        persistAndRefreshShell();
       }
-      persistAndRefreshShell();
       return false;
     }
 
@@ -1502,22 +1848,35 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
       return false;
     }
     const seq = eventSequenceNumber(payload);
-    const currentSeq = Number(session.lastSequenceNumber || 0);
-    const historicalReplayEvent = replayBoundaryPending
-      && seq > 0
-      && seq <= replayThroughSequence;
-    streamState.historicalReplayEvent = historicalReplayEvent;
-    // Reconnects and overlapping POST/event streams can replay an event that is
-    // already reflected in the local projection. Applying it again duplicates
-    // text and can append phase/tool nodes after newer output. Stream overflow
-    // is the one transport control event that intentionally reuses the latest
-    // sequence number and still needs to trigger snapshot recovery.
+    const eventResponseId = replayPayloadResponseID(payload, expectedResponseId);
+    if (replayBoundaryPending && seq > 0 && seq <= replayThroughSequence) {
+      try {
+        reduceHistoricalReplayEvent(replayStage, event, payload);
+      } catch (err) {
+        terminalError = {
+          message: err?.message || 'historical replay reduction failed',
+          recoverableReplayInterrupted: true,
+        };
+        return false;
+      }
+      if (seq >= replayThroughSequence) completeReplayBoundary();
+      return true;
+    }
+    if (replayBoundaryPending && seq > replayThroughSequence) {
+      terminalError = {
+        message: 'fresh response event arrived before replay boundary completion',
+        recoverableReplayInterrupted: true,
+      };
+      return false;
+    }
+
+    streamState.historicalReplayEvent = false;
+    const currentSeq = responseEventSequence(session, eventResponseId);
+    // Overlapping POST and GET transports share a response-scoped cursor. An
+    // already-applied event is ignored without moving mutable cursors to a
+    // projected/durable node.
     if (seq > 0 && (seq < currentSeq || (seq === currentSeq && event !== 'response.stream_error'))) {
-      // This transport may have attached before another transport projected the
-      // replayed event. Align its mutable cursor with the shared transcript so
-      // the next fresh delta continues the existing assistant/tool node.
       rehydrateResponseStreamState(session, streamState);
-      if (historicalReplayEvent && seq >= replayThroughSequence) completeReplayBoundary();
       return true;
     }
     if (seq > currentSeq + 1) {
@@ -1531,15 +1890,14 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     let result;
     try {
       result = applyResponseStreamEvent(session, streamState, event, payload);
+      if (seq > 0) markResponseEventApplied(session, eventResponseId, seq);
     } catch (err) {
-      session.lastSequenceNumber = currentSeq;
       terminalError = {
         message: err?.message || 'response event projection failed',
         recoverableStreamApplyFailure: true,
       };
       return false;
     }
-    if (historicalReplayEvent && seq >= replayThroughSequence) completeReplayBoundary();
     if (result?.terminal) {
       sawTerminal = true;
     }
@@ -1618,10 +1976,27 @@ const applyResponseRecoverySnapshot = (session, payload) => {
   const hasRecovery = recovery && typeof recovery === 'object';
 
   if (hasRecovery) {
+    const responseId = String(payload.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
     const rawMessages = Array.isArray(recovery.messages) ? recovery.messages : [];
+    let recoveryAssistantOrdinal = 0;
     const recoveredMessages = rawMessages
-      .map((message) => sanitizeMessage(message))
-      .filter(Boolean);
+      .map((message) => {
+        const sanitized = sanitizeMessage(message);
+        if (sanitized?.role === 'assistant') {
+          if (!Number.isFinite(Number(sanitized.assistantSegmentOrdinal))) {
+            sanitized.assistantSegmentOrdinal = recoveryAssistantOrdinal;
+            recoveryAssistantOrdinal += 1;
+          } else {
+            recoveryAssistantOrdinal = Math.max(
+              recoveryAssistantOrdinal,
+              Math.trunc(Number(sanitized.assistantSegmentOrdinal)) + 1
+            );
+          }
+        }
+        return sanitized;
+      })
+      .filter(Boolean)
+      .map((message) => ({ ...message, responseId: String(message.responseId || responseId) }));
 
     const recoveredInterjections = recoveredMessages.filter((message) => (
       message?.role === 'user' && message?.interruptState === 'interject'
@@ -1630,20 +2005,64 @@ const applyResponseRecoverySnapshot = (session, payload) => {
       clearCommittedInterjectionPendingState(session.id, message.id, message.content);
     }
 
-    let anchorIndex = -1;
-    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-      if (session.messages[i]?.role === 'user') {
-        anchorIndex = i;
-        break;
+    const transcript = session.transcript;
+    if (transcript) {
+      for (const recovered of recoveredMessages) {
+        let existing = null;
+        if (recovered.role === 'assistant') {
+          const durable = transcript.durableAssistant?.(recovered.responseId, recovered.assistantSegmentOrdinal) || null;
+          if (durable && !window.assistantSegmentKey?.(durable.body)) {
+            transcript.bindLegacyAssistantIdentity?.(recovered.responseId, recovered.assistantSegmentOrdinal, durable);
+          }
+          existing = transcript.optimisticAssistant?.(recovered.responseId, recovered.assistantSegmentOrdinal) || null;
+        } else if (recovered.role === 'tool-group') {
+          existing = transcript.optimistic.find((entry) => (
+            entry.role === 'tool-group'
+            && String(entry.responseId || '') === recovered.responseId
+            && entry.tools?.some((tool) => recovered.tools?.some((candidate) => candidate.id && candidate.id === tool.id))
+          )) || null;
+        } else if (recovered.role === 'user') {
+          existing = transcript.optimistic.find((entry) => entry.role === 'user' && String(entry.id || '') === String(recovered.id || '')) || null;
+        }
+        if (existing) {
+          transcript.assertMutableOverlay(existing, 'snapshot-merge');
+          if (existing.role === 'assistant' && String(existing.content || '') !== String(recovered.content || '')) {
+            window.transcriptDiagnostic?.('snapshot_content_authority', {
+              responseId: recovered.responseId,
+              segmentKey: window.assistantSegmentKey?.(recovered),
+              transcriptRev: transcript.rev,
+            });
+          }
+          Object.assign(existing, recovered, { optimistic: true });
+          if (existing.role === 'assistant') delete existing.replaySuffixOnly;
+        } else {
+          transcript.addOptimistic(recovered, transcript.rev);
+        }
       }
+      transcript.rebuildOptimisticIdentityIndex?.();
+      app.persistTranscriptOptimistic?.(session);
+      if (typeof app.refreshSessionMessagesFromTranscript === 'function') {
+        app.refreshSessionMessagesFromTranscript(session);
+      } else {
+        session.messages = window.reconcileTranscriptProjection([
+          ...(session.messages || []).filter((message) => message?.durable === true),
+          ...transcript.optimistic,
+        ], transcript);
+      }
+    } else {
+      // Legacy clients without TranscriptStore still publish the complete
+      // recovery snapshot in one assignment.
+      let anchorIndex = -1;
+      for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+        if (session.messages[i]?.role === 'user') { anchorIndex = i; break; }
+      }
+      const preserved = anchorIndex >= 0
+        ? session.messages.slice(0, anchorIndex + 1).filter((message) => !shouldDropPreservedOptimisticInterjection(message, recoveredInterjections))
+        : [];
+      session.messages = preserved.concat(recoveredMessages);
     }
-
-    const preserved = anchorIndex >= 0
-      ? session.messages.slice(0, anchorIndex + 1).filter((message) => !shouldDropPreservedOptimisticInterjection(message, recoveredInterjections))
-      : [];
-    session.messages = preserved.concat(recoveredMessages);
-    app.reconcileSessionTranscriptProjection?.(session, { trackOptimisticTail: true });
   }
+  app.reconcileSessionTranscriptProjection?.(session, { trackOptimisticTail: true });
 
   const nextSeq = Number(payload.last_sequence_number ?? recovery?.sequence_number ?? session.lastSequenceNumber ?? 0);
   if (Number.isFinite(nextSeq) && nextSeq >= 0) {
@@ -1662,24 +2081,47 @@ const applyResponseRecoverySnapshot = (session, payload) => {
   }
   updateSessionUsageDisplay(session);
 
-  if (payload.status === 'completed') {
+  const terminalStatus = ['completed', 'failed', 'cancelled'].includes(String(payload.status || ''));
+  const firstFinalization = terminalStatus
+    ? beginResponseFinalization(session, responseId, nextSeq, 'snapshot')
+    : true;
+  markResponseEventApplied(session, responseId, nextSeq);
+  if (payload.status === 'completed' && firstFinalization) {
     clearTerminalPendingEffort(session);
-    if (responseId) {
-      session.lastResponseId = responseId;
+    if (responseId) session.lastResponseId = responseId;
+    clearActiveResponseTracking(session, responseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
+    requeuePendingInterjections(session);
+    void notifyTranscriptTerminal(session, responseId, payload.final_rev || 0, payload.run_epoch || 0);
+  } else if ((payload.status === 'failed' || payload.status === 'cancelled') && firstFinalization) {
+    clearTerminalPendingEffort(session);
+    clearActiveResponseTracking(session, responseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
+    requeuePendingInterjections(session);
+    void notifyTranscriptTerminal(session, responseId, payload.final_rev || 0, payload.run_epoch || 0);
+  } else if (!terminalStatus && responseId) {
+    const runEpoch = Math.max(0, Number(payload.run_epoch) || 0);
+    const latestRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, Number(session.transcript?.latestRunEpoch) || 0);
+    const currentResponseId = String(session.activeResponseId || '').trim();
+    const staleOwnership = Boolean(
+      currentResponseId
+      && currentResponseId !== responseId
+      && (runEpoch === 0 || runEpoch <= latestRunEpoch)
+    );
+    if (staleOwnership) {
+      window.transcriptDiagnostic?.('stale_status_rejection', {
+        responseId,
+        transcriptRev: session.transcript?.rev,
+        startRev: payload.started_rev,
+      });
+    } else {
+      if (runEpoch > 0) session.latestRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, runEpoch);
+      setActiveResponseTracking(session, responseId, session.lastSequenceNumber);
+      setSessionOptimisticBusy(session, true);
+      session.transcript?.setActiveRun?.(responseId, payload.started_rev || 0, runEpoch);
     }
-    clearActiveResponseTracking(session, responseId);
-    setSessionOptimisticBusy(session, false);
-    setSessionServerActiveRun(session, false);
-    requeuePendingInterjections(session);
-  } else if (payload.status === 'failed' || payload.status === 'cancelled') {
-    clearTerminalPendingEffort(session);
-    clearActiveResponseTracking(session, responseId);
-    setSessionOptimisticBusy(session, false);
-    setSessionServerActiveRun(session, false);
-    requeuePendingInterjections(session);
-  } else if (responseId) {
-    setActiveResponseTracking(session, responseId, session.lastSequenceNumber);
-    setSessionOptimisticBusy(session, true);
   }
 
   saveSessions();
@@ -1868,7 +2310,7 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
         setStreaming(Boolean(state.currentStreamResponseId));
         return false;
       }
-      if (result.error?.recoverableStreamGap || result.error?.recoverableStreamApplyFailure) {
+      if (result.error?.recoverableStreamGap || result.error?.recoverableStreamApplyFailure || result.error?.recoverableReplayInterrupted) {
         const sequenceBeforeRecovery = Number(session.lastSequenceNumber || 0);
         try {
           const snapshot = await recoverResponseStateFromSnapshot(session, responseId);
@@ -5210,6 +5652,12 @@ Object.assign(app, {
   createResponseStreamState,
   applyResponseStreamEvent,
   applyResponseRecoverySnapshot,
+  createHistoricalReplayStage,
+  reduceHistoricalReplayEvent,
+  mergeHistoricalReplayStage,
+  responseEventCursor,
+  responseEventSequence,
+  beginResponseFinalization,
   consumeResponseStream,
   scheduleStreamPersistence,
   flushStreamPersistence,

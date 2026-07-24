@@ -10,8 +10,8 @@ func BenchmarkResponseRunAppendTextDeltaRetainedReplay(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := run.appendTextDeltaEvent(0, ""); err != nil {
-			b.Fatalf("appendTextDeltaEvent failed: %v", err)
+		if err := run.appendTextDeltaSegmentEvent(0, 0, ""); err != nil {
+			b.Fatalf("appendTextDeltaSegmentEvent failed: %v", err)
 		}
 	}
 }

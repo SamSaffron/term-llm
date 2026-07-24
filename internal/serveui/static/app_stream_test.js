@@ -560,6 +560,11 @@ function createHarness(options = {}) {
 
   const windowObj = {
     TermLLMApp: app,
+    TranscriptStore,
+    reconcileTranscriptProjection,
+    assistantSegmentKey: require('./transcript-store.js').assistantSegmentKey,
+    transcriptToolIdentityKey: require('./transcript-store.js').transcriptToolIdentityKey,
+    transcriptDiagnostic: require('./transcript-store.js').transcriptDiagnostic,
     __TERM_LLM_DIAGNOSTICS__: Boolean(options.diagnostics),
     setTimeout: typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout,
     clearTimeout: typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout,
@@ -2478,7 +2483,7 @@ async function testSendMessageRecoversAfterStreamBufferOverflowDone() {
   const session = harness.state.sessions[0];
   const assistant = session && session.messages.find((message) => message.role === 'assistant');
   if (!assistant || assistant.content !== 'hello world') {
-    fail(name, 'assistant content did not recover after overflow', assistant ? assistant.content : 'missing');
+    fail(name, 'assistant content did not recover after overflow', JSON.stringify({ assistant: assistant?.content, messages: session?.messages?.map((message) => [message.role, message.id, message.content]), optimistic: session?.transcript?.optimistic?.map((message) => [message.role, message.id, message.content]) }));
     return;
   }
 
@@ -3098,7 +3103,7 @@ async function testReplayCompletionReconcilesDurableSelectedProjection() {
       ? (message.tools || []).map((tool) => tool.id)
       : []);
     if (projectedCalls.join(',') !== calls.join(',')) {
-      fail(name, `${phase}: session projection did not contain A/B/C durable and D optimistic once`, JSON.stringify(session.messages));
+      fail(name, `${phase}: session projection did not contain A/B/C durable and D optimistic once`, JSON.stringify({ messages: session.messages, optimistic: transcript.optimistic }));
       return false;
     }
     if (optimisticCalls.join(',') !== 'call_D') {
@@ -3144,8 +3149,8 @@ async function testReplayCompletionReconcilesDurableSelectedProjection() {
     transcript.destroy();
     return;
   }
-  if (reconciliations !== 2 || renders !== 4) {
-    fail(name, `expected one replay reconciliation plus snapshot/boundary renders per resume, got ${reconciliations} reconciliations and ${renders} renders`);
+  if (reconciliations !== 4 || renders !== 4) {
+    fail(name, `expected one snapshot normalization and one replay-boundary normalization per resume, got ${reconciliations} reconciliations and ${renders} renders`);
     await cleanup();
     transcript.destroy();
     return;
@@ -4808,7 +4813,10 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   ];
 
   const streamState = app.createResponseStreamState(session);
-  const fakeToolGroup = { id: 'grp_1', role: 'tool-group', tools: [], status: 'running' };
+  const fakeToolGroup = app.trackTranscriptOptimistic(session, {
+    id: 'grp_1', role: 'tool-group', responseId: 'resp_int', tools: [], status: 'running'
+  });
+  session.messages.push(fakeToolGroup);
   streamState.currentToolGroup = fakeToolGroup;
   streamState.currentAssistantMessage = null;
 
@@ -6997,7 +7005,308 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   pass(name);
 }
 
+async function testDetachedReplayPublishesOnlyAtOrderedBoundary() {
+  const name = 'historical replay remains detached until every ordered boundary event is present';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const responseId = 'resp_detached_boundary';
+  const transcript = new TranscriptStore('session_detached_boundary');
+  transcript.setActiveRun(responseId, 0, 1);
+  const session = { id: 'session_detached_boundary', messages: [], transcript, activeResponseId: responseId, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  const events = [
+    ['response.output_text.delta', { response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1, delta: 'alpha', sequence_number: 1 }],
+    ['response.output_item.added', { response_id: responseId, item: { type: 'function_call', call_id: 'call_boundary', name: 'shell', arguments: '{}' }, output_index: 1, sequence_number: 2 }],
+    ['response.completed', { response_id: responseId, response: { id: responseId, status: 'completed' }, sequence_number: 3 }],
+  ];
+  for (let cutoff = 0; cutoff < events.length; cutoff += 1) {
+    const stage = app.createHistoricalReplayStage(responseId, 0, 3, 1);
+    for (let i = 0; i < cutoff; i += 1) app.reduceHistoricalReplayEvent(stage, events[i][0], events[i][1]);
+    if (session.messages.length !== 0 || transcript.optimistic.length !== 0) {
+      fail(name, `cutoff ${cutoff} published partial replay`, JSON.stringify(session.messages));
+      await cleanup();
+      return;
+    }
+  }
+  const stage = app.createHistoricalReplayStage(responseId, 0, 3, 1);
+  for (const [event, payload] of events) app.reduceHistoricalReplayEvent(stage, event, payload);
+  const streamState = app.createResponseStreamState(session, { responseId });
+  const terminal = app.mergeHistoricalReplayStage(session, streamState, stage);
+  if (!terminal || transcript.optimistic.length !== 2 || session.messages.length !== 2) {
+    fail(name, 'complete text/tool/terminal boundary was not published atomically', JSON.stringify({ terminal, messages: session.messages }));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  transcript.destroy();
+  pass(name);
+}
+
+async function testDurableReplayContinuationKeepsCanonicalOverlayCursor() {
+  const name = 'durable prefix replay overlap and refreshes preserve one mutable overlay through fresh suffixes';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const responseId = 'resp_overlay_cursor';
+  const transcript = new TranscriptStore('session_overlay_cursor');
+  transcript.setActiveRun(responseId, 1, 1);
+  transcript.applyIndex({
+    rev: 1,
+    rows: {
+      ids: [10], seqs: [10], roles: 'a', flags: [0],
+      response_ids: [''], assistant_segment_ordinals: [-1],
+    },
+  });
+  transcript.materialize([{ id: 10, sequence: 10, role: 'assistant', parts: [{ type: 'text', text: 'durable' }] }]);
+  let durable = { id: 'srv_10', durableSourceRowIds: [10], role: 'assistant', content: 'durable', durable: true, serverSeq: 10 };
+  const session = { id: 'session_overlay_cursor', messages: [durable], transcript, activeResponseId: responseId, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  const stage = app.createHistoricalReplayStage(responseId, 0, 1, 1);
+  app.reduceHistoricalReplayEvent(stage, 'response.output_text.delta', {
+    response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1,
+    delta: 'durable', sequence_number: 1,
+  });
+  const streamState = app.createResponseStreamState(session, { responseId });
+  app.mergeHistoricalReplayStage(session, streamState, stage);
+  for (const [sequence, delta] of [[2, ' suffix'], [3, '!']]) {
+    app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+      response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1,
+      delta, sequence_number: sequence,
+    });
+    app.responseEventCursor(session, responseId).appliedSequence = sequence;
+    transcript.applyIndex({
+      rev: sequence,
+      rows: { ids: [10], seqs: [10], roles: 'a', flags: [0], response_ids: [''], assistant_segment_ordinals: [-1] },
+    });
+    const refreshedBody = { id: 10, sequence: 10, role: 'assistant', parts: [{ type: 'text', text: 'durable' }] };
+    transcript.materialize([refreshedBody]);
+    durable = {
+      id: 'srv_10', durableSourceRowIds: [10], role: 'assistant', content: 'durable', durable: true, serverSeq: 10,
+      responseId: refreshedBody.responseId, assistantSegmentOrdinal: refreshedBody.assistantSegmentOrdinal,
+    };
+    session.messages = [durable, ...transcript.optimistic];
+    transcript.reconcileOptimistic();
+    const projection = reconcileTranscriptProjection(session.messages, transcript);
+    if (projection.filter((message) => message.role === 'assistant').length !== 1
+      || projection.find((message) => message.role === 'assistant')?.content !== (sequence === 2 ? 'durable suffix' : 'durable suffix!')) {
+      fail(name, `refresh after sequence ${sequence} lost or duplicated suffix`, JSON.stringify(projection));
+      await cleanup();
+      return;
+    }
+    transcript.assertMutableOverlay(streamState.currentAssistantMessage, 'adversarial-refresh');
+  }
+  await cleanup();
+  transcript.destroy();
+  pass(name);
+}
+
+async function testSuffixOnlyReplayAndRepeatedTerminalAreIdempotent() {
+  const name = 'suffix-only replay composes by identity and repeated terminal finalizes exactly once';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const responseId = 'resp_suffix_terminal';
+  const transcript = new TranscriptStore('session_suffix_terminal');
+  transcript.applyIndex({ rev: 1, rows: { ids: [20], seqs: [20], roles: 'a', flags: [0], response_ids: [responseId], assistant_segment_ordinals: [0] } });
+  transcript.setActiveRun(responseId, 1, 2);
+  const durable = { id: 'srv_20', role: 'assistant', content: 'prefix', durable: true, responseId, assistantSegmentOrdinal: 0, serverSeq: 20 };
+  const session = { id: 'session_suffix_terminal', messages: [durable], transcript, activeResponseId: responseId, lastSequenceNumber: 5 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  const stage = app.createHistoricalReplayStage(responseId, 5, 6, 2);
+  app.reduceHistoricalReplayEvent(stage, 'response.output_text.delta', {
+    response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1,
+    delta: ' suffix', sequence_number: 6,
+  });
+  const streamState = app.createResponseStreamState(session, { responseId });
+  app.mergeHistoricalReplayStage(session, streamState, stage);
+  transcript.materialize([{ id: 20, sequence: 20, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0, parts: [{ type: 'text', text: 'prefix' }] }]);
+  const projected = reconcileTranscriptProjection([durable, ...transcript.optimistic], transcript);
+  if (projected.filter((message) => message.role === 'assistant').length !== 1 || projected[0]?.content !== 'prefix suffix') {
+    fail(name, 'suffix-only replay did not compose with its identified durable prefix', JSON.stringify(projected));
+    await cleanup();
+    return;
+  }
+  let terminalEffects = 0;
+  app.noteTranscriptTerminal = (_session, _responseId, _finalRev) => { terminalEffects += 1; };
+  for (let i = 0; i < 3; i += 1) {
+    app.applyResponseStreamEvent(session, streamState, 'response.completed', {
+      response_id: responseId, response: { id: responseId, status: 'completed' },
+      sequence_number: 7, final_rev: 2, run_epoch: 2,
+    });
+  }
+  const cursor = app.responseEventCursor(session, responseId);
+  if (terminalEffects !== 1 || !cursor.finalized || cursor.terminalSequence !== 7 || Object.keys(session.responseEventCursors).length > 16) {
+    fail(name, 'terminal effects or cursor retention were not idempotent/bounded', JSON.stringify({ terminalEffects, cursor, cursors: session.responseEventCursors }));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  transcript.destroy();
+  pass(name);
+}
+
+async function testInterruptedReplayPublishesNothingAndRetriesFromOriginalCursor() {
+  const name = 'interrupted detached replay publishes nothing and retries from the original response cursor';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const responseId = 'resp_interrupted_replay';
+  const transcript = new TranscriptStore('session_interrupted_replay');
+  transcript.setActiveRun(responseId, 0, 4);
+  const session = {
+    id: 'session_interrupted_replay', messages: [], transcript,
+    activeResponseId: responseId, lastSequenceNumber: 0,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  const streamState = app.createResponseStreamState(session, { responseId });
+  const makeStream = (body) => new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  });
+  const partial = await app.consumeResponseStream(makeStream([
+    'event: response.output_text.delta\n',
+    `data: {"response_id":"${responseId}","assistant_segment_ordinal":0,"segment_start_sequence":1,"delta":"alpha","sequence_number":1}\n\n`,
+    'data: [DONE]\n\n',
+  ].join('')), session, streamState, {
+    generation: state.streamGeneration, responseId, replayAfterSequence: 0, replayThroughSequence: 2,
+  });
+  if (!partial.error?.recoverableReplayInterrupted || session.messages.length !== 0
+    || transcript.optimistic.length !== 0 || app.responseEventSequence(session, responseId) !== 0) {
+    fail(name, 'partial replay leaked staged state or advanced its response cursor', JSON.stringify({ partial, messages: session.messages, optimistic: transcript.optimistic }));
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+  const retried = await app.consumeResponseStream(makeStream([
+    'event: response.output_text.delta\n',
+    `data: {"response_id":"${responseId}","assistant_segment_ordinal":0,"segment_start_sequence":1,"delta":"alpha","sequence_number":1}\n\n`,
+    'event: response.output_text.delta\n',
+    `data: {"response_id":"${responseId}","assistant_segment_ordinal":0,"segment_start_sequence":1,"delta":" beta","sequence_number":2}\n\n`,
+    'data: [DONE]\n\n',
+  ].join('')), session, streamState, {
+    generation: state.streamGeneration, responseId, replayAfterSequence: 0, replayThroughSequence: 2,
+  });
+  const assistant = transcript.optimisticAssistant(responseId, 0);
+  if (retried.error || !assistant || assistant.content !== 'alpha beta' || app.responseEventSequence(session, responseId) !== 2) {
+    fail(name, 'complete retry did not publish exactly once at its replay boundary', JSON.stringify({ retried, assistant, cursor: app.responseEventSequence(session, responseId) }));
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+  await cleanup();
+  transcript.destroy();
+  pass(name);
+}
+
+async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch() {
+  const name = 'stale recovery snapshot cannot reclaim session ownership after a rapid response switch';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const transcript = new TranscriptStore('session_rapid_response_switch');
+  transcript.setActiveRun('resp_new', 2, 2);
+  const session = {
+    id: 'session_rapid_response_switch', messages: [], transcript,
+    activeResponseId: 'resp_new', latestRunEpoch: 2, lastSequenceNumber: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = 'resp_new';
+  app.applyResponseRecoverySnapshot(session, {
+    id: 'resp_old', status: 'in_progress', run_epoch: 1, started_rev: 1, last_sequence_number: 4,
+    recovery: {
+      sequence_number: 4,
+      messages: [{ id: 'old-assistant', role: 'assistant', response_id: 'resp_old', assistant_segment_ordinal: 0, content: 'old tail' }],
+    },
+  });
+  if (session.activeResponseId !== 'resp_new' || transcript.activeRun?.id !== 'resp_new'
+    || state.currentStreamResponseId !== 'resp_new') {
+    fail(name, 'stale snapshot replaced newer response ownership', JSON.stringify({ session: session.activeResponseId, transcript: transcript.activeRun, stream: state.currentStreamResponseId }));
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+  await cleanup();
+  transcript.destroy();
+  pass(name);
+}
+
+async function testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection() {
+  const name = 'durable-before-snapshot recovery keeps every mutable cursor on the optimistic overlay';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const responseId = 'resp_durable_before_snapshot';
+  const transcript = new TranscriptStore('session_durable_before_snapshot');
+  transcript.applyIndex({
+    rev: 1,
+    rows: { ids: [30], seqs: [30], roles: 'a', flags: [0], response_ids: [responseId], assistant_segment_ordinals: [0] },
+  });
+  transcript.materialize([{
+    id: 30, sequence: 30, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+    parts: [{ type: 'text', text: 'durable prefix' }],
+  }]);
+  transcript.setActiveRun(responseId, 1, 3);
+  const durable = {
+    id: 'srv_30', role: 'assistant', content: 'durable prefix', durable: true, serverSeq: 30,
+    responseId, assistantSegmentOrdinal: 0,
+  };
+  const session = {
+    id: 'session_durable_before_snapshot', messages: [durable], transcript,
+    activeResponseId: responseId, lastSequenceNumber: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  const streamState = app.createResponseStreamState(session, { responseId });
+  let thrown = null;
+  try {
+    app.applyResponseStreamEvent(session, streamState, 'response.stream_error', {
+      response_id: responseId,
+      sequence_number: 2,
+      error: { type: 'stream_buffer_overflow' },
+      recovery: {
+        sequence_number: 2,
+        messages: [{
+          id: `${responseId}_assistant_1`, role: 'assistant', response_id: responseId,
+          assistant_segment_ordinal: 0, content: 'durable prefix suffix',
+        }],
+      },
+    });
+  } catch (err) {
+    thrown = err;
+  }
+  const overlay = transcript.optimisticAssistant(responseId, 0);
+  if (thrown || !overlay || streamState.currentAssistantMessage !== overlay || overlay.durable === true || overlay.optimistic !== true) {
+    fail(name, 'snapshot recovery selected a durable/projection node as the mutable cursor', JSON.stringify({ error: thrown?.message, cursor: streamState.currentAssistantMessage, overlay }));
+    await cleanup();
+    transcript.destroy();
+    return;
+  }
+  transcript.assertMutableOverlay(streamState.currentAssistantMessage, 'cursor-never-durable-test');
+  await cleanup();
+  transcript.destroy();
+  pass(name);
+}
+
 (async () => {
+  await testDetachedReplayPublishesOnlyAtOrderedBoundary();
+  await testDurableReplayContinuationKeepsCanonicalOverlayCursor();
+  await testSuffixOnlyReplayAndRepeatedTerminalAreIdempotent();
+  await testInterruptedReplayPublishesNothingAndRetriesFromOriginalCursor();
+  await testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch();
+  await testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection();
   await testUnknownSlashTextRemainsNormalMessage();
   await testMainSkillUsesStructuredInvocationAndResponseStream();
   await testIsolatedSkillStreamsIndependentlyAndCancelsIndependently();

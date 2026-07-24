@@ -873,12 +873,16 @@ type sessionMessagePartEntry struct {
 }
 
 type sessionMessageEntry struct {
-	ID             int64                     `json:"id"`
-	Sequence       int                       `json:"sequence"`
-	Role           string                    `json:"role"`
-	Parts          []sessionMessagePartEntry `json:"parts"`
-	CreatedAt      int64                     `json:"created_at"`
-	CompactionTail bool                      `json:"compaction_tail,omitempty"`
+	ID                      int64                     `json:"id"`
+	Sequence                int                       `json:"sequence"`
+	Role                    string                    `json:"role"`
+	Parts                   []sessionMessagePartEntry `json:"parts"`
+	CreatedAt               int64                     `json:"created_at"`
+	CompactionTail          bool                      `json:"compaction_tail,omitempty"`
+	ResponseID              string                    `json:"response_id,omitempty"`
+	AssistantSegmentOrdinal *int                      `json:"assistant_segment_ordinal,omitempty"`
+	SegmentStartSequence    int64                     `json:"segment_start_sequence,omitempty"`
+	SegmentEndSequence      int64                     `json:"segment_end_sequence,omitempty"`
 }
 
 type sessionMessagesResponse struct {
@@ -1382,11 +1386,18 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			continue
 		}
 		entry := sessionMessageEntry{
-			ID:             msg.ID,
-			Sequence:       msg.Sequence,
-			Role:           string(msg.Role),
-			CreatedAt:      msg.CreatedAt.UnixMilli(),
-			CompactionTail: msg.CompactionTail,
+			ID:                   msg.ID,
+			Sequence:             msg.Sequence,
+			Role:                 string(msg.Role),
+			CreatedAt:            msg.CreatedAt.UnixMilli(),
+			CompactionTail:       msg.CompactionTail,
+			ResponseID:           msg.ResponseID,
+			SegmentStartSequence: msg.SegmentStartSequence,
+			SegmentEndSequence:   msg.SegmentEndSequence,
+		}
+		if msg.Role == llm.RoleAssistant && msg.ResponseID != "" {
+			ordinal := msg.AssistantSegmentOrdinal
+			entry.AssistantSegmentOrdinal = &ordinal
 		}
 		if msg.Role == llm.RoleEvent {
 			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {

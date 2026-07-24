@@ -448,6 +448,18 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   assert.equal(assistantTail.optimistic.length, 0);
   assert.deepEqual(assistantTail.reconcileOptimistic(), [], 'repeat terminal reconciliation is a no-op');
 
+  const freshness = new TranscriptStore('run-freshness');
+  freshness.setActiveRun('resp-A', 1, 1);
+  freshness.setActiveRun('resp-B', 2, 2);
+  freshness.setActiveRun('', 0, 0, { observedCreatedEpoch: 1 });
+  assert.equal(freshness.activeRun.id, 'resp-B', 'idle status sampled before response B must not clear newer ownership');
+  freshness.setActiveRun('resp-A', 1, 1);
+  assert.equal(freshness.activeRun.id, 'resp-B', 'late response A attach must not replace newer response B');
+  freshness.setActiveRun('resp-A-legacy', 1, 0, { observedCreatedEpoch: 1 });
+  assert.equal(freshness.activeRun.id, 'resp-B', 'late epochless status sampled before response B must not replace newer ownership');
+  freshness.setActiveRun('', 0, 2, { responseId: 'resp-B', sampledEpoch: 2, observedCreatedEpoch: 2 });
+  assert.equal(freshness.activeRun, null, 'fresh response B terminal may clear ownership');
+
   const reloadedAssistant = new TranscriptStore('assistant-tail-reloaded');
   reloadedAssistant.applyIndex(envelope([25, 26], { rev: 7, roles: 'ua', seqs: [25, 26] }));
   reloadedAssistant.materialize([
@@ -580,6 +592,110 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   assert.deepEqual(fallback.renderedMessages().map((entry) => entry.id || entry.role), direct.renderedMessages().map((entry) => entry.id || entry.role));
   assert(__transcriptStats('converted-fallback'));
   fallback._checkInvariants();
+})();
+
+(() => {
+  const responseA = 'resp_identity_A';
+  const responseB = 'resp_identity_B';
+  const durableA = {
+    id: 'durable-A', role: 'assistant', content: 'same text', durable: true,
+    serverSeq: 1, responseId: responseA, assistantSegmentOrdinal: 0,
+  };
+  const durableB = {
+    id: 'durable-B', role: 'assistant', content: 'same text', durable: true,
+    serverSeq: 3, responseId: responseB, assistantSegmentOrdinal: 0,
+  };
+  const optimisticA = {
+    id: 'optimistic-A', clientKey: `${responseA}:assistant:0`, role: 'assistant',
+    responseId: responseA, assistantSegmentOrdinal: 0, content: 'same text A suffix', optimistic: true,
+  };
+  const optimisticB = {
+    id: 'optimistic-B', clientKey: `${responseB}:assistant:0`, role: 'assistant',
+    responseId: responseB, assistantSegmentOrdinal: 0, content: 'same text B suffix', optimistic: true,
+  };
+  const user = { id: 'interjection', role: 'user', content: 'between' };
+  for (const input of [
+    [durableA, user, durableB, optimisticA, optimisticB],
+    [durableA, optimisticA, user, durableB, optimisticB],
+  ]) {
+    const projection = reconcileTranscriptProjection(input);
+    assert.deepEqual(
+      projection.filter((message) => message.role === 'assistant').map((message) => [message.id, message.content]),
+      [['durable-A', 'same text A suffix'], ['durable-B', 'same text B suffix']],
+      'response-scoped identities must preserve interjection boundaries in either arrival order'
+    );
+  }
+
+  const legacyScope = new TranscriptStore('legacy-active-scope');
+  legacyScope.applyIndex(envelope([101], { rev: 1, roles: 'a', seqs: [101] }));
+  legacyScope.materialize([{ id: 101, sequence: 101, role: 'assistant', parts: [{ type: 'text', text: 'old history' }] }]);
+  legacyScope.setActiveRun('resp-live', 1, 1);
+  legacyScope.applyIndex(envelope([101, 102], { rev: 2, roles: 'aa', seqs: [101, 102] }));
+  legacyScope.materialize([
+    { id: 101, sequence: 101, role: 'assistant', parts: [{ type: 'text', text: 'old history' }] },
+    { id: 102, sequence: 102, role: 'assistant', parts: [{ type: 'text', text: 'live prefix' }] },
+  ]);
+  assert.equal(legacyScope.durableAssistant('resp-live', 0)?.body?.id, 102, 'legacy inference must never claim pre-run assistant history');
+
+  const repeatedContent = reconcileTranscriptProjection([
+    durableA,
+    { ...durableA, id: 'durable-A-segment-1', assistantSegmentOrdinal: 1 },
+    durableB,
+  ]);
+  assert.equal(repeatedContent.length, 3, 'identical assistant content in distinct segment/response identities must never cross-match');
+
+  const scopedTools = reconcileTranscriptProjection([
+    { id: 'tools-A', role: 'tool-group', responseId: responseA, durable: true, tools: [{ id: 'call_same' }] },
+    { id: 'tools-B', role: 'tool-group', responseId: responseB, durable: true, tools: [{ id: 'call_same' }] },
+    { id: 'tools-A-replay', role: 'tool-group', responseId: responseA, optimistic: true, tools: [{ id: 'call_same' }] },
+  ]);
+  assert.deepEqual(scopedTools.map((message) => message.id), ['tools-A', 'tools-B'], 'tool IDs are deduplicated only within their response scope');
+  legacyScope.destroy();
+})();
+
+(() => {
+  const responseId = 'resp_optimistic_first';
+  const store = new TranscriptStore('optimistic-first');
+  store.setActiveRun(responseId, 0, 1);
+  const overlay = store.addOptimistic({
+    id: 'overlay-first', role: 'assistant', responseId, assistantSegmentOrdinal: 0,
+    content: 'prefix suffix', segmentStartSequence: 1, segmentEndSequence: 2,
+  });
+  store.assertMutableOverlay(overlay, 'test');
+  assert.throws(
+    () => store.assertMutableOverlay({ id: 'durable-cursor', role: 'assistant', durable: true }, 'test'),
+    /not a transcript-owned optimistic overlay/,
+    'mutable stream cursor assertion must reject durable nodes'
+  );
+  store.applyIndex({
+    rev: 1,
+    rows: { ids: [1], seqs: [1], roles: 'a', flags: [0], response_ids: [responseId], assistant_segment_ordinals: [0] },
+  });
+  store.materialize([{
+    id: 1, sequence: 1, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+    segment_start_sequence: 1, segment_end_sequence: 1, parts: [{ type: 'text', text: 'prefix' }],
+  }]);
+  assert.deepEqual(store.reconcileOptimistic(), [], 'active durable prefix must retain the canonical overlay suffix');
+  assert.equal(store.optimistic[0], overlay);
+  store.setActiveRun('', 0, 1, { responseId, sampledEpoch: 1, observedCreatedEpoch: 1 });
+  store.materialize([{
+    id: 1, sequence: 1, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+    segment_start_sequence: 1, segment_end_sequence: 2, parts: [{ type: 'text', text: 'prefix suffix' }],
+  }]);
+  assert.deepEqual(store.reconcileOptimistic(), [overlay], 'terminal durable body retires the optimistic source exactly once');
+  assert.deepEqual(store.reconcileOptimistic(), [], 'repeated terminal reconciliation remains a no-op');
+
+  const reloaded = transcriptStoreFromMessages('identity-reload', [{
+    messages: [{
+      id: 1, sequence: 1, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+      segment_start_sequence: 1, segment_end_sequence: 2, parts: [{ type: 'text', text: 'prefix suffix' }],
+    }],
+  }]);
+  assert.equal(reloaded.responseIDs[0], responseId);
+  assert.equal(reloaded.assistantSegmentOrdinals[0], 0);
+  assert.equal(reloaded.renderedMessages()[0].response_id, responseId, 'reload preserves durable response-scoped identity');
+  store._checkInvariants();
+  reloaded._checkInvariants();
 })();
 
 console.log('transcript-store tests passed');

@@ -217,10 +217,14 @@ const (
 
 // Message holds a role with structured parts.
 type Message struct {
-	Role         Role
-	Parts        []Part
-	CacheAnchor  bool   // provider should apply cache_control to this message (Anthropic-specific)
-	ApprovalRole string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
+	Role                    Role
+	Parts                   []Part
+	CacheAnchor             bool   // provider should apply cache_control to this message (Anthropic-specific)
+	ApprovalRole            string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
+	ResponseID              string `json:",omitempty"` // Stable response owner for persisted/UI projection identity; providers ignore it.
+	AssistantSegmentOrdinal int    `json:",omitempty"` // Response-scoped assistant segment identity; -1 when not applicable.
+	SegmentStartSequence    int64  `json:",omitempty"` // First response event sequence for this assistant segment, when known.
+	SegmentEndSequence      int64  `json:",omitempty"` // Last response event sequence covered by this persisted segment, when known.
 }
 
 // ReasoningKind classifies provider reasoning/thinking payloads for safe display.

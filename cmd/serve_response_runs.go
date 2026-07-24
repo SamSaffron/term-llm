@@ -36,16 +36,20 @@ type responseRunRecoveryTool struct {
 }
 
 type responseRunRecoveryMessage struct {
-	ID             string
-	Role           string
-	Content        []byte
-	Created        int64
-	Tools          []responseRunRecoveryTool
-	Attachments    []map[string]any
-	Expanded       bool
-	Status         string
-	Usage          map[string]any
-	InterruptState string
+	ID                      string
+	Role                    string
+	Content                 []byte
+	Created                 int64
+	Tools                   []responseRunRecoveryTool
+	Attachments             []map[string]any
+	Expanded                bool
+	Status                  string
+	Usage                   map[string]any
+	InterruptState          string
+	ResponseID              string
+	AssistantSegmentOrdinal int
+	SegmentStartSequence    int64
+	SegmentEndSequence      int64
 }
 
 type responseRunRecoveryEvent struct {
@@ -61,6 +65,11 @@ type responseRunSubscribeResult struct {
 	minReplayAfter   int64
 }
 
+type responseRunSegmentRange struct {
+	Start int64
+	End   int64
+}
+
 type responseRun struct {
 	mu                 sync.Mutex
 	terminalMu         sync.Mutex
@@ -71,6 +80,7 @@ type responseRun struct {
 	reasoningEffort    string
 	reasoningEffortSet bool
 	created            int64
+	runEpoch           int64
 	startedRev         int64
 	finalRev           int64
 	finalRevReader     func() int64
@@ -91,6 +101,7 @@ type responseRun struct {
 	nextMessageOrdinal int64
 	currentAssistant   int
 	currentToolGroup   int
+	segmentRanges      map[int]responseRunSegmentRange
 	compactionEnabled  bool
 	subscribers        map[int]chan responseRunEvent
 	subscriberWarned   map[int]bool // tracks whether 75% buffer warning was logged
@@ -110,6 +121,37 @@ type startResponseRunOptions struct {
 	runtimeSetup              func(*llm.Request) error
 }
 
+type responseRunContextKey struct{}
+
+func withResponseRunContext(ctx context.Context, run *responseRun) context.Context {
+	if ctx == nil || run == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, responseRunContextKey{}, run)
+}
+
+func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal int) llm.Message {
+	if ctx == nil {
+		return msg
+	}
+	run, _ := ctx.Value(responseRunContextKey{}).(*responseRun)
+	if run == nil {
+		return msg
+	}
+	msg.ResponseID = run.id
+	if msg.Role != llm.RoleAssistant {
+		msg.AssistantSegmentOrdinal = -1
+		return msg
+	}
+	msg.AssistantSegmentOrdinal = segmentOrdinal
+	run.mu.Lock()
+	rangeValue := run.segmentRanges[segmentOrdinal]
+	run.mu.Unlock()
+	msg.SegmentStartSequence = rangeValue.Start
+	msg.SegmentEndSequence = rangeValue.End
+	return msg
+}
+
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
 	return &responseRun{
 		id:                 respID,
@@ -121,6 +163,7 @@ func newResponseRun(respID, sessionID, previousResponseID, model string, created
 		maxRetainedEvents:  defaultResponseRunReplayLimit,
 		currentAssistant:   -1,
 		currentToolGroup:   -1,
+		segmentRanges:      make(map[int]responseRunSegmentRange),
 		compactionEnabled:  true,
 		subscribers:        make(map[int]chan responseRunEvent),
 		subscriberWarned:   make(map[int]bool),
@@ -238,10 +281,13 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	if payload == nil {
 		payload = map[string]any{}
 	}
+	payload["response_id"] = r.id
+	payload["run_epoch"] = r.runEpoch
 	if event == "response.created" {
 		payload["started_rev"] = r.startedRev
 		if response := mapValue(payload["response"]); len(response) > 0 {
 			response["started_rev"] = r.startedRev
+			response["run_epoch"] = r.runEpoch
 		}
 	}
 	if terminal {
@@ -308,9 +354,37 @@ func (r *responseRun) storeEventLocked(stored responseRunEvent, terminal bool) {
 	}
 }
 
-func encodeTextDeltaPayload(outputIndex int, delta string, sequenceNumber int64) ([]byte, error) {
-	data := make([]byte, 0, 80+len(delta))
-	data = append(data, `{"output_index":`...)
+func responseRunInt64Value(value any, fallback int64) int64 {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	case json.Number:
+		if parsed, err := typed.Int64(); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func responseRunIntValue(value any, fallback int) int {
+	return int(responseRunInt64Value(value, int64(fallback)))
+}
+
+func encodeTextDeltaPayloadWithIdentity(responseID string, runEpoch int64, outputIndex, segmentOrdinal int, segmentStartSequence int64, delta string, sequenceNumber int64) ([]byte, error) {
+	data := make([]byte, 0, 160+len(responseID)+len(delta))
+	data = append(data, `{"response_id":`...)
+	data = appendJSONString(data, responseID)
+	data = append(data, `,"run_epoch":`...)
+	data = strconv.AppendInt(data, runEpoch, 10)
+	data = append(data, `,"assistant_segment_ordinal":`...)
+	data = strconv.AppendInt(data, int64(segmentOrdinal), 10)
+	data = append(data, `,"segment_start_sequence":`...)
+	data = strconv.AppendInt(data, segmentStartSequence, 10)
+	data = append(data, `,"output_index":`...)
 	data = strconv.AppendInt(data, int64(outputIndex), 10)
 	data = append(data, `,"delta":`...)
 	if utf8.ValidString(delta) {
@@ -328,23 +402,38 @@ func encodeTextDeltaPayload(outputIndex int, delta string, sequenceNumber int64)
 	return data, nil
 }
 
-// appendTextDeltaEvent is a fast path for response.output_text.delta that avoids
+// appendTextDeltaSegmentEvent is a fast path for response.output_text.delta that avoids
 // allocating a map[string]any or a typed payload on every streamed token.
-func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error {
+func (r *responseRun) appendTextDeltaSegmentEvent(outputIndex, segmentOrdinal int, delta string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastSequenceNumber++
+	sequenceNumber := r.lastSequenceNumber
+	rangeValue, hadRange := r.segmentRanges[segmentOrdinal]
+	previousRange := rangeValue
+	if rangeValue.Start == 0 {
+		rangeValue.Start = sequenceNumber
+	}
+	rangeValue.End = sequenceNumber
+	r.segmentRanges[segmentOrdinal] = rangeValue
 
-	data, err := encodeTextDeltaPayload(outputIndex, delta, r.lastSequenceNumber)
+	data, err := encodeTextDeltaPayloadWithIdentity(r.id, r.runEpoch, outputIndex, segmentOrdinal, rangeValue.Start, delta, sequenceNumber)
 	if err != nil {
 		r.lastSequenceNumber--
+		if hadRange {
+			r.segmentRanges[segmentOrdinal] = previousRange
+		} else {
+			delete(r.segmentRanges, segmentOrdinal)
+		}
 		return err
 	}
 
 	if delta != "" {
 		r.closeToolGroupLocked()
-		idx := r.ensureAssistantMessageLocked()
+		idx := r.ensureAssistantMessageLocked(segmentOrdinal)
 		r.recoveryMessages[idx].Content = append(r.recoveryMessages[idx].Content, delta...)
+		r.recoveryMessages[idx].SegmentStartSequence = rangeValue.Start
+		r.recoveryMessages[idx].SegmentEndSequence = rangeValue.End
 	}
 
 	r.storeEventLocked(responseRunEvent{
@@ -441,12 +530,14 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 			return
 		}
 		r.closeToolGroupLocked()
-		idx := r.ensureAssistantMessageLocked()
+		ordinal := responseRunIntValue(payload["assistant_segment_ordinal"], 0)
+		idx := r.ensureAssistantMessageLocked(ordinal)
 		r.recoveryMessages[idx].Content = append(r.recoveryMessages[idx].Content, delta...)
+		r.recoveryMessages[idx].SegmentStartSequence = responseRunInt64Value(payload["segment_start_sequence"], 0)
+		r.recoveryMessages[idx].SegmentEndSequence = responseRunInt64Value(payload["sequence_number"], 0)
 	case "response.output_text.new_segment":
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
-		r.ensureAssistantMessageLocked()
 	case "response.output_item.added":
 		item := mapValue(payload["item"])
 		if stringValue(item["type"]) != "function_call" {
@@ -569,14 +660,23 @@ func (r *responseRun) nextRecoveryMessageIDLocked(kind string) string {
 	return fmt.Sprintf("%s_%s_%d", r.id, kind, r.nextMessageOrdinal)
 }
 
-func (r *responseRun) ensureAssistantMessageLocked() int {
+func (r *responseRun) ensureAssistantMessageLocked(segmentOrdinal int) int {
 	if r.currentAssistant >= 0 && r.currentAssistant < len(r.recoveryMessages) {
-		return r.currentAssistant
+		current := &r.recoveryMessages[r.currentAssistant]
+		if current.AssistantSegmentOrdinal == segmentOrdinal {
+			return r.currentAssistant
+		}
+		r.currentAssistant = -1
 	}
+	rangeValue := r.segmentRanges[segmentOrdinal]
 	r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
-		ID:      r.nextRecoveryMessageIDLocked("assistant"),
-		Role:    "assistant",
-		Created: time.Now().UnixMilli(),
+		ID:                      r.nextRecoveryMessageIDLocked("assistant"),
+		Role:                    "assistant",
+		Created:                 time.Now().UnixMilli(),
+		ResponseID:              r.id,
+		AssistantSegmentOrdinal: segmentOrdinal,
+		SegmentStartSequence:    rangeValue.Start,
+		SegmentEndSequence:      rangeValue.End,
 	})
 	r.currentAssistant = len(r.recoveryMessages) - 1
 	return r.currentAssistant
@@ -690,6 +790,7 @@ func (r *responseRun) snapshot() map[string]any {
 		"session_id":           r.sessionID,
 		"previous_response_id": r.previousResponseID,
 		"last_sequence_number": r.lastSequenceNumber,
+		"run_epoch":            r.runEpoch,
 		"started_rev":          r.startedRev,
 	}
 	if r.status != "in_progress" {
@@ -723,10 +824,26 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 
 	messages := make([]map[string]any, 0, len(r.recoveryMessages))
 	for _, msg := range r.recoveryMessages {
+		responseID := msg.ResponseID
+		if responseID == "" {
+			responseID = r.id
+		}
 		entry := map[string]any{
-			"id":      msg.ID,
-			"role":    msg.Role,
-			"created": msg.Created,
+			"id":          msg.ID,
+			"role":        msg.Role,
+			"created":     msg.Created,
+			"responseId":  responseID,
+			"response_id": responseID,
+		}
+		if msg.Role == "assistant" {
+			entry["assistantSegmentOrdinal"] = msg.AssistantSegmentOrdinal
+			entry["assistant_segment_ordinal"] = msg.AssistantSegmentOrdinal
+			if msg.SegmentStartSequence > 0 {
+				entry["segment_start_sequence"] = msg.SegmentStartSequence
+			}
+			if msg.SegmentEndSequence > 0 {
+				entry["segment_end_sequence"] = msg.SegmentEndSequence
+			}
 		}
 		if len(msg.Content) > 0 {
 			entry["content"] = string(msg.Content)
@@ -847,14 +964,15 @@ func (r *responseRun) resolveApprovalRecovery(approvalID string) {
 }
 
 type responseRunManager struct {
-	mu                sync.Mutex
-	runs              map[string]*responseRun
-	activeBySession   map[string]string
-	idempotencyByKey  map[string]string
-	cleanupTimers     map[string]*time.Timer
-	terminalRetention time.Duration
-	runWG             sync.WaitGroup
-	closed            bool
+	mu                 sync.Mutex
+	runs               map[string]*responseRun
+	activeBySession    map[string]string
+	idempotencyByKey   map[string]string
+	cleanupTimers      map[string]*time.Timer
+	nextEpochBySession map[string]int64
+	terminalRetention  time.Duration
+	runWG              sync.WaitGroup
+	closed             bool
 }
 
 const (
@@ -899,11 +1017,12 @@ func newServeResponseRunManager() *responseRunManager {
 
 func newServeResponseRunManagerWithRetention(retention time.Duration) *responseRunManager {
 	return &responseRunManager{
-		runs:              make(map[string]*responseRun),
-		activeBySession:   make(map[string]string),
-		idempotencyByKey:  make(map[string]string),
-		cleanupTimers:     make(map[string]*time.Timer),
-		terminalRetention: retention,
+		runs:               make(map[string]*responseRun),
+		activeBySession:    make(map[string]string),
+		idempotencyByKey:   make(map[string]string),
+		cleanupTimers:      make(map[string]*time.Timer),
+		nextEpochBySession: make(map[string]int64),
+		terminalRetention:  retention,
 	}
 }
 
@@ -957,6 +1076,13 @@ func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempote
 	if _, exists := m.runs[run.id]; exists {
 		return nil, false, fmt.Errorf("response run %q already exists", run.id)
 	}
+	previousEpoch := m.nextEpochBySession[run.sessionID]
+	nextEpoch := previousEpoch + 1
+	if now := time.Now().UnixMicro(); nextEpoch < now {
+		nextEpoch = now
+	}
+	m.nextEpochBySession[run.sessionID] = nextEpoch
+	run.runEpoch = nextEpoch
 	m.runs[run.id] = run
 	if key != "" {
 		m.idempotencyByKey[key] = run.id
@@ -1288,11 +1414,13 @@ func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
 }
 
 type responseRunStreamState struct {
-	outputIndex        int
-	toolsSeen          bool
-	model              string
-	reasoningEffort    string
-	reasoningEffortSet bool
+	outputIndex              int
+	toolsSeen                bool
+	assistantBoundaryPending bool
+	assistantSegmentOrdinal  int
+	model                    string
+	reasoningEffort          string
+	reasoningEffortSet       bool
 }
 
 func newResponseRunStreamState(model, reasoningEffort string) *responseRunStreamState {
@@ -1361,15 +1489,18 @@ func (s *serveServer) persistResponseRunErrorEvent(runtime *serveRuntime, sessio
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
 	switch ev.Type {
 	case llm.EventTextDelta:
-		if state.toolsSeen {
+		if state.toolsSeen || state.assistantBoundaryPending {
+			state.assistantSegmentOrdinal++
 			if err := run.appendEvent("response.output_text.new_segment", map[string]any{
-				"output_index": state.outputIndex,
+				"output_index":              state.outputIndex,
+				"assistant_segment_ordinal": state.assistantSegmentOrdinal,
 			}); err != nil {
 				return err
 			}
 			state.toolsSeen = false
+			state.assistantBoundaryPending = false
 		}
-		return run.appendTextDeltaEvent(state.outputIndex, ev.Text)
+		return run.appendTextDeltaSegmentEvent(state.outputIndex, state.assistantSegmentOrdinal, ev.Text)
 	case llm.EventAttemptDiscard:
 		state.toolsSeen = false
 		return run.appendEvent("response.attempt.discard", map[string]any{
@@ -1379,8 +1510,11 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		if ev.Tool == nil {
 			return nil
 		}
-		// Suppress tool calls for server-executed tools in API mode
+		// Suppress tool call metadata for server-executed tools in API mode, but
+		// retain the assistant boundary so persisted callback turn ordinals and
+		// streamed segment identities remain aligned end to end.
 		if s.suppressResponseRunServerToolEvent(runtime, ev.Tool.Name) {
+			state.toolsSeen = true
 			return nil
 		}
 		state.toolsSeen = true
@@ -1392,8 +1526,9 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"arguments": string(ev.Tool.Arguments),
 		}
 		if err := run.appendEvent("response.output_item.added", map[string]any{
-			"output_index": state.outputIndex,
-			"item":         item,
+			"output_index":              state.outputIndex,
+			"assistant_segment_ordinal": state.assistantSegmentOrdinal,
+			"item":                      item,
 		}); err != nil {
 			return err
 		}
@@ -1496,6 +1631,10 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		}
 		return run.appendEvent("response.retry", payload)
 	case llm.EventInterjection:
+		// One or more committed interjections form a single user boundary before
+		// the next assistant text. Defer the ordinal bump until text arrives so a
+		// batch of interjections cannot create skipped segment identities.
+		state.assistantBoundaryPending = true
 		payload := map[string]any{
 			"text": ev.Text,
 		}
@@ -1602,10 +1741,7 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 		return "", err
 	}
 	if result.Text.Len() > 0 {
-		if err := run.appendEvent("response.output_text.delta", map[string]any{
-			"output_index": 0,
-			"delta":        result.Text.String(),
-		}); err != nil {
+		if err := run.appendTextDeltaSegmentEvent(0, 0, result.Text.String()); err != nil {
 			cleanup()
 			return "", err
 		}
@@ -1945,6 +2081,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - serve.response_timeout bounds orphan-run lifetime.
 	runCtx, cancel := context.WithTimeout(context.Background(), s.responseTimeout())
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	runCtx = withResponseRunContext(runCtx, run)
 	s.configureResponseRunRevision(run, sessionID)
 	createdRun, duplicate, err := mgr.createOrGetByIdempotency(run, options.idempotencyKey)
 	if err != nil {

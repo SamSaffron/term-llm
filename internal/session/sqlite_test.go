@@ -2850,3 +2850,69 @@ func explainQueryPlan(t *testing.T, db *sql.DB, query string) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+func TestSQLiteStoreMigratesLegacyMessagesToResponseSegmentIdentity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-stream-identity.db")
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatalf("create current store: %v", err)
+	}
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.AssistantText("legacy row"), -1)); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	for _, column := range []string{"segment_end_sequence", "segment_start_sequence", "assistant_segment_ordinal", "response_id"} {
+		if _, err := db.Exec("ALTER TABLE messages DROP COLUMN " + column); err != nil {
+			db.Close()
+			t.Fatalf("drop %s: %v", column, err)
+		}
+	}
+	if _, err := db.Exec("UPDATE schema_version SET version = 41"); err != nil {
+		db.Close()
+		t.Fatalf("rewind schema version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	migrated, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatalf("migrate store: %v", err)
+	}
+	defer migrated.Close()
+	messages, err := migrated.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("read migrated legacy row: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ResponseID != "" || messages[0].AssistantSegmentOrdinal != -1 {
+		t.Fatalf("migrated legacy row = %+v", messages)
+	}
+	identified := llm.AssistantText("identified row")
+	identified.ResponseID = "resp_migrated"
+	identified.AssistantSegmentOrdinal = 1
+	identified.SegmentStartSequence = 7
+	identified.SegmentEndSequence = 9
+	if err := migrated.AddMessage(ctx, sess.ID, NewMessage(sess.ID, identified, -1)); err != nil {
+		t.Fatalf("write identified row after migration: %v", err)
+	}
+	messages, err = migrated.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("read identified row: %v", err)
+	}
+	got := messages[len(messages)-1]
+	if got.ResponseID != identified.ResponseID || got.AssistantSegmentOrdinal != 1 || got.SegmentStartSequence != 7 || got.SegmentEndSequence != 9 {
+		t.Fatalf("identified row after migration = %+v", got)
+	}
+}
