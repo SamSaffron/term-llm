@@ -7,6 +7,7 @@ const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-render.js'), 'utf8');
 const markdownStreaming = require(path.join(__dirname, 'markdown-streaming.js'));
+const { reconcileToolCallProjection } = require('./transcript-store.js');
 let failures = 0;
 
 function fail(name, message, details) {
@@ -1925,6 +1926,59 @@ async function run(name, fn) {
       messages.children.map((node) => node.dataset.messageId).join(','),
       'msg_keep_going,tools_queue_agent,tools_wait_for_jobs',
       'live DOM follows session message order without requiring a reload'
+    );
+  });
+
+  await run('transcript reconciliation removes duplicate optimistic tool DOM without reload', () => {
+    const { app, session, messages } = createHarness();
+    session.transcript = {};
+    const durable = {
+      id: 'srv_seq_387_tools_1',
+      role: 'tool-group',
+      durable: true,
+      transcriptSegmentIndex: 0,
+      status: 'done',
+      tools: [
+        { id: 'call_shell_exact_a', name: 'shell', status: 'done', arguments: '{}' },
+        { id: 'call_shell_exact_b', name: 'shell', status: 'done', arguments: '{}' }
+      ],
+      created: 1000
+    };
+    const exactLive = {
+      id: 'msg_ba0-live-tools',
+      role: 'tool-group',
+      status: 'done',
+      tools: [
+        { id: 'call_shell_exact_a', name: 'shell', status: 'done', arguments: '{}' },
+        { id: 'call_shell_exact_b', name: 'shell', status: 'done', arguments: '{}' }
+      ],
+      created: 1100
+    };
+    const partialLive = {
+      id: 'msg_652-live-tools',
+      role: 'tool-group',
+      status: 'running',
+      tools: [
+        { id: 'call_shell_exact_b', name: 'shell', status: 'done', arguments: '{}' },
+        { id: 'call_shell_newer', name: 'shell', status: 'running', arguments: '{}' }
+      ],
+      created: 1200
+    };
+    session.messages = [durable, exactLive, partialLive];
+    app.renderMessages();
+    assertEqual(messages.querySelectorAll('.tool-group').length, 3, 'reproduction mounts durable and duplicate optimistic cards');
+
+    session.messages = reconcileToolCallProjection(session.messages);
+    app.renderMessages();
+
+    assertEqual(messages.querySelectorAll('.tool-group').length, 2, 'covered optimistic group is removed in the mounted reconciliation');
+    assertEqual(messages.querySelectorAll('[data-tool-id="call_shell_exact_a"]').length, 1, 'first durable call ID appears once in DOM');
+    assertEqual(messages.querySelectorAll('[data-tool-id="call_shell_exact_b"]').length, 1, 'second durable call ID appears once in DOM');
+    assertEqual(messages.querySelectorAll('[data-tool-id="call_shell_newer"]').length, 1, 'newer optimistic-only call remains once in DOM');
+    assertEqual(
+      session.messages.map((message) => message.id).join(','),
+      'srv_seq_387_tools_1,msg_652-live-tools',
+      'session projection preserves durable then newer live ordering'
     );
   });
 

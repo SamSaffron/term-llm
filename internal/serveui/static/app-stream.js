@@ -1575,6 +1575,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
       ? session.messages.slice(0, anchorIndex + 1).filter((message) => !shouldDropPreservedOptimisticInterjection(message, recoveredInterjections))
       : [];
     session.messages = preserved.concat(recoveredMessages);
+    app.reconcileSessionToolCallProjection?.(session, { trackOptimisticTools: true });
   }
 
   const nextSeq = Number(payload.last_sequence_number ?? recovery?.sequence_number ?? session.lastSequenceNumber ?? 0);
@@ -5133,6 +5134,7 @@ Object.assign(app, {
   updateResponseSequence,
   createResponseStreamState,
   applyResponseStreamEvent,
+  applyResponseRecoverySnapshot,
   consumeResponseStream,
   scheduleStreamPersistence,
   flushStreamPersistence,

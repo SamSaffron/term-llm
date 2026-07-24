@@ -1086,7 +1086,7 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		Pinned:        sess.Pinned,
 		CreatedAt:     sess.CreatedAt.UnixMilli(),
 		LastMessageAt: lastMessageAt.UnixMilli(),
-		MsgCount:      sess.LastMessageCount,
+		MsgCount:      sess.MessageCount,
 	}
 }
 

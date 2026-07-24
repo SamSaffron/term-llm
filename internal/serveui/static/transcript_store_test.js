@@ -5,6 +5,7 @@ const {
   TranscriptStore,
   TRANSCRIPT_FLAG_EMPTY_BODY,
   transcriptStoreFromMessages,
+  reconcileToolCallProjection,
   __transcriptStats
 } = require('./transcript-store.js');
 
@@ -286,6 +287,63 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   ]);
   assert.equal(tools.reconcileOptimistic().length, 1, 'interleaved durable tool evidence must replace optimistic group');
 
+  const partialTools = new TranscriptStore('partial-tools');
+  partialTools.applyIndex(envelope([23, 24], { rev: 7, roles: 'ua' }));
+  partialTools.materialize([
+    body(23, 0, 'user'),
+    body(24, 1, 'assistant', [
+      { type: 'tool_call', tool_call_id: 'call_GwHMMHXf28QA81Zfm9vgRMap' },
+      { type: 'tool_call', tool_call_id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu' }
+    ])
+  ]);
+  partialTools.addOptimistic({
+    id: 'msg_441406d5-live-tools',
+    role: 'tool-group',
+    status: 'running',
+    tools: [
+      { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent', status: 'done' },
+      { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs', status: 'done' },
+      { id: 'call_newer_optimistic_only', name: 'shell', status: 'running' }
+    ]
+  }, 7);
+  assert.deepEqual(
+    partialTools.reconcileOptimistic(),
+    [],
+    'partially covered optimistic groups remain projected for newer calls'
+  );
+  assert.deepEqual(
+    partialTools.optimistic[0].tools.map((tool) => tool.id),
+    ['call_newer_optimistic_only'],
+    'stable durable call IDs are removed even when the transcript revision has not advanced'
+  );
+
+  const durableGroup = {
+    id: 'srv_seq_382_tools_0',
+    role: 'tool-group',
+    durable: true,
+    tools: [
+      { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent' },
+      { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs' }
+    ]
+  };
+  const liveGroup = {
+    id: 'msg_441406d5-live-tools',
+    role: 'tool-group',
+    tools: [
+      { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent' },
+      { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs' },
+      { id: 'call_newer_optimistic_only', name: 'shell' }
+    ]
+  };
+  const projected = reconcileToolCallProjection([durableGroup, liveGroup]);
+  assert.deepEqual(projected.map((message) => message.id), ['srv_seq_382_tools_0', 'msg_441406d5-live-tools']);
+  assert.deepEqual(projected[1].tools.map((tool) => tool.id), ['call_newer_optimistic_only']);
+  assert.deepEqual(
+    reconcileToolCallProjection(projected).map((message) => message.id),
+    ['srv_seq_382_tools_0', 'msg_441406d5-live-tools'],
+    'repeat resume reconciliation is idempotent'
+  );
+
   const scopedTools = new TranscriptStore('scoped-persisted-tools');
   scopedTools.applyIndex(envelope([30, 31], { rev: 1, roles: 'ua' }));
   scopedTools.addOptimistic({ clientKey: 'persisted-tools', role: 'tool-group', tools: [{ id: 'shared-call' }] }, 1, { persisted: true });
@@ -302,10 +360,10 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   ]);
   assert.deepEqual(
     scopedTools.reconcileOptimistic().map((entry) => entry.clientKey),
-    ['live-tools'],
-    'persisted tool IDs must match only their target segment while live entries retain later-turn matching'
+    ['persisted-tools', 'live-tools'],
+    'stable durable tool IDs retire every optimistic projection regardless of synthetic group or turn scope'
   );
-  assert.deepEqual(scopedTools.optimistic.map((entry) => entry.clientKey), ['persisted-tools']);
+  assert.deepEqual(scopedTools.optimistic.map((entry) => entry.clientKey), []);
 
   const terminalTools = new TranscriptStore('terminal-tools');
   terminalTools.applyIndex(envelope([40], { rev: 5 }));

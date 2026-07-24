@@ -11,6 +11,7 @@ const { webcrypto } = require('crypto');
 const dir = __dirname;
 const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const source = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
+const { reconcileToolCallProjection } = require('./transcript-store.js');
 
 let failures = 0;
 
@@ -480,6 +481,13 @@ function createHarness(options = {}) {
     renderSidebar() {},
     renderWidgetSidebar() {},
     renderMessages() {},
+    reconcileSessionToolCallProjection(session) {
+      session.messages = reconcileToolCallProjection(session.messages);
+      if (typeof options.onReconcileSessionToolCallProjection === 'function') {
+        options.onReconcileSessionToolCallProjection(session);
+      }
+      return true;
+    },
     maybeNotifyResponseComplete: async () => {},
     enqueueAssistantStreamUpdate() {},
     finalizeAssistantStreamRender() {},
@@ -2859,6 +2867,83 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   }
   if (planRefreshes !== 2) {
     fail(name, `expected snapshot recovery and terminal fallback to refetch plan state, got ${planRefreshes}`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testRecoverySnapshotReconcilesDurableToolCallsIdempotently() {
+  const name = 'recovery snapshot reconciles durable tool calls by stable call ID idempotently';
+  let reconciliations = 0;
+  const harness = createHarness({
+    onReconcileSessionToolCallProjection() { reconciliations += 1; }
+  });
+  const { app, state, cleanup } = harness;
+  const durable = {
+    id: 'srv_seq_382_tools_0',
+    role: 'tool-group',
+    durable: true,
+    status: 'done',
+    tools: [
+      { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent', status: 'done' },
+      { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs', status: 'done' }
+    ],
+    created: 1000
+  };
+  const interjection = {
+    id: 'msg_interjection', role: 'user', content: 'keep going', interruptState: 'interject', created: 1100
+  };
+  const session = {
+    id: 'session_durable_recovery_overlap',
+    messages: [durable, interjection],
+    activeResponseId: 'resp_overlap',
+    lastSequenceNumber: 0,
+    number: 1
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const snapshot = {
+    id: 'resp_overlap',
+    status: 'in_progress',
+    last_sequence_number: 9,
+    recovery: {
+      sequence_number: 9,
+      messages: [{
+        id: 'msg_441406d5-live-tools',
+        role: 'tool-group',
+        status: 'running',
+        created: 1200,
+        tools: [
+          { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent', status: 'done' },
+          { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs', status: 'done' },
+          { id: 'call_newer_shell', name: 'shell', status: 'running' }
+        ]
+      }]
+    }
+  };
+
+  app.applyResponseRecoverySnapshot(session, snapshot);
+  app.applyResponseRecoverySnapshot(session, snapshot);
+
+  const toolGroups = session.messages.filter((message) => message.role === 'tool-group');
+  const callIDs = toolGroups.flatMap((group) => group.tools.map((tool) => tool.id));
+  const counts = new Map(callIDs.map((id) => [id, callIDs.filter((candidate) => candidate === id).length]));
+  if ([...counts.values()].some((count) => count !== 1)) {
+    fail(name, 'repeat recovery projected duplicate stable call IDs', JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (toolGroups.map((group) => group.id).join(',') !== 'srv_seq_382_tools_0,msg_441406d5-live-tools'
+      || toolGroups[1].tools.map((tool) => tool.id).join(',') !== 'call_newer_shell') {
+    fail(name, 'partial overlap did not preserve only the newer optimistic call in order', JSON.stringify(toolGroups));
+    await cleanup();
+    return;
+  }
+  if (reconciliations !== 2) {
+    fail(name, `expected one reconciliation per recovery, got ${reconciliations}`);
     await cleanup();
     return;
   }
@@ -6764,6 +6849,7 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   await testDrainInterruptQueueAfterResumeCompletes();
   await testDrainInterruptQueueIgnoresOtherSessionEntries();
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
+  await testRecoverySnapshotReconcilesDurableToolCallsIdempotently();
   await testResumeActiveResponseRepairsSequenceGapWithSnapshot();
   await testRecoverySnapshotClearsSyntheticPendingInterjectionByText();
   await testRecoverySnapshotDoesNotDuplicateOptimisticInterjection();

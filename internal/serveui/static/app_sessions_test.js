@@ -427,6 +427,7 @@ async function createSessionsHarness(options = {}) {
   vm.runInContext(transcriptStoreSource, context, { filename: 'transcript-store.js' });
   windowObj.TranscriptStore = context.TranscriptStore;
   windowObj.transcriptStoreFromMessages = context.transcriptStoreFromMessages;
+  windowObj.reconcileToolCallProjection = context.reconcileToolCallProjection;
   windowObj.TRANSCRIPT_BUDGETS = context.TRANSCRIPT_BUDGETS;
   vm.runInContext(coreSource, context, { filename: 'app-core.js' });
   vm.runInContext(planSource, context, { filename: 'app-plan.js' });
@@ -970,6 +971,7 @@ async function testIdleStartupSchedulesNormalPollWithoutImmediateRequest() {
 async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests() {
   const name = 'startup transcript sideload renders bounded first paint with zero transcript requests';
   const ids = Array.from({ length: 20 }, (_, index) => index + 1);
+  const authoritativeMessageCount = 4;
   const messages = ids.slice(-9).map((id) => ({
     id,
     sequence: id - 1,
@@ -1009,7 +1011,7 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
           sessions: [],
           selected_session: {
             id: 'sess_3347', number: 3347, short_title: 'Sideloaded', long_title: 'Sideloaded',
-            mode: 'chat', origin: 'web', created_at: 1000, message_count: ids.length, transcript_rev: 20,
+            mode: 'chat', origin: 'web', created_at: 1000, message_count: authoritativeMessageCount, transcript_rev: 20,
           },
           selected_transcript: startupTranscriptSideload({ rev: 20, ids, messages }),
           widget_status: { widgets: [] },
@@ -1077,6 +1079,10 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
     fail(name, 'sideload did not preserve the initial viewport budget', JSON.stringify({ rev: session.transcript.rev, bodies: session.transcript.bodies.size, segments: session.transcript.segments }));
     return;
   }
+  if (session.messageCount !== authoritativeMessageCount || session.transcript.ids.length !== ids.length) {
+    fail(name, 'sideload row application changed the authoritative server message count', JSON.stringify({ messageCount: session.messageCount, transcriptRows: session.transcript.ids.length }));
+    return;
+  }
   const statusRequests = fetchCalls.filter((url) => parsedTestURL(url)?.pathname === '/ui/v1/sessions/status');
   const liveTimers = scheduled.filter((handle) => !handle.cleared && handle.delay >= 2000);
   if (statusRequests.length !== 0 || liveTimers.length !== 1 || liveTimers[0].delay !== 5000) {
@@ -1084,6 +1090,100 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
     return;
   }
   app.stopSidebarStatusPoll();
+  pass(name);
+}
+
+async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwitchBack() {
+  const name = 'selected transcript sideload reconciles stable tool calls across switch away and back';
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  });
+  const session = {
+    id: 'sess_tool_overlap',
+    number: 956,
+    title: 'Tool overlap',
+    messages: [],
+    messageCount: 2,
+    activeResponseId: 'resp_tool_overlap',
+    lastSequenceNumber: 9
+  };
+  app.state.sessions.push(session);
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = transcript;
+  transcript.addOptimistic({
+    id: 'msg_441406d5-live-tools',
+    role: 'tool-group',
+    status: 'running',
+    created: 1200,
+    tools: [
+      { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent', status: 'done' },
+      { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs', status: 'done' },
+      { id: 'call_newer_shell', name: 'shell', status: 'running' }
+    ]
+  }, 7);
+  const sideload = {
+    index_etag: '"tool-overlap-7"',
+    index: {
+      rev: 7,
+      compaction_seq: -1,
+      compaction_count: 0,
+      active_response_id: 'resp_tool_overlap',
+      started_rev: 6,
+      rows: {
+        ids: [381, 382],
+        seqs: [381, 382],
+        roles: 'ua',
+        flags: [0, 0]
+      }
+    },
+    bodies: {
+      rev: 7,
+      messages: [
+        { id: 381, sequence: 381, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'continue' }] },
+        {
+          id: 382,
+          sequence: 382,
+          role: 'assistant',
+          created_at: 1100,
+          parts: [
+            { type: 'tool_call', tool_call_id: 'call_GwHMMHXf28QA81Zfm9vgRMap', tool_name: 'queue_agent', tool_arguments: '{}' },
+            { type: 'tool_call', tool_call_id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', tool_name: 'wait_for_jobs', tool_arguments: '{}' }
+          ]
+        }
+      ]
+    }
+  };
+
+  const assertUniqueProjection = (phase) => {
+    const groups = session.messages.filter((message) => message.role === 'tool-group');
+    const callIDs = groups.flatMap((group) => group.tools.map((tool) => tool.id));
+    const unique = new Set(callIDs);
+    if (unique.size !== callIDs.length) {
+      fail(name, `${phase} retained duplicate call IDs`, JSON.stringify(session.messages));
+      return false;
+    }
+    if (groups.map((group) => group.id).join(',') !== 'srv_seq_382_tools_0,msg_441406d5-live-tools'
+        || groups[1].tools.map((tool) => tool.id).join(',') !== 'call_newer_shell') {
+      fail(name, `${phase} lost durable authority or newer optimistic order`, JSON.stringify(groups));
+      return false;
+    }
+    return true;
+  };
+
+  if (!app.applySelectedTranscriptSideload(session, sideload) || !assertUniqueProjection('initial sideload')) return;
+
+  // Reproduce switching away: mounted bodies and the projected message array are
+  // released, while the optimistic transcript tail remains available for resume.
+  session.transcript.releaseBodies();
+  session.messages = [];
+  if (!app.applySelectedTranscriptSideload(session, sideload) || !assertUniqueProjection('switch-back sideload')) return;
+
   pass(name);
 }
 
@@ -5999,6 +6099,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testNumericDeepLinkResolvesRealSessionId();
   await testIdleStartupSchedulesNormalPollWithoutImmediateRequest();
   await testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests();
+  await testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwitchBack();
   await testMalformedStartupTranscriptSideloadFallsBack();
   await testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision();
   await testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus();

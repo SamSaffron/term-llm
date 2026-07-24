@@ -42,6 +42,7 @@ type SQLiteStore struct {
 	hasGoal                  bool // true if sessions table has goal column
 	hasShare                 bool // true if sessions table has share column
 	hasTranscriptRev         bool // true if sessions table has transcript_rev column
+	hasMessagesTable         bool // true if the messages table exists
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 }
 
@@ -1153,6 +1154,17 @@ func qualifiedMessageColumn(alias, column string) string {
 	return alias + "." + column
 }
 
+func (s *SQLiteStore) conversationMessageCountSelectSQL(sessionAlias string) string {
+	if s.hasMessageCount {
+		return "COALESCE(" + qualifiedMessageColumn(sessionAlias, "message_count") + ", 0)"
+	}
+	if !s.hasMessagesTable {
+		return "0"
+	}
+	return "(SELECT COUNT(*) FROM messages WHERE session_id = " + qualifiedMessageColumn(sessionAlias, "id") +
+		" AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
+}
+
 func createMessageCountTriggers(db schemaExecutor) error {
 	oldCountable := countableConversationMessageSQL("old", true)
 	newCountable := countableConversationMessageSQL("new", true)
@@ -2079,10 +2091,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasShare {
 		shareCol = "s.share"
 	}
-	messageCountCol := "COALESCE(s.message_count, 0)"
-	if !s.hasMessageCount {
-		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
-	}
+	messageCountCol := s.conversationMessageCountSelectSQL("s")
 	worktreeDirCol := "''"
 	if s.hasWorktreeDir {
 		worktreeDirCol = "COALESCE(s.worktree_dir, '')"
@@ -2281,13 +2290,10 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return []SearchResult{}, nil
 	}
 
-	messageCountCol := "COALESCE(s.message_count, 0)"
+	messageCountCol := s.conversationMessageCountSelectSQL("s")
 	compactionTailClause := ""
 	if s.hasMessageCompactionTail {
 		compactionTailClause = " AND COALESCE(m.compaction_tail, FALSE) = FALSE"
-	}
-	if !s.hasMessageCount {
-		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
 	}
 
 	originCol := "'tui'"
@@ -3846,6 +3852,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasGoal = true
 	s.hasShare = true
 	s.hasTranscriptRev = true
+	s.hasMessagesTable = true
 	s.hasMessageCompactionTail = true
 }
 
@@ -3928,6 +3935,7 @@ func (s *SQLiteStore) probeMessageColumns() {
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
 			return
 		}
+		s.hasMessagesTable = true
 		if name == "compaction_tail" {
 			s.hasMessageCompactionTail = true
 		}
@@ -3992,6 +4000,7 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	if s.hasLastMessageCount {
 		base += ", last_message_count"
 	}
+	base += ", " + s.conversationMessageCountSelectSQL("sessions") + " AS message_count"
 	base += ", status, tags"
 	if s.hasGoal {
 		base += ", goal"
@@ -4046,6 +4055,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if hasLastMessageCount {
 		scanArgs = append(scanArgs, &sess.LastMessageCount)
 	}
+	scanArgs = append(scanArgs, &sess.MessageCount)
 	scanArgs = append(scanArgs, &status, &tags, &goalRaw, &shareRaw)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)

@@ -1159,6 +1159,27 @@ const transcriptViewportAdapter = (session, forceScroll = false) => {
   };
 };
 
+const reconcileSessionToolCallProjection = (session, options = {}) => {
+  if (!session || !Array.isArray(session.messages)) return false;
+  const reconcile = window.reconcileToolCallProjection;
+  if (typeof reconcile === 'function') {
+    session.messages = reconcile(session.messages);
+  }
+
+  if (options.trackOptimisticTools === true) {
+    const transcript = ensureSessionTranscript(session);
+    if (transcript) {
+      for (const message of session.messages) {
+        if (message?.durable || (message?.role !== 'tool-group' && message?.role !== 'tool')) continue;
+        transcript.addOptimistic(message, transcript.rev);
+      }
+      transcript.reconcileOptimistic();
+      persistTranscriptOptimistic(session);
+    }
+  }
+  return true;
+};
+
 const refreshSessionMessagesFromTranscript = (session) => {
   const transcript = session?.transcript;
   if (!transcript) return false;
@@ -1209,7 +1230,9 @@ const refreshSessionMessagesFromTranscript = (session) => {
     });
   }
   display.push(...transcript.optimistic);
-  session.messages = display;
+  session.messages = typeof window.reconcileToolCallProjection === 'function'
+    ? window.reconcileToolCallProjection(display)
+    : display;
   delete session._serverOnly;
   return true;
 };
@@ -3577,6 +3600,7 @@ Object.assign(app, {
   noteTranscriptRunCreated,
   noteTranscriptTerminal,
   refreshSessionMessagesFromTranscript,
+  reconcileSessionToolCallProjection,
   refreshActiveSessionMessagesFromServer,
   loadOlderSessionMessages,
   maybeLoadOlderSessionMessages,

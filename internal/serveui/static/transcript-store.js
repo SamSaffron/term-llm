@@ -35,6 +35,89 @@
   const bodyID = (entry) => normalizedID(entry?.id ?? entry?.ID);
   const bodySeq = (entry) => finiteInt(entry?.sequence ?? entry?.seq, -1);
   const partToolID = (part) => String(part?.tool_call_id || part?.call_id || part?.toolCallId || part?.id || '').trim();
+  const toolEntryID = (tool) => String(tool?.tool_call_id || tool?.call_id || tool?.toolCallId || tool?.id || '').trim();
+
+  const messageToolIDs = (message) => {
+    const ids = new Set();
+    if (message?.role === 'tool-group') {
+      for (const tool of message.tools || []) {
+        const id = toolEntryID(tool);
+        if (id) ids.add(id);
+      }
+    } else if (message?.role === 'tool') {
+      const id = String(message?.tool_call_id || message?.call_id || message?.toolCallId || '').trim();
+      if (id) ids.add(id);
+    }
+    for (const part of message?.parts || []) {
+      const id = partToolID(part);
+      if (id) ids.add(id);
+    }
+    return ids;
+  };
+
+  // Stable tool call IDs are authoritative across the durable/optimistic
+  // boundary. Synthetic message IDs differ between transcript conversion and
+  // response recovery, so reconciling only message rows can project the same
+  // call twice. Reserve every durable call first, then retain optimistic calls
+  // in their existing order only when no earlier projection owns that ID.
+  const reconcileToolCallProjection = (messages) => {
+    if (!Array.isArray(messages) || messages.length === 0) return Array.isArray(messages) ? messages : [];
+    const durableIDs = new Set();
+    for (const message of messages) {
+      if (!message?.durable) continue;
+      for (const id of messageToolIDs(message)) durableIDs.add(id);
+    }
+
+    const claimed = new Set();
+    const result = [];
+    for (const message of messages) {
+      if (!message || (message.role !== 'tool-group' && message.role !== 'tool')) {
+        result.push(message);
+        continue;
+      }
+
+      if (message.role === 'tool-group') {
+        const tools = Array.isArray(message.tools) ? message.tools : [];
+        let stableCount = 0;
+        const retained = tools.filter((tool) => {
+          const id = toolEntryID(tool);
+          if (!id) return true;
+          stableCount += 1;
+          if (message.durable) {
+            if (claimed.has(id)) return false;
+            claimed.add(id);
+            return true;
+          }
+          if (durableIDs.has(id) || claimed.has(id)) return false;
+          claimed.add(id);
+          return true;
+        });
+        if (retained.length !== tools.length) message.tools = retained;
+        if (stableCount > 0 && retained.length === 0) continue;
+        result.push(message);
+        continue;
+      }
+
+      const ids = messageToolIDs(message);
+      if (ids.size === 0) {
+        result.push(message);
+        continue;
+      }
+      const retainedIDs = new Set([...ids].filter((id) => (
+        message.durable ? !claimed.has(id) : (!durableIDs.has(id) && !claimed.has(id))
+      )));
+      if (retainedIDs.size === 0) continue;
+      if (Array.isArray(message.parts)) {
+        message.parts = message.parts.filter((part) => {
+          const id = partToolID(part);
+          return !id || retainedIDs.has(id);
+        });
+      }
+      retainedIDs.forEach((id) => claimed.add(id));
+      result.push(message);
+    }
+    return result;
+  };
 
   class TranscriptStore {
     constructor(sessionId, budgets = {}) {
@@ -466,30 +549,10 @@
       return [...selected];
     }
 
-    durableToolIDsInSegment(segmentIndex, afterSequence = -1) {
+    durableToolIDs() {
       const ids = new Set();
-      const segment = this.segments[segmentIndex];
-      if (!segment) return ids;
-      for (let ordinal = segment.startOrdinal; ordinal <= segment.endOrdinal; ordinal += 1) {
-        if (this.seqs[ordinal] <= afterSequence) continue;
-        const entry = this.bodies.get(this.ids[ordinal]);
-        for (const part of entry?.parts || []) {
-          const id = partToolID(part);
-          if (id) ids.add(id);
-        }
-      }
-      return ids;
-    }
-
-    durableToolIDsAfter(sequence) {
-      const ids = new Set();
-      for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
-        if (this.seqs[ordinal] <= sequence) continue;
-        const entry = this.bodies.get(this.ids[ordinal]);
-        for (const part of entry?.parts || []) {
-          const id = partToolID(part);
-          if (id) ids.add(id);
-        }
+      for (const entry of this.bodies.values()) {
+        for (const id of messageToolIDs(entry)) ids.add(id);
       }
       return ids;
     }
@@ -499,7 +562,35 @@
       const kept = [];
       const removed = [];
       const consumed = new Set();
+      const durableToolIDs = this.durableToolIDs();
+      const claimedOptimisticToolIDs = new Set();
       for (const local of this.optimistic) {
+        const localIsTool = local.role === 'tool-group' || local.role === 'tool';
+        if (localIsTool) {
+          const localIDs = messageToolIDs(local);
+          if (localIDs.size > 0) {
+            const uncovered = new Set([...localIDs].filter((id) => (
+              !durableToolIDs.has(id) && !claimedOptimisticToolIDs.has(id)
+            )));
+            if (local.role === 'tool-group' && Array.isArray(local.tools)) {
+              local.tools = local.tools.filter((tool) => {
+                const id = toolEntryID(tool);
+                return !id || uncovered.has(id);
+              });
+            } else if (local.role === 'tool' && Array.isArray(local.parts)) {
+              local.parts = local.parts.filter((part) => {
+                const id = partToolID(part);
+                return !id || uncovered.has(id);
+              });
+            }
+            if (uncovered.size === 0) {
+              removed.push(local);
+              continue;
+            }
+            uncovered.forEach((id) => claimedOptimisticToolIDs.add(id));
+          }
+        }
+
         if (this.rev <= finiteInt(local.revAtSend, this.rev)) {
           kept.push(local);
           continue;
@@ -515,20 +606,6 @@
               break;
             }
           }
-        } else if (local.role === 'tool-group' || local.role === 'tool') {
-          const localIDs = new Set();
-          for (const tool of local.tools || []) {
-            const id = String(tool?.id || tool?.call_id || '').trim();
-            if (id) localIDs.add(id);
-          }
-          for (const part of local.parts || []) {
-            const id = partToolID(part);
-            if (id) localIDs.add(id);
-          }
-          const durableIDs = this.persistedOptimistic.has(local)
-            ? this.durableToolIDsInSegment(this.segmentAfterSequence(afterSeq), afterSeq)
-            : this.durableToolIDsAfter(afterSeq);
-          matched = localIDs.size > 0 && [...localIDs].every((id) => durableIDs.has(id));
         } else if (local.role === 'assistant') {
           for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
             if (this.seqs[ordinal] <= afterSeq || consumed.has(ordinal)) continue;
@@ -542,7 +619,7 @@
         // Reaching a newer durable revision with no active run is the terminal
         // authority for completed tool UI. An unmatched completed tool cannot
         // represent queued input and must not remain persisted at the tail.
-        const completedTool = (local.role === 'tool-group' || local.role === 'tool')
+        const completedTool = localIsTool
           && ['done', 'error', 'failed', 'cancelled'].includes(String(local.status || '').toLowerCase());
         if (matched || (!this.activeRun && completedTool)) removed.push(local);
         else kept.push(local);
@@ -729,6 +806,7 @@
     TRANSCRIPT_FLAG_COMPACTION_TAIL,
     TRANSCRIPT_FLAG_EMPTY_BODY,
     transcriptStoreFromMessages,
+    reconcileToolCallProjection,
     transcriptRoleCode: roleCode,
     transcriptRoleName: roleName,
     __transcriptStats

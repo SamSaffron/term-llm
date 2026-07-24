@@ -314,6 +314,128 @@ func TestHandleSessionsSelectedTranscriptSideloadMatchesTranscriptEndpointsAndIs
 	}
 }
 
+func TestHandleSessionsMessageCountMatchesConversationAcrossSelectedTranscriptResponses(t *testing.T) {
+	srv, store, sess := newTranscriptHandlerServer(t)
+	ctx := context.Background()
+	messages := []*session.Message{
+		session.NewMessage(sess.ID, llm.SystemText("internal system prompt"), -1),
+		session.NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "internal developer prompt"}}}, -1),
+		session.NewMessage(sess.ID, llm.UserText("run the tools"), -1),
+	}
+	for i := 0; i < 12; i++ {
+		callID := fmt.Sprintf("call-count-%02d", i)
+		messages = append(messages,
+			session.NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID: callID, Name: "read_file",
+				},
+			}}}, -1),
+			session.NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
+				Type: llm.PartToolResult,
+				ToolResult: &llm.ToolResult{
+					ID: callID, Name: "read_file", Content: "internal result",
+				},
+			}}}, -1),
+			session.NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent}, -1),
+		)
+	}
+	messages = append(messages,
+		session.NewMessage(sess.ID, llm.AssistantText("tools complete"), -1),
+		session.NewMessage(sess.ID, llm.UserText("[Context Compaction] internal summary"), -1),
+	)
+	compactionTail := session.NewMessage(sess.ID, llm.AssistantText("retained internal tail"), -1)
+	compactionTail.CompactionTail = true
+	messages = append(messages, compactionTail,
+		session.NewMessage(sess.ID, llm.UserText("what happened?"), -1),
+		session.NewMessage(sess.ID, llm.AssistantText("all done"), -1),
+	)
+	for i, message := range messages {
+		if err := store.AddMessage(ctx, sess.ID, message); err != nil {
+			t.Fatalf("AddMessage %d: %v", i, err)
+		}
+	}
+
+	indexer, ok := store.(session.TranscriptIndexer)
+	if !ok {
+		t.Fatal("test store does not implement TranscriptIndexer")
+	}
+	snapshot, err := indexer.GetTranscriptSnapshot(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetTranscriptSnapshot: %v", err)
+	}
+	const conversationCount = 4
+	transcriptRowCount := len(snapshot.Items)
+	if transcriptRowCount <= conversationCount {
+		t.Fatalf("transcript rows=%d, want more than conversation count %d", transcriptRowCount, conversationCount)
+	}
+	// Reproduce the live corruption: the legacy context checkpoint tracks raw
+	// model/transcript rows and must never be exposed as the conversation count.
+	if err := store.UpdateContextEstimate(ctx, sess.ID, 1234, transcriptRowCount); err != nil {
+		t.Fatalf("UpdateContextEstimate: %v", err)
+	}
+
+	type sessionsResponse struct {
+		Sessions           []webSessionEntry          `json:"sessions"`
+		SelectedSession    *webSelectedSessionEntry   `json:"selected_session"`
+		SelectedTranscript *transcriptStartupSideload `json:"selected_transcript"`
+	}
+	requestSessions := func(path string) sessionsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessions(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s: status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+		var response sessionsResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		return response
+	}
+
+	normal := requestSessions("/v1/sessions?selected_session=" + sess.ID)
+	if len(normal.Sessions) != 1 || normal.Sessions[0].MsgCount != conversationCount {
+		t.Fatalf("normal sessions count=%+v, want %d", normal.Sessions, conversationCount)
+	}
+	if normal.SelectedSession == nil || normal.SelectedSession.MsgCount != conversationCount {
+		t.Fatalf("normal selected_session=%+v, want count %d", normal.SelectedSession, conversationCount)
+	}
+
+	selectedByID := requestSessions("/v1/sessions?selected_session=" + sess.ID + "&selected_only=1&include_transcript=1")
+	if len(selectedByID.Sessions) != 0 || selectedByID.SelectedSession == nil || selectedByID.SelectedSession.MsgCount != conversationCount {
+		t.Fatalf("selected_only by ID=%+v, want count %d and no sessions", selectedByID, conversationCount)
+	}
+	if selectedByID.SelectedTranscript == nil {
+		t.Fatal("selected_only by ID omitted transcript sideload")
+	}
+	if got := len(selectedByID.SelectedTranscript.Index.Rows.IDs); got != transcriptRowCount {
+		t.Fatalf("selected transcript rows=%d, want independent raw row count %d", got, transcriptRowCount)
+	}
+
+	selectedByNumber := requestSessions("/v1/sessions?selected_session=" + strconv.FormatInt(sess.Number, 10) + "&selected_only=1")
+	if len(selectedByNumber.Sessions) != 0 || selectedByNumber.SelectedSession == nil || selectedByNumber.SelectedSession.MsgCount != conversationCount {
+		t.Fatalf("selected_only by number=%+v, want count %d and no sessions", selectedByNumber, conversationCount)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/status", nil)
+	statusRec := httptest.NewRecorder()
+	srv.handleSessionsStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status endpoint: status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var status struct {
+		Sessions []sessionsStatusTestEntry `json:"sessions"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(status.Sessions) != 1 || status.Sessions[0].ID != sess.ID || status.Sessions[0].MsgCount != conversationCount {
+		t.Fatalf("status sessions=%+v, want count %d", status.Sessions, conversationCount)
+	}
+}
+
 type countingTranscriptSideloadStore struct {
 	session.Store
 	indexer       session.TranscriptIndexer
