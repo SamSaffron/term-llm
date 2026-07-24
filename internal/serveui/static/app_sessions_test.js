@@ -145,6 +145,25 @@ function isTranscriptBodiesURL(url, sessionId) {
   return Boolean(parsed && parsed.pathname === `/ui/v1/sessions/${sessionId}/transcript/bodies`);
 }
 
+function startupTranscriptSideload({ rev, ids, messages, etag = `\"startup-${rev}\"`, activeResponseId = '', startedRev = 0 }) {
+  return {
+    index_etag: etag,
+    index: {
+      rev,
+      compaction_seq: -1,
+      compaction_count: 0,
+      ...(activeResponseId ? { active_response_id: activeResponseId, started_rev: startedRev } : {}),
+      rows: {
+        ids,
+        seqs: ids.map((_, index) => index),
+        roles: 'u'.repeat(ids.length),
+        flags: ids.map(() => 0),
+      },
+    },
+    bodies: { rev, messages },
+  };
+}
+
 function isSessionMessagesURL(url, sessionId) {
   const parsed = parsedTestURL(url);
   return Boolean(parsed && parsed.pathname === `/ui/v1/sessions/${sessionId}/messages`);
@@ -906,6 +925,288 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     fail(name, 'durable transcript bodies must not be written to localStorage', JSON.stringify([...storage.entries()]));
     return;
   }
+  pass(name);
+}
+
+async function testIdleStartupSchedulesNormalPollWithoutImmediateRequest() {
+  const name = 'idle startup schedules normal poll delay without immediate status request';
+  const scheduled = [];
+  let statusRequests = 0;
+  const { app } = await createSessionsHarness({
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) { if (handle) handle.cleared = true; },
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/status') statusRequests += 1;
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [], selected_session: null, widget_status: { widgets: [] } }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const pollTimers = scheduled.filter((handle) => !handle.cleared && handle.delay >= 2000);
+  if (statusRequests !== 0 || pollTimers.length !== 1 || pollTimers[0].delay !== 30000) {
+    fail(name, 'idle startup did not arm exactly one normal idle timer', JSON.stringify({ statusRequests, timers: pollTimers.map(({ delay }) => delay) }));
+    return;
+  }
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
+async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests() {
+  const name = 'startup transcript sideload renders bounded first paint with zero transcript requests';
+  const ids = Array.from({ length: 20 }, (_, index) => index + 1);
+  const messages = ids.slice(-9).map((id) => ({
+    id,
+    sequence: id - 1,
+    role: 'user',
+    created_at: id * 1000,
+    parts: [{ type: 'text', text: `turn-${id}` }],
+  }));
+  const fetchCalls = [];
+  const events = [];
+  const scheduled = [];
+  let appRef = null;
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/3347',
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) { if (handle) handle.cleared = true; },
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: {
+            id: 'sess_3347', number: 3347, short_title: 'Sideloaded', long_title: 'Sideloaded',
+            mode: 'chat', origin: 'web', created_at: 1000, message_count: ids.length, transcript_rev: 20,
+          },
+          selected_transcript: startupTranscriptSideload({ rev: 20, ids, messages }),
+          widget_status: { widgets: [] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed?.pathname === '/ui/v1/sessions/sess_3347/state') {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 20 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      renderMessages() {
+        const session = appRef?.state.sessions.find((item) => item.id === 'sess_3347');
+        events.push({ type: 'render', contents: session?.messages.map((message) => message.content) || [] });
+      },
+      hideStartupSplash() { events.push({ type: 'splash' }); },
+    },
+    onInitializeStarted({ app: startedApp }) { appRef = startedApp; },
+  });
+
+  const startupURL = fetchCalls.find((url) => parsedTestURL(url)?.pathname === '/ui/v1/sessions');
+  if (parsedTestURL(startupURL)?.searchParams.get('include_transcript') !== '1') {
+    fail(name, 'selected startup request did not opt into transcript sideload', startupURL);
+    return;
+  }
+  const transcriptRequests = fetchCalls.filter((url) => isTranscriptIndexURL(url, 'sess_3347') || isTranscriptBodiesURL(url, 'sess_3347'));
+  if (transcriptRequests.length !== 0) {
+    fail(name, 'valid sideload issued transcript endpoint requests', JSON.stringify(transcriptRequests));
+    return;
+  }
+  const session = app.state.sessions.find((item) => item.id === 'sess_3347');
+  const hydratedRender = events.findIndex((event) => event.type === 'render'
+    && event.contents.filter((content) => typeof content === 'string').length === 9);
+  const splash = events.findIndex((event) => event.type === 'splash');
+  if (!session || hydratedRender < 0 || splash <= hydratedRender) {
+    fail(name, 'bounded sideload was not rendered atomically before splash hide', JSON.stringify(events));
+    return;
+  }
+  if (session.transcript.rev !== 20 || session.transcript.bodies.size !== 9
+      || session.transcript.segments.filter((segment) => segment.state === 'materialized').length !== 9) {
+    fail(name, 'sideload did not preserve the initial viewport budget', JSON.stringify({ rev: session.transcript.rev, bodies: session.transcript.bodies.size, segments: session.transcript.segments }));
+    return;
+  }
+  const statusRequests = fetchCalls.filter((url) => parsedTestURL(url)?.pathname === '/ui/v1/sessions/status');
+  const liveTimers = scheduled.filter((handle) => !handle.cleared && handle.delay >= 2000);
+  if (statusRequests.length !== 0 || liveTimers.length !== 1 || liveTimers[0].delay !== 5000) {
+    fail(name, 'startup did not arm the normal visible-active-session poll delay', JSON.stringify({ statusRequests, liveTimers: liveTimers.map(({ delay }) => delay) }));
+    return;
+  }
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
+async function testMalformedStartupTranscriptSideloadFallsBack() {
+  const name = 'malformed startup transcript sideload falls back to index and bodies';
+  let indexRequests = 0;
+  let bodyRequests = 0;
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/41',
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        const malformed = startupTranscriptSideload({
+          rev: 2,
+          ids: [1, 2],
+          messages: [{ id: 1, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'fallback' }] }],
+        });
+        malformed.bodies.rev = 1;
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: { id: 'sess_41', number: 41, short_title: 'Fallback', origin: 'web', created_at: 1, transcript_rev: 2 },
+          selected_transcript: malformed,
+          widget_status: { widgets: [] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTranscriptIndexURL(url, 'sess_41')) {
+        indexRequests += 1;
+        return new Response(JSON.stringify({ rev: 2, compaction_seq: -1, compaction_count: 0, rows: { ids: [1], seqs: [0], roles: 'u', flags: [0] } }), {
+          status: 200, headers: { 'Content-Type': 'application/json', ETag: '"fallback-2"' },
+        });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_41')) {
+        bodyRequests += 1;
+        return new Response(JSON.stringify({ rev: 2, messages: [{ id: 1, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'fallback' }] }] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (parsed?.pathname === '/ui/v1/sessions/sess_41/state') {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 2 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = app.state.sessions.find((item) => item.id === 'sess_41');
+  if (indexRequests !== 1 || bodyRequests !== 1 || session?.messages[0]?.content !== 'fallback') {
+    fail(name, 'fallback did not use the existing activation path', JSON.stringify({ indexRequests, bodyRequests, messages: session?.messages }));
+    return;
+  }
+  pass(name);
+}
+
+async function testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision() {
+  const name = 'startup transcript sideload refreshes only when concurrent state revision is newer';
+  let indexRequests = 0;
+  let bodyRequests = 0;
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/52',
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: { id: 'sess_52', number: 52, short_title: 'Race', origin: 'web', created_at: 1, transcript_rev: 2 },
+          selected_transcript: startupTranscriptSideload({
+            rev: 2,
+            ids: [1, 2],
+            messages: [
+              { id: 1, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'one' }] },
+              { id: 2, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'two' }] },
+            ],
+          }),
+          widget_status: { widgets: [] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed?.pathname === '/ui/v1/sessions/sess_52/state') {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 3 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTranscriptIndexURL(url, 'sess_52')) {
+        indexRequests += 1;
+        return new Response(JSON.stringify({ rev: 3, compaction_seq: -1, compaction_count: 0, rows: { ids: [1, 2, 3], seqs: [0, 1, 2], roles: 'uuu', flags: [0, 0, 0] } }), {
+          status: 200, headers: { 'Content-Type': 'application/json', ETag: '"race-3"' },
+        });
+      }
+      if (isTranscriptBodiesURL(url, 'sess_52')) {
+        bodyRequests += 1;
+        return new Response(JSON.stringify({
+          rev: 3,
+          messages: [1, 2, 3].map((id) => ({ id, sequence: id - 1, role: 'user', parts: [{ type: 'text', text: String(id) }] })),
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = app.state.sessions.find((item) => item.id === 'sess_52');
+  if (indexRequests !== 1 || bodyRequests !== 1 || session?.transcript.rev !== 3 || session?.messages.at(-1)?.content !== '3') {
+    fail(name, 'newer state revision was lost or fetched redundantly', JSON.stringify({ indexRequests, bodyRequests, rev: session?.transcript.rev, messages: session?.messages }));
+    return;
+  }
+  pass(name);
+}
+
+async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus() {
+  const name = 'scheduled status reconciliation does not duplicate startup state for sideloaded active run';
+  const scheduled = [];
+  let stateRequests = 0;
+  let statusRequests = 0;
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/63',
+    setTimeout(fn, delay) {
+      const handle = { fn, delay, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) { if (handle) handle.cleared = true; },
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [],
+          selected_session: { id: 'sess_63', number: 63, short_title: 'Active', origin: 'web', created_at: 1, transcript_rev: 5 },
+          selected_transcript: startupTranscriptSideload({
+            rev: 5,
+            ids: [1],
+            messages: [{ id: 1, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'active' }] }],
+            activeResponseId: 'resp_63',
+            startedRev: 5,
+          }),
+          widget_status: { widgets: [] },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed?.pathname === '/ui/v1/sessions/sess_63/state') {
+        stateRequests += 1;
+        return new Response(JSON.stringify({ active_run: true, active_response_id: 'resp_63', started_rev: 5, transcript_rev: 6 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (parsed?.pathname === '/ui/v1/sessions/status') {
+        statusRequests += 1;
+        return new Response(JSON.stringify({ sessions: [{ id: 'sess_63', active_response_id: 'resp_63', started_rev: 5, transcript_rev: 6 }] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+
+  if (stateRequests !== 1 || statusRequests !== 0) {
+    fail(name, 'startup issued immediate status or duplicate state request', JSON.stringify({ stateRequests, statusRequests }));
+    return;
+  }
+  const firstPoll = scheduled.find((handle) => !handle.cleared && handle.delay === 2000);
+  if (!firstPoll) {
+    fail(name, 'active startup did not arm normal active poll delay', JSON.stringify(scheduled.map(({ delay, cleared }) => ({ delay, cleared }))));
+    return;
+  }
+  firstPoll.cleared = true;
+  await firstPoll.fn();
+  await Promise.resolve();
+  if (statusRequests !== 1 || stateRequests !== 1) {
+    fail(name, 'status reconciliation duplicated selected-session state', JSON.stringify({ stateRequests, statusRequests }));
+    return;
+  }
+  app.stopSidebarStatusPoll();
   pass(name);
 }
 
@@ -2821,9 +3122,9 @@ async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
 
   releaseSessions();
   const { app, windowObj } = await harnessPromise;
-  if (!app.state.connected || statusCalls !== 1) {
+  if (!app.state.connected || statusCalls !== 0) {
     app.stopSidebarStatusPoll();
-    fail(name, 'initial merge did not start exactly one connected status poll', JSON.stringify({ connected: app.state.connected, statusCalls }));
+    fail(name, 'initial authoritative merge should only schedule status polling', JSON.stringify({ connected: app.state.connected, statusCalls }));
     return;
   }
 
@@ -2831,9 +3132,9 @@ async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
   await visibilityHandler({ type: 'visibilitychange' });
   windowObj.document.visibilityState = 'visible';
   await visibilityHandler({ type: 'visibilitychange' });
-  if (statusCalls !== 2) {
+  if (statusCalls !== 1) {
     app.stopSidebarStatusPoll();
-    fail(name, `later visibility change did not restart normal polling; got ${statusCalls} status requests`);
+    fail(name, `later visibility recovery did not poll immediately; got ${statusCalls} status requests`);
     return;
   }
 
@@ -2885,17 +3186,17 @@ async function testPageshowWaitsForInitialConnectionBeforeStatusPoll() {
 
   releaseSessions();
   const { app } = await harnessPromise;
-  if (!app.state.connected || statusCalls !== 1) {
+  if (!app.state.connected || statusCalls !== 0) {
     app.stopSidebarStatusPoll();
-    fail(name, 'initial merge did not start exactly one connected status poll', JSON.stringify({ connected: app.state.connected, statusCalls }));
+    fail(name, 'initial authoritative merge should only schedule status polling', JSON.stringify({ connected: app.state.connected, statusCalls }));
     return;
   }
 
   await app.stopSidebarStatusPoll();
   pageshowHandler({ type: 'pageshow', persisted: true });
-  if (statusCalls !== 2) {
+  if (statusCalls !== 1) {
     app.stopSidebarStatusPoll();
-    fail(name, `connected BFCache pageshow did not restart normal polling; got ${statusCalls} status requests`);
+    fail(name, `connected BFCache pageshow did not recover immediately; got ${statusCalls} status requests`);
     return;
   }
 
@@ -3041,7 +3342,7 @@ async function testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus()
     fetchImpl: async (url) => {
       if (url === '/ui/v1/sessions/status') {
         statusCalls += 1;
-        if (statusCalls > 1) {
+        if (statusCalls >= 1) {
           return new Promise((resolve) => {
             resolveStatus = () => resolve(new Response(JSON.stringify({
               sessions: [{ id: 'stale_session', short_title: 'Stale' }],
@@ -5119,6 +5420,11 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testSwitchingSessionsDiscardsPendingAttachments();
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
+  await testIdleStartupSchedulesNormalPollWithoutImmediateRequest();
+  await testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests();
+  await testMalformedStartupTranscriptSideloadFallsBack();
+  await testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision();
+  await testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus();
   await testStartupSplashWaitsForDeepLinkedTranscriptRender();
   await testStartupSideloadsWidgetsBeforeFirstPaint();
   await testStartupSideloadsEmptyWidgetList();

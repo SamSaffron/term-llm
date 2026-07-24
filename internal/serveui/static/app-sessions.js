@@ -1947,6 +1947,86 @@ const applyServerSessionSummary = (target, serverSession) => {
   return target;
 };
 
+const applySelectedTranscriptSideload = (session, sideload) => {
+  if (!session || !sideload || typeof sideload !== 'object' || typeof window.TranscriptStore !== 'function') return false;
+  const index = sideload.index;
+  const bodies = sideload.bodies;
+  const etag = String(sideload.index_etag || '').trim();
+  const rev = Number(index?.rev);
+  if (!index?.rows || !Number.isFinite(rev) || rev < 0 || !etag
+      || !bodies || Number(bodies.rev) !== rev || !Array.isArray(bodies.messages)) return false;
+
+  const current = ensureSessionTranscript(session);
+  if (!current || current.rev > rev) return false;
+
+  // Validate the complete transaction in a detached store before mutating the
+  // selected canonical session. This catches malformed parallel arrays,
+  // out-of-window bodies, and incomplete turns without exposing a partial
+  // projection or disturbing optimistic entries.
+  const staging = new window.TranscriptStore(`startup-sideload:${session.id}`, current.budgets);
+  try {
+    staging.applyIndex(index, etag);
+    if (staging.ids.length > 0) {
+      const last = staging.ids.length - 1;
+      staging.setViewport(last, last, { deferBudget: true });
+    }
+    for (const optimistic of current.optimistic || []) {
+      staging.addOptimistic({ ...optimistic }, optimistic.revAtSend, {
+        persisted: current.persistedOptimistic?.has?.(optimistic) === true
+      });
+    }
+    if (current.activeRun) staging.setActiveRun(current.activeRun.id, current.activeRun.startedRev);
+
+    const wantedIndexes = transcriptSyncSegmentIndexes(staging);
+    const allowedBodyIDs = new Set();
+    for (const segmentIndex of wantedIndexes) {
+      const segment = staging.segments[segmentIndex];
+      if (!segment) continue;
+      for (let ordinal = segment.startOrdinal; ordinal <= segment.endOrdinal; ordinal += 1) {
+        allowedBodyIDs.add(staging.ids[ordinal]);
+      }
+    }
+    const normalizedBodyID = (entry) => {
+      const value = entry?.id ?? entry?.ID;
+      return Number.isFinite(Number(value)) ? Number(value) : value;
+    };
+    if (bodies.messages.some((entry) => !allowedBodyIDs.has(normalizedBodyID(entry)))) return false;
+    staging.materialize(bodies.messages, { countFetch: false, deferBudget: true });
+    if (!wantedIndexes.every((segmentIndex) => ['materialized', 'empty'].includes(staging.segments[segmentIndex]?.state))) {
+      return false;
+    }
+    staging.enforceBudget();
+    staging._checkInvariants?.();
+  } catch (_) {
+    return false;
+  } finally {
+    staging.destroy();
+  }
+
+  try {
+    current.applyIndex(index, etag);
+    if (current.ids.length > 0) {
+      const last = current.ids.length - 1;
+      current.setViewport(last, last, { deferBudget: true });
+    }
+    current.materialize(bodies.messages, { countFetch: false, deferBudget: true });
+    if (index.active_response_id) current.setActiveRun(index.active_response_id, index.started_rev);
+    current.reconcileOptimistic();
+    persistTranscriptOptimistic(session);
+    current.enforceBudget();
+    current._checkInvariants?.();
+    refreshSessionMessagesFromTranscript(session);
+    touchTranscriptSkeleton(session);
+    session._startupTranscriptSideloaded = true;
+    if (session.id === state.activeSessionId && !state.draftSessionActive) renderMessages(true);
+    return true;
+  } catch (_) {
+    // The detached validation above makes this path defensive only. Leave the
+    // marker unset so activation falls back to the normal transcript endpoints.
+    return false;
+  }
+};
+
 const reconcileServerSessionIdentity = (session, serverSession) => {
   if (!session || !serverSession) return session;
 
@@ -1995,6 +2075,9 @@ const mergeServerSessions = async (options = {}) => {
     }
     if (options.selectedOnly === true) {
       params.set('selected_only', '1');
+    }
+    if (options.includeTranscript === true) {
+      params.set('include_transcript', '1');
     }
     if (options.includeWidgetStatus === true) {
       params.set('include_widget_status', '1');
@@ -2059,6 +2142,9 @@ const mergeServerSessions = async (options = {}) => {
     for (const serverSession of data.sessions) mergeServerSession(serverSession);
 
     const selected = mergeServerSession(data.selected_session);
+    if (selected && options.includeTranscript === true) {
+      applySelectedTranscriptSideload(selected, data.selected_transcript);
+    }
     if (selected && selected.id === state.activeSessionId && !state.draftSessionActive) {
       if (selected.fileChangeSummary) {
         app.applySessionDiffSummary?.(selected.id, selected.fileChangeSummary);
@@ -2364,13 +2450,15 @@ const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
   if (!active || !isSessionIdentityResolved(active)) return;
 
-  // Start state sync immediately so the server round-trip overlaps with the
-  // messages fetch instead of serialising after it. For server-only sessions,
-  // the explicit message preload below owns the message fetch to avoid a double
-  // request.
-  const statePromise = syncActiveSessionFromServer(active, true, { skipMessagesFetch: Boolean(active._serverOnly) });
+  const hasTranscriptSideload = active._startupTranscriptSideloaded === true;
+  // Start state sync immediately so the server round-trip overlaps with a
+  // fallback transcript fetch. A valid startup sideload already owns the first
+  // projection, so state only refreshes it when the server reports a newer rev.
+  const statePromise = syncActiveSessionFromServer(active, true, {
+    skipMessagesFetch: Boolean(active._serverOnly) || hasTranscriptSideload
+  });
 
-  const preloadMessagesPromise = active._serverOnly
+  const preloadMessagesPromise = active._serverOnly && !hasTranscriptSideload
     ? loadServerSessionMessages(active.id)
     : null;
 
@@ -2384,6 +2472,7 @@ const hydrateActiveSessionAfterStartup = async () => {
   }
 
   await statePromise;
+  delete active._startupTranscriptSideloaded;
   if (syncSelectedRuntimeFromSession(active)) {
     app.updateHeader();
   }
@@ -2463,7 +2552,11 @@ const initialize = async () => {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
 
-    const sessionsPromise = mergeServerSessions({ selectedSession: urlSlug, includeWidgetStatus: true });
+    const sessionsPromise = mergeServerSessions({
+      selectedSession: urlSlug,
+      includeTranscript: Boolean(urlSlug),
+      includeWidgetStatus: true
+    });
 
     // Start a speculative models fetch immediately using the provider stored in
     // localStorage. For returning users this runs in parallel with fetchProviders,
@@ -2494,7 +2587,10 @@ const initialize = async () => {
     renderModelOptions();
     app.updateHeader?.();
     setConnectionState('', '');
-    startSidebarStatusPoll();
+    // The primary sessions response is authoritative for startup. Arm the
+    // ordinary cadence instead of immediately reconciling the same status and
+    // triggering duplicate selected-session state work during first paint.
+    refreshSidebarStatusPoll();
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
       renderMessages(true);
@@ -3434,6 +3530,7 @@ Object.assign(app, {
   invalidateSessionStateForSelection,
   syncSelectedRuntimeFromSession,
   applyServerSessionSummary,
+  applySelectedTranscriptSideload,
   mergeServerSessions,
   refreshWidgetsSidebar,
   startSidebarStatusPoll,

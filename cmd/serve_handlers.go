@@ -1160,9 +1160,15 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selected_only")), "true")
 	includeWidgetStatus := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_widget_status")), "1") ||
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_widget_status")), "true")
+	includeTranscript := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_transcript")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_transcript")), "true")
 	selectedSelector := strings.TrimSpace(r.URL.Query().Get("selected_session"))
 	if selectedOnly && selectedSelector == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "selected_session is required with selected_only")
+		return
+	}
+	if includeTranscript && selectedSelector == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "selected_session is required with include_transcript")
 		return
 	}
 
@@ -1207,6 +1213,14 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// The shell HTML is public and process-wide cached so mutable widget
 		// status belongs in this primary authenticated startup response instead.
 		payload["widget_status"] = s.currentWidgetStatus()
+	}
+	if includeTranscript && selected != nil {
+		// Only the explicitly selected startup session gets transcript I/O. Keep
+		// ordinary 100-row sidebar listings summary-only and N+1 free.
+		sideload, sideloadErr := s.selectedTranscriptStartupSideload(r.Context(), selected.ID)
+		if sideloadErr == nil && sideload != nil {
+			payload["selected_transcript"] = sideload
+		}
 	}
 	writeJSONConditional(w, r, http.StatusOK, payload)
 }
