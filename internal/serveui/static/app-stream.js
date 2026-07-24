@@ -1575,7 +1575,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
       ? session.messages.slice(0, anchorIndex + 1).filter((message) => !shouldDropPreservedOptimisticInterjection(message, recoveredInterjections))
       : [];
     session.messages = preserved.concat(recoveredMessages);
-    app.reconcileSessionToolCallProjection?.(session, { trackOptimisticTools: true });
+    app.reconcileSessionTranscriptProjection?.(session, { trackOptimisticTail: true });
   }
 
   const nextSeq = Number(payload.last_sequence_number ?? recovery?.sequence_number ?? session.lastSequenceNumber ?? 0);
@@ -4012,6 +4012,7 @@ const cancelPendingInterjection = async (entry) => {
     if (session) {
       const idx = session.messages.findIndex(m => m.id === entry.messageId && m.role === 'user');
       if (idx >= 0) session.messages.splice(idx, 1);
+      app.retireTranscriptOptimistic?.(session, entry.messageId);
       if (isSessionVisible(session)) {
         const node = Array.from(elements.messages.querySelectorAll('[data-message-id]'))
           .find(el => el.getAttribute('data-message-id') === entry.messageId);

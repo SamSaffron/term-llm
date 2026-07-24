@@ -5,7 +5,7 @@ const {
   TranscriptStore,
   TRANSCRIPT_FLAG_EMPTY_BODY,
   transcriptStoreFromMessages,
-  reconcileToolCallProjection,
+  reconcileTranscriptProjection,
   __transcriptStats
 } = require('./transcript-store.js');
 
@@ -335,13 +335,150 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
       { id: 'call_newer_optimistic_only', name: 'shell' }
     ]
   };
-  const projected = reconcileToolCallProjection([durableGroup, liveGroup]);
+  const projected = reconcileTranscriptProjection([durableGroup, liveGroup]);
   assert.deepEqual(projected.map((message) => message.id), ['srv_seq_382_tools_0', 'msg_441406d5-live-tools']);
   assert.deepEqual(projected[1].tools.map((tool) => tool.id), ['call_newer_optimistic_only']);
   assert.deepEqual(
-    reconcileToolCallProjection(projected).map((message) => message.id),
+    reconcileTranscriptProjection(projected).map((message) => message.id),
     ['srv_seq_382_tools_0', 'msg_441406d5-live-tools'],
     'repeat resume reconciliation is idempotent'
+  );
+
+  const assistantTail = new TranscriptStore('assistant-tail');
+  assistantTail.applyIndex(envelope([25], { rev: 7, roles: 'u' }));
+  assistantTail.materialize([body(25, 25, 'user')]);
+  assistantTail.setActiveRun('resp-assistant-tail', 7);
+  assistantTail.addOptimistic({
+    id: 'msg_assistant_tail',
+    clientKey: 'msg_assistant_tail',
+    role: 'assistant',
+    content: 'durable prefix',
+    durableSeqAtSend: 25,
+    revAtSend: 7
+  }, 7);
+  const recoveredAssistant = assistantTail.addOptimistic({
+    id: 'msg_assistant_tail',
+    clientKey: 'msg_assistant_tail',
+    role: 'assistant',
+    content: 'durable prefix plus optimistic suffix'
+  }, 7);
+  assert.equal(recoveredAssistant, assistantTail.optimistic[0], 'reconnect recovery must update the canonical optimistic object');
+  assert.equal(recoveredAssistant.content, 'durable prefix plus optimistic suffix', 'reconnect recovery must retain newer assistant text');
+  assert.equal(recoveredAssistant.revAtSend, 7, 'reconnect recovery must preserve the original revision boundary');
+  assert.equal(recoveredAssistant.durableSeqAtSend, 25, 'reconnect recovery must preserve the original sequence boundary');
+  assistantTail.applyIndex(envelope([25, 26], { rev: 7, roles: 'ua', seqs: [25, 26] }));
+  assistantTail.materialize([
+    body(25, 25, 'user'),
+    body(26, 26, 'assistant', [{ type: 'text', text: 'durable prefix' }])
+  ]);
+  assert.deepEqual(
+    assistantTail.reconcileOptimistic(),
+    [],
+    'same-revision active durable prefix must retain the optimistic-only suffix'
+  );
+  assert.equal(
+    assistantTail.optimistic[0].content,
+    'durable prefix plus optimistic suffix',
+    'source reconciliation must keep the complete optimistic text for idempotent reload projection'
+  );
+
+  const assistantProjection = reconcileTranscriptProjection([
+    {
+      id: 'srv_seq_26_text_0',
+      role: 'assistant',
+      content: 'durable prefix',
+      durable: true,
+      serverSeq: 26,
+      transcriptSegmentIndex: 0
+    },
+    assistantTail.optimistic[0]
+  ], assistantTail);
+  assert.deepEqual(
+    assistantProjection.map((message) => message.id),
+    ['srv_seq_26_text_0'],
+    'one authoritative assistant node owns durable and optimistic text'
+  );
+  assert.equal(
+    assistantProjection[0].content,
+    'durable prefix plus optimistic suffix',
+    'durable prefix and optimistic suffix must be coalesced without duplication or loss'
+  );
+  assert.deepEqual(
+    reconcileTranscriptProjection(assistantProjection, assistantTail),
+    assistantProjection,
+    'repeat status/reconnect projection is idempotent'
+  );
+
+  const interjectedProjection = reconcileTranscriptProjection([
+    {
+      id: 'srv_seq_26_text_0',
+      role: 'assistant',
+      content: 'durable prefix',
+      durable: true,
+      serverSeq: 26,
+      transcriptSegmentIndex: 0
+    },
+    { id: 'msg_interjection', role: 'user', content: 'stop there', interruptState: 'interject' },
+    assistantTail.optimistic[0]
+  ], assistantTail);
+  assert.deepEqual(
+    interjectedProjection.map((message) => ({ id: message.id, content: message.content })),
+    [
+      { id: 'srv_seq_26_text_0', content: 'durable prefix' },
+      { id: 'msg_interjection', content: 'stop there' },
+      { id: 'msg_assistant_tail', content: ' plus optimistic suffix' }
+    ],
+    'assistant suffix must not move ahead of an intervening user interjection'
+  );
+  assert.deepEqual(
+    reconcileTranscriptProjection(interjectedProjection, assistantTail)
+      .map((message) => ({ id: message.id, content: message.content })),
+    interjectedProjection.map((message) => ({ id: message.id, content: message.content })),
+    'interjected assistant projection must remain idempotent'
+  );
+
+  assistantTail.materialize([
+    body(26, 26, 'assistant', [{ type: 'text', text: 'durable prefix plus optimistic suffix' }])
+  ]);
+  assert.deepEqual(
+    assistantTail.reconcileOptimistic().map((entry) => entry.clientKey),
+    ['msg_assistant_tail'],
+    'the complete durable assistant projection retires its optimistic source exactly once'
+  );
+  assert.equal(assistantTail.optimistic.length, 0);
+  assert.deepEqual(assistantTail.reconcileOptimistic(), [], 'repeat terminal reconciliation is a no-op');
+
+  const reloadedAssistant = new TranscriptStore('assistant-tail-reloaded');
+  reloadedAssistant.applyIndex(envelope([25, 26], { rev: 7, roles: 'ua', seqs: [25, 26] }));
+  reloadedAssistant.materialize([
+    body(25, 25, 'user'),
+    body(26, 26, 'assistant', [{ type: 'text', text: 'durable prefix' }])
+  ]);
+  reloadedAssistant.setActiveRun('resp-assistant-tail', 7);
+  reloadedAssistant.addOptimistic({
+    id: 'msg_assistant_tail',
+    clientKey: 'msg_assistant_tail',
+    role: 'assistant',
+    content: 'durable prefix plus optimistic suffix',
+    durableSeqAtSend: 25,
+    revAtSend: 7
+  }, 7, { persisted: true });
+  reloadedAssistant.reconcileOptimistic();
+  const reloadedProjection = reconcileTranscriptProjection([
+    {
+      id: 'srv_seq_26_text_0',
+      role: 'assistant',
+      content: 'durable prefix',
+      durable: true,
+      serverSeq: 26,
+      transcriptSegmentIndex: 0
+    },
+    ...reloadedAssistant.optimistic
+  ], reloadedAssistant);
+  assert.deepEqual(
+    reloadedProjection.map((message) => ({ id: message.id, content: message.content })),
+    assistantProjection.map((message) => ({ id: message.id, content: message.content })),
+    'persisted reload and live status synchronization must publish the same tail'
   );
 
   const scopedTools = new TranscriptStore('scoped-persisted-tools');

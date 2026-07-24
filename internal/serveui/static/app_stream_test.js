@@ -11,7 +11,7 @@ const { webcrypto } = require('crypto');
 const dir = __dirname;
 const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const source = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
-const { reconcileToolCallProjection } = require('./transcript-store.js');
+const { reconcileTranscriptProjection } = require('./transcript-store.js');
 
 let failures = 0;
 
@@ -481,10 +481,10 @@ function createHarness(options = {}) {
     renderSidebar() {},
     renderWidgetSidebar() {},
     renderMessages() {},
-    reconcileSessionToolCallProjection(session) {
-      session.messages = reconcileToolCallProjection(session.messages);
-      if (typeof options.onReconcileSessionToolCallProjection === 'function') {
-        options.onReconcileSessionToolCallProjection(session);
+    reconcileSessionTranscriptProjection(session) {
+      session.messages = reconcileTranscriptProjection(session.messages);
+      if (typeof options.onReconcileSessionTranscriptProjection === 'function') {
+        options.onReconcileSessionTranscriptProjection(session);
       }
       return true;
     },
@@ -2879,7 +2879,7 @@ async function testRecoverySnapshotReconcilesDurableToolCallsIdempotently() {
   const name = 'recovery snapshot reconciles durable tool calls by stable call ID idempotently';
   let reconciliations = 0;
   const harness = createHarness({
-    onReconcileSessionToolCallProjection() { reconciliations += 1; }
+    onReconcileSessionTranscriptProjection() { reconciliations += 1; }
   });
   const { app, state, cleanup } = harness;
   const durable = {

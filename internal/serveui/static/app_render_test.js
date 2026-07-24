@@ -7,7 +7,7 @@ const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-render.js'), 'utf8');
 const markdownStreaming = require(path.join(__dirname, 'markdown-streaming.js'));
-const { reconcileToolCallProjection } = require('./transcript-store.js');
+const { reconcileTranscriptProjection } = require('./transcript-store.js');
 let failures = 0;
 
 function fail(name, message, details) {
@@ -1968,7 +1968,7 @@ async function run(name, fn) {
     app.renderMessages();
     assertEqual(messages.querySelectorAll('.tool-group').length, 3, 'reproduction mounts durable and duplicate optimistic cards');
 
-    session.messages = reconcileToolCallProjection(session.messages);
+    session.messages = reconcileTranscriptProjection(session.messages);
     app.renderMessages();
 
     assertEqual(messages.querySelectorAll('.tool-group').length, 2, 'covered optimistic group is removed in the mounted reconciliation');
@@ -1979,6 +1979,51 @@ async function run(name, fn) {
       session.messages.map((message) => message.id).join(','),
       'srv_seq_387_tools_1,msg_652-live-tools',
       'session projection preserves durable then newer live ordering'
+    );
+  });
+
+  await run('transcript reconciliation hands one assistant DOM node from durable prefix to live suffix', () => {
+    const { app, session, messages } = createHarness();
+    session.transcript = { rev: 7, activeRun: { id: 'resp_assistant_dom', startedRev: 7 } };
+    const durable = {
+      id: 'srv_seq_402_text_0',
+      role: 'assistant',
+      content: 'durable prefix',
+      durable: true,
+      serverSeq: 402,
+      transcriptSegmentIndex: 0,
+      created: 1000
+    };
+    const optimistic = {
+      id: 'msg_assistant_dom',
+      clientKey: 'msg_assistant_dom',
+      role: 'assistant',
+      content: 'durable prefix plus live suffix',
+      optimistic: true,
+      revAtSend: 7,
+      durableSeqAtSend: 401,
+      created: 1100
+    };
+    session.messages = [durable, optimistic];
+    app.renderMessages();
+    assertEqual(messages.querySelectorAll('.assistant').length, 2, 'race reproduction mounts durable and optimistic assistant nodes');
+
+    session.messages = reconcileTranscriptProjection(session.messages, session.transcript);
+    app.renderMessages();
+
+    assertEqual(messages.querySelectorAll('.assistant').length, 1, 'projection boundary removes the superseded optimistic assistant node');
+    assertEqual(session.messages.length, 1, 'one authoritative assistant remains in session.messages');
+    assertEqual(session.messages[0].id, 'srv_seq_402_text_0', 'durable identity owns the coalesced assistant node');
+    assertEqual(session.messages[0].content, 'durable prefix plus live suffix', 'the optimistic-only suffix remains visible exactly once');
+    assertEqual(
+      messages.querySelectorAll('[data-message-id="srv_seq_402_text_0"]').length,
+      1,
+      'durable assistant identity is unique in the mounted DOM'
+    );
+    assertEqual(
+      messages.querySelectorAll('[data-message-id="msg_assistant_dom"]').length,
+      0,
+      'superseded optimistic assistant identity is removed from the mounted DOM'
     );
   });
 

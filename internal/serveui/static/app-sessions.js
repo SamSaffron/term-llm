@@ -1092,6 +1092,14 @@ const trackTranscriptOptimistic = (session, message) => {
   return tracked;
 };
 
+const retireTranscriptOptimistic = (session, messageOrKey) => {
+  const transcript = session?.transcript;
+  if (!transcript?.removeOptimistic) return [];
+  const removed = transcript.removeOptimistic(messageOrKey);
+  if (removed.length > 0) persistTranscriptOptimistic(session);
+  return removed;
+};
+
 const noteTranscriptRunCreated = (session, responseId, startedRev) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return Promise.resolve(false);
@@ -1159,23 +1167,23 @@ const transcriptViewportAdapter = (session, forceScroll = false) => {
   };
 };
 
-const reconcileSessionToolCallProjection = (session, options = {}) => {
+const reconcileSessionTranscriptProjection = (session, options = {}) => {
   if (!session || !Array.isArray(session.messages)) return false;
-  const reconcile = window.reconcileToolCallProjection;
-  if (typeof reconcile === 'function') {
-    session.messages = reconcile(session.messages);
+  const transcript = ensureSessionTranscript(session);
+
+  if (options.trackOptimisticTail === true && transcript) {
+    for (const [index, message] of session.messages.entries()) {
+      if (message?.durable || !['assistant', 'tool-group', 'tool'].includes(message?.role)) continue;
+      const tracked = transcript.addOptimistic(message, transcript.rev);
+      if (tracked && tracked !== message) session.messages[index] = tracked;
+    }
+    transcript.reconcileOptimistic();
+    persistTranscriptOptimistic(session);
   }
 
-  if (options.trackOptimisticTools === true) {
-    const transcript = ensureSessionTranscript(session);
-    if (transcript) {
-      for (const message of session.messages) {
-        if (message?.durable || (message?.role !== 'tool-group' && message?.role !== 'tool')) continue;
-        transcript.addOptimistic(message, transcript.rev);
-      }
-      transcript.reconcileOptimistic();
-      persistTranscriptOptimistic(session);
-    }
+  const reconcile = window.reconcileTranscriptProjection;
+  if (typeof reconcile === 'function') {
+    session.messages = reconcile(session.messages, transcript);
   }
   return true;
 };
@@ -1231,11 +1239,9 @@ const refreshSessionMessagesFromTranscript = (session) => {
   }
   display.push(...transcript.optimistic);
   session.messages = display;
-  // Recovery and transcript advancement are independent lifecycle boundaries:
-  // newly materialized durable calls must retire overlapping recovered calls in
-  // both the published projection and the optimistic source before any caller
-  // renders. This stays centralized here rather than running per stream token.
-  reconcileSessionToolCallProjection(session, { trackOptimisticTools: true });
+  // Every durable/optimistic handoff is committed through the same projected
+  // tail before callers can render or publish session.messages.
+  reconcileSessionTranscriptProjection(session, { trackOptimisticTail: true });
   delete session._serverOnly;
   return true;
 };
@@ -1309,7 +1315,7 @@ const transcriptSyncSegmentIndexes = (transcript) => {
   if (!transcript) return [];
   const wanted = new Set(transcript.pinnedSegments);
   if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
-  for (const index of transcript.persistedOptimisticToolSegmentIndexes?.(TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || []) {
+  for (const index of transcript.persistedOptimisticSegmentIndexes?.(TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || []) {
     wanted.add(index);
   }
   return [...wanted];
@@ -1404,10 +1410,22 @@ const syncTranscriptOnce = async (session, options = {}) => {
   if (resp.status === 404) {
     const pages = await fetchLegacyTranscriptPages(session.id);
     if (!pages) return false;
+    const optimistic = transcript.optimistic.map((entry) => ({
+      entry: { ...entry },
+      persisted: transcript.persistedOptimistic?.has?.(entry) === true
+    }));
+    const activeRun = transcript.activeRun ? { ...transcript.activeRun } : null;
+    const replacement = window.transcriptStoreFromMessages(session.id, pages);
+    for (const local of optimistic) {
+      replacement.addOptimistic(local.entry, local.entry.revAtSend, { persisted: local.persisted });
+    }
+    if (activeRun) replacement.setActiveRun(activeRun.id, activeRun.startedRev);
+    replacement.reconcileOptimistic();
     transcript.destroy();
-    session.transcript = window.transcriptStoreFromMessages(session.id, pages);
+    session.transcript = replacement;
     session.transcript.setViewport(Math.max(0, session.transcript.ids.length - 1), Math.max(0, session.transcript.ids.length - 1));
     session.transcript.enforceBudget();
+    persistTranscriptOptimistic(session);
     refreshSessionMessagesFromTranscript(session);
     if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
     touchTranscriptSkeleton(session);
@@ -1425,7 +1443,7 @@ const syncTranscriptOnce = async (session, options = {}) => {
   const loaded = await transcript.withViewportAnchor(adapter, async () => {
     if (data) {
       transcript.applyIndex(data, resp.headers?.get?.('ETag') || '');
-      if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
+      transcript.setActiveRun(data.active_response_id || '', data.started_rev);
     }
     if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
       const last = transcript.ids.length - 1;
@@ -1687,6 +1705,15 @@ const reconcileTranscriptFromStatus = async (statusSessions) => {
       && document.visibilityState !== 'hidden') {
       await syncActiveSessionFromServer(active, true, { skipMessagesFetch: true });
     }
+  } else if (!refreshed && transcript.activeRun) {
+    // Status is authoritative for run ownership even when another path already
+    // fetched its final transcript revision. Clear and republish once so stale
+    // completed optimistic rows cannot survive an equal-revision terminal poll.
+    transcript.setActiveRun('', 0);
+    transcript.reconcileOptimistic();
+    persistTranscriptOptimistic(active);
+    refreshSessionMessagesFromTranscript(active);
+    if (active.id === state.activeSessionId && !state.draftSessionActive) renderMessages(false);
   }
   return refreshed;
 };
@@ -1906,6 +1933,8 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   if (!activeRun && !state.abortController) {
     if (isStillActive()) stopSessionStatePoll();
+    const clearedTranscriptRun = Boolean(transcript?.activeRun);
+    if (clearedTranscriptRun) transcript.setActiveRun('', 0);
     if (session.activeResponseId || (isStillActive() && state.currentStreamResponseId)) {
       clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
       saveSessions();
@@ -1919,6 +1948,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
         targetRev: runtimeTranscriptRev,
         forceScroll: true
       });
+    } else if (clearedTranscriptRun && transcript) {
+      transcript.reconcileOptimistic();
+      persistTranscriptOptimistic(session);
+      refreshSessionMessagesFromTranscript(session);
+      if (isStillActive()) renderMessages(false);
     }
     const lastError = String(runtimeState.last_error || '').trim();
     let currentTurnStart = 0;
@@ -2027,7 +2061,7 @@ const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
         persisted: current.persistedOptimistic?.has?.(optimistic) === true
       });
     }
-    if (current.activeRun) staging.setActiveRun(current.activeRun.id, current.activeRun.startedRev);
+    staging.setActiveRun(index.active_response_id || '', index.started_rev);
 
     const wantedIndexes = transcriptSyncSegmentIndexes(staging);
     const allowedBodyIDs = new Set();
@@ -2062,7 +2096,7 @@ const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
       current.setViewport(last, last, { deferBudget: true });
     }
     current.materialize(bodies.messages, { countFetch: false, deferBudget: true });
-    if (index.active_response_id) current.setActiveRun(index.active_response_id, index.started_rev);
+    current.setActiveRun(index.active_response_id || '', index.started_rev);
     current.reconcileOptimistic();
     persistTranscriptOptimistic(session);
     current.enforceBudget();
@@ -3603,11 +3637,12 @@ Object.assign(app, {
   reconcileTranscriptFromStatus,
   materializeTranscriptSegments,
   trackTranscriptOptimistic,
+  retireTranscriptOptimistic,
   persistTranscriptOptimistic,
   noteTranscriptRunCreated,
   noteTranscriptTerminal,
   refreshSessionMessagesFromTranscript,
-  reconcileSessionToolCallProjection,
+  reconcileSessionTranscriptProjection,
   refreshActiveSessionMessagesFromServer,
   loadOlderSessionMessages,
   maybeLoadOlderSessionMessages,

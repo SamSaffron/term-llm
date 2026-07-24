@@ -55,22 +55,92 @@
     return ids;
   };
 
-  // Stable tool call IDs are authoritative across the durable/optimistic
-  // boundary. Synthetic message IDs differ between transcript conversion and
-  // response recovery, so reconciling only message rows can project the same
-  // call twice. Reserve every durable call first, then retain optimistic calls
-  // in their existing order only when no earlier projection owns that ID.
-  const reconcileToolCallProjection = (messages) => {
+  // Durable identity owns every projected transcript event it covers. Tools use
+  // their server-issued call IDs. Assistant rows have no response ID in the
+  // durable body, so they are paired in order only after the stronger
+  // revision/sequence boundary identifies the same response tail. Content is
+  // consulted after that match solely to retain a not-yet-durable suffix.
+  const assistantProjectionCanCover = (local, context = null) => {
+    if (!local || local.role !== 'assistant' || local.durable) return false;
+    const revAtSend = finiteInt(local.revAtSend, -1);
+    const durableSeqAtSend = finiteInt(local.durableSeqAtSend, -1);
+    if (revAtSend < 0 || durableSeqAtSend < 0) return false;
+    const projectionRev = finiteInt(context?.rev, -1);
+    if (projectionRev > revAtSend) return true;
+    const activeRun = context?.activeRun;
+    if (!activeRun || projectionRev < revAtSend) return false;
+    const localResponseID = String(local.responseId || '').trim();
+    if (localResponseID && localResponseID !== String(activeRun.id || '').trim()) return false;
+    const localStartedRev = finiteInt(local.responseStartedRev, revAtSend);
+    return localStartedRev === finiteInt(activeRun.startedRev, localStartedRev);
+  };
+
+  const assistantSourceContent = (message) => String(message?.optimisticFullContent ?? message?.content ?? '');
+
+  const assistantSuffixAfterDurable = (durableContent, optimisticContent) => {
+    const durable = String(durableContent || '');
+    const optimistic = String(optimisticContent || '');
+    if (optimistic.startsWith(durable)) return optimistic.slice(durable.length);
+    if (durable.startsWith(optimistic)) return '';
+    const maxOverlap = Math.min(durable.length, optimistic.length);
+    for (let length = maxOverlap; length > 0; length -= 1) {
+      if (durable.endsWith(optimistic.slice(0, length))) return optimistic.slice(length);
+    }
+    return '';
+  };
+
+  const reconcileTranscriptProjection = (messages, context = null) => {
     if (!Array.isArray(messages) || messages.length === 0) return Array.isArray(messages) ? messages : [];
     const durableIDs = new Set();
-    for (const message of messages) {
+    const durableAssistants = [];
+    for (const [index, message] of messages.entries()) {
       if (!message?.durable) continue;
       for (const id of messageToolIDs(message)) durableIDs.add(id);
+      if (message.role === 'assistant' && Number.isFinite(Number(message.serverSeq))) {
+        durableAssistants.push({ index, message, serverSeq: finiteInt(message.serverSeq, -1) });
+      }
+    }
+
+    const assistantMatches = new Map();
+    const claimedAssistants = new Set();
+    for (const [index, message] of messages.entries()) {
+      if (!assistantProjectionCanCover(message, context)) continue;
+      const afterSeq = finiteInt(message.durableSeqAtSend, -1);
+      const match = durableAssistants.find((candidate) => (
+        candidate.serverSeq > afterSeq && !claimedAssistants.has(candidate.index)
+      ));
+      if (!match) continue;
+      claimedAssistants.add(match.index);
+      const crossesUserBoundary = messages.slice(match.index + 1, index).some((candidate) => candidate?.role === 'user');
+      assistantMatches.set(index, { ...match, crossesUserBoundary });
     }
 
     const claimed = new Set();
     const result = [];
-    for (const message of messages) {
+    for (const [messageIndex, message] of messages.entries()) {
+      const assistantMatch = assistantMatches.get(messageIndex);
+      if (assistantMatch) {
+        const optimisticContent = assistantSourceContent(message);
+        const suffix = assistantSuffixAfterDurable(assistantMatch.message.content, optimisticContent);
+        if (suffix && assistantMatch.crossesUserBoundary) {
+          result.push({
+            ...message,
+            content: suffix,
+            optimisticFullContent: optimisticContent
+          });
+          continue;
+        }
+        const durableIndex = result.findIndex((entry) => entry === assistantMatch.message);
+        if (durableIndex >= 0 && suffix) {
+          result[durableIndex] = {
+            ...assistantMatch.message,
+            content: `${String(assistantMatch.message.content || '')}${suffix}`,
+            optimisticSuffixClientKey: String(message.clientKey || message.id || '')
+          };
+        }
+        continue;
+      }
+
       if (!message || (message.role !== 'tool-group' && message.role !== 'tool')) {
         result.push(message);
         continue;
@@ -503,6 +573,22 @@
       const clientKey = String(entry.clientKey || entry.id || `optimistic-${Date.now()}-${this.optimistic.length}`);
       const existing = this.optimistic.find((item) => String(item.clientKey || item.id || '') === clientKey);
       if (existing) {
+        const previousAssistantContent = existing.role === 'assistant' ? String(existing.content || '') : '';
+        const previousRevAtSend = finiteInt(existing.revAtSend, finiteInt(revAtSend, this.rev));
+        const previousDurableSeqAtSend = finiteInt(existing.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1);
+        Object.assign(existing, entry);
+        existing.clientKey = clientKey;
+        existing.optimistic = true;
+        existing.revAtSend = finiteInt(existing.revAtSend, previousRevAtSend);
+        existing.durableSeqAtSend = finiteInt(existing.durableSeqAtSend, previousDurableSeqAtSend);
+        if (existing.role === 'assistant') {
+          const incomingContent = String(entry.content || '');
+          if (previousAssistantContent.startsWith(incomingContent)) existing.content = previousAssistantContent;
+        }
+        if (this.activeRun && (existing.role === 'assistant' || existing.role === 'tool' || existing.role === 'tool-group')) {
+          if (!String(existing.responseId || '').trim()) existing.responseId = this.activeRun.id;
+          existing.responseStartedRev = finiteInt(existing.responseStartedRev, this.activeRun.startedRev);
+        }
         if (options.persisted === true) this.persistedOptimistic.add(existing);
         return existing;
       }
@@ -511,6 +597,10 @@
       optimistic.optimistic = true;
       optimistic.revAtSend = finiteInt(entry.revAtSend, finiteInt(revAtSend, this.rev));
       optimistic.durableSeqAtSend = finiteInt(entry.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1);
+      if (this.activeRun && (optimistic.role === 'assistant' || optimistic.role === 'tool' || optimistic.role === 'tool-group')) {
+        if (!String(optimistic.responseId || '').trim()) optimistic.responseId = this.activeRun.id;
+        optimistic.responseStartedRev = finiteInt(optimistic.responseStartedRev, this.activeRun.startedRev);
+      }
       this.optimistic.push(optimistic);
       if (options.persisted === true) this.persistedOptimistic.add(optimistic);
       return optimistic;
@@ -534,14 +624,14 @@
       return low < this.seqs.length ? this.segmentForOrdinal(low) : -1;
     }
 
-    persistedOptimisticToolSegmentIndexes(limit = TRANSCRIPT_MATERIALIZE_BATCH_TURNS) {
+    persistedOptimisticSegmentIndexes(limit = TRANSCRIPT_MATERIALIZE_BATCH_TURNS) {
       if (this.activeRun || this.optimistic.length === 0) return [];
       const max = Math.max(1, finiteInt(limit, TRANSCRIPT_MATERIALIZE_BATCH_TURNS));
       const selected = new Set();
       for (const local of this.optimistic) {
         if (selected.size >= max) break;
         if (!this.persistedOptimistic.has(local)) continue;
-        if (local.role !== 'tool-group' && local.role !== 'tool') continue;
+        if (!['assistant', 'tool-group', 'tool'].includes(local.role)) continue;
         if (this.rev <= finiteInt(local.revAtSend, this.rev)) continue;
         const segmentIndex = this.segmentAfterSequence(local.durableSeqAtSend);
         if (segmentIndex >= 0 && this.segments[segmentIndex]?.state === 'evicted') selected.add(segmentIndex);
@@ -557,11 +647,33 @@
       return ids;
     }
 
+    durableAssistantParts() {
+      const result = [];
+      for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
+        if (this.roles[ordinal] !== 'a') continue;
+        const body = this.bodies.get(this.ids[ordinal]);
+        if (!body) continue;
+        for (const [partIndex, part] of (body.parts || []).entries()) {
+          if (part?.type !== 'text' || !String(part.text || '')) continue;
+          result.push({
+            key: `${ordinal}:${partIndex}`,
+            ordinal,
+            partIndex,
+            sequence: this.seqs[ordinal],
+            content: String(part.text || '')
+          });
+        }
+      }
+      return result;
+    }
+
     reconcileOptimistic() {
       if (this.optimistic.length === 0) return [];
       const kept = [];
       const removed = [];
-      const consumed = new Set();
+      const consumedRows = new Set();
+      const consumedAssistantParts = new Set();
+      const durableAssistantParts = this.durableAssistantParts();
       const durableToolIDs = this.durableToolIDs();
       const claimedOptimisticToolIDs = new Set();
       for (const local of this.optimistic) {
@@ -591,26 +703,33 @@
           }
         }
 
+        const afterSeq = finiteInt(local.durableSeqAtSend, -1);
+        if (local.role === 'assistant' && assistantProjectionCanCover(local, this)) {
+          const durablePart = durableAssistantParts.find((candidate) => (
+            candidate.sequence > afterSeq && !consumedAssistantParts.has(candidate.key)
+          ));
+          if (durablePart) {
+            consumedAssistantParts.add(durablePart.key);
+            const suffix = assistantSuffixAfterDurable(durablePart.content, assistantSourceContent(local));
+            if (suffix) {
+              kept.push(local);
+            } else {
+              removed.push(local);
+            }
+            continue;
+          }
+        }
+
         if (this.rev <= finiteInt(local.revAtSend, this.rev)) {
           kept.push(local);
           continue;
         }
-        const afterSeq = finiteInt(local.durableSeqAtSend, -1);
         let matched = false;
         if (local.role === 'user') {
           for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
-            if (this.seqs[ordinal] <= afterSeq || consumed.has(ordinal)) continue;
+            if (this.seqs[ordinal] <= afterSeq || consumedRows.has(ordinal)) continue;
             if (this.roles[ordinal] === 'u' && this.bodies.has(this.ids[ordinal])) {
-              consumed.add(ordinal);
-              matched = true;
-              break;
-            }
-          }
-        } else if (local.role === 'assistant') {
-          for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
-            if (this.seqs[ordinal] <= afterSeq || consumed.has(ordinal)) continue;
-            if (this.roles[ordinal] === 'a' && this.bodies.has(this.ids[ordinal])) {
-              consumed.add(ordinal);
+              consumedRows.add(ordinal);
               matched = true;
               break;
             }
@@ -631,6 +750,20 @@
     clearTransientOptimistic() {
       const removed = this.optimistic.filter((entry) => entry?.transient);
       this.optimistic = this.optimistic.filter((entry) => !entry?.transient);
+      return removed;
+    }
+
+    removeOptimistic(entryOrKey) {
+      const key = String(
+        entryOrKey && typeof entryOrKey === 'object'
+          ? (entryOrKey.clientKey || entryOrKey.id || '')
+          : (entryOrKey || '')
+      );
+      if (!key) return [];
+      const removed = this.optimistic.filter((entry) => String(entry?.clientKey || entry?.id || '') === key);
+      if (removed.length > 0) {
+        this.optimistic = this.optimistic.filter((entry) => String(entry?.clientKey || entry?.id || '') !== key);
+      }
       return removed;
     }
 
@@ -806,7 +939,7 @@
     TRANSCRIPT_FLAG_COMPACTION_TAIL,
     TRANSCRIPT_FLAG_EMPTY_BODY,
     transcriptStoreFromMessages,
-    reconcileToolCallProjection,
+    reconcileTranscriptProjection,
     transcriptRoleCode: roleCode,
     transcriptRoleName: roleName,
     __transcriptStats
