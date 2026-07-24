@@ -100,6 +100,7 @@ type Session struct {
 	OutputTokens      int           `json:"output_tokens,omitempty"`       // Total output tokens used
 	LastTotalTokens   int           `json:"last_total_tokens,omitempty"`   // Last observed request context size (input+cached+output)
 	LastMessageCount  int           `json:"last_message_count,omitempty"`  // Legacy checkpoint count; estimator uses structural delta
+	MessageCount      int           `json:"message_count,omitempty"`       // User/assistant conversation messages visible as chat bubbles
 	Status            SessionStatus `json:"status,omitempty"`              // Session status
 	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
 	Goal              *Goal         `json:"goal,omitempty"`                // Persistent objective state for /goal

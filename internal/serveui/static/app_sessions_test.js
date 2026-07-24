@@ -970,6 +970,7 @@ async function testIdleStartupSchedulesNormalPollWithoutImmediateRequest() {
 async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests() {
   const name = 'startup transcript sideload renders bounded first paint with zero transcript requests';
   const ids = Array.from({ length: 20 }, (_, index) => index + 1);
+  const authoritativeMessageCount = 4;
   const messages = ids.slice(-9).map((id) => ({
     id,
     sequence: id - 1,
@@ -1009,7 +1010,7 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
           sessions: [],
           selected_session: {
             id: 'sess_3347', number: 3347, short_title: 'Sideloaded', long_title: 'Sideloaded',
-            mode: 'chat', origin: 'web', created_at: 1000, message_count: ids.length, transcript_rev: 20,
+            mode: 'chat', origin: 'web', created_at: 1000, message_count: authoritativeMessageCount, transcript_rev: 20,
           },
           selected_transcript: startupTranscriptSideload({ rev: 20, ids, messages }),
           widget_status: { widgets: [] },
@@ -1075,6 +1076,10 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
   if (session.transcript.rev !== 20 || session.transcript.bodies.size !== 9
       || session.transcript.segments.filter((segment) => segment.state === 'materialized').length !== 9) {
     fail(name, 'sideload did not preserve the initial viewport budget', JSON.stringify({ rev: session.transcript.rev, bodies: session.transcript.bodies.size, segments: session.transcript.segments }));
+    return;
+  }
+  if (session.messageCount !== authoritativeMessageCount || session.transcript.ids.length !== ids.length) {
+    fail(name, 'sideload row application changed the authoritative server message count', JSON.stringify({ messageCount: session.messageCount, transcriptRows: session.transcript.ids.length }));
     return;
   }
   const statusRequests = fetchCalls.filter((url) => parsedTestURL(url)?.pathname === '/ui/v1/sessions/status');
