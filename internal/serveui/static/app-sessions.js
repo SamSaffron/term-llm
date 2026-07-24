@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, isSessionIdentityResolved, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -50,6 +50,12 @@ let sidebarStatusPollInFlightGeneration = -1;
 let sidebarStatusPollIsRecovery = false;
 let sidebarStatusImmediatePending = false;
 
+const applyWidgetStatus = (data) => {
+  state.widgets = Array.isArray(data?.widgets) ? data.widgets : [];
+  state.widgetsLoaded = true;
+  app.renderWidgetSidebar?.();
+};
+
 const refreshWidgetsSidebar = async () => {
   if (!app.renderWidgetSidebar) return;
   try {
@@ -63,10 +69,7 @@ const refreshWidgetsSidebar = async () => {
       return;
     }
     if (!resp.ok) return;
-    const data = await resp.json();
-    state.widgets = Array.isArray(data.widgets) ? data.widgets : [];
-    state.widgetsLoaded = true;
-    app.renderWidgetSidebar?.();
+    applyWidgetStatus(await resp.json());
   } catch (_) {
     // Widgets are optional; leave the section hidden if the admin route is unavailable.
   }
@@ -91,7 +94,7 @@ const stopSidebarStatusPoll = () => {
 
 const scheduleSidebarStatusPoll = (delay) => {
   clearSidebarStatusTimer();
-  if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return;
+  if (!state.connected || !sidebarStatusPollEnabled || document.visibilityState === 'hidden') return;
   sidebarStatusTimer = setTimeout(() => {
     sidebarStatusTimer = null;
     return pollSidebarStatus(false);
@@ -108,7 +111,7 @@ const sidebarStatusPollDelay = () => {
 };
 
 const pollSidebarStatus = (isRecovery = false) => {
-  if (!sidebarStatusPollEnabled || document.visibilityState === 'hidden') return Promise.resolve(false);
+  if (!state.connected || !sidebarStatusPollEnabled || document.visibilityState === 'hidden') return Promise.resolve(false);
   if (sidebarStatusPollPromise) return sidebarStatusPollPromise;
 
   clearSidebarStatusTimer();
@@ -119,7 +122,8 @@ const pollSidebarStatus = (isRecovery = false) => {
   sidebarStatusPollIsRecovery = isRecovery;
 
   const isCurrent = () => (
-    sidebarStatusPollEnabled
+    state.connected
+    && sidebarStatusPollEnabled
     && document.visibilityState !== 'hidden'
     && sidebarStatusPollGeneration === generation
     && sidebarStatusPollController === controller
@@ -193,6 +197,7 @@ const ensureSidebarStatusPoll = () => {
     stopSidebarStatusPoll();
     return Promise.resolve(false);
   }
+  if (!state.connected) return Promise.resolve(false);
 
   sidebarStatusPollEnabled = true;
   clearSidebarStatusTimer();
@@ -212,7 +217,7 @@ const ensureSidebarStatusPoll = () => {
 const startSidebarStatusPoll = () => ensureSidebarStatusPoll();
 
 const refreshSidebarStatusPoll = (forceNow = false) => {
-  if (document.visibilityState === 'hidden') return Promise.resolve(false);
+  if (!state.connected || document.visibilityState === 'hidden') return Promise.resolve(false);
   if (forceNow) return ensureSidebarStatusPoll();
 
   sidebarStatusPollEnabled = true;
@@ -221,6 +226,7 @@ const refreshSidebarStatusPoll = (forceNow = false) => {
 };
 
 const handleFetchTransportFallback = () => {
+  if (!state.connected) return Promise.resolve(false);
   if (document.visibilityState !== 'hidden' && sidebarStatusPollPromise && !sidebarStatusPollIsRecovery) {
     sidebarStatusPollEnabled = true;
     clearSidebarStatusTimer();
@@ -401,6 +407,45 @@ const syncSelectedRuntimeFromSession = (session) => {
   return true;
 };
 
+const selectedTranscriptReady = (session) => {
+  if (!session || session._serverOnly) return false;
+  const transcript = session.transcript;
+  if (transcript) {
+    return transcriptSyncSegmentIndexes(transcript).every((index) => (
+      ['materialized', 'empty'].includes(transcript.segments[index]?.state)
+    ));
+  }
+  if (Array.isArray(session.messages) && session.messages.length > 0) return true;
+  return Math.max(0, Number(session.messageCount) || 0) === 0;
+};
+
+const continueSessionSwitchHydration = (session, switchGeneration, options = {}) => {
+  if (!session) return;
+  const sessionId = String(session.id || '').trim();
+  const isCurrent = () => state.sessionSwitchGeneration === switchGeneration
+    && String(state.activeSessionId || '').trim() === sessionId
+    && !state.draftSessionActive;
+
+  if (options.sync !== false) {
+    const statePromise = syncActiveSessionFromServer(session, true, {
+      // Conversation readiness is owned by the selected sideload or its single
+      // fallback. State still fetches a transcript when it reports a newer rev.
+      skipMessagesFetch: true,
+      expectedSwitchGeneration: switchGeneration
+    });
+    void Promise.resolve(statePromise).then(() => {
+      if (isCurrent() && syncSelectedRuntimeFromSession(session)) app.updateHeader();
+    }).catch(() => {});
+  }
+
+  if (isSessionIdentityResolved(session)) {
+    void Promise.resolve().then(() => {
+      if (!isCurrent()) return null;
+      return app.refreshSkillCommands?.(sessionId);
+    }).catch(() => {});
+  }
+};
+
 const switchToSession = async (sessionId, options = {}) => {
   const nextId = String(sessionId || '').trim();
   if (!nextId) return null;
@@ -460,42 +505,38 @@ const switchToSession = async (sessionId, options = {}) => {
   updateURL(sessionSlug(session));
   refreshPendingInterjectionBanner();
 
-  let preloadServerMessagesPromise = null;
-  if (session._serverOnly) {
-    preloadServerMessagesPromise = loadServerSessionMessages(session.id);
-  }
+  const needsSelectedPayload = isSessionIdentityResolved(session) && !selectedTranscriptReady(session);
+  const selectedPayloadPromise = needsSelectedPayload
+    ? mergeServerSessions({
+      selectedSession: session.id,
+      selectedOnly: true,
+      includeTranscript: true,
+      expectedSwitchGeneration: switchGeneration
+    })
+    : null;
 
   persistAndRefreshShell();
   renderMessages(true);
   restoreDraftMessageForSession(session.id, { replace: true });
   app.activateDiffSidebar?.(session.id);
 
-  let didPreloadServerMessages = false;
-  if (preloadServerMessagesPromise) {
-    const msgs = await preloadServerMessagesPromise;
+  let conversationReady = selectedTranscriptReady(session);
+  if (selectedPayloadPromise) {
+    const selectedResult = await selectedPayloadPromise;
     if (!isCurrentSwitch()) return null;
-    if (Array.isArray(msgs)) {
-      persistAndRefreshShell();
-      if (isCurrentSwitch()) {
-        renderMessages(true);
-      }
-      didPreloadServerMessages = true;
-    }
+    conversationReady = selectedResult?.selectedTranscriptApplied === true || selectedTranscriptReady(session);
   }
 
-  if (options.sync !== false) {
-    await syncActiveSessionFromServer(session, true, {
-      skipMessagesFetch: didPreloadServerMessages,
-      expectedSwitchGeneration: switchGeneration
-    });
+  // Missing, malformed, or legacy selected payloads use the established
+  // transcript path once. syncTranscript owns its single final render.
+  if (!conversationReady && isSessionIdentityResolved(session)) {
+    await loadServerSessionMessages(session.id);
     if (!isCurrentSwitch()) return null;
   }
+
   if (!isCurrentSwitch()) return null;
-  await app.refreshSkillCommands?.(session.id);
-  if (!isCurrentSwitch()) return null;
-  if (syncSelectedRuntimeFromSession(session)) {
-    app.updateHeader();
-  }
+  if (syncSelectedRuntimeFromSession(session)) app.updateHeader();
+  continueSessionSwitchHydration(session, switchGeneration, options);
   if (options.focusPrompt) {
     elements.promptInput.focus();
   }
@@ -1387,17 +1428,26 @@ const syncTranscriptOnce = async (session, options = {}) => {
 };
 
 const mergeTranscriptSyncRequest = (session, options = {}) => {
-  const pending = session._transcriptSyncPending || { force: false, forceScroll: false, targetRev: 0, reason: '' };
-  pending.force = pending.force || options.force === true;
+  const pending = session._transcriptSyncPending || {
+    force: false,
+    forceWithoutTarget: false,
+    forceScroll: false,
+    targetRev: 0,
+    reason: ''
+  };
+  const targetRev = Math.max(0, Number(options.targetRev) || 0);
+  const force = options.force === true;
+  pending.force = pending.force || force;
+  pending.forceWithoutTarget = pending.forceWithoutTarget || (force && targetRev === 0);
   pending.forceScroll = pending.forceScroll || options.forceScroll === true;
-  pending.targetRev = Math.max(Number(pending.targetRev) || 0, Number(options.targetRev) || 0);
+  pending.targetRev = Math.max(Number(pending.targetRev) || 0, targetRev);
   if (options.reason) pending.reason = String(options.reason);
   session._transcriptSyncPending = pending;
   return pending;
 };
 
 const syncTranscript = async (session, options = {}) => {
-  if (!session || !ensureSessionTranscript(session)) return false;
+  if (!session || !isSessionIdentityResolved(session) || !ensureSessionTranscript(session)) return false;
   mergeTranscriptSyncRequest(session, options);
   if (session._transcriptSyncPromise) return session._transcriptSyncPromise;
 
@@ -1415,16 +1465,18 @@ const syncTranscript = async (session, options = {}) => {
         mergeTranscriptSyncRequest(session, { reason: 'target-revision', force: true, targetRev });
       }
       const pending = session._transcriptSyncPending;
+      const pendingTargetRev = Math.max(0, Number(pending?.targetRev) || 0);
+      const pendingForceNeedsFetch = Boolean(pending?.force)
+        && (Boolean(pending?.forceWithoutTarget) || pendingTargetRev === 0);
       if (pending
-          && !pending.force
+          && !pendingForceNeedsFetch
           && !pending.forceScroll
-          && Number(pending.targetRev) > 0
           && transcript
-          && transcript.rev >= Number(pending.targetRev)) {
-        // A status poll can discover a revision while an activation request is
-        // already in flight. If that response reached the queued target, the
-        // queued request carries no new work and must not manufacture a 304
-        // index round-trip plus another client reconciliation.
+          && transcript.rev >= pendingTargetRev) {
+        // A completed response absorbs queued ordinary requests and forced
+        // requests whose positive target revision is now satisfied. Preserve
+        // untargeted force (for example stale body recovery) and forceScroll:
+        // neither semantic can be proven complete from transcript.rev alone.
         delete session._transcriptSyncPending;
       }
       if (!session._transcriptSyncPending) return true;
@@ -1640,7 +1692,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 };
 
 const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false, expectedSwitchGeneration = null } = {}) => {
-  if (!session) return SESSION_STATE_RETRY_RESULT;
+  if (!session || !isSessionIdentityResolved(session)) return SESSION_STATE_RETRY_RESULT;
 
   const requestSessionId = String(session.id || '').trim();
   if (!requestSessionId) return SESSION_STATE_RETRY_RESULT;
@@ -1666,7 +1718,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   if (loadResult.kind !== 'ok') return SESSION_STATE_RETRY_RESULT;
   const runtimeState = loadResult.state;
   const belongsToSelectedSession = requestSessionId === String(state.activeSessionId || '').trim() && !state.draftSessionActive;
-  if (belongsToSelectedSession && !selectedResponseApplies()) return loadResult;
+  if ((hasExpectedGeneration || belongsToSelectedSession) && !selectedResponseApplies()) return loadResult;
   if (selectedResponseApplies()) {
     state.lastAppliedSessionStateRequestGeneration = requestGeneration;
     app.applyCurrentPlanState?.(requestSessionId, runtimeState);
@@ -1904,7 +1956,100 @@ const applyServerSessionSummary = (target, serverSession) => {
   if (Object.prototype.hasOwnProperty.call(serverSession, 'goal')) {
     target.goal = serverSession.goal && typeof serverSession.goal === 'object' ? { ...serverSession.goal } : null;
   }
+  if (Object.prototype.hasOwnProperty.call(serverSession, 'file_change_summary')) {
+    target.fileChangeSummary = serverSession.file_change_summary && typeof serverSession.file_change_summary === 'object'
+      ? { ...serverSession.file_change_summary }
+      : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(serverSession, 'plan_summary')) {
+    target.planSummary = serverSession.plan_summary && typeof serverSession.plan_summary === 'object'
+      ? { ...serverSession.plan_summary }
+      : null;
+  }
   return target;
+};
+
+const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
+  if (!session || !sideload || typeof sideload !== 'object' || typeof window.TranscriptStore !== 'function') return false;
+  const index = sideload.index;
+  const bodies = sideload.bodies;
+  const etag = String(sideload.index_etag || '').trim();
+  const rev = Number(index?.rev);
+  if (!index?.rows || !Number.isFinite(rev) || rev < 0 || !etag
+      || !bodies || Number(bodies.rev) !== rev || !Array.isArray(bodies.messages)) return false;
+
+  const current = ensureSessionTranscript(session);
+  if (!current || current.rev > rev) return false;
+
+  // Validate the complete transaction in a detached store before mutating the
+  // selected canonical session. This catches malformed parallel arrays,
+  // out-of-window bodies, and incomplete turns without exposing a partial
+  // projection or disturbing optimistic entries.
+  const staging = new window.TranscriptStore(`startup-sideload:${session.id}`, current.budgets);
+  try {
+    staging.applyIndex(index, etag);
+    if (staging.ids.length > 0) {
+      const last = staging.ids.length - 1;
+      staging.setViewport(last, last, { deferBudget: true });
+    }
+    for (const optimistic of current.optimistic || []) {
+      staging.addOptimistic({ ...optimistic }, optimistic.revAtSend, {
+        persisted: current.persistedOptimistic?.has?.(optimistic) === true
+      });
+    }
+    if (current.activeRun) staging.setActiveRun(current.activeRun.id, current.activeRun.startedRev);
+
+    const wantedIndexes = transcriptSyncSegmentIndexes(staging);
+    const allowedBodyIDs = new Set();
+    for (const segmentIndex of wantedIndexes) {
+      const segment = staging.segments[segmentIndex];
+      if (!segment) continue;
+      for (let ordinal = segment.startOrdinal; ordinal <= segment.endOrdinal; ordinal += 1) {
+        allowedBodyIDs.add(staging.ids[ordinal]);
+      }
+    }
+    const normalizedBodyID = (entry) => {
+      const value = entry?.id ?? entry?.ID;
+      return Number.isFinite(Number(value)) ? Number(value) : value;
+    };
+    if (bodies.messages.some((entry) => !allowedBodyIDs.has(normalizedBodyID(entry)))) return false;
+    staging.materialize(bodies.messages, { countFetch: false, deferBudget: true });
+    if (!wantedIndexes.every((segmentIndex) => ['materialized', 'empty'].includes(staging.segments[segmentIndex]?.state))) {
+      return false;
+    }
+    staging.enforceBudget();
+    staging._checkInvariants?.();
+  } catch (_) {
+    return false;
+  } finally {
+    staging.destroy();
+  }
+
+  try {
+    current.applyIndex(index, etag);
+    if (current.ids.length > 0) {
+      const last = current.ids.length - 1;
+      current.setViewport(last, last, { deferBudget: true });
+    }
+    current.materialize(bodies.messages, { countFetch: false, deferBudget: true });
+    if (index.active_response_id) current.setActiveRun(index.active_response_id, index.started_rev);
+    current.reconcileOptimistic();
+    persistTranscriptOptimistic(session);
+    current.enforceBudget();
+    current._checkInvariants?.();
+    refreshSessionMessagesFromTranscript(session);
+    touchTranscriptSkeleton(session);
+    if (options.startup === true) session._startupTranscriptSideloaded = true;
+    if (session.id === state.activeSessionId && !state.draftSessionActive) {
+      renderMessages(true);
+      if (options.startup === true) session._startupTranscriptRendered = true;
+    }
+    return true;
+  } catch (_) {
+    // The detached validation above makes this path defensive only. Leave the
+    // marker unset so activation falls back to the normal transcript endpoints.
+    return false;
+  }
 };
 
 const reconcileServerSessionIdentity = (session, serverSession) => {
@@ -1937,6 +2082,11 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
 };
 
 const mergeServerSessions = async (options = {}) => {
+  const result = {
+    selectedSession: null,
+    selectedTranscriptApplied: false,
+    selectedResponseCurrent: false
+  };
   try {
     const categories = Array.isArray(options.categories) ? options.categories : state.sidebarSessionCategories;
     const includeArchived = typeof options.includeArchived === 'boolean'
@@ -1949,13 +2099,29 @@ const mergeServerSessions = async (options = {}) => {
     if (includeArchived) {
       params.set('include_archived', '1');
     }
+    const selectedSession = String(options.selectedSession || '').trim();
+    if (selectedSession) {
+      params.set('selected_session', selectedSession);
+    }
+    if (options.selectedOnly === true) {
+      params.set('selected_only', '1');
+    }
+    if (options.includeTranscript === true) {
+      params.set('include_transcript', '1');
+    }
+    if (options.includeWidgetStatus === true) {
+      params.set('include_widget_status', '1');
+    }
     const query = params.toString();
     const resp = await fetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
       headers: requestHeaders('')
     });
-    if (!resp.ok) return;
+    if (!resp.ok) return result;
     const data = await resp.json();
-    if (!Array.isArray(data.sessions)) return;
+    if (!Array.isArray(data.sessions)) return result;
+    if (options.includeWidgetStatus === true) {
+      applyWidgetStatus(data.widget_status);
+    }
 
     const localById = new Map(state.sessions.map(s => [s.id, s]));
     const localByNumber = new Map(
@@ -1964,7 +2130,8 @@ const mergeServerSessions = async (options = {}) => {
         .map(s => [Number(s.number), s])
     );
 
-    for (const serverSession of data.sessions) {
+    const mergeServerSession = (serverSession) => {
+      if (!serverSession || typeof serverSession !== 'object') return null;
       const sNum = Number(serverSession.number || 0);
       let local = localById.get(serverSession.id) ||
         (sNum > 0 ? localByNumber.get(sNum) : null) ||
@@ -1972,7 +2139,9 @@ const mergeServerSessions = async (options = {}) => {
       if (local) {
         reconcileServerSessionIdentity(local, serverSession);
         applyServerSessionSummary(local, serverSession);
-        continue;
+        localById.set(local.id, local);
+        if (Number(local.number) > 0) localByNumber.set(Number(local.number), local);
+        return local;
       }
 
       local = applyServerSessionSummary({
@@ -1995,11 +2164,40 @@ const mergeServerSessions = async (options = {}) => {
         _serverOnly: true
       }, serverSession);
       state.sessions.push(local);
+      localById.set(local.id, local);
+      if (Number(local.number) > 0) localByNumber.set(Number(local.number), local);
+      return local;
+    };
+
+    for (const serverSession of data.sessions) mergeServerSession(serverSession);
+
+    const selected = mergeServerSession(data.selected_session);
+    result.selectedSession = selected;
+    const expectedSwitchGeneration = Number(options.expectedSwitchGeneration);
+    const hasExpectedSwitchGeneration = Number.isFinite(expectedSwitchGeneration) && expectedSwitchGeneration > 0;
+    result.selectedResponseCurrent = Boolean(selected)
+      && selected.id === state.activeSessionId
+      && !state.draftSessionActive
+      && (!hasExpectedSwitchGeneration || state.sessionSwitchGeneration === expectedSwitchGeneration);
+    if (result.selectedResponseCurrent && options.includeTranscript === true) {
+      result.selectedTranscriptApplied = applySelectedTranscriptSideload(selected, data.selected_transcript, {
+        startup: options.startupTranscript === true
+      });
+    }
+    if (result.selectedResponseCurrent && selected.id === state.activeSessionId && !state.draftSessionActive) {
+      if (selected.fileChangeSummary) {
+        app.applySessionDiffSummary?.(selected.id, selected.fileChangeSummary);
+      }
+      if (Object.prototype.hasOwnProperty.call(selected, 'planSummary')) {
+        app.applyCurrentPlanSummary?.(selected.id, selected.planSummary);
+      }
     }
 
     persistAndRefreshShell();
+    return result;
   } catch {
     // Gracefully fall back to in-memory-only
+    return result;
   }
 };
 
@@ -2277,34 +2475,83 @@ const setSessionPinned = async (session, pinned) => {
 };
 
 // ===== Initialization =====
+const configuredStartupHydrationTimeout = Number(window.TERM_LLM_STARTUP_HYDRATION_TIMEOUT_MS);
+const STARTUP_HYDRATION_TIMEOUT_MS = Number.isFinite(configuredStartupHydrationTimeout)
+  && configuredStartupHydrationTimeout >= 0
+  ? configuredStartupHydrationTimeout
+  : 10000;
+let startupSplashReleased = false;
+
+const releaseStartupSplash = () => {
+  if (startupSplashReleased) return;
+  startupSplashReleased = true;
+  hideStartupSplash();
+};
+
+const refreshSkillCommandsAfterStartup = (sessionId) => {
+  Promise.resolve()
+    .then(() => app.refreshSkillCommands?.(sessionId))
+    .catch(() => {});
+};
+
 const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
-  if (!active) return;
+  if (!active || !isSessionIdentityResolved(active)) return false;
 
-  // Start state sync immediately so the server round-trip overlaps with the
-  // messages fetch instead of serialising after it. For server-only sessions,
-  // the explicit message preload below owns the message fetch to avoid a double
-  // request.
-  const statePromise = syncActiveSessionFromServer(active, true, { skipMessagesFetch: Boolean(active._serverOnly) });
+  const hasTranscriptSideload = active._startupTranscriptSideloaded === true;
+  const hasRenderedTranscriptSideload = active._startupTranscriptRendered === true;
+  // Start state sync immediately so the server round-trip overlaps with a
+  // fallback transcript fetch. Runtime metadata and active-response recovery
+  // continue independently after the selected transcript is ready to reveal.
+  const statePromise = syncActiveSessionFromServer(active, true, {
+    skipMessagesFetch: Boolean(active._serverOnly) || hasTranscriptSideload
+  });
+  void (async () => {
+    try {
+      await statePromise;
+      if (syncSelectedRuntimeFromSession(active)) {
+        app.updateHeader();
+      }
+    } catch (_) {
+      // Runtime state is best-effort during startup and must not create an
+      // unhandled rejection after transcript readiness releases the splash.
+    } finally {
+      delete active._startupTranscriptSideloaded;
+      delete active._startupTranscriptRendered;
+      refreshSkillCommandsAfterStartup(active.id);
+    }
+  })();
 
-  const preloadMessagesPromise = active._serverOnly
+  if (hasRenderedTranscriptSideload) return true;
+
+  const preloadMessagesPromise = active._serverOnly && !hasTranscriptSideload
     ? loadServerSessionMessages(active.id)
     : null;
+  if (!preloadMessagesPromise) return false;
 
-  if (preloadMessagesPromise) {
-    const msgs = await preloadMessagesPromise;
-    if (Array.isArray(msgs)) {
-      saveSessions();
-      renderSidebar();
-      renderMessages(true);
-    }
-  }
+  const msgs = await preloadMessagesPromise;
+  if (!Array.isArray(msgs)) return false;
+  saveSessions();
+  renderSidebar();
+  // This force-scroll render is the fallback transcript's final startup
+  // projection and bottom-position boundary.
+  renderMessages(true);
+  return true;
+};
 
-  await statePromise;
-  await app.refreshSkillCommands?.(active.id);
-  if (syncSelectedRuntimeFromSession(active)) {
-    app.updateHeader();
-  }
+const waitForStartupHydration = async () => {
+  const active = getActiveSession();
+  if (!active || !isSessionIdentityResolved(active)) return false;
+
+  setStartupStatus('Loading conversation…');
+  const hydration = hydrateActiveSessionAfterStartup().catch(() => false);
+  let timeoutID = null;
+  const timeout = new Promise((resolve) => {
+    timeoutID = window.setTimeout(() => resolve(false), STARTUP_HYDRATION_TIMEOUT_MS);
+  });
+  const rendered = await Promise.race([hydration, timeout]);
+  if (timeoutID !== null) window.clearTimeout(timeoutID);
+  return rendered === true;
 };
 
 const initialize = async () => {
@@ -2354,7 +2601,6 @@ const initialize = async () => {
   ensureActiveSession();
 
   renderSidebar();
-  app.renderWidgetSidebar?.();
   renderMessages(true);
   renderProviderOptions();
   renderModelOptions();
@@ -2367,7 +2613,21 @@ const initialize = async () => {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
 
-    const sessionsPromise = mergeServerSessions();
+    const sessionsPromise = mergeServerSessions({
+      selectedSession: urlSlug,
+      includeTranscript: Boolean(urlSlug),
+      startupTranscript: true,
+      includeWidgetStatus: true
+    });
+    // Session selection owns conversation readiness. Begin transcript fallback
+    // and runtime state as soon as the authoritative merge lands, without
+    // waiting for providers or models. Only an actual selected transcript
+    // render releases the splash here; draft/unresolved/error paths retain the
+    // existing final or bounded fallback.
+    const startupHydrationPromise = sessionsPromise.then(() => waitForStartupHydration());
+    void startupHydrationPromise.then((rendered) => {
+      if (rendered) releaseStartupSplash();
+    }).catch(() => {});
 
     // Start a speculative models fetch immediately using the provider stored in
     // localStorage. For returning users this runs in parallel with fetchProviders,
@@ -2398,8 +2658,10 @@ const initialize = async () => {
     renderModelOptions();
     app.updateHeader?.();
     setConnectionState('', '');
-    startSidebarStatusPoll();
-    void refreshWidgetsSidebar();
+    // The primary sessions response is authoritative for startup. Arm the
+    // ordinary cadence instead of immediately reconciling the same status and
+    // triggering duplicate selected-session state work during first paint.
+    refreshSidebarStatusPoll();
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
       renderMessages(true);
@@ -2415,8 +2677,7 @@ const initialize = async () => {
       subscribeToPush();
     }
 
-    hideStartupSplash();
-    await hydrateActiveSessionAfterStartup().catch(() => {});
+    await startupHydrationPromise;
   } catch (err) {
     const message = err?.message || 'Unable to validate token.';
     setStartupStatus(message);
@@ -2425,7 +2686,7 @@ const initialize = async () => {
       handleAuthFailure();
     }
   } finally {
-    hideStartupSplash();
+    releaseStartupSplash();
   }
 };
 
@@ -3187,6 +3448,7 @@ document.addEventListener('visibilitychange', async () => {
     stopSidebarStatusPoll();
     return;
   }
+  if (!state.connected) return;
   // Reconcile the authoritative transcript before looking for an active
   // response. Another tab may have completed several turns and started a new
   // one while this page was hidden; attaching first would only replay the new
@@ -3263,7 +3525,7 @@ window.addEventListener('offline', () => {
 });
 
 window.addEventListener('pageshow', (event) => {
-  void ensureSidebarStatusPoll();
+  if (state.connected) void ensureSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;
   if (session.activeResponseId && app.wakeResponseReconnect?.({
@@ -3339,7 +3601,9 @@ Object.assign(app, {
   invalidateSessionStateForSelection,
   syncSelectedRuntimeFromSession,
   applyServerSessionSummary,
+  applySelectedTranscriptSideload,
   mergeServerSessions,
+  refreshWidgetsSidebar,
   startSidebarStatusPoll,
   stopSidebarStatusPoll,
   refreshSidebarStatusPoll,

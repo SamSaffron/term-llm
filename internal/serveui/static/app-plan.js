@@ -80,6 +80,35 @@ const normalizeCurrentPlan = (value) => {
   return { version, steps, ...(explanation ? { explanation } : {}) };
 };
 
+const normalizeCurrentPlanSummary = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const version = Number(value.version);
+  const total = Number(value.step_count);
+  const completed = Number(value.completed_steps);
+  const position = Number(value.position);
+  const status = String(value.state || '');
+  if (!Number.isSafeInteger(version) || version <= 0
+      || !Number.isSafeInteger(total) || total <= 0
+      || !Number.isSafeInteger(completed) || completed < 0 || completed > total
+      || !Number.isSafeInteger(position) || position <= 0 || position > total
+      || !PLAN_STATUSES.has(status)) return null;
+  const complete = status === 'completed';
+  if (complete && (completed !== total || position !== total)) return null;
+  return { version, total, completed, position, complete, state: status };
+};
+
+const planSummaryFromPlan = (plan) => {
+  const summary = planSummary(plan);
+  return {
+    version: Number(plan?.version) || 0,
+    total: summary.total,
+    completed: summary.completed,
+    position: summary.position,
+    complete: summary.complete,
+    state: summary.complete ? 'completed' : ((plan?.steps || []).some((step) => step.status === 'in_progress') ? 'in_progress' : 'pending'),
+  };
+};
+
 const markerForStatus = (status) => {
   if (status === 'completed') return '✓';
   if (status === 'in_progress') return '●';
@@ -137,7 +166,7 @@ const renderPlanSurface = (progressElement, explanationElement, checklistElement
 };
 
 const currentPlanIsVisible = () => Boolean(
-  state.currentPlan
+  (state.currentPlan || state.currentPlanSummary)
   && state.currentPlanSessionId
   && state.currentPlanSessionId === state.activeSessionId
   && !state.draftSessionActive
@@ -195,11 +224,13 @@ const showPlanSurfaceForViewport = ({ transferFocus = false } = {}) => {
 const renderCurrentPlan = () => {
   const visible = currentPlanIsVisible();
   const plan = visible ? state.currentPlan : null;
+  const summary = visible
+    ? (plan ? planSummaryFromPlan(plan) : state.currentPlanSummary)
+    : null;
   if (elements.planToggleBtn) {
-    setHidden(elements.planToggleBtn, !plan);
-    elements.planToggleBtn.setAttribute('aria-expanded', state.currentPlanOpen && visible ? 'true' : 'false');
-    if (plan) {
-      const summary = planSummary(plan);
+    setHidden(elements.planToggleBtn, !summary);
+    elements.planToggleBtn.setAttribute('aria-expanded', state.currentPlanOpen && Boolean(plan) && visible ? 'true' : 'false');
+    if (summary) {
       if (elements.planToggleWord) {
         elements.planToggleWord.textContent = summary.complete ? 'Done' : 'Plan';
       }
@@ -214,7 +245,7 @@ const renderCurrentPlan = () => {
       elements.planToggleBtn.title = status;
     }
   }
-  if (elements.planUnseenDot) setHidden(elements.planUnseenDot, !plan || !state.currentPlanUnseen);
+  if (elements.planUnseenDot) setHidden(elements.planUnseenDot, !summary || !state.currentPlanUnseen);
 
   renderPlanSurface(elements.planPanelProgress, elements.planPanelExplanation, elements.planPanelChecklist, plan);
   renderPlanSurface(elements.planSheetProgress, elements.planSheetExplanation, elements.planSheetChecklist, plan);
@@ -250,12 +281,43 @@ const restoreFocusAfterForcedPlanClose = ({ preferReturnTarget = false } = {}) =
 const resetCurrentPlanForSession = (sessionId = '') => {
   restoreFocusAfterForcedPlanClose();
   state.currentPlan = null;
+  state.currentPlanSummary = null;
   state.currentPlanSessionId = String(sessionId || '').trim();
   state.currentPlanInitialized = false;
   state.currentPlanUnseen = false;
   state.currentPlanOpen = false;
   planReturnFocus = null;
   renderCurrentPlan();
+};
+
+const applyCurrentPlanSummary = (sessionId, value) => {
+  const owner = String(sessionId || '').trim();
+  if (!owner || owner !== String(state.activeSessionId || '').trim() || state.draftSessionActive) return false;
+  if (value === null) {
+    restoreFocusAfterForcedPlanClose({ preferReturnTarget: true });
+    state.currentPlan = null;
+    state.currentPlanSummary = null;
+    state.currentPlanSessionId = owner;
+    state.currentPlanInitialized = true;
+    state.currentPlanUnseen = false;
+    state.currentPlanOpen = false;
+    planReturnFocus = null;
+    renderCurrentPlan();
+    return true;
+  }
+  const incoming = normalizeCurrentPlanSummary(value);
+  if (!incoming) return false;
+  const currentVersion = Math.max(
+    Number(state.currentPlan?.version || 0),
+    Number(state.currentPlanSummary?.version || 0),
+  );
+  if (state.currentPlanSessionId === owner && currentVersion > incoming.version) return false;
+  state.currentPlanSummary = incoming;
+  state.currentPlanSessionId = owner;
+  state.currentPlanInitialized = true;
+  state.currentPlanUnseen = false;
+  renderCurrentPlan();
+  return true;
 };
 
 const applyCurrentPlanState = (sessionId, response) => {
@@ -265,9 +327,13 @@ const applyCurrentPlanState = (sessionId, response) => {
 
   const wasInitialized = state.currentPlanInitialized && state.currentPlanSessionId === owner;
   const previousPlan = state.currentPlanSessionId === owner ? state.currentPlan : null;
+  const previousVersion = state.currentPlanSessionId === owner
+    ? Math.max(Number(previousPlan?.version || 0), Number(state.currentPlanSummary?.version || 0))
+    : 0;
   if (response.current_plan === null) {
     restoreFocusAfterForcedPlanClose({ preferReturnTarget: true });
     state.currentPlan = null;
+    state.currentPlanSummary = null;
     state.currentPlanSessionId = owner;
     state.currentPlanInitialized = true;
     state.currentPlanUnseen = false;
@@ -283,11 +349,12 @@ const applyCurrentPlanState = (sessionId, response) => {
   if (previousPlan && incoming.version <= Number(previousPlan.version || 0)) return false;
 
   state.currentPlan = incoming;
+  state.currentPlanSummary = planSummaryFromPlan(incoming);
   state.currentPlanSessionId = owner;
   state.currentPlanInitialized = true;
-  state.currentPlanUnseen = Boolean(wasInitialized && !state.currentPlanOpen);
+  state.currentPlanUnseen = Boolean(wasInitialized && incoming.version > previousVersion && !state.currentPlanOpen);
   renderCurrentPlan();
-  if (wasInitialized) {
+  if (wasInitialized && incoming.version > previousVersion) {
     const summary = planSummary(incoming);
     announcePlanChange(`Plan updated, ${summary.completed} of ${summary.total} steps complete`);
   }
@@ -308,6 +375,15 @@ const focusPlanSheetAfterComposerBlur = () => {
 
 const openCurrentPlanSurface = (source = null) => {
   if (!currentPlanIsVisible()) return false;
+  if (!state.currentPlan) {
+    const owner = String(state.activeSessionId || '').trim();
+    Promise.resolve(app.refreshCurrentPlanFromServer?.()).then(() => {
+      if (owner === String(state.activeSessionId || '').trim() && state.currentPlan) {
+        openCurrentPlanSurface(source);
+      }
+    }).catch(() => {});
+    return true;
+  }
   app.closeDiffSidebar?.();
   planReturnFocus = source?.focus ? source : elements.planToggleBtn;
   state.currentPlanOpen = true;
@@ -412,9 +488,11 @@ Object.assign(app, {
   PLAN_MOBILE_QUERY,
   planSummary,
   normalizeCurrentPlan,
+  normalizeCurrentPlanSummary,
   renderPlanChecklist,
   renderCurrentPlan,
   resetCurrentPlanForSession,
+  applyCurrentPlanSummary,
   applyCurrentPlanState,
   openCurrentPlanSurface,
   closeCurrentPlanSurface,

@@ -36,6 +36,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/widgets"
 )
 
 type stagedStream struct {
@@ -513,6 +514,44 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("/images/ traversal status = %d, want 404", rr.Code)
+	}
+}
+
+func TestBuildIndexHTMLBootstrapsWorktreeCapabilityAndReusesGitRoot(t *testing.T) {
+	tests := []struct {
+		name       string
+		cwd        string
+		wantGlobal string
+		wantStatus int
+	}{
+		{name: "git cwd", cwd: newGitRepoForBindingTest(t), wantGlobal: `window.TERM_LLM_WORKTREES_ENABLED=true`, wantStatus: http.StatusOK},
+		{name: "non-git cwd", cwd: t.TempDir(), wantGlobal: `window.TERM_LLM_WORKTREES_ENABLED=false`, wantStatus: http.StatusConflict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rootCalls := 0
+			srv := &serveServer{
+				cfg: serveServerConfig{basePath: "/ui"},
+				worktreeRootFn: func() (string, error) {
+					rootCalls++
+					return tt.cwd, nil
+				},
+			}
+
+			body := string(srv.renderIndexHTML())
+			if !strings.Contains(body, tt.wantGlobal) {
+				t.Fatalf("index missing %q", tt.wantGlobal)
+			}
+
+			rec := httptest.NewRecorder()
+			srv.handleWorktrees(rec, httptest.NewRequest(http.MethodGet, "/v1/worktrees", nil))
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("worktree list status = %d body=%s, want %d", rec.Code, rec.Body.String(), tt.wantStatus)
+			}
+			if rootCalls != 1 {
+				t.Fatalf("worktree root detection called %d times, want once across bootstrap and request", rootCalls)
+			}
+		})
 	}
 }
 
@@ -5008,6 +5047,138 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	}
 	if body.Sessions[0].LastMessageAt != body.Sessions[0].CreatedAt {
 		t.Fatalf("last_message_at = %d, want %d (fallback to created_at when no messages)", body.Sessions[0].LastMessageAt, body.Sessions[0].CreatedAt)
+	}
+}
+
+func TestHandleSessions_SideloadsExactWidgetStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	widgetsDir := t.TempDir()
+	widgetDir := filepath.Join(widgetsDir, "private-widget-id")
+	if err := os.MkdirAll(widgetDir, 0o755); err != nil {
+		t.Fatalf("mkdir widget: %v", err)
+	}
+	manifest := `title: "Startup Metrics"
+mount: metrics
+command: ["widget-server", "--socket", "$SOCKET"]
+description: "Safe sidebar description"
+`
+	if err := os.WriteFile(filepath.Join(widgetDir, "widget.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatalf("write widget manifest: %v", err)
+	}
+	manager := widgets.NewManager(widgetsDir, "/ui")
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfg:        serveServerConfig{basePath: "/ui", ui: true},
+		store:      store,
+		widgetsMgr: manager,
+	}
+
+	sideloadReq := httptest.NewRequest(http.MethodGet, "/v1/sessions?include_widget_status=1", nil)
+	sideloadRec := httptest.NewRecorder()
+	srv.handleSessions(sideloadRec, sideloadReq)
+	if sideloadRec.Code != http.StatusOK {
+		t.Fatalf("sideload status = %d, want 200; body=%s", sideloadRec.Code, sideloadRec.Body.String())
+	}
+	var sideload map[string]any
+	if err := json.Unmarshal(sideloadRec.Body.Bytes(), &sideload); err != nil {
+		t.Fatalf("decode sideload: %v", err)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/admin/widgets/status", nil)
+	statusRec := httptest.NewRecorder()
+	srv.handleAdminWidgetsStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("widget status = %d, want 200; body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var statusPayload map[string]any
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("decode widget status: %v", err)
+	}
+
+	if !reflect.DeepEqual(sideload["widget_status"], statusPayload) {
+		t.Fatalf("sideloaded widget_status = %#v, want exact endpoint shape %#v", sideload["widget_status"], statusPayload)
+	}
+	widgetStatus, ok := sideload["widget_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("widget_status type = %T, want object", sideload["widget_status"])
+	}
+	entries, ok := widgetStatus["widgets"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("widget_status.widgets = %#v, want one entry", widgetStatus["widgets"])
+	}
+	entry, ok := entries[0].(map[string]any)
+	if !ok || entry["id"] != "private-widget-id" || entry["mount"] != "metrics" || entry["title"] != "Startup Metrics" || entry["description"] != "Safe sidebar description" || entry["state"] != "stopped" {
+		t.Fatalf("serialized widget entry = %#v", entries[0])
+	}
+	if strings.Contains(sideloadRec.Body.String(), widgetsDir) || strings.Contains(sideloadRec.Body.String(), "widget-server") || strings.Contains(sideloadRec.Body.String(), "$SOCKET") {
+		t.Fatalf("sideload exposed filesystem or command configuration: %s", sideloadRec.Body.String())
+	}
+
+	index := string(srv.buildIndexHTML())
+	for _, sensitive := range []string{"private-widget-id", "Startup Metrics", "Safe sidebar description", widgetsDir} {
+		if strings.Contains(index, sensitive) {
+			t.Fatalf("public bootstrap HTML exposed widget status/config value %q", sensitive)
+		}
+	}
+
+	// The sideload remains behind the same auth wrapper as the sessions API;
+	// the public shell must not become an alternate widget-discovery surface.
+	srv.cfg.requireAuth = true
+	srv.cfg.token = "startup-secret"
+	handler := srv.httpHandler()
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/ui/v1/sessions?include_widget_status=1", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated sideload status = %d, want 401", unauthorized.Code)
+	}
+	if strings.Contains(unauthorized.Body.String(), "Startup Metrics") {
+		t.Fatalf("unauthenticated sideload leaked widget status: %s", unauthorized.Body.String())
+	}
+	authorizedReq := httptest.NewRequest(http.MethodGet, "/ui/v1/sessions?include_widget_status=1", nil)
+	authorizedReq.Header.Set("Authorization", "Bearer startup-secret")
+	authorized := httptest.NewRecorder()
+	handler.ServeHTTP(authorized, authorizedReq)
+	if authorized.Code != http.StatusOK || !strings.Contains(authorized.Body.String(), "Startup Metrics") {
+		t.Fatalf("authenticated sideload status = %d, body=%s", authorized.Code, authorized.Body.String())
+	}
+}
+
+func TestHandleSessions_SideloadsAuthoritativeEmptyWidgetStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?include_widget_status=1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSessions(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		WidgetStatus struct {
+			Widgets []json.RawMessage `json:"widgets"`
+		} `json:"widget_status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.WidgetStatus.Widgets == nil {
+		t.Fatalf("widget_status.widgets = nil, want authoritative [] in %s", rec.Body.String())
+	}
+	if len(payload.WidgetStatus.Widgets) != 0 {
+		t.Fatalf("widget_status.widgets = %d entries, want 0", len(payload.WidgetStatus.Widgets))
 	}
 }
 

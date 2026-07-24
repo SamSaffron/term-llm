@@ -147,6 +147,7 @@ const state = {
   sessionStateRequestGeneration: 0,
   lastAppliedSessionStateRequestGeneration: 0,
   currentPlan: null,
+  currentPlanSummary: null,
   currentPlanSessionId: '',
   currentPlanInitialized: false,
   currentPlanUnseen: false,
@@ -1534,9 +1535,11 @@ const updateSessionUsageDisplay = (session) => {
 const SCROLL_STICKY_THRESHOLD = 96;
 const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
 const SCROLL_TO_BOTTOM_MIN_INTERVAL_MS = 500;
+const FORCED_BOTTOM_SETTLE_MAX_MS = 1500;
 let lastScrollToBottomAt = -SCROLL_TO_BOTTOM_MIN_INTERVAL_MS;
 let pendingScrollToBottomTimer = 0;
 let pendingScrollToBottomForce = false;
+let forcedBottomSettle = null;
 
 const isNearBottom = () => {
   const el = elements.chatScroll;
@@ -1547,6 +1550,7 @@ const isNearBottom = () => {
 const noteUserScrollIntent = () => {
   state.autoScroll = false;
   clearPendingScrollToBottom();
+  cancelForcedBottomSettle();
 };
 
 const noteScrollPositionChanged = () => {
@@ -1577,6 +1581,59 @@ const clearPendingScrollToBottom = () => {
   pendingScrollToBottomForce = false;
 };
 
+const cancelForcedBottomSettle = () => {
+  const settle = forcedBottomSettle;
+  if (!settle) return;
+  forcedBottomSettle = null;
+  if (settle.rafId) window.cancelAnimationFrame(settle.rafId);
+  if (settle.timerId) window.clearTimeout(settle.timerId);
+  settle.observer?.disconnect();
+};
+
+const requestForcedBottomSettle = () => {
+  const settle = forcedBottomSettle;
+  if (!settle || settle.rafId) return;
+  if (Date.now() >= settle.expiresAt) {
+    cancelForcedBottomSettle();
+    return;
+  }
+
+  settle.rafId = window.requestAnimationFrame(() => {
+    if (forcedBottomSettle !== settle) return;
+    settle.rafId = 0;
+    if (Date.now() >= settle.expiresAt || !elements.chatScroll) {
+      cancelForcedBottomSettle();
+      return;
+    }
+    state.autoScroll = true;
+    elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
+  });
+};
+
+// Forced startup/session renders can gain height after their DOM commit as
+// markdown, media, fonts, and the mobile visual viewport settle. Keep the
+// bottom anchored briefly, but never leave an observer running indefinitely.
+const startForcedBottomSettle = () => {
+  cancelForcedBottomSettle();
+  const settle = {
+    expiresAt: Date.now() + FORCED_BOTTOM_SETTLE_MAX_MS,
+    observer: null,
+    rafId: 0,
+    timerId: 0,
+  };
+  forcedBottomSettle = settle;
+
+  if (typeof ResizeObserver === 'function') {
+    settle.observer = new ResizeObserver(requestForcedBottomSettle);
+    if (elements.messages) settle.observer.observe(elements.messages);
+    settle.observer.observe(elements.chatScroll);
+  }
+  settle.timerId = window.setTimeout(() => {
+    if (forcedBottomSettle === settle) cancelForcedBottomSettle();
+  }, FORCED_BOTTOM_SETTLE_MAX_MS);
+  requestForcedBottomSettle();
+};
+
 const performScrollToBottom = (force = false) => {
   if (force) {
     state.autoScroll = true;
@@ -1592,6 +1649,7 @@ const scrollToBottom = (force = false) => {
   if (force) {
     clearPendingScrollToBottom();
     performScrollToBottom(true);
+    startForcedBottomSettle();
     return;
   }
   if (!state.autoScroll) {
@@ -1773,10 +1831,14 @@ const syncViewportShell = (() => {
 syncViewportShell();
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', syncViewportShell);
+  window.visualViewport.addEventListener('resize', requestForcedBottomSettle);
   window.visualViewport.addEventListener('scroll', syncViewportShell);
+  window.visualViewport.addEventListener('scroll', requestForcedBottomSettle);
 }
 window.addEventListener('resize', syncViewportShell);
+window.addEventListener('resize', requestForcedBottomSettle);
 window.addEventListener('orientationchange', syncViewportShell);
+window.addEventListener('orientationchange', requestForcedBottomSettle);
 window.addEventListener('pageshow', syncViewportShell);
 document.addEventListener('focusin', syncViewportShell);
 document.addEventListener('focusout', () => {
@@ -1961,6 +2023,15 @@ const sessionIdFromURL = () => {
   const escaped = UI_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = path.match(new RegExp('^' + escaped + '/(.+)$'));
   return match ? decodeURIComponent(match[1]) : '';
+};
+
+// Numeric deep links are human-facing session numbers. They are route lookup
+// keys, not durable session IDs, so no session-scoped endpoint may see one.
+const isSessionIdentityResolved = (sessionOrId) => {
+  const id = String(
+    sessionOrId && typeof sessionOrId === 'object' ? sessionOrId.id : sessionOrId
+  ).trim();
+  return Boolean(id) && !/^\d+$/.test(id);
 };
 
 const updateURL = (sessionId) => {
@@ -2529,6 +2600,7 @@ Object.assign(app, {
   requestNotificationPermission,
   maybeNotifyResponseComplete,
   sessionIdFromURL,
+  isSessionIdentityResolved,
   sessionSlug,
   findSessionBySlug,
   updateURL,

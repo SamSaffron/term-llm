@@ -6,7 +6,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   const { UI_PREFIX, state, elements } = worktreeApp;
   if (!UI_PREFIX || !state || !elements) return;
 
-  let available = false;
+  const worktreesEnabled = window.TERM_LLM_WORKTREES_ENABLED === true;
   let loading = false;
   let menu = null;
 
@@ -33,7 +33,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   };
 
   const renderWorktreeChip = () => {
-    if (!available) {
+    if (!worktreesEnabled) {
       setChipVisible(false);
       return;
     }
@@ -52,23 +52,15 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   };
 
   const loadWorktrees = async () => {
+    if (!worktreesEnabled) return [];
     try {
       const res = await fetch(`${UI_PREFIX}/v1/worktrees`, { headers: authHeaders() });
-      if (res.status === 409) {
-        available = false;
-        state.worktrees = [];
-        renderWorktreeChip();
-        return [];
-      }
       if (!res.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
       const data = await res.json();
-      available = true;
       state.worktrees = Array.isArray(data.worktrees) ? data.worktrees : [];
       renderWorktreeChip();
       return state.worktrees;
     } catch (_err) {
-      available = false;
-      renderWorktreeChip();
       return [];
     }
   };
@@ -184,6 +176,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   };
 
   const openMenu = async () => {
+    if (!worktreesEnabled) return;
     const session = activeSession();
     const isDraft = state.draftSessionActive;
     const activeDir = !isDraft ? (session?.worktreeDir || '') : '';
@@ -242,7 +235,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     elements.chipWorktreeTrigger.setAttribute('aria-expanded', 'true');
   };
 
-  if (elements.chipWorktreeTrigger) {
+  if (worktreesEnabled && elements.chipWorktreeTrigger) {
     elements.chipWorktreeTrigger.addEventListener('click', (event) => {
       event.preventDefault();
       if (menu) closeMenu(); else void openMenu();
@@ -276,6 +269,6 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     renderWorktreeChip
   });
 
-  void loadWorktrees();
-  setInterval(renderWorktreeChip, 1000);
+  renderWorktreeChip();
+  if (worktreesEnabled) setInterval(renderWorktreeChip, 1000);
 })();

@@ -60,6 +60,8 @@ const sessionDiffState = (sessionId) => {
       lastActivityAt: 0,
       pendingScrollPath: '',
       listLoaded: false,
+      summaryKnown: false,
+      summary: { fileCount: 0, adds: 0, dels: 0 },
       hidden: true               // panel starts closed; only an explicit user toggle reveals it
     };
     diffStateBySession.set(sessionId, ds);
@@ -67,7 +69,39 @@ const sessionDiffState = (sessionId) => {
   return ds;
 };
 
+const normalizeSessionDiffSummary = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const fileCount = Number(value.file_count);
+  const adds = Number(value.adds);
+  const dels = Number(value.dels);
+  if (!Number.isSafeInteger(fileCount) || fileCount < 0
+      || !Number.isSafeInteger(adds) || adds < 0
+      || !Number.isSafeInteger(dels) || dels < 0) return null;
+  return { fileCount, adds, dels };
+};
+
+const applySessionDiffSummary = (sessionId, value) => {
+  const owner = String(sessionId || '').trim();
+  const summary = normalizeSessionDiffSummary(value);
+  if (!owner || !summary) return false;
+  const ds = sessionDiffState(owner);
+  ds.summaryKnown = true;
+  ds.summary = summary;
+  if (summary.fileCount === 0) {
+    ds.files.clear();
+    ds.listLoaded = true;
+    reconcileDiffPathState(ds);
+  } else if (ds.files.size === 0) {
+    ds.listLoaded = false;
+  }
+  if (owner === state.activeSessionId) renderDiffSidebar(owner);
+  return true;
+};
+
 const authHeaders = () => (state.token ? { Authorization: `Bearer ${state.token}` } : {});
+const isResolvedSessionIdentity = typeof app.isSessionIdentityResolved === 'function'
+  ? app.isSessionIdentityResolved
+  : (sessionId) => Boolean(String(sessionId || '').trim()) && !/^\d+$/.test(String(sessionId).trim());
 
 const isDiffDrawerViewport = () => {
   try {
@@ -316,6 +350,7 @@ const reconcileDiffPathState = (ds) => {
 };
 
 const fetchSessionFileChanges = async (sessionId) => {
+  if (!isResolvedSessionIdentity(sessionId)) return false;
   const ds = sessionDiffState(sessionId);
   // Snapshot per-path seqs so live rows whose change events land while this
   // fetch is in flight survive the authoritative replace below.
@@ -353,6 +388,12 @@ const fetchSessionFileChanges = async (sessionId) => {
     });
     ds.files = next;
     ds.listLoaded = true;
+    ds.summaryKnown = true;
+    ds.summary = { fileCount: next.size, adds: 0, dels: 0 };
+    next.forEach((entry) => {
+      ds.summary.adds += entry.adds;
+      ds.summary.dels += entry.dels;
+    });
     reconcileDiffPathState(ds);
     // Cached diffs predating the authoritative seq are stale even though no
     // live event bumped them (the tab may have missed events while detached).
@@ -361,8 +402,10 @@ const fetchSessionFileChanges = async (sessionId) => {
       if (cached && (entry.lastSeq || 0) > (cached.seq || 0)) ds.dirtyPaths.add(path);
     });
     if (sessionId === state.activeSessionId) renderDiffSidebar(sessionId);
+    return true;
   } catch {
     // Network failures leave existing state untouched.
+    return false;
   }
 };
 
@@ -446,8 +489,19 @@ const fileDirName = (path) => {
 
 const kindBadgeLabel = { create: 'A', modify: 'M', delete: 'D' };
 
+const diffTotals = (ds) => {
+  if (!ds) return { fileCount: 0, adds: 0, dels: 0 };
+  if (!ds.listLoaded && ds.summaryKnown) return ds.summary;
+  const totals = { fileCount: ds.files.size, adds: 0, dels: 0 };
+  ds.files.forEach((entry) => {
+    totals.adds += entry.adds;
+    totals.dels += entry.dels;
+  });
+  return totals;
+};
+
 const applyDiffSidebarVisibility = (ds) => {
-  const hasChanges = ds && ds.files.size > 0;
+  const hasChanges = diffTotals(ds).fileCount > 0;
   const drawer = isDiffDrawerViewport();
   const visible = hasChanges && !ds.hidden && !drawer;
   const drawerOpen = Boolean(hasChanges && drawer && elements.diffSidebar?.classList.contains('open'));
@@ -557,13 +611,22 @@ const requestDiffHighlight = () => {
   });
 };
 
+const DIFF_FILE_ICON_SVG = '<svg class="diff-toggle-file-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 1.75h4.25L12.5 5.5v8.75h-8z"/><path d="M8.75 1.75V5.5h3.75"/><path d="M6.25 8.5h4"/><path d="M6.25 11h3"/></svg>';
+
 const renderDiffTotals = (ds) => {
-  let adds = 0;
-  let dels = 0;
-  ds.files.forEach((entry) => {
-    adds += entry.adds;
-    dels += entry.dels;
-  });
+  const { fileCount, adds, dels } = diffTotals(ds);
+  if (fileCount === 0) {
+    if (elements.diffSidebarTotals) elements.diffSidebarTotals.textContent = '';
+    if (elements.diffToggleBadge) {
+      elements.diffToggleBadge.replaceChildren();
+    }
+    if (elements.diffToggleBtn) {
+      elements.diffToggleBtn.title = '';
+      elements.diffToggleBtn.setAttribute?.('aria-label', 'Toggle file changes');
+    }
+    return;
+  }
+
   const summary = [];
   if (adds > 0) summary.push(`+${adds}`);
   if (dels > 0) summary.push(`−${dels}`);
@@ -572,24 +635,15 @@ const renderDiffTotals = (ds) => {
   if (elements.diffToggleBadge) {
     const badge = elements.diffToggleBadge;
     const parts = [];
-    const fileCount = ds.files.size || 0;
     const fileCountEl = createEl('span', 'diff-toggle-file-count');
-    fileCountEl.innerHTML = '<svg class="diff-toggle-file-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 1.75h4.25L12.5 5.5v8.75h-8z"/><path d="M8.75 1.75V5.5h3.75"/><path d="M6.25 8.5h4"/><path d="M6.25 11h3"/></svg>';
+    fileCountEl.innerHTML = DIFF_FILE_ICON_SVG;
     fileCountEl.dataset.fileCount = String(fileCount);
     parts.push(fileCountEl);
     if (adds > 0) parts.push(createEl('span', 'diff-toggle-stat-add', `+${adds}`));
     if (dels > 0) parts.push(createEl('span', 'diff-toggle-stat-del', `−${dels}`));
-    if (parts.length === 1 && fileCount === 0) parts.push(createEl('span', 'diff-toggle-stat-neutral', '0'));
     badge.replaceChildren(...parts);
-    // Pulse on change so new activity is discoverable while the panel is
-    // closed, without stealing attention when nothing moved.
-    if (badge._lastSummary !== undefined && badge._lastSummary !== summaryText && summaryText) {
-      applyTransientClass(badge, 'pulse');
-    }
-    badge._lastSummary = summaryText;
   }
   if (elements.diffToggleBtn) {
-    const fileCount = ds.files.size || 0;
     const fileLabel = `${fileCount} changed ${fileCount === 1 ? 'file' : 'files'}`;
     elements.diffToggleBtn.title = summary.length > 0 ? `${fileLabel} (${summary.join(' ')})` : fileLabel;
     elements.diffToggleBtn.setAttribute?.('aria-label', `Toggle file changes: ${elements.diffToggleBtn.title}`);
@@ -950,8 +1004,8 @@ const renderDiffSidebar = (sessionId) => {
   const ds = sessionDiffState(sessionId);
   applyDiffSidebarVisibility(ds);
   updateDiffBulkToggle(ds);
-  if (ds.files.size === 0) return;
   renderDiffTotals(ds);
+  if (ds.files.size === 0) return;
   // Skip the accordion (and its lazy diff fetches) while hidden; it renders
   // on reveal.
   if (elements.diffSidebar?.hidden) return;
@@ -1031,6 +1085,7 @@ const setDiffSidebarHidden = (hidden) => {
   if (!sessionId) return;
   const ds = sessionDiffState(sessionId);
   ds.hidden = Boolean(hidden);
+  if (!ds.hidden && !ds.listLoaded && (ds.summaryKnown || ds.files.size === 0)) void fetchSessionFileChanges(sessionId);
   renderDiffSidebar(sessionId);
   if (!ds.hidden) scheduleDiffRefresh(sessionId);
 };
@@ -1045,6 +1100,7 @@ const toggleDiffSidebar = () => {
     if (open) {
       app.closeCurrentPlanSurface?.({ restoreFocus: false });
       ds.hidden = false;
+      if (!ds.listLoaded && (ds.summaryKnown || ds.files.size === 0)) void fetchSessionFileChanges(sessionId);
       setPanelOpen({
         panel: elements.diffSidebar,
         open: true,
@@ -1113,10 +1169,13 @@ const activateDiffSidebar = (sessionId) => {
     return;
   }
   const ds = sessionDiffState(sessionId);
+  if (!ds.summaryKnown) {
+    const session = state.sessions?.find?.((item) => String(item?.id || '').trim() === String(sessionId));
+    if (session?.fileChangeSummary) applySessionDiffSummary(sessionId, session.fileChangeSummary);
+  }
   if (elements.diffFilterInput) elements.diffFilterInput.value = ds.filter || '';
   renderDiffSidebar(sessionId);
   applyDiffSidebarVisibility(ds);
-  if (!ds.listLoaded) void fetchSessionFileChanges(sessionId);
 };
 
 // After a run completes/fails, true-up against the server (events may have
@@ -1340,6 +1399,8 @@ Object.assign(app, {
   computeInlineEmphasis,
   sortDiffPaths,
   buildUnifiedDiff,
+  normalizeSessionDiffSummary,
+  applySessionDiffSummary,
   handleFileChangeEvent,
   activateDiffSidebar,
   refreshFileChangesAfterRun,

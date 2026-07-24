@@ -1889,6 +1889,62 @@ async function run(name, fn) {
     assertEqual(messages.children[2].dataset.messageId, 'm3', 'new node has correct id');
   });
 
+  await run('mounted reconnect reconciliation restores an earlier user before later tool rows', () => {
+    const { app, session, messages } = createHarness();
+    const user = {
+      id: 'msg_keep_going',
+      role: 'user',
+      content: 'keep going',
+      interruptState: 'interject',
+      created: 1000,
+    };
+    const queueAgent = {
+      id: 'tools_queue_agent',
+      role: 'tool-group',
+      status: 'done',
+      tools: [{ id: 'call_queue_agent', name: 'queue_agent', status: 'done', arguments: '{}' }],
+      created: 2000,
+    };
+    const waitForJobs = {
+      id: 'tools_wait_for_jobs',
+      role: 'tool-group',
+      status: 'running',
+      tools: [{ id: 'call_wait_for_jobs', name: 'wait_for_jobs', status: 'running', arguments: '{}' }],
+      created: 3000,
+    };
+    session.messages = [user, queueAgent, waitForJobs];
+
+    // Reproduce the live reconnect window: recovery has mounted later stream
+    // cards, while the earlier optimistic/interjected user row is temporarily
+    // absent. Replaying response.interjection updates that existing message.
+    messages.appendChild(app.createToolGroupNode(queueAgent));
+    messages.appendChild(app.createToolGroupNode(waitForJobs));
+    app.updateMountedUserNode(session, user);
+
+    assertEqual(
+      messages.children.map((node) => node.dataset.messageId).join(','),
+      'msg_keep_going,tools_queue_agent,tools_wait_for_jobs',
+      'live DOM follows session message order without requiring a reload'
+    );
+  });
+
+  await run('forced transcript render starts bottom anchoring after DOM commit', () => {
+    const scrollCalls = [];
+    let harness = null;
+    harness = createHarness({
+      scrollToBottom(force) {
+        scrollCalls.push({ force, renderedCount: harness.messages.children.length });
+      },
+    });
+    harness.session.messages = [{ id: 'startup-user', role: 'user', content: 'hello', created: 1000 }];
+
+    harness.app.renderMessages(true);
+
+    assertEqual(scrollCalls.length, 1, 'render issues one bottom-anchor request');
+    assertEqual(scrollCalls[0].force, true, 'startup render requests forced anchoring');
+    assertEqual(scrollCalls[0].renderedCount, 1, 'forced anchoring starts after transcript DOM commit');
+  });
+
   await run('renderMessages exposes gated mounted-count and duration diagnostics', () => {
     const { app, session, messages, windowObj } = createHarness();
     windowObj.__TERM_LLM_DIAGNOSTICS__ = true;

@@ -46,7 +46,7 @@ const names = [
 const elements = Object.fromEntries(names.map((name) => [name, new Element(name.includes('Input') ? 'input' : 'div')]));
 const document = new Element('document');
 document.createElement = (tag) => new Element(tag);
-let session = null;
+let session = { id: 'main' };
 let fetches = [];
 let failNextPost = false;
 let deferNextGet = false;
@@ -103,6 +103,14 @@ vm.runInNewContext(source, context, { filename: 'side-question.js' });
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 (async () => {
+  assert(fetches.length === 0, 'unopened side-question issued an eager startup recovery request');
+  session = { id: '3347' };
+  const unresolvedStart = fetches.length;
+  const unresolved = await app.recoverSideQuestion(session.id);
+  assert(unresolved === false, 'numeric route stub recovery should report that identity is unresolved');
+  assert(fetches.length === unresolvedStart, 'numeric route stub reached the side-question endpoint');
+  session = { id: 'main' };
+
   assert(!indexHTML.includes('sideQuestionCopyBtn'), 'side overlay retained redundant copy control');
   assert(!indexHTML.includes('sideQuestionClearBtn'), 'side overlay retained clear control');
   assert(!indexHTML.includes('sideQuestionCancelBtn'), 'side overlay retained cancel control');

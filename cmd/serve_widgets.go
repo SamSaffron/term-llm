@@ -127,24 +127,31 @@ func (s *serveServer) handleAdminWidgetsReload(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+type widgetStatusResponse struct {
+	Widgets    []widgets.WidgetStatus `json:"widgets"`
+	LoadErrors []string               `json:"load_errors,omitempty"`
+}
+
+func (s *serveServer) currentWidgetStatus() widgetStatusResponse {
+	resp := widgetStatusResponse{Widgets: make([]widgets.WidgetStatus, 0)}
+	if s.widgetsMgr == nil {
+		return resp
+	}
+	resp.Widgets = s.widgetsMgr.Status()
+	for _, err := range s.widgetsMgr.LoadErrors() {
+		resp.LoadErrors = append(resp.LoadErrors, err.Error())
+	}
+	return resp
+}
+
 // handleAdminWidgetsStatus handles GET /admin/widgets/status.
 func (s *serveServer) handleAdminWidgetsStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	type statusResponse struct {
-		Widgets    []widgets.WidgetStatus `json:"widgets"`
-		LoadErrors []string               `json:"load_errors,omitempty"`
-	}
-	resp := statusResponse{
-		Widgets: s.widgetsMgr.Status(),
-	}
-	for _, e := range s.widgetsMgr.LoadErrors() {
-		resp.LoadErrors = append(resp.LoadErrors, e.Error())
-	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(s.currentWidgetStatus())
 }
 
 // handleAdminWidgetStop handles POST /admin/widgets/<mount>/stop.

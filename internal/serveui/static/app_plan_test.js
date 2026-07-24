@@ -196,6 +196,30 @@ function snapshot(version, statuses = ['completed', 'in_progress', 'pending']) {
   };
 }
 
+function testPlanSummaryRendersInitialAffordance() {
+  const name = 'selected session plan summary renders the final affordance before plan body state';
+  const h = createHarness();
+
+  if (!h.app.applyCurrentPlanSummary('session-a', {
+    version: 7,
+    step_count: 4,
+    completed_steps: 2,
+    position: 3,
+    state: 'in_progress',
+  })) return fail(name, 'valid plan summary was not accepted');
+  if (h.elements.planToggleBtn.hidden
+    || h.elements.planToggleWord.textContent !== 'Plan'
+    || h.elements.planToggleProgress.textContent !== '3/4'
+    || !h.elements.planToggleBtn.getAttribute('aria-label').includes('Step 3 of 4')) {
+    return fail(name, 'initial plan affordance was not complete and accurate');
+  }
+  if (h.elements.planPanelChecklist.children.length !== 0) return fail(name, 'summary metadata invented full plan steps');
+
+  h.app.applyCurrentPlanSummary('session-a', null);
+  if (!h.elements.planToggleBtn.hidden) return fail(name, 'authoritative no-plan summary left the affordance visible');
+  pass(name);
+}
+
 function testPlanStateAndRendering() {
   const name = 'authoritative plan versions render shared progress and explicit clears';
   const h = createHarness();
@@ -334,6 +358,7 @@ function testInvalidSnapshotsAreRejected() {
 }
 
 [
+  testPlanSummaryRendersInitialAffordance,
   testPlanStateAndRendering,
   testSessionIsolationAndReset,
   testMobileInteractionsAndBreakpointTransfer,

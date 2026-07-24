@@ -15,6 +15,49 @@ type webCurrentPlan struct {
 	Explanation string         `json:"explanation,omitempty"`
 }
 
+type webPlanSummary struct {
+	Version        int64  `json:"version"`
+	StepCount      int    `json:"step_count"`
+	CompletedSteps int    `json:"completed_steps"`
+	Position       int    `json:"position"`
+	State          string `json:"state"`
+}
+
+func summarizeWebPlan(snapshot planpkg.Snapshot, version int64) *webPlanSummary {
+	if version <= 0 || snapshot.NormalizeAndValidate() != nil || len(snapshot.Plan) == 0 {
+		return nil
+	}
+	summary := &webPlanSummary{
+		Version:   version,
+		StepCount: len(snapshot.Plan),
+		Position:  1,
+		State:     string(planpkg.StatusPending),
+	}
+	firstPending := 0
+	for index, step := range snapshot.Plan {
+		switch step.Status {
+		case planpkg.StatusCompleted:
+			summary.CompletedSteps++
+		case planpkg.StatusInProgress:
+			summary.Position = index + 1
+			summary.State = string(planpkg.StatusInProgress)
+		case planpkg.StatusPending:
+			if firstPending == 0 {
+				firstPending = index + 1
+			}
+		}
+	}
+	if summary.State != string(planpkg.StatusInProgress) {
+		if firstPending > 0 {
+			summary.Position = firstPending
+		} else {
+			summary.Position = summary.StepCount
+			summary.State = string(planpkg.StatusCompleted)
+		}
+	}
+	return summary
+}
+
 func planSnapshotStoreForWeb(store session.Store) (session.PlanSnapshotStore, bool) {
 	if store == nil {
 		return nil, false

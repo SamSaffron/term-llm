@@ -167,6 +167,25 @@ func cssRuleBlocks(cssSrc, selector string) []string {
 	}
 }
 
+func TestRenderIndexHTMLPlacesServerBootstrapBeforeApplicationScripts(t *testing.T) {
+	const capability = `<script>window.TERM_LLM_WORKTREES_ENABLED=false;</script>`
+	rendered := string(RenderIndexHTML("/chat", capability, RenderOptions{}))
+	capabilityAt := strings.Index(rendered, capability)
+	appAt := strings.Index(rendered, `src="app-core.js?v=`)
+	if capabilityAt < 0 {
+		t.Fatal("rendered index missing server capability bootstrap")
+	}
+	if appAt < 0 {
+		t.Fatal("rendered index missing app-core script")
+	}
+	if capabilityAt > appAt {
+		t.Fatal("server capability bootstrap must precede application scripts")
+	}
+	if !strings.Contains(rendered, `id="chipWorktree" hidden`) {
+		t.Fatal("embedded worktree control must start hidden until the explicit capability is applied")
+	}
+}
+
 func TestStaticAssetsEmbedProductionFilesOnly(t *testing.T) {
 	embedded := make(map[string]bool)
 	var testFixtures []string

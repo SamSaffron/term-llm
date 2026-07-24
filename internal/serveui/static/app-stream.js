@@ -7,7 +7,7 @@ const {
   getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
+  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
   updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
   conversationDOMFor, isConversationMounted,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
@@ -683,6 +683,9 @@ const appendStreamMessageNode = (session, message, createNode = createMessageNod
   if (!root) return null;
   const node = createNode(message);
   if (node?.dataset) node.dataset.sessionId = String(session?.id || '');
+  if (typeof insertMountedMessageNode === 'function') {
+    return insertMountedMessageNode(session, message, node);
+  }
   root.appendChild(node);
   return node;
 };

@@ -67,7 +67,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, windowOverrides = {}, contextOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -136,6 +136,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], document
     history: { pushState() {} },
     MediaRecorder: undefined,
     focus() {},
+    ...windowOverrides,
   };
 
   const DateShim = class extends Date {
@@ -160,6 +161,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], document
     Date: DateShim,
     TextEncoder,
     TextDecoder,
+    ...contextOverrides,
   };
   context.globalThis = context;
 
@@ -1145,6 +1147,166 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
   }
   if (testApp.state.autoScroll !== true) {
     fail(name, 'forced scroll should restore autoScroll');
+    return;
+  }
+  pass(name);
+})();
+
+(function testForcedScrollSettlesAfterPostRenderLayoutGrowth() {
+  const name = 'forced scroll stays bottom-anchored while post-render layout settles';
+  const frames = [];
+  const timers = [];
+  let resizeCallback = null;
+  let observerDisconnected = false;
+  const observed = [];
+  const viewportListeners = { resize: [], scroll: [] };
+  const visualViewport = {
+    height: 844,
+    offsetTop: 0,
+    addEventListener(type, listener) { viewportListeners[type].push(listener); },
+  };
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const messages = makeNode();
+
+  class FakeResizeObserver {
+    constructor(callback) { resizeCallback = callback; }
+    observe(node) { observed.push(node); }
+    disconnect() { observerDisconnected = true; }
+  }
+
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { chatScroll, messages },
+    windowOverrides: {
+      visualViewport,
+      requestAnimationFrame(callback) {
+        frames.push(callback);
+        return frames.length;
+      },
+    },
+    contextOverrides: { ResizeObserver: FakeResizeObserver },
+    timerOverrides: {
+      setTimeout(fn, delay) {
+        timers.push({ fn, delay, cleared: false });
+        return timers.length;
+      },
+      clearTimeout(id) {
+        if (timers[id - 1]) timers[id - 1].cleared = true;
+      },
+    },
+  });
+
+  // Ignore app-core's initial viewport synchronization frame.
+  frames.length = 0;
+  testApp.scrollToBottom(true);
+  if (chatScroll.scrollTop !== 1000) {
+    fail(name, `expected immediate forced scroll, got ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (typeof resizeCallback !== 'function' || !observed.includes(chatScroll) || !observed.includes(messages)) {
+    fail(name, 'forced scroll did not observe the transcript and scroll viewport while layout settles');
+    return;
+  }
+
+  // Finish the initial follow-up frame, then model a later markdown/image/font
+  // layout change that grows the transcript after renderMessages returned.
+  while (frames.length) frames.shift()();
+  chatScroll.scrollHeight = 1079;
+  resizeCallback();
+  while (frames.length) frames.shift()();
+
+  if (chatScroll.scrollTop !== 1079) {
+    fail(name, `post-render growth left viewport at ${chatScroll.scrollTop}`);
+    return;
+  }
+
+  // Mobile browser chrome changes the visual viewport and then the chat box.
+  // The settling anchor must run after that viewport synchronization as well.
+  chatScroll.scrollHeight = 1158;
+  viewportListeners.resize.forEach((listener) => listener());
+  while (frames.length) frames.shift()();
+  if (chatScroll.scrollTop !== 1158) {
+    fail(name, `visual viewport resize left viewport at ${chatScroll.scrollTop}`);
+    return;
+  }
+
+  const settleTimer = timers.find((timer) => timer.delay > 0);
+  if (!settleTimer || settleTimer.delay > 2000) {
+    fail(name, `settling anchor was not bounded, timers=${JSON.stringify(timers.map((timer) => timer.delay))}`);
+    return;
+  }
+  settleTimer.fn();
+  chatScroll.scrollHeight = 1200;
+  resizeCallback();
+  viewportListeners.resize.forEach((listener) => listener());
+  while (frames.length) frames.shift()();
+  if (!observerDisconnected || chatScroll.scrollTop !== 1158) {
+    fail(name, 'settling work continued after its bounded window');
+    return;
+  }
+  pass(name);
+})();
+
+(function testUserIntentCancelsForcedScrollSettling() {
+  const name = 'explicit user intent cancels forced-scroll settling corrections';
+  const frames = [];
+  const timers = [];
+  let resizeCallback = null;
+  let observerDisconnected = false;
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+
+  class FakeResizeObserver {
+    constructor(callback) { resizeCallback = callback; }
+    observe() {}
+    disconnect() { observerDisconnected = true; }
+  }
+
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { chatScroll, messages: makeNode() },
+    windowOverrides: {
+      requestAnimationFrame(callback) {
+        frames.push(callback);
+        return frames.length;
+      },
+      cancelAnimationFrame() {},
+    },
+    contextOverrides: { ResizeObserver: FakeResizeObserver },
+    timerOverrides: {
+      setTimeout(fn, delay) {
+        timers.push({ fn, delay, cleared: false });
+        return timers.length;
+      },
+      clearTimeout(id) {
+        if (timers[id - 1]) timers[id - 1].cleared = true;
+      },
+    },
+  });
+
+  frames.length = 0;
+  testApp.scrollToBottom(true);
+  while (frames.length) frames.shift()();
+  testApp.noteUserScrollIntent();
+  chatScroll.scrollHeight = 1120;
+  resizeCallback?.();
+  while (frames.length) frames.shift()();
+
+  if (chatScroll.scrollTop !== 1000) {
+    fail(name, `settling correction fought user intent and moved to ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (!observerDisconnected || !timers.some((timer) => timer.cleared)) {
+    fail(name, 'user intent did not tear down the bounded settling work');
+    return;
+  }
+  if (testApp.state.autoScroll !== false) {
+    fail(name, 'autoScroll should remain disabled after user intent');
     return;
   }
   pass(name);

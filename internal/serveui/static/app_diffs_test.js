@@ -571,23 +571,58 @@ async function run(name, fn) {
     assert(!elements.appShell.classList.contains('diff-open'), 'grid back to two columns');
   });
 
-  await run('toggle stays hidden for sessions without file changes', async () => {
-    const { app, elements, state, flushTimers } = createHarness();
-    assert(elements.diffToggleBtn.hidden, 'toggle hidden on load');
-
-    // Activating a session whose server list is empty must not reveal anything.
+  await run('known clean session has no Changes toggle and makes no request', async () => {
+    const { app, elements, fetchCalls, flushTimers } = createHarness();
+    app.applySessionDiffSummary('s1', { file_count: 0, adds: 0, dels: 0 });
     app.activateDiffSidebar('s1');
     await flushTimers();
-    assert(elements.diffToggleBtn.hidden, 'toggle hidden after empty list fetch');
-    assert(elements.diffSidebar.hidden, 'sidebar hidden after empty list fetch');
 
-    // Switching away from a session with changes to one without hides both.
-    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
-    assert(!elements.diffToggleBtn.hidden, 'toggle visible once a file changed');
-    state.activeSessionId = 'clean';
-    app.activateDiffSidebar('clean');
-    assert(elements.diffToggleBtn.hidden, 'toggle hidden again on changeless session');
-    assert(elements.diffSidebar.hidden, 'sidebar hidden again on changeless session');
+    assert(elements.diffToggleBtn.hidden, 'clean session has no changes affordance');
+    assert(elements.diffSidebar.hidden, 'clean session keeps sidebar hidden');
+    assertEqual(elements.diffToggleBadge.children.length, 0, 'clean session has no provisional badge');
+    assertEqual(fetchCalls.filter((url) => url.endsWith('/file-changes')).length, 0, 'clean startup does not fetch the full list');
+  });
+
+  await run('aggregate metadata renders the final Changes header before the list loads', async () => {
+    const { app, elements, fetchCalls, flushTimers } = createHarness();
+    app.applySessionDiffSummary('s1', { file_count: 2, adds: 4, dels: 2 });
+    app.activateDiffSidebar('s1');
+    await flushTimers();
+
+    assert(!elements.diffToggleBtn.hidden, 'changed session exposes Changes immediately');
+    const fileCount = elements.diffToggleBadge.querySelector('.diff-toggle-file-count');
+    assert(fileCount, 'changed toggle renders the file icon/count');
+    assertEqual(fileCount.dataset.fileCount, '2', 'aggregate metadata supplies the actual file count');
+    assertEqual(elementText(elements.diffToggleBadge), '+4−2', 'aggregate metadata supplies additions and deletions');
+    assertEqual(elements.diffToggleBtn.title, '2 changed files (+4 −2)', 'initial title is final and accurate');
+    assertEqual(elements.diffFileList.children.length, 0, 'full file rows remain lazy');
+    assertEqual(fetchCalls.filter((url) => url.endsWith('/file-changes')).length, 0, 'rendering the header does not fetch the list');
+  });
+
+  await run('opening a known changed session fetches the full list exactly once', async () => {
+    const { app, elements, fetchCalls, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/work/a.go', kind: 'modify', lang: 'go', truncated: false, hunks: [] }
+          : { file_changes: [
+              { path: '/work/a.go', kind: 'modify', adds: 3, dels: 2, truncated: false },
+              { path: '/work/b.go', kind: 'create', adds: 1, dels: 0, truncated: false }
+            ] })
+      })
+    });
+    app.applySessionDiffSummary('s1', { file_count: 2, adds: 4, dels: 2 });
+    app.activateDiffSidebar('s1');
+
+    app.toggleDiffSidebar();
+    await flushTimers();
+    assertEqual(fetchCalls.filter((url) => url.endsWith('/file-changes')).length, 1, 'first reveal fetches the exact list once');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 2, 'drawer is populated from the lazy list');
+
+    app.toggleDiffSidebar();
+    app.toggleDiffSidebar();
+    await flushTimers();
+    assertEqual(fetchCalls.filter((url) => url.endsWith('/file-changes')).length, 1, 'reopening reuses the loaded list');
   });
 
   await run('drawer mode: no auto-open, toggle opens populated panel', async () => {
@@ -671,14 +706,30 @@ async function run(name, fn) {
     assertEqual(app.clampDiffWidth(500, 0), 500, 'missing viewport falls back sanely');
   });
 
-  await run('activateDiffSidebar fetches the server list once', async () => {
+  await run('activateDiffSidebar defers the server list until interaction', async () => {
     const { app, state, fetchCalls, flushTimers } = createHarness();
     state.activeSessionId = 's2';
     app.activateDiffSidebar('s2');
     await flushTimers();
     app.activateDiffSidebar('s2');
     await flushTimers();
-    assertEqual(fetchCalls.filter((u) => u.includes('s2') && u.endsWith('/file-changes')).length, 1, 'list fetched once per session');
+    assertEqual(fetchCalls.filter((u) => u.includes('s2') && u.endsWith('/file-changes')).length, 0, 'activation does not fetch a hidden ancillary list');
+
+    app.toggleDiffSidebar();
+    await flushTimers();
+    assertEqual(fetchCalls.filter((u) => u.includes('s2') && u.endsWith('/file-changes')).length, 1, 'first reveal lazily fetches the list once');
+    app.activateDiffSidebar('s2');
+    await flushTimers();
+    assertEqual(fetchCalls.filter((u) => u.includes('s2') && u.endsWith('/file-changes')).length, 1, 'loaded list stays cached for the session');
+  });
+
+  await run('numeric route stub never reaches file-changes endpoint', async () => {
+    const { app, state, fetchCalls, flushTimers } = createHarness();
+    state.activeSessionId = '3347';
+    app.activateDiffSidebar('3347');
+    app.toggleDiffSidebar();
+    await flushTimers();
+    assertEqual(fetchCalls.filter((u) => u.includes('/sessions/3347/')).length, 0, 'unresolved identity emitted a session-scoped diff request');
   });
 
   await run('server list is authoritative and removes stale duplicate live rows', async () => {
@@ -698,27 +749,6 @@ async function run(name, fn) {
     await app.fetchSessionFileChanges('s1');
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'server refresh replaced stale live row instead of adding a duplicate');
     assertEqual(elementText(elements.diffToggleBadge), '−3', 'badge shows cumulative diff stat');
-  });
-
-  await run('fresh page load keeps restored session diff sidebar closed', async () => {
-    const { app, elements, flushTimers } = createHarness({
-      fetch: async (url) => ({
-        ok: true,
-        json: async () => (String(url).includes('/diff?')
-          ? { path: '/work/a.go', kind: 'create', lang: 'go', truncated: false, hunks: [] }
-          : { file_changes: [{ path: '/work/a.go', kind: 'create', adds: 3, dels: 0, truncated: false }] })
-      })
-    });
-    // No switchToSession call — the script itself activates for the restored
-    // session, but page load must not open the diff panel without a click.
-    await flushTimers();
-    assert(elements.diffSidebar.hidden, 'sidebar remains closed on fresh load when session has changes');
-    assert(!elements.diffToggleBtn.hidden, 'toggle visible on fresh load');
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 0, 'file list not populated while hidden');
-
-    app.toggleDiffSidebar();
-    assert(!elements.diffSidebar.hidden, 'explicit toggle opens restored session sidebar');
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'file list populated after user opens');
   });
 
   await run('sortDiffPaths orders by recency then path', () => {

@@ -316,6 +316,8 @@ func (s *serveServer) buildIndexHTML() []byte {
 	titleEscaped, _ := json.Marshal(s.cfg.uiTitle)
 	headSnippet += `<script>window.TERM_LLM_UI_TITLE=` + string(titleEscaped) + `;</script>`
 	headSnippet += `<script>window.TERM_LLM_LOCATION_SHARING_ENABLED=` + strconv.FormatBool(!s.cfg.locationSharingDisabled) + `;</script>`
+	_, worktreeRootErr := s.currentGitRoot()
+	headSnippet += `<script>window.TERM_LLM_WORKTREES_ENABLED=` + strconv.FormatBool(worktreeRootErr == nil) + `;</script>`
 	if s.cfg.hubURL != "" {
 		hubEscaped, _ := json.Marshal(map[string]string{
 			"url":      s.cfg.hubURL,
@@ -1016,6 +1018,137 @@ func sessionSummaryLastMessageAt(sess session.SessionSummary) time.Time {
 	return lastMessageAt
 }
 
+type webFileChangeSummary struct {
+	FileCount int `json:"file_count"`
+	Adds      int `json:"adds"`
+	Dels      int `json:"dels"`
+}
+
+type webSessionEntry struct {
+	ID            string                `json:"id"`
+	Number        int64                 `json:"number,omitempty"`
+	Name          string                `json:"name,omitempty"`
+	ShortTitle    string                `json:"short_title"`
+	LongTitle     string                `json:"long_title"`
+	Mode          session.SessionMode   `json:"mode,omitempty"`
+	Origin        session.SessionOrigin `json:"origin,omitempty"`
+	Provider      string                `json:"provider,omitempty"`
+	Archived      bool                  `json:"archived"`
+	Pinned        bool                  `json:"pinned"`
+	CreatedAt     int64                 `json:"created_at"`
+	LastMessageAt int64                 `json:"last_message_at"`
+	MsgCount      int                   `json:"message_count"`
+}
+
+type webSelectedSessionEntry struct {
+	webSessionEntry
+	FileChangeSummary webFileChangeSummary `json:"file_change_summary"`
+	PlanSummary       *webPlanSummary      `json:"plan_summary"`
+}
+
+func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) webSessionEntry {
+	return webSessionEntry{
+		Name:          sess.Name,
+		ID:            sess.ID,
+		Number:        sess.Number,
+		ShortTitle:    sess.PreferredShortTitle(),
+		LongTitle:     sess.PreferredLongTitle(),
+		Mode:          sess.Mode,
+		Origin:        sess.Origin,
+		Provider:      sessionSummaryProviderKey(s.cfgRef, sess),
+		Archived:      sess.Archived,
+		Pinned:        sess.Pinned,
+		CreatedAt:     sess.CreatedAt.UnixMilli(),
+		LastMessageAt: sessionSummaryLastMessageAt(sess).UnixMilli(),
+		MsgCount:      sess.MessageCount,
+	}
+}
+
+func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessionEntry {
+	lastMessageAt := sess.UpdatedAt
+	if lastMessageAt.IsZero() {
+		lastMessageAt = sess.CreatedAt
+	}
+	provider := strings.TrimSpace(sess.ProviderKey)
+	if provider == "" {
+		provider = resolveSessionProviderKey(s.cfgRef, sess)
+	}
+	return webSessionEntry{
+		Name:          sess.Name,
+		ID:            sess.ID,
+		Number:        sess.Number,
+		ShortTitle:    sess.PreferredShortTitle(),
+		LongTitle:     sess.PreferredLongTitle(),
+		Mode:          sess.Mode,
+		Origin:        sess.Origin,
+		Provider:      provider,
+		Archived:      sess.Archived,
+		Pinned:        sess.Pinned,
+		CreatedAt:     sess.CreatedAt.UnixMilli(),
+		LastMessageAt: lastMessageAt.UnixMilli(),
+		MsgCount:      sess.LastMessageCount,
+	}
+}
+
+func (s *serveServer) selectedWebSession(ctx context.Context, selector string, summaries []session.SessionSummary) (*webSelectedSessionEntry, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, nil
+	}
+
+	var selected webSessionEntry
+	if number, err := strconv.ParseInt(selector, 10, 64); err == nil && number > 0 {
+		for _, summary := range summaries {
+			if summary.Number == number {
+				selected = s.webSessionEntryFromSummary(summary)
+				break
+			}
+		}
+		if selected.ID == "" {
+			sess, err := s.store.GetByNumber(ctx, number)
+			if err != nil || sess == nil {
+				return nil, nil
+			}
+			selected = s.webSessionEntryFromSession(sess)
+		}
+	} else {
+		for _, summary := range summaries {
+			if summary.ID == selector {
+				selected = s.webSessionEntryFromSummary(summary)
+				break
+			}
+		}
+		if selected.ID == "" {
+			sess, err := s.store.Get(ctx, selector)
+			if err != nil || sess == nil {
+				return nil, nil
+			}
+			selected = s.webSessionEntryFromSession(sess)
+		}
+	}
+
+	result := &webSelectedSessionEntry{webSessionEntry: selected}
+	if fileStore := s.fileTrackStore(); fileStore != nil {
+		changes, err := fileStore.ListSessionChanges(ctx, selected.ID)
+		if err != nil {
+			return nil, fmt.Errorf("summarize selected session file changes: %w", err)
+		}
+		result.FileChangeSummary.FileCount = len(changes)
+		for _, change := range changes {
+			result.FileChangeSummary.Adds += change.Adds
+			result.FileChangeSummary.Dels += change.Dels
+		}
+	}
+	if planStore, ok := planSnapshotStoreForWeb(s.store); ok {
+		snapshot, version, err := planStore.LoadPlanSnapshot(ctx, selected.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load selected session plan: %w", err)
+		}
+		result.PlanSummary = summarizeWebPlan(snapshot, version)
+	}
+	return result, nil
+}
+
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -1023,63 +1156,73 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	categories, err := parseSidebarSessionCategories(r.URL.Query().Get("categories"), false)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+	selectedOnly := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selected_only")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("selected_only")), "true")
+	includeWidgetStatus := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_widget_status")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_widget_status")), "true")
+	includeTranscript := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_transcript")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_transcript")), "true")
+	selectedSelector := strings.TrimSpace(r.URL.Query().Get("selected_session"))
+	if selectedOnly && selectedSelector == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "selected_session is required with selected_only")
 		return
 	}
-	includeArchived := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "1") ||
-		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
-
-	sessions, err := s.store.List(r.Context(), session.ListOptions{
-		Limit:          100,
-		Archived:       includeArchived,
-		Categories:     categories,
-		SortByActivity: true,
-	})
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
+	if includeTranscript && selectedSelector == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "selected_session is required with include_transcript")
 		return
 	}
 
-	type sessionEntry struct {
-		ID            string                `json:"id"`
-		Number        int64                 `json:"number,omitempty"`
-		Name          string                `json:"name,omitempty"`
-		ShortTitle    string                `json:"short_title"`
-		LongTitle     string                `json:"long_title"`
-		Mode          session.SessionMode   `json:"mode,omitempty"`
-		Origin        session.SessionOrigin `json:"origin,omitempty"`
-		Provider      string                `json:"provider,omitempty"`
-		Archived      bool                  `json:"archived"`
-		Pinned        bool                  `json:"pinned"`
-		CreatedAt     int64                 `json:"created_at"`
-		LastMessageAt int64                 `json:"last_message_at"`
-		MsgCount      int                   `json:"message_count"`
-	}
+	var sessions []session.SessionSummary
+	if !selectedOnly {
+		categories, err := parseSidebarSessionCategories(r.URL.Query().Get("categories"), false)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		includeArchived := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "1") ||
+			strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
-	result := make([]sessionEntry, 0, len(sessions))
-	for _, sess := range sessions {
-		provider := sessionSummaryProviderKey(s.cfgRef, sess)
-		lastMessageAt := sessionSummaryLastMessageAt(sess)
-		result = append(result, sessionEntry{
-			Name:          sess.Name,
-			ID:            sess.ID,
-			Number:        sess.Number,
-			ShortTitle:    sess.PreferredShortTitle(),
-			LongTitle:     sess.PreferredLongTitle(),
-			Mode:          sess.Mode,
-			Origin:        sess.Origin,
-			Provider:      provider,
-			Archived:      sess.Archived,
-			Pinned:        sess.Pinned,
-			CreatedAt:     sess.CreatedAt.UnixMilli(),
-			LastMessageAt: lastMessageAt.UnixMilli(),
-			MsgCount:      sess.MessageCount,
+		sessions, err = s.store.List(r.Context(), session.ListOptions{
+			Limit:          100,
+			Archived:       includeArchived,
+			Categories:     categories,
+			SortByActivity: true,
 		})
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
+			return
+		}
 	}
 
-	writeJSONConditional(w, r, http.StatusOK, map[string]any{"sessions": result})
+	result := make([]webSessionEntry, 0, len(sessions))
+	for _, sess := range sessions {
+		result = append(result, s.webSessionEntryFromSummary(sess))
+	}
+
+	selected, err := s.selectedWebSession(r.Context(), selectedSelector, sessions)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load selected session metadata")
+		return
+	}
+
+	payload := map[string]any{
+		"sessions":         result,
+		"selected_session": selected,
+	}
+	if includeWidgetStatus {
+		// The shell HTML is public and process-wide cached so mutable widget
+		// status belongs in this primary authenticated startup response instead.
+		payload["widget_status"] = s.currentWidgetStatus()
+	}
+	if includeTranscript && selected != nil {
+		// Only the explicitly selected startup session gets transcript I/O. Keep
+		// ordinary 100-row sidebar listings summary-only and N+1 free.
+		sideload, sideloadErr := s.selectedTranscriptStartupSideload(r.Context(), selected.ID)
+		if sideloadErr == nil && sideload != nil {
+			payload["selected_transcript"] = sideload
+		}
+	}
+	writeJSONConditional(w, r, http.StatusOK, payload)
 }
 
 func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Request) {

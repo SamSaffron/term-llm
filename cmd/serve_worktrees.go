@@ -45,16 +45,29 @@ type worktreeRow struct {
 	InUse      []worktree.InUseSession `json:"in_use,omitempty"`
 }
 
+// currentGitRoot resolves the serve process's startup repository once and shares
+// it between the HTML capability bootstrap and every worktree API handler.
+func (s *serveServer) currentGitRoot() (string, error) {
+	s.worktreeRootOnce.Do(func() {
+		cwd, err := os.Getwd()
+		if s.worktreeRootFn != nil {
+			cwd, err = s.worktreeRootFn()
+		}
+		if err != nil {
+			s.worktreeRootErr = err
+			return
+		}
+		if !worktree.IsGitRepo(cwd) {
+			s.worktreeRootErr = fmt.Errorf("not a git repository")
+			return
+		}
+		s.worktreeRoot, s.worktreeRootErr = worktree.MainRepoRoot(cwd)
+	})
+	return s.worktreeRoot, s.worktreeRootErr
+}
+
 func (s *serveServer) currentGitRootOr409(w http.ResponseWriter) (string, bool) {
-	cwd, err := os.Getwd()
-	if s.worktreeRootFn != nil {
-		cwd, err = s.worktreeRootFn()
-	}
-	if err != nil || !worktree.IsGitRepo(cwd) {
-		writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "not a git repository")
-		return "", false
-	}
-	root, err := worktree.MainRepoRoot(cwd)
+	root, err := s.currentGitRoot()
 	if err != nil {
 		writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "not a git repository")
 		return "", false

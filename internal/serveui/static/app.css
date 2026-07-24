@@ -658,16 +658,6 @@
       white-space: nowrap;
     }
 
-    .diff-toggle-badge.pulse {
-      animation: diff-badge-pulse 0.6s ease;
-    }
-
-    @keyframes diff-badge-pulse {
-      0% { transform: scale(1); }
-      35% { transform: scale(1.18); }
-      100% { transform: scale(1); }
-    }
-
     .diff-filter-row {
       padding: 0.45rem 0.75rem;
       border-bottom: 1px solid var(--border);
@@ -763,8 +753,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .diff-file-row.updated,
-      .diff-toggle-badge.pulse {
+      .diff-file-row.updated {
         animation: none;
       }
     }

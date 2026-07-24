@@ -2465,23 +2465,64 @@ const mountedConversationDOMFor = (sessionOrId) => {
   return sessionId && !state.draftSessionActive && state.activeSessionId === sessionId ? elements.messages : null;
 };
 
-const updateMountedToolGroupNode = (sessionOrId, message) => {
+const mountedConversationSessionFor = (sessionOrId) => {
+  if (sessionOrId && typeof sessionOrId === 'object') return sessionOrId;
+  const sessionId = String(sessionOrId || '').trim();
+  return state.sessions.find((session) => String(session?.id || '').trim() === sessionId) || null;
+};
+
+const insertMountedMessageNode = (sessionOrId, message, node) => {
+  const root = mountedConversationDOMFor(sessionOrId);
+  const session = mountedConversationSessionFor(sessionOrId);
+  if (!root || !session || !message || !node) return null;
+  stampMessageNodeSession(node, session.id);
+
+  // Durable transcript rows can live inside a grouped turn section. Its order
+  // is owned by renderTranscriptMessages; incremental stream reconciliation
+  // must never pull an individual durable row out of that container.
+  if (node.parentNode && node.parentNode !== root) return node;
+
+  const messageIndex = session.messages.findIndex((candidate) => (
+    candidate === message || (candidate?.id && candidate.id === message.id)
+  ));
+  if (messageIndex >= 0) {
+    for (let index = messageIndex + 1; index < session.messages.length; index += 1) {
+      const later = session.messages[index];
+      if (!later?.id || later.id === message.id) continue;
+      let reference = findMessageElement(later.id, session);
+      while (reference?.parentNode && reference.parentNode !== root) reference = reference.parentNode;
+      if (reference?.parentNode === root && reference !== node) {
+        root.insertBefore(node, reference);
+        return node;
+      }
+    }
+  }
+  root.appendChild(node);
+  return node;
+};
+
+const reconcileMountedMessageNode = (sessionOrId, message, update, alwaysReorder = false) => {
   if (!mountedConversationDOMFor(sessionOrId)) return false;
-  updateToolGroupNode(message);
+  const existing = alwaysReorder ? null : findMessageElement(message?.id, sessionOrId);
+  update(message);
+  if (!existing) {
+    const node = findMessageElement(message?.id, sessionOrId);
+    if (node) insertMountedMessageNode(sessionOrId, message, node);
+  }
   return true;
 };
 
-const updateMountedModelSwapNode = (sessionOrId, message) => {
-  if (!mountedConversationDOMFor(sessionOrId)) return false;
-  updateModelSwapNode(message);
-  return true;
-};
+const updateMountedToolGroupNode = (sessionOrId, message) => (
+  reconcileMountedMessageNode(sessionOrId, message, updateToolGroupNode)
+);
 
-const updateMountedUserNode = (sessionOrId, message) => {
-  if (!mountedConversationDOMFor(sessionOrId)) return false;
-  updateUserNode(message);
-  return true;
-};
+const updateMountedModelSwapNode = (sessionOrId, message) => (
+  reconcileMountedMessageNode(sessionOrId, message, updateModelSwapNode)
+);
+
+const updateMountedUserNode = (sessionOrId, message) => (
+  reconcileMountedMessageNode(sessionOrId, message, updateUserNode, true)
+);
 
 const enqueueMountedAssistantStreamUpdate = (sessionOrId, message) => {
   if (!mountedConversationDOMFor(sessionOrId)) return false;
@@ -3016,6 +3057,7 @@ Object.assign(app, {
   buildArgsNode,
   createToolEntryNode,
   updateToolGroupNode,
+  insertMountedMessageNode,
   updateMountedToolGroupNode,
   updateMountedModelSwapNode,
   updateMountedUserNode,

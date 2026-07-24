@@ -6,6 +6,9 @@ const { UI_PREFIX, state, elements, getActiveSession, requestHeaders } = app;
 const side = state.sideQuestion;
 side.pending = false;
 let openOperation = 0;
+const isResolvedSessionIdentity = typeof app.isSessionIdentityResolved === 'function'
+  ? app.isSessionIdentityResolved
+  : (sessionId) => Boolean(String(sessionId || '').trim()) && !/^\d+$/.test(String(sessionId).trim());
 
 const endpoint = (sessionId, suffix = '') => `${UI_PREFIX}/api/sessions/${encodeURIComponent(sessionId)}/side-question${suffix}`;
 
@@ -77,9 +80,11 @@ const applyView = (view) => {
 };
 
 const recover = async (sessionId) => {
+  if (!isResolvedSessionIdentity(sessionId)) return false;
   const response = await fetch(endpoint(sessionId), { headers: requestHeaders(sessionId) });
   if (!response.ok) throw new Error(`Unable to load side questions (${response.status})`);
   applyView(await response.json());
+  return true;
 };
 
 const parseSSE = async (response) => {
@@ -130,6 +135,10 @@ const openSideQuestion = async (question = '') => {
   const session = getActiveSession();
   if (!session || state.draftSessionActive) {
     window.alert('Start the main conversation before asking a side question.');
+    return;
+  }
+  if (!isResolvedSessionIdentity(session)) {
+    window.alert('This session is still loading. Try again in a moment.');
     return;
   }
   const trimmed = String(question || '').trim();
@@ -204,7 +213,9 @@ const cancel = async (focus = true) => {
   side.error = '';
   render();
   if (focus) focusComposer();
-  await fetch(endpoint(session.id, '/active'), { method: 'DELETE', headers: requestHeaders(session.id) }).catch(() => {});
+  if (isResolvedSessionIdentity(session)) {
+    await fetch(endpoint(session.id, '/active'), { method: 'DELETE', headers: requestHeaders(session.id) }).catch(() => {});
+  }
 };
 
 const close = () => {
@@ -245,7 +256,7 @@ setInterval(() => {
   if (currentId === observedSessionId) return;
   const previousId = observedSessionId;
   observedSessionId = currentId;
-  if (previousId && side.running) {
+  if (previousId && side.running && isResolvedSessionIdentity(previousId)) {
     fetch(endpoint(previousId, '/active'), { method: 'DELETE', headers: requestHeaders(previousId) }).catch(() => {});
   }
   side.generation += 1;
@@ -257,11 +268,7 @@ setInterval(() => {
   side.error = '';
   side.history = [];
   render();
-  if (currentId) recover(currentId).catch(() => {});
 }, 500);
-
-const initialSession = getActiveSession();
-if (initialSession) recover(initialSession.id).catch(() => {});
 
 Object.assign(app, { openSideQuestion, recoverSideQuestion: recover, renderSideQuestion: render });
 })();
