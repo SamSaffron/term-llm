@@ -18,11 +18,12 @@ import (
 
 // fakeFileRecorder captures ChangeRecords for assertions.
 type fakeFileRecorder struct {
-	mu           sync.Mutex
-	records      []filetrack.ChangeRecord
-	sessionPaths []string
-	seq          int64
-	maxFileBytes int // 0 = filetrack.DefaultMaxFileBytes
+	mu                sync.Mutex
+	records           []filetrack.ChangeRecord
+	sessionPaths      []string
+	sessionPathsCalls int
+	seq               int64
+	maxFileBytes      int // 0 = filetrack.DefaultMaxFileBytes
 }
 
 func (f *fakeFileRecorder) RecordChange(ctx context.Context, rec filetrack.ChangeRecord) *llm.FileChange {
@@ -43,7 +44,16 @@ func (f *fakeFileRecorder) RecordChange(ctx context.Context, rec filetrack.Chang
 }
 
 func (f *fakeFileRecorder) SessionPaths(ctx context.Context, sessionID string) []string {
-	return f.sessionPaths
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionPathsCalls++
+	return append([]string(nil), f.sessionPaths...)
+}
+
+func (f *fakeFileRecorder) sessionPathCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionPathsCalls
 }
 
 func (f *fakeFileRecorder) MaxFileBytes() int {
@@ -253,6 +263,52 @@ func TestShellToolRecordsAffectedPaths(t *testing.T) {
 	deleted := recorder.findRecord(t, doomed)
 	if !deleted.AfterMissing || string(deleted.Before) != "delete me\n" {
 		t.Fatalf("delete record = %+v", deleted)
+	}
+}
+
+func TestShellToolAffectedPathsSkipSessionTrackedPaths(t *testing.T) {
+	dir := t.TempDir()
+	hinted := filepath.Join(dir, "hinted.txt")
+	if err := os.WriteFile(hinted, []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exceed the content-read cap to model a long-running session whose history
+	// would otherwise consume the remaining snapshot budget on every shell call.
+	historical := make([]string, maxShellContentReads+25)
+	for i := range historical {
+		historical[i] = filepath.Join(dir, fmt.Sprintf("historical-%03d.txt", i))
+		if err := os.WriteFile(historical[i], []byte("old\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := &fakeFileRecorder{sessionPaths: historical}
+	ctx := trackingContext()
+	snap := preShellSnapshot(ctx, recorder, dir, []string{"hinted.txt"})
+
+	if calls := recorder.sessionPathCallCount(); calls != 0 {
+		t.Fatalf("SessionPaths calls = %d, want 0 for bounded affected_paths", calls)
+	}
+	if len(snap.files) != 1 {
+		t.Fatalf("snapshotted files = %d, want only the hinted file", len(snap.files))
+	}
+	if entry, ok := snap.files[hinted]; !ok || string(entry.content) != "before\n" {
+		t.Fatalf("hinted snapshot = %+v, present=%v", entry, ok)
+	}
+
+	if err := os.WriteFile(hinted, []byte("after\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(historical[0], []byte("changed but out of scope\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	changes := postShellChanges(ctx, recorder, snap)
+	if len(changes) != 1 || canonicalTestPath(changes[0].Path) != canonicalTestPath(hinted) {
+		t.Fatalf("file changes = %+v, want only hinted file", changes)
+	}
+	if records := recorder.recorded(); len(records) != 1 || canonicalTestPath(records[0].Path) != canonicalTestPath(hinted) {
+		t.Fatalf("records = %+v, want only hinted file", records)
 	}
 }
 
