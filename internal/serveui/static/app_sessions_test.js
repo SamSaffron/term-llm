@@ -93,11 +93,13 @@ function makeNode(tagName = 'div') {
     querySelector() { return null; },
     querySelectorAll(selector) {
       const results = [];
+      const toolIDMatch = String(selector || '').match(/^\[data-tool-id="([^"]+)"\]$/);
       const visit = (child) => {
         if (!child) return;
         if (selector === 'input[data-mcp-server]' && child.tagName === 'INPUT' && child.dataset && child.dataset.mcpServer) {
           results.push(child);
         }
+        if (toolIDMatch && child.dataset?.toolId === toolIDMatch[1]) results.push(child);
         (child.children || []).forEach(visit);
       };
       children.forEach(visit);
@@ -1183,6 +1185,172 @@ async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwit
   session.transcript.releaseBodies();
   session.messages = [];
   if (!app.applySelectedTranscriptSideload(session, sideload) || !assertUniqueProjection('switch-back sideload')) return;
+
+  pass(name);
+}
+
+async function testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender() {
+  const name = 'transcript refresh publishes durable recovery tools once before render';
+  let appRef = null;
+  let renderCount = 0;
+  let projectionAtRender = [];
+  let optimisticAtRender = [];
+  const { app, storage, windowObj, elementMap } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, 'sess_late_durable_tools')) {
+        return new Response(null, { status: 304, headers: { ETag: '"late-tools-9"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      renderMessages() {
+        renderCount += 1;
+        const session = appRef?.state.sessions.find((item) => item.id === 'sess_late_durable_tools');
+        if (!session) return;
+        projectionAtRender = session.messages
+          .filter((message) => message.role === 'tool-group')
+          .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }));
+        optimisticAtRender = (session.transcript?.optimistic || [])
+          .filter((message) => message.role === 'tool-group')
+          .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }));
+        const mounted = elementMap.get('messages');
+        mounted.replaceChildren(...projectionAtRender.flatMap((group) => group.tools.map((toolID) => {
+          const node = makeNode();
+          node.dataset.toolId = toolID;
+          return node;
+        })));
+      }
+    },
+    onInitializeStarted({ app: startedApp }) { appRef = startedApp; }
+  });
+  const session = {
+    id: 'sess_late_durable_tools',
+    number: 957,
+    title: 'Late durable tools',
+    messages: [],
+    activeResponseId: 'resp_late_durable_tools',
+    lastSequenceNumber: 8
+  };
+  app.state.sessions.push(session);
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  // Recovery arrives first and owns the only projection while the durable
+  // transcript still trails the active response.
+  session.messages = [{
+    id: 'msg_c011_recovery_tools',
+    role: 'tool-group',
+    status: 'running',
+    created: 1200,
+    tools: [
+      { id: 'call_A', name: 'shell', status: 'done' },
+      { id: 'call_B', name: 'shell', status: 'done' },
+      { id: 'call_C', name: 'shell', status: 'done' },
+      { id: 'call_D', name: 'shell', status: 'running' }
+    ]
+  }];
+  app.reconcileSessionToolCallProjection(session, { trackOptimisticTools: true });
+  app.renderMessages(false);
+
+  // A later transcript refresh materializes A/B/C durably. Publishing the
+  // combined durable + optimistic projection must reconcile both sources before
+  // the caller's single render boundary, retaining only newer optimistic D.
+  const transcript = session.transcript;
+  transcript.applyIndex({
+    rev: 9,
+    compaction_seq: -1,
+    compaction_count: 0,
+    active_response_id: session.activeResponseId,
+    started_rev: 7,
+    rows: {
+      ids: [436, 437],
+      seqs: [436, 437],
+      roles: 'ua',
+      flags: [0, 0]
+    }
+  }, '"late-tools-9"');
+  transcript.setViewport(1, 1, { deferBudget: true });
+  transcript.materialize([
+    { id: 436, sequence: 436, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'continue' }] },
+    {
+      id: 437,
+      sequence: 437,
+      role: 'assistant',
+      created_at: 1100,
+      parts: [
+        { type: 'tool_call', tool_call_id: 'call_A', tool_name: 'shell', tool_arguments: '{}' },
+        { type: 'tool_call', tool_call_id: 'call_B', tool_name: 'shell', tool_arguments: '{}' },
+        { type: 'tool_call', tool_call_id: 'call_C', tool_name: 'shell', tool_arguments: '{}' }
+      ]
+    }
+  ], { countFetch: false, deferBudget: true });
+  transcript.enforceBudget();
+
+  if (!app.refreshSessionMessagesFromTranscript(session)) {
+    fail(name, 'late durable transcript projection was not published');
+    return;
+  }
+  app.renderMessages(false);
+
+  const expectedProjection = JSON.stringify([
+    { id: 'srv_seq_437_tools_0', tools: ['call_A', 'call_B', 'call_C'] },
+    { id: 'msg_c011_recovery_tools', tools: ['call_D'] }
+  ]);
+  if (JSON.stringify(projectionAtRender) !== expectedProjection
+      || JSON.stringify(optimisticAtRender) !== JSON.stringify([{ id: 'msg_c011_recovery_tools', tools: ['call_D'] }])) {
+    fail(name, 'projection or transcript optimistic state was not reconciled before render', JSON.stringify({ projectionAtRender, optimisticAtRender }));
+    return;
+  }
+
+  const mounted = elementMap.get('messages');
+  for (const callID of ['call_A', 'call_B', 'call_C', 'call_D']) {
+    if (mounted.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
+      fail(name, `${callID} was not mounted exactly once after transcript refresh`);
+      return;
+    }
+  }
+  const persisted = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  const persistedTools = persisted?.sessions?.[session.id]?.[0]?.tools?.map((tool) => tool.id) || [];
+  if (persistedTools.join(',') !== 'call_D') {
+    fail(name, 'covered recovery calls remained in persisted transcript optimistic state', JSON.stringify(persisted));
+    return;
+  }
+
+  // Repeated status-driven publication is idempotent, and an inactive session
+  // updates only data. Switching back renders the same unique projection.
+  const rendersBeforeInactiveRefresh = renderCount;
+  const durableGroup = session.messages.find((message) => message.id === 'srv_seq_437_tools_0');
+  session.messages = [durableGroup, {
+    id: 'msg_c011_recovery_tools',
+    role: 'tool-group',
+    status: 'running',
+    tools: [
+      { id: 'call_A', name: 'shell', status: 'done' },
+      { id: 'call_B', name: 'shell', status: 'done' },
+      { id: 'call_C', name: 'shell', status: 'done' },
+      { id: 'call_D', name: 'shell', status: 'running' }
+    ]
+  }];
+  app.state.activeSessionId = 'sess_other';
+  await app.refreshActiveSessionMessagesFromServer(session, { force: true });
+  await app.refreshActiveSessionMessagesFromServer(session, { force: true });
+  if (renderCount !== rendersBeforeInactiveRefresh || JSON.stringify(session.messages
+    .filter((message) => message.role === 'tool-group')
+    .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }))) !== expectedProjection) {
+    fail(name, 'inactive repeat refresh rendered or changed the reconciled projection');
+    return;
+  }
+  app.state.activeSessionId = session.id;
+  app.renderMessages(false);
+  for (const callID of ['call_A', 'call_B', 'call_C', 'call_D']) {
+    if (mounted.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
+      fail(name, `${callID} was duplicated after switch back`);
+      return;
+    }
+  }
 
   pass(name);
 }
@@ -6100,6 +6268,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testIdleStartupSchedulesNormalPollWithoutImmediateRequest();
   await testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests();
   await testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwitchBack();
+  await testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender();
   await testMalformedStartupTranscriptSideloadFallsBack();
   await testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision();
   await testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus();

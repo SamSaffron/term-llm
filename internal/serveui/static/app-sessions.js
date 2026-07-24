@@ -1230,9 +1230,12 @@ const refreshSessionMessagesFromTranscript = (session) => {
     });
   }
   display.push(...transcript.optimistic);
-  session.messages = typeof window.reconcileToolCallProjection === 'function'
-    ? window.reconcileToolCallProjection(display)
-    : display;
+  session.messages = display;
+  // Recovery and transcript advancement are independent lifecycle boundaries:
+  // newly materialized durable calls must retire overlapping recovered calls in
+  // both the published projection and the optimistic source before any caller
+  // renders. This stays centralized here rather than running per stream token.
+  reconcileSessionToolCallProjection(session, { trackOptimisticTools: true });
   delete session._serverOnly;
   return true;
 };
@@ -1446,6 +1449,10 @@ const syncTranscriptOnce = async (session, options = {}) => {
     return true;
   });
   if (!loaded) return false;
+  // Active transactions publish through the viewport adapter's single render
+  // boundary. Inactive transactions still need their in-memory projection and
+  // optimistic registry reconciled, but must not touch the mounted transcript.
+  if (!adapter) refreshSessionMessagesFromTranscript(session);
   touchTranscriptSkeleton(session);
   return true;
 };
