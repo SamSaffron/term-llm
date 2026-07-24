@@ -93,11 +93,13 @@ function makeNode(tagName = 'div') {
     querySelector() { return null; },
     querySelectorAll(selector) {
       const results = [];
+      const toolIDMatch = String(selector || '').match(/^\[data-tool-id="([^"]+)"\]$/);
       const visit = (child) => {
         if (!child) return;
         if (selector === 'input[data-mcp-server]' && child.tagName === 'INPUT' && child.dataset && child.dataset.mcpServer) {
           results.push(child);
         }
+        if (toolIDMatch && child.dataset?.toolId === toolIDMatch[1]) results.push(child);
         (child.children || []).forEach(visit);
       };
       children.forEach(visit);
@@ -427,7 +429,7 @@ async function createSessionsHarness(options = {}) {
   vm.runInContext(transcriptStoreSource, context, { filename: 'transcript-store.js' });
   windowObj.TranscriptStore = context.TranscriptStore;
   windowObj.transcriptStoreFromMessages = context.transcriptStoreFromMessages;
-  windowObj.reconcileToolCallProjection = context.reconcileToolCallProjection;
+  windowObj.reconcileTranscriptProjection = context.reconcileTranscriptProjection;
   windowObj.TRANSCRIPT_BUDGETS = context.TRANSCRIPT_BUDGETS;
   vm.runInContext(coreSource, context, { filename: 'app-core.js' });
   vm.runInContext(planSource, context, { filename: 'app-plan.js' });
@@ -1093,8 +1095,8 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
   pass(name);
 }
 
-async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwitchBack() {
-  const name = 'selected transcript sideload reconciles stable tool calls across switch away and back';
+async function testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitchBack() {
+  const name = 'selected transcript sideload reconciles assistant and tool tails across switch away and back';
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
@@ -1127,6 +1129,17 @@ async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwit
       { id: 'call_newer_shell', name: 'shell', status: 'running' }
     ]
   }, 7);
+  transcript.addOptimistic({
+    id: 'msg_441406d5-live-assistant',
+    clientKey: 'msg_441406d5-live-assistant',
+    role: 'assistant',
+    content: 'durable answer plus live suffix',
+    revAtSend: 7,
+    durableSeqAtSend: 381,
+    responseId: 'resp_tool_overlap',
+    responseStartedRev: 6,
+    created: 1190
+  }, 7);
   const sideload = {
     index_etag: '"tool-overlap-7"',
     index: {
@@ -1152,6 +1165,7 @@ async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwit
           role: 'assistant',
           created_at: 1100,
           parts: [
+            { type: 'text', text: 'durable answer' },
             { type: 'tool_call', tool_call_id: 'call_GwHMMHXf28QA81Zfm9vgRMap', tool_name: 'queue_agent', tool_arguments: '{}' },
             { type: 'tool_call', tool_call_id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', tool_name: 'wait_for_jobs', tool_arguments: '{}' }
           ]
@@ -1162,15 +1176,21 @@ async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwit
 
   const assertUniqueProjection = (phase) => {
     const groups = session.messages.filter((message) => message.role === 'tool-group');
+    const assistants = session.messages.filter((message) => message.role === 'assistant');
     const callIDs = groups.flatMap((group) => group.tools.map((tool) => tool.id));
     const unique = new Set(callIDs);
     if (unique.size !== callIDs.length) {
       fail(name, `${phase} retained duplicate call IDs`, JSON.stringify(session.messages));
       return false;
     }
-    if (groups.map((group) => group.id).join(',') !== 'srv_seq_382_tools_0,msg_441406d5-live-tools'
+    if (groups.map((group) => group.id).join(',') !== 'srv_seq_382_tools_1,msg_441406d5-live-tools'
         || groups[1].tools.map((tool) => tool.id).join(',') !== 'call_newer_shell') {
       fail(name, `${phase} lost durable authority or newer optimistic order`, JSON.stringify(groups));
+      return false;
+    }
+    if (assistants.length !== 1 || assistants[0].id !== 'srv_seq_382_text_0'
+        || assistants[0].content !== 'durable answer plus live suffix') {
+      fail(name, `${phase} duplicated or lost the assistant tail`, JSON.stringify(assistants));
       return false;
     }
     return true;
@@ -1183,6 +1203,172 @@ async function testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwit
   session.transcript.releaseBodies();
   session.messages = [];
   if (!app.applySelectedTranscriptSideload(session, sideload) || !assertUniqueProjection('switch-back sideload')) return;
+
+  pass(name);
+}
+
+async function testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender() {
+  const name = 'transcript refresh publishes durable recovery tools once before render';
+  let appRef = null;
+  let renderCount = 0;
+  let projectionAtRender = [];
+  let optimisticAtRender = [];
+  const { app, storage, windowObj, elementMap } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, 'sess_late_durable_tools')) {
+        return new Response(null, { status: 304, headers: { ETag: '"late-tools-9"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      renderMessages() {
+        renderCount += 1;
+        const session = appRef?.state.sessions.find((item) => item.id === 'sess_late_durable_tools');
+        if (!session) return;
+        projectionAtRender = session.messages
+          .filter((message) => message.role === 'tool-group')
+          .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }));
+        optimisticAtRender = (session.transcript?.optimistic || [])
+          .filter((message) => message.role === 'tool-group')
+          .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }));
+        const mounted = elementMap.get('messages');
+        mounted.replaceChildren(...projectionAtRender.flatMap((group) => group.tools.map((toolID) => {
+          const node = makeNode();
+          node.dataset.toolId = toolID;
+          return node;
+        })));
+      }
+    },
+    onInitializeStarted({ app: startedApp }) { appRef = startedApp; }
+  });
+  const session = {
+    id: 'sess_late_durable_tools',
+    number: 957,
+    title: 'Late durable tools',
+    messages: [],
+    activeResponseId: 'resp_late_durable_tools',
+    lastSequenceNumber: 8
+  };
+  app.state.sessions.push(session);
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  // Recovery arrives first and owns the only projection while the durable
+  // transcript still trails the active response.
+  session.messages = [{
+    id: 'msg_c011_recovery_tools',
+    role: 'tool-group',
+    status: 'running',
+    created: 1200,
+    tools: [
+      { id: 'call_A', name: 'shell', status: 'done' },
+      { id: 'call_B', name: 'shell', status: 'done' },
+      { id: 'call_C', name: 'shell', status: 'done' },
+      { id: 'call_D', name: 'shell', status: 'running' }
+    ]
+  }];
+  app.reconcileSessionTranscriptProjection(session, { trackOptimisticTail: true });
+  app.renderMessages(false);
+
+  // A later transcript refresh materializes A/B/C durably. Publishing the
+  // combined durable + optimistic projection must reconcile both sources before
+  // the caller's single render boundary, retaining only newer optimistic D.
+  const transcript = session.transcript;
+  transcript.applyIndex({
+    rev: 9,
+    compaction_seq: -1,
+    compaction_count: 0,
+    active_response_id: session.activeResponseId,
+    started_rev: 7,
+    rows: {
+      ids: [436, 437],
+      seqs: [436, 437],
+      roles: 'ua',
+      flags: [0, 0]
+    }
+  }, '"late-tools-9"');
+  transcript.setViewport(1, 1, { deferBudget: true });
+  transcript.materialize([
+    { id: 436, sequence: 436, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'continue' }] },
+    {
+      id: 437,
+      sequence: 437,
+      role: 'assistant',
+      created_at: 1100,
+      parts: [
+        { type: 'tool_call', tool_call_id: 'call_A', tool_name: 'shell', tool_arguments: '{}' },
+        { type: 'tool_call', tool_call_id: 'call_B', tool_name: 'shell', tool_arguments: '{}' },
+        { type: 'tool_call', tool_call_id: 'call_C', tool_name: 'shell', tool_arguments: '{}' }
+      ]
+    }
+  ], { countFetch: false, deferBudget: true });
+  transcript.enforceBudget();
+
+  if (!app.refreshSessionMessagesFromTranscript(session)) {
+    fail(name, 'late durable transcript projection was not published');
+    return;
+  }
+  app.renderMessages(false);
+
+  const expectedProjection = JSON.stringify([
+    { id: 'srv_seq_437_tools_0', tools: ['call_A', 'call_B', 'call_C'] },
+    { id: 'msg_c011_recovery_tools', tools: ['call_D'] }
+  ]);
+  if (JSON.stringify(projectionAtRender) !== expectedProjection
+      || JSON.stringify(optimisticAtRender) !== JSON.stringify([{ id: 'msg_c011_recovery_tools', tools: ['call_D'] }])) {
+    fail(name, 'projection or transcript optimistic state was not reconciled before render', JSON.stringify({ projectionAtRender, optimisticAtRender }));
+    return;
+  }
+
+  const mounted = elementMap.get('messages');
+  for (const callID of ['call_A', 'call_B', 'call_C', 'call_D']) {
+    if (mounted.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
+      fail(name, `${callID} was not mounted exactly once after transcript refresh`);
+      return;
+    }
+  }
+  const persisted = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  const persistedTools = persisted?.sessions?.[session.id]?.[0]?.tools?.map((tool) => tool.id) || [];
+  if (persistedTools.join(',') !== 'call_D') {
+    fail(name, 'covered recovery calls remained in persisted transcript optimistic state', JSON.stringify(persisted));
+    return;
+  }
+
+  // Repeated status-driven publication is idempotent, and an inactive session
+  // updates only data. Switching back renders the same unique projection.
+  const rendersBeforeInactiveRefresh = renderCount;
+  const durableGroup = session.messages.find((message) => message.id === 'srv_seq_437_tools_0');
+  session.messages = [durableGroup, {
+    id: 'msg_c011_recovery_tools',
+    role: 'tool-group',
+    status: 'running',
+    tools: [
+      { id: 'call_A', name: 'shell', status: 'done' },
+      { id: 'call_B', name: 'shell', status: 'done' },
+      { id: 'call_C', name: 'shell', status: 'done' },
+      { id: 'call_D', name: 'shell', status: 'running' }
+    ]
+  }];
+  app.state.activeSessionId = 'sess_other';
+  await app.refreshActiveSessionMessagesFromServer(session, { force: true });
+  await app.refreshActiveSessionMessagesFromServer(session, { force: true });
+  if (renderCount !== rendersBeforeInactiveRefresh || JSON.stringify(session.messages
+    .filter((message) => message.role === 'tool-group')
+    .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }))) !== expectedProjection) {
+    fail(name, 'inactive repeat refresh rendered or changed the reconciled projection');
+    return;
+  }
+  app.state.activeSessionId = session.id;
+  app.renderMessages(false);
+  for (const callID of ['call_A', 'call_B', 'call_C', 'call_D']) {
+    if (mounted.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
+      fail(name, `${callID} was duplicated after switch back`);
+      return;
+    }
+  }
 
   pass(name);
 }
@@ -5147,6 +5333,12 @@ async function testOptimisticTranscriptStorageIsPerSession() {
     fail(name, 'one session clobbered another or persisted a display-only row', JSON.stringify(saved));
     return;
   }
+  app.retireTranscriptOptimistic(first, 'send-a');
+  const retired = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  if (retired?.sessions?.[first.id] || retired?.sessions?.[second.id]?.[0]?.clientKey !== 'send-b') {
+    fail(name, 'retiring one optimistic writer removed the wrong session or left stale storage', JSON.stringify(retired));
+    return;
+  }
   pass(name);
 }
 
@@ -6078,6 +6270,148 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   pass(name);
 }
 
+async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh() {
+  const name = 'assistant tail ownership coalesces status prefix, terminal completion, and inactive refresh';
+  const sessionId = 'assistant-tail-race';
+  let phase = 'status';
+  let renderCount = 0;
+  const transcriptEnvelope = () => phase === 'status'
+    ? {
+      rev: 7,
+      compaction_seq: -1,
+      compaction_count: 0,
+      active_response_id: 'resp_assistant_tail',
+      started_rev: 7,
+      rows: { ids: [401, 402], seqs: [401, 402], roles: 'ua', flags: [0, 0] }
+    }
+    : {
+      rev: 8,
+      compaction_seq: -1,
+      compaction_count: 0,
+      rows: { ids: [401, 403], seqs: [401, 403], roles: 'ua', flags: [0, 0] }
+    };
+  const transcriptBodies = () => ({
+    rev: phase === 'status' ? 7 : 8,
+    messages: [
+      { id: 401, sequence: 401, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'question' }] },
+      {
+        id: phase === 'status' ? 402 : 403,
+        sequence: phase === 'status' ? 402 : 403,
+        role: 'assistant',
+        created_at: 2000,
+        parts: [{
+          type: 'text',
+          text: phase === 'status' ? 'durable prefix' : 'durable prefix plus optimistic suffix'
+        }]
+      }
+    ]
+  });
+
+  const { app, windowObj, storage } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        return new Response(JSON.stringify(transcriptEnvelope()), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"assistant-${phase}"` }
+        });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        return new Response(JSON.stringify(transcriptBodies()), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      renderMessages() { renderCount += 1; }
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = { id: sessionId, messages: [] };
+  session.transcript = new windowObj.TranscriptStore(sessionId);
+  session.transcript.applyIndex({
+    rev: 6,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: { ids: [401], seqs: [401], roles: 'u', flags: [0] }
+  });
+  session.transcript.materialize(transcriptBodies().messages.slice(0, 1), { countFetch: false });
+  session.transcript.setViewport(0, 0);
+  session.transcript.setActiveRun('resp_assistant_tail', 7);
+  const optimistic = {
+    id: 'msg_assistant_tail',
+    clientKey: 'msg_assistant_tail',
+    role: 'assistant',
+    content: 'durable prefix plus optimistic suffix',
+    revAtSend: 7,
+    durableSeqAtSend: 401,
+    created: 2100
+  };
+  session.messages.push(optimistic);
+  app.trackTranscriptOptimistic(session, optimistic);
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+  app.state.streaming = true;
+
+  const statusLoaded = await app.reconcileTranscriptFromStatus([{
+    id: sessionId,
+    transcript_rev: 7,
+    active_response_id: 'resp_assistant_tail',
+    started_rev: 7,
+    active_run: true
+  }]);
+  const statusAssistants = session.messages.filter((message) => message.role === 'assistant');
+  if (!statusLoaded || statusAssistants.length !== 1
+      || statusAssistants[0].id !== 'srv_seq_402_text_0'
+      || statusAssistants[0].content !== 'durable prefix plus optimistic suffix') {
+    fail(name, 'status projection duplicated or lost the active assistant tail', JSON.stringify(session.messages));
+    return;
+  }
+  if (session.transcript.optimistic.length !== 1) {
+    fail(name, 'partial durable coverage retired the live suffix source', JSON.stringify(session.transcript.optimistic));
+    return;
+  }
+
+  phase = 'terminal';
+  const terminalLoaded = await app.noteTranscriptTerminal(session, 8);
+  const terminalAssistants = session.messages.filter((message) => message.role === 'assistant');
+  if (!terminalLoaded || terminalAssistants.length !== 1
+      || terminalAssistants[0].id !== 'srv_seq_403_text_0'
+      || terminalAssistants[0].content !== 'durable prefix plus optimistic suffix') {
+    fail(name, 'terminal projection did not leave one complete durable assistant', JSON.stringify(session.messages));
+    return;
+  }
+  if (session.transcript.optimistic.length !== 0) {
+    fail(name, 'terminal completion did not clear the superseded optimistic assistant exactly once', JSON.stringify(session.transcript.optimistic));
+    return;
+  }
+  const persisted = JSON.parse(storage.get('term_llm_optimistic_transcript') || '{"sessions":{}}');
+  if (persisted.sessions?.[sessionId]) {
+    fail(name, 'terminal completion left superseded optimistic storage behind', JSON.stringify(persisted));
+    return;
+  }
+
+  const activeRenderCount = renderCount;
+  app.state.activeSessionId = 'different-session';
+  const inactiveLoaded = await app.syncTranscript(session, { reason: 'reconnect', force: true, targetRev: 8 });
+  if (!inactiveLoaded || renderCount !== activeRenderCount) {
+    fail(name, 'inactive transcript refresh touched the mounted DOM', JSON.stringify({ inactiveLoaded, renderCount, activeRenderCount }));
+    return;
+  }
+  if (session.messages.filter((message) => message.role === 'assistant').length !== 1) {
+    fail(name, 'inactive transcript refresh did not remain data-correct', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -6099,7 +6433,8 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testNumericDeepLinkResolvesRealSessionId();
   await testIdleStartupSchedulesNormalPollWithoutImmediateRequest();
   await testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests();
-  await testSelectedTranscriptSideloadReconcilesStableToolCallsAcrossSwitchBack();
+  await testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitchBack();
+  await testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender();
   await testMalformedStartupTranscriptSideloadFallsBack();
   await testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision();
   await testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus();
@@ -6137,6 +6472,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testTranscriptSyncCommitsOneRenderedProjection();
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testInflightSyncAbsorbsQueuedZeroRevisionActivation();
+  await testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
   await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
   await testTerminalTranscriptSyncQueuesBehindInflightRequest();

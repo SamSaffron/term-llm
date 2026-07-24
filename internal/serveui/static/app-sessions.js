@@ -120,6 +120,10 @@ const pollSidebarStatus = (isRecovery = false) => {
   sidebarStatusPollController = controller;
   sidebarStatusPollInFlightGeneration = generation;
   sidebarStatusPollIsRecovery = isRecovery;
+  const sampledRunEpochs = new Map(state.sessions.map((session) => [
+    String(session.id || ''),
+    Math.max(Number(session.latestRunEpoch) || 0, Number(session.transcript?.latestRunEpoch) || 0),
+  ]));
 
   const isCurrent = () => (
     state.connected
@@ -157,7 +161,7 @@ const pollSidebarStatus = (isRecovery = false) => {
       if (etag) sidebarStatusEtag = etag;
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
-        await reconcileTranscriptFromStatus(data.sessions);
+        await reconcileTranscriptFromStatus(data.sessions, { sampledRunEpochs });
         if (!isCurrent()) return false;
         // Discover sessions created in other tabs/devices
         const localIds = new Set(state.sessions.map((s) => s.id));
@@ -769,6 +773,16 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
   const addDurableSource = (entry, msg) => {
     if (!entry) return entry;
+    const responseId = String(msg?.response_id || msg?.responseId || '').trim();
+    if (responseId) entry.responseId = responseId;
+    const segmentOrdinal = Number(msg?.assistant_segment_ordinal ?? msg?.assistantSegmentOrdinal);
+    if (entry.role === 'assistant' && Number.isFinite(segmentOrdinal) && segmentOrdinal >= 0) {
+      entry.assistantSegmentOrdinal = Math.trunc(segmentOrdinal);
+      const startSequence = Number(msg?.segment_start_sequence ?? msg?.segmentStartSequence);
+      const endSequence = Number(msg?.segment_end_sequence ?? msg?.segmentEndSequence);
+      if (Number.isFinite(startSequence) && startSequence > 0) entry.segmentStartSequence = Math.trunc(startSequence);
+      if (Number.isFinite(endSequence) && endSequence > 0) entry.segmentEndSequence = Math.trunc(endSequence);
+    }
     const id = durableSourceID(msg);
     if (id == null) return entry;
     if (!Array.isArray(entry.durableSourceRowIds)) entry.durableSourceRowIds = [];
@@ -1092,20 +1106,40 @@ const trackTranscriptOptimistic = (session, message) => {
   return tracked;
 };
 
-const noteTranscriptRunCreated = (session, responseId, startedRev) => {
+const retireTranscriptOptimistic = (session, messageOrKey) => {
+  const transcript = session?.transcript;
+  if (!transcript?.removeOptimistic) return [];
+  const removed = transcript.removeOptimistic(messageOrKey);
+  if (removed.length > 0) persistTranscriptOptimistic(session);
+  return removed;
+};
+
+const noteTranscriptRunCreated = (session, responseId, startedRev, runEpoch = 0) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return Promise.resolve(false);
-  transcript.setActiveRun(responseId, startedRev);
+  const epoch = Math.max(0, Number(runEpoch) || 0);
+  if (epoch > 0) session.latestRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, epoch);
+  transcript.setActiveRun(responseId, startedRev, epoch);
   const target = Math.max(0, Number(startedRev) || 0);
   if (target > transcript.rev) return syncTranscript(session, { reason: 'run-created', targetRev: target });
   return Promise.resolve(true);
 };
 
-const noteTranscriptTerminal = (session, finalRev) => {
+const noteTranscriptTerminal = (session, responseId, finalRev, runEpoch = 0) => {
+  if (finalRev === undefined && Number.isFinite(Number(responseId))) {
+    finalRev = Number(responseId);
+    responseId = session?.transcript?.activeRun?.id || session?.activeResponseId || '';
+  }
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return Promise.resolve(false);
+  const activeBefore = transcript.activeRun;
   transcript.clearTransientOptimistic();
-  transcript.setActiveRun('', 0);
+  transcript.setActiveRun('', 0, runEpoch, {
+    responseId,
+    sampledEpoch: runEpoch,
+    observedCreatedEpoch: session?.latestRunEpoch || 0,
+  });
+  if (activeBefore && transcript.activeRun) return Promise.resolve(false);
   persistTranscriptOptimistic(session);
   return syncTranscript(session, {
     reason: 'terminal',
@@ -1159,23 +1193,23 @@ const transcriptViewportAdapter = (session, forceScroll = false) => {
   };
 };
 
-const reconcileSessionToolCallProjection = (session, options = {}) => {
+const reconcileSessionTranscriptProjection = (session, options = {}) => {
   if (!session || !Array.isArray(session.messages)) return false;
-  const reconcile = window.reconcileToolCallProjection;
-  if (typeof reconcile === 'function') {
-    session.messages = reconcile(session.messages);
+  const transcript = ensureSessionTranscript(session);
+
+  if (options.trackOptimisticTail === true && transcript) {
+    for (const [index, message] of session.messages.entries()) {
+      if (message?.durable || !['assistant', 'tool-group', 'tool'].includes(message?.role)) continue;
+      const tracked = transcript.addOptimistic(message, transcript.rev);
+      if (tracked && tracked !== message) session.messages[index] = tracked;
+    }
+    transcript.reconcileOptimistic();
+    persistTranscriptOptimistic(session);
   }
 
-  if (options.trackOptimisticTools === true) {
-    const transcript = ensureSessionTranscript(session);
-    if (transcript) {
-      for (const message of session.messages) {
-        if (message?.durable || (message?.role !== 'tool-group' && message?.role !== 'tool')) continue;
-        transcript.addOptimistic(message, transcript.rev);
-      }
-      transcript.reconcileOptimistic();
-      persistTranscriptOptimistic(session);
-    }
+  const reconcile = window.reconcileTranscriptProjection;
+  if (typeof reconcile === 'function') {
+    session.messages = reconcile(session.messages, transcript);
   }
   return true;
 };
@@ -1230,9 +1264,10 @@ const refreshSessionMessagesFromTranscript = (session) => {
     });
   }
   display.push(...transcript.optimistic);
-  session.messages = typeof window.reconcileToolCallProjection === 'function'
-    ? window.reconcileToolCallProjection(display)
-    : display;
+  session.messages = display;
+  // Every durable/optimistic handoff is committed through the same projected
+  // tail before callers can render or publish session.messages.
+  reconcileSessionTranscriptProjection(session, { trackOptimisticTail: true });
   delete session._serverOnly;
   return true;
 };
@@ -1306,7 +1341,7 @@ const transcriptSyncSegmentIndexes = (transcript) => {
   if (!transcript) return [];
   const wanted = new Set(transcript.pinnedSegments);
   if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
-  for (const index of transcript.persistedOptimisticToolSegmentIndexes?.(TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || []) {
+  for (const index of transcript.persistedOptimisticSegmentIndexes?.(TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || []) {
     wanted.add(index);
   }
   return [...wanted];
@@ -1394,6 +1429,7 @@ const materializeTranscriptSegments = (session, request) => {
 const syncTranscriptOnce = async (session, options = {}) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
+  const observedCreatedEpoch = Math.max(Number(session.latestRunEpoch) || 0, Number(transcript.latestRunEpoch) || 0);
   const headers = requestHeaders(session.id);
   if (transcript.etag && !options.force) headers['If-None-Match'] = transcript.etag;
   const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
@@ -1401,10 +1437,22 @@ const syncTranscriptOnce = async (session, options = {}) => {
   if (resp.status === 404) {
     const pages = await fetchLegacyTranscriptPages(session.id);
     if (!pages) return false;
+    const optimistic = transcript.optimistic.map((entry) => ({
+      entry: { ...entry },
+      persisted: transcript.persistedOptimistic?.has?.(entry) === true
+    }));
+    const activeRun = transcript.activeRun ? { ...transcript.activeRun } : null;
+    const replacement = window.transcriptStoreFromMessages(session.id, pages);
+    for (const local of optimistic) {
+      replacement.addOptimistic(local.entry, local.entry.revAtSend, { persisted: local.persisted });
+    }
+    if (activeRun) replacement.setActiveRun(activeRun.id, activeRun.startedRev, activeRun.epoch || 0);
+    replacement.reconcileOptimistic();
     transcript.destroy();
-    session.transcript = window.transcriptStoreFromMessages(session.id, pages);
+    session.transcript = replacement;
     session.transcript.setViewport(Math.max(0, session.transcript.ids.length - 1), Math.max(0, session.transcript.ids.length - 1));
     session.transcript.enforceBudget();
+    persistTranscriptOptimistic(session);
     refreshSessionMessagesFromTranscript(session);
     if (session.id === state.activeSessionId) renderMessages(options.forceScroll === true);
     touchTranscriptSkeleton(session);
@@ -1422,7 +1470,11 @@ const syncTranscriptOnce = async (session, options = {}) => {
   const loaded = await transcript.withViewportAnchor(adapter, async () => {
     if (data) {
       transcript.applyIndex(data, resp.headers?.get?.('ETag') || '');
-      if (data.active_response_id) transcript.setActiveRun(data.active_response_id, data.started_rev);
+      if (data.active_response_id) {
+        transcript.setActiveRun(data.active_response_id, data.started_rev, data.run_epoch || 0, { observedCreatedEpoch });
+      } else {
+        transcript.setActiveRun('', 0, data.run_epoch || 0, { observedCreatedEpoch });
+      }
     }
     if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
       const last = transcript.ids.length - 1;
@@ -1446,6 +1498,10 @@ const syncTranscriptOnce = async (session, options = {}) => {
     return true;
   });
   if (!loaded) return false;
+  // Active transactions publish through the viewport adapter's single render
+  // boundary. Inactive transactions still need their in-memory projection and
+  // optimistic registry reconciled, but must not touch the mounted transcript.
+  if (!adapter) refreshSessionMessagesFromTranscript(session);
   touchTranscriptSkeleton(session);
   return true;
 };
@@ -1651,7 +1707,7 @@ const loadServerSessionState = async (sessionId) => {
   }
 };
 
-const reconcileTranscriptFromStatus = async (statusSessions) => {
+const reconcileTranscriptFromStatus = async (statusSessions, options = {}) => {
   if (!Array.isArray(statusSessions)) return false;
   const active = getActiveSession();
   if (!active) return false;
@@ -1661,6 +1717,10 @@ const reconcileTranscriptFromStatus = async (statusSessions) => {
   if (!transcript) return false;
   const incomingRev = Math.max(0, Number(entry.transcript_rev) || 0);
   const activeResponseId = String(entry.active_response_id || '').trim();
+  const runEpoch = Math.max(0, Number(entry.run_epoch) || 0);
+  const sampledRunEpoch = options.sampledRunEpochs instanceof Map
+    ? Math.max(0, Number(options.sampledRunEpochs.get(active.id)) || 0)
+    : Math.max(Number(active.latestRunEpoch) || 0, Number(transcript.latestRunEpoch) || 0);
   const startedRev = Math.max(0, Number(entry.started_rev) || 0);
   const targetRev = activeResponseId ? startedRev : incomingRev;
   let refreshed = false;
@@ -1672,7 +1732,8 @@ const reconcileTranscriptFromStatus = async (statusSessions) => {
     });
   }
   if (activeResponseId) {
-    transcript.setActiveRun(activeResponseId, startedRev);
+    if (runEpoch > 0) active.latestRunEpoch = Math.max(Number(active.latestRunEpoch) || 0, runEpoch);
+    transcript.setActiveRun(activeResponseId, startedRev, runEpoch, { observedCreatedEpoch: sampledRunEpoch });
     if (transcript.rev >= startedRev
       && !state.abortController
       && !state.streaming
@@ -1680,6 +1741,19 @@ const reconcileTranscriptFromStatus = async (statusSessions) => {
       && document.visibilityState !== 'hidden') {
       await syncActiveSessionFromServer(active, true, { skipMessagesFetch: true });
     }
+  } else if (!refreshed && transcript.activeRun) {
+    const activeBefore = transcript.activeRun;
+    transcript.setActiveRun('', 0, runEpoch, {
+      sampledEpoch: runEpoch,
+      observedCreatedEpoch: sampledRunEpoch,
+    });
+    if (transcript.activeRun === activeBefore) return refreshed;
+    // Status is only authoritative after freshness validation. Reconciliation
+    // below is a defensive terminal normalization, not replay deduplication.
+    transcript.reconcileOptimistic();
+    persistTranscriptOptimistic(active);
+    refreshSessionMessagesFromTranscript(active);
+    if (active.id === state.activeSessionId && !state.draftSessionActive) renderMessages(false);
   }
   return refreshed;
 };
@@ -1732,6 +1806,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     && requestGeneration >= Number(state.lastAppliedSessionStateRequestGeneration || 0);
 
   const busyBefore = sessionHasInProgressState(session);
+  const sampledRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, Number(session.transcript?.latestRunEpoch) || 0);
 
   const loadResult = await loadServerSessionState(requestSessionId);
   if (loadResult.kind === 'auth') {
@@ -1846,6 +1921,16 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   const transcript = ensureSessionTranscript(session);
   const runtimeTranscriptRev = Math.max(0, Number(runtimeState.transcript_rev) || 0);
   const activeResponseId = String(runtimeState.active_response_id || '').trim();
+  const runEpoch = Math.max(0, Number(runtimeState.run_epoch) || 0);
+  const latestObservedRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, Number(transcript?.latestRunEpoch) || 0);
+  if (activeResponseId && runEpoch > 0 && runEpoch < latestObservedRunEpoch) {
+    window.transcriptDiagnostic?.('stale_status_rejection', {
+      responseId: activeResponseId,
+      transcriptRev: transcript?.rev,
+      startRev: runtimeState.started_rev,
+    });
+    return loadResult;
+  }
   const startedRev = Math.max(0, Number(runtimeState.started_rev) || 0);
   const targetTranscriptRev = activeResponseId ? startedRev : runtimeTranscriptRev;
   if (transcript && targetTranscriptRev > transcript.rev && isStillActive()) {
@@ -1866,8 +1951,9 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   };
 
   if (activeResponseId) {
+    if (runEpoch > 0) session.latestRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, runEpoch);
     if (transcript) {
-      transcript.setActiveRun(activeResponseId, startedRev);
+      transcript.setActiveRun(activeResponseId, startedRev, runEpoch, { observedCreatedEpoch: sampledRunEpoch });
     }
     const responseChanged = session.activeResponseId !== activeResponseId;
     const recoverFromSnapshot = false;
@@ -1898,7 +1984,17 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   }
 
   if (!activeRun && !state.abortController) {
+    if (sampledRunEpoch < Math.max(Number(session.latestRunEpoch) || 0, Number(transcript?.latestRunEpoch) || 0)) {
+      window.transcriptDiagnostic?.('stale_status_rejection', {
+        responseId: session.activeResponseId || transcript?.activeRun?.id || '',
+        transcriptRev: transcript?.rev,
+      });
+      return loadResult;
+    }
     if (isStillActive()) stopSessionStatePoll();
+    const activeBeforeClear = transcript?.activeRun || null;
+    if (activeBeforeClear) transcript.setActiveRun('', 0, runEpoch, { observedCreatedEpoch: sampledRunEpoch });
+    const clearedTranscriptRun = Boolean(activeBeforeClear && !transcript?.activeRun);
     if (session.activeResponseId || (isStillActive() && state.currentStreamResponseId)) {
       clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
       saveSessions();
@@ -1912,6 +2008,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
         targetRev: runtimeTranscriptRev,
         forceScroll: true
       });
+    } else if (clearedTranscriptRun && transcript) {
+      transcript.reconcileOptimistic();
+      persistTranscriptOptimistic(session);
+      refreshSessionMessagesFromTranscript(session);
+      if (isStillActive()) renderMessages(false);
     }
     const lastError = String(runtimeState.last_error || '').trim();
     let currentTurnStart = 0;
@@ -2020,7 +2121,9 @@ const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
         persisted: current.persistedOptimistic?.has?.(optimistic) === true
       });
     }
-    if (current.activeRun) staging.setActiveRun(current.activeRun.id, current.activeRun.startedRev);
+    staging.setActiveRun(index.active_response_id || '', index.started_rev, index.run_epoch || 0, {
+      observedCreatedEpoch: session.latestRunEpoch || 0,
+    });
 
     const wantedIndexes = transcriptSyncSegmentIndexes(staging);
     const allowedBodyIDs = new Set();
@@ -2055,7 +2158,9 @@ const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
       current.setViewport(last, last, { deferBudget: true });
     }
     current.materialize(bodies.messages, { countFetch: false, deferBudget: true });
-    if (index.active_response_id) current.setActiveRun(index.active_response_id, index.started_rev);
+    current.setActiveRun(index.active_response_id || '', index.started_rev, index.run_epoch || 0, {
+      observedCreatedEpoch: session.latestRunEpoch || 0,
+    });
     current.reconcileOptimistic();
     persistTranscriptOptimistic(session);
     current.enforceBudget();
@@ -3596,11 +3701,12 @@ Object.assign(app, {
   reconcileTranscriptFromStatus,
   materializeTranscriptSegments,
   trackTranscriptOptimistic,
+  retireTranscriptOptimistic,
   persistTranscriptOptimistic,
   noteTranscriptRunCreated,
   noteTranscriptTerminal,
   refreshSessionMessagesFromTranscript,
-  reconcileSessionToolCallProjection,
+  reconcileSessionTranscriptProjection,
   refreshActiveSessionMessagesFromServer,
   loadOlderSessionMessages,
   maybeLoadOlderSessionMessages,

@@ -19,10 +19,12 @@ const (
 )
 
 type transcriptRowsResponse struct {
-	Seqs  []int   `json:"seqs"`
-	IDs   []int64 `json:"ids"`
-	Roles string  `json:"roles"`
-	Flags []int   `json:"flags"`
+	Seqs                     []int    `json:"seqs"`
+	IDs                      []int64  `json:"ids"`
+	Roles                    string   `json:"roles"`
+	Flags                    []int    `json:"flags"`
+	ResponseIDs              []string `json:"response_ids"`
+	AssistantSegmentOrdinals []int    `json:"assistant_segment_ordinals"`
 }
 
 type transcriptResponse struct {
@@ -30,6 +32,7 @@ type transcriptResponse struct {
 	CompactionSeq    int                    `json:"compaction_seq"`
 	CompactionCount  int                    `json:"compaction_count"`
 	ActiveResponseID string                 `json:"active_response_id,omitempty"`
+	RunEpoch         int64                  `json:"run_epoch,omitempty"`
 	StartedRev       int64                  `json:"started_rev,omitempty"`
 	Rows             transcriptRowsResponse `json:"rows"`
 }
@@ -76,21 +79,21 @@ func transcriptIndexerForWeb(store session.Store) (session.TranscriptIndexer, bo
 	return indexer, ok
 }
 
-func (s *serveServer) activeTranscriptRun(sessionID string) (string, int64) {
+func (s *serveServer) activeTranscriptRun(sessionID string) (string, int64, int64) {
 	if s.responseRuns == nil {
-		return "", 0
+		return "", 0, 0
 	}
 	id := s.responseRuns.activeRunID(sessionID)
 	if id == "" {
-		return "", 0
+		return "", 0, 0
 	}
 	run, ok := s.responseRuns.get(id)
 	if !ok || run == nil {
-		return id, 0
+		return id, 0, 0
 	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	return id, run.startedRev
+	return id, run.startedRev, run.runEpoch
 }
 
 func transcriptJSON(payload any) ([]byte, string, error) {
@@ -121,9 +124,11 @@ func writeTranscriptJSON(w http.ResponseWriter, r *http.Request, rev int64, payl
 
 func transcriptRowsFromSnapshot(snapshot session.TranscriptSnapshot) transcriptRowsResponse {
 	rows := transcriptRowsResponse{
-		Seqs:  make([]int, 0, len(snapshot.Items)),
-		IDs:   make([]int64, 0, len(snapshot.Items)),
-		Flags: make([]int, 0, len(snapshot.Items)),
+		Seqs:                     make([]int, 0, len(snapshot.Items)),
+		IDs:                      make([]int64, 0, len(snapshot.Items)),
+		Flags:                    make([]int, 0, len(snapshot.Items)),
+		ResponseIDs:              make([]string, 0, len(snapshot.Items)),
+		AssistantSegmentOrdinals: make([]int, 0, len(snapshot.Items)),
 	}
 	var roles strings.Builder
 	roles.Grow(len(snapshot.Items))
@@ -131,6 +136,8 @@ func transcriptRowsFromSnapshot(snapshot session.TranscriptSnapshot) transcriptR
 		rows.Seqs = append(rows.Seqs, item.Seq)
 		rows.IDs = append(rows.IDs, item.ID)
 		rows.Flags = append(rows.Flags, int(item.Flags))
+		rows.ResponseIDs = append(rows.ResponseIDs, item.ResponseID)
+		rows.AssistantSegmentOrdinals = append(rows.AssistantSegmentOrdinals, item.AssistantSegmentOrdinal)
 		roles.WriteByte(transcriptRoleCode(item.Role))
 	}
 	rows.Roles = roles.String()
@@ -138,12 +145,13 @@ func transcriptRowsFromSnapshot(snapshot session.TranscriptSnapshot) transcriptR
 }
 
 func (s *serveServer) transcriptResponseFromSnapshot(sessionID string, snapshot session.TranscriptSnapshot) transcriptResponse {
-	activeResponseID, startedRev := s.activeTranscriptRun(sessionID)
+	activeResponseID, startedRev, runEpoch := s.activeTranscriptRun(sessionID)
 	return transcriptResponse{
 		Rev:              snapshot.Rev,
 		CompactionSeq:    snapshot.CompactionSeq,
 		CompactionCount:  snapshot.CompactionCount,
 		ActiveResponseID: activeResponseID,
+		RunEpoch:         runEpoch,
 		StartedRev:       startedRev,
 		Rows:             transcriptRowsFromSnapshot(snapshot),
 	}

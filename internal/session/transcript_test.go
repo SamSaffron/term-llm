@@ -252,3 +252,46 @@ func TestSQLiteStoreTranscriptRewriteRetiresIDs(t *testing.T) {
 		t.Fatalf("rewritten row retained retired ID %d", oldSecondID)
 	}
 }
+
+func TestSQLiteStoreTranscriptPersistsResponseScopedAssistantIdentity(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	assistant := llm.AssistantText("stable segment")
+	assistant.ResponseID = "resp_identity"
+	assistant.AssistantSegmentOrdinal = 2
+	assistant.SegmentStartSequence = 11
+	assistant.SegmentEndSequence = 17
+	message := NewMessage(sess.ID, assistant, -1)
+	if err := store.AddMessage(ctx, sess.ID, message); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	snapshot, err := store.GetTranscriptSnapshot(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetTranscriptSnapshot: %v", err)
+	}
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("items=%d want 1", len(snapshot.Items))
+	}
+	item := snapshot.Items[0]
+	if item.ResponseID != assistant.ResponseID || item.AssistantSegmentOrdinal != 2 {
+		t.Fatalf("index identity=%+v", item)
+	}
+	_, bodies, err := store.GetMessagesByTranscriptRanges(ctx, sess.ID, []TranscriptRange{{
+		StartSeq: item.Seq, StartID: item.ID, EndSeq: item.Seq, EndID: item.ID,
+	}})
+	if err != nil {
+		t.Fatalf("GetMessagesByTranscriptRanges: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("bodies=%d want 1", len(bodies))
+	}
+	got := bodies[0]
+	if got.ResponseID != assistant.ResponseID || got.AssistantSegmentOrdinal != 2 || got.SegmentStartSequence != 11 || got.SegmentEndSequence != 17 {
+		t.Fatalf("body identity=%+v", got)
+	}
+	roundTrip := got.ToLLMMessage()
+	if roundTrip.ResponseID != assistant.ResponseID || roundTrip.AssistantSegmentOrdinal != 2 {
+		t.Fatalf("LLM round trip identity=%+v", roundTrip)
+	}
+}

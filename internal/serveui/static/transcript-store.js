@@ -55,66 +55,183 @@
     return ids;
   };
 
-  // Stable tool call IDs are authoritative across the durable/optimistic
-  // boundary. Synthetic message IDs differ between transcript conversion and
-  // response recovery, so reconciling only message rows can project the same
-  // call twice. Reserve every durable call first, then retain optimistic calls
-  // in their existing order only when no earlier projection owns that ID.
-  const reconcileToolCallProjection = (messages) => {
+  const messageResponseID = (message) => String(message?.responseId || message?.response_id || '').trim();
+  const assistantSegmentOrdinal = (message) => {
+    const value = message?.assistantSegmentOrdinal ?? message?.assistant_segment_ordinal;
+    return Number.isFinite(Number(value)) ? Math.trunc(Number(value)) : -1;
+  };
+  const assistantSegmentKey = (messageOrResponseID, ordinal = null) => {
+    const responseID = typeof messageOrResponseID === 'object'
+      ? messageResponseID(messageOrResponseID)
+      : String(messageOrResponseID || '').trim();
+    const segmentOrdinal = ordinal == null
+      ? assistantSegmentOrdinal(messageOrResponseID)
+      : finiteInt(ordinal, -1);
+    return responseID && segmentOrdinal >= 0 ? `${responseID}:assistant:${segmentOrdinal}` : '';
+  };
+  const toolIdentityKey = (responseID, callID) => {
+    const id = String(callID || '').trim();
+    if (!id) return '';
+    const owner = String(responseID || '').trim();
+    return owner ? `${owner}:tool:${id}` : `legacy-tool:${id}`;
+  };
+  const transcriptDiagnosticsEnabled = () => Boolean(
+    root.__TERM_LLM_DIAGNOSTICS__ || root.__WEBRTC_DIAGNOSTICS__
+  );
+  const transcriptDiagnostic = (kind, fields = {}) => {
+    if (!transcriptDiagnosticsEnabled() || typeof console === 'undefined') return;
+    const safe = {
+      kind: String(kind || ''),
+      responseId: String(fields.responseId || ''),
+      segmentKey: String(fields.segmentKey || ''),
+      streamGeneration: finiteInt(fields.streamGeneration, 0),
+      transcriptRev: finiteInt(fields.transcriptRev, 0),
+      startRev: finiteInt(fields.startRev, 0),
+      finalRev: finiteInt(fields.finalRev, 0),
+      after: finiteInt(fields.after, 0),
+      replayThrough: finiteInt(fields.replayThrough, 0),
+      appliedSequence: finiteInt(fields.appliedSequence, 0),
+      stagedCount: finiteInt(fields.stagedCount, 0),
+      coveredCount: finiteInt(fields.coveredCount, 0),
+      retainedCount: finiteInt(fields.retainedCount, 0),
+    };
+    console.warn('[transcript]', safe);
+  };
+
+  const messageToolKeys = (message) => {
+    const keys = new Set();
+    const responseID = messageResponseID(message);
+    for (const id of messageToolIDs(message)) {
+      const key = toolIdentityKey(responseID, id);
+      if (key) keys.add(key);
+    }
+    return keys;
+  };
+
+  const assistantSourceContent = (message) => String(message?.optimisticFullContent ?? message?.content ?? '');
+
+  // Content is consulted only after a stable response-scoped segment identity
+  // match. Durable transcript text is authoritative on divergence. Prefix
+  // relations compute the uncovered optimistic suffix without searching for
+  // repeated text or inferring identity from content.
+  const assistantSuffixAfterDurable = (durableContent, optimisticContent, options = {}) => {
+    const durable = String(durableContent || '');
+    const optimistic = String(optimisticContent || '');
+    if (options.suffixOnly === true) {
+      const durableEnd = finiteInt(options.durableEndSequence, 0);
+      const optimisticEnd = finiteInt(options.optimisticEndSequence, 0);
+      if ((durableEnd > 0 && optimisticEnd > 0 && durableEnd >= optimisticEnd)
+        || (optimistic && durable.endsWith(optimistic))) {
+        return { suffix: '', divergent: false };
+      }
+      return { suffix: optimistic, divergent: false };
+    }
+    if (optimistic.startsWith(durable)) return { suffix: optimistic.slice(durable.length), divergent: false };
+    if (durable.startsWith(optimistic)) return { suffix: '', divergent: false };
+    return { suffix: '', divergent: true };
+  };
+
+  const reconcileTranscriptProjection = (messages, context = null) => {
     if (!Array.isArray(messages) || messages.length === 0) return Array.isArray(messages) ? messages : [];
-    const durableIDs = new Set();
+    const durableTools = new Set();
+    const durableAssistants = new Map();
+    const legacyDurableAssistants = [];
     for (const message of messages) {
       if (!message?.durable) continue;
-      for (const id of messageToolIDs(message)) durableIDs.add(id);
+      for (const key of messageToolKeys(message)) durableTools.add(key);
+      const key = message.role === 'assistant' ? assistantSegmentKey(message) : '';
+      if (message.role === 'assistant' && !key && Number.isFinite(Number(message.serverSeq))) {
+        legacyDurableAssistants.push(message);
+      }
+      if (key) {
+        if (durableAssistants.has(key)) {
+          transcriptDiagnostic('ambiguous_identity', {
+            responseId: messageResponseID(message),
+            segmentKey: key,
+            transcriptRev: context?.rev,
+          });
+        } else durableAssistants.set(key, message);
+      }
     }
 
-    const claimed = new Set();
+    const projectedDurable = new Map();
+    const claimedLegacyAssistants = new Set();
+    const claimedTools = new Set();
     const result = [];
     for (const message of messages) {
-      if (!message || (message.role !== 'tool-group' && message.role !== 'tool')) {
+      if (!message) continue;
+      if (!message.durable && message.role === 'assistant') {
+        const key = assistantSegmentKey(message);
+        let durable = key ? durableAssistants.get(key) : null;
+        if (!key && finiteInt(message.durableSeqAtSend, -1) >= -1) {
+          const afterSeq = finiteInt(message.durableSeqAtSend, -1);
+          durable = legacyDurableAssistants.find((candidate) => (
+            finiteInt(candidate.serverSeq, -1) > afterSeq && !claimedLegacyAssistants.has(candidate)
+          )) || null;
+          if (durable) claimedLegacyAssistants.add(durable);
+        }
+        if (durable) {
+          const comparison = assistantSuffixAfterDurable(durable.content, assistantSourceContent(message), {
+            suffixOnly: message.replaySuffixOnly === true,
+            durableEndSequence: durable.segmentEndSequence ?? durable.segment_end_sequence,
+            optimisticEndSequence: message.segmentEndSequence ?? message.segment_end_sequence,
+          });
+          if (comparison.divergent) {
+            transcriptDiagnostic('divergent_content', {
+              responseId: messageResponseID(message),
+              segmentKey: key,
+              transcriptRev: context?.rev,
+            });
+          } else if (comparison.suffix) {
+            const crossesUserBoundary = !key && messages.slice(messages.indexOf(durable) + 1, messages.indexOf(message)).some((candidate) => candidate?.role === 'user');
+            if (crossesUserBoundary) {
+              result.push({ ...message, content: comparison.suffix, optimisticFullContent: assistantSourceContent(message) });
+              continue;
+            }
+            const existing = projectedDurable.get(durable) || durable;
+            const projected = {
+              ...existing,
+              content: `${String(durable.content || '')}${comparison.suffix}`,
+              optimisticSuffixClientKey: String(message.clientKey || message.id || ''),
+            };
+            projectedDurable.set(durable, projected);
+            const index = result.indexOf(existing);
+            if (index >= 0) result[index] = projected;
+          }
+          continue;
+        }
         result.push(message);
         continue;
       }
 
       if (message.role === 'tool-group') {
         const tools = Array.isArray(message.tools) ? message.tools : [];
-        let stableCount = 0;
+        const owner = messageResponseID(message);
         const retained = tools.filter((tool) => {
           const id = toolEntryID(tool);
-          if (!id) return true;
-          stableCount += 1;
-          if (message.durable) {
-            if (claimed.has(id)) return false;
-            claimed.add(id);
-            return true;
-          }
-          if (durableIDs.has(id) || claimed.has(id)) return false;
-          claimed.add(id);
+          const key = toolIdentityKey(owner, id);
+          const legacyKey = toolIdentityKey('', id);
+          if (!key) return true;
+          if ((!message.durable && (durableTools.has(key) || durableTools.has(legacyKey))) || claimedTools.has(key)) return false;
+          claimedTools.add(key);
           return true;
         });
-        if (retained.length !== tools.length) message.tools = retained;
-        if (stableCount > 0 && retained.length === 0) continue;
-        result.push(message);
+        if (retained.length === 0) continue;
+        result.push(retained.length === tools.length ? message : { ...message, tools: retained });
         continue;
       }
 
-      const ids = messageToolIDs(message);
-      if (ids.size === 0) {
-        result.push(message);
-        continue;
+      if (message.role === 'tool') {
+        const keys = messageToolKeys(message);
+        const retained = [...keys].filter((key) => (
+          !claimedTools.has(key) && (message.durable || !durableTools.has(key))
+        ));
+        if (keys.size > 0 && retained.length === 0) continue;
+        retained.forEach((key) => claimedTools.add(key));
       }
-      const retainedIDs = new Set([...ids].filter((id) => (
-        message.durable ? !claimed.has(id) : (!durableIDs.has(id) && !claimed.has(id))
-      )));
-      if (retainedIDs.size === 0) continue;
-      if (Array.isArray(message.parts)) {
-        message.parts = message.parts.filter((part) => {
-          const id = partToolID(part);
-          return !id || retainedIDs.has(id);
-        });
-      }
-      retainedIDs.forEach((id) => claimed.add(id));
-      result.push(message);
+
+      const projected = projectedDurable.get(message) || message;
+      result.push(projected);
     }
     return result;
   };
@@ -130,13 +247,23 @@
       this.seqs = [];
       this.roles = '';
       this.flags = [];
+      this.responseIDs = [];
+      this.assistantSegmentOrdinals = [];
+      // Existing rows predate durable stream identity. Replay/snapshot identity
+      // can bind those stable row IDs locally until a later server rewrite
+      // persists the same identity. This survives transcript body refreshes.
+      this.legacyAssistantIdentityByID = new Map();
       this.compactionSeq = -1;
       this.compactionCount = 0;
       this.bodies = new Map();
       this.segments = [];
       this.optimistic = [];
+      this.optimisticOwned = new WeakSet();
+      this.optimisticByAssistantSegment = new Map();
       this.persistedOptimistic = new WeakSet();
       this.activeRun = null;
+      this.activeRunDurableIDsAtStart = new Set();
+      this.latestRunEpoch = 0;
       this.etag = '';
       this.viewport = { firstOrdinal: -1, lastOrdinal: -1 };
       this.pinnedSegments = new Set();
@@ -155,10 +282,17 @@
       const ids = Array.isArray(rows.ids) ? rows.ids.map(normalizedID) : [];
       const seqs = Array.isArray(rows.seqs) ? rows.seqs.map((seq) => finiteInt(seq, -1)) : [];
       const flags = Array.isArray(rows.flags) ? rows.flags.map((flag) => finiteInt(flag, 0)) : [];
+      const responseIDs = Array.isArray(rows.response_ids)
+        ? rows.response_ids.map((value) => String(value || '').trim())
+        : ids.map(() => '');
+      const assistantSegmentOrdinals = Array.isArray(rows.assistant_segment_ordinals)
+        ? rows.assistant_segment_ordinals.map((value) => finiteInt(value, -1))
+        : ids.map(() => -1);
       const roles = String(rows.roles || '');
       const incomingRev = finiteInt(envelope?.rev, this.rev);
       const rollback = incomingRev < this.rev;
-      if (ids.length !== seqs.length || ids.length !== flags.length || ids.length !== roles.length) {
+      if (ids.length !== seqs.length || ids.length !== flags.length || ids.length !== roles.length
+        || ids.length !== responseIDs.length || ids.length !== assistantSegmentOrdinals.length) {
         throw new Error('invalid transcript index parallel arrays');
       }
       const duplicateCheck = new Set(ids);
@@ -170,7 +304,9 @@
         && this.ids[divergence] === ids[divergence]
         && this.seqs[divergence] === seqs[divergence]
         && this.roles[divergence] === roles[divergence]
-        && this.flags[divergence] === flags[divergence]) {
+        && this.flags[divergence] === flags[divergence]
+        && this.responseIDs[divergence] === responseIDs[divergence]
+        && this.assistantSegmentOrdinals[divergence] === assistantSegmentOrdinals[divergence]) {
         divergence += 1;
       }
       const compactionChanged = this.compactionSeq !== finiteInt(envelope?.compaction_seq, -1)
@@ -184,6 +320,19 @@
         for (const local of this.optimistic) local.revAtSend = incomingRev;
       }
       const surviving = new Set(ids);
+      for (const id of this.legacyAssistantIdentityByID.keys()) {
+        if (!surviving.has(id)) this.legacyAssistantIdentityByID.delete(id);
+      }
+      for (let ordinal = 0; ordinal < ids.length; ordinal += 1) {
+        if (responseIDs[ordinal] && assistantSegmentOrdinals[ordinal] >= 0) {
+          this.legacyAssistantIdentityByID.delete(ids[ordinal]);
+        }
+      }
+      for (const entry of this.optimistic) {
+        if (entry?.optimistic !== true || entry?.durable === true) {
+          throw new Error('transcript optimistic registry contains a non-overlay entry');
+        }
+      }
       for (const id of this.bodies.keys()) {
         if (!surviving.has(id)) this.bodies.delete(id);
       }
@@ -192,6 +341,8 @@
       this.seqs = seqs;
       this.roles = roles;
       this.flags = flags;
+      this.responseIDs = responseIDs;
+      this.assistantSegmentOrdinals = assistantSegmentOrdinals;
       this.compactionSeq = finiteInt(envelope?.compaction_seq, -1);
       this.compactionCount = finiteInt(envelope?.compaction_count, 0);
       this.rebuildSegments(oldSegmentState);
@@ -299,6 +450,18 @@
       for (const entry of messages) {
         const id = bodyID(entry);
         if (!known.has(id)) continue;
+        const ordinal = this.ordinalForID(id);
+        if (ordinal >= 0) {
+          const inferredIdentity = this.legacyAssistantIdentityByID.get(id) || null;
+          const responseID = this.responseIDs[ordinal] || inferredIdentity?.responseId || '';
+          const segmentOrdinal = this.assistantSegmentOrdinals[ordinal] >= 0
+            ? this.assistantSegmentOrdinals[ordinal]
+            : finiteInt(inferredIdentity?.assistantSegmentOrdinal, -1);
+          if (!messageResponseID(entry) && responseID) entry.responseId = responseID;
+          if (entry.role === 'assistant' && assistantSegmentOrdinal(entry) < 0 && segmentOrdinal >= 0) {
+            entry.assistantSegmentOrdinal = segmentOrdinal;
+          }
+        }
         this.bodies.set(id, entry);
         const segmentIndex = this.segmentForID(id);
         if (segmentIndex >= 0) touched.add(segmentIndex);
@@ -498,28 +661,145 @@
       return result;
     }
 
+    rebuildOptimisticIdentityIndex() {
+      this.optimisticByAssistantSegment.clear();
+      this.optimisticOwned = new WeakSet();
+      for (const entry of this.optimistic) {
+        this.optimisticOwned.add(entry);
+        const key = entry?.role === 'assistant' ? assistantSegmentKey(entry) : '';
+        if (!key) continue;
+        if (this.optimisticByAssistantSegment.has(key) && this.optimisticByAssistantSegment.get(key) !== entry) {
+          transcriptDiagnostic('ambiguous_identity', {
+            responseId: messageResponseID(entry),
+            segmentKey: key,
+            transcriptRev: this.rev,
+          });
+          continue;
+        }
+        this.optimisticByAssistantSegment.set(key, entry);
+      }
+    }
+
+    optimisticAssistant(responseID, ordinal) {
+      return this.optimisticByAssistantSegment.get(assistantSegmentKey(responseID, ordinal)) || null;
+    }
+
+    assertMutableOverlay(entry, source = '') {
+      const valid = Boolean(
+        entry
+        && entry.optimistic === true
+        && entry.durable !== true
+        && this.optimisticOwned.has(entry)
+      );
+      if (valid) return true;
+      transcriptDiagnostic('attempted_durable_cursor_mutation', {
+        responseId: messageResponseID(entry),
+        segmentKey: assistantSegmentKey(entry),
+        transcriptRev: this.rev,
+      });
+      throw new Error(`mutable stream cursor is not a transcript-owned optimistic overlay${source ? ` (${source})` : ''}`);
+    }
+
     addOptimistic(entry, revAtSend = this.rev, options = {}) {
-      if (!entry || typeof entry !== 'object') return null;
-      const clientKey = String(entry.clientKey || entry.id || `optimistic-${Date.now()}-${this.optimistic.length}`);
-      const existing = this.optimistic.find((item) => String(item.clientKey || item.id || '') === clientKey);
+      if (!entry || typeof entry !== 'object' || entry.durable === true) return null;
+      if (this.activeRun && ['assistant', 'tool', 'tool-group'].includes(entry.role)) {
+        if (!messageResponseID(entry)) entry.responseId = this.activeRun.id;
+        entry.responseStartedRev = finiteInt(entry.responseStartedRev, this.activeRun.startedRev);
+        entry.runEpoch = finiteInt(entry.runEpoch, this.activeRun.epoch);
+      }
+      const segmentKey = entry.role === 'assistant' ? assistantSegmentKey(entry) : '';
+      const clientKey = String(entry.clientKey || segmentKey || entry.id || `optimistic-${Date.now()}-${this.optimistic.length}`);
+      const existing = (segmentKey ? this.optimisticByAssistantSegment.get(segmentKey) : null)
+        || this.optimistic.find((item) => String(item.clientKey || item.id || '') === clientKey);
       if (existing) {
+        const previousAssistantContent = existing.role === 'assistant' ? String(existing.content || '') : '';
+        const previousRevAtSend = finiteInt(existing.revAtSend, finiteInt(revAtSend, this.rev));
+        const previousDurableSeqAtSend = finiteInt(existing.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1);
+        Object.assign(existing, entry);
+        existing.clientKey = clientKey;
+        existing.optimistic = true;
+        this.optimisticOwned.add(existing);
+        delete existing.durable;
+        existing.revAtSend = finiteInt(existing.revAtSend, previousRevAtSend);
+        existing.durableSeqAtSend = finiteInt(existing.durableSeqAtSend, previousDurableSeqAtSend);
+        if (existing.role === 'assistant') {
+          const incomingContent = String(entry.content || '');
+          if (previousAssistantContent.startsWith(incomingContent)) existing.content = previousAssistantContent;
+        }
+        if (segmentKey) this.optimisticByAssistantSegment.set(segmentKey, existing);
         if (options.persisted === true) this.persistedOptimistic.add(existing);
         return existing;
       }
       const optimistic = entry;
       optimistic.clientKey = clientKey;
       optimistic.optimistic = true;
+      delete optimistic.durable;
       optimistic.revAtSend = finiteInt(entry.revAtSend, finiteInt(revAtSend, this.rev));
       optimistic.durableSeqAtSend = finiteInt(entry.durableSeqAtSend, this.seqs.length ? this.seqs[this.seqs.length - 1] : -1);
       this.optimistic.push(optimistic);
+      this.optimisticOwned.add(optimistic);
+      if (segmentKey) this.optimisticByAssistantSegment.set(segmentKey, optimistic);
       if (options.persisted === true) this.persistedOptimistic.add(optimistic);
       return optimistic;
     }
 
-    setActiveRun(id, startedRev = 0) {
+    setActiveRun(id, startedRev = 0, epoch = 0, options = {}) {
       const normalized = String(id || '').trim();
-      this.activeRun = normalized ? { id: normalized, startedRev: finiteInt(startedRev, 0) } : null;
-      return this.activeRun;
+      const nextEpoch = Math.max(0, finiteInt(epoch, 0));
+      if (normalized) {
+        const observedCreatedEpoch = finiteInt(options.observedCreatedEpoch, this.latestRunEpoch);
+        if ((nextEpoch > 0 && nextEpoch < this.latestRunEpoch)
+          || observedCreatedEpoch < this.latestRunEpoch) {
+          transcriptDiagnostic('stale_status_rejection', {
+            responseId: normalized,
+            transcriptRev: this.rev,
+            startRev: startedRev,
+          });
+          return this.activeRun;
+        }
+        if (nextEpoch > 0) this.latestRunEpoch = Math.max(this.latestRunEpoch, nextEpoch);
+        if (this.activeRun?.id !== normalized) {
+          this.activeRunDurableIDsAtStart = new Set(this.ids);
+          // A status/snapshot attach can arrive after the first durable prefix.
+          // Only the assistant tail after the latest durable user boundary is a
+          // structurally safe legacy candidate; earlier history remains excluded.
+          if (finiteInt(startedRev, 0) < this.rev) {
+            let lastUserOrdinal = -1;
+            for (let ordinal = this.roles.length - 1; ordinal >= 0; ordinal -= 1) {
+              if (this.roles[ordinal] === 'u') {
+                lastUserOrdinal = ordinal;
+                break;
+              }
+            }
+            for (let ordinal = lastUserOrdinal + 1; ordinal < this.ids.length; ordinal += 1) {
+              if (this.roles[ordinal] === 'a') this.activeRunDurableIDsAtStart.delete(this.ids[ordinal]);
+            }
+          }
+        }
+        this.activeRun = {
+          id: normalized,
+          startedRev: finiteInt(startedRev, 0),
+          ...((nextEpoch || this.latestRunEpoch) > 0 ? { epoch: nextEpoch || this.latestRunEpoch } : {}),
+        };
+        return this.activeRun;
+      }
+      const expectedResponseID = String(options.responseId || '').trim();
+      const sampledEpoch = Math.max(0, finiteInt(options.sampledEpoch ?? nextEpoch, 0));
+      if (this.activeRun && (
+        (expectedResponseID && this.activeRun.id !== expectedResponseID)
+        || (sampledEpoch > 0 && sampledEpoch < this.latestRunEpoch)
+        || (finiteInt(options.observedCreatedEpoch, this.latestRunEpoch) < this.latestRunEpoch)
+      )) {
+        transcriptDiagnostic('stale_status_rejection', {
+          responseId: expectedResponseID || this.activeRun.id,
+          transcriptRev: this.rev,
+          startRev: this.activeRun.startedRev,
+        });
+        return this.activeRun;
+      }
+      this.activeRun = null;
+      this.activeRunDurableIDsAtStart = new Set();
+      return null;
     }
 
     segmentAfterSequence(sequence) {
@@ -534,14 +814,14 @@
       return low < this.seqs.length ? this.segmentForOrdinal(low) : -1;
     }
 
-    persistedOptimisticToolSegmentIndexes(limit = TRANSCRIPT_MATERIALIZE_BATCH_TURNS) {
+    persistedOptimisticSegmentIndexes(limit = TRANSCRIPT_MATERIALIZE_BATCH_TURNS) {
       if (this.activeRun || this.optimistic.length === 0) return [];
       const max = Math.max(1, finiteInt(limit, TRANSCRIPT_MATERIALIZE_BATCH_TURNS));
       const selected = new Set();
       for (const local of this.optimistic) {
         if (selected.size >= max) break;
         if (!this.persistedOptimistic.has(local)) continue;
-        if (local.role !== 'tool-group' && local.role !== 'tool') continue;
+        if (!['assistant', 'tool-group', 'tool'].includes(local.role)) continue;
         if (this.rev <= finiteInt(local.revAtSend, this.rev)) continue;
         const segmentIndex = this.segmentAfterSequence(local.durableSeqAtSend);
         if (segmentIndex >= 0 && this.segments[segmentIndex]?.state === 'evicted') selected.add(segmentIndex);
@@ -557,80 +837,218 @@
       return ids;
     }
 
+    bindLegacyAssistantIdentity(responseID, segmentOrdinal, durable) {
+      const owner = String(responseID || '').trim();
+      const ordinal = finiteInt(segmentOrdinal, -1);
+      const rowOrdinal = finiteInt(durable?.ordinal, -1);
+      if (!owner || ordinal < 0 || rowOrdinal < 0 || rowOrdinal >= this.ids.length || this.roles[rowOrdinal] !== 'a') {
+        return false;
+      }
+      const id = this.ids[rowOrdinal];
+      const existingResponseID = this.responseIDs[rowOrdinal] || '';
+      const existingSegmentOrdinal = this.assistantSegmentOrdinals[rowOrdinal];
+      if (existingResponseID && (existingResponseID !== owner || existingSegmentOrdinal !== ordinal)) {
+        transcriptDiagnostic('ambiguous_identity', {
+          responseId: owner,
+          segmentKey: assistantSegmentKey(owner, ordinal),
+          transcriptRev: this.rev,
+        });
+        return false;
+      }
+      this.legacyAssistantIdentityByID.set(id, { responseId: owner, assistantSegmentOrdinal: ordinal });
+      if (!existingResponseID) {
+        this.responseIDs[rowOrdinal] = owner;
+        this.assistantSegmentOrdinals[rowOrdinal] = ordinal;
+      }
+      if (durable?.body) {
+        durable.body.responseId = owner;
+        durable.body.assistantSegmentOrdinal = ordinal;
+      }
+      return true;
+    }
+
+    durableAssistant(responseID, ordinal) {
+      const key = assistantSegmentKey(responseID, ordinal);
+      if (!key) return null;
+      const legacy = [];
+      for (let rowOrdinal = 0; rowOrdinal < this.ids.length; rowOrdinal += 1) {
+        if (this.roles[rowOrdinal] !== 'a') continue;
+        const body = this.bodies.get(this.ids[rowOrdinal]);
+        if (!body) continue;
+        const part = (body.parts || []).find((candidate) => candidate?.type === 'text' && String(candidate.text || ''));
+        if (!part) continue;
+        const bodyKey = assistantSegmentKey(body);
+        if (bodyKey === key) return { body, content: String(part.text || ''), ordinal: rowOrdinal };
+        if (!bodyKey && !this.activeRunDurableIDsAtStart.has(this.ids[rowOrdinal])) {
+          legacy.push({ body, content: String(part.text || ''), ordinal: rowOrdinal });
+        }
+      }
+      if (this.activeRun?.id === String(responseID || '').trim()) {
+        return legacy[Math.max(0, finiteInt(ordinal, 0))] || null;
+      }
+      return null;
+    }
+
+    durableAssistantParts() {
+      const result = [];
+      for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
+        if (this.roles[ordinal] !== 'a') continue;
+        const body = this.bodies.get(this.ids[ordinal]);
+        if (!body) continue;
+        for (const [partIndex, part] of (body.parts || []).entries()) {
+          if (part?.type !== 'text' || !String(part.text || '')) continue;
+          result.push({
+            key: `${ordinal}:${partIndex}`,
+            ordinal,
+            partIndex,
+            sequence: this.seqs[ordinal],
+            segmentEndSequence: finiteInt(body.segmentEndSequence ?? body.segment_end_sequence, 0),
+            responseId: messageResponseID(body) || this.responseIDs[ordinal] || '',
+            segmentKey: assistantSegmentKey(
+              messageResponseID(body) || this.responseIDs[ordinal] || '',
+              assistantSegmentOrdinal(body) >= 0 ? assistantSegmentOrdinal(body) : this.assistantSegmentOrdinals[ordinal]
+            ),
+            content: String(part.text || '')
+          });
+        }
+      }
+      return result;
+    }
+
     reconcileOptimistic() {
       if (this.optimistic.length === 0) return [];
       const kept = [];
       const removed = [];
-      const consumed = new Set();
-      const durableToolIDs = this.durableToolIDs();
-      const claimedOptimisticToolIDs = new Set();
+      const consumedRows = new Set();
+      const durableAssistantParts = this.durableAssistantParts();
+      const durableAssistantByKey = new Map();
+      for (const candidate of durableAssistantParts) {
+        if (!candidate.segmentKey) continue;
+        if (durableAssistantByKey.has(candidate.segmentKey)) {
+          transcriptDiagnostic('ambiguous_identity', {
+            responseId: candidate.responseId,
+            segmentKey: candidate.segmentKey,
+            transcriptRev: this.rev,
+          });
+          continue;
+        }
+        durableAssistantByKey.set(candidate.segmentKey, candidate);
+      }
+      const durableToolKeys = new Set();
+      for (const entry of this.bodies.values()) {
+        for (const key of messageToolKeys(entry)) durableToolKeys.add(key);
+      }
+      const claimedOptimisticToolKeys = new Set();
+
       for (const local of this.optimistic) {
         const localIsTool = local.role === 'tool-group' || local.role === 'tool';
         if (localIsTool) {
-          const localIDs = messageToolIDs(local);
-          if (localIDs.size > 0) {
-            const uncovered = new Set([...localIDs].filter((id) => (
-              !durableToolIDs.has(id) && !claimedOptimisticToolIDs.has(id)
-            )));
+          const owner = messageResponseID(local);
+          const localKeys = new Map([...messageToolIDs(local)].map((id) => [toolIdentityKey(owner, id), id]));
+          const uncovered = new Set([...localKeys.entries()].filter(([key, id]) => (
+            key
+            && !durableToolKeys.has(key)
+            && !durableToolKeys.has(toolIdentityKey('', id))
+            && !claimedOptimisticToolKeys.has(key)
+          )).map(([key]) => key));
+          if (localKeys.size > 0) {
             if (local.role === 'tool-group' && Array.isArray(local.tools)) {
-              local.tools = local.tools.filter((tool) => {
-                const id = toolEntryID(tool);
-                return !id || uncovered.has(id);
-              });
+              local.tools = local.tools.filter((tool) => uncovered.has(toolIdentityKey(owner, toolEntryID(tool))));
             } else if (local.role === 'tool' && Array.isArray(local.parts)) {
               local.parts = local.parts.filter((part) => {
                 const id = partToolID(part);
-                return !id || uncovered.has(id);
+                return !id || uncovered.has(toolIdentityKey(owner, id));
               });
             }
             if (uncovered.size === 0) {
               removed.push(local);
               continue;
             }
-            uncovered.forEach((id) => claimedOptimisticToolIDs.add(id));
+            uncovered.forEach((key) => claimedOptimisticToolKeys.add(key));
           }
         }
 
+        if (local.role === 'assistant') {
+          const key = assistantSegmentKey(local);
+          const durablePart = key ? durableAssistantByKey.get(key) : null;
+          if (durablePart) {
+            const comparison = assistantSuffixAfterDurable(durablePart.content, assistantSourceContent(local), {
+              suffixOnly: local.replaySuffixOnly === true,
+              durableEndSequence: durablePart.segmentEndSequence,
+              optimisticEndSequence: local.segmentEndSequence ?? local.segment_end_sequence,
+            });
+            if (comparison.divergent) {
+              transcriptDiagnostic('divergent_content', {
+                responseId: messageResponseID(local),
+                segmentKey: key,
+                transcriptRev: this.rev,
+              });
+              removed.push(local);
+            } else if (this.activeRun?.id === messageResponseID(local)) {
+              // A covered live overlay remains the sole mutable cursor until the
+              // response finalizes; fresh deltas must never target its durable projection.
+              kept.push(local);
+            } else if (comparison.suffix) kept.push(local);
+            else removed.push(local);
+            continue;
+          }
+          if (!key) {
+            const legacyPart = durableAssistantParts.find((candidate) => candidate.sequence > finiteInt(local.durableSeqAtSend, -1));
+            if (legacyPart) {
+              const comparison = assistantSuffixAfterDurable(legacyPart.content, assistantSourceContent(local));
+              if (comparison.suffix) kept.push(local);
+              else removed.push(local);
+              continue;
+            }
+          }
+        }
+
+        const afterSeq = finiteInt(local.durableSeqAtSend, -1);
         if (this.rev <= finiteInt(local.revAtSend, this.rev)) {
           kept.push(local);
           continue;
         }
-        const afterSeq = finiteInt(local.durableSeqAtSend, -1);
         let matched = false;
-        if (local.role === 'user') {
+        if (local.role === 'user' || (local.role === 'assistant' && !assistantSegmentKey(local))) {
+          const wantedRole = local.role === 'user' ? 'u' : 'a';
           for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
-            if (this.seqs[ordinal] <= afterSeq || consumed.has(ordinal)) continue;
-            if (this.roles[ordinal] === 'u' && this.bodies.has(this.ids[ordinal])) {
-              consumed.add(ordinal);
-              matched = true;
-              break;
-            }
-          }
-        } else if (local.role === 'assistant') {
-          for (let ordinal = 0; ordinal < this.ids.length; ordinal += 1) {
-            if (this.seqs[ordinal] <= afterSeq || consumed.has(ordinal)) continue;
-            if (this.roles[ordinal] === 'a' && this.bodies.has(this.ids[ordinal])) {
-              consumed.add(ordinal);
+            if (this.seqs[ordinal] <= afterSeq || consumedRows.has(ordinal)) continue;
+            if (this.roles[ordinal] === wantedRole && this.bodies.has(this.ids[ordinal])) {
+              consumedRows.add(ordinal);
               matched = true;
               break;
             }
           }
         }
-        // Reaching a newer durable revision with no active run is the terminal
-        // authority for completed tool UI. An unmatched completed tool cannot
-        // represent queued input and must not remain persisted at the tail.
         const completedTool = localIsTool
           && ['done', 'error', 'failed', 'cancelled'].includes(String(local.status || '').toLowerCase());
         if (matched || (!this.activeRun && completedTool)) removed.push(local);
         else kept.push(local);
       }
       this.optimistic = kept;
+      this.rebuildOptimisticIdentityIndex();
       return removed;
     }
 
     clearTransientOptimistic() {
       const removed = this.optimistic.filter((entry) => entry?.transient);
       this.optimistic = this.optimistic.filter((entry) => !entry?.transient);
+      this.rebuildOptimisticIdentityIndex();
+      return removed;
+    }
+
+    removeOptimistic(entryOrKey) {
+      const key = String(
+        entryOrKey && typeof entryOrKey === 'object'
+          ? (entryOrKey.clientKey || entryOrKey.id || '')
+          : (entryOrKey || '')
+      );
+      if (!key) return [];
+      const removed = this.optimistic.filter((entry) => String(entry?.clientKey || entry?.id || '') === key);
+      if (removed.length > 0) {
+        this.optimistic = this.optimistic.filter((entry) => String(entry?.clientKey || entry?.id || '') !== key);
+        this.rebuildOptimisticIdentityIndex();
+      }
       return removed;
     }
 
@@ -710,7 +1128,8 @@
 
     _checkInvariants() {
       const length = this.ids.length;
-      if (this.seqs.length !== length || this.flags.length !== length || this.roles.length !== length) {
+      if (this.seqs.length !== length || this.flags.length !== length || this.roles.length !== length
+        || this.responseIDs.length !== length || this.assistantSegmentOrdinals.length !== length) {
         throw new Error('transcript skeleton arrays differ in length');
       }
       if (new Set(this.ids).size !== length) throw new Error('transcript skeleton IDs are not unique');
@@ -782,6 +1201,8 @@
         ids: unique.map(bodyID),
         seqs: unique.map(bodySeq),
         roles: unique.map((message) => roleCode(message.role)).join(''),
+        response_ids: unique.map((message) => messageResponseID(message)),
+        assistant_segment_ordinals: unique.map((message) => assistantSegmentOrdinal(message)),
         flags: unique.map((message) => {
           let flags = message.compaction_tail ? TRANSCRIPT_FLAG_COMPACTION_TAIL : 0;
           if (!Array.isArray(message.parts) || message.parts.length === 0) flags |= TRANSCRIPT_FLAG_EMPTY_BODY;
@@ -806,7 +1227,10 @@
     TRANSCRIPT_FLAG_COMPACTION_TAIL,
     TRANSCRIPT_FLAG_EMPTY_BODY,
     transcriptStoreFromMessages,
-    reconcileToolCallProjection,
+    reconcileTranscriptProjection,
+    assistantSegmentKey,
+    transcriptToolIdentityKey: toolIdentityKey,
+    transcriptDiagnostic,
     transcriptRoleCode: roleCode,
     transcriptRoleName: roleName,
     __transcriptStats

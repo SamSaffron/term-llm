@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -163,11 +164,11 @@ func TestResponseRunFinalRevisionReadDoesNotBlockEventMutex(t *testing.T) {
 	}
 }
 
-func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
+func TestEncodeTextDeltaPayloadWithIdentityMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
 	delta := string([]byte{'o', 'k', 0xff, '!'})
-	data, err := encodeTextDeltaPayload(2, delta, 7)
+	data, err := encodeTextDeltaPayloadWithIdentity("resp_identity", 3, 2, 1, 5, delta, 7)
 	if err != nil {
-		t.Fatalf("encodeTextDeltaPayload() error = %v", err)
+		t.Fatalf("encodeTextDeltaPayloadWithIdentity() error = %v", err)
 	}
 
 	var got map[string]any
@@ -177,8 +178,8 @@ func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
 	if got["delta"] != "ok�!" {
 		t.Fatalf("delta = %q, want replacement-char-normalized string", got["delta"])
 	}
-	if got["output_index"] != float64(2) || got["sequence_number"] != float64(7) {
-		t.Fatalf("payload = %#v, want output_index=2 sequence_number=7", got)
+	if got["response_id"] != "resp_identity" || got["run_epoch"] != float64(3) || got["assistant_segment_ordinal"] != float64(1) || got["segment_start_sequence"] != float64(5) || got["output_index"] != float64(2) || got["sequence_number"] != float64(7) {
+		t.Fatalf("payload = %#v, want stable response/segment identity and sequence", got)
 	}
 }
 
@@ -390,6 +391,37 @@ func TestAppendResponseRunEventSuppressesServerToolMetadata(t *testing.T) {
 	}
 }
 
+func TestSuppressedServerToolStillAdvancesAssistantSegmentIdentity(t *testing.T) {
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_suppressed_boundary", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	for _, event := range []llm.Event{
+		{Type: llm.EventTextDelta, Text: "before"},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-hidden", Name: "echo"}},
+		{Type: llm.EventTextDelta, Text: "after"},
+	} {
+		if err := server.appendResponseRunEvent(runtime, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+	if len(run.events) != 3 || run.events[1].Event != "response.output_text.new_segment" {
+		t.Fatalf("events = %+v, want text/boundary/text without hidden tool metadata", run.events)
+	}
+	var first, second map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(run.events[2].Data, &second); err != nil {
+		t.Fatal(err)
+	}
+	if first["assistant_segment_ordinal"] != float64(0) || second["assistant_segment_ordinal"] != float64(1) {
+		t.Fatalf("segment identities first=%v second=%v", first, second)
+	}
+}
+
 func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
@@ -421,6 +453,39 @@ func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
 	}
 	if !sawFileChange {
 		t.Fatalf("events = %+v, want response.file_change for non-server tool", run.events)
+	}
+}
+
+func TestStreamResponseRunEventsReportsAuthoritativeReplayBoundary(t *testing.T) {
+	run := newResponseRun("resp_replay_boundary", "sess_replay_boundary", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
+		t.Fatalf("append created event: %v", err)
+	}
+	if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "historical"}); err != nil {
+		t.Fatalf("append text event: %v", err)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
+
+	for _, tc := range []struct {
+		name  string
+		after int64
+		want  string
+	}{
+		{name: "replayed events", after: 0, want: "2"},
+		{name: "empty replay", after: 2, want: "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server := &serveServer{}
+			server.streamResponseRunEvents(context.Background(), recorder, run, tc.after)
+			response := recorder.Result()
+			defer response.Body.Close()
+			if got := response.Header.Get("X-Term-LLM-Replay-Through"); got != tc.want {
+				t.Fatalf("X-Term-LLM-Replay-Through = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -555,8 +620,8 @@ func TestResponseRunCompactionKeepsReplayWindowInOrder(t *testing.T) {
 	run.maxRetainedEvents = 3
 
 	for i := 0; i < 8; i++ {
-		if err := run.appendTextDeltaEvent(0, ""); err != nil {
-			t.Fatalf("appendTextDeltaEvent failed at %d: %v", i, err)
+		if err := run.appendTextDeltaSegmentEvent(0, 0, ""); err != nil {
+			t.Fatalf("appendTextDeltaSegmentEvent failed at %d: %v", i, err)
 		}
 	}
 
@@ -732,8 +797,8 @@ func TestResponseRunInteractiveRecoveryDoesNotDisableCompaction(t *testing.T) {
 	}
 
 	for i := 0; i < 6; i++ {
-		if err := run.appendTextDeltaEvent(0, "x"); err != nil {
-			t.Fatalf("appendTextDeltaEvent failed at %d: %v", i, err)
+		if err := run.appendTextDeltaSegmentEvent(0, 0, "x"); err != nil {
+			t.Fatalf("appendTextDeltaSegmentEvent failed at %d: %v", i, err)
 		}
 	}
 
@@ -775,15 +840,17 @@ func TestResponseRunInteractiveRecoveryDoesNotDisableCompaction(t *testing.T) {
 
 func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	run := newResponseRun("resp_interjection", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	streamState := newResponseRunStreamState("mock", "")
+	server := &serveServer{}
 
-	if err := run.appendTextDeltaEvent(0, "before"); err != nil {
-		t.Fatalf("appendTextDeltaEvent before: %v", err)
+	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "before"}); err != nil {
+		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
 	}
-	if err := run.appendEvent("response.interjection", map[string]any{"text": "check X"}); err != nil {
+	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventInterjection, Text: "check X"}); err != nil {
 		t.Fatalf("append interjection: %v", err)
 	}
-	if err := run.appendTextDeltaEvent(0, "after"); err != nil {
-		t.Fatalf("appendTextDeltaEvent after: %v", err)
+	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "after"}); err != nil {
+		t.Fatalf("appendTextDeltaSegmentEvent after: %v", err)
 	}
 
 	recovery := run.recoveryPayloadLocked()
@@ -808,6 +875,12 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	}
 	if got := messages[1]["interruptState"]; got != "interject" {
 		t.Fatalf("messages[1].interruptState = %v, want interject", got)
+	}
+	if got := messages[2]["content"]; got != "after" {
+		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+	if first, second := messages[0]["assistant_segment_ordinal"], messages[2]["assistant_segment_ordinal"]; first != 0 || second != 1 {
+		t.Fatalf("assistant segment ordinals = %v, %v; want 0, 1 across interjection", first, second)
 	}
 	atts := []map[string]any{{"name": "image 1", "type": "image/png"}}
 	if err := run.appendEvent("response.interjection", map[string]any{"text": "see image", "interjection_id": "img-1", "attachments": atts}); err != nil {
@@ -1017,5 +1090,77 @@ func TestStreamResponseRunEventsWritesTerminalErrorWhenSubscriberOverflows(t *te
 	}
 	if streamErrorIndex > doneIndex {
 		t.Fatalf("stream_error should be emitted before [DONE], got: %q", body)
+	}
+}
+
+func TestResponseRunTextDeltaCarriesStableSegmentIdentityAcrossReplayAndRecovery(t *testing.T) {
+	run := newResponseRun("resp_segment_identity", "session_identity", "", "test", time.Now().Unix(), nil)
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	if err := manager.create(run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := run.appendTextDeltaSegmentEvent(0, 0, "prefix"); err != nil {
+		t.Fatalf("append first segment: %v", err)
+	}
+	if err := run.appendEvent("response.output_text.new_segment", map[string]any{
+		"assistant_segment_ordinal": 1,
+	}); err != nil {
+		t.Fatalf("append boundary: %v", err)
+	}
+	if err := run.appendTextDeltaSegmentEvent(1, 1, "suffix"); err != nil {
+		t.Fatalf("append second segment: %v", err)
+	}
+
+	subscription := run.subscribe(0)
+	if len(subscription.replay) != 3 {
+		t.Fatalf("replay events=%d want 3", len(subscription.replay))
+	}
+	for _, event := range []responseRunEvent{subscription.replay[0], subscription.replay[2]} {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatalf("decode event: %v", err)
+		}
+		if payload["response_id"] != run.id || int64(payload["run_epoch"].(float64)) != run.runEpoch {
+			t.Fatalf("event owner=%v epoch=%v", payload["response_id"], payload["run_epoch"])
+		}
+	}
+	var first, second map[string]any
+	_ = json.Unmarshal(subscription.replay[0].Data, &first)
+	_ = json.Unmarshal(subscription.replay[2].Data, &second)
+	if first["assistant_segment_ordinal"] != float64(0) || second["assistant_segment_ordinal"] != float64(1) {
+		t.Fatalf("segment ordinals first=%v second=%v", first, second)
+	}
+	if first["segment_start_sequence"] != float64(1) || second["segment_start_sequence"] != float64(3) {
+		t.Fatalf("segment start sequences first=%v second=%v", first, second)
+	}
+
+	snapshot := run.snapshot()
+	recovery := snapshot["recovery"].(map[string]any)
+	messages := recovery["messages"].([]map[string]any)
+	if len(messages) != 2 {
+		t.Fatalf("recovery assistant messages=%d want 2", len(messages))
+	}
+	for ordinal, message := range messages {
+		if message["response_id"] != run.id || message["assistant_segment_ordinal"] != ordinal {
+			t.Fatalf("recovery[%d]=%v", ordinal, message)
+		}
+	}
+}
+
+func TestResponseRunManagerAssignsMonotonicSessionEpochs(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	defer manager.Close()
+	beforeCreate := time.Now().UnixMilli()
+	first := newResponseRun("resp_epoch_A", "session_epoch", "", "test", 1, nil)
+	second := newResponseRun("resp_epoch_B", "session_epoch", "", "test", 2, nil)
+	if err := manager.create(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.create(second); err != nil {
+		t.Fatal(err)
+	}
+	if first.runEpoch < beforeCreate || second.runEpoch <= first.runEpoch {
+		t.Fatalf("restart-safe epochs before=%d first=%d second=%d", beforeCreate, first.runEpoch, second.runEpoch)
 	}
 }

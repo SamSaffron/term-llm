@@ -244,6 +244,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			if run, ok := s.responseRuns.get(activeResponseID); ok && run != nil {
 				run.mu.Lock()
 				resp["started_rev"] = run.startedRev
+				resp["run_epoch"] = run.runEpoch
 				run.mu.Unlock()
 			}
 		}

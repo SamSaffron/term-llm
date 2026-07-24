@@ -2052,6 +2052,21 @@ const sanitizeMessage = (msg) => {
     created: asTimestamp(msg.created)
   };
 
+  const responseId = String(msg.responseId || msg.response_id || '').trim();
+  if (responseId) base.responseId = responseId;
+  const segmentOrdinal = Number(msg.assistantSegmentOrdinal ?? msg.assistant_segment_ordinal);
+  if (role === 'assistant' && Number.isFinite(segmentOrdinal) && segmentOrdinal >= 0) {
+    base.assistantSegmentOrdinal = Math.trunc(segmentOrdinal);
+  }
+  const segmentStartSequence = Number(msg.segmentStartSequence ?? msg.segment_start_sequence);
+  const segmentEndSequence = Number(msg.segmentEndSequence ?? msg.segment_end_sequence);
+  if (Number.isFinite(segmentStartSequence) && segmentStartSequence > 0) base.segmentStartSequence = Math.trunc(segmentStartSequence);
+  if (Number.isFinite(segmentEndSequence) && segmentEndSequence > 0) base.segmentEndSequence = Math.trunc(segmentEndSequence);
+  const runEpoch = Number(msg.runEpoch ?? msg.run_epoch);
+  if (Number.isFinite(runEpoch) && runEpoch > 0) base.runEpoch = Math.trunc(runEpoch);
+  if (msg.optimistic === true) base.optimistic = true;
+  if (typeof msg.clientKey === 'string' && msg.clientKey) base.clientKey = msg.clientKey;
+
   if (role === 'user' || role === 'assistant' || role === 'error') {
     base.content = String(msg.content || '');
     if (role === 'assistant' && msg.usage && typeof msg.usage === 'object') {
@@ -2166,6 +2181,14 @@ const sanitizeSession = (session) => {
     lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,
     activeResponseId: typeof session.activeResponseId === 'string' ? session.activeResponseId : null,
     lastSequenceNumber: Number.isFinite(Number(session.lastSequenceNumber)) ? Number(session.lastSequenceNumber) : 0,
+    responseEventCursors: session.responseEventCursors && typeof session.responseEventCursors === 'object'
+      ? Object.fromEntries(Object.entries(session.responseEventCursors).slice(-16).map(([id, cursor]) => [String(id), {
+          appliedSequence: Math.max(0, Number(cursor?.appliedSequence) || 0),
+          terminalSequence: Math.max(0, Number(cursor?.terminalSequence) || 0),
+          finalized: Boolean(cursor?.finalized),
+        }]))
+      : {},
+    latestRunEpoch: Math.max(0, Number(session.latestRunEpoch) || 0),
     sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null,
     lastUsage: session.lastUsage && typeof session.lastUsage === 'object' ? session.lastUsage : null,
     activeModel: typeof session.activeModel === 'string' ? session.activeModel : '',
