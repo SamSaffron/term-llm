@@ -90,10 +90,13 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		snap.gitRoot = repo.Root
 	}
 
-	sessionPaths := recorder.SessionPaths(ctx, sessionID)
-	// When the caller supplied bounded hints, trust that scope and avoid the
-	// repo-wide git status fallback. Commands that omit hints still get the
-	// broader best-effort dirty/untracked detection below.
+	var sessionPaths []string
+	if len(patterns) == 0 {
+		sessionPaths = recorder.SessionPaths(ctx, sessionID)
+	}
+	// When the caller supplied bounded hints, trust that scope and avoid both
+	// historical session paths and the repo-wide git status fallback. Commands
+	// that omit hints still get the broader best-effort detection below.
 	hasBoundedHints := len(patterns) > 0 || len(sessionPaths) > 0
 	if snap.gitRoot != "" && !hasBoundedHints {
 		snap.gitStatus = gitStatusPorcelain(ctx, snap.gitRoot)
