@@ -6537,13 +6537,19 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
       compaction_count: 0,
       active_response_id: 'resp_assistant_tail',
       started_rev: 7,
-      rows: { ids: [401, 402], seqs: [401, 402], roles: 'ua', flags: [0, 0] }
+      rows: {
+        ids: [401, 402], seqs: [401, 402], roles: 'ua', flags: [0, 0],
+        response_ids: ['', 'resp_assistant_tail'], assistant_segment_ordinals: [-1, 0]
+      }
     }
     : {
       rev: 8,
       compaction_seq: -1,
       compaction_count: 0,
-      rows: { ids: [401, 403], seqs: [401, 403], roles: 'ua', flags: [0, 0] }
+      rows: {
+        ids: [401, 403], seqs: [401, 403], roles: 'ua', flags: [0, 0],
+        response_ids: ['', 'resp_assistant_tail'], assistant_segment_ordinals: [-1, 0]
+      }
     };
   const transcriptBodies = () => ({
     rev: phase === 'status' ? 7 : 8,
@@ -6553,6 +6559,8 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
         id: phase === 'status' ? 402 : 403,
         sequence: phase === 'status' ? 402 : 403,
         role: 'assistant',
+        response_id: 'resp_assistant_tail',
+        assistant_segment_ordinal: 0,
         created_at: 2000,
         parts: [{
           type: 'text',
@@ -6600,8 +6608,10 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   session.transcript.setActiveRun('resp_assistant_tail', 7);
   const optimistic = {
     id: 'msg_assistant_tail',
-    clientKey: 'msg_assistant_tail',
+    clientKey: 'resp_assistant_tail:assistant:0',
     role: 'assistant',
+    responseId: 'resp_assistant_tail',
+    assistantSegmentOrdinal: 0,
     content: 'durable prefix plus optimistic suffix',
     revAtSend: 7,
     durableSeqAtSend: 401,
@@ -6632,6 +6642,15 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
     fail(name, 'partial durable coverage retired the live suffix source', JSON.stringify(session.transcript.optimistic));
     return;
   }
+
+  // Reproduce the live-only failure: a cursor/recovery race leaves the completed
+  // response overlay with a stale stable-looking ordinal. Ordinary identity
+  // reconciliation cannot pair ordinal 99 with durable ordinal 0, but terminal
+  // authority must still retire all server output owned by this response.
+  const driftedOverlay = session.transcript.optimistic[0];
+  driftedOverlay.assistantSegmentOrdinal = 99;
+  driftedOverlay.clientKey = 'resp_assistant_tail:assistant:99';
+  session.transcript.rebuildOptimisticIdentityIndex();
 
   phase = 'terminal';
   const terminalLoaded = await app.noteTranscriptTerminal(session, 8);
