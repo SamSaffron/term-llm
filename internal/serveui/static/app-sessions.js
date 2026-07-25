@@ -1033,13 +1033,36 @@ const TRANSCRIPT_OPTIMISTIC_LIMIT = 256;
 const TRANSCRIPT_EMPTY_BODY_FLAG = Number(window.TRANSCRIPT_FLAG_EMPTY_BODY || 2);
 const findSessionById = (sessionId) => state.sessions.find((item) => item?.id === sessionId) || null;
 
+// Version 2 restricts local persistence to client-owned intent. Version 1 (and
+// the unversioned legacy shape) also stored assistant/tool recovery shadows,
+// which could shadow durable rows after a reload. Migration keeps pending user
+// intent and drops every server-produced projection.
+const TRANSCRIPT_OPTIMISTIC_VERSION = 2;
+
+const isClientOwnedIntentEntry = (entry) => (
+  window.transcriptIsClientOwnedIntent?.(entry) === true
+);
+
+const migrateTranscriptOptimisticSessions = (sessions) => {
+  const migrated = {};
+  for (const [sessionId, entries] of Object.entries(sessions || {})) {
+    if (!Array.isArray(entries)) continue;
+    const intent = entries.filter(isClientOwnedIntentEntry);
+    if (intent.length > 0) migrated[sessionId] = intent;
+  }
+  return migrated;
+};
+
 const readTranscriptOptimisticRegistry = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.optimisticTranscript) || 'null');
-    if (saved?.sessions && typeof saved.sessions === 'object') return saved.sessions;
-    if (saved?.sessionId && Array.isArray(saved.entries)) {
-      return { [saved.sessionId]: saved.entries };
-    }
+    const sessions = saved?.sessions && typeof saved.sessions === 'object'
+      ? saved.sessions
+      : (saved?.sessionId && Array.isArray(saved.entries) ? { [saved.sessionId]: saved.entries } : null);
+    if (!sessions) return {};
+    // Every payload is filtered, not just older versions: a downgraded tab or a
+    // hand-edited value must never be able to reintroduce assistant/tool output.
+    return migrateTranscriptOptimisticSessions(sessions);
   } catch {
     // Optimistic recovery is best-effort; durable transcript bodies never live here.
   }
@@ -1055,7 +1078,10 @@ const rekeyTranscriptOptimisticStorage = (previousId, nextId) => {
     const unique = new Map(merged.map((entry) => [String(entry?.clientKey || entry?.id || ''), entry]));
     sessions[nextId] = [...unique.values()].slice(-TRANSCRIPT_OPTIMISTIC_LIMIT);
     delete sessions[previousId];
-    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ version: 1, sessions }));
+    localStorage.setItem(
+      STORAGE_KEYS.optimisticTranscript,
+      JSON.stringify({ version: TRANSCRIPT_OPTIMISTIC_VERSION, sessions })
+    );
   } catch {
     // Identity reconciliation must succeed even when storage is unavailable.
   }
@@ -1067,9 +1093,14 @@ const ensureSessionTranscript = (session) => {
     session.transcript = new window.TranscriptStore(session.id);
     const saved = readTranscriptOptimisticRegistry()[session.id];
     if (Array.isArray(saved)) {
-      saved.slice(-TRANSCRIPT_OPTIMISTIC_LIMIT).forEach((entry) => {
-        session.transcript.addOptimistic(entry, entry.revAtSend, { persisted: true });
-      });
+      // Storage is the one place a projection could re-enter the store after a
+      // reload, so hydration admits client-owned intent only. Assistant and tool
+      // output is never restored here; it comes back from the server.
+      saved
+        .slice(-TRANSCRIPT_OPTIMISTIC_LIMIT)
+        .forEach((entry) => {
+          session.transcript.addOptimistic(entry, entry.revAtSend);
+        });
     }
   }
   return session.transcript;
@@ -1080,8 +1111,11 @@ const persistTranscriptOptimistic = (session) => {
   if (!session?.id) return;
   try {
     const sessions = readTranscriptOptimisticRegistry();
+    // Only client-owned intent is durable across a reload. Assistant and tool
+    // overlays stay in memory for the life of the page and are rebuilt from the
+    // durable transcript plus response replay/snapshot recovery.
     const entries = transcript?.optimistic
-      ?.filter((entry) => !entry?.transient)
+      ?.filter((entry) => !entry?.transient && isClientOwnedIntentEntry(entry))
       .slice(-TRANSCRIPT_OPTIMISTIC_LIMIT)
       .map((entry) => ({ ...entry, optimistic: true })) || [];
     if (entries.length > 0) sessions[session.id] = entries;
@@ -1090,7 +1124,10 @@ const persistTranscriptOptimistic = (session) => {
       localStorage.removeItem(STORAGE_KEYS.optimisticTranscript);
       return;
     }
-    localStorage.setItem(STORAGE_KEYS.optimisticTranscript, JSON.stringify({ version: 1, sessions }));
+    localStorage.setItem(
+      STORAGE_KEYS.optimisticTranscript,
+      JSON.stringify({ version: TRANSCRIPT_OPTIMISTIC_VERSION, sessions })
+    );
   } catch {
     // Storage pressure must not interrupt a response.
   }
@@ -1342,9 +1379,6 @@ const transcriptSyncSegmentIndexes = (transcript) => {
   if (!transcript) return [];
   const wanted = new Set(transcript.pinnedSegments);
   if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
-  for (const index of transcript.persistedOptimisticSegmentIndexes?.(TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || []) {
-    wanted.add(index);
-  }
   return [...wanted];
 };
 
@@ -1438,14 +1472,11 @@ const syncTranscriptOnce = async (session, options = {}) => {
   if (resp.status === 404) {
     const pages = await fetchLegacyTranscriptPages(session.id);
     if (!pages) return false;
-    const optimistic = transcript.optimistic.map((entry) => ({
-      entry: { ...entry },
-      persisted: transcript.persistedOptimistic?.has?.(entry) === true
-    }));
+    const optimistic = transcript.optimistic.map((entry) => ({ ...entry }));
     const activeRun = transcript.activeRun ? { ...transcript.activeRun } : null;
     const replacement = window.transcriptStoreFromMessages(session.id, pages);
     for (const local of optimistic) {
-      replacement.addOptimistic(local.entry, local.entry.revAtSend, { persisted: local.persisted });
+      replacement.addOptimistic(local, local.revAtSend);
     }
     if (activeRun) replacement.setActiveRun(activeRun.id, activeRun.startedRev, activeRun.epoch || 0);
     replacement.reconcileOptimistic();
@@ -2118,9 +2149,7 @@ const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
       staging.setViewport(last, last, { deferBudget: true });
     }
     for (const optimistic of current.optimistic || []) {
-      staging.addOptimistic({ ...optimistic }, optimistic.revAtSend, {
-        persisted: current.persistedOptimistic?.has?.(optimistic) === true
-      });
+      staging.addOptimistic({ ...optimistic }, optimistic.revAtSend);
     }
     staging.setActiveRun(index.active_response_id || '', index.started_rev, index.run_epoch || 0, {
       observedCreatedEpoch: session.latestRunEpoch || 0,

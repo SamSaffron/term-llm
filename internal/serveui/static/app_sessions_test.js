@@ -430,6 +430,7 @@ async function createSessionsHarness(options = {}) {
   windowObj.TranscriptStore = context.TranscriptStore;
   windowObj.transcriptStoreFromMessages = context.transcriptStoreFromMessages;
   windowObj.reconcileTranscriptProjection = context.reconcileTranscriptProjection;
+  windowObj.transcriptIsClientOwnedIntent = context.transcriptIsClientOwnedIntent;
   windowObj.TRANSCRIPT_BUDGETS = context.TRANSCRIPT_BUDGETS;
   vm.runInContext(coreSource, context, { filename: 'app-core.js' });
   vm.runInContext(planSource, context, { filename: 'app-plan.js' });
@@ -1330,10 +1331,14 @@ async function testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender
       return;
     }
   }
+  // Recovery tool output is a server projection: it lives in the in-memory
+  // overlay above, and must never be written to local storage where a reload
+  // could republish it beside the durable row that owns it.
   const persisted = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
-  const persistedTools = persisted?.sessions?.[session.id]?.[0]?.tools?.map((tool) => tool.id) || [];
-  if (persistedTools.join(',') !== 'call_D') {
-    fail(name, 'covered recovery calls remained in persisted transcript optimistic state', JSON.stringify(persisted));
+  const persistedProjection = (persisted?.sessions?.[session.id] || [])
+    .filter((entry) => entry?.role !== 'user');
+  if (persistedProjection.length > 0) {
+    fail(name, 'server-produced recovery output reached persisted transcript optimistic state', JSON.stringify(persisted));
     return;
   }
 
@@ -5342,116 +5347,157 @@ async function testOptimisticTranscriptStorageIsPerSession() {
   pass(name);
 }
 
-async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalReconciliation() {
-  const name = 'reload reconciles matched persisted tools and retires unmatched completed tool UI at the terminal revision';
-  const sessionId = 'stale-tool-reload';
-  const storageKey = 'term_llm_optimistic_transcript';
-  let nextID = 201;
-  let nextSeq = 10;
-  const message = (role, parts) => ({
-    id: nextID++,
-    sequence: nextSeq++,
-    role,
-    created_at: nextSeq * 1000,
-    parts
+async function testStreamProjectionNeverReachesLocalStorage() {
+  const name = 'streaming assistant and tool overlays stay in memory and never reach local storage';
+  const { app, storage } = await createSessionsHarness();
+  const session = { id: 'projection-write-boundary', messages: [] };
+  const responseId = 'resp_write_boundary';
+  app.trackTranscriptOptimistic(session, {
+    id: 'msg_assistant', clientKey: `${responseId}:assistant:0`, role: 'assistant',
+    responseId, assistantSegmentOrdinal: 0, content: 'streamed text'
   });
-  const staleTurn = [
-    message('user', [{ type: 'text', text: 'run the old tool' }]),
-    message('assistant', [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'stale-call' }]),
-    message('tool', [{ type: 'tool_result', tool_name: 'read_file', tool_call_id: 'stale-call' }]),
-    message('assistant', [{ type: 'text', text: 'Old turn done.' }])
-  ];
-  const turns = [staleTurn];
-  for (let index = 0; index < 72; index += 1) {
-    turns.push([
-      message('user', [{ type: 'text', text: `filler ${index}` }]),
-      message('assistant', [{ type: 'text', text: `answer ${index}` }])
-    ]);
+  app.trackTranscriptOptimistic(session, {
+    id: 'msg_tools', clientKey: 'msg_tools', role: 'tool-group', responseId,
+    status: 'running', tools: [{ id: 'call_1', status: 'running' }]
+  });
+  app.trackTranscriptOptimistic(session, {
+    id: 'msg_user', clientKey: 'send-1', role: 'user', content: 'queued question'
+  });
+
+  const inMemory = session.transcript.optimistic.map((entry) => entry.clientKey);
+  if (JSON.stringify(inMemory) !== JSON.stringify([`${responseId}:assistant:0`, 'msg_tools', 'send-1'])) {
+    fail(name, 'the in-memory overlay lost live streaming state', JSON.stringify(inMemory));
+    return;
   }
-  const unrelatedTurn = [
-    message('user', [{ type: 'text', text: 'run a later tool' }]),
-    message('assistant', [{ type: 'tool_call', tool_name: 'grep', tool_call_id: 'never-durable-call' }]),
-    message('tool', [{ type: 'tool_result', tool_name: 'grep', tool_call_id: 'never-durable-call' }]),
-    message('assistant', [{ type: 'text', text: 'Later turn done.' }])
-  ];
-  turns.push(unrelatedTurn);
-  const raw = turns.flat();
-  const persistedEntries = [
-    {
-      id: 'local-stale-tool-group',
-      clientKey: 'local-stale-tool-group',
-      role: 'tool-group',
-      status: 'done',
-      tools: [{ id: 'stale-call', name: 'read_file', status: 'done' }],
-      revAtSend: 5,
-      durableSeqAtSend: staleTurn[0].sequence,
-      optimistic: true
-    },
-    {
-      id: 'local-unmatched-tool-group',
-      clientKey: 'local-unmatched-tool-group',
-      role: 'tool-group',
-      status: 'done',
-      tools: [{ id: 'never-durable-call', name: 'write_file', status: 'done' }],
-      revAtSend: 5,
-      durableSeqAtSend: staleTurn[staleTurn.length - 1].sequence,
-      optimistic: true
-    },
-    {
-      id: 'local-queued-user',
-      clientKey: 'local-queued-user',
-      role: 'user',
-      content: 'queued after the active run',
-      revAtSend: 5,
-      durableSeqAtSend: raw[raw.length - 1].sequence,
-      optimistic: true
+  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  if (saved?.version !== 2) {
+    fail(name, 'storage was not stamped with the current version', JSON.stringify(saved));
+    return;
+  }
+  const savedKeys = (saved?.sessions?.[session.id] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['send-1'])) {
+    fail(name, 'server-produced projection was written to local storage', JSON.stringify(saved));
+    return;
+  }
+  pass(name);
+}
+
+async function testLegacyUnversionedStorageMigratesOnlyIntent() {
+  const name = 'legacy unversioned storage keeps queued intent and drops assistant/tool shadows';
+  const sessionId = 'legacy-unversioned-shape';
+  const { app, storage } = await createSessionsHarness({
+    initialStorage: {
+      term_llm_optimistic_transcript: JSON.stringify({
+        sessionId,
+        entries: [
+          {
+            id: 'legacy-assistant', clientKey: 'legacy-assistant', role: 'assistant',
+            content: 'ghost output', optimistic: true
+          },
+          {
+            id: 'legacy-tools', clientKey: 'legacy-tools', role: 'tool-group', status: 'done',
+            tools: [{ id: 'call_old', status: 'done' }], optimistic: true
+          },
+          {
+            id: 'legacy-user', clientKey: 'legacy-user', role: 'user',
+            content: 'still queued', optimistic: true
+          }
+        ]
+      })
     }
-  ];
+  });
+  const session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  // Tracking a fresh send hydrates the store from legacy storage first.
+  app.trackTranscriptOptimistic(session, {
+    id: 'msg_new_user', clientKey: 'send-new', role: 'user', content: 'newly queued'
+  });
+
+  const hydrated = session.transcript.optimistic.map((entry) => entry.clientKey);
+  if (JSON.stringify(hydrated) !== JSON.stringify(['legacy-user', 'send-new'])) {
+    fail(name, 'legacy hydration restored projection shadows or dropped queued intent', JSON.stringify(hydrated));
+    return;
+  }
+  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
+  if (saved?.version !== 2) {
+    fail(name, 'legacy payload was not rewritten at the current version', JSON.stringify(saved));
+    return;
+  }
+  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['legacy-user', 'send-new'])) {
+    fail(name, 'legacy migration persisted the wrong entries', JSON.stringify(saved));
+    return;
+  }
+  pass(name);
+}
+
+async function testReloadMigratesLegacyProjectionShadowsAtEqualRevision() {
+  const name = 'reload discards legacy assistant/tool shadows at an unchanged revision and keeps queued user intent';
+  const sessionId = 'legacy-projection-shadow';
+  const storageKey = 'term_llm_optimistic_transcript';
+  const responseId = 'resp_TimE4vzRQUUJ';
+  // Version 1 storage written by an older build: server-owned response output
+  // captured at exactly the revision the server still reports. The retired
+  // "rev > revAtSend" rule could never retire these, so an idle session stayed
+  // duplicated forever. Migration must drop them on the way out of storage.
   const persisted = JSON.stringify({
     version: 1,
-    sessions: { [sessionId]: persistedEntries }
+    sessions: {
+      [sessionId]: [
+        {
+          id: 'msg_shadow_assistant', clientKey: `${responseId}:assistant:0`, role: 'assistant',
+          responseId, assistantSegmentOrdinal: 0, content: 'durable answer',
+          revAtSend: 279, durableSeqAtSend: 180, optimistic: true
+        },
+        {
+          id: 'msg_shadow_drifted', clientKey: `${responseId}:assistant:99`, role: 'assistant',
+          responseId, assistantSegmentOrdinal: 99, content: 'durable answer',
+          revAtSend: 279, durableSeqAtSend: 180, optimistic: true
+        },
+        {
+          id: 'msg_shadow_legacy', clientKey: 'msg_shadow_legacy', role: 'assistant',
+          content: 'durable answer', revAtSend: 279, durableSeqAtSend: 180, optimistic: true
+        },
+        {
+          id: 'msg_shadow_tools', clientKey: 'msg_shadow_tools', role: 'tool-group', responseId,
+          status: 'done', tools: [{ id: 'call_stale', name: 'read_file', status: 'done' }],
+          revAtSend: 279, durableSeqAtSend: 180, optimistic: true
+        },
+        {
+          id: 'pending-user', clientKey: 'pending-user', role: 'user', content: 'send me next',
+          revAtSend: 279, durableSeqAtSend: 181, optimistic: true
+        }
+      ]
+    }
   });
-  const bodyRequests = [];
-  const targetStatesAtFetch = [];
-  let indexRequests = 0;
-  let primedMaterializationBudget = false;
-  let session = null;
+  const durable = [
+    { id: 180, sequence: 180, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+    {
+      id: 181, sequence: 181, role: 'assistant', response_id: responseId,
+      assistant_segment_ordinal: 0, parts: [{ type: 'text', text: 'durable answer' }]
+    }
+  ];
   const { app, storage } = await createSessionsHarness({
     initialStorage: { [storageKey]: persisted },
     fetchImpl: async (url) => {
       if (isTranscriptIndexURL(url, sessionId)) {
-        indexRequests += 1;
-        if (indexRequests > 1) {
-          return new Response(null, { status: 304, headers: { ETag: '"stale-tool-rev-8"' } });
-        }
         return new Response(JSON.stringify({
-          rev: 8,
+          rev: 279,
           compaction_seq: -1,
           compaction_count: 0,
           rows: {
-            ids: raw.map((entry) => entry.id),
-            seqs: raw.map((entry) => entry.sequence),
-            roles: raw.map((entry) => ({ user: 'u', assistant: 'a', tool: 't' })[entry.role]).join(''),
-            flags: raw.map(() => 0)
+            ids: [180, 181],
+            seqs: [180, 181],
+            roles: 'ua',
+            flags: [0, 0],
+            response_ids: ['', responseId],
+            assistant_segment_ordinals: [-1, 0]
           }
-        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"stale-tool-rev-8"' } });
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"equal-rev-279"' } });
       }
       if (isTranscriptBodiesURL(url, sessionId)) {
-        targetStatesAtFetch.push(session?.transcript?.segments?.[0]?.state || '');
-        if (!primedMaterializationBudget) {
-          primedMaterializationBudget = true;
-          session.transcript.materialize(turns.slice(-60).flat(), { countFetch: false });
-        }
-        const requested = (parsedTestURL(url)?.searchParams.get('ids') || '')
-          .split(',')
-          .filter(Boolean)
-          .map(Number);
-        bodyRequests.push(requested);
-        const requestedAnchors = new Set(requested);
-        const messages = turns
-          .filter((turn) => requestedAnchors.has(turn[0].id))
-          .flat();
-        return new Response(JSON.stringify({ rev: 8, messages }), {
+        return new Response(JSON.stringify({ rev: 279, messages: durable }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
@@ -5462,90 +5508,46 @@ async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalR
       });
     }
   });
-  session = { id: sessionId, messages: [] };
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, messages: [] };
   app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
+  app.state.activeSessionId = sessionId;
   app.state.draftSessionActive = false;
 
   const loaded = await app.syncTranscript(session, { reason: 'reload' });
-  const requested = bodyRequests[0] || [];
-  if (!loaded || targetStatesAtFetch[0] !== 'evicted') {
-    fail(name, 'stale turn was not initially evicted before body materialization', JSON.stringify({ loaded, targetStatesAtFetch }));
+  if (!loaded || session.transcript.rev !== 279) {
+    fail(name, 'reload did not settle on the unchanged server revision', JSON.stringify({ loaded, rev: session.transcript?.rev }));
     return;
   }
-  if (turns.length <= 60) {
-    fail(name, 'regression transcript did not exceed the materialized-turn budget', String(turns.length));
+  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  if (assistants.length !== 1 || assistants[0].durable !== true) {
+    fail(name, 'a legacy assistant shadow rendered beside the durable row it duplicates', JSON.stringify(session.messages));
     return;
   }
-  if (!requested.includes(staleTurn[0].id) || !requested.includes(unrelatedTurn[0].id)) {
-    fail(name, 'reload did not fetch both the stale original turn and the pinned later turn', JSON.stringify(bodyRequests));
+  if (session.messages.some((message) => ['tool-group', 'tool'].includes(message.role))) {
+    fail(name, 'a legacy tool shadow survived migration', JSON.stringify(session.messages));
     return;
   }
-  if (requested.length > 32 || requested.length >= turns.length) {
-    fail(name, 'reload body fetch was not bounded to selected turn anchors', JSON.stringify({ requested: requested.length, turns: turns.length }));
+  const optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
+  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['pending-user'])) {
+    fail(name, 'migration dropped queued user intent or retained a projection shadow', JSON.stringify(optimisticKeys));
     return;
   }
-  let optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
-  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-queued-user'])) {
-    fail(name, '200 terminal reconciliation retained stale completed tool UI or dropped the queued user', JSON.stringify(optimisticKeys));
+  const saved = JSON.parse(storage.get(storageKey) || 'null');
+  if (saved?.version !== 2) {
+    fail(name, 'migrated storage was not rewritten at the current version', JSON.stringify(saved));
     return;
   }
-  let saved = JSON.parse(storage.get(storageKey) || 'null');
-  let savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
-  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-queued-user'])) {
-    fail(name, '200 terminal reconciliation was not persisted without the stale tool tail', JSON.stringify(saved));
-    return;
-  }
-  if (session.transcript.segments[0]?.state !== 'evicted'
-      || session.transcript.segments.filter((segment) => segment.state === 'materialized').length > 60) {
-    fail(name, 'post-reconciliation budget did not evict the distant target turn', JSON.stringify({
-      targetState: session.transcript.segments[0]?.state || 'missing',
-      materialized: session.transcript.segments.filter((segment) => segment.state === 'materialized').length
-    }));
-    return;
-  }
-
-  session.transcript.addOptimistic({
-    id: 'local-304-tool-group',
-    clientKey: 'local-304-tool-group',
-    role: 'tool-group',
-    status: 'done',
-    tools: [{ id: 'stale-call', name: 'read_file', status: 'done' }],
-    revAtSend: 5,
-    durableSeqAtSend: staleTurn[0].sequence,
-    optimistic: true
-  }, 5, { persisted: true });
-  app.persistTranscriptOptimistic(session);
-
-  const loadedNotModified = await app.syncTranscript(session, { reason: 'not-modified' });
-  optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
-  if (!loadedNotModified || targetStatesAtFetch[1] !== 'evicted' || !bodyRequests[1]?.includes(staleTurn[0].id)) {
-    fail(name, '304 sync did not rematerialize the evicted reconciliation target', JSON.stringify({ loadedNotModified, targetStatesAtFetch, bodyRequests }));
-    return;
-  }
-  if (JSON.stringify(optimisticKeys) !== JSON.stringify(['local-queued-user'])) {
-    fail(name, '304 reconciliation retained completed tool UI or dropped the queued user', JSON.stringify(optimisticKeys));
-    return;
-  }
-  saved = JSON.parse(storage.get(storageKey) || 'null');
-  savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
-  if (JSON.stringify(savedKeys) !== JSON.stringify(['local-queued-user'])) {
-    fail(name, '304 reconciliation persistence did not retain only the queued user', JSON.stringify(saved));
-    return;
-  }
-  const finalMaterialized = session.transcript.segments.filter((segment) => segment.state === 'materialized').length;
-  if (session.transcript.segments[0]?.state !== 'evicted' || finalMaterialized > 60) {
-    fail(name, '304 sync did not enforce the budget after reconciliation', JSON.stringify({
-      targetState: session.transcript.segments[0]?.state || 'missing',
-      materialized: finalMaterialized
-    }));
+  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['pending-user'])) {
+    fail(name, 'migrated storage retained server-produced projection', JSON.stringify(saved));
     return;
   }
   pass(name);
 }
 
 async function testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdvance() {
-  const name = 'reload retires stale version-1 assistant identity after terminal transcript advance';
+  const name = 'reload discards a version-1 assistant identity that no longer matches durable output';
   const sessionId = 'stale-persisted-assistant';
   const storageKey = 'term_llm_optimistic_transcript';
   const responseId = 'resp_stale_persisted';
@@ -5626,24 +5628,24 @@ async function testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdva
   const loaded = await app.syncTranscript(session, { reason: 'reload' });
   const assistants = session.messages.filter((message) => message.role === 'assistant');
   if (!loaded || assistants.length !== 1 || assistants[0].durable !== true) {
-    fail(name, 'reload retained the stale assistant overlay beside authoritative durable output', JSON.stringify(session.messages));
+    fail(name, 'a stored assistant shadow rendered beside authoritative durable output', JSON.stringify(session.messages));
     return;
   }
   if (JSON.stringify(session.transcript.optimistic.map((entry) => entry.clientKey)) !== JSON.stringify(['pending-user'])) {
-    fail(name, 'terminal retirement did not preserve only the genuinely pending user', JSON.stringify(session.transcript.optimistic));
+    fail(name, 'migration did not preserve only the genuinely pending user', JSON.stringify(session.transcript.optimistic));
     return;
   }
   const saved = JSON.parse(storage.get(storageKey) || 'null');
   const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
   if (JSON.stringify(savedKeys) !== JSON.stringify(['pending-user'])) {
-    fail(name, 'stale assistant retirement was not persisted', JSON.stringify(saved));
+    fail(name, 'migrated storage retained the stale assistant identity', JSON.stringify(saved));
     return;
   }
   pass(name);
 }
 
 async function testReloadScopesStalePersistedRetirementToCurrentActiveResponse() {
-  const name = 'reload retires stale old response output under a different active response';
+  const name = 'reload during an active response rebuilds output from the server instead of storage';
   const sessionId = 'stale-persisted-active-response';
   const storageKey = 'term_llm_optimistic_transcript';
   const staleResponseId = 'resp_stale_persisted';
@@ -5727,25 +5729,32 @@ async function testReloadScopesStalePersistedRetirementToCurrentActiveResponse()
   app.state.draftSessionActive = false;
 
   const loaded = await app.syncTranscript(session, { reason: 'reload' });
-  const expectedKeys = [
-    'legacy-ownerless',
-    `${activeResponseId}:assistant:0`,
-    `${activeResponseId}:tool:call-current`,
-    'pending-user'
-  ];
+  // Reloading mid-response must not restore any stored projection, not even for
+  // the response that is still running. The live overlay is rebuilt from event
+  // replay and the response snapshot, so storage keeps only queued intent.
+  const expectedKeys = ['pending-user'];
   const optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
   if (!loaded || session.transcript.activeRun?.id !== activeResponseId
       || JSON.stringify(optimisticKeys) !== JSON.stringify(expectedKeys)) {
-    fail(name, 'active response authority retained stale foreign output or dropped protected entries', JSON.stringify({
+    fail(name, 'reload during an active response restored stored projection or dropped queued intent', JSON.stringify({
       activeRun: session.transcript.activeRun,
       optimisticKeys
     }));
     return;
   }
+  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  if (assistants.length !== 1 || assistants[0].durable !== true) {
+    fail(name, 'a stored assistant shadow rendered beside the durable row during an active response', JSON.stringify(session.messages));
+    return;
+  }
   const saved = JSON.parse(storage.get(storageKey) || 'null');
+  if (saved?.version !== 2) {
+    fail(name, 'storage was not rewritten at the current version during an active response', JSON.stringify(saved));
+    return;
+  }
   const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
   if (JSON.stringify(savedKeys) !== JSON.stringify(expectedKeys)) {
-    fail(name, 'response-scoped stale retirement was not persisted', JSON.stringify(saved));
+    fail(name, 'storage retained server-produced projection during an active response', JSON.stringify(saved));
     return;
   }
   pass(name);
@@ -6714,7 +6723,9 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionPruningDestroysTranscriptStores();
   await testOptimisticTranscriptStorageIsPerSession();
-  await testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalReconciliation();
+  await testStreamProjectionNeverReachesLocalStorage();
+  await testLegacyUnversionedStorageMigratesOnlyIntent();
+  await testReloadMigratesLegacyProjectionShadowsAtEqualRevision();
   await testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdvance();
   await testReloadScopesStalePersistedRetirementToCurrentActiveResponse();
   await testTranscriptSyncCommitsOneRenderedProjection();

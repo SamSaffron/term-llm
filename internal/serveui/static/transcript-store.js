@@ -55,6 +55,19 @@
     return ids;
   };
 
+  // Client-owned intent is the only transcript state a browser may persist.
+  // Assistant and tool rows are server projections whose sole authorities are
+  // the durable transcript and response replay/snapshot recovery. Keeping them
+  // out of local storage is what makes a reload structurally incapable of
+  // resurrecting an overlay that shadows a durable row.
+  const CLIENT_INTENT_ROLES = new Set(['user']);
+  const isClientOwnedIntent = (entry) => (
+    Boolean(entry)
+    && typeof entry === 'object'
+    && entry.durable !== true
+    && CLIENT_INTENT_ROLES.has(entry.role)
+  );
+
   const messageResponseID = (message) => String(message?.responseId || message?.response_id || '').trim();
   const assistantSegmentOrdinal = (message) => {
     const value = message?.assistantSegmentOrdinal ?? message?.assistant_segment_ordinal;
@@ -260,7 +273,6 @@
       this.optimistic = [];
       this.optimisticOwned = new WeakSet();
       this.optimisticByAssistantSegment = new Map();
-      this.persistedOptimistic = new WeakSet();
       this.activeRun = null;
       this.activeRunDurableIDsAtStart = new Set();
       this.latestRunEpoch = 0;
@@ -700,7 +712,7 @@
       throw new Error(`mutable stream cursor is not a transcript-owned optimistic overlay${source ? ` (${source})` : ''}`);
     }
 
-    addOptimistic(entry, revAtSend = this.rev, options = {}) {
+    addOptimistic(entry, revAtSend = this.rev) {
       if (!entry || typeof entry !== 'object' || entry.durable === true) return null;
       if (this.activeRun && ['assistant', 'tool', 'tool-group'].includes(entry.role)) {
         if (!messageResponseID(entry)) entry.responseId = this.activeRun.id;
@@ -727,7 +739,6 @@
           if (previousAssistantContent.startsWith(incomingContent)) existing.content = previousAssistantContent;
         }
         if (segmentKey) this.optimisticByAssistantSegment.set(segmentKey, existing);
-        if (options.persisted === true) this.persistedOptimistic.add(existing);
         return existing;
       }
       const optimistic = entry;
@@ -739,7 +750,6 @@
       this.optimistic.push(optimistic);
       this.optimisticOwned.add(optimistic);
       if (segmentKey) this.optimisticByAssistantSegment.set(segmentKey, optimistic);
-      if (options.persisted === true) this.persistedOptimistic.add(optimistic);
       return optimistic;
     }
 
@@ -812,21 +822,6 @@
         else high = mid;
       }
       return low < this.seqs.length ? this.segmentForOrdinal(low) : -1;
-    }
-
-    persistedOptimisticSegmentIndexes(limit = TRANSCRIPT_MATERIALIZE_BATCH_TURNS) {
-      if (this.activeRun || this.optimistic.length === 0) return [];
-      const max = Math.max(1, finiteInt(limit, TRANSCRIPT_MATERIALIZE_BATCH_TURNS));
-      const selected = new Set();
-      for (const local of this.optimistic) {
-        if (selected.size >= max) break;
-        if (!this.persistedOptimistic.has(local)) continue;
-        if (!['assistant', 'tool-group', 'tool'].includes(local.role)) continue;
-        if (this.rev <= finiteInt(local.revAtSend, this.rev)) continue;
-        const segmentIndex = this.segmentAfterSequence(local.durableSeqAtSend);
-        if (segmentIndex >= 0 && this.segments[segmentIndex]?.state === 'evicted') selected.add(segmentIndex);
-      }
-      return [...selected];
     }
 
     durableToolIDs() {
@@ -943,15 +938,6 @@
       for (const local of this.optimistic) {
         const localIsTool = local.role === 'tool-group' || local.role === 'tool';
         const outputOwner = messageResponseID(local);
-        // An active response is authoritative only for output with the same
-        // stable owner. Legacy ownerless output remains protected because its
-        // response scope cannot be established safely.
-        const activeRunOwnsOutput = Boolean(this.activeRun)
-          && (!outputOwner || this.activeRun.id === outputOwner);
-        const serverOwnsPersistedOutput = !activeRunOwnsOutput
-          && this.persistedOptimistic.has(local)
-          && (local.role === 'assistant' || localIsTool)
-          && this.rev > finiteInt(local.revAtSend, this.rev);
         if (localIsTool) {
           const owner = outputOwner;
           const localKeys = new Map([...messageToolIDs(local)].map((id) => [toolIdentityKey(owner, id), id]));
@@ -998,8 +984,7 @@
               // A covered live overlay remains the sole mutable cursor until the
               // response finalizes; fresh deltas must never target its durable projection.
               kept.push(local);
-            } else if (serverOwnsPersistedOutput) removed.push(local);
-            else if (comparison.suffix) kept.push(local);
+            } else if (comparison.suffix) kept.push(local);
             else removed.push(local);
             continue;
           }
@@ -1007,20 +992,11 @@
             const legacyPart = durableAssistantParts.find((candidate) => candidate.sequence > finiteInt(local.durableSeqAtSend, -1));
             if (legacyPart) {
               const comparison = assistantSuffixAfterDurable(legacyPart.content, assistantSourceContent(local));
-              if (comparison.suffix && !serverOwnsPersistedOutput) kept.push(local);
+              if (comparison.suffix) kept.push(local);
               else removed.push(local);
               continue;
             }
           }
-        }
-
-        if (serverOwnsPersistedOutput) {
-          // Persisted assistant/tool overlays are recovery shadows, not durable
-          // client intent. Once the transcript advances beyond their captured
-          // revision and no active response owns them, the durable transcript
-          // owns the response tail even if an old stable identity never matched.
-          removed.push(local);
-          continue;
         }
 
         const afterSeq = finiteInt(local.durableSeqAtSend, -1);
@@ -1248,6 +1224,7 @@
     TRANSCRIPT_FLAG_EMPTY_BODY,
     transcriptStoreFromMessages,
     reconcileTranscriptProjection,
+    transcriptIsClientOwnedIntent: isClientOwnedIntent,
     assistantSegmentKey,
     transcriptToolIdentityKey: toolIdentityKey,
     transcriptDiagnostic,
