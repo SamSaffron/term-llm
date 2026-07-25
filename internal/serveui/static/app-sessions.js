@@ -1240,10 +1240,7 @@ const refreshSessionMessagesFromTranscript = (session) => {
         ? { ...entry, transcriptEmptyBody: true }
         : entry);
     }
-    const converted = convertServerMessages(raw, {
-      compactionSeq: transcript.compactionSeq,
-      compactionCount: transcript.compactionCount
-    });
+    const converted = convertServerMessages(raw);
     const claimedAnchors = new Set();
     converted.forEach((message) => {
       const sourceIDs = Array.isArray(message.durableSourceRowIds)
@@ -1263,6 +1260,10 @@ const refreshSessionMessagesFromTranscript = (session) => {
       });
     });
   }
+  annotateCompactionBoundary(display, {
+    compactionSeq: transcript.compactionSeq,
+    compactionCount: transcript.compactionCount
+  });
   display.push(...transcript.optimistic);
   session.messages = display;
   // Every durable/optimistic handoff is committed through the same projected

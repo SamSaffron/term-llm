@@ -5751,6 +5751,45 @@ async function testReloadScopesStalePersistedRetirementToCurrentActiveResponse()
   pass(name);
 }
 
+async function testTranscriptProjectionAnnotatesCompactionBoundaryOnceAcrossSegments() {
+  const name = 'transcript projection annotates one compaction boundary across materialized segments';
+  const { app, windowObj } = await createSessionsHarness();
+  const raw = [
+    { id: 101, sequence: 11, role: 'user', created_at: 1100, parts: [{ type: 'text', text: 'first prompt' }] },
+    { id: 102, sequence: 12, role: 'assistant', created_at: 1200, parts: [{ type: 'text', text: 'first answer' }] },
+    { id: 103, sequence: 13, role: 'user', created_at: 1300, parts: [{ type: 'text', text: 'second prompt' }] },
+    { id: 104, sequence: 14, role: 'assistant', created_at: 1400, parts: [{ type: 'text', text: 'second answer' }] },
+  ];
+  const session = { id: 'single-compaction-boundary', messages: [] };
+  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript.applyIndex({
+    rev: 4,
+    compaction_seq: 10,
+    compaction_count: 1,
+    rows: { ids: [101, 102, 103, 104], seqs: [11, 12, 13, 14], roles: 'uaua', flags: [0, 0, 0, 0] }
+  });
+  session.transcript.materialize(raw);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  if (session.transcript.renderRuns().filter((run) => run.type === 'segment').length < 2) {
+    fail(name, 'regression fixture did not produce multiple materialized transcript segments');
+    return;
+  }
+  app.refreshSessionMessagesFromTranscript(session);
+  const boundaries = session.messages.filter((message) => message.role === 'compaction-boundary');
+  if (boundaries.length !== 1 || boundaries[0].id !== 'compaction_boundary_10') {
+    fail(name, 'global compaction metadata produced one marker per materialized segment', JSON.stringify(session.messages));
+    return;
+  }
+  if (session.messages[0] !== boundaries[0] || session.messages[1]?.content !== 'first prompt') {
+    fail(name, 'single marker was not placed at the first visible post-compaction message', JSON.stringify(session.messages));
+    return;
+  }
+  pass(name);
+}
+
 async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
   const name = 'grouped tool conversion preserves source range and later durable anchors';
   const { app, windowObj } = await createSessionsHarness();
@@ -6682,6 +6721,7 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testInflightSyncAbsorbsQueuedZeroRevisionActivation();
   await testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh();
+  await testTranscriptProjectionAnnotatesCompactionBoundaryOnceAcrossSegments();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
   await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
   await testTerminalTranscriptSyncQueuesBehindInflightRequest();
