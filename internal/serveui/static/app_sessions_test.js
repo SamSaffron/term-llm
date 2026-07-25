@@ -5544,6 +5544,213 @@ async function testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalR
   pass(name);
 }
 
+async function testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdvance() {
+  const name = 'reload retires stale version-1 assistant identity after terminal transcript advance';
+  const sessionId = 'stale-persisted-assistant';
+  const storageKey = 'term_llm_optimistic_transcript';
+  const responseId = 'resp_stale_persisted';
+  const persisted = JSON.stringify({
+    version: 1,
+    sessions: {
+      [sessionId]: [
+        {
+          id: 'stale-assistant',
+          clientKey: `${responseId}:assistant:99`,
+          role: 'assistant',
+          responseId,
+          assistantSegmentOrdinal: 99,
+          content: 'durable answer',
+          revAtSend: 1,
+          durableSeqAtSend: 1,
+          optimistic: true
+        },
+        {
+          id: 'pending-user',
+          clientKey: 'pending-user',
+          role: 'user',
+          content: 'send me next',
+          revAtSend: 2,
+          durableSeqAtSend: 2,
+          optimistic: true
+        }
+      ]
+    }
+  });
+  const durable = [
+    { id: 1, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+    {
+      id: 2,
+      sequence: 2,
+      role: 'assistant',
+      response_id: responseId,
+      assistant_segment_ordinal: 0,
+      parts: [{ type: 'text', text: 'durable answer' }]
+    }
+  ];
+  const { app, storage } = await createSessionsHarness({
+    initialStorage: { [storageKey]: persisted },
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          compaction_seq: -1,
+          compaction_count: 0,
+          rows: {
+            ids: [1, 2],
+            seqs: [1, 2],
+            roles: 'ua',
+            flags: [0, 0],
+            response_ids: ['', responseId],
+            assistant_segment_ordinals: [-1, 0]
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"stale-assistant-rev-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        return new Response(JSON.stringify({ rev: 2, messages: durable }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+
+  const loaded = await app.syncTranscript(session, { reason: 'reload' });
+  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  if (!loaded || assistants.length !== 1 || assistants[0].durable !== true) {
+    fail(name, 'reload retained the stale assistant overlay beside authoritative durable output', JSON.stringify(session.messages));
+    return;
+  }
+  if (JSON.stringify(session.transcript.optimistic.map((entry) => entry.clientKey)) !== JSON.stringify(['pending-user'])) {
+    fail(name, 'terminal retirement did not preserve only the genuinely pending user', JSON.stringify(session.transcript.optimistic));
+    return;
+  }
+  const saved = JSON.parse(storage.get(storageKey) || 'null');
+  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(['pending-user'])) {
+    fail(name, 'stale assistant retirement was not persisted', JSON.stringify(saved));
+    return;
+  }
+  pass(name);
+}
+
+async function testReloadScopesStalePersistedRetirementToCurrentActiveResponse() {
+  const name = 'reload retires stale old response output under a different active response';
+  const sessionId = 'stale-persisted-active-response';
+  const storageKey = 'term_llm_optimistic_transcript';
+  const staleResponseId = 'resp_stale_persisted';
+  const activeResponseId = 'resp_current_active';
+  const entries = [
+    {
+      id: 'stale-assistant', clientKey: `${staleResponseId}:assistant:99`, role: 'assistant',
+      responseId: staleResponseId, assistantSegmentOrdinal: 99, content: 'stale persisted output',
+      revAtSend: 1, durableSeqAtSend: 1, optimistic: true
+    },
+    {
+      id: 'stale-tool', clientKey: `${staleResponseId}:tool:call-stale`, role: 'tool-group',
+      responseId: staleResponseId, status: 'running', tools: [{ id: 'call-stale', status: 'running' }],
+      revAtSend: 1, durableSeqAtSend: 1, optimistic: true
+    },
+    {
+      id: 'legacy-ownerless', clientKey: 'legacy-ownerless', role: 'assistant', content: 'legacy recovery output',
+      revAtSend: 1, durableSeqAtSend: 2, optimistic: true
+    },
+    {
+      id: 'current-assistant', clientKey: `${activeResponseId}:assistant:0`, role: 'assistant',
+      responseId: activeResponseId, assistantSegmentOrdinal: 0, content: 'current response suffix',
+      revAtSend: 1, durableSeqAtSend: 2, optimistic: true
+    },
+    {
+      id: 'current-tool', clientKey: `${activeResponseId}:tool:call-current`, role: 'tool-group',
+      responseId: activeResponseId, status: 'running', tools: [{ id: 'call-current', status: 'running' }],
+      revAtSend: 1, durableSeqAtSend: 2, optimistic: true
+    },
+    {
+      id: 'pending-user', clientKey: 'pending-user', role: 'user', content: 'send me next',
+      revAtSend: 2, durableSeqAtSend: 2, optimistic: true
+    }
+  ];
+  const durable = [
+    { id: 1, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+    {
+      id: 2, sequence: 2, role: 'assistant', response_id: staleResponseId, assistant_segment_ordinal: 0,
+      parts: [{ type: 'text', text: 'stale persisted output' }]
+    }
+  ];
+  const { app, storage } = await createSessionsHarness({
+    initialStorage: {
+      [storageKey]: JSON.stringify({ version: 1, sessions: { [sessionId]: entries } })
+    },
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        return new Response(JSON.stringify({
+          rev: 2,
+          compaction_seq: -1,
+          compaction_count: 0,
+          active_response_id: activeResponseId,
+          started_rev: 1,
+          run_epoch: 2,
+          rows: {
+            ids: [1, 2],
+            seqs: [1, 2],
+            roles: 'ua',
+            flags: [0, 0],
+            response_ids: ['', staleResponseId],
+            assistant_segment_ordinals: [-1, 0]
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"stale-active-rev-2"' } });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        return new Response(JSON.stringify({ rev: 2, messages: durable }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, messages: [] };
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+
+  const loaded = await app.syncTranscript(session, { reason: 'reload' });
+  const expectedKeys = [
+    'legacy-ownerless',
+    `${activeResponseId}:assistant:0`,
+    `${activeResponseId}:tool:call-current`,
+    'pending-user'
+  ];
+  const optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
+  if (!loaded || session.transcript.activeRun?.id !== activeResponseId
+      || JSON.stringify(optimisticKeys) !== JSON.stringify(expectedKeys)) {
+    fail(name, 'active response authority retained stale foreign output or dropped protected entries', JSON.stringify({
+      activeRun: session.transcript.activeRun,
+      optimisticKeys
+    }));
+    return;
+  }
+  const saved = JSON.parse(storage.get(storageKey) || 'null');
+  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  if (JSON.stringify(savedKeys) !== JSON.stringify(expectedKeys)) {
+    fail(name, 'response-scoped stale retirement was not persisted', JSON.stringify(saved));
+    return;
+  }
+  pass(name);
+}
+
 async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
   const name = 'grouped tool conversion preserves source range and later durable anchors';
   const { app, windowObj } = await createSessionsHarness();
@@ -6469,6 +6676,8 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testSessionPruningDestroysTranscriptStores();
   await testOptimisticTranscriptStorageIsPerSession();
   await testReloadMaterializesPersistedOptimisticToolTurnsBeforeTerminalReconciliation();
+  await testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdvance();
+  await testReloadScopesStalePersistedRetirementToCurrentActiveResponse();
   await testTranscriptSyncCommitsOneRenderedProjection();
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testInflightSyncAbsorbsQueuedZeroRevisionActivation();

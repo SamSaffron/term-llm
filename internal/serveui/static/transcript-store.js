@@ -942,8 +942,18 @@
 
       for (const local of this.optimistic) {
         const localIsTool = local.role === 'tool-group' || local.role === 'tool';
+        const outputOwner = messageResponseID(local);
+        // An active response is authoritative only for output with the same
+        // stable owner. Legacy ownerless output remains protected because its
+        // response scope cannot be established safely.
+        const activeRunOwnsOutput = Boolean(this.activeRun)
+          && (!outputOwner || this.activeRun.id === outputOwner);
+        const serverOwnsPersistedOutput = !activeRunOwnsOutput
+          && this.persistedOptimistic.has(local)
+          && (local.role === 'assistant' || localIsTool)
+          && this.rev > finiteInt(local.revAtSend, this.rev);
         if (localIsTool) {
-          const owner = messageResponseID(local);
+          const owner = outputOwner;
           const localKeys = new Map([...messageToolIDs(local)].map((id) => [toolIdentityKey(owner, id), id]));
           const uncovered = new Set([...localKeys.entries()].filter(([key, id]) => (
             key
@@ -988,7 +998,8 @@
               // A covered live overlay remains the sole mutable cursor until the
               // response finalizes; fresh deltas must never target its durable projection.
               kept.push(local);
-            } else if (comparison.suffix) kept.push(local);
+            } else if (serverOwnsPersistedOutput) removed.push(local);
+            else if (comparison.suffix) kept.push(local);
             else removed.push(local);
             continue;
           }
@@ -996,11 +1007,20 @@
             const legacyPart = durableAssistantParts.find((candidate) => candidate.sequence > finiteInt(local.durableSeqAtSend, -1));
             if (legacyPart) {
               const comparison = assistantSuffixAfterDurable(legacyPart.content, assistantSourceContent(local));
-              if (comparison.suffix) kept.push(local);
+              if (comparison.suffix && !serverOwnsPersistedOutput) kept.push(local);
               else removed.push(local);
               continue;
             }
           }
+        }
+
+        if (serverOwnsPersistedOutput) {
+          // Persisted assistant/tool overlays are recovery shadows, not durable
+          // client intent. Once the transcript advances beyond their captured
+          // revision and no active response owns them, the durable transcript
+          // owns the response tail even if an old stable identity never matched.
+          removed.push(local);
+          continue;
         }
 
         const afterSeq = finiteInt(local.durableSeqAtSend, -1);

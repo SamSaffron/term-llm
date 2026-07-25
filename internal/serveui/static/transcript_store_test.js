@@ -537,13 +537,13 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   terminalTools.setActiveRun('', 0);
   assert.deepEqual(
     terminalTools.reconcileOptimistic().map((entry) => entry.clientKey),
-    ['completed-tool-tail', 'completed-standalone-tool'],
-    'an authoritative terminal revision must retire unmatched completed tool UI'
+    ['completed-tool-tail', 'completed-standalone-tool', 'running-tool'],
+    'an authoritative terminal revision must retire every unmatched persisted tool overlay'
   );
   assert.deepEqual(
     terminalTools.optimistic.map((entry) => entry.clientKey),
-    ['queued-user', 'running-tool'],
-    'queued user messages and running tools must survive terminal tool cleanup'
+    ['queued-user'],
+    'queued user messages must survive terminal server-owned output cleanup'
   );
 
   const displayOnly = new TranscriptStore('display-only');
@@ -696,6 +696,111 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   assert.equal(reloaded.renderedMessages()[0].response_id, responseId, 'reload preserves durable response-scoped identity');
   store._checkInvariants();
   reloaded._checkInvariants();
+})();
+
+(() => {
+  const responseId = 'resp_stale_persisted_output';
+  const stalePersisted = new TranscriptStore('stale-persisted-output');
+  const staleMatchedSuffix = stalePersisted.addOptimistic({
+    id: 'stale-matched-suffix', role: 'assistant', responseId, assistantSegmentOrdinal: 0,
+    content: 'prefix suffix ghost', revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const staleAssistant = stalePersisted.addOptimistic({
+    id: 'stale-assistant', role: 'assistant', responseId, assistantSegmentOrdinal: 99,
+    content: 'prefix suffix', revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const staleLegacyAssistant = stalePersisted.addOptimistic({
+    id: 'stale-legacy-assistant', role: 'assistant', content: 'prefix suffix ghost',
+    revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const staleTool = stalePersisted.addOptimistic({
+    id: 'stale-tool', role: 'tool-group', responseId, status: 'running',
+    tools: [{ id: 'call-stale', status: 'running' }], revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const pendingUser = stalePersisted.addOptimistic({
+    id: 'pending-user', role: 'user', content: 'still pending', revAtSend: 2, durableSeqAtSend: 2,
+  }, 2, { persisted: true });
+  stalePersisted.applyIndex({
+    rev: 2,
+    rows: {
+      ids: [1, 2], seqs: [1, 2], roles: 'ua', flags: [0, 0],
+      response_ids: ['', responseId], assistant_segment_ordinals: [-1, 0],
+    },
+  });
+  stalePersisted.materialize([
+    { id: 1, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+    {
+      id: 2, sequence: 2, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+      parts: [{ type: 'text', text: 'prefix suffix' }],
+    },
+  ]);
+  assert.deepEqual(
+    stalePersisted.reconcileOptimistic(),
+    [staleMatchedSuffix, staleAssistant, staleLegacyAssistant, staleTool],
+    'terminal authoritative advancement retires persisted server-owned output whether its stable identity matches or is stale'
+  );
+  assert.deepEqual(stalePersisted.optimistic, [pendingUser], 'terminal retirement preserves genuinely pending user input');
+
+  const currentResponseId = 'resp_current_active';
+  const activePersisted = new TranscriptStore('active-persisted-output');
+  const staleMatchedActive = activePersisted.addOptimistic({
+    id: 'stale-matched-active', role: 'assistant', responseId, assistantSegmentOrdinal: 0,
+    content: 'prefix suffix ghost', revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const staleAssistantActive = activePersisted.addOptimistic({
+    id: 'stale-assistant-active', role: 'assistant', responseId, assistantSegmentOrdinal: 99,
+    content: 'stale persisted output', revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const staleToolActive = activePersisted.addOptimistic({
+    id: 'stale-tool-active', role: 'tool-group', responseId, status: 'running',
+    tools: [{ id: 'call-stale-active', status: 'running' }], revAtSend: 1, durableSeqAtSend: 1,
+  }, 1, { persisted: true });
+  const legacyOwnerless = activePersisted.addOptimistic({
+    id: 'legacy-ownerless-active', role: 'assistant', content: 'legacy recovery output',
+    revAtSend: 1, durableSeqAtSend: 2,
+  }, 1, { persisted: true });
+  activePersisted.setActiveRun(currentResponseId, 1, 2);
+  const activeSuffix = activePersisted.addOptimistic({
+    id: 'active-suffix', role: 'assistant', responseId: currentResponseId, assistantSegmentOrdinal: 0,
+    content: 'active suffix', revAtSend: 1, durableSeqAtSend: 2,
+  }, 1, { persisted: true });
+  const activeTool = activePersisted.addOptimistic({
+    id: 'active-tool', role: 'tool-group', responseId: currentResponseId, status: 'running',
+    tools: [{ id: 'call-current', status: 'running' }], revAtSend: 1, durableSeqAtSend: 2,
+  }, 1, { persisted: true });
+  const activePendingUser = activePersisted.addOptimistic({
+    id: 'active-pending-user', role: 'user', content: 'still pending', revAtSend: 2, durableSeqAtSend: 2,
+  }, 2, { persisted: true });
+  activePersisted.applyIndex({
+    rev: 2,
+    active_response_id: currentResponseId,
+    rows: {
+      ids: [1, 2], seqs: [1, 2], roles: 'ua', flags: [0, 0],
+      response_ids: ['', responseId], assistant_segment_ordinals: [-1, 0],
+    },
+  });
+  activePersisted.materialize([
+    { id: 1, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+    {
+      id: 2, sequence: 2, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+      parts: [{ type: 'text', text: 'prefix suffix' }],
+    },
+  ]);
+  assert.deepEqual(
+    activePersisted.reconcileOptimistic(),
+    [staleMatchedActive, staleAssistantActive, staleToolActive],
+    'a different active response must not protect stale persisted output with a stable old owner'
+  );
+  assert.deepEqual(
+    activePersisted.optimistic,
+    [legacyOwnerless, activeSuffix, activeTool, activePendingUser],
+    'active reconciliation preserves ownerless recovery output, the current response suffix/tools, and pending user input'
+  );
+
+  stalePersisted._checkInvariants();
+  activePersisted._checkInvariants();
+  stalePersisted.destroy();
+  activePersisted.destroy();
 })();
 
 console.log('transcript-store tests passed');
