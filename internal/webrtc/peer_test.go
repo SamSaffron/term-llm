@@ -7,10 +7,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
+	"github.com/pion/ice/v4"
 )
 
 // newTestPeer creates a peer wired to handler with the given basePath,
@@ -53,6 +57,180 @@ func encodeRequest(id, method, path string, headers map[string]string, body stri
 	}
 	data, _ := json.Marshal(f)
 	return data
+}
+
+func gatherTestICEAgent(t *testing.T) (*ice.Agent, string, string, []ice.Candidate) {
+	t.Helper()
+
+	agent, err := ice.NewAgentWithOptions(
+		ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+	)
+	if err != nil {
+		t.Fatalf("create browser ICE agent: %v", err)
+	}
+	t.Cleanup(func() { _ = agent.Close() })
+
+	gathered := make(chan struct{})
+	var gatherOnce sync.Once
+	if err := agent.OnCandidate(func(candidate ice.Candidate) {
+		if candidate == nil {
+			gatherOnce.Do(func() { close(gathered) })
+		}
+	}); err != nil {
+		t.Fatalf("register browser candidate callback: %v", err)
+	}
+	if err := agent.GatherCandidates(); err != nil {
+		t.Fatalf("gather browser ICE candidates: %v", err)
+	}
+	select {
+	case <-gathered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out gathering browser ICE candidates")
+	}
+
+	ufrag, pwd, err := agent.GetLocalUserCredentials()
+	if err != nil {
+		t.Fatalf("get browser ICE credentials: %v", err)
+	}
+	candidates, err := agent.GetLocalCandidates()
+	if err != nil {
+		t.Fatalf("get browser ICE candidates: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("browser ICE agent gathered no candidates")
+	}
+	return agent, ufrag, pwd, candidates
+}
+
+func TestHandleOffer_SetupTimeoutReleasesConnectionSlot(t *testing.T) {
+	browserAgent, browserUfrag, browserPwd, browserCandidates := gatherTestICEAgent(t)
+	browserCert, err := selfsign.GenerateSelfSigned()
+	if err != nil {
+		t.Fatalf("generate browser certificate: %v", err)
+	}
+	browserFingerprint, err := certFingerprint(browserCert)
+	if err != nil {
+		t.Fatalf("fingerprint browser certificate: %v", err)
+	}
+	offerSDP, err := buildAnswer(browserUfrag, browserPwd, browserFingerprint, "0", browserCandidates)
+	if err != nil {
+		t.Fatalf("build browser offer: %v", err)
+	}
+	firstOffer := signalingMsg{SessionID: "abandoned", Type: "offer", SDP: offerSDP}
+	secondOffer := signalingMsg{SessionID: "next", Type: "offer", SDP: offerSDP}
+
+	answers := make(chan signalingMsg, 2)
+	var pollMu sync.Mutex
+	var polledOffer *signalingMsg
+	signaling := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			var answer signalingMsg
+			if err := json.NewDecoder(r.Body).Decode(&answer); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			answers <- answer
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			pollMu.Lock()
+			offer := polledOffer
+			polledOffer = nil
+			pollMu.Unlock()
+			if offer == nil {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(offer)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer signaling.Close()
+
+	p := &peer{
+		cfg: Config{
+			SignalingURL: signaling.URL,
+			MaxConns:     1,
+		},
+		handler:      http.NotFoundHandler(),
+		client:       signaling.Client(),
+		setupTimeout: 200 * time.Millisecond,
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		p.handleOffer(context.Background(), firstOffer)
+	}()
+
+	var firstAnswer signalingMsg
+	select {
+	case firstAnswer = <-answers:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first WebRTC answer")
+	}
+	if got := p.active.Load(); got != 1 {
+		t.Fatalf("active connections after first answer = %d, want 1", got)
+	}
+
+	answerInfo, err := parseOffer(firstAnswer.SDP)
+	if err != nil {
+		t.Fatalf("parse first WebRTC answer: %v", err)
+	}
+	for _, rawCandidate := range answerInfo.candidates {
+		candidate, err := ice.UnmarshalCandidate(rawCandidate)
+		if err != nil {
+			t.Fatalf("parse answer ICE candidate: %v", err)
+		}
+		if err := browserAgent.AddRemoteCandidate(candidate); err != nil {
+			t.Fatalf("add answer ICE candidate: %v", err)
+		}
+	}
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
+	browserConn, err := browserAgent.Dial(dialCtx, answerInfo.iceUfrag, answerInfo.icePwd)
+	cancelDial()
+	if err != nil {
+		t.Fatalf("complete browser ICE connection: %v", err)
+	}
+	defer browserConn.Close()
+	// Deliberately send no DTLS ClientHello after ICE connectivity succeeds.
+
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("abandoned WebRTC setup did not return after setup timeout")
+	}
+	if got := p.active.Load(); got != 0 {
+		t.Fatalf("active connections after setup timeout = %d, want 0", got)
+	}
+
+	pollMu.Lock()
+	polledOffer = &secondOffer
+	pollMu.Unlock()
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	if err := p.pollOnce(secondCtx); err != nil {
+		cancelSecond()
+		t.Fatalf("poll subsequent offer: %v", err)
+	}
+	select {
+	case answer := <-answers:
+		if answer.SessionID != secondOffer.SessionID {
+			t.Fatalf("subsequent answer session = %q, want %q", answer.SessionID, secondOffer.SessionID)
+		}
+	case <-time.After(5 * time.Second):
+		cancelSecond()
+		t.Fatal("subsequent offer was rejected after abandoned setup")
+	}
+	cancelSecond()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for p.active.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.active.Load(); got != 0 {
+		t.Fatalf("active connections after canceling subsequent offer = %d, want 0", got)
+	}
 }
 
 type blockingReadDataChannel struct {
