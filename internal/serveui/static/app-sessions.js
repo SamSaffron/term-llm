@@ -1177,6 +1177,15 @@ const noteTranscriptTerminal = (session, responseId, finalRev, runEpoch = 0) => 
     observedCreatedEpoch: session?.latestRunEpoch || 0,
   });
   if (activeBefore && transcript.activeRun) return Promise.resolve(false);
+  if (!(session._terminalResponseRetirements instanceof Map)) {
+    session._terminalResponseRetirements = new Map();
+  }
+  const terminalResponseId = String(responseId || '').trim();
+  if (terminalResponseId) {
+    const targetRev = Math.max(0, Number(finalRev) || 0);
+    const previousTarget = Number(session._terminalResponseRetirements.get(terminalResponseId)) || 0;
+    session._terminalResponseRetirements.set(terminalResponseId, Math.max(previousTarget, targetRev));
+  }
   persistTranscriptOptimistic(session);
   return syncTranscript(session, {
     reason: 'terminal',
@@ -1461,6 +1470,24 @@ const materializeTranscriptSegments = (session, request) => {
   });
 };
 
+const commitTerminalResponseAuthority = (session, transcript) => {
+  const pending = session?._terminalResponseRetirements;
+  if (!(pending instanceof Map) || pending.size === 0 || !transcript) return [];
+  const removed = [];
+  for (const [responseId, targetRev] of [...pending]) {
+    // Never retire before the transcript revision named by the terminal event
+    // is present. An older in-flight/304 sync may complete first.
+    if ((Number(targetRev) || 0) > 0 && transcript.rev < Number(targetRev)) continue;
+    // A newer status sample may prove the response is still active. Keep its
+    // overlays until a later successful terminal sync establishes authority.
+    if (transcript.activeRun?.id === responseId) continue;
+    removed.push(...(transcript.retireResponseOutput?.(responseId) || []));
+    pending.delete(responseId);
+  }
+  if (pending.size === 0) delete session._terminalResponseRetirements;
+  return removed;
+};
+
 const syncTranscriptOnce = async (session, options = {}) => {
   const transcript = ensureSessionTranscript(session);
   if (!transcript) return false;
@@ -1479,6 +1506,7 @@ const syncTranscriptOnce = async (session, options = {}) => {
       replacement.addOptimistic(local, local.revAtSend);
     }
     if (activeRun) replacement.setActiveRun(activeRun.id, activeRun.startedRev, activeRun.epoch || 0);
+    commitTerminalResponseAuthority(session, replacement);
     replacement.reconcileOptimistic();
     transcript.destroy();
     session.transcript = replacement;
@@ -1524,7 +1552,10 @@ const syncTranscriptOnce = async (session, options = {}) => {
     // Reconcile while all requested bodies are present, then persist the
     // optimistic source before the transaction's final budget can evict a
     // distant turn. withViewportAnchor publishes one bounded projection after
-    // this callback resolves.
+    // this callback resolves. A successful terminal sync is also the ownership
+    // commit boundary: server-produced overlays from the completed response
+    // cannot survive merely because their segment ordinal drifted.
+    commitTerminalResponseAuthority(session, transcript);
     transcript.reconcileOptimistic();
     persistTranscriptOptimistic(session);
     return true;

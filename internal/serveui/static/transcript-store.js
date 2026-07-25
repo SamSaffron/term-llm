@@ -1026,6 +1026,21 @@
       return removed;
     }
 
+    retireResponseOutput(responseId) {
+      const owner = String(responseId || '').trim();
+      if (!owner) return [];
+      const removed = this.optimistic.filter((entry) => (
+        messageResponseID(entry) === owner
+        && ['assistant', 'tool', 'tool-group'].includes(entry?.role)
+      ));
+      if (removed.length > 0) {
+        const removedSet = new Set(removed);
+        this.optimistic = this.optimistic.filter((entry) => !removedSet.has(entry));
+        this.rebuildOptimisticIdentityIndex();
+      }
+      return removed;
+    }
+
     clearTransientOptimistic() {
       const removed = this.optimistic.filter((entry) => entry?.transient);
       this.optimistic = this.optimistic.filter((entry) => !entry?.transient);

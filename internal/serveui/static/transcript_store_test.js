@@ -721,6 +721,30 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   assert.equal(transcriptIsClientOwnedIntent({ id: 'durable-user', role: 'user', durable: true }), false);
 })();
 
+// Terminal authority is response-scoped rather than segment-scoped. Once the
+// server confirms completion, every assistant/tool overlay owned by that
+// response is obsolete even when its segment identity drifted.
+(() => {
+  const store = new TranscriptStore('terminal-response-authority');
+  const staleAssistant = store.addOptimistic({
+    id: 'stale-assistant', role: 'assistant', responseId: 'resp_done',
+    assistantSegmentOrdinal: 99, content: 'duplicate output'
+  });
+  const staleTools = store.addOptimistic({
+    id: 'stale-tools', role: 'tool-group', responseId: 'resp_done',
+    tools: [{ id: 'call_done', status: 'done' }]
+  });
+  const newerAssistant = store.addOptimistic({
+    id: 'newer-assistant', role: 'assistant', responseId: 'resp_new',
+    assistantSegmentOrdinal: 0, content: 'still active'
+  });
+  const queuedUser = store.addOptimistic({ id: 'queued-user', role: 'user', content: 'next turn' });
+  assert.deepEqual(store.retireResponseOutput('resp_done'), [staleAssistant, staleTools]);
+  assert.deepEqual(store.optimistic, [newerAssistant, queuedUser]);
+  store._checkInvariants();
+  store.destroy();
+})();
+
 // Exact production regression: a durable row and a same-revision overlay for the
 // same response. Retirement must come from durable coverage, never from a
 // transcript revision that has not advanced past the overlay's capture point.
