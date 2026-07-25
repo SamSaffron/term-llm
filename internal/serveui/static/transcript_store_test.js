@@ -6,6 +6,7 @@ const {
   TRANSCRIPT_FLAG_EMPTY_BODY,
   transcriptStoreFromMessages,
   reconcileTranscriptProjection,
+  transcriptIsClientOwnedIntent,
   __transcriptStats
 } = require('./transcript-store.js');
 
@@ -474,7 +475,7 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
     content: 'durable prefix plus optimistic suffix',
     durableSeqAtSend: 25,
     revAtSend: 7
-  }, 7, { persisted: true });
+  }, 7);
   reloadedAssistant.reconcileOptimistic();
   const reloadedProjection = reconcileTranscriptProjection([
     {
@@ -490,12 +491,12 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   assert.deepEqual(
     reloadedProjection.map((message) => ({ id: message.id, content: message.content })),
     assistantProjection.map((message) => ({ id: message.id, content: message.content })),
-    'persisted reload and live status synchronization must publish the same tail'
+    'an in-memory reload overlay and live status synchronization must publish the same tail'
   );
 
   const scopedTools = new TranscriptStore('scoped-persisted-tools');
   scopedTools.applyIndex(envelope([30, 31], { rev: 1, roles: 'ua' }));
-  scopedTools.addOptimistic({ clientKey: 'persisted-tools', role: 'tool-group', tools: [{ id: 'shared-call' }] }, 1, { persisted: true });
+  scopedTools.addOptimistic({ clientKey: 'recovered-tools', role: 'tool-group', tools: [{ id: 'shared-call' }] }, 1);
   scopedTools.addOptimistic({ clientKey: 'live-tools', role: 'tool-group', tools: [{ id: 'shared-call' }] });
   scopedTools.applyIndex(envelope([30, 31, 32, 33, 34, 35, 36], { rev: 2, roles: 'uauauat' }));
   scopedTools.materialize([
@@ -509,7 +510,7 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   ]);
   assert.deepEqual(
     scopedTools.reconcileOptimistic().map((entry) => entry.clientKey),
-    ['persisted-tools', 'live-tools'],
+    ['recovered-tools', 'live-tools'],
     'stable durable tool IDs retire every optimistic projection regardless of synthetic group or turn scope'
   );
   assert.deepEqual(scopedTools.optimistic.map((entry) => entry.clientKey), []);
@@ -521,15 +522,15 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
     role: 'tool-group',
     status: 'done',
     tools: [{ id: 'local-only-call', status: 'done' }]
-  }, 5, { persisted: true });
-  terminalTools.addOptimistic({ clientKey: 'completed-standalone-tool', role: 'tool', status: 'error' }, 5, { persisted: true });
-  terminalTools.addOptimistic({ clientKey: 'queued-user', role: 'user', durableSeqAtSend: 99 }, 5, { persisted: true });
+  }, 5);
+  terminalTools.addOptimistic({ clientKey: 'completed-standalone-tool', role: 'tool', status: 'error' }, 5);
+  terminalTools.addOptimistic({ clientKey: 'queued-user', role: 'user', durableSeqAtSend: 99 }, 5);
   terminalTools.addOptimistic({
     clientKey: 'running-tool',
     role: 'tool-group',
     status: 'running',
     tools: [{ id: 'active-call', status: 'running' }]
-  }, 5, { persisted: true });
+  }, 5);
   terminalTools.setActiveRun('resp-active', 5);
   terminalTools.applyIndex(envelope([40, 41], { rev: 6, roles: 'ua' }));
   materializeOrdinals(terminalTools, [1]);
@@ -537,13 +538,13 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   terminalTools.setActiveRun('', 0);
   assert.deepEqual(
     terminalTools.reconcileOptimistic().map((entry) => entry.clientKey),
-    ['completed-tool-tail', 'completed-standalone-tool', 'running-tool'],
-    'an authoritative terminal revision must retire every unmatched persisted tool overlay'
+    ['completed-tool-tail', 'completed-standalone-tool'],
+    'an authoritative terminal revision retires completed tool UI the durable transcript now owns'
   );
   assert.deepEqual(
     terminalTools.optimistic.map((entry) => entry.clientKey),
-    ['queued-user'],
-    'queued user messages must survive terminal server-owned output cleanup'
+    ['queued-user', 'running-tool'],
+    'queued user intent and the still-running in-memory tool overlay survive terminal cleanup'
   );
 
   const displayOnly = new TranscriptStore('display-only');
@@ -698,109 +699,115 @@ const materializeOrdinals = (store, ordinals, estHeight = 20) => {
   reloaded._checkInvariants();
 })();
 
+// Persistence classification is shared by storage reads and writes: only
+// non-durable client intent is eligible for browser persistence.
 (() => {
-  const responseId = 'resp_stale_persisted_output';
-  const stalePersisted = new TranscriptStore('stale-persisted-output');
-  const staleMatchedSuffix = stalePersisted.addOptimistic({
-    id: 'stale-matched-suffix', role: 'assistant', responseId, assistantSegmentOrdinal: 0,
-    content: 'prefix suffix ghost', revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const staleAssistant = stalePersisted.addOptimistic({
-    id: 'stale-assistant', role: 'assistant', responseId, assistantSegmentOrdinal: 99,
+  const responseId = 'resp_projection_authority';
+  const projections = [
+    { id: 'matched-identity', role: 'assistant', responseId, assistantSegmentOrdinal: 0, content: 'prefix' },
+    { id: 'drifted-ordinal', role: 'assistant', responseId, assistantSegmentOrdinal: 99, content: 'prefix' },
+    { id: 'ownerless-legacy', role: 'assistant', content: 'legacy recovery output' },
+    { id: 'tool-group', role: 'tool-group', responseId, status: 'running', tools: [{ id: 'call-a', status: 'running' }] },
+    { id: 'standalone-tool', role: 'tool', responseId, status: 'running' },
+  ];
+  for (const projection of projections) {
+    assert.equal(
+      transcriptIsClientOwnedIntent(projection),
+      false,
+      `server-produced ${projection.id} must never be browser-persistable`
+    );
+  }
+  assert.equal(transcriptIsClientOwnedIntent({ id: 'queued-user', role: 'user' }), true);
+  assert.equal(transcriptIsClientOwnedIntent({ id: 'durable-user', role: 'user', durable: true }), false);
+})();
+
+// Exact production regression: a durable row and a same-revision overlay for the
+// same response. Retirement must come from durable coverage, never from a
+// transcript revision that has not advanced past the overlay's capture point.
+(() => {
+  const responseId = 'resp_TimE4vzRQUUJ';
+  const equalRev = new TranscriptStore('equal-revision-coverage');
+  const covered = equalRev.addOptimistic({
+    id: 'msg_overlay', role: 'assistant', responseId, assistantSegmentOrdinal: 0,
+    content: 'durable answer', revAtSend: 279, durableSeqAtSend: 180,
+  }, 279);
+  const queued = equalRev.addOptimistic({
+    id: 'queued-user', role: 'user', content: 'still pending', revAtSend: 279, durableSeqAtSend: 180,
+  }, 279);
+  equalRev.applyIndex({
+    rev: 279,
+    rows: {
+      ids: [180, 181], seqs: [180, 181], roles: 'ua', flags: [0, 0],
+      response_ids: ['', responseId], assistant_segment_ordinals: [-1, 0],
+    },
+  });
+  equalRev.materialize([
+    { id: 180, sequence: 180, role: 'user', parts: [{ type: 'text', text: 'question' }] },
+    {
+      id: 181, sequence: 181, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+      parts: [{ type: 'text', text: 'durable answer' }],
+    },
+  ]);
+  assert.equal(equalRev.rev, 279, 'the transcript revision must stay equal to the overlay capture revision');
+  assert.deepEqual(
+    equalRev.reconcileOptimistic(),
+    [covered],
+    'a fully covered overlay retires at an unchanged revision instead of waiting for an unrelated advance'
+  );
+  assert.deepEqual(equalRev.optimistic, [queued], 'equal-revision retirement preserves queued user intent');
+  equalRev._checkInvariants();
+  equalRev.destroy();
+})();
+
+// Ownership during an active response: the owning response keeps its mutable
+// cursor, a different owner never adopts another response's output.
+(() => {
+  const staleResponseId = 'resp_stale_owner';
+  const activeResponseId = 'resp_current_active';
+  const owners = new TranscriptStore('active-run-ownership');
+  const staleCovered = owners.addOptimistic({
+    id: 'stale-covered', role: 'assistant', responseId: staleResponseId, assistantSegmentOrdinal: 0,
     content: 'prefix suffix', revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const staleLegacyAssistant = stalePersisted.addOptimistic({
-    id: 'stale-legacy-assistant', role: 'assistant', content: 'prefix suffix ghost',
-    revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const staleTool = stalePersisted.addOptimistic({
-    id: 'stale-tool', role: 'tool-group', responseId, status: 'running',
-    tools: [{ id: 'call-stale', status: 'running' }], revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const pendingUser = stalePersisted.addOptimistic({
-    id: 'pending-user', role: 'user', content: 'still pending', revAtSend: 2, durableSeqAtSend: 2,
-  }, 2, { persisted: true });
-  stalePersisted.applyIndex({
-    rev: 2,
-    rows: {
-      ids: [1, 2], seqs: [1, 2], roles: 'ua', flags: [0, 0],
-      response_ids: ['', responseId], assistant_segment_ordinals: [-1, 0],
-    },
-  });
-  stalePersisted.materialize([
-    { id: 1, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'question' }] },
-    {
-      id: 2, sequence: 2, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
-      parts: [{ type: 'text', text: 'prefix suffix' }],
-    },
-  ]);
-  assert.deepEqual(
-    stalePersisted.reconcileOptimistic(),
-    [staleMatchedSuffix, staleAssistant, staleLegacyAssistant, staleTool],
-    'terminal authoritative advancement retires persisted server-owned output whether its stable identity matches or is stale'
-  );
-  assert.deepEqual(stalePersisted.optimistic, [pendingUser], 'terminal retirement preserves genuinely pending user input');
-
-  const currentResponseId = 'resp_current_active';
-  const activePersisted = new TranscriptStore('active-persisted-output');
-  const staleMatchedActive = activePersisted.addOptimistic({
-    id: 'stale-matched-active', role: 'assistant', responseId, assistantSegmentOrdinal: 0,
-    content: 'prefix suffix ghost', revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const staleAssistantActive = activePersisted.addOptimistic({
-    id: 'stale-assistant-active', role: 'assistant', responseId, assistantSegmentOrdinal: 99,
-    content: 'stale persisted output', revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const staleToolActive = activePersisted.addOptimistic({
-    id: 'stale-tool-active', role: 'tool-group', responseId, status: 'running',
-    tools: [{ id: 'call-stale-active', status: 'running' }], revAtSend: 1, durableSeqAtSend: 1,
-  }, 1, { persisted: true });
-  const legacyOwnerless = activePersisted.addOptimistic({
-    id: 'legacy-ownerless-active', role: 'assistant', content: 'legacy recovery output',
-    revAtSend: 1, durableSeqAtSend: 2,
-  }, 1, { persisted: true });
-  activePersisted.setActiveRun(currentResponseId, 1, 2);
-  const activeSuffix = activePersisted.addOptimistic({
-    id: 'active-suffix', role: 'assistant', responseId: currentResponseId, assistantSegmentOrdinal: 0,
-    content: 'active suffix', revAtSend: 1, durableSeqAtSend: 2,
-  }, 1, { persisted: true });
-  const activeTool = activePersisted.addOptimistic({
-    id: 'active-tool', role: 'tool-group', responseId: currentResponseId, status: 'running',
+  }, 1);
+  owners.setActiveRun(activeResponseId, 1, 2);
+  const activeCursor = owners.addOptimistic({
+    id: 'active-cursor', role: 'assistant', responseId: activeResponseId, assistantSegmentOrdinal: 0,
+    content: 'live suffix', revAtSend: 1, durableSeqAtSend: 2,
+  }, 1);
+  const activeTool = owners.addOptimistic({
+    id: 'active-tool', role: 'tool-group', responseId: activeResponseId, status: 'running',
     tools: [{ id: 'call-current', status: 'running' }], revAtSend: 1, durableSeqAtSend: 2,
-  }, 1, { persisted: true });
-  const activePendingUser = activePersisted.addOptimistic({
-    id: 'active-pending-user', role: 'user', content: 'still pending', revAtSend: 2, durableSeqAtSend: 2,
-  }, 2, { persisted: true });
-  activePersisted.applyIndex({
+  }, 1);
+  const queued = owners.addOptimistic({
+    id: 'queued-user', role: 'user', content: 'still pending', revAtSend: 2, durableSeqAtSend: 2,
+  }, 2);
+  owners.applyIndex({
     rev: 2,
-    active_response_id: currentResponseId,
+    active_response_id: activeResponseId,
     rows: {
       ids: [1, 2], seqs: [1, 2], roles: 'ua', flags: [0, 0],
-      response_ids: ['', responseId], assistant_segment_ordinals: [-1, 0],
+      response_ids: ['', staleResponseId], assistant_segment_ordinals: [-1, 0],
     },
   });
-  activePersisted.materialize([
+  owners.materialize([
     { id: 1, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'question' }] },
     {
-      id: 2, sequence: 2, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
+      id: 2, sequence: 2, role: 'assistant', response_id: staleResponseId, assistant_segment_ordinal: 0,
       parts: [{ type: 'text', text: 'prefix suffix' }],
     },
   ]);
   assert.deepEqual(
-    activePersisted.reconcileOptimistic(),
-    [staleMatchedActive, staleAssistantActive, staleToolActive],
-    'a different active response must not protect stale persisted output with a stable old owner'
+    owners.reconcileOptimistic(),
+    [staleCovered],
+    'a different active response must not protect output a durable row already covers'
   );
   assert.deepEqual(
-    activePersisted.optimistic,
-    [legacyOwnerless, activeSuffix, activeTool, activePendingUser],
-    'active reconciliation preserves ownerless recovery output, the current response suffix/tools, and pending user input'
+    owners.optimistic,
+    [activeCursor, activeTool, queued],
+    'the owning response keeps its mutable cursor and tools while queued intent survives'
   );
-
-  stalePersisted._checkInvariants();
-  activePersisted._checkInvariants();
-  stalePersisted.destroy();
-  activePersisted.destroy();
+  owners._checkInvariants();
+  owners.destroy();
 })();
 
 console.log('transcript-store tests passed');
