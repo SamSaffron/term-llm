@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -274,73 +273,6 @@ func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettin
 		perms.AddScriptCommand(script)
 	}
 	return tools.NewApprovalManager(perms), nil
-}
-
-const postFrameFlushDelay = 16 * time.Millisecond
-
-type postFrameWriter struct {
-	w     io.Writer
-	after func() string
-	mu    sync.Mutex
-	timer *time.Timer
-}
-
-func newPostFrameWriter(w io.Writer, after func() string) io.Writer {
-	return &postFrameWriter{w: w, after: after}
-}
-
-func (w *postFrameWriter) Read(p []byte) (int, error) {
-	if r, ok := w.w.(io.Reader); ok {
-		return r.Read(p)
-	}
-	return 0, io.EOF
-}
-
-func (w *postFrameWriter) Close() error {
-	w.flushPostFrame()
-	// Do not close stdout/stderr; Bubble Tea owns terminal state, not the fd.
-	return nil
-}
-
-func (w *postFrameWriter) Fd() uintptr {
-	if f, ok := w.w.(interface{ Fd() uintptr }); ok {
-		return f.Fd()
-	}
-	return os.Stdout.Fd()
-}
-
-func (w *postFrameWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	n, err := w.w.Write(p)
-	if err == nil {
-		w.schedulePostFrameLocked()
-	}
-	w.mu.Unlock()
-	return n, err
-}
-
-func (w *postFrameWriter) schedulePostFrameLocked() {
-	if w.after == nil {
-		return
-	}
-	if w.timer == nil {
-		w.timer = time.AfterFunc(postFrameFlushDelay, w.flushPostFrame)
-		return
-	}
-	w.timer.Reset(postFrameFlushDelay)
-}
-
-func (w *postFrameWriter) flushPostFrame() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.after == nil {
-		return
-	}
-	seq := w.after()
-	if seq == "" {
-		return
-	}
-	_, _ = io.WriteString(w.w, seq)
 }
 
 func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string) (string, string, error) {
@@ -766,10 +698,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		opts = append(opts, tea.WithInput(programInput.reader))
 	}
 
-	// Run the TUI
-	if useAltScreen {
-		opts = append(opts, tea.WithOutput(newPostFrameWriter(os.Stdout, model.TakePostFrameImageSequence)))
-	}
+	// Run the TUI. Image bytes and their acknowledgements are attached directly
+	// to the tea.View that composed them; stdout remains renderer-owned.
 	p := tea.NewProgram(model, opts...)
 	model.SetProgram(p)
 

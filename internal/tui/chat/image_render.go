@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +44,15 @@ type postFrameImageState struct {
 	HeightCells int
 	ScreenRow   int
 	Upload      string
+}
+
+type postFrameImageReceipt struct {
+	Generation    uint64
+	Reset         bool
+	Prefix        string
+	LegacyUploads []string
+	UploadedIDs   []uint32
+	Images        map[string]postFrameImageState
 }
 
 func (m *Model) configureImageRenderer() {
@@ -91,7 +102,7 @@ func (m *Model) renderViewportImageArtifact(path string) ui.ImageArtifact {
 		return artifact
 	}
 
-	termimage.Debugf(termimage.DefaultEnvironment(), "chat render image path=%s protocol=%s cells=%dx%d viewport=%dx%d model=%dx%d upload=%d display=%d suppressed=%t", path, result.Protocol, result.WidthCells, result.HeightCells, m.viewport.Width(), m.viewport.Height(), m.width, m.height, len(result.Upload), len(result.Display), m.imagePlaceholdersSuppressed)
+	termimage.Debugf(termimage.DefaultEnvironment(), "chat render image path=%s protocol=%s cells=%dx%d viewport=%dx%d model=%dx%d upload=%d display=%d", path, result.Protocol, result.WidthCells, result.HeightCells, m.viewport.Width(), m.viewport.Height(), m.width, m.height, len(result.Upload), len(result.Display))
 
 	artifact.Display = result.Display
 	artifact.Upload = result.Upload
@@ -115,31 +126,13 @@ func (m *Model) renderViewportImageArtifact(path string) ui.ImageArtifact {
 			HeightCells: result.HeightCells,
 			ImageID:     result.ImageID,
 		}
-		if result.ImageID != 0 {
-			if m.ownedKittyImageIDs == nil {
-				m.ownedKittyImageIDs = make(map[uint32]struct{})
-			}
-			m.ownedKittyImageIDs[result.ImageID] = struct{}{}
-		}
+		m.addOwnedKittyImageID(result.ImageID)
 		artifact.Display = viewportImageMarkerGrid(token, result.WidthCells, result.HeightCells)
 		artifact.Upload = ""
 		return artifact
 	}
 
 	if artifact.Upload != "" {
-		if m.imagePlaceholdersSuppressed {
-			// During terminal-width changes, first erase stale placeholder text / real
-			// Kitty placements without creating a new virtual placement. If cleanup and
-			// reupload are emitted in the same raw chunk, the newly uploaded virtual image
-			// can briefly bind to the old on-screen placeholder grid from the previous
-			// layout, producing doubled/misplaced images after resize. The cleanup flush
-			// clears suppression and invalidates the viewport; the next render queues the
-			// fresh upload and draws the new placeholder grid.
-			termimage.Debugf(termimage.DefaultEnvironment(), "chat suppress Kitty placeholders during resize cleanup path=%s", path)
-			artifact.Display = ""
-			artifact.Height = 0
-			return artifact
-		}
 		key := artifact.CacheKey
 		if key == "" {
 			key = fmt.Sprintf("%s|%s|%dx%d", path, result.Protocol, result.WidthCells, result.HeightCells)
@@ -181,34 +174,45 @@ func viewportImageMarkerGrid(token string, width, height int) string {
 	return b.String()
 }
 
-func (m *Model) usePostFrameImageComposition() bool {
-	return m != nil && m.altScreen
+func (m *Model) postFrameImageCompositionEnabled() bool {
+	if m == nil {
+		return false
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	return !m.postFrameRetryDisabled || m.postFrameFailureGeneration != m.imageGeneration
 }
 
 func (m *Model) beginPostFrameImageComposition() {
-	if m == nil || !m.altScreen {
+	if m == nil || !m.altScreen || m.externalProcessActive || m.quitting {
 		return
 	}
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
-	if m.postFrameTransmittedImages == nil {
-		m.postFrameTransmittedImages = make(map[uint32]struct{})
-	}
 	if m.postFrameRenderCache == nil {
 		m.postFrameRenderCache = make(map[string]postFrameImageState)
 	}
-	m.postFrameCurrentImages = make(map[string]postFrameImageState)
-	m.postFrameQueuedImages = make(map[uint32]struct{})
+	if m.postFrameKnownImages == nil {
+		m.postFrameKnownImages = make(map[string]postFrameImageState)
+	}
+	if m.postFrameUploadedImages == nil {
+		m.postFrameUploadedImages = make(map[uint32]struct{})
+	}
+	m.postFrameCurrentImages = clonePostFrameImageStates(m.postFrameLastImages)
+	if m.postFrameCurrentImages == nil {
+		m.postFrameCurrentImages = make(map[string]postFrameImageState)
+	}
 	m.postFrameImageUploadSeq = ""
 	m.postFrameImagePlaceSeq = ""
 }
 
-func mapKeys[K comparable, V any](m map[K]V) []K {
-	keys := make([]K, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
+func (m *Model) resetPostFrameCurrentImages() {
+	if m == nil || !m.altScreen {
+		return
 	}
-	return keys
+	m.postFrameImageMu.Lock()
+	m.postFrameCurrentImages = make(map[string]postFrameImageState)
+	m.postFrameImageMu.Unlock()
 }
 
 func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, blockStartLine, startRow, rows, screenRow int) {
@@ -256,16 +260,8 @@ func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, blockStar
 	if m.postFrameCurrentImages == nil {
 		m.postFrameCurrentImages = make(map[string]postFrameImageState)
 	}
-	if m.postFrameTransmittedImages == nil {
-		m.postFrameTransmittedImages = make(map[uint32]struct{})
-	}
 	m.postFrameCurrentImages[placementKey] = state
-	if state.ImageID != 0 {
-		if m.ownedKittyImageIDs == nil {
-			m.ownedKittyImageIDs = make(map[uint32]struct{})
-		}
-		m.ownedKittyImageIDs[state.ImageID] = struct{}{}
-	}
+	m.addOwnedKittyImageID(state.ImageID)
 }
 
 func postFramePlacementID(key string) uint32 {
@@ -279,36 +275,77 @@ func postFramePlacementID(key string) uint32 {
 }
 
 func (m *Model) finishPostFrameImageComposition() {
-	if m == nil || !m.altScreen {
+	if m == nil || !m.altScreen || m.externalProcessActive || m.quitting {
 		return
 	}
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
-	for key, previous := range m.postFrameVisibleImages {
-		if _, stillVisible := m.postFrameCurrentImages[key]; !stillVisible && previous.ImageID != 0 {
+
+	prefix := m.postFrameImagePrefixSeq
+	reset := prefix != ""
+	knownImages := m.postFrameKnownImages
+	uploadedImages := m.postFrameUploadedImages
+	if reset {
+		knownImages = nil
+		uploadedImages = nil
+	}
+
+	knownKeys := slices.Sorted(maps.Keys(knownImages))
+	for _, key := range knownKeys {
+		previous := knownImages[key]
+		current, stillVisible := m.postFrameCurrentImages[key]
+		if (!stillVisible || previous.ImageID != current.ImageID || previous.PlacementID != current.PlacementID) && previous.ImageID != 0 {
 			m.postFrameImagePlaceSeq += termimage.KittyDeletePlacementSequence(previous.ImageID, previous.PlacementID)
 		}
 	}
-	for _, current := range m.postFrameCurrentImages {
-		if _, transmitted := m.postFrameTransmittedImages[current.ImageID]; !transmitted {
-			if _, queued := m.postFrameQueuedImages[current.ImageID]; !queued {
+
+	currentKeys := slices.Sorted(maps.Keys(m.postFrameCurrentImages))
+	queuedUploads := make(map[uint32]struct{}, len(currentKeys))
+	uploadedIDs := make([]uint32, 0, len(currentKeys))
+	for _, key := range currentKeys {
+		current := m.postFrameCurrentImages[key]
+		if _, acknowledged := uploadedImages[current.ImageID]; !acknowledged {
+			if _, queued := queuedUploads[current.ImageID]; !queued {
 				m.postFrameImageUploadSeq += current.Upload
-				m.postFrameQueuedImages[current.ImageID] = struct{}{}
+				queuedUploads[current.ImageID] = struct{}{}
+				uploadedIDs = append(uploadedIDs, current.ImageID)
 			}
 		}
-		place := termimage.KittyDirectPlaceSequence(current.ImageID, current.PlacementID, current.WidthCells, current.HeightCells)
-		m.postFrameImagePlaceSeq += fmt.Sprintf("\x1b[%d;1H%s", current.ScreenRow+1, place)
+		if previous, acknowledged := knownImages[key]; !acknowledged || !samePostFramePlacement(previous, current) {
+			place := termimage.KittyDirectPlaceSequence(current.ImageID, current.PlacementID, current.WidthCells, current.HeightCells)
+			m.postFrameImagePlaceSeq += fmt.Sprintf("\x1b[%d;1H%s", current.ScreenRow+1, place)
+		}
 	}
-	m.postFramePendingImages = clonePostFrameImageStates(m.postFrameCurrentImages)
+	m.postFrameLastImages = clonePostFrameImageStates(m.postFrameCurrentImages)
 	m.postFrameCurrentImages = nil
-	if m.postFrameImageUploadSeq != "" || m.postFrameImagePlaceSeq != "" {
-		m.postFrameImageSeq = m.postFrameImageUploadSeq + "\x1b[s" + m.postFrameImagePlaceSeq + "\x1b[u"
+
+	legacyUploads := append([]string(nil), m.pendingImageUploads...)
+	m.postFrameImageSeq = strings.Join(legacyUploads, "") + prefix + m.postFrameImageUploadSeq
+	if m.postFrameImagePlaceSeq != "" {
+		m.postFrameImageSeq += "\x1b[s" + m.postFrameImagePlaceSeq + "\x1b[u"
+	}
+	if m.postFrameImageSeq != "" {
+		m.postFrameReceipt = &postFrameImageReceipt{
+			Generation:    m.imageGeneration,
+			Reset:         reset,
+			Prefix:        prefix,
+			LegacyUploads: legacyUploads,
+			UploadedIDs:   uploadedIDs,
+			Images:        clonePostFrameImageStates(m.postFrameLastImages),
+		}
 	} else {
-		m.postFrameImageSeq = ""
-		m.postFramePendingImages = nil
+		m.postFrameReceipt = nil
 	}
 	m.postFrameImageUploadSeq = ""
 	m.postFrameImagePlaceSeq = ""
+}
+
+func samePostFramePlacement(a, b postFrameImageState) bool {
+	return a.ImageID == b.ImageID &&
+		a.PlacementID == b.PlacementID &&
+		a.WidthCells == b.WidthCells &&
+		a.HeightCells == b.HeightCells &&
+		a.ScreenRow == b.ScreenRow
 }
 
 func clonePostFrameImageStates(src map[string]postFrameImageState) map[string]postFrameImageState {
@@ -322,102 +359,112 @@ func clonePostFrameImageStates(src map[string]postFrameImageState) map[string]po
 	return dst
 }
 
-func (m *Model) setPostFrameImageSuppressed(suppressed bool) {
-	if m == nil {
+func (m *Model) postFrameImagePayloadForView() (string, *postFrameImageReceipt) {
+	if m == nil || !m.altScreen || m.externalProcessActive {
+		return "", nil
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	if m.quitting || (m.postFrameRetryDisabled && m.postFrameFailureGeneration == m.imageGeneration) {
+		return "", nil
+	}
+	return m.postFrameImageSeq, clonePostFrameImageReceipt(m.postFrameReceipt)
+}
+
+func clonePostFrameImageReceipt(receipt *postFrameImageReceipt) *postFrameImageReceipt {
+	if receipt == nil {
+		return nil
+	}
+	clone := *receipt
+	clone.LegacyUploads = append([]string(nil), receipt.LegacyUploads...)
+	clone.UploadedIDs = append([]uint32(nil), receipt.UploadedIDs...)
+	clone.Images = clonePostFrameImageStates(receipt.Images)
+	return &clone
+}
+
+func (m *Model) queuePostFrameImagePrefix(seq string) {
+	if m == nil || seq == "" {
 		return
 	}
 	m.postFrameImageMu.Lock()
-	defer m.postFrameImageMu.Unlock()
-	m.postFrameImageSuppressed = suppressed
-	if suppressed {
-		// A post-frame timer may fire after Bubble Tea has handed the terminal to
-		// an interactive child. Discard queued output so it cannot draw into the
-		// child's screen; the next normal chat render will compose it again.
-		m.postFrameImageSeq = ""
-		m.postFramePendingImages = nil
-	}
+	m.postFrameImagePrefixSeq += seq
+	m.postFrameImageMu.Unlock()
 }
 
-func (m *Model) TakePostFrameImageSequence() string {
-	if m == nil {
-		return ""
+func (m *Model) hasPostFrameImageActivity() bool {
+	return m != nil && (len(m.pendingImageUploads) > 0 || len(m.ownedKittyImageIDs) > 0 || len(m.postFrameKnownImages) > 0)
+}
+
+func (m *Model) queuePostFrameImageCleanupIfActive() {
+	if m == nil || !m.hasPostFrameImageActivity() {
+		return
 	}
+	m.queuePostFrameImagePrefix(m.imageCleanupSequence())
+}
+
+func (m *Model) handlePostFrameImageResult(receipt *postFrameImageReceipt, err error) tea.Cmd {
+	if m == nil || m.quitting || receipt == nil || receipt.Generation != m.imageGeneration {
+		return nil
+	}
+	if err != nil {
+		// Disable automatic retries for this generation. The terminal may have
+		// consumed an arbitrary payload prefix, so acknowledged image state stays
+		// unchanged; a resize/manual image reset advances the generation and
+		// deliberately recomposes the complete transition.
+		m.postFrameImageMu.Lock()
+		alreadySurfaced := m.postFrameRetryDisabled && m.postFrameFailureGeneration == receipt.Generation
+		m.postFrameRetryDisabled = true
+		m.postFrameFailureGeneration = receipt.Generation
+		m.postFrameImageMu.Unlock()
+		if alreadySurfaced {
+			return nil
+		}
+		_, cmd := m.showFooterError(fmt.Sprintf("Terminal image update failed; image retries paused until refresh: %v", err))
+		return cmd
+	}
+
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
-	if m.postFrameImageSuppressed {
-		// Composition may have queued another sequence after suppression began;
-		// discard it here as well before the timer writes to the terminal.
-		m.postFrameImageSeq = ""
-		m.postFramePendingImages = nil
-		return ""
+	if receipt.Reset {
+		m.postFrameKnownImages = make(map[string]postFrameImageState)
+		m.postFrameUploadedImages = make(map[uint32]struct{})
 	}
-	seq := m.postFrameImageSeq
-	if seq != "" {
-		if m.postFrameTransmittedImages == nil {
-			m.postFrameTransmittedImages = make(map[uint32]struct{})
-		}
-		for _, image := range m.postFramePendingImages {
-			if image.ImageID != 0 {
-				m.postFrameTransmittedImages[image.ImageID] = struct{}{}
-			}
-		}
-		m.postFrameVisibleImages = m.postFramePendingImages
-		m.postFramePendingImages = nil
+	if m.postFrameUploadedImages == nil {
+		m.postFrameUploadedImages = make(map[uint32]struct{})
 	}
-	m.postFrameImageSeq = ""
-	return seq
+	for _, id := range receipt.UploadedIDs {
+		if id != 0 {
+			m.postFrameUploadedImages[id] = struct{}{}
+		}
+	}
+	m.postFrameKnownImages = clonePostFrameImageStates(receipt.Images)
+	if m.postFrameKnownImages == nil {
+		m.postFrameKnownImages = make(map[string]postFrameImageState)
+	}
+	if receipt.Prefix != "" && m.postFrameImagePrefixSeq == receipt.Prefix {
+		m.postFrameImagePrefixSeq = ""
+	}
+	if postFrameLegacyPrefixMatches(m.pendingImageUploads, receipt.LegacyUploads) {
+		m.pendingImageUploads = m.pendingImageUploads[len(receipt.LegacyUploads):]
+		if len(m.pendingImageUploads) == 0 {
+			m.pendingImageUploadKeys = make(map[string]struct{})
+			m.pendingImagePlaceKeys = make(map[string]struct{})
+			m.imageCleanupQueued = false
+		}
+	}
+	return nil
 }
 
-func (m *Model) renderViewportImageSliceArtifact(art viewportImageArtifact, startRow, rows int) (viewportImageArtifact, bool) {
-	if m == nil || art.Path == "" || rows <= 0 {
-		return viewportImageArtifact{}, false
+func postFrameLegacyPrefixMatches(pending, acknowledged []string) bool {
+	if len(acknowledged) > len(pending) {
+		return false
 	}
-	if startRow < 0 {
-		startRow = 0
-	}
-	key := fmt.Sprintf("%s:slice:%d:%d", art.Key, startRow, rows)
-	if existing, ok := m.viewportImageArtifacts[key]; ok {
-		return existing, true
-	}
-	result, err := termimage.Render(termimage.Request{
-		Path:               art.Path,
-		MaxCols:            m.imageMaxCols(),
-		MaxRows:            m.imageMaxRows(),
-		Mode:               termimage.ModeViewport,
-		Protocol:           termimage.ProtocolAuto,
-		Background:         m.imageBackground(),
-		AllowEscapeUploads: true,
-		SliceStartRow:      startRow,
-		SliceRows:          rows,
-	})
-	if err != nil || result.Protocol != termimage.ProtocolKitty || result.Display == "" {
-		if err != nil {
-			termimage.Debugf(termimage.DefaultEnvironment(), "chat render image slice failed path=%s start=%d rows=%d err=%v", art.Path, startRow, rows, err)
+	for i := range acknowledged {
+		if pending[i] != acknowledged[i] {
+			return false
 		}
-		return viewportImageArtifact{}, false
 	}
-	slice := viewportImageArtifact{
-		Key:         key,
-		Path:        art.Path,
-		Upload:      result.Upload,
-		Place:       result.Place,
-		Rows:        strings.Split(result.Display, "\n"),
-		WidthCells:  result.WidthCells,
-		HeightCells: result.HeightCells,
-		ImageID:     result.ImageID,
-	}
-	if m.viewportImageArtifacts == nil {
-		m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
-	}
-	m.viewportImageArtifacts[key] = slice
-	if result.ImageID != 0 {
-		if m.ownedKittyImageIDs == nil {
-			m.ownedKittyImageIDs = make(map[uint32]struct{})
-		}
-		m.ownedKittyImageIDs[result.ImageID] = struct{}{}
-	}
-	termimage.Debugf(termimage.DefaultEnvironment(), "chat render image slice path=%s start=%d rows=%d cells=%dx%d upload=%d display=%d", art.Path, startRow, rows, result.WidthCells, result.HeightCells, len(result.Upload), len(result.Display))
-	return slice, true
+	return true
 }
 
 func (m *Model) viewportImageUploadKey(token string) string {
@@ -508,18 +555,10 @@ func (m *Model) imageBackground() color.Color {
 	return m.styles.Theme().Background
 }
 
-// queueImageUpload queues upload bytes for direct tea.Raw emission. Placeholder
-// text remains in viewport content immediately so Bubble Tea lays out and scrolls
-// the final image area from the first frame; Kitty will attach the real image as
-// soon as the queued upload/placement bytes are flushed.
+// queueImageUpload retains upload bytes in replacement-capable Views until the
+// exact PostFrame attempt is acknowledged.
 func (m *Model) queueImageUpload(key, upload string) {
 	if m == nil || key == "" || upload == "" {
-		return
-	}
-	if m.uploadedImageKeys == nil {
-		m.uploadedImageKeys = make(map[string]struct{})
-	}
-	if _, ok := m.uploadedImageKeys[key]; ok {
 		return
 	}
 	if m.pendingImageUploadKeys == nil {
@@ -528,24 +567,17 @@ func (m *Model) queueImageUpload(key, upload string) {
 	if _, ok := m.pendingImageUploadKeys[key]; ok {
 		return
 	}
-	firstImageUpload := len(m.uploadedImageKeys) == 0 && len(m.pendingImageUploadKeys) == 0 && len(m.pendingImageUploads) == 0
+	firstImageUpload := len(m.pendingImageUploadKeys) == 0 && len(m.pendingImageUploads) == 0
 	m.pendingImageUploadKeys[key] = struct{}{}
 	termimage.Debugf(termimage.DefaultEnvironment(), "chat queue image upload key=%s bytes=%d first=%t", key, len(upload), firstImageUpload)
 	if firstImageUpload {
 		m.queueImageCleanup()
 	}
 	m.pendingImageUploads = append(m.pendingImageUploads, upload)
-	m.scheduleImageUploadFlush()
 }
 
 func (m *Model) queueImagePlacement(key, place string) {
 	if m == nil || key == "" || place == "" {
-		return
-	}
-	if m.placedImageKeys == nil {
-		m.placedImageKeys = make(map[string]struct{})
-	}
-	if _, ok := m.placedImageKeys[key]; ok {
 		return
 	}
 	if m.pendingImagePlaceKeys == nil {
@@ -557,39 +589,48 @@ func (m *Model) queueImagePlacement(key, place string) {
 	m.pendingImagePlaceKeys[key] = struct{}{}
 	m.pendingImageUploads = append(m.pendingImageUploads, place)
 	termimage.Debugf(termimage.DefaultEnvironment(), "chat queue image placement key=%s bytes=%d", key, len(place))
-	m.scheduleImageUploadFlush()
 }
 
-func (m *Model) scheduleImageUploadFlush() {
-	if m == nil || m.imageUploadFlushScheduled {
+func (m *Model) addOwnedKittyImageID(id uint32) {
+	if m == nil || id == 0 {
 		return
 	}
-	m.imageUploadFlushScheduled = true
-	// Uploads discovered while rendering View() cannot be returned as commands
-	// from View(). If the real Bubble Tea program is available, poke the update
-	// loop so it can emit the pending bytes with tea.Raw before/alongside the next
-	// frame. Use a goroutine because Program.Send is blocking and View() runs on
-	// Bubble Tea's event-loop goroutine.
-	if m.program != nil {
-		p := m.program
-		go p.Send(imageUploadFlushMsg{})
+	if m.ownedKittyImageIDs == nil {
+		m.ownedKittyImageIDs = make(map[uint32]struct{})
 	}
+	if _, exists := m.ownedKittyImageIDs[id]; exists {
+		return
+	}
+	m.ownedKittyImageIDs[id] = struct{}{}
+	m.imageCleanupSeqValid = false
+}
+
+func (m *Model) clearOwnedKittyImageIDs() {
+	if m == nil || len(m.ownedKittyImageIDs) == 0 {
+		return
+	}
+	m.ownedKittyImageIDs = make(map[uint32]struct{})
+	m.imageCleanupSeqValid = false
 }
 
 func (m *Model) imageCleanupSequence() string {
 	if m == nil {
 		return ""
 	}
-	if len(m.ownedKittyImageIDs) > 0 {
-		ids := make([]uint32, 0, len(m.ownedKittyImageIDs))
-		for id := range m.ownedKittyImageIDs {
-			ids = append(ids, id)
-		}
-		if seq := termimage.KittyDeleteImageSequence(ids...); seq != "" {
-			return seq
-		}
+	if m.imageCleanupSeqValid {
+		return m.imageCleanupSeq
 	}
-	return termimage.CleanupSequence(termimage.DefaultEnvironment())
+	seq := ""
+	if len(m.ownedKittyImageIDs) > 0 {
+		ids := slices.Sorted(maps.Keys(m.ownedKittyImageIDs))
+		seq = termimage.KittyDeleteImageSequence(ids...)
+	}
+	if seq == "" {
+		seq = termimage.CleanupSequence(termimage.DefaultEnvironment())
+	}
+	m.imageCleanupSeq = seq
+	m.imageCleanupSeqValid = true
+	return seq
 }
 
 func (m *Model) queueImageCleanup() {
@@ -603,63 +644,6 @@ func (m *Model) queueImageCleanup() {
 	m.pendingImageUploads = append([]string{seq}, m.pendingImageUploads...)
 	termimage.Debugf(termimage.DefaultEnvironment(), "chat queue image cleanup bytes=%d", len(seq))
 	m.imageCleanupQueued = true
-	m.scheduleImageUploadFlush()
-}
-
-func (m *Model) drainPendingImageUploads() string {
-	if m == nil || len(m.pendingImageUploads) == 0 {
-		if m != nil {
-			m.imageUploadFlushScheduled = false
-		}
-		return ""
-	}
-	uploads := strings.Join(m.pendingImageUploads, "")
-	m.pendingImageUploads = nil
-	for key := range m.pendingImageUploadKeys {
-		if m.uploadedImageKeys == nil {
-			m.uploadedImageKeys = make(map[string]struct{})
-		}
-		m.uploadedImageKeys[key] = struct{}{}
-	}
-	for key := range m.pendingImagePlaceKeys {
-		if m.placedImageKeys == nil {
-			m.placedImageKeys = make(map[string]struct{})
-		}
-		m.placedImageKeys[key] = struct{}{}
-	}
-	m.pendingImageUploadKeys = make(map[string]struct{})
-	m.pendingImagePlaceKeys = make(map[string]struct{})
-	m.imageCleanupQueued = false
-	m.imagePlaceholdersSuppressed = false
-	m.imageUploadFlushScheduled = false
-	return uploads
-}
-
-func (m *Model) drainPendingImageUploadCmd() tea.Cmd {
-	cleanupOnlyResize := m != nil && m.imagePlaceholdersSuppressed && len(m.pendingImageUploadKeys) == 0 && len(m.pendingImagePlaceKeys) == 0 && len(m.pendingImageUploads) > 0
-	if cleanupOnlyResize {
-		uploads := strings.Join(m.pendingImageUploads, "")
-		m.pendingImageUploads = nil
-		m.imageCleanupQueued = false
-		m.imageUploadFlushScheduled = false
-		if uploads == "" {
-			return nil
-		}
-		termimage.Debugf(termimage.DefaultEnvironment(), "chat flush cleanup-only resize bytes=%d", len(uploads))
-		return tea.Sequence(
-			tea.ClearScreen,
-			tea.Raw("\x1b[2J\x1b[H"+uploads),
-			func() tea.Msg { return imageCleanupFlushedMsg{} },
-		)
-	}
-
-	uploads := m.drainPendingImageUploads()
-	if uploads == "" {
-		return nil
-	}
-	m.invalidateImageViewportContent()
-	termimage.Debugf(termimage.DefaultEnvironment(), "chat flush image uploads bytes=%d", len(uploads))
-	return tea.Raw(uploads)
 }
 
 func (m *Model) invalidateImageViewportContent() {
@@ -676,73 +660,44 @@ func (m *Model) invalidateImageViewportContent() {
 	m.bumpContentVersion()
 }
 
-func (m *Model) finishImageCleanupFlush() tea.Cmd {
-	if m == nil {
-		return nil
-	}
-	m.imagePlaceholdersSuppressed = false
-	termimage.Debugf(termimage.DefaultEnvironment(), "chat image cleanup flushed; re-enable placeholders and schedule repaint")
-	m.invalidateImageViewportContent()
-	m.scheduleImageUploadFlush()
-	return nil
-}
-
 func (m *Model) resetImageUploadState() {
 	if m == nil {
 		return
 	}
+	m.imageGeneration++
+	m.postFrameImageMu.Lock()
+	m.postFrameRetryDisabled = false
+	m.postFrameFailureGeneration = 0
+	m.postFrameImageMu.Unlock()
+	m.queuePostFrameImageCleanupIfActive()
 	m.pendingImageUploads = nil
 	m.pendingImageUploadKeys = make(map[string]struct{})
 	m.pendingImagePlaceKeys = make(map[string]struct{})
-	m.uploadedImageKeys = make(map[string]struct{})
-	m.placedImageKeys = make(map[string]struct{})
-	m.visibleImageKeys = make(map[string]struct{})
-	m.ownedKittyImageIDs = make(map[uint32]struct{})
-	m.postFrameVisibleImages = make(map[string]postFrameImageState)
-	m.postFramePendingImages = nil
+	m.clearOwnedKittyImageIDs()
 	m.postFrameCurrentImages = nil
+	m.postFrameLastImages = make(map[string]postFrameImageState)
+	m.postFrameKnownImages = make(map[string]postFrameImageState)
+	m.postFrameUploadedImages = make(map[uint32]struct{})
 	m.postFrameRenderCache = make(map[string]postFrameImageState)
-	m.postFrameQueuedImages = nil
-	m.postFrameTransmittedImages = make(map[uint32]struct{})
+	m.postFrameReceipt = nil
 	m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
 	m.viewportImageBlocks = nil
 	m.imageCleanupQueued = false
-	m.imagePlaceholdersSuppressed = false
-	m.imageUploadFlushScheduled = false
-}
-
-func (m *Model) resetUploadedImageKeys() {
-	if m == nil {
-		return
-	}
-	m.uploadedImageKeys = make(map[string]struct{})
-	m.placedImageKeys = make(map[string]struct{})
-}
-
-func (m *Model) terminalImageCleanupCmd() tea.Cmd {
-	if m == nil || !m.altScreen || (len(m.uploadedImageKeys) == 0 && len(m.placedImageKeys) == 0 && len(m.pendingImageUploadKeys) == 0 && len(m.pendingImagePlaceKeys) == 0 && len(m.pendingImageUploads) == 0 && len(m.ownedKittyImageIDs) == 0) {
-		return nil
-	}
-	seq := m.imageCleanupSequence()
-	if seq == "" {
-		return nil
-	}
-	return tea.Raw(seq)
 }
 
 func (m *Model) quitCmd(cmds ...tea.Cmd) tea.Cmd {
-	seq := make([]tea.Cmd, 0, len(cmds)+2)
+	// Bubble Tea can call View again for commands sequenced before Quit and once
+	// more during its final renderer flush. Disable normal image composition so
+	// none of those Views can recreate a placement. View.TerminalCleanup remains
+	// armed for every renderer shutdown path.
+	m.quitting = true
+
+	seq := make([]tea.Cmd, 0, len(cmds)+1)
 	for _, cmd := range cmds {
 		if cmd != nil {
 			seq = append(seq, cmd)
 		}
 	}
-	if cleanup := m.terminalImageCleanupCmd(); cleanup != nil {
-		seq = append(seq, cleanup)
-	}
 	seq = append(seq, tea.Quit)
 	return tea.Sequence(seq...)
 }
-
-type imageUploadFlushMsg struct{}
-type imageCleanupFlushedMsg struct{}

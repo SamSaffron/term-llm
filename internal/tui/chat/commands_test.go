@@ -3892,12 +3892,6 @@ func TestShellExitErrorRestoresRendering(t *testing.T) {
 	if restored.externalProcessActive || restored.pausedForExternalUI {
 		t.Fatal("shell error left external process rendering state active")
 	}
-	restored.postFrameImageMu.Lock()
-	imageSuppressed := restored.postFrameImageSuppressed
-	restored.postFrameImageMu.Unlock()
-	if imageSuppressed {
-		t.Fatal("shell error left post-frame images suppressed")
-	}
 	if !restored.View().AltScreen {
 		t.Fatal("shell error did not restore alternate-screen rendering")
 	}

@@ -425,36 +425,35 @@ type Model struct {
 	textareaPromptWidth    int
 	textareaEffectiveWidth int
 
-	// Alt-screen terminal image rendering. Raw upload/control bytes are emitted
-	// outside the Bubble Tea viewport; viewport content only contains captions plus
-	// line-clipping-safe image display text (Kitty placeholders or ANSI blocks).
-	// pendingImageUploads contains raw terminal image upload bytes that must be
-	// emitted with tea.Raw, not embedded in View content (Bubble Tea parses View
-	// content into cells and drops non-styling control sequences).
-	pendingImageUploads         []string
-	pendingImageUploadKeys      map[string]struct{}
-	pendingImagePlaceKeys       map[string]struct{}
-	uploadedImageKeys           map[string]struct{}
-	placedImageKeys             map[string]struct{}
-	visibleImageKeys            map[string]struct{}
-	ownedKittyImageIDs          map[uint32]struct{}
-	imageGeneration             uint64
-	imageUploadFlushScheduled   bool
-	imageCleanupQueued          bool
-	imagePlaceholdersSuppressed bool
-	viewportImageArtifacts      map[string]viewportImageArtifact
-	viewportImageBlocks         []viewportImageBlock
-	postFrameImageSeq           string
-	postFrameImageUploadSeq     string
-	postFrameImagePlaceSeq      string
-	postFrameImageMu            sync.Mutex
-	postFrameImageSuppressed    bool
-	postFrameVisibleImages      map[string]postFrameImageState
-	postFramePendingImages      map[string]postFrameImageState
-	postFrameCurrentImages      map[string]postFrameImageState
-	postFrameRenderCache        map[string]postFrameImageState
-	postFrameQueuedImages       map[uint32]struct{}
-	postFrameTransmittedImages  map[uint32]struct{}
+	// Alt-screen terminal image rendering. Upload/control bytes are attached to
+	// the same tea.View.PostFrame as the viewport which composed them; viewport
+	// content contains only captions plus line-clipping-safe display cells.
+	// pendingImageUploads retains non-direct protocol bytes until the exact View
+	// carrying them is acknowledged. Direct Kitty uploads and placements diff
+	// against postFrameUploadedImages/postFrameKnownImages only after success.
+	pendingImageUploads        []string
+	pendingImageUploadKeys     map[string]struct{}
+	pendingImagePlaceKeys      map[string]struct{}
+	ownedKittyImageIDs         map[uint32]struct{}
+	imageCleanupSeq            string
+	imageCleanupSeqValid       bool
+	imageGeneration            uint64
+	imageCleanupQueued         bool
+	viewportImageArtifacts     map[string]viewportImageArtifact
+	viewportImageBlocks        []viewportImageBlock
+	postFrameImageSeq          string
+	postFrameImageUploadSeq    string
+	postFrameImagePlaceSeq     string
+	postFrameImagePrefixSeq    string
+	postFrameImageMu           sync.Mutex
+	postFrameCurrentImages     map[string]postFrameImageState
+	postFrameLastImages        map[string]postFrameImageState
+	postFrameKnownImages       map[string]postFrameImageState
+	postFrameUploadedImages    map[uint32]struct{}
+	postFrameRenderCache       map[string]postFrameImageState
+	postFrameReceipt           *postFrameImageReceipt
+	postFrameRetryDisabled     bool
+	postFrameFailureGeneration uint64
 
 	// Text selection state (alt-screen only)
 	selection               Selection
@@ -555,8 +554,12 @@ type (
 		clearManualName   bool
 		manualEditVersion uint64
 	}
-	mcpStatusUpdateMsg struct{ update mcp.StatusUpdate }
-	GuardianReviewMsg  struct{ Event tools.GuardianEvent }
+	mcpStatusUpdateMsg      struct{ update mcp.StatusUpdate }
+	GuardianReviewMsg       struct{ Event tools.GuardianEvent }
+	postFrameImageResultMsg struct {
+		Receipt *postFrameImageReceipt
+		Err     error
+	}
 )
 
 const (
@@ -894,83 +897,81 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	}
 
 	model := &Model{
-		width:                      width,
-		height:                     height,
-		textarea:                   ta,
-		spinner:                    s,
-		styles:                     styles,
-		keyMap:                     DefaultKeyMap(),
-		store:                      store,
-		sess:                       sess,
-		messages:                   messages,
-		compactionIdx:              compactionIdx,
-		olderScrollbackLoaded:      !session.HasCompactionBoundary(sess) || compactionIdx > 0,
-		rootCtx:                    context.Background(),
-		provider:                   provider,
-		fastProvider:               fastProvider,
-		engine:                     engine,
-		config:                     cfg,
-		providerName:               provider.Name(),
-		providerKey:                providerKey,
-		modelName:                  modelName,
-		agentName:                  agentName,
-		platformDeveloperMessage:   strings.TrimSpace(platformDeveloperMessage),
-		currentOrigin:              session.OriginTUI,
-		yolo:                       yolo,
-		requestedApprovalMode:      requestedApprovalMode,
-		phase:                      "Thinking",
-		reasoningConfig:            reasoningCfg,
-		viewportRows:               ui.RemainingLines(height, 8), // Reserve space for input and status
-		tracker:                    tracker,
-		toolMgr:                    toolMgr,
-		subagentTracker:            subagentTracker,
-		smoothBuffer:               ui.NewSmoothBuffer(),
-		completions:                completions,
-		dialog:                     dialog,
-		approvedDirs:               approvedDirs,
-		mcpManager:                 mcpManager,
-		mcpStatusChan:              mcpStatusChan,
-		maxTurns:                   maxTurns,
-		forceExternalSearch:        forceExternalSearch,
-		disableExternalWebFetch:    disableExternalWebFetch,
-		searchEnabled:              searchEnabled,
-		fastMode:                   fastMode,
-		fastProviderDefault:        fastProviderDefault,
-		fastMetadataLoaded:         fastMetadataLoaded,
-		fastMetadataStale:          fastMetadataStale,
-		modelMetadata:              modelMetadata,
-		localTools:                 localTools,
-		toolsStr:                   toolsStr,
-		mcpStr:                     mcpStr,
-		showStats:                  showStats,
-		stats:                      stats,
-		streamPerf:                 newStreamPerfTelemetryFromEnv(),
-		titleMode:                  titleMode,
-		titleFormat:                cfg.Chat.TerminalTitleFormat,
-		titleProgress:              cfg.Chat.TerminalProgress,
-		titleFormatter:             newTerminalTitleFormatter(cfg.Chat.TerminalTitleFormat, TerminalTitleEnvironment{}),
-		titleManager:               newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}, cfg.Chat.TerminalProgress),
-		streamCancelRequested:      &atomic.Bool{},
-		altScreen:                  altScreen,
-		mouseMode:                  chatMouseModeFromEnv(),
-		viewport:                   vp,
-		streamRenderMinInterval:    chatRenderMinIntervalFromEnv(),
-		chatRenderer:               chatRenderer,
-		autoSendQueue:              autoSendQueue,
-		autoSendExitOnDone:         autoSendExitOnDone,
-		textMode:                   textMode,
-		uploadedImageKeys:          make(map[string]struct{}),
-		placedImageKeys:            make(map[string]struct{}),
-		pendingImageUploadKeys:     make(map[string]struct{}),
-		pendingImagePlaceKeys:      make(map[string]struct{}),
-		visibleImageKeys:           make(map[string]struct{}),
-		ownedKittyImageIDs:         make(map[uint32]struct{}),
-		postFrameVisibleImages:     make(map[string]postFrameImageState),
-		postFrameRenderCache:       make(map[string]postFrameImageState),
-		postFrameTransmittedImages: make(map[uint32]struct{}),
-		viewportImageArtifacts:     make(map[string]viewportImageArtifact),
-		selectedImage:              -1,
-		selectedInterjection:       -1,
+		width:                    width,
+		height:                   height,
+		textarea:                 ta,
+		spinner:                  s,
+		styles:                   styles,
+		keyMap:                   DefaultKeyMap(),
+		store:                    store,
+		sess:                     sess,
+		messages:                 messages,
+		compactionIdx:            compactionIdx,
+		olderScrollbackLoaded:    !session.HasCompactionBoundary(sess) || compactionIdx > 0,
+		rootCtx:                  context.Background(),
+		provider:                 provider,
+		fastProvider:             fastProvider,
+		engine:                   engine,
+		config:                   cfg,
+		providerName:             provider.Name(),
+		providerKey:              providerKey,
+		modelName:                modelName,
+		agentName:                agentName,
+		platformDeveloperMessage: strings.TrimSpace(platformDeveloperMessage),
+		currentOrigin:            session.OriginTUI,
+		yolo:                     yolo,
+		requestedApprovalMode:    requestedApprovalMode,
+		phase:                    "Thinking",
+		reasoningConfig:          reasoningCfg,
+		viewportRows:             ui.RemainingLines(height, 8), // Reserve space for input and status
+		tracker:                  tracker,
+		toolMgr:                  toolMgr,
+		subagentTracker:          subagentTracker,
+		smoothBuffer:             ui.NewSmoothBuffer(),
+		completions:              completions,
+		dialog:                   dialog,
+		approvedDirs:             approvedDirs,
+		mcpManager:               mcpManager,
+		mcpStatusChan:            mcpStatusChan,
+		maxTurns:                 maxTurns,
+		forceExternalSearch:      forceExternalSearch,
+		disableExternalWebFetch:  disableExternalWebFetch,
+		searchEnabled:            searchEnabled,
+		fastMode:                 fastMode,
+		fastProviderDefault:      fastProviderDefault,
+		fastMetadataLoaded:       fastMetadataLoaded,
+		fastMetadataStale:        fastMetadataStale,
+		modelMetadata:            modelMetadata,
+		localTools:               localTools,
+		toolsStr:                 toolsStr,
+		mcpStr:                   mcpStr,
+		showStats:                showStats,
+		stats:                    stats,
+		streamPerf:               newStreamPerfTelemetryFromEnv(),
+		titleMode:                titleMode,
+		titleFormat:              cfg.Chat.TerminalTitleFormat,
+		titleProgress:            cfg.Chat.TerminalProgress,
+		titleFormatter:           newTerminalTitleFormatter(cfg.Chat.TerminalTitleFormat, TerminalTitleEnvironment{}),
+		titleManager:             newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}, cfg.Chat.TerminalProgress),
+		streamCancelRequested:    &atomic.Bool{},
+		altScreen:                altScreen,
+		mouseMode:                chatMouseModeFromEnv(),
+		viewport:                 vp,
+		streamRenderMinInterval:  chatRenderMinIntervalFromEnv(),
+		chatRenderer:             chatRenderer,
+		autoSendQueue:            autoSendQueue,
+		autoSendExitOnDone:       autoSendExitOnDone,
+		textMode:                 textMode,
+		pendingImageUploadKeys:   make(map[string]struct{}),
+		pendingImagePlaceKeys:    make(map[string]struct{}),
+		ownedKittyImageIDs:       make(map[uint32]struct{}),
+		postFrameLastImages:      make(map[string]postFrameImageState),
+		postFrameKnownImages:     make(map[string]postFrameImageState),
+		postFrameUploadedImages:  make(map[uint32]struct{}),
+		postFrameRenderCache:     make(map[string]postFrameImageState),
+		viewportImageArtifacts:   make(map[string]viewportImageArtifact),
+		selectedImage:            -1,
+		selectedInterjection:     -1,
 	}
 	if internalreasoning.RawDisplayBlocked(reasoningCfg) {
 		model.SetFooterWarning("Raw reasoning display is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
@@ -1178,6 +1179,10 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 		viewportHeightChanged := oldViewportHeight > 0 && oldViewportHeight != m.viewport.Height()
 		if widthChanged || viewportHeightChanged {
 			m.imageGeneration++
+			m.postFrameImageMu.Lock()
+			m.postFrameRetryDisabled = false
+			m.postFrameFailureGeneration = 0
+			m.postFrameImageMu.Unlock()
 			termimage.ClearCache()
 			termimage.Debugf(termimage.DefaultEnvironment(), "chat resize width %d->%d viewport_h %d->%d model_h=%d generation=%d: invalidate image viewport render", oldWidth, m.width, oldViewportHeight, m.viewport.Height(), m.height, m.imageGeneration)
 			if !widthChanged && viewportHeightChanged && m.resizeReflowHadImages {
@@ -1188,25 +1193,23 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 			// Bubble Tea erases the alt screen before delivering WindowSizeMsg; clearing
 			// this cache here would leave nothing to draw while a large history reflows.
 			m.viewCache.cachedTrackerVersion = 0
-			// Drop old-generation raw operations before queuing cleanup. Otherwise a
-			// resize that lands between View() and the upload flush can transmit stale
-			// image bytes after the cleanup for the new layout.
+			// Preserve cleanup for every replacement-capable post-frame payload in
+			// this resize generation. The new renderer frame erases old placement
+			// anchors before this cleanup and the fresh upload/placement are written.
+			m.queuePostFrameImageCleanupIfActive()
 			m.pendingImageUploads = nil
 			m.pendingImageUploadKeys = make(map[string]struct{})
 			m.pendingImagePlaceKeys = make(map[string]struct{})
 			m.imageCleanupQueued = false
-			m.imagePlaceholdersSuppressed = true
-			m.queueImageCleanup()
 			m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
 			m.viewportImageBlocks = nil
-			m.ownedKittyImageIDs = make(map[uint32]struct{})
-			m.postFrameVisibleImages = make(map[string]postFrameImageState)
-			m.postFramePendingImages = nil
+			m.clearOwnedKittyImageIDs()
 			m.postFrameCurrentImages = nil
+			m.postFrameLastImages = make(map[string]postFrameImageState)
+			m.postFrameKnownImages = make(map[string]postFrameImageState)
+			m.postFrameUploadedImages = make(map[uint32]struct{})
 			m.postFrameRenderCache = make(map[string]postFrameImageState)
-			m.postFrameQueuedImages = nil
-			m.postFrameTransmittedImages = make(map[uint32]struct{})
-			m.resetUploadedImageKeys()
+			m.postFrameReceipt = nil
 		}
 	} else if m.chatRenderer != nil {
 		m.chatRenderer.SetSize(m.width, m.height)
@@ -1552,7 +1555,7 @@ func (m *Model) SetChildRunner(runner runpkg.ChildRunner) {
 }
 
 // SetProgram gives the model a handle to the running Bubble Tea program for
-// scheduling raw terminal writes that are discovered during View rendering.
+// model wakeups that originate outside the Update loop.
 func (m *Model) SetProgram(p *tea.Program) {
 	m.program = p
 }
@@ -2017,16 +2020,15 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// This tick exists to ensure View() runs again after the throttle window, so
 		// pending content can pass shouldThrottleSetContent().
 
-	case imageUploadFlushMsg:
-		if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
-			return m, cmd
-		}
+	case tea.SuspendMsg:
+		// Bubble Tea restores the terminal before delivering SuspendMsg to the
+		// model. Renderer shutdown has removed Kitty resources, so invalidate all
+		// acknowledgements before the first resumed frame is composed.
+		m.resetImageUploadState()
+		m.invalidateImageViewportContent()
 
-	case imageCleanupFlushedMsg:
-		if cmd := m.finishImageCleanupFlush(); cmd != nil {
-			return m, cmd
-		}
-		return m, nil
+	case postFrameImageResultMsg:
+		return m, m.handlePostFrameImageResult(msg.Receipt, msg.Err)
 
 	case footerMessageClearMsg:
 		if msg.Seq == m.footerMessageSeq {
@@ -2676,9 +2678,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// Add image segment for inline display
 			if m.tracker != nil && ev.ImagePath != "" {
 				m.tracker.AddImageSegment(ev.ImagePath)
-				// In alt-screen mode, pre-render now so the Kitty/iTerm/etc. upload
-				// can be emitted with tea.Raw from this Update. Rendering again in
-				// View() will hit the image cache and reuse the same display cells.
+				// In alt-screen mode, pre-render now so View can attach image
+				// upload/placement bytes to its renderer-owned PostFrame. Rendering
+				// again in View hits the image cache and reuses the display cells.
 				if m.altScreen {
 					_ = m.renderViewportImageArtifact(ev.ImagePath)
 				}
@@ -3180,10 +3182,6 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	if cmd := m.maybeScheduleStreamRenderTick(); cmd != nil {
 		cmds = append(cmds, cmd)
-	}
-
-	if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
-		flushCmds = append(flushCmds, cmd)
 	}
 
 	m.appendTerminalTitleCmd(&cmds)
