@@ -63,6 +63,9 @@
         ? rows.assistant_segment_ordinals.map((value) => finiteInt(value, -1))
         : ids.map(() => -1);
       const incomingRev = finiteInt(envelope?.rev, this.rev);
+      const previousLength = this.ids.length;
+      const previousViewport = { ...this.viewport };
+      const followedPreviousTail = previousLength > 0 && previousViewport.lastOrdinal >= previousLength - 1;
       const rollback = incomingRev < this.rev;
       if (ids.length !== seqs.length || ids.length !== flags.length || ids.length !== roles.length
         || ids.length !== responseIDs.length || ids.length !== assistantSegmentOrdinals.length) {
@@ -117,6 +120,18 @@
       this.compactionSeq = finiteInt(envelope?.compaction_seq, -1);
       this.compactionCount = finiteInt(envelope?.compaction_count, 0);
       this.rebuildSegments(oldSegmentState);
+      // Ordinals are positions, not stable viewport anchors. If the viewport owned
+      // the old tail, append-only growth must move it to the new tail before body
+      // budgeting; otherwise a distant freshly fetched tail can be evicted at once.
+      if (appendOnly && followedPreviousTail && ids.length > previousLength) {
+        const span = previousViewport.firstOrdinal >= 0
+          ? Math.max(0, previousViewport.lastOrdinal - previousViewport.firstOrdinal)
+          : 0;
+        this.viewport = {
+          firstOrdinal: Math.max(0, ids.length - 1 - span),
+          lastOrdinal: ids.length - 1,
+        };
+      }
       this.rev = incomingRev;
       if (etag) this.etag = String(etag);
       this.refreshPinnedSegments();
