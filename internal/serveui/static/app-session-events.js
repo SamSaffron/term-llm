@@ -21,6 +21,25 @@ const {
 } = app;
 
 // ===== Event listeners =====
+let pageResumeFollowTail = false;
+let pageWasBackgrounded = false;
+const rememberPageTailOwnership = () => {
+  if (pageWasBackgrounded) return;
+  pageResumeFollowTail = Boolean(state.autoScroll);
+  pageWasBackgrounded = true;
+};
+const restorePageTailOwnership = () => {
+  if (!pageWasBackgrounded) return false;
+  const followTail = pageResumeFollowTail;
+  pageWasBackgrounded = false;
+  pageResumeFollowTail = false;
+  // Mobile viewport resize/scroll events can flip autoScroll while the page is
+  // suspended. Restore the user's pre-background ownership instead of treating
+  // those synthetic layout events as intentional scrolling in either direction.
+  state.autoScroll = followTail;
+  return followTail;
+};
+
 elements.newChatBtn.addEventListener('click', app.createAndSwitchToFreshSession);
 elements.sidebarRailNewChatBtn.addEventListener('click', async () => {
   await app.createAndSwitchToFreshSession();
@@ -283,10 +302,12 @@ window.addEventListener('popstate', async () => {
 
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') {
+    rememberPageTailOwnership();
     flushStreamPersistence();
     app.stopSidebarStatusPoll();
     return;
   }
+  restorePageTailOwnership();
   if (!state.connected) return;
   // Reconcile the authoritative transcript before looking for an active
   // response. Another tab may have completed several turns and started a new
@@ -325,6 +346,7 @@ document.addEventListener('visibilitychange', async () => {
 });
 
 window.addEventListener('pagehide', () => {
+  rememberPageTailOwnership();
   flushStreamPersistence();
   app.stopSidebarStatusPoll();
 });
@@ -364,6 +386,7 @@ window.addEventListener('offline', () => {
 });
 
 window.addEventListener('pageshow', (event) => {
+  restorePageTailOwnership();
   if (state.connected) void app.ensureSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;

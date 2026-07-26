@@ -3798,6 +3798,71 @@ async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
   pass(name);
 }
 
+async function testVisibilityResumeRestoresPreBackgroundTailOwnership() {
+  const name = 'visibility resume restores pre-background tail ownership before catch-up';
+  let appRef = null;
+  const autoScrollAtStatus = [];
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (String(url).startsWith('/ui/v1/sessions/status')) {
+        autoScrollAtStatus.push(appRef?.state.autoScroll);
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+  appRef = app;
+  await app.stopSidebarStatusPoll();
+  autoScrollAtStatus.length = 0;
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  if (!visibilityHandler) {
+    fail(name, 'expected visibilitychange listener');
+    return;
+  }
+
+  app.state.autoScroll = true;
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  // Mobile viewport events can report a synthetic scroll while suspended.
+  app.state.autoScroll = false;
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+
+  if (app.state.autoScroll !== true || autoScrollAtStatus[0] !== true) {
+    app.stopSidebarStatusPoll();
+    fail(name, 'resume catch-up lost bottom ownership before status reconciliation', JSON.stringify({
+      autoScroll: app.state.autoScroll,
+      autoScrollAtStatus,
+    }));
+    return;
+  }
+
+  await app.stopSidebarStatusPoll();
+  app.state.autoScroll = false;
+  windowObj.document.visibilityState = 'hidden';
+  await visibilityHandler({ type: 'visibilitychange' });
+  // The inverse synthetic layout result must not drag a historical reader down.
+  app.state.autoScroll = true;
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+  if (app.state.autoScroll !== false || autoScrollAtStatus[1] !== false) {
+    app.stopSidebarStatusPoll();
+    fail(name, 'resume catch-up replaced historical ownership with synthetic bottom stickiness', JSON.stringify({
+      autoScroll: app.state.autoScroll,
+      autoScrollAtStatus,
+    }));
+    return;
+  }
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
 async function testPageshowWaitsForInitialConnectionBeforeStatusPoll() {
   const name = 'pageshow waits for initial session merge before starting status polling';
   let releaseSessions;
@@ -6192,6 +6257,18 @@ async function testBottomPinnedTranscriptSyncKeepsFollowingTail() {
 
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async (url) => {
+      if (String(url).startsWith('/ui/v1/sessions/status')) {
+        const targetTurns = pendingTurns[0] || servedTurns;
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: sessionId,
+            transcript_rev: targetTurns * 2,
+            active_response_id: 'resp-live',
+            run_epoch: 1,
+            started_rev: 6,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: `"status-${targetTurns}"` } });
+      }
       if (isTranscriptIndexURL(url, sessionId)) {
         servedTurns = pendingTurns.shift() || servedTurns;
         return new Response(JSON.stringify(makeIndex(servedTurns)), {
@@ -6211,7 +6288,10 @@ async function testBottomPinnedTranscriptSyncKeepsFollowingTail() {
         headers: { 'Content-Type': 'application/json' }
       });
     },
-    appOverrides: { renderMessages() {} }
+    appOverrides: {
+      renderMessages() {},
+      wakeResponseReconnect() { return true; },
+    }
   });
   app.stopSidebarStatusPoll();
 
@@ -6227,7 +6307,7 @@ async function testBottomPinnedTranscriptSyncKeepsFollowingTail() {
   messages.querySelectorAll = (selector) => selector === '[data-durable-id]' ? [anchorNode] : [];
   messages.querySelector = (selector) => String(selector) === `[data-durable-id="${anchorID}"]` ? anchorNode : null;
 
-  const session = { id: sessionId, messages: [] };
+  const session = { id: sessionId, messages: [], activeResponseId: 'resp-live' };
   const transcript = new windowObj.ConversationController(sessionId, { maxMaterializedTurns: 3, overscanTurns: 0 });
   transcript.applyIndex(makeIndex(3));
   transcript.setViewport(5, 5);
@@ -6237,9 +6317,21 @@ async function testBottomPinnedTranscriptSyncKeepsFollowingTail() {
   app.state.activeSessionId = sessionId;
   app.state.draftSessionActive = false;
   app.state.autoScroll = true;
+  await app.stopSidebarStatusPoll();
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  if (!visibilityHandler) {
+    fail(name, 'expected visibilitychange listener');
+    return;
+  }
 
   for (const expectedTurns of [8, 13]) {
-    const loaded = await app.syncTranscript(session, { reason: 'tail-follow-regression', force: true });
+    windowObj.document.visibilityState = 'hidden';
+    await visibilityHandler({ type: 'visibilitychange' });
+    // Reproduce the synthetic mobile scroll/layout event seen while suspended.
+    app.state.autoScroll = false;
+    windowObj.document.visibilityState = 'visible';
+    await visibilityHandler({ type: 'visibilitychange' });
+    const loaded = transcript.ids.length === expectedTurns * 2;
     const tail = transcript.segments[expectedTurns - 1];
     const materialized = transcript.segments.filter((segment) => segment.state === 'materialized').length;
     if (!loaded || transcript.ids.length !== expectedTurns * 2 || tail?.state !== 'materialized'
@@ -6483,6 +6575,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
   await testPreConnectedVisibilityDoesNotStartSidebarStatusPoll();
+  await testVisibilityResumeRestoresPreBackgroundTailOwnership();
   await testPageshowWaitsForInitialConnectionBeforeStatusPoll();
   await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();
   await testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus();
