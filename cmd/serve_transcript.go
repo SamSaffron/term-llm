@@ -19,12 +19,13 @@ const (
 )
 
 type transcriptRowsResponse struct {
-	Seqs                     []int    `json:"seqs"`
-	IDs                      []int64  `json:"ids"`
-	Roles                    string   `json:"roles"`
-	Flags                    []int    `json:"flags"`
-	ResponseIDs              []string `json:"response_ids"`
-	AssistantSegmentOrdinals []int    `json:"assistant_segment_ordinals"`
+	Seqs                     []int             `json:"seqs"`
+	IDs                      []int64           `json:"ids"`
+	Roles                    string            `json:"roles"`
+	Flags                    []int             `json:"flags"`
+	ResponseIDs              []string          `json:"response_ids"`
+	AssistantSegmentOrdinals []int             `json:"assistant_segment_ordinals"`
+	ClientMessageIDs         map[string]string `json:"client_message_ids,omitempty"`
 }
 
 type transcriptResponse struct {
@@ -34,6 +35,8 @@ type transcriptResponse struct {
 	ActiveResponseID string                 `json:"active_response_id,omitempty"`
 	RunEpoch         int64                  `json:"run_epoch,omitempty"`
 	StartedRev       int64                  `json:"started_rev,omitempty"`
+	ClientMessageID  string                 `json:"client_message_id,omitempty"`
+	AnchorRowID      int64                  `json:"anchor_row_id,omitempty"`
 	Rows             transcriptRowsResponse `json:"rows"`
 }
 
@@ -63,37 +66,45 @@ func transcriptRoleCode(role string) byte {
 	}
 }
 
-func transcriptIndexerForWeb(store session.Store) (session.TranscriptIndexer, bool) {
-	if store == nil {
+func (s *serveServer) transcriptIndexerForWeb() (session.TranscriptIndexer, bool) {
+	if s == nil || s.store == nil {
 		return nil, false
 	}
-	if reporter, ok := store.(session.TranscriptVersionReporter); ok && !reporter.TranscriptVersioned() {
-		return nil, false
-	}
-	if loggingStore, ok := store.(*session.LoggingStore); ok {
-		if _, supported := transcriptIndexerForWeb(loggingStore.Store); !supported {
-			return nil, false
+	s.transcriptIndexerOnce.Do(func() {
+		if reporter, ok := s.store.(session.TranscriptVersionReporter); ok && !reporter.TranscriptVersioned() {
+			s.transcriptIndexer = session.NewFallbackTranscriptIndexer(s.store)
+			return
 		}
-	}
-	indexer, ok := store.(session.TranscriptIndexer)
-	return indexer, ok
+		if loggingStore, ok := s.store.(*session.LoggingStore); ok {
+			if _, native := loggingStore.Store.(session.TranscriptIndexer); !native {
+				s.transcriptIndexer = session.NewFallbackTranscriptIndexer(s.store)
+				return
+			}
+		}
+		if indexer, ok := s.store.(session.TranscriptIndexer); ok {
+			s.transcriptIndexer = indexer
+		} else {
+			s.transcriptIndexer = session.NewFallbackTranscriptIndexer(s.store)
+		}
+	})
+	return s.transcriptIndexer, s.transcriptIndexer != nil
 }
 
-func (s *serveServer) activeTranscriptRun(sessionID string) (string, int64, int64) {
+func (s *serveServer) activeTranscriptRun(sessionID string) (string, int64, int64, string, int64) {
 	if s.responseRuns == nil {
-		return "", 0, 0
+		return "", 0, 0, "", 0
 	}
 	id := s.responseRuns.activeRunID(sessionID)
 	if id == "" {
-		return "", 0, 0
+		return "", 0, 0, "", 0
 	}
 	run, ok := s.responseRuns.get(id)
 	if !ok || run == nil {
-		return id, 0, 0
+		return id, 0, 0, "", 0
 	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	return id, run.startedRev, run.runEpoch
+	return id, run.startedRev, run.runEpoch, run.clientMessageID, run.anchorRowID
 }
 
 func transcriptJSON(payload any) ([]byte, string, error) {
@@ -129,15 +140,19 @@ func transcriptRowsFromSnapshot(snapshot session.TranscriptSnapshot) transcriptR
 		Flags:                    make([]int, 0, len(snapshot.Items)),
 		ResponseIDs:              make([]string, 0, len(snapshot.Items)),
 		AssistantSegmentOrdinals: make([]int, 0, len(snapshot.Items)),
+		ClientMessageIDs:         make(map[string]string),
 	}
 	var roles strings.Builder
 	roles.Grow(len(snapshot.Items))
-	for _, item := range snapshot.Items {
+	for ordinal, item := range snapshot.Items {
 		rows.Seqs = append(rows.Seqs, item.Seq)
 		rows.IDs = append(rows.IDs, item.ID)
 		rows.Flags = append(rows.Flags, int(item.Flags))
 		rows.ResponseIDs = append(rows.ResponseIDs, item.ResponseID)
 		rows.AssistantSegmentOrdinals = append(rows.AssistantSegmentOrdinals, item.AssistantSegmentOrdinal)
+		if item.Role == "user" && item.ClientMessageID != "" {
+			rows.ClientMessageIDs[strconv.Itoa(ordinal)] = item.ClientMessageID
+		}
 		roles.WriteByte(transcriptRoleCode(item.Role))
 	}
 	rows.Roles = roles.String()
@@ -145,7 +160,7 @@ func transcriptRowsFromSnapshot(snapshot session.TranscriptSnapshot) transcriptR
 }
 
 func (s *serveServer) transcriptResponseFromSnapshot(sessionID string, snapshot session.TranscriptSnapshot) transcriptResponse {
-	activeResponseID, startedRev, runEpoch := s.activeTranscriptRun(sessionID)
+	activeResponseID, startedRev, runEpoch, clientMessageID, anchorRowID := s.activeTranscriptRun(sessionID)
 	return transcriptResponse{
 		Rev:              snapshot.Rev,
 		CompactionSeq:    snapshot.CompactionSeq,
@@ -153,12 +168,14 @@ func (s *serveServer) transcriptResponseFromSnapshot(sessionID string, snapshot 
 		ActiveResponseID: activeResponseID,
 		RunEpoch:         runEpoch,
 		StartedRev:       startedRev,
+		ClientMessageID:  clientMessageID,
+		AnchorRowID:      anchorRowID,
 		Rows:             transcriptRowsFromSnapshot(snapshot),
 	}
 }
 
 func (s *serveServer) handleSessionTranscript(w http.ResponseWriter, r *http.Request, sessionID string) {
-	indexer, ok := transcriptIndexerForWeb(s.store)
+	indexer, ok := s.transcriptIndexerForWeb()
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "revisioned transcript is unavailable")
 		return
@@ -280,7 +297,7 @@ func readCoherentTranscriptProjection(
 }
 
 func (s *serveServer) selectedTranscriptStartupSideload(ctx context.Context, sessionID string) (*transcriptStartupSideload, error) {
-	indexer, ok := transcriptIndexerForWeb(s.store)
+	indexer, ok := s.transcriptIndexerForWeb()
 	if !ok {
 		return nil, nil
 	}
@@ -309,7 +326,7 @@ func (s *serveServer) selectedTranscriptStartupSideload(ctx context.Context, ses
 }
 
 func (s *serveServer) handleSessionTranscriptBodies(w http.ResponseWriter, r *http.Request, sessionID string) {
-	indexer, ok := transcriptIndexerForWeb(s.store)
+	indexer, ok := s.transcriptIndexerForWeb()
 	if !ok {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "revisioned transcript is unavailable")
 		return

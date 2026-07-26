@@ -456,7 +456,7 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 	if sessionID == "" || !plan.enabled {
 		return
 	}
-	msg := modelSwapMarkerMessage(plan, candidate, status, strategy)
+	msg := tagResponseRunMessage(ctx, modelSwapMarkerMessage(plan, candidate, status, strategy), -1)
 	if candidate != nil {
 		candidate.mu.Lock()
 		defer candidate.mu.Unlock()
@@ -496,7 +496,9 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 		sm := session.NewMessage(sessionID, msg, -1)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_ = s.store.AddMessage(dbCtx, sessionID, sm)
+		_, _ = runResponseRunPersistence(ctx, []llm.Message{msg}, func() (int64, error) {
+			return addResponseRunMessage(dbCtx, s.store, sessionID, sm)
+		})
 	}
 }
 
@@ -504,7 +506,7 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 	if exec == nil || !exec.plan.enabled {
 		return
 	}
-	msg := modelSwapMarkerMessage(exec.plan, candidate, status, strategy)
+	msg := tagResponseRunMessage(ctx, modelSwapMarkerMessage(exec.plan, candidate, status, strategy), -1)
 	// The failed trigger turn is intentionally omitted from restored history so
 	// the previous runtime cannot resume with an orphaned user message. The
 	// failure marker is therefore the terminal event of the restored transcript.
@@ -523,7 +525,9 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 		}
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_ = s.store.ReplaceMessages(dbCtx, sessionID, dbMessages)
+		_, _ = runResponseRunPersistence(ctx, restoredHistory, func() (int64, error) {
+			return replaceResponseRunMessages(dbCtx, s.store, sessionID, dbMessages)
+		})
 		if exec.previous != nil {
 			s.syncPersistedSessionRuntime(dbCtx, sessionID, exec.previous, exec.plan.previousModel, exec.plan.previousEffort, "", false, "")
 		}

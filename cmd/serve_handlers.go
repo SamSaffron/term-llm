@@ -879,6 +879,7 @@ type sessionMessageEntry struct {
 	Parts                   []sessionMessagePartEntry `json:"parts"`
 	CreatedAt               int64                     `json:"created_at"`
 	CompactionTail          bool                      `json:"compaction_tail,omitempty"`
+	ClientMessageID         string                    `json:"client_message_id,omitempty"`
 	ResponseID              string                    `json:"response_id,omitempty"`
 	AssistantSegmentOrdinal *int                      `json:"assistant_segment_ordinal,omitempty"`
 	SegmentStartSequence    int64                     `json:"segment_start_sequence,omitempty"`
@@ -1391,6 +1392,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			Role:                 string(msg.Role),
 			CreatedAt:            msg.CreatedAt.UnixMilli(),
 			CompactionTail:       msg.CompactionTail,
+			ClientMessageID:      msg.ClientMessageID,
 			ResponseID:           msg.ResponseID,
 			SegmentStartSequence: msg.SegmentStartSequence,
 			SegmentEndSequence:   msg.SegmentEndSequence,
@@ -1837,7 +1839,11 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	if fastErr != nil {
 		log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
 	}
-	action, replayed, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, strings.TrimSpace(req.InterjectionID), fastProvider, false)
+	clientMessageID := strings.TrimSpace(req.ClientMessageID)
+	if clientMessageID == "" {
+		clientMessageID = strings.TrimSpace(req.InterjectionID)
+	}
+	action, replayed, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, false)
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return

@@ -101,7 +101,7 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	ctx := context.Background()
 	messages := []*Message{
 		NewMessage(sess.ID, llm.SystemText("hidden"), -1),
-		NewMessage(sess.ID, llm.UserText("hello"), -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: llm.UserText("hello").Parts, ClientMessageID: "client-hello"}, -1),
 		NewMessage(sess.ID, llm.AssistantText("answer"), -1),
 		NewMessage(sess.ID, llm.Message{Role: llm.RoleTool}, -1),
 		NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent}, -1),
@@ -128,6 +128,9 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 			t.Fatalf("item[%d]=%#v", i, item)
 		}
 	}
+	if got := items[0].ClientMessageID; got != "client-hello" {
+		t.Fatalf("user client message id=%q, want client-hello", got)
+	}
 	if items[2].Flags&TranscriptFlagEmptyBody == 0 || items[3].Flags&TranscriptFlagEmptyBody == 0 {
 		t.Fatalf("empty rows lack empty-body flags: %#v", items)
 	}
@@ -144,6 +147,36 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	}
 	if len(bodies) != 2 || bodies[0].ID != messages[1].ID || bodies[1].ID != messages[3].ID {
 		t.Fatalf("bodies not authoritative sequence order: %#v", bodies)
+	}
+	if got := bodies[0].ClientMessageID; got != "client-hello" {
+		t.Fatalf("body client message id=%q, want client-hello", got)
+	}
+}
+
+func TestSQLiteCompactionPreservesResponseIdentity(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	messages := []Message{
+		*NewMessage(sess.ID, llm.UserText("summary"), -1),
+		*NewMessage(sess.ID, llm.AssistantText("retained answer"), -1),
+	}
+	messages[1].ResponseID = "resp-compaction-identity"
+	messages[1].AssistantSegmentOrdinal = 0
+	if err := store.CompactMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.GetTranscriptSnapshot(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range snapshot.Items {
+		if item.ResponseID == "resp-compaction-identity" && item.AssistantSegmentOrdinal == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("response identity did not survive compaction: %#v", snapshot.Items)
 	}
 }
 

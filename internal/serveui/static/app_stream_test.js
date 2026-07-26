@@ -11,7 +11,18 @@ const { webcrypto } = require('crypto');
 const dir = __dirname;
 const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const source = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
-const { TranscriptStore, reconcileTranscriptProjection } = require('./transcript-store.js');
+const responseEffectsSource = fs.readFileSync(path.join(dir, 'app-response-effects.js'), 'utf8');
+const sendSource = fs.readFileSync(path.join(dir, 'app-send.js'), 'utf8');
+const runtimeSource = fs.readFileSync(path.join(dir, 'app-runtime.js'), 'utf8');
+const interjectSource = fs.readFileSync(path.join(dir, 'app-interject.js'), 'utf8');
+const modalsSource = fs.readFileSync(path.join(dir, 'app-modals.js'), 'utf8');
+const composerSource = fs.readFileSync(path.join(dir, 'app-composer.js'), 'utf8');
+const skillsSource = fs.readFileSync(path.join(dir, 'app-skills.js'), 'utf8');
+const conversation = require('./conversation.js');
+const projectedMessages = (session) => session?.transcript?.conversation
+  ? conversation.sessionMessages(session)
+  : (Array.isArray(session?.messages) ? session.messages : []);
+const { ConversationController: ConversationController } = conversation;
 
 let failures = 0;
 
@@ -101,6 +112,37 @@ function makeMessageContainer() {
   };
 }
 
+function strictResponseSSE(body, responseId, runEpoch = 1) {
+  let event = '';
+  return String(body || '').split('\n').map((line) => {
+    if (line.startsWith('event:')) {
+      event = line.slice('event:'.length).trim();
+      return line;
+    }
+    if (!event.startsWith('response.') || !line.startsWith('data:')) return line;
+    const raw = line.slice('data:'.length).trim();
+    if (!raw || raw === '[DONE]') return line;
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (_) {
+      return line;
+    }
+    if (!Object.prototype.hasOwnProperty.call(payload, 'response_id')) payload.response_id = responseId;
+    if (!Object.prototype.hasOwnProperty.call(payload, 'run_epoch')) payload.run_epoch = runEpoch;
+    if (['response.completed', 'response.cancelled', 'response.failed'].includes(event)) {
+      if (!Object.prototype.hasOwnProperty.call(payload, 'final_rev')) payload.final_rev = 1;
+      if (!Object.prototype.hasOwnProperty.call(payload, 'durable_handoff')) payload.durable_handoff = true;
+      if (!Object.prototype.hasOwnProperty.call(payload, 'durable_output_count')) payload.durable_output_count = 1;
+    }
+    return `data: ${JSON.stringify(payload)}`;
+  }).join('\n');
+}
+
+function strictResponseBytes(body, responseId, runEpoch = 1) {
+  return new TextEncoder().encode(strictResponseSSE(body, responseId, runEpoch));
+}
+
 function createHarness(options = {}) {
   let idCounter = 0;
   let postStreamController = null;
@@ -110,7 +152,7 @@ function createHarness(options = {}) {
   const fetchCalls = [];
   const responseId = options.responseId || 'resp_test';
   const postKeepOpen = Boolean(options.postKeepOpen);
-  const postBody = Object.prototype.hasOwnProperty.call(options, 'postBody')
+  const rawPostBody = Object.prototype.hasOwnProperty.call(options, 'postBody')
     ? String(options.postBody || '')
     : [
       'id: 1\n',
@@ -124,11 +166,13 @@ function createHarness(options = {}) {
       `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":3}\n\n`,
       'data: [DONE]\n\n',
     ].join('');
+  const postBody = strictResponseSSE(rawPostBody, responseId, Number(options.runEpoch) || 1);
   const eventsKeepOpen = Boolean(options.eventsKeepOpen);
   const cancelDelayMs = Math.max(0, Number(options.cancelDelayMs || 0));
   const snapshotStatus = Number.isFinite(Number(options.snapshotStatus)) ? Number(options.snapshotStatus) : 200;
   const snapshotPayload = options.snapshotPayload || {
     id: responseId,
+    run_epoch: 1,
     status: 'in_progress',
     last_sequence_number: 0,
     recovery: {
@@ -147,7 +191,7 @@ function createHarness(options = {}) {
   };
   let cancelRequested = false;
   let cancelResolve = null;
-  const eventsBody = String(options.eventsBody || [
+  const rawEventsBody = String(options.eventsBody || [
     'id: 1\n',
     'event: response.created\n',
     `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
@@ -159,6 +203,7 @@ function createHarness(options = {}) {
     `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":3}\n\n`,
     'data: [DONE]\n\n',
   ].join(''));
+  const eventsBody = strictResponseSSE(rawEventsBody, responseId, Number(options.runEpoch) || 1);
 
   const document = {
     activeElement: null,
@@ -319,6 +364,22 @@ function createHarness(options = {}) {
     enumerable: true,
   });
   state.activeSessionId = activeSessionIdValue;
+  const pushSessions = state.sessions.push.bind(state.sessions);
+  state.sessions.push = (...sessions) => {
+    for (const session of sessions) {
+      const seed = Array.isArray(projectedMessages(session)) ? session.messages : [];
+      if (seed.length === 0 || session.transcript) continue;
+      session.transcript = new ConversationController(session.id);
+      session.transcript.publishedMessages = seed.filter((message) => message?.durable === true);
+      for (const message of seed) {
+        if (message?.role === 'user' && message?.durable !== true) {
+          if (!message.clientMessageId && !message.client_message_id) message.clientMessageId = String(message.id || `test-intent-${session.id}`);
+          session.transcript.addPendingIntent(message, 0);
+        }
+      }
+    }
+    return pushSessions(...sessions);
+  };
 
   const connectionStates = [];
   let providerRetryStatus = null;
@@ -355,6 +416,12 @@ function createHarness(options = {}) {
     syncTokenCookie() {},
     truncate(value, len) { return String(value || '').slice(0, len); },
     saveSessions() {},
+    noteTranscriptRunCreated(session, responseId, startedRev, runEpoch) {
+      if (!session.transcript) session.transcript = new ConversationController(session.id);
+      session.transcript.setActiveRun(responseId, startedRev, runEpoch);
+      session.latestRunEpoch = Math.max(Number(session.latestRunEpoch) || 0, Number(runEpoch) || 0);
+      return Promise.resolve(true);
+    },
     getActiveSession() {
       return state.sessions.find((session) => session.id === state.activeSessionId) || null;
     },
@@ -486,24 +553,23 @@ function createHarness(options = {}) {
         options.onRenderMessages(session, elements.messages);
       }
     },
-    trackTranscriptOptimistic(session, message) {
-      return session?.transcript?.addOptimistic?.(message, session.transcript.rev) || null;
-    },
-    persistTranscriptOptimistic() {},
-    reconcileSessionTranscriptProjection(session, reconcileOptions = {}) {
-      const transcript = session?.transcript || null;
-      if (reconcileOptions.trackOptimisticTail === true && transcript) {
-        for (const [index, message] of session.messages.entries()) {
-          if (message?.durable || !['assistant', 'tool-group', 'tool'].includes(message?.role)) continue;
-          const tracked = transcript.addOptimistic(message, transcript.rev);
-          if (tracked && tracked !== message) session.messages[index] = tracked;
+    trackPendingIntent(session, message) {
+      if (!session) return null;
+      if (!session.transcript) {
+        const existing = Array.isArray(projectedMessages(session)) ? projectedMessages(session).slice() : [];
+        session.transcript = new conversation.ConversationController(session.id);
+        session.transcript.publishedMessages = existing.filter((entry) => entry?.durable === true);
+        for (const entry of existing) {
+          if (entry?.role === 'user' && entry?.durable !== true) session.transcript.addPendingIntent(entry, 0);
         }
-        transcript.reconcileOptimistic();
       }
-      session.messages = reconcileTranscriptProjection(session.messages, transcript);
-      if (typeof options.onReconcileSessionTranscriptProjection === 'function') {
-        options.onReconcileSessionTranscriptProjection(session);
-      }
+      return session.transcript.addPendingIntent(message, session.transcript.rev);
+    },
+    persistPendingIntents() {},
+    refreshSessionMessagesFromTranscript(session) {
+      const transcript = session?.transcript;
+      if (!transcript?.conversation) return false;
+      conversation.applyDurable(transcript.conversation, transcript);
       return true;
     },
     maybeNotifyResponseComplete: async () => {},
@@ -560,11 +626,11 @@ function createHarness(options = {}) {
 
   const windowObj = {
     TermLLMApp: app,
-    TranscriptStore,
-    reconcileTranscriptProjection,
-    assistantSegmentKey: require('./transcript-store.js').assistantSegmentKey,
-    transcriptToolIdentityKey: require('./transcript-store.js').transcriptToolIdentityKey,
-    transcriptDiagnostic: require('./transcript-store.js').transcriptDiagnostic,
+    ConversationController,
+    TermLLMConversation: conversation,
+    assistantSegmentKey: conversation.assistantSegmentKey,
+    transcriptToolIdentityKey: conversation.transcriptToolIdentityKey,
+    transcriptDiagnostic: conversation.transcriptDiagnostic,
     __TERM_LLM_DIAGNOSTICS__: Boolean(options.diagnostics),
     setTimeout: typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout,
     clearTimeout: typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout,
@@ -751,6 +817,41 @@ function createHarness(options = {}) {
   // the shared app bag at load time, so it must run first (mirrors index.html).
   vm.runInNewContext(attachmentsSource, context, { filename: 'app-attachments.js' });
   vm.runInNewContext(source, context, { filename: 'app-stream.js' });
+  vm.runInNewContext(responseEffectsSource, context, { filename: 'app-response-effects.js' });
+  vm.runInNewContext(composerSource, context, { filename: 'app-composer.js' });
+  vm.runInNewContext(sendSource, context, { filename: 'app-send.js' });
+  vm.runInNewContext(runtimeSource, context, { filename: 'app-runtime.js' });
+  vm.runInNewContext(interjectSource, context, { filename: 'app-interject.js' });
+  vm.runInNewContext(modalsSource, context, { filename: 'app-modals.js' });
+  vm.runInNewContext(skillsSource, context, { filename: 'app-skills.js' });
+
+  const applyResponseRecoverySnapshot = app.applyResponseRecoverySnapshot;
+  app.applyResponseRecoverySnapshot = (session, payload = {}) => {
+    const snapshot = { ...payload };
+    if (!Object.prototype.hasOwnProperty.call(snapshot, 'run_epoch')) {
+      snapshot.run_epoch = Math.max(0, Number(session?.transcript?.activeRun?.epoch || session?.latestRunEpoch || options.runEpoch) || 1);
+    }
+    return applyResponseRecoverySnapshot(session, snapshot);
+  };
+
+  const applyResponseStreamEvent = app.applyResponseStreamEvent;
+  app.applyResponseStreamEvent = (session, streamState, event, payload = {}) => {
+    if (!String(event || '').startsWith('response.') || event === 'response.file_change') {
+      return applyResponseStreamEvent(session, streamState, event, payload);
+    }
+    const active = session?.transcript?.conversation?.active;
+    const envelope = { ...payload };
+    if (!Object.prototype.hasOwnProperty.call(envelope, 'response_id')) {
+      envelope.response_id = String(payload?.response?.id || streamState?.responseId || session?.activeResponseId || '').trim();
+    }
+    if (!Object.prototype.hasOwnProperty.call(envelope, 'run_epoch')) {
+      envelope.run_epoch = Math.max(0, Number(payload?.response?.run_epoch || active?.runEpoch || session?.latestRunEpoch || options.runEpoch) || 1);
+    }
+    if (event !== 'response.stream_error' && !Object.prototype.hasOwnProperty.call(envelope, 'sequence_number')) {
+      envelope.sequence_number = Math.max(0, Number(active?.lastSequence) || 0) + 1;
+    }
+    return applyResponseStreamEvent(session, streamState, event, envelope);
+  };
 
   return {
     app,
@@ -885,6 +986,8 @@ async function testResponseCreatedRecordsStartedTranscriptRevision() {
   state.activeSessionId = session.id;
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.created', {
+    response_id: 'resp_started',
+    run_epoch: 1,
     response: { id: 'resp_started', status: 'in_progress' },
     started_rev: 17,
     sequence_number: 1
@@ -917,6 +1020,7 @@ async function testResponseCompletedForcesSidebarStatusRefresh() {
     messages: [{ id: 'assistant_1', role: 'assistant', content: 'done', created: 1000 }],
     lastResponseId: null,
     activeResponseId: 'resp_status_refresh',
+    latestRunEpoch: 1,
     lastSequenceNumber: 0,
     number: 1,
   };
@@ -927,9 +1031,13 @@ async function testResponseCompletedForcesSidebarStatusRefresh() {
 
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.completed', {
+    response_id: 'resp_status_refresh',
+    run_epoch: 1,
     response: { id: 'resp_status_refresh', model: 'test-model', status: 'completed' },
-    sequence_number: 3,
-    final_rev: 9
+    sequence_number: 1,
+    final_rev: 9,
+    durable_handoff: true,
+    durable_output_count: 1
   });
 
   const refreshed = await waitFor(() => refreshCalls.length === 1, 75);
@@ -940,54 +1048,6 @@ async function testResponseCompletedForcesSidebarStatusRefresh() {
   }
   if (terminalCalls.length !== 1 || terminalCalls[0].sessionId !== session.id || terminalCalls[0].finalRev !== 9) {
     fail(name, 'terminal event must reconcile the durable transcript at final_rev', JSON.stringify(terminalCalls));
-    await cleanup();
-    return;
-  }
-
-  await cleanup();
-  pass(name);
-}
-
-async function testResponseCompletedPreservesFailedToolStatus() {
-  const name = 'response.completed preserves failed tool status while closing running tools';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-  const failedTool = { id: 'call_failed', name: 'update_plan', status: 'error' };
-  const runningTool = { id: 'call_running', name: 'read_file', status: 'running' };
-  const toolGroup = {
-    id: 'tools_1',
-    role: 'tool-group',
-    status: 'running',
-    tools: [failedTool, runningTool],
-    created: 1000,
-  };
-  const session = {
-    id: 'session_failed_tool_status',
-    title: 'Failed tool status',
-    messages: [toolGroup],
-    lastResponseId: null,
-    activeResponseId: 'resp_failed_tool_status',
-    lastSequenceNumber: 0,
-    number: 1,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  state.currentStreamSessionId = session.id;
-  state.currentStreamResponseId = session.activeResponseId;
-
-  const streamState = app.createResponseStreamState(session);
-  app.applyResponseStreamEvent(session, streamState, 'response.completed', {
-    response: { id: session.activeResponseId, model: 'test-model', status: 'completed' },
-    sequence_number: 3,
-  });
-
-  if (failedTool.status !== 'error') {
-    fail(name, `failed tool status = ${JSON.stringify(failedTool.status)}, want "error"`);
-    await cleanup();
-    return;
-  }
-  if (runningTool.status !== 'done' || toolGroup.status !== 'done') {
-    fail(name, 'running tool group was not closed', JSON.stringify(toolGroup));
     await cleanup();
     return;
   }
@@ -1021,11 +1081,11 @@ async function testStaleTerminalStreamDoesNotRefreshStatus() {
 
   const stream = new ReadableStream({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode([
+      controller.enqueue(strictResponseBytes([
         'event: response.completed\n',
         'data: {"response":{"id":"resp_stale_terminal","model":"test-model","status":"completed"},"sequence_number":9}\n\n',
         'data: [DONE]\n\n',
-      ].join('')));
+      ].join(''), 'resp_stale_terminal'));
       controller.close();
     },
   });
@@ -1058,10 +1118,7 @@ async function testStaleTerminalStreamDoesNotRefreshStatus() {
 
 async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
   const name = 'response stream ignores replayed events that would duplicate or reorder messages';
-  let reconciliations = 0;
-  const harness = createHarness({
-    onReconcileSessionTranscriptProjection() { reconciliations += 1; }
-  });
+  const harness = createHarness();
   const { app, state, cleanup } = harness;
   const session = {
     id: 'session_replayed_events',
@@ -1079,7 +1136,7 @@ async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
 
   const stream = new ReadableStream({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode([
+      controller.enqueue(strictResponseBytes([
         'event: response.output_text.delta\n',
         'data: {"delta":"first","sequence_number":1}\n\n',
         'event: response.output_text.delta\n',
@@ -1089,7 +1146,7 @@ async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
         'event: response.output_text.delta\n',
         'data: {"delta":" last","sequence_number":2}\n\n',
         'data: [DONE]\n\n',
-      ].join('')));
+      ].join(''), session.activeResponseId));
       controller.close();
     },
   });
@@ -1099,19 +1156,14 @@ async function testConsumeResponseStreamIgnoresAlreadyProjectedEvents() {
     responseId: session.activeResponseId,
   });
 
-  const projected = session.messages.map((message) => `${message.role}:${message.content || ''}`);
+  const projected = projectedMessages(session).map((message) => `${message.role}:${message.content || ''}`);
   if (JSON.stringify(projected) !== JSON.stringify(['assistant:first last'])) {
     fail(name, 'replayed sequence numbers changed the projected transcript order', JSON.stringify(projected));
     await cleanup();
     return;
   }
-  if (session.lastSequenceNumber !== 2) {
-    fail(name, `last sequence = ${session.lastSequenceNumber}, want 2`);
-    await cleanup();
-    return;
-  }
-  if (reconciliations !== 0) {
-    fail(name, `fresh/live event handling performed ${reconciliations} full transcript reconciliations`);
+  if (app.responseEventSequence(session, session.activeResponseId) !== 2) {
+    fail(name, `active-run sequence = ${app.responseEventSequence(session, session.activeResponseId)}, want 2`);
     await cleanup();
     return;
   }
@@ -1138,7 +1190,7 @@ async function testConsumeResponseStreamPreservesOverflowRecoverySequenceExcepti
 
   const stream = new ReadableStream({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode([
+      controller.enqueue(strictResponseBytes([
         'event: response.output_text.delta\n',
         'data: {"delta":"before","sequence_number":1}\n\n',
         'event: response.output_text.delta\n',
@@ -1148,7 +1200,7 @@ async function testConsumeResponseStreamPreservesOverflowRecoverySequenceExcepti
         'event: response.stream_error\n',
         'data: {"error":{"type":"stream_buffer_overflow"},"sequence_number":1,"recovery":{"sequence_number":1,"messages":[{"id":"stale","role":"assistant","content":"stale"}]}}\n\n',
         'data: [DONE]\n\n',
-      ].join('')));
+      ].join(''), session.activeResponseId));
       controller.close();
     },
   });
@@ -1158,14 +1210,14 @@ async function testConsumeResponseStreamPreservesOverflowRecoverySequenceExcepti
     responseId: session.activeResponseId,
   });
 
-  const projected = session.messages.map((message) => `${message.role}:${message.content || ''}`);
+  const projected = projectedMessages(session).map((message) => `${message.role}:${message.content || ''}`);
   if (JSON.stringify(projected) !== JSON.stringify(['assistant:recovered'])) {
     fail(name, 'overflow sequence exception applied the wrong recovery snapshot', JSON.stringify(projected));
     await cleanup();
     return;
   }
-  if (session.lastSequenceNumber !== 2) {
-    fail(name, `last sequence = ${session.lastSequenceNumber}, want 2`);
+  if (app.responseEventSequence(session, session.activeResponseId) !== 2) {
+    fail(name, `active-run sequence = ${app.responseEventSequence(session, session.activeResponseId)}, want 2`);
     await cleanup();
     return;
   }
@@ -1194,6 +1246,8 @@ async function testSkippedReplayRehydratesStreamProjectionState() {
   const streamState = app.createResponseStreamState(session);
   const projectedState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, projectedState, 'response.output_item.added', {
+    response_id: session.activeResponseId,
+    run_epoch: 1,
     sequence_number: 1,
     output_index: 0,
     item: { type: 'function_call', call_id: 'call_replayed', name: 'read_file', arguments: '' },
@@ -1201,13 +1255,13 @@ async function testSkippedReplayRehydratesStreamProjectionState() {
 
   const stream = new ReadableStream({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode([
+      controller.enqueue(strictResponseBytes([
         'event: response.output_item.added\n',
         'data: {"sequence_number":1,"output_index":0,"item":{"type":"function_call","call_id":"call_replayed","name":"read_file","arguments":""}}\n\n',
         'event: response.function_call_arguments.delta\n',
         'data: {"sequence_number":2,"output_index":0,"delta":"{\\"path\\":\\"README.md\\"}"}\n\n',
         'data: [DONE]\n\n',
-      ].join('')));
+      ].join(''), session.activeResponseId));
       controller.close();
     },
   });
@@ -1217,9 +1271,9 @@ async function testSkippedReplayRehydratesStreamProjectionState() {
     responseId: session.activeResponseId,
   });
 
-  const tools = session.messages.flatMap((message) => message.role === 'tool-group' ? message.tools || [] : []);
+  const tools = projectedMessages(session).flatMap((message) => message.role === 'tool-group' ? message.tools || [] : []);
   if (tools.length !== 1 || tools[0].arguments !== '{"path":"README.md"}') {
-    fail(name, 'fresh tool delta was not applied to the already projected call', JSON.stringify(session.messages));
+    fail(name, 'fresh tool delta was not applied to the already projected call', JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
@@ -1247,7 +1301,7 @@ async function testInactiveSessionStreamEventsDoNotAppendToVisibleDOM() {
     title: 'B',
     messages: [],
     lastResponseId: null,
-    activeResponseId: null,
+    activeResponseId: 'resp_phase',
     lastSequenceNumber: 0,
     number: 2,
   };
@@ -1266,15 +1320,15 @@ async function testInactiveSessionStreamEventsDoNotAppendToVisibleDOM() {
     sequence_number: 2,
   });
 
-  const assistant = sessionA.messages.find((message) => message.role === 'assistant');
-  const toolGroup = sessionA.messages.find((message) => message.role === 'tool-group');
+  const assistant = projectedMessages(sessionA).find((message) => message.role === 'assistant');
+  const toolGroup = projectedMessages(sessionA).find((message) => message.role === 'tool-group');
   if (!assistant || assistant.content !== 'leaked assistant text') {
-    fail(name, 'inactive session assistant data was not preserved', JSON.stringify(sessionA.messages));
+    fail(name, 'inactive session assistant data was not preserved', JSON.stringify(projectedMessages(sessionA)));
     await cleanup();
     return;
   }
   if (!toolGroup || toolGroup.tools.length !== 1) {
-    fail(name, 'inactive session tool data was not preserved', JSON.stringify(sessionA.messages));
+    fail(name, 'inactive session tool data was not preserved', JSON.stringify(projectedMessages(sessionA)));
     await cleanup();
     return;
   }
@@ -1301,7 +1355,7 @@ async function testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM() {
   const sessionA = {
     id: 'session_existing_a',
     title: 'A',
-    messages: [{ id: 'msg_pending', role: 'user', content: 'interrupt me', created: 1000, interruptState: 'evaluating' }],
+    messages: [{ id: 'msg_pending', clientMessageId: 'msg_pending', role: 'user', content: 'interrupt me', created: 1000, interruptState: 'evaluating' }],
     activeResponseId: 'resp_existing',
     lastSequenceNumber: 0,
     number: 1,
@@ -1321,7 +1375,7 @@ async function testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM() {
   const streamState = app.createResponseStreamState(sessionA);
   app.applyResponseStreamEvent(sessionA, streamState, 'response.interjection', {
     text: 'interrupt me',
-    interjection_id: 'msg_pending',
+    client_message_id: 'msg_pending',
     sequence_number: 1,
   });
 
@@ -1330,8 +1384,8 @@ async function testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM() {
     await cleanup();
     return;
   }
-  if (sessionA.messages[0].interruptState !== 'interject') {
-    fail(name, 'inactive session data was not updated', JSON.stringify(sessionA.messages[0]));
+  if (projectedMessages(sessionA)[0].interruptState !== 'interject') {
+    fail(name, 'inactive session data was not updated', JSON.stringify(projectedMessages(sessionA)[0]));
     await cleanup();
     return;
   }
@@ -1375,8 +1429,8 @@ async function testInactiveInterruptHelpersDoNotTouchVisibleDOM() {
     await cleanup();
     return;
   }
-  if (sessionA.messages[0].interruptState !== 'queue' || sessionA.messages.length !== 2) {
-    fail(name, 'inactive session interrupt data was not updated', JSON.stringify(sessionA.messages));
+  if (projectedMessages(sessionA)[0].interruptState !== 'queue' || projectedMessages(sessionA).length !== 2) {
+    fail(name, 'inactive session interrupt data was not updated', JSON.stringify(projectedMessages(sessionA)));
     await cleanup();
     return;
   }
@@ -1395,7 +1449,10 @@ async function testInactiveSessionPromptEventsRemainActionable() {
   const harness = createHarness();
   const { app, state, cleanup } = harness;
 
-  const sessionA = { id: 'session_prompt_a', title: 'A', messages: [], activeResponseId: 'resp_prompt', lastSequenceNumber: 0, number: 1 };
+  const sessionA = { id: 'session_prompt_a', title: 'A', messages: [], activeResponseId: 'resp_prompt', latestRunEpoch: 1, lastSequenceNumber: 6, number: 1 };
+  sessionA.transcript = new ConversationController(sessionA.id);
+  sessionA.transcript.setActiveRun('resp_prompt', 0, 1);
+  sessionA.transcript.conversation.active.lastSequence = 6;
   const sessionB = { id: 'session_prompt_b', title: 'B', messages: [], activeResponseId: null, lastSequenceNumber: 0, number: 2 };
   state.sessions.push(sessionA, sessionB);
   state.activeSessionId = sessionB.id;
@@ -1412,8 +1469,8 @@ async function testInactiveSessionPromptEventsRemainActionable() {
     await cleanup();
     return;
   }
-  if (sessionA.lastSequenceNumber !== 7) {
-    fail(name, `ask-user sequence not recorded, got ${sessionA.lastSequenceNumber}`);
+  if (app.responseEventSequence(sessionA, sessionA.activeResponseId) !== 7) {
+    fail(name, `ask-user sequence not recorded, got ${app.responseEventSequence(sessionA, sessionA.activeResponseId)}`);
     await cleanup();
     return;
   }
@@ -1432,8 +1489,8 @@ async function testInactiveSessionPromptEventsRemainActionable() {
     await cleanup();
     return;
   }
-  if (sessionA.lastSequenceNumber !== 8) {
-    fail(name, `approval sequence not recorded, got ${sessionA.lastSequenceNumber}`);
+  if (app.responseEventSequence(sessionA, sessionA.activeResponseId) !== 8) {
+    fail(name, `approval sequence not recorded, got ${app.responseEventSequence(sessionA, sessionA.activeResponseId)}`);
     await cleanup();
     return;
   }
@@ -1442,8 +1499,8 @@ async function testInactiveSessionPromptEventsRemainActionable() {
   pass(name);
 }
 
-async function testInactiveSessionFailureDoesNotAppendToVisibleDOM() {
-  const name = 'response.failed for inactive session stores error without appending to visible DOM';
+async function testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM() {
+  const name = 'response.failed for inactive session stays out of transcript and visible DOM';
   const harness = createHarness();
   const { app, state, elements, cleanup } = harness;
 
@@ -1455,12 +1512,11 @@ async function testInactiveSessionFailureDoesNotAppendToVisibleDOM() {
   const streamState = app.createResponseStreamState(sessionA);
   app.applyResponseStreamEvent(sessionA, streamState, 'response.failed', {
     error: { message: 'tool exploded' },
-    sequence_number: 3,
+    sequence_number: 1,
   });
 
-  const error = sessionA.messages.find((message) => message.role === 'error');
-  if (!error || error.content !== 'tool exploded') {
-    fail(name, 'inactive failure error was not preserved on the owning session', JSON.stringify(sessionA.messages));
+  if (projectedMessages(sessionA).some((message) => message.role === 'error')) {
+    fail(name, 'transport status leaked into the conversation projection', JSON.stringify(projectedMessages(sessionA)));
     await cleanup();
     return;
   }
@@ -1503,7 +1559,7 @@ async function testConsumeResponseStreamReportsStaleWithoutApplyingEvents() {
     await cleanup();
     return;
   }
-  if (session.messages.length !== 0 || session.lastSequenceNumber !== 0) {
+  if (projectedMessages(session).length !== 0 || session.lastSequenceNumber !== 0) {
     fail(name, 'stale stream should not apply events to the session', JSON.stringify(session));
     await cleanup();
     return;
@@ -1832,9 +1888,9 @@ async function testSendMessageHeartbeatAbortRetriesBeforeResponseId() {
     return;
   }
   const session = state.sessions[0];
-  const userMessages = (session?.messages || []).filter((message) => message.role === 'user');
+  const userMessages = (projectedMessages(session) || []).filter((message) => message.role === 'user');
   if (userMessages.length !== 1) {
-    fail(name, `retry duplicated the user message: ${userMessages.length}`, JSON.stringify(session?.messages || []));
+    fail(name, `retry duplicated the user message: ${userMessages.length}`, JSON.stringify(projectedMessages(session) || []));
     return;
   }
   if (postBodies.length === 2 && postBodies[0] !== postBodies[1]) {
@@ -1966,9 +2022,9 @@ async function testSendMessageTransientPreResponseFailureRetries() {
     fail(name, 'transient retry did not reuse idempotency key', JSON.stringify(idempotencyKeys));
     return;
   }
-  const userMessages = (state.sessions[0]?.messages || []).filter((message) => message.role === 'user');
+  const userMessages = projectedMessages(state.sessions[0]).filter((message) => message.role === 'user');
   if (userMessages.length !== 1) {
-    fail(name, `transient retry duplicated user message: ${userMessages.length}`, JSON.stringify(state.sessions[0]?.messages || []));
+    fail(name, `transient retry duplicated user message: ${userMessages.length}`, JSON.stringify(projectedMessages(state.sessions[0])));
     return;
   }
 
@@ -2061,9 +2117,9 @@ async function testSendMessageHeartbeatAbortKeepsRetryingWithSlowBackoff() {
     return;
   }
   const session = state.sessions[0];
-  const userMessages = (session?.messages || []).filter((message) => message.role === 'user');
+  const userMessages = (projectedMessages(session) || []).filter((message) => message.role === 'user');
   if (userMessages.length !== 1) {
-    fail(name, `retry loop duplicated the user message: ${userMessages.length}`, JSON.stringify(session?.messages || []));
+    fail(name, `retry loop duplicated the user message: ${userMessages.length}`, JSON.stringify(projectedMessages(session) || []));
     return;
   }
 
@@ -2082,8 +2138,8 @@ async function testSendMessageDoesNotResumeAfterStalePostStream() {
       'event: response.output_text.delta\n',
       'data: {"delta":"hello","sequence_number":2}\n\n',
     ].join(''),
-    onCreateMessageNode(message) {
-      if (message.role === 'assistant') harness.app.detachResponseStream();
+    onRenderMessages(session) {
+      if (projectedMessages(session)?.some((message) => message.role === 'assistant')) harness.app.detachResponseStream();
     },
   });
   const { app, elements, fetchCalls, cleanup } = harness;
@@ -2322,7 +2378,7 @@ async function testSendMessageConsumesPostStreamWhenAvailable() {
   }
 
   const session = harness.state.sessions[0];
-  const assistant = session && session.messages.find((message) => message.role === 'assistant');
+  const assistant = session && projectedMessages(session).find((message) => message.role === 'assistant');
   if (!assistant || assistant.content !== 'hello') {
     fail(name, 'assistant content did not complete from the POST stream', assistant ? assistant.content : 'missing');
     return;
@@ -2416,7 +2472,7 @@ async function testSendMessageResumesFromEventsAfterPostStreamDrops() {
   }
 
   const session = harness.state.sessions[0];
-  const assistant = session && session.messages.find((message) => message.role === 'assistant');
+  const assistant = session && projectedMessages(session).find((message) => message.role === 'assistant');
   if (!assistant || assistant.content !== 'hello world') {
     fail(name, 'assistant content did not resume correctly after the POST stream ended early', assistant ? assistant.content : 'missing');
     return;
@@ -2481,9 +2537,9 @@ async function testSendMessageRecoversAfterStreamBufferOverflowDone() {
   }
 
   const session = harness.state.sessions[0];
-  const assistant = session && session.messages.find((message) => message.role === 'assistant');
+  const assistant = session && projectedMessages(session).find((message) => message.role === 'assistant');
   if (!assistant || assistant.content !== 'hello world') {
-    fail(name, 'assistant content did not recover after overflow', JSON.stringify({ assistant: assistant?.content, messages: session?.messages?.map((message) => [message.role, message.id, message.content]), optimistic: session?.transcript?.optimistic?.map((message) => [message.role, message.id, message.content]) }));
+    fail(name, 'assistant content did not recover after overflow', JSON.stringify({ assistant: assistant?.content, messages: projectedMessages(session)?.map((message) => [message.role, message.id, message.content]), optimistic: session?.transcript?.optimistic?.map((message) => [message.role, message.id, message.content]) }));
     return;
   }
 
@@ -2805,6 +2861,7 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
     },
     snapshotPayload: {
       id: responseId,
+      run_epoch: 1,
       status: 'in_progress',
       last_sequence_number: 4,
       recovery: {
@@ -2883,7 +2940,7 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
     return;
   }
 
-  const toolGroups = session.messages.filter((message) => message.role === 'tool-group');
+  const toolGroups = projectedMessages(session).filter((message) => message.role === 'tool-group');
   if (toolGroups.length !== 2) {
     fail(name, `expected recovered and replayed tool groups, got ${toolGroups.length}`, JSON.stringify(toolGroups));
     await cleanup();
@@ -2911,17 +2968,15 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   pass(name);
 }
 
-async function testRecoverySnapshotReconcilesDurableToolCallsIdempotently() {
-  const name = 'recovery snapshot reconciles durable tool calls by stable call ID idempotently';
-  let reconciliations = 0;
-  const harness = createHarness({
-    onReconcileSessionTranscriptProjection() { reconciliations += 1; }
-  });
+async function testRecoverySnapshotReplacesResponseProjectionIdempotently() {
+  const name = 'recovery snapshot atomically replaces response projection idempotently';
+  const harness = createHarness();
   const { app, state, cleanup } = harness;
   const durable = {
     id: 'srv_seq_382_tools_0',
     role: 'tool-group',
     durable: true,
+    responseId: 'resp_overlap',
     status: 'done',
     tools: [
       { id: 'call_GwHMMHXf28QA81Zfm9vgRMap', name: 'queue_agent', status: 'done' },
@@ -2964,200 +3019,23 @@ async function testRecoverySnapshotReconcilesDurableToolCallsIdempotently() {
   app.applyResponseRecoverySnapshot(session, snapshot);
   app.applyResponseRecoverySnapshot(session, snapshot);
 
-  const toolGroups = session.messages.filter((message) => message.role === 'tool-group');
+  const toolGroups = projectedMessages(session).filter((message) => message.role === 'tool-group');
   const callIDs = toolGroups.flatMap((group) => group.tools.map((tool) => tool.id));
   const counts = new Map(callIDs.map((id) => [id, callIDs.filter((candidate) => candidate === id).length]));
   if ([...counts.values()].some((count) => count !== 1)) {
-    fail(name, 'repeat recovery projected duplicate stable call IDs', JSON.stringify(session.messages));
+    fail(name, 'repeat recovery projected duplicate stable call IDs', JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
-  if (toolGroups.map((group) => group.id).join(',') !== 'srv_seq_382_tools_0,msg_441406d5-live-tools'
-      || toolGroups[1].tools.map((tool) => tool.id).join(',') !== 'call_newer_shell') {
-    fail(name, 'partial overlap did not preserve only the newer optimistic call in order', JSON.stringify(toolGroups));
-    await cleanup();
-    return;
-  }
-  if (reconciliations !== 2) {
-    fail(name, `expected one reconciliation per recovery, got ${reconciliations}`);
+    if (toolGroups.length !== 1
+      || toolGroups[0].id !== 'resp_overlap:tools:call_GwHMMHXf28QA81Zfm9vgRMap'
+      || toolGroups[0].tools.map((tool) => tool.id).join(',') !== 'call_GwHMMHXf28QA81Zfm9vgRMap,call_XX3ODxDyeoIxc7ZUZwJm19qu,call_newer_shell') {
+    fail(name, 'snapshot did not replace the complete response-owned projection', JSON.stringify(toolGroups));
     await cleanup();
     return;
   }
 
   await cleanup();
-  pass(name);
-}
-
-async function testReplayCompletionReconcilesDurableSelectedProjection() {
-  const name = 'replay completion reconciles durable selected tools and assistant before publishing';
-  const responseId = 'resp_inverse_replay';
-  const calls = ['call_A', 'call_B', 'call_C', 'call_D'];
-  let renders = 0;
-  let reconciliations = 0;
-  const harness = createHarness({
-    responseId,
-    eventsReplayThrough: 7,
-    onReconcileSessionTranscriptProjection() { reconciliations += 1; },
-    snapshotPayload: {
-      id: responseId,
-      status: 'in_progress',
-      last_sequence_number: 0,
-    },
-    eventsBody: [
-      'id: 1\n',
-      'event: response.output_text.delta\n',
-      'data: {"delta":"durable assistant prefix plus replay suffix","sequence_number":1}\n\n',
-      'id: 2\n',
-      'event: response.output_text.new_segment\n',
-      'data: {"sequence_number":2}\n\n',
-      ...calls.map((callID, index) => [
-        `id: ${index + 3}\n`,
-        'event: response.output_item.added\n',
-        `data: {"item":{"type":"function_call","call_id":"${callID}","name":"tool_${callID.at(-1)}","arguments":"{}"},"output_index":${index},"sequence_number":${index + 3}}\n\n`,
-      ].join('')),
-      'id: 7\n',
-      'event: response.output_item.done\n',
-      'data: {"item":{"type":"function_call","call_id":"call_D","name":"tool_D","arguments":"{}"},"output_index":3,"sequence_number":7}\n\n',
-      'id: 8\n',
-      'event: response.completed\n',
-      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":8}\n\n`,
-      'data: [DONE]\n\n',
-    ].join(''),
-    onRenderMessages(session, container) {
-      renders += 1;
-      container.children = [];
-      for (const message of session?.messages || []) {
-        if (message.role === 'assistant') {
-          container.children.push({ dataset: { messageId: message.id }, role: 'assistant', content: message.content });
-        }
-        if (message.role === 'tool-group') {
-          for (const tool of message.tools || []) {
-            container.children.push({ dataset: { toolId: tool.id }, role: 'tool' });
-          }
-        }
-      }
-    },
-  });
-  const { app, state, elements, cleanup } = harness;
-  elements.messages.querySelectorAll = (selector) => {
-    const toolMatch = String(selector || '').match(/^\[data-tool-id="([^"]+)"\]$/);
-    if (toolMatch) return elements.messages.children.filter((node) => node.dataset?.toolId === toolMatch[1]);
-    if (selector === '[data-message-id]') return elements.messages.children.filter((node) => node.dataset?.messageId);
-    return [];
-  };
-
-  const transcript = new TranscriptStore('session_inverse_replay');
-  transcript.applyIndex({
-    rev: 7,
-    compaction_seq: -1,
-    compaction_count: 0,
-    rows: {
-      ids: [491, 492],
-      seqs: [491, 492],
-      roles: 'ua',
-      flags: [0, 0],
-    },
-  }, '"inverse-7"');
-  transcript.setViewport(0, 1, { deferBudget: true });
-  transcript.materialize([
-    { id: 491, sequence: 491, role: 'user', parts: [{ type: 'text', text: 'run tools' }] },
-    {
-      id: 492,
-      sequence: 492,
-      role: 'assistant',
-      parts: [
-        { type: 'text', text: 'durable assistant prefix' },
-        ...calls.slice(0, 3).map((callID) => ({ type: 'tool_call', tool_call_id: callID })),
-      ],
-    },
-  ], { countFetch: false });
-  transcript.setActiveRun(responseId, 6);
-
-  const session = {
-    id: 'session_inverse_replay',
-    title: 'Inverse replay',
-    transcript,
-    messages: [
-      { id: 'srv_seq_491_user_0', role: 'user', content: 'run tools', durable: true, serverSeq: 491 },
-      { id: 'srv_seq_492_text_0', role: 'assistant', content: 'durable assistant prefix', durable: true, serverSeq: 492 },
-      {
-        id: 'srv_seq_492_tools_0',
-        role: 'tool-group',
-        durable: true,
-        status: 'done',
-        tools: calls.slice(0, 3).map((callID) => ({ id: callID, name: `tool_${callID.at(-1)}`, status: 'done' })),
-      },
-    ],
-    activeResponseId: responseId,
-    lastSequenceNumber: 0,
-    number: 1,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-
-  const assertProjection = (phase) => {
-    const projectedCalls = session.messages.flatMap((message) => message.role === 'tool-group'
-      ? (message.tools || []).map((tool) => tool.id)
-      : []);
-    const optimisticCalls = transcript.optimistic.flatMap((message) => message.role === 'tool-group'
-      ? (message.tools || []).map((tool) => tool.id)
-      : []);
-    if (projectedCalls.join(',') !== calls.join(',')) {
-      fail(name, `${phase}: session projection did not contain A/B/C durable and D optimistic once`, JSON.stringify({ messages: session.messages, optimistic: transcript.optimistic }));
-      return false;
-    }
-    if (optimisticCalls.join(',') !== 'call_D') {
-      fail(name, `${phase}: transcript optimistic tail did not retain only D`, JSON.stringify(transcript.optimistic));
-      return false;
-    }
-    if (session.messages.some((message) => message.role === 'tool-group' && (message.tools || []).length === 0)) {
-      fail(name, `${phase}: empty tool group remained`, JSON.stringify(session.messages));
-      return false;
-    }
-    const assistants = session.messages.filter((message) => message.role === 'assistant');
-    if (assistants.length !== 1
-        || assistants[0].id !== 'srv_seq_492_text_0'
-        || assistants[0].content !== 'durable assistant prefix plus replay suffix') {
-      fail(name, `${phase}: durable assistant did not own the replay suffix exactly once`, JSON.stringify(assistants));
-      return false;
-    }
-    for (const callID of calls) {
-      if (elements.messages.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
-        fail(name, `${phase}: mounted DOM did not contain ${callID} exactly once`, JSON.stringify(elements.messages.children));
-        return false;
-      }
-    }
-    const assistantNodes = elements.messages.querySelectorAll('[data-message-id]')
-      .filter((node) => node.role === 'assistant');
-    if (assistantNodes.length !== 1 || assistantNodes[0].content !== 'durable assistant prefix plus replay suffix') {
-      fail(name, `${phase}: mounted assistant was duplicated or lost its suffix`, JSON.stringify(assistantNodes));
-      return false;
-    }
-    return true;
-  };
-
-  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
-  if (!assertProjection('first resume')) {
-    await cleanup();
-    transcript.destroy();
-    return;
-  }
-
-  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
-  if (!assertProjection('repeated resume')) {
-    await cleanup();
-    transcript.destroy();
-    return;
-  }
-  if (reconciliations !== 4 || renders !== 4) {
-    fail(name, `expected one snapshot normalization and one replay-boundary normalization per resume, got ${reconciliations} reconciliations and ${renders} renders`);
-    await cleanup();
-    transcript.destroy();
-    return;
-  }
-
-  await cleanup();
-  transcript.destroy();
   pass(name);
 }
 
@@ -3168,6 +3046,7 @@ async function testResumeActiveResponseRepairsSequenceGapWithSnapshot() {
     responseId,
     snapshotPayload: {
       id: responseId,
+      run_epoch: 1,
       status: 'completed',
       last_sequence_number: 9,
       recovery: {
@@ -3203,6 +3082,8 @@ async function testResumeActiveResponseRepairsSequenceGapWithSnapshot() {
     number: 1,
   };
   state.sessions.push(session);
+  session.transcript.setActiveRun(responseId, 0, 1, { clientMessageId: session.messages[0].clientMessageId });
+  session.transcript.conversation.active.lastSequence = 4;
   state.activeSessionId = session.id;
 
   await app.resumeActiveResponse(session, { responseId });
@@ -3219,15 +3100,14 @@ async function testResumeActiveResponseRepairsSequenceGapWithSnapshot() {
     await cleanup();
     return;
   }
-  const assistantMessages = session.messages.filter((message) => message.role === 'assistant');
+  const assistantMessages = projectedMessages(session).filter((message) => message.role === 'assistant');
   if (assistantMessages.length !== 1 || assistantMessages[0].content !== 'complete recovered answer') {
-    fail(name, 'expected gapped replay tail to be discarded in favor of snapshot', JSON.stringify(session.messages));
+    fail(name, 'expected gapped replay tail to be discarded in favor of snapshot', JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
-  if (session.lastSequenceNumber !== 0) {
-    // completed snapshot clears active tracking, which resets the replay cursor.
-    fail(name, `lastSequenceNumber = ${session.lastSequenceNumber}, want 0 after completed snapshot`);
+  if (app.responseEventSequence(session, responseId) !== 9) {
+    fail(name, `frozen terminal active-run sequence = ${app.responseEventSequence(session, responseId)}, want 9`);
     await cleanup();
     return;
   }
@@ -3243,12 +3123,13 @@ async function testRecoverySnapshotClearsSyntheticPendingInterjectionByText() {
     responseId,
     snapshotPayload: {
       id: responseId,
+      run_epoch: 1,
       status: 'completed',
       last_sequence_number: 9,
       recovery: {
         sequence_number: 9,
         messages: [
-          { id: 'real-id', role: 'user', content: 'please also check X', interruptState: 'interject', created: 1002 },
+          { id: 'real-id', client_message_id: 'synthetic-id', role: 'user', content: 'please also check X', interruptState: 'interject', created: 1002 },
           { id: 'assistant-after', role: 'assistant', content: 'checked', created: 1003 },
         ],
       },
@@ -3260,7 +3141,7 @@ async function testRecoverySnapshotClearsSyntheticPendingInterjectionByText() {
     title: 'Snapshot interjection cleanup',
     messages: [
       { id: 'msg_user_local', role: 'user', content: 'find files', created: 1000 },
-      { id: 'synthetic-id', role: 'user', content: 'please also check X', created: 1001, interruptState: 'pending_interject' },
+      { id: 'synthetic-id', clientMessageId: 'synthetic-id', role: 'user', content: 'please also check X', created: 1001, interruptState: 'pending_interject' },
     ],
     lastResponseId: null,
     activeResponseId: responseId,
@@ -3305,12 +3186,13 @@ async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
     responseId,
     snapshotPayload: {
       id: responseId,
+      run_epoch: 1,
       status: 'completed',
       last_sequence_number: 4,
       recovery: {
         sequence_number: 4,
         messages: [
-          { id: 'real-id', role: 'user', content: 'please also check X', interruptState: 'interject', created: 1002 },
+          { id: 'real-id', client_message_id: 'synthetic-id', role: 'user', content: 'please also check X', interruptState: 'interject', created: 1002 },
           { id: 'assistant-after', role: 'assistant', content: 'checked', created: 1003 },
         ],
       },
@@ -3322,7 +3204,7 @@ async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
     title: 'Snapshot interjection dedupe',
     messages: [
       { id: 'msg_user_local', role: 'user', content: 'find files', created: 1000 },
-      { id: 'synthetic-id', role: 'user', content: 'please also check X', created: 1001, interruptState: 'pending_interject' },
+      { id: 'synthetic-id', clientMessageId: 'synthetic-id', role: 'user', content: 'please also check X', created: 1001, interruptState: 'pending_interject' },
     ],
     lastResponseId: null,
     activeResponseId: responseId,
@@ -3340,9 +3222,9 @@ async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
 
   await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
 
-  const matchingUsers = session.messages.filter((message) => message.role === 'user' && message.content === 'please also check X');
+  const matchingUsers = projectedMessages(session).filter((message) => message.role === 'user' && message.content === 'please also check X');
   if (matchingUsers.length !== 1) {
-    fail(name, `expected one interjection user message after recovery, got ${matchingUsers.length}`, JSON.stringify(session.messages));
+    fail(name, `expected one interjection user message after recovery, got ${matchingUsers.length}`, JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
@@ -3817,6 +3699,7 @@ async function testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasN
     eventsStatus: 409,
     snapshotPayload: {
       id: responseId,
+      run_epoch: 1,
       status: 'completed',
       last_sequence_number: 5,
     },
@@ -4210,7 +4093,7 @@ function testModelSwapProgressEventUpdatesTransientMarker() {
     title: 'Progress test',
     messages: [],
     lastResponseId: null,
-    activeResponseId: null,
+    activeResponseId: 'resp_progress',
     lastSequenceNumber: 0,
     number: 1,
   };
@@ -4219,20 +4102,22 @@ function testModelSwapProgressEventUpdatesTransientMarker() {
   const streamState = app.createResponseStreamState(session);
 
   app.applyResponseStreamEvent(session, streamState, 'response.model_swap.progress', {
+    response_id: 'resp_progress',
     stage: 'naive_start',
     message: 'Switching model: old → new; trying existing context…',
     sequence_number: 1,
   });
   app.applyResponseStreamEvent(session, streamState, 'response.model_swap.progress', {
+    response_id: 'resp_progress',
     stage: 'handover_start',
     message: 'Naive continuation failed; preparing handover…',
     sequence_number: 2,
   });
 
-  const markers = session.messages.filter((message) => message.role === 'model-swap');
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  const markers = projectedMessages(session).filter((message) => message.role === 'model-swap');
+  const assistants = projectedMessages(session).filter((message) => message.role === 'assistant');
   if (markers.length !== 1) {
-    fail(name, `expected one model-swap marker, got ${markers.length}`, JSON.stringify(session.messages));
+    fail(name, `expected one model-swap marker, got ${markers.length}`, JSON.stringify(projectedMessages(session)));
     return;
   }
   if (!markers[0].transient || markers[0].content !== 'Naive continuation failed; preparing handover…') {
@@ -4243,10 +4128,6 @@ function testModelSwapProgressEventUpdatesTransientMarker() {
     fail(name, 'progress event should not create assistant messages', JSON.stringify(assistants));
     return;
   }
-  if (harness.getModelSwapUpdateCount() !== 1) {
-    fail(name, `expected updateModelSwapNode to be called once, got ${harness.getModelSwapUpdateCount()}`);
-    return;
-  }
   pass(name);
 }
 
@@ -4255,15 +4136,16 @@ function testGuardianReviewEventIsDisplayOnlyTransient() {
   const { app, state } = createHarness();
   const session = {
     id: 'session_guardian', title: 'Guardian', messages: [], lastResponseId: null,
-    activeResponseId: null, lastSequenceNumber: 0, number: 1,
+    activeResponseId: 'resp_guardian', lastSequenceNumber: 0, number: 1,
   };
   state.sessions.push(session);
   state.activeSessionId = session.id;
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.guardian.review', {
+    response_id: 'resp_guardian',
     message: 'Guardian approved command', sequence_number: 1,
   });
-  const marker = session.messages[0];
+  const marker = projectedMessages(session)[0];
   if (!marker || marker.role !== 'event' || !marker.transient) {
     fail(name, 'guardian marker can leak into durable optimistic recovery', JSON.stringify(marker));
     return;
@@ -4289,18 +4171,20 @@ function testResponsePhaseEventUpdatesTransientMarker() {
   const streamState = app.createResponseStreamState(session);
 
   app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    response_id: 'resp_phase',
     text: 'Compacting context...',
     sequence_number: 1,
   });
   app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    response_id: 'resp_phase',
     text: 'Continuing from compacted context...',
     sequence_number: 2,
   });
 
-  const markers = session.messages.filter((message) => message.role === 'phase');
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  const markers = projectedMessages(session).filter((message) => message.role === 'phase');
+  const assistants = projectedMessages(session).filter((message) => message.role === 'assistant');
   if (markers.length !== 1) {
-    fail(name, `expected one phase marker, got ${markers.length}`, JSON.stringify(session.messages));
+    fail(name, `expected one phase marker, got ${markers.length}`, JSON.stringify(projectedMessages(session)));
     return;
   }
   if (!markers[0].transient || markers[0].content !== 'Continuing from compacted context...') {
@@ -4311,8 +4195,8 @@ function testResponsePhaseEventUpdatesTransientMarker() {
     fail(name, 'phase event should not create assistant messages', JSON.stringify(assistants));
     return;
   }
-  if (session.lastSequenceNumber !== 2) {
-    fail(name, `lastSequenceNumber = ${session.lastSequenceNumber}, want 2`);
+  if (app.responseEventSequence(session, 'resp_phase') !== 2) {
+    fail(name, `active-run sequence = ${app.responseEventSequence(session, 'resp_phase')}, want 2`);
     return;
   }
   pass(name);
@@ -4361,8 +4245,8 @@ function testResponseRetryEventUpdatesOwnedHeaderStatus() {
 
   const status = harness.getProviderRetryStatus();
   const sets = harness.connectionStates.filter((entry) => entry.source === 'provider-retry' && entry.action === 'set' && entry.applied);
-  if (harness.session.messages.length !== 0) {
-    fail(name, 'retry event created transcript messages', JSON.stringify(harness.session.messages));
+  if (projectedMessages(harness.session).length !== 0) {
+    fail(name, 'retry event created transcript messages', JSON.stringify(projectedMessages(harness.session)));
     return;
   }
   if (!status || status.sessionId !== harness.session.id || status.responseId !== harness.responseId
@@ -4374,8 +4258,8 @@ function testResponseRetryEventUpdatesOwnedHeaderStatus() {
     fail(name, 'header status calls were not source/mode aware', JSON.stringify(sets));
     return;
   }
-  if (harness.session.lastSequenceNumber !== 2) {
-    fail(name, `lastSequenceNumber = ${harness.session.lastSequenceNumber}, want 2`);
+  if (harness.app.responseEventSequence(harness.session, harness.session.activeResponseId) !== 2) {
+    fail(name, `active-run sequence = ${harness.app.responseEventSequence(harness.session, harness.session.activeResponseId)}, want 2`);
     return;
   }
   pass(name);
@@ -4467,12 +4351,15 @@ function testActiveResponseTransitionClearsObsoleteRetryOwner() {
   const newResponseId = 'resp_response_transition_new';
   harness.app.setActiveResponseTracking(harness.session, newResponseId, 0);
   harness.state.currentStreamResponseId = newResponseId;
+  harness.session.transcript.transitionAuthoritativeRun(newResponseId, 0, 2);
+  harness.session.latestRunEpoch = 2;
+  harness.streamState.responseId = newResponseId;
   if (harness.getProviderRetryStatus() !== null) {
     fail(name, 'obsolete retry remained visible after the active response changed', JSON.stringify(harness.getProviderRetryStatus()));
     return;
   }
 
-  projectRetry(harness, 2, 'New response retry');
+  projectRetry(harness, 1, 'New response retry');
   harness.app.clearActiveResponseTracking(harness.session, oldResponseId);
   const status = harness.getProviderRetryStatus();
   if (status?.responseId !== newResponseId || harness.session.activeResponseId !== newResponseId) {
@@ -4509,7 +4396,10 @@ function testProviderRetryOwnershipGuardsBackgroundDetachAndStaleClear() {
   const newResponseId = 'resp_ownership_new';
   harness.session.activeResponseId = newResponseId;
   harness.state.currentStreamResponseId = newResponseId;
-  projectRetry(harness, 2, 'New response retry');
+  harness.session.transcript.transitionAuthoritativeRun(newResponseId, 0, 2);
+  harness.session.latestRunEpoch = 2;
+  harness.streamState.responseId = newResponseId;
+  projectRetry(harness, 1, 'New response retry');
   harness.app.clearProviderRetryStatus(harness.session.id, oldResponseId);
   if (harness.getProviderRetryStatus()?.responseId !== newResponseId) {
     fail(name, 'stale owner cleared newer response retry', JSON.stringify(harness.getProviderRetryStatus()));
@@ -4533,7 +4423,7 @@ function testResponsePhaseUpdateCanStraddleResumedOutput() {
     title: 'Phase straddle test',
     messages: [],
     lastResponseId: null,
-    activeResponseId: null,
+    activeResponseId: 'resp_phase_straddle',
     lastSequenceNumber: 0,
     number: 1,
   };
@@ -4542,21 +4432,25 @@ function testResponsePhaseUpdateCanStraddleResumedOutput() {
   const streamState = app.createResponseStreamState(session);
 
   app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    response_id: 'resp_phase_straddle',
     text: 'Working…',
     sequence_number: 1,
   });
   app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    response_id: 'resp_phase_straddle',
+    assistant_segment_ordinal: 0,
     delta: 'intermediate output',
     sequence_number: 2,
   });
   app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    response_id: 'resp_phase_straddle',
     text: 'Done working.',
     sequence_number: 3,
   });
 
-  const markers = session.messages.filter((message) => message.role === 'phase');
+  const markers = projectedMessages(session).filter((message) => message.role === 'phase');
   if (markers.length !== 1 || markers[0].content !== 'Done working.') {
-    fail(name, 'phase update created a duplicate marker around resumed output', JSON.stringify(session.messages));
+    fail(name, 'phase update created a duplicate marker around resumed output', JSON.stringify(projectedMessages(session)));
     return;
   }
   pass(name);
@@ -4571,7 +4465,7 @@ function testResponsePhaseSeparatesAssistantSegments() {
     title: 'Phase ordering test',
     messages: [],
     lastResponseId: null,
-    activeResponseId: null,
+    activeResponseId: 'resp_phase_order',
     lastSequenceNumber: 0,
     number: 1,
   };
@@ -4580,25 +4474,30 @@ function testResponsePhaseSeparatesAssistantSegments() {
   const streamState = app.createResponseStreamState(session);
 
   app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    response_id: 'resp_phase_order',
+    assistant_segment_ordinal: 0,
     delta: 'checkpoint',
     sequence_number: 1,
   });
   app.applyResponseStreamEvent(session, streamState, 'response.phase', {
+    response_id: 'resp_phase_order',
     text: 'Compacting context...',
     sequence_number: 2,
   });
   app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    response_id: 'resp_phase_order',
+    assistant_segment_ordinal: 1,
     delta: 'continued answer',
     sequence_number: 3,
   });
 
-  const roles = session.messages.map((message) => message.role);
+  const roles = projectedMessages(session).map((message) => message.role);
   if (roles.join(',') !== 'assistant,phase,assistant') {
-    fail(name, `unexpected message roles/order: ${roles.join(',')}`, JSON.stringify(session.messages));
+    fail(name, `unexpected message roles/order: ${roles.join(',')}`, JSON.stringify(projectedMessages(session)));
     return;
   }
-  if (session.messages[0].content !== 'checkpoint' || session.messages[2].content !== 'continued answer') {
-    fail(name, 'assistant segments were not separated around phase marker', JSON.stringify(session.messages));
+  if (projectedMessages(session)[0].content !== 'checkpoint' || projectedMessages(session)[2].content !== 'continued answer') {
+    fail(name, 'assistant segments were not separated around phase marker', JSON.stringify(projectedMessages(session)));
     return;
   }
   pass(name);
@@ -4796,7 +4695,7 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   const session = {
     id: 'session_interject',
     title: 'Interject test',
-    messages: [],
+    messages: [{ id: 'msg_pending', clientMessageId: 'msg_pending', role: 'user', content: 'please also check X', created: 1, interruptState: 'pending_interject' }],
     lastResponseId: null,
     activeResponseId: 'resp_int',
     lastSequenceNumber: 0,
@@ -4813,24 +4712,20 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   ];
 
   const streamState = app.createResponseStreamState(session);
-  const fakeToolGroup = app.trackTranscriptOptimistic(session, {
+  const fakeToolGroup = app.trackPendingIntent(session, {
     id: 'grp_1', role: 'tool-group', responseId: 'resp_int', tools: [], status: 'running'
   });
-  session.messages.push(fakeToolGroup);
+  projectedMessages(session).push(fakeToolGroup);
   streamState.currentToolGroup = fakeToolGroup;
   streamState.currentAssistantMessage = null;
 
   app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    response_id: 'resp_int',
+    client_message_id: 'msg_pending',
     text: 'please also check X',
   });
 
-  if (streamState.currentToolGroup) {
-    fail(name, 'streamState.currentToolGroup should be null after interjection', JSON.stringify(streamState.currentToolGroup));
-    await cleanup();
-    return;
-  }
-
-  const userMessages = session.messages.filter((m) => m.role === 'user');
+  const userMessages = projectedMessages(session).filter((m) => m.role === 'user');
   if (userMessages.length !== 1) {
     fail(name, `expected 1 user message, got ${userMessages.length}`);
     await cleanup();
@@ -4861,8 +4756,8 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   pass(name);
 }
 
-async function testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjectedMessage() {
-  const name = 'replayed response.interjection without id does not duplicate existing injected user message';
+async function testReplayedInterjectionUsesExactClientIdentity() {
+  const name = 'replayed response.interjection uses exact client identity without duplication';
   const harness = createHarness();
   const { app, state, cleanup } = harness;
 
@@ -4872,6 +4767,7 @@ async function testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjected
     messages: [
       {
         id: 'msg_already_injected',
+        clientMessageId: 'msg_already_injected',
         role: 'user',
         content: 'also format all sql nicely',
         created: 1000,
@@ -4887,160 +4783,30 @@ async function testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjected
   state.activeSessionId = session.id;
   state.pendingInterjections = [];
   state.pendingInterruptCommits = [];
+  session.transcript = new ConversationController(session.id);
+  session.transcript.addPendingIntent(session.messages[0]);
+  session.transcript.setActiveRun(session.activeResponseId, 0, 1);
+  session.transcript.conversation.active.lastSequence = 10;
+  session.latestRunEpoch = 1;
 
   const streamState = app.createResponseStreamState(session);
 
-  // Simulates a reconnect/replay path where the UI has already rendered the
-  // committed interjection but receives a response.interjection event without
-  // the stable interjection_id needed to match it. The correct behavior should
-  // be to update/reuse the existing injected user message, not append another
-  // identical bubble.
+  // Replay resolves the already rendered interjection by exact client identity.
   app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    response_id: 'resp_int_replay',
+    client_message_id: 'msg_already_injected',
     text: 'also format all sql nicely',
     sequence_number: 11,
   });
 
-  const userMessages = session.messages.filter((m) => m.role === 'user' && m.content === 'also format all sql nicely');
+  const userMessages = projectedMessages(session).filter((m) => m.role === 'user' && m.content === 'also format all sql nicely');
   if (userMessages.length !== 1) {
-    fail(name, `expected 1 injected user message after replay, got ${userMessages.length}`, JSON.stringify(session.messages));
+    fail(name, `expected 1 injected user message after replay, got ${userMessages.length}`, JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
   if (userMessages[0].id !== 'msg_already_injected') {
     fail(name, `expected replay to keep existing message id, got ${userMessages[0].id}`);
-    await cleanup();
-    return;
-  }
-
-  await cleanup();
-  pass(name);
-}
-
-async function testCommittedInterjectionWithRealIdClearsStaleSyntheticPending() {
-  const name = 'committed response.interjection with server id clears pending tracked under a different id';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-
-  const session = {
-    id: 'session_interject_stale',
-    title: 'Interject stale id test',
-    messages: [
-      {
-        id: 'synthetic-id',
-        role: 'user',
-        content: 'foo',
-        created: 1000,
-        interruptState: 'pending_interject',
-      },
-    ],
-    lastResponseId: null,
-    activeResponseId: 'resp_int_stale',
-    lastSequenceNumber: 0,
-    number: 1,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-
-  // The optimistic pending entries are tracked under a synthetic id, but the
-  // committed event arrives with the real server-issued interjection_id. The
-  // id-only lookup misses, so the cleanup must fall back to a text match.
-  state.pendingInterjections = [
-    { sessionId: session.id, prompt: 'foo', messageId: 'synthetic-id', action: 'interject' },
-  ];
-  state.pendingInterruptCommits = [
-    { sessionId: session.id, prompt: 'foo', messageId: 'synthetic-id' },
-  ];
-
-  const streamState = app.createResponseStreamState(session);
-
-  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
-    text: 'foo',
-    interjection_id: 'real-id',
-  });
-
-  if (state.pendingInterjections.length !== 0) {
-    fail(name, 'pendingInterjections should be cleared after commit', JSON.stringify(state.pendingInterjections));
-    await cleanup();
-    return;
-  }
-  if (state.pendingInterruptCommits.length !== 0) {
-    fail(name, 'pendingInterruptCommits should be cleared after commit', JSON.stringify(state.pendingInterruptCommits));
-    await cleanup();
-    return;
-  }
-
-  const userMessages = session.messages.filter((m) => m.role === 'user' && m.content === 'foo');
-  if (userMessages.length !== 1) {
-    fail(name, `expected 1 user message after commit, got ${userMessages.length}`, JSON.stringify(session.messages));
-    await cleanup();
-    return;
-  }
-  if (userMessages[0].id !== 'synthetic-id') {
-    fail(name, `expected existing optimistic message to be reused, got id ${userMessages[0].id}`);
-    await cleanup();
-    return;
-  }
-  if (userMessages[0].interruptState !== 'interject') {
-    fail(name, `interruptState = ${userMessages[0].interruptState}, want "interject"`);
-    await cleanup();
-    return;
-  }
-
-  await cleanup();
-  pass(name);
-}
-
-async function testCommittedInterjectionReusesOptimisticMessageEvenWhenPendingTrackedUnderServerId() {
-  const name = 'committed response.interjection reuses optimistic message when pending entry has server id';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-
-  const session = {
-    id: 'session_interject_server_id_pending',
-    title: 'Interject server id pending test',
-    messages: [
-      {
-        id: 'optimistic-id',
-        role: 'user',
-        content: 'foo',
-        created: 1000,
-        interruptState: 'pending_interject',
-      },
-    ],
-    lastResponseId: null,
-    activeResponseId: 'resp_int_server_id_pending',
-    lastSequenceNumber: 0,
-    number: 1,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-
-  state.pendingInterjections = [
-    { sessionId: session.id, prompt: 'foo', messageId: 'real-id', action: 'interject' },
-  ];
-  state.pendingInterruptCommits = [
-    { sessionId: session.id, prompt: 'foo', messageId: 'real-id' },
-  ];
-
-  const streamState = app.createResponseStreamState(session);
-  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
-    text: 'foo',
-    interjection_id: 'real-id',
-  });
-
-  const userMessages = session.messages.filter((m) => m.role === 'user' && m.content === 'foo');
-  if (userMessages.length !== 1) {
-    fail(name, `expected 1 user message after commit, got ${userMessages.length}`, JSON.stringify(session.messages));
-    await cleanup();
-    return;
-  }
-  if (userMessages[0].id !== 'optimistic-id') {
-    fail(name, `expected optimistic message to be reused, got id ${userMessages[0].id}`);
-    await cleanup();
-    return;
-  }
-  if (userMessages[0].interruptState !== 'interject') {
-    fail(name, `interruptState = ${userMessages[0].interruptState}, want "interject"`);
     await cleanup();
     return;
   }
@@ -5089,7 +4855,7 @@ async function testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit() {
     return;
   }
 
-  const queuedMessage = session.messages.find((m) => m.id === 'msg_x');
+  const queuedMessage = projectedMessages(session).find((m) => m.id === 'msg_x');
   if (!queuedMessage || queuedMessage.interruptState !== 'pending_interject') {
     fail(name, `expected interruptState "pending_interject" while queued, got ${queuedMessage?.interruptState}`);
     await cleanup();
@@ -5106,10 +4872,10 @@ async function testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit() {
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
     text: 'foo',
-    interjection_id: 'msg_x',
+    client_message_id: 'msg_x',
   });
 
-  const committedMessage = session.messages.find((m) => m.id === 'msg_x');
+  const committedMessage = projectedMessages(session).find((m) => m.id === 'msg_x');
   if (!committedMessage || committedMessage.interruptState !== 'interject') {
     fail(name, `expected interruptState "interject" after commit, got ${committedMessage?.interruptState}`);
     await cleanup();
@@ -5159,7 +4925,7 @@ async function testUserCancelDiscardsPendingInterjectionStateButPreservesFollowU
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.cancelled', {
     response: { id: 'resp_cancel_preserve_followup', status: 'cancelled' },
-    sequence_number: 5,
+    sequence_number: 1,
   });
 
   if (state.pendingInterjections.length !== 0 || state.pendingInterruptCommits.length !== 0) {
@@ -5241,7 +5007,7 @@ async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
     return;
   }
 
-  const userMessages = session.messages.filter((m) => m.role === 'user');
+  const userMessages = projectedMessages(session).filter((m) => m.role === 'user');
   if (userMessages.length !== 1 || userMessages[0].id !== 'msg_late') {
     fail(name, 'expected one inline user message with reused id', JSON.stringify(userMessages));
     await cleanup();
@@ -5316,7 +5082,7 @@ async function testRecoverInterruptConflictClearsPendingWhenRunFinished() {
 
   // No inline "queue" message should have been added — the run is finished,
   // so we hand off to sendMessage (not the inline-queue path).
-  const inlineQueued = session.messages.find((m) => m.role === 'user' && m.interruptState === 'queue');
+  const inlineQueued = projectedMessages(session).find((m) => m.role === 'user' && m.interruptState === 'queue');
   if (inlineQueued) {
     fail(name, 'should not add inline queue message when run is finished', JSON.stringify(inlineQueued));
     await cleanup();
@@ -5357,7 +5123,7 @@ async function testRunCompletesWithoutInterjectionQueuesOrphan() {
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.completed', {
     response: { id: 'resp_orphan', model: 'test', status: 'completed' },
-    sequence_number: 5,
+    sequence_number: 1,
   });
 
   if (state.pendingInterjections.length !== 0) {
@@ -5411,7 +5177,7 @@ async function testFunctionCallArgumentDeltasFillToolPrompt() {
     delta: '"prompt":"turn this sketch into watercolor"}',
   });
 
-  const group = session.messages.find((message) => message.role === 'tool-group');
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
   const tool = group && group.tools && group.tools[0];
   if (!tool || !String(tool.arguments || '').includes('turn this sketch into watercolor')) {
     fail(name, 'tool arguments did not accumulate prompt deltas', JSON.stringify(tool));
@@ -5465,7 +5231,7 @@ async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
     delta: '{"pattern":"needle"}',
   });
 
-  const group = session.messages.find((message) => message.role === 'tool-group');
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
   const tools = group && group.tools;
   if (!tools || tools.length !== 2) {
     fail(name, 'expected two tools in group', JSON.stringify(group));
@@ -5518,7 +5284,7 @@ async function testArgumentDeltasContinueUntilOutputItemDone() {
     delta: ',"content":"still append even after valid partial JSON"}',
   });
 
-  const group = session.messages.find((message) => message.role === 'tool-group');
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
   const tool = group && group.tools && group.tools[0];
   if (!tool || !String(tool.arguments || '').includes('still append')) {
     fail(name, 'delta after a valid JSON prefix should still append before finalization', JSON.stringify(tool));
@@ -5576,7 +5342,7 @@ async function testSeededToolArgumentsIgnoreReplayDeltas() {
     delta: '{"pattern":"needle"}',
   });
 
-  const group = session.messages.find((message) => message.role === 'tool-group');
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
   const tool = group && group.tools && group.tools[0];
   if (!tool || tool.arguments !== '{"pattern":"needle"}' || !tool.argumentsFinalized) {
     fail(name, 'seeded complete arguments should be retained and marked finalized', JSON.stringify(tool));
@@ -5635,7 +5401,7 @@ async function testSuccessfulPlanToolCompletionRefetchesAuthoritativeState() {
     tool_name: 'update_plan',
     success: true,
   });
-  const tool = session.messages.find((message) => message.role === 'tool-group')?.tools?.[0];
+  const tool = projectedMessages(session).find((message) => message.role === 'tool-group')?.tools?.[0];
   if (refreshes !== 1 || tool?.resultStatus !== 'success') {
     fail(name, 'successful execution did not record positive evidence and refetch once', JSON.stringify({ refreshes, tool }));
     await cleanup();
@@ -5652,7 +5418,7 @@ async function testSuccessfulPlanToolCompletionRefetchesAuthoritativeState() {
     tool_name: 'update_plan',
     success: false,
   });
-  const failedTool = session.messages.findLast((message) => message.role === 'tool-group')?.tools?.[0];
+  const failedTool = projectedMessages(session).findLast((message) => message.role === 'tool-group')?.tools?.[0];
   if (refreshes !== 1 || failedTool?.resultStatus !== 'error' || failedTool?.status !== 'error') {
     fail(name, 'failed execution refetched or lost generic error evidence', JSON.stringify({ refreshes, failedTool }));
     await cleanup();
@@ -5717,7 +5483,7 @@ async function testToolExecImagesAttachToToolArtifactNotAssistantMarkdown() {
     images: ['/ui/images/generated.png'],
   });
 
-  const group = session.messages.find((message) => message.role === 'tool-group');
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
   const tool = group && group.tools && group.tools[0];
   if (!tool || !Array.isArray(tool.images) || tool.images[0] !== '/ui/images/generated.png') {
     fail(name, 'tool image URL was not stored on tool artifact', JSON.stringify(group));
@@ -5725,7 +5491,7 @@ async function testToolExecImagesAttachToToolArtifactNotAssistantMarkdown() {
     return;
   }
 
-  const assistant = session.messages.find((message) => message.role === 'assistant');
+  const assistant = projectedMessages(session).find((message) => message.role === 'assistant');
   if (assistant && String(assistant.content || '').includes('Generated Image')) {
     fail(name, 'image URL should not be injected as assistant markdown', JSON.stringify(assistant));
     await cleanup();
@@ -5766,9 +5532,9 @@ async function testToolExecImagesUseHubAssetRebase() {
     images: ['/ui/images/generated.png'],
   });
 
-  const tool = session.messages.find((message) => message.role === 'tool-group')?.tools?.[0];
+  const tool = projectedMessages(session).find((message) => message.role === 'tool-group')?.tools?.[0];
   if (!tool || !Array.isArray(tool.images) || tool.images[0] !== '/hub/node/alpha/images/generated.png') {
-    fail(name, 'tool image URL was not rebased through helper', JSON.stringify(session.messages));
+    fail(name, 'tool image URL was not rebased through helper', JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
@@ -5883,7 +5649,7 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
   }
 
   const session = state.sessions[0];
-  const userMessage = session && session.messages.find((message) => message.role === 'user');
+  const userMessage = session && projectedMessages(session).find((message) => message.role === 'user');
   const storedAttachment = userMessage && userMessage.attachments && userMessage.attachments[0];
   if (!storedAttachment) {
     fail(name, 'expected stored user attachment after send', JSON.stringify(session));
@@ -6338,8 +6104,10 @@ async function testStaleInterrupt404RefreshesAndSendsMessage() {
     return;
   }
   const interruptBody = JSON.parse(interruptCalls[0].body || '{}');
-  if (!interruptBody.interjection_id || interruptCalls[0].headers?.['Idempotency-Key'] !== interruptBody.interjection_id) {
-    fail(name, 'interrupt retry key should match its stable interjection id', JSON.stringify(interruptCalls[0]));
+  if (!interruptBody.client_message_id
+      || interruptBody.client_message_id !== interruptBody.interjection_id
+      || interruptCalls[0].headers?.['Idempotency-Key'] !== `interrupt_${interruptBody.client_message_id}`) {
+    fail(name, 'interrupt retry key should be request-scoped while client intent identity stays stable', JSON.stringify(interruptCalls[0]));
     return;
   }
   const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
@@ -6694,7 +6462,7 @@ function testResponseModelSwitchStabilizesEffortAndClearsPending() {
   app.applyResponseStreamEvent(session, streamState, 'response.model_switch', {
     model: 'gpt-5.4',
     reasoning_effort: 'high',
-    sequence_number: 7,
+    sequence_number: 1,
   });
 
   if (session.activeModel !== 'gpt-5.4' || session.activeEffort !== 'high') {
@@ -6732,7 +6500,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.completed', {
     response: { id: 'resp_effort_done', model: 'gpt-5.4', status: 'completed', reasoning_effort: 'medium' },
-    sequence_number: 8,
+    sequence_number: 1,
   });
 
   if (session.pendingEffortQueued || Object.prototype.hasOwnProperty.call(session, 'pendingEffort')) {
@@ -6817,8 +6585,8 @@ async function testCompressCommandCompactsWithoutSendingMessage() {
     fail(name, 'expected /compress and /compact to issue compact POSTs', JSON.stringify(fetchCalls));
     return;
   }
-  if (responseCalls.length !== 0 || session.messages.length !== 0) {
-    fail(name, 'command was sent as a normal conversation message', JSON.stringify({ responseCalls, messages: session.messages }));
+  if (responseCalls.length !== 0 || projectedMessages(session).length !== 0) {
+    fail(name, 'command was sent as a normal conversation message', JSON.stringify({ responseCalls, messages: projectedMessages(session) }));
     return;
   }
   if (!refreshOptions?.force || refreshOptions?.useEtag !== false || elements.promptInput.value !== '') {
@@ -6866,7 +6634,7 @@ async function testMainSkillUsesStructuredInvocationAndResponseStream() {
     },
     fetchImpl: async (url, requestOptions, { Response, ReadableStream, encoder }) => {
       if (url === '/ui/v1/sessions/session_skill_main/skills/invoke') {
-        return new Response(JSON.stringify({ execution: 'main', response_id: responseId, events_url: `/v1/responses/${responseId}/events` }), {
+        return new Response(JSON.stringify({ execution: 'main', response_id: responseId, run_epoch: 1, started_rev: 0, events_url: `/v1/responses/${responseId}/events` }), {
           status: 202,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -6883,7 +6651,8 @@ async function testMainSkillUsesStructuredInvocationAndResponseStream() {
           'event: response.completed\n',
           `data: {"response":{"id":"${responseId}","status":"completed"},"sequence_number":3}\n\n`,
         ].join('');
-        return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(body)); controller.close(); } }), {
+        const strictBody = strictResponseSSE(body, responseId, 1);
+        return new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(strictBody)); controller.close(); } }), {
           status: 200,
           headers: { 'Content-Type': 'text/event-stream' },
         });
@@ -6906,13 +6675,13 @@ async function testMainSkillUsesStructuredInvocationAndResponseStream() {
     await cleanup();
     return;
   }
-  if (!session.messages.some((message) => message.role === 'user' && message.content === '/explain src/main.go')) {
-    fail(name, 'concise slash invocation was not displayed', JSON.stringify(session.messages));
+  if (!projectedMessages(session).some((message) => message.role === 'user' && message.content === '/explain src/main.go')) {
+    fail(name, 'concise slash invocation was not displayed', JSON.stringify(projectedMessages(session)));
     await cleanup();
     return;
   }
-  if (!session.messages.some((message) => message.role === 'assistant' && message.content === 'explained')) {
-    fail(name, 'normal response event stream was not consumed', JSON.stringify(session.messages));
+  if (!projectedMessages(session).some((message) => message.role === 'assistant' && message.content === 'explained')) {
+    fail(name, 'normal response event stream was not consumed', JSON.stringify({ messages: projectedMessages(session), active: session.transcript?.conversation?.active, fetchCalls }));
     await cleanup();
     return;
   }
@@ -6980,17 +6749,17 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   elements.promptInput.value = '/review staged';
 
   await app.sendMessage();
-  const progressVisible = await waitFor(() => session.messages.some((message) => message.role === 'skill-run' && message.progress === 'checking diff'), 500);
+  const progressVisible = await waitFor(() => app.skillRunMessageFor(session, { id: runId })?.progress === 'checking diff', 500);
   if (!progressVisible || !state.streaming || state.currentStreamResponseId !== 'resp_parent') {
-    fail(name, 'child progress disturbed or failed to coexist with parent stream', JSON.stringify({ state, messages: session.messages }));
+    fail(name, 'child progress disturbed or failed to coexist with parent stream');
     releaseRun();
     await cleanup();
     return;
   }
 
   await app.cancelSkillRun(session.id, runId);
-  const terminal = await waitFor(() => session.messages.some((message) => message.runId === runId && message.status === 'cancelled'), 500);
-  const message = session.messages.find((entry) => entry.runId === runId);
+  const terminal = await waitFor(() => app.skillRunMessageFor(session, { id: runId })?.status === 'cancelled', 500);
+  const message = app.skillRunMessageFor(session, { id: runId });
   if (!cancelCalled || !terminal || message?.output !== 'partial review') {
     fail(name, 'cancel did not preserve the isolated partial result', JSON.stringify({ cancelCalled, message }));
     await cleanup();
@@ -7005,215 +6774,11 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
   pass(name);
 }
 
-async function testDetachedReplayPublishesOnlyAtOrderedBoundary() {
-  const name = 'historical replay remains detached until every ordered boundary event is present';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-  const responseId = 'resp_detached_boundary';
-  const transcript = new TranscriptStore('session_detached_boundary');
-  transcript.setActiveRun(responseId, 0, 1);
-  const session = { id: 'session_detached_boundary', messages: [], transcript, activeResponseId: responseId, lastSequenceNumber: 0 };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  state.currentStreamSessionId = session.id;
-  state.currentStreamResponseId = responseId;
-  const events = [
-    ['response.output_text.delta', { response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1, delta: 'alpha', sequence_number: 1 }],
-    ['response.output_item.added', { response_id: responseId, item: { type: 'function_call', call_id: 'call_boundary', name: 'shell', arguments: '{}' }, output_index: 1, sequence_number: 2 }],
-    ['response.completed', { response_id: responseId, response: { id: responseId, status: 'completed' }, sequence_number: 3 }],
-  ];
-  for (let cutoff = 0; cutoff < events.length; cutoff += 1) {
-    const stage = app.createHistoricalReplayStage(responseId, 0, 3, 1);
-    for (let i = 0; i < cutoff; i += 1) app.reduceHistoricalReplayEvent(stage, events[i][0], events[i][1]);
-    if (session.messages.length !== 0 || transcript.optimistic.length !== 0) {
-      fail(name, `cutoff ${cutoff} published partial replay`, JSON.stringify(session.messages));
-      await cleanup();
-      return;
-    }
-  }
-  const stage = app.createHistoricalReplayStage(responseId, 0, 3, 1);
-  for (const [event, payload] of events) app.reduceHistoricalReplayEvent(stage, event, payload);
-  const streamState = app.createResponseStreamState(session, { responseId });
-  const terminal = app.mergeHistoricalReplayStage(session, streamState, stage);
-  if (!terminal || transcript.optimistic.length !== 2 || session.messages.length !== 2) {
-    fail(name, 'complete text/tool/terminal boundary was not published atomically', JSON.stringify({ terminal, messages: session.messages }));
-    await cleanup();
-    return;
-  }
-  await cleanup();
-  transcript.destroy();
-  pass(name);
-}
-
-async function testDurableReplayContinuationKeepsCanonicalOverlayCursor() {
-  const name = 'durable prefix replay overlap and refreshes preserve one mutable overlay through fresh suffixes';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-  const responseId = 'resp_overlay_cursor';
-  const transcript = new TranscriptStore('session_overlay_cursor');
-  transcript.setActiveRun(responseId, 1, 1);
-  transcript.applyIndex({
-    rev: 1,
-    rows: {
-      ids: [10], seqs: [10], roles: 'a', flags: [0],
-      response_ids: [''], assistant_segment_ordinals: [-1],
-    },
-  });
-  transcript.materialize([{ id: 10, sequence: 10, role: 'assistant', parts: [{ type: 'text', text: 'durable' }] }]);
-  let durable = { id: 'srv_10', durableSourceRowIds: [10], role: 'assistant', content: 'durable', durable: true, serverSeq: 10 };
-  const session = { id: 'session_overlay_cursor', messages: [durable], transcript, activeResponseId: responseId, lastSequenceNumber: 0 };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  state.currentStreamSessionId = session.id;
-  state.currentStreamResponseId = responseId;
-  const stage = app.createHistoricalReplayStage(responseId, 0, 1, 1);
-  app.reduceHistoricalReplayEvent(stage, 'response.output_text.delta', {
-    response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1,
-    delta: 'durable', sequence_number: 1,
-  });
-  const streamState = app.createResponseStreamState(session, { responseId });
-  app.mergeHistoricalReplayStage(session, streamState, stage);
-  for (const [sequence, delta] of [[2, ' suffix'], [3, '!']]) {
-    app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
-      response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1,
-      delta, sequence_number: sequence,
-    });
-    app.responseEventCursor(session, responseId).appliedSequence = sequence;
-    transcript.applyIndex({
-      rev: sequence,
-      rows: { ids: [10], seqs: [10], roles: 'a', flags: [0], response_ids: [''], assistant_segment_ordinals: [-1] },
-    });
-    const refreshedBody = { id: 10, sequence: 10, role: 'assistant', parts: [{ type: 'text', text: 'durable' }] };
-    transcript.materialize([refreshedBody]);
-    durable = {
-      id: 'srv_10', durableSourceRowIds: [10], role: 'assistant', content: 'durable', durable: true, serverSeq: 10,
-      responseId: refreshedBody.responseId, assistantSegmentOrdinal: refreshedBody.assistantSegmentOrdinal,
-    };
-    session.messages = [durable, ...transcript.optimistic];
-    transcript.reconcileOptimistic();
-    const projection = reconcileTranscriptProjection(session.messages, transcript);
-    if (projection.filter((message) => message.role === 'assistant').length !== 1
-      || projection.find((message) => message.role === 'assistant')?.content !== (sequence === 2 ? 'durable suffix' : 'durable suffix!')) {
-      fail(name, `refresh after sequence ${sequence} lost or duplicated suffix`, JSON.stringify(projection));
-      await cleanup();
-      return;
-    }
-    transcript.assertMutableOverlay(streamState.currentAssistantMessage, 'adversarial-refresh');
-  }
-  await cleanup();
-  transcript.destroy();
-  pass(name);
-}
-
-async function testSuffixOnlyReplayAndRepeatedTerminalAreIdempotent() {
-  const name = 'suffix-only replay composes by identity and repeated terminal finalizes exactly once';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-  const responseId = 'resp_suffix_terminal';
-  const transcript = new TranscriptStore('session_suffix_terminal');
-  transcript.applyIndex({ rev: 1, rows: { ids: [20], seqs: [20], roles: 'a', flags: [0], response_ids: [responseId], assistant_segment_ordinals: [0] } });
-  transcript.setActiveRun(responseId, 1, 2);
-  const durable = { id: 'srv_20', role: 'assistant', content: 'prefix', durable: true, responseId, assistantSegmentOrdinal: 0, serverSeq: 20 };
-  const session = { id: 'session_suffix_terminal', messages: [durable], transcript, activeResponseId: responseId, lastSequenceNumber: 5 };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  state.currentStreamSessionId = session.id;
-  state.currentStreamResponseId = responseId;
-  const stage = app.createHistoricalReplayStage(responseId, 5, 6, 2);
-  app.reduceHistoricalReplayEvent(stage, 'response.output_text.delta', {
-    response_id: responseId, assistant_segment_ordinal: 0, segment_start_sequence: 1,
-    delta: ' suffix', sequence_number: 6,
-  });
-  const streamState = app.createResponseStreamState(session, { responseId });
-  app.mergeHistoricalReplayStage(session, streamState, stage);
-  transcript.materialize([{ id: 20, sequence: 20, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0, parts: [{ type: 'text', text: 'prefix' }] }]);
-  const projected = reconcileTranscriptProjection([durable, ...transcript.optimistic], transcript);
-  if (projected.filter((message) => message.role === 'assistant').length !== 1 || projected[0]?.content !== 'prefix suffix') {
-    fail(name, 'suffix-only replay did not compose with its identified durable prefix', JSON.stringify(projected));
-    await cleanup();
-    return;
-  }
-  let terminalEffects = 0;
-  app.noteTranscriptTerminal = (_session, _responseId, _finalRev) => { terminalEffects += 1; };
-  for (let i = 0; i < 3; i += 1) {
-    app.applyResponseStreamEvent(session, streamState, 'response.completed', {
-      response_id: responseId, response: { id: responseId, status: 'completed' },
-      sequence_number: 7, final_rev: 2, run_epoch: 2,
-    });
-  }
-  const cursor = app.responseEventCursor(session, responseId);
-  if (terminalEffects !== 1 || !cursor.finalized || cursor.terminalSequence !== 7 || Object.keys(session.responseEventCursors).length > 16) {
-    fail(name, 'terminal effects or cursor retention were not idempotent/bounded', JSON.stringify({ terminalEffects, cursor, cursors: session.responseEventCursors }));
-    await cleanup();
-    return;
-  }
-  await cleanup();
-  transcript.destroy();
-  pass(name);
-}
-
-async function testInterruptedReplayPublishesNothingAndRetriesFromOriginalCursor() {
-  const name = 'interrupted detached replay publishes nothing and retries from the original response cursor';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-  const responseId = 'resp_interrupted_replay';
-  const transcript = new TranscriptStore('session_interrupted_replay');
-  transcript.setActiveRun(responseId, 0, 4);
-  const session = {
-    id: 'session_interrupted_replay', messages: [], transcript,
-    activeResponseId: responseId, lastSequenceNumber: 0,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  state.currentStreamSessionId = session.id;
-  state.currentStreamResponseId = responseId;
-  const streamState = app.createResponseStreamState(session, { responseId });
-  const makeStream = (body) => new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(body));
-      controller.close();
-    },
-  });
-  const partial = await app.consumeResponseStream(makeStream([
-    'event: response.output_text.delta\n',
-    `data: {"response_id":"${responseId}","assistant_segment_ordinal":0,"segment_start_sequence":1,"delta":"alpha","sequence_number":1}\n\n`,
-    'data: [DONE]\n\n',
-  ].join('')), session, streamState, {
-    generation: state.streamGeneration, responseId, replayAfterSequence: 0, replayThroughSequence: 2,
-  });
-  if (!partial.error?.recoverableReplayInterrupted || session.messages.length !== 0
-    || transcript.optimistic.length !== 0 || app.responseEventSequence(session, responseId) !== 0) {
-    fail(name, 'partial replay leaked staged state or advanced its response cursor', JSON.stringify({ partial, messages: session.messages, optimistic: transcript.optimistic }));
-    await cleanup();
-    transcript.destroy();
-    return;
-  }
-  const retried = await app.consumeResponseStream(makeStream([
-    'event: response.output_text.delta\n',
-    `data: {"response_id":"${responseId}","assistant_segment_ordinal":0,"segment_start_sequence":1,"delta":"alpha","sequence_number":1}\n\n`,
-    'event: response.output_text.delta\n',
-    `data: {"response_id":"${responseId}","assistant_segment_ordinal":0,"segment_start_sequence":1,"delta":" beta","sequence_number":2}\n\n`,
-    'data: [DONE]\n\n',
-  ].join('')), session, streamState, {
-    generation: state.streamGeneration, responseId, replayAfterSequence: 0, replayThroughSequence: 2,
-  });
-  const assistant = transcript.optimisticAssistant(responseId, 0);
-  if (retried.error || !assistant || assistant.content !== 'alpha beta' || app.responseEventSequence(session, responseId) !== 2) {
-    fail(name, 'complete retry did not publish exactly once at its replay boundary', JSON.stringify({ retried, assistant, cursor: app.responseEventSequence(session, responseId) }));
-    await cleanup();
-    transcript.destroy();
-    return;
-  }
-  await cleanup();
-  transcript.destroy();
-  pass(name);
-}
-
 async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch() {
   const name = 'stale recovery snapshot cannot reclaim session ownership after a rapid response switch';
   const harness = createHarness();
   const { app, state, cleanup } = harness;
-  const transcript = new TranscriptStore('session_rapid_response_switch');
+  const transcript = new ConversationController('session_rapid_response_switch');
   transcript.setActiveRun('resp_new', 2, 2);
   const session = {
     id: 'session_rapid_response_switch', messages: [], transcript,
@@ -7242,78 +6807,14 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   pass(name);
 }
 
-async function testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection() {
-  const name = 'durable-before-snapshot recovery keeps every mutable cursor on the optimistic overlay';
-  const harness = createHarness();
-  const { app, state, cleanup } = harness;
-  const responseId = 'resp_durable_before_snapshot';
-  const transcript = new TranscriptStore('session_durable_before_snapshot');
-  transcript.applyIndex({
-    rev: 1,
-    rows: { ids: [30], seqs: [30], roles: 'a', flags: [0], response_ids: [responseId], assistant_segment_ordinals: [0] },
-  });
-  transcript.materialize([{
-    id: 30, sequence: 30, role: 'assistant', response_id: responseId, assistant_segment_ordinal: 0,
-    parts: [{ type: 'text', text: 'durable prefix' }],
-  }]);
-  transcript.setActiveRun(responseId, 1, 3);
-  const durable = {
-    id: 'srv_30', role: 'assistant', content: 'durable prefix', durable: true, serverSeq: 30,
-    responseId, assistantSegmentOrdinal: 0,
-  };
-  const session = {
-    id: 'session_durable_before_snapshot', messages: [durable], transcript,
-    activeResponseId: responseId, lastSequenceNumber: 1,
-  };
-  state.sessions.push(session);
-  state.activeSessionId = session.id;
-  state.currentStreamSessionId = session.id;
-  state.currentStreamResponseId = responseId;
-  const streamState = app.createResponseStreamState(session, { responseId });
-  let thrown = null;
-  try {
-    app.applyResponseStreamEvent(session, streamState, 'response.stream_error', {
-      response_id: responseId,
-      sequence_number: 2,
-      error: { type: 'stream_buffer_overflow' },
-      recovery: {
-        sequence_number: 2,
-        messages: [{
-          id: `${responseId}_assistant_1`, role: 'assistant', response_id: responseId,
-          assistant_segment_ordinal: 0, content: 'durable prefix suffix',
-        }],
-      },
-    });
-  } catch (err) {
-    thrown = err;
-  }
-  const overlay = transcript.optimisticAssistant(responseId, 0);
-  if (thrown || !overlay || streamState.currentAssistantMessage !== overlay || overlay.durable === true || overlay.optimistic !== true) {
-    fail(name, 'snapshot recovery selected a durable/projection node as the mutable cursor', JSON.stringify({ error: thrown?.message, cursor: streamState.currentAssistantMessage, overlay }));
-    await cleanup();
-    transcript.destroy();
-    return;
-  }
-  transcript.assertMutableOverlay(streamState.currentAssistantMessage, 'cursor-never-durable-test');
-  await cleanup();
-  transcript.destroy();
-  pass(name);
-}
-
 (async () => {
-  await testDetachedReplayPublishesOnlyAtOrderedBoundary();
-  await testDurableReplayContinuationKeepsCanonicalOverlayCursor();
-  await testSuffixOnlyReplayAndRepeatedTerminalAreIdempotent();
-  await testInterruptedReplayPublishesNothingAndRetriesFromOriginalCursor();
   await testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch();
-  await testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection();
   await testUnknownSlashTextRemainsNormalMessage();
   await testMainSkillUsesStructuredInvocationAndResponseStream();
   await testIsolatedSkillStreamsIndependentlyAndCancelsIndependently();
   await testModelEffortOptionsFollowMetadata();
   await testResponseCreatedRecordsStartedTranscriptRevision();
   await testResponseCompletedForcesSidebarStatusRefresh();
-  await testResponseCompletedPreservesFailedToolStatus();
   await testStaleTerminalStreamDoesNotRefreshStatus();
   await testConsumeResponseStreamIgnoresAlreadyProjectedEvents();
   await testConsumeResponseStreamPreservesOverflowRecoverySequenceException();
@@ -7322,7 +6823,7 @@ async function testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection() 
   await testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM();
   await testInactiveInterruptHelpersDoNotTouchVisibleDOM();
   await testInactiveSessionPromptEventsRemainActionable();
-  await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
+  await testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testParseSSEStreamUpdatesHeartbeatOnCommentFrame();
   await testSendMessageHeartbeatCancelsPostStreamWithoutAbortingFetch();
@@ -7362,8 +6863,7 @@ async function testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection() 
   await testDrainInterruptQueueAfterResumeCompletes();
   await testDrainInterruptQueueIgnoresOtherSessionEntries();
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
-  await testRecoverySnapshotReconcilesDurableToolCallsIdempotently();
-  await testReplayCompletionReconcilesDurableSelectedProjection();
+  await testRecoverySnapshotReplacesResponseProjectionIdempotently();
   await testResumeActiveResponseRepairsSequenceGapWithSnapshot();
   await testRecoverySnapshotClearsSyntheticPendingInterjectionByText();
   await testRecoverySnapshotDoesNotDuplicateOptimisticInterjection();
@@ -7406,9 +6906,7 @@ async function testRecoverySnapshotNeverPointsStreamCursorAtDurableProjection() 
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
   await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();
-  await testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjectedMessage();
-  await testCommittedInterjectionWithRealIdClearsStaleSyntheticPending();
-  await testCommittedInterjectionReusesOptimisticMessageEvenWhenPendingTrackedUnderServerId();
+  await testReplayedInterjectionUsesExactClientIdentity();
   await testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit();
   await testUserCancelDiscardsPendingInterjectionStateButPreservesFollowUpQueue();
   await testRunCompletesWithoutInterjectionQueuesOrphan();

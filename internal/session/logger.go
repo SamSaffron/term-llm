@@ -143,6 +143,48 @@ func (s *LoggingStore) AddMessage(ctx context.Context, sessionID string, msg *Me
 	return err
 }
 
+func (s *LoggingStore) AddMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message) (int64, error) {
+	writer, ok := s.Store.(TranscriptRevisionWriter)
+	if !ok {
+		return 0, ErrTranscriptRevisionUnsupported
+	}
+	rev, err := writer.AddMessageWithTranscriptRev(ctx, sessionID, msg)
+	s.logOnce("AddMessageWithTranscriptRev", err)
+	return rev, err
+}
+
+func (s *LoggingStore) UpdateStreamingMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message, finalizeText bool) (int64, error) {
+	writer, ok := s.Store.(TranscriptRevisionWriter)
+	if !ok {
+		return 0, ErrTranscriptRevisionUnsupported
+	}
+	rev, err := writer.UpdateStreamingMessageWithTranscriptRev(ctx, sessionID, msg, finalizeText)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("UpdateStreamingMessageWithTranscriptRev", err)
+	}
+	return rev, err
+}
+
+func (s *LoggingStore) ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
+	writer, ok := s.Store.(TranscriptRevisionWriter)
+	if !ok {
+		return 0, ErrTranscriptRevisionUnsupported
+	}
+	rev, err := writer.ReplaceMessagesWithTranscriptRev(ctx, sessionID, messages)
+	s.logOnce("ReplaceMessagesWithTranscriptRev", err)
+	return rev, err
+}
+
+func (s *LoggingStore) ReplaceCompactedMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error) {
+	writer, ok := s.Store.(CompactedTranscriptRevisionWriter)
+	if !ok {
+		return 0, ErrTranscriptRevisionUnsupported
+	}
+	rev, err := writer.ReplaceCompactedMessagesWithTranscriptRev(ctx, sessionID, messages)
+	s.logOnce("ReplaceCompactedMessagesWithTranscriptRev", err)
+	return rev, err
+}
+
 // UpdateMessage wraps Store.UpdateMessage with error logging.
 // ErrNotFound is returned to the caller verbatim (no logging) so upsert
 // callers can fall back to AddMessage without noise.

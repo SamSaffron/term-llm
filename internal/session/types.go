@@ -123,6 +123,7 @@ type Message struct {
 	CreatedAt               time.Time  `json:"created_at"`
 	Sequence                int        `json:"sequence"`
 	CompactionTail          bool       `json:"compaction_tail,omitempty"` // Persisted display hint: retained post-compaction context already visible before the marker
+	ClientMessageID         string     `json:"client_message_id,omitempty"`
 	ResponseID              string     `json:"response_id,omitempty"`
 	AssistantSegmentOrdinal int        `json:"assistant_segment_ordinal"` // Response-scoped; -1 when the row is not an assistant segment.
 	SegmentStartSequence    int64      `json:"segment_start_sequence,omitempty"`
@@ -223,6 +224,7 @@ func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 		Parts:                   msg.Parts,
 		CreatedAt:               time.Now(),
 		Sequence:                sequence,
+		ClientMessageID:         msg.ClientMessageID,
 		ResponseID:              msg.ResponseID,
 		AssistantSegmentOrdinal: msg.AssistantSegmentOrdinal,
 		SegmentStartSequence:    msg.SegmentStartSequence,
@@ -257,6 +259,7 @@ func (m *Message) ToLLMMessage() llm.Message {
 	msg := llm.Message{
 		Role:                    m.Role,
 		Parts:                   providerMessageParts(m.Parts),
+		ClientMessageID:         m.ClientMessageID,
 		ResponseID:              m.ResponseID,
 		AssistantSegmentOrdinal: m.AssistantSegmentOrdinal,
 		SegmentStartSequence:    m.SegmentStartSequence,

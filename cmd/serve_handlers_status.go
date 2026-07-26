@@ -53,6 +53,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		ActiveResponseID    string `json:"active_response_id,omitempty"`
 		RunEpoch            int64  `json:"run_epoch,omitempty"`
 		StartedRev          int64  `json:"started_rev,omitempty"`
+		ClientMessageID     string `json:"client_message_id,omitempty"`
+		AnchorRowID         int64  `json:"anchor_row_id,omitempty"`
 		TranscriptRev       int64  `json:"transcript_rev"`
 		MsgCount            int    `json:"message_count"`
 		LastMessageAt       int64  `json:"last_message_at"`
@@ -60,7 +62,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
-	indexer, revisioned := transcriptIndexerForWeb(s.store)
+	indexer, revisioned := s.transcriptIndexerForWeb()
 	summaryRevisions := false
 	if reporter, ok := s.store.(session.SessionSummaryTranscriptRevisionReporter); ok {
 		summaryRevisions = reporter.SessionSummariesIncludeTranscriptRev()
@@ -80,7 +82,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 				transcriptRev = rev
 			}
 		}
-		activeResponseID, startedRev, runEpoch := s.activeTranscriptRun(sess.ID)
+		activeResponseID, startedRev, runEpoch, clientMessageID, anchorRowID := s.activeTranscriptRun(sess.ID)
 		result = append(result, statusEntry{
 			ID:                  sess.ID,
 			ShortTitle:          sess.PreferredShortTitle(),
@@ -89,6 +91,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			ActiveResponseID:    activeResponseID,
 			RunEpoch:            runEpoch,
 			StartedRev:          startedRev,
+			ClientMessageID:     clientMessageID,
+			AnchorRowID:         anchorRowID,
 			TranscriptRev:       transcriptRev,
 			MsgCount:            sess.MessageCount,
 			LastMessageAt:       lastMessageAt.UnixMilli(),

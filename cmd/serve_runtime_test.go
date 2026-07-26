@@ -179,6 +179,7 @@ type serveRuntimeTestStore struct {
 	updateMetricsCalls         int
 	updateContextEstimateCalls int
 	nextID                     int64
+	transcriptRev              int64
 }
 
 var _ session.Store = (*serveRuntimeTestStore)(nil)
@@ -368,6 +369,34 @@ func (s *serveRuntimeTestStore) ReplaceMessages(ctx context.Context, sessionID s
 	}
 	s.messages[sessionID] = out
 	return nil
+}
+
+func (s *serveRuntimeTestStore) nextTranscriptRev() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transcriptRev++
+	return s.transcriptRev
+}
+
+func (s *serveRuntimeTestStore) AddMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *session.Message) (int64, error) {
+	if err := s.AddMessage(ctx, sessionID, msg); err != nil {
+		return 0, err
+	}
+	return s.nextTranscriptRev(), nil
+}
+
+func (s *serveRuntimeTestStore) UpdateStreamingMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *session.Message, _ bool) (int64, error) {
+	if err := s.UpdateMessage(ctx, sessionID, msg); err != nil {
+		return 0, err
+	}
+	return s.nextTranscriptRev(), nil
+}
+
+func (s *serveRuntimeTestStore) ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []session.Message) (int64, error) {
+	if err := s.ReplaceMessages(ctx, sessionID, messages); err != nil {
+		return 0, err
+	}
+	return s.nextTranscriptRev(), nil
 }
 
 func (s *serveRuntimeTestStore) CompactMessages(ctx context.Context, sessionID string, messages []session.Message) error {
@@ -1795,7 +1824,9 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	}
 
 	textDeltas := 0
-	_, err := rt.RunWithEvents(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+	run := newResponseRun("resp-partial-error", "sess-partial-err", "", "test-model", time.Now().Unix(), nil)
+	runCtx := withResponseRunContext(context.Background(), run)
+	_, err := rt.RunWithEvents(runCtx, true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
 		SessionID:  "sess-partial-err",
 		Tools:      []llm.ToolSpec{tool.Spec()},
 		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
@@ -1833,11 +1864,83 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	if msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "partial text" {
 		t.Fatalf("message[1] = %+v, want partial assistant text", msgs[1])
 	}
+	if msgs[1].ResponseID != run.id {
+		t.Fatalf("partial response_id = %q, want %q", msgs[1].ResponseID, run.id)
+	}
+	if _, terminalErr := run.fail(map[string]any{"error": map[string]any{"message": disconnectErr.Error()}}, "server_error", disconnectErr.Error()); terminalErr != nil {
+		t.Fatalf("terminal fail: %v", terminalErr)
+	}
+	if !run.durableHandoff || run.durableOutputCount != 1 || run.finalRev <= 0 {
+		t.Fatalf("terminal handoff = valid:%v count:%d rev:%d", run.durableHandoff, run.durableOutputCount, run.finalRev)
+	}
 	if len(rt.history) != 2 {
 		t.Fatalf("runtime history length = %d, want 2", len(rt.history))
 	}
 	if rt.history[1].Role != llm.RoleAssistant || len(rt.history[1].Parts) != 1 || rt.history[1].Parts[0].Type != llm.PartText || rt.history[1].Parts[0].Text != "partial text" {
 		t.Fatalf("runtime history[1] = %+v, want partial assistant text", rt.history[1])
+	}
+}
+
+func TestServeRuntimeTerminalHandoffPersistsTaggedPartialOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cancelled bool
+	}{
+		{name: "complete"},
+		{name: "cancel", cancelled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newServeRuntimeTestStore()
+			provider := &serveRuntimeDisconnectDuringStreamProvider{}
+			rt := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: llm.NewEngine(provider, nil), store: store, defaultModel: "test-model"}
+			sessionID := "sess-terminal-" + tc.name
+			run := newResponseRun("resp-terminal-"+tc.name, sessionID, "", "test-model", time.Now().Unix(), nil)
+			runCtx := withResponseRunContext(context.Background(), run)
+			deltas := 0
+			result, runErr := rt.RunWithEvents(runCtx, true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{SessionID: sessionID}, func(ev llm.Event) error {
+				if tc.cancelled && ev.Type == llm.EventTextDelta {
+					deltas++
+					if deltas == 2 {
+						return context.Canceled
+					}
+				}
+				return nil
+			})
+			if tc.cancelled {
+				if !errors.Is(runErr, context.Canceled) {
+					t.Fatalf("run error = %v, want cancellation", runErr)
+				}
+				run.mu.Lock()
+				run.cancelRequested = true
+				run.mu.Unlock()
+				if _, err := run.finishCancelled(map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
+					t.Fatalf("finish cancelled: %v", err)
+				}
+			} else {
+				if runErr != nil {
+					t.Fatalf("run error: %v", runErr)
+				}
+				if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, result.Usage, result.SessionUsage); err != nil {
+					t.Fatalf("complete: %v", err)
+				}
+			}
+			messages, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+			if err != nil {
+				t.Fatalf("GetMessages: %v", err)
+			}
+			var assistant *session.Message
+			for i := range messages {
+				if messages[i].Role == llm.RoleAssistant {
+					assistant = &messages[i]
+				}
+			}
+			if assistant == nil || assistant.ResponseID != run.id || assistant.TextContent == "" {
+				t.Fatalf("durable assistant = %#v, want tagged displayable output", assistant)
+			}
+			if !run.durableHandoff || run.durableOutputCount != 1 || run.finalRev <= 0 {
+				t.Fatalf("handoff = valid:%v count:%d rev:%d", run.durableHandoff, run.durableOutputCount, run.finalRev)
+			}
+		})
 	}
 }
 

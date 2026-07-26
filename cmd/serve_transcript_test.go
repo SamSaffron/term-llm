@@ -33,6 +33,144 @@ func newTranscriptHandlerServer(t *testing.T) (*serveServer, session.Store, *ses
 	return &serveServer{store: store}, store, sess
 }
 
+type unversionedTranscriptStore struct {
+	session.Store
+	indexer session.TranscriptIndexer
+}
+
+func (s *unversionedTranscriptStore) TranscriptVersioned() bool { return false }
+func (s *unversionedTranscriptStore) GetTranscriptIndex(ctx context.Context, sessionID string) (int64, []session.TranscriptIndexItem, error) {
+	_, items, err := s.indexer.GetTranscriptIndex(ctx, sessionID)
+	return 0, items, err
+}
+func (s *unversionedTranscriptStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (session.TranscriptSnapshot, error) {
+	snapshot, err := s.indexer.GetTranscriptSnapshot(ctx, sessionID)
+	snapshot.Rev = 0
+	return snapshot, err
+}
+func (s *unversionedTranscriptStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []session.TranscriptRange) (int64, []session.Message, error) {
+	_, messages, err := s.indexer.GetMessagesByTranscriptRanges(ctx, sessionID, ranges)
+	return 0, messages, err
+}
+func (s *unversionedTranscriptStore) TranscriptRev(context.Context, string) (int64, error) {
+	return 0, nil
+}
+
+func TestHandleSessionTranscriptAdaptsUnversionedStoreToSingleProtocol(t *testing.T) {
+	srv, store, sess := newTranscriptHandlerServer(t)
+	message := session.NewMessage(sess.ID, llm.UserText("legacy"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, message); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	indexer, ok := store.(session.TranscriptIndexer)
+	if !ok {
+		t.Fatal("test store lacks transcript indexer")
+	}
+	srv.store = &unversionedTranscriptStore{Store: store, indexer: indexer}
+
+	indexReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript", nil)
+	indexRec := httptest.NewRecorder()
+	srv.handleSessionByID(indexRec, indexReq)
+	if indexRec.Code != http.StatusOK {
+		t.Fatalf("index status=%d body=%s", indexRec.Code, indexRec.Body.String())
+	}
+	var index transcriptResponse
+	if err := json.Unmarshal(indexRec.Body.Bytes(), &index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if index.Rev <= 0 || len(index.Rows.IDs) != 1 || index.Rows.IDs[0] != message.ID {
+		t.Fatalf("fallback index=%+v", index)
+	}
+
+	bodyReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript/bodies?ids="+strconv.FormatInt(message.ID, 10), nil)
+	bodyRec := httptest.NewRecorder()
+	srv.handleSessionByID(bodyRec, bodyReq)
+	if bodyRec.Code != http.StatusOK {
+		t.Fatalf("bodies status=%d body=%s", bodyRec.Code, bodyRec.Body.String())
+	}
+	var bodies transcriptBodiesResponse
+	if err := json.Unmarshal(bodyRec.Body.Bytes(), &bodies); err != nil {
+		t.Fatalf("decode bodies: %v", err)
+	}
+	if bodies.Rev != index.Rev || len(bodies.Messages) != 1 || bodies.Messages[0].ID != message.ID {
+		t.Fatalf("bodies=%+v indexRev=%d", bodies, index.Rev)
+	}
+}
+
+type capabilitylessTranscriptStore struct{ session.Store }
+
+func TestHandleSessionTranscriptAdaptsStoreWithoutIndexerAndObservesAttachedCLIWrite(t *testing.T) {
+	srv, store, sess := newTranscriptHandlerServer(t)
+	message := session.NewMessage(sess.ID, llm.UserText("fallback"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, message); err != nil {
+		t.Fatal(err)
+	}
+	srv.store = &capabilitylessTranscriptStore{Store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSessionByID(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var index transcriptResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &index); err != nil {
+		t.Fatal(err)
+	}
+	if index.Rev <= 0 || len(index.Rows.IDs) != 1 || index.Rows.IDs[0] != message.ID {
+		t.Fatalf("fallback index=%+v", index)
+	}
+
+	bodyReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript/bodies?ids="+strconv.FormatInt(message.ID, 10), nil)
+	bodyRec := httptest.NewRecorder()
+	srv.handleSessionByID(bodyRec, bodyReq)
+	if bodyRec.Code != http.StatusOK {
+		t.Fatalf("bodies status=%d body=%s", bodyRec.Code, bodyRec.Body.String())
+	}
+	var bodies transcriptBodiesResponse
+	if err := json.Unmarshal(bodyRec.Body.Bytes(), &bodies); err != nil {
+		t.Fatal(err)
+	}
+	if bodies.Rev != index.Rev || len(bodies.Messages) != 1 || bodies.Messages[0].ID != message.ID {
+		t.Fatalf("fallback bodies=%+v indexRev=%d", bodies, index.Rev)
+	}
+
+	// Model a CLI/TUI writer mutating the same store while the browser remains
+	// attached. The adapter must expose a newer revision through the same route.
+	external := session.NewMessage(sess.ID, llm.AssistantText("external write"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, external); err != nil {
+		t.Fatal(err)
+	}
+	nextReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/transcript", nil)
+	nextRec := httptest.NewRecorder()
+	srv.handleSessionByID(nextRec, nextReq)
+	var next transcriptResponse
+	if err := json.Unmarshal(nextRec.Body.Bytes(), &next); err != nil {
+		t.Fatal(err)
+	}
+	if nextRec.Code != http.StatusOK || next.Rev <= index.Rev || len(next.Rows.IDs) != 2 {
+		t.Fatalf("external write was not exposed monotonically: before=%+v after=%+v", index, next)
+	}
+}
+
+func TestTranscriptResponseIncludesExactActiveRunAnchor(t *testing.T) {
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun("resp-anchor-index", "sess-anchor-index", "", "mock", time.Now().Unix(), nil)
+	run.clientMessageID = "client-anchor-index"
+	run.anchorRowID = 77
+	created, duplicate, err := manager.createOrGetByIdempotency(run, "")
+	if err != nil || duplicate || created != run {
+		t.Fatalf("create run: created=%p duplicate=%v err=%v", created, duplicate, err)
+	}
+	manager.setActiveRun(run.sessionID, run.id)
+	srv := &serveServer{responseRuns: manager}
+	response := srv.transcriptResponseFromSnapshot(run.sessionID, session.TranscriptSnapshot{})
+	if response.ActiveResponseID != run.id || response.RunEpoch <= 0 || response.ClientMessageID != "client-anchor-index" || response.AnchorRowID != 77 {
+		t.Fatalf("active transcript anchor = %+v", response)
+	}
+}
+
 func TestHandleSessionTranscriptReturnsCompleteCompactIdentityIndex(t *testing.T) {
 	srv, store, sess := newTranscriptHandlerServer(t)
 	ctx := context.Background()

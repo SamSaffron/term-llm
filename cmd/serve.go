@@ -1118,6 +1118,8 @@ type serveServer struct {
 	sessionToResponse       sync.Map // session_id (string) → latest response_id (string)
 	responseRunsOnce        sync.Once
 	responseRuns            *responseRunManager
+	transcriptIndexerOnce   sync.Once
+	transcriptIndexer       session.TranscriptIndexer
 	skillsSetup             *skills.Setup
 	skillsConfig            *config.SkillsConfig
 	skillsCacheMu           sync.Mutex

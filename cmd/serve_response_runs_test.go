@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,23 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testing.T) {
+	run := newResponseRun("resp-content-independent", "sess-content-independent", "", "test", time.Now().Unix(), nil)
+	run.finalRevReader = func() (int64, error) { return 3, nil }
+	ctx := withResponseRunContext(context.Background(), run)
+	for _, text := range []string{"partial", "partial complete"} {
+		message := tagResponseRunMessage(ctx, llm.AssistantText(text), 0)
+		finish := beginResponseRunPersistence(ctx, []llm.Message{message})
+		finish(3, nil)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if run.durableOutputCount != 1 {
+		t.Fatalf("durable output count = %d, want one exact assistant segment", run.durableOutputCount)
+	}
+}
 
 func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
@@ -35,8 +53,18 @@ func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 	if run.startedRev != 0 {
 		t.Fatalf("startedRev=%d before triggering row, want 0", run.startedRev)
 	}
-	if err := store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText("trigger"), -1)); err != nil {
-		t.Fatalf("AddMessage: %v", err)
+	runCtx := withResponseRunContext(ctx, run)
+	assistant := tagResponseRunMessage(runCtx, llm.AssistantText("durable output"), 0)
+	finishPersistence := beginResponseRunPersistence(runCtx, []llm.Message{assistant})
+	message := session.NewMessage(sess.ID, assistant, -1)
+	writer, ok := store.(session.TranscriptRevisionWriter)
+	if !ok {
+		t.Fatal("store does not report transcript revisions")
+	}
+	rev, persistErr := writer.AddMessageWithTranscriptRev(ctx, sess.ID, message)
+	finishPersistence(rev, persistErr)
+	if persistErr != nil {
+		t.Fatalf("AddMessage: %v", persistErr)
 	}
 	if err := run.appendEvent("response.created", map[string]any{"response": map[string]any{"id": run.id}}); err != nil {
 		t.Fatalf("append created: %v", err)
@@ -59,14 +87,29 @@ func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 		t.Fatalf("created started_rev=%v", got)
 	}
 	if got, _ := completed["final_rev"].(float64); int64(got) < 1 {
-		t.Fatalf("completed final_rev=%v, want >= triggering row rev", got)
+		t.Fatalf("completed final_rev=%v, want >= owned output rev", got)
 	}
+	if got, _ := completed["durable_handoff"].(bool); !got {
+		t.Fatalf("completed durable_handoff=%v, want true", completed["durable_handoff"])
+	}
+	if got, _ := completed["durable_output_count"].(float64); got != 1 {
+		t.Fatalf("completed durable_output_count=%v, want 1", got)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
 	snapshot := run.snapshot()
 	if got, _ := snapshot["started_rev"].(int64); got != 0 {
 		t.Fatalf("snapshot started_rev=%d", got)
 	}
 	if got, _ := snapshot["final_rev"].(int64); got < 1 {
 		t.Fatalf("snapshot final_rev=%d", got)
+	}
+	if got, _ := snapshot["durable_handoff"].(bool); !got {
+		t.Fatalf("snapshot durable_handoff=%v, want true", snapshot["durable_handoff"])
+	}
+	if got, _ := snapshot["durable_output_count"].(int); got != 1 {
+		t.Fatalf("snapshot durable_output_count=%v, want 1", snapshot["durable_output_count"])
 	}
 }
 
@@ -79,8 +122,10 @@ func (s *deadlineTranscriptStore) GetTranscriptIndex(context.Context, string) (i
 	return 0, nil, nil
 }
 
-func (s *deadlineTranscriptStore) GetTranscriptSnapshot(context.Context, string) (session.TranscriptSnapshot, error) {
-	return session.TranscriptSnapshot{}, nil
+func (s *deadlineTranscriptStore) GetTranscriptSnapshot(ctx context.Context, _ string) (session.TranscriptSnapshot, error) {
+	_, ok := ctx.Deadline()
+	s.deadlineSeen <- ok
+	return session.TranscriptSnapshot{Rev: 7}, nil
 }
 
 func (s *deadlineTranscriptStore) GetMessagesByTranscriptRanges(context.Context, string, []session.TranscriptRange) (int64, []session.Message, error) {
@@ -108,46 +153,90 @@ func TestConfigureResponseRunRevisionBoundsStartedRevisionRead(t *testing.T) {
 	}
 }
 
-func TestResponseRunFinalRevisionReadDoesNotBlockEventMutex(t *testing.T) {
-	run := newResponseRun("resp-final-rev-lock", "sess-lock", "", "test", time.Now().Unix(), nil)
-	readerStarted := make(chan struct{})
-	releaseReader := make(chan struct{})
-	run.finalRevReader = func() int64 {
-		close(readerStarted)
-		<-releaseReader
-		return 11
+func TestResponseRunUsesFallbackRevisionForUnversionedPersistence(t *testing.T) {
+	run := newResponseRun("resp-fallback-rev", "sess-fallback-rev", "", "test", time.Now().Unix(), nil)
+	run.finalRevReader = func() (int64, error) { return 9, nil }
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisted"), 0)
+	finish := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	finish(0, nil)
+
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
 	}
+	if !run.durableHandoff || run.finalRev != 9 || run.durableHandoffErr != "" {
+		t.Fatalf("handoff valid=%v finalRev=%d error=%q", run.durableHandoff, run.finalRev, run.durableHandoffErr)
+	}
+}
+
+func TestResponseRunUsesFallbackRevisionForCapabilitylessStore(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-capabilityless-rev", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	server := &serveServer{store: &capabilitylessTranscriptStore{Store: store}}
+	run := newResponseRun("resp-capabilityless-rev", sess.ID, "", "test", time.Now().Unix(), nil)
+	server.configureResponseRunRevision(run, sess.ID)
+	runCtx := withResponseRunContext(ctx, run)
+	assistant := tagResponseRunMessage(runCtx, llm.AssistantText("persisted"), 0)
+	message := session.NewMessage(sess.ID, assistant, -1)
+	if _, err := runResponseRunPersistence(runCtx, []llm.Message{assistant}, func() (int64, error) {
+		return addResponseRunMessage(ctx, server.store, sess.ID, message)
+	}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if !run.durableHandoff || run.finalRev <= 0 || run.durableHandoffErr != "" {
+		t.Fatalf("handoff valid=%v finalRev=%d error=%q", run.durableHandoff, run.finalRev, run.durableHandoffErr)
+	}
+}
+
+func TestResponseRunPersistenceBarrierTimesOut(t *testing.T) {
+	run := newResponseRun("resp-final-rev-timeout", "sess-timeout", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisting"), 0)
+	_ = beginResponseRunPersistence(ctx, []llm.Message{assistant})
+
+	started := time.Now()
+	handoff := run.readDurableHandoffWithTimeout(20 * time.Millisecond)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("barrier timeout took %s", elapsed)
+	}
+	if handoff.Valid || !strings.Contains(handoff.Error, "timed out") {
+		t.Fatalf("handoff = %#v, want timed-out invalid handoff", handoff)
+	}
+}
+
+func TestResponseRunPersistenceBarrierDoesNotBlockEventMutex(t *testing.T) {
+	run := newResponseRun("resp-final-rev-lock", "sess-lock", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, llm.AssistantText("persisted"), 0)
+	finish := beginResponseRunPersistence(ctx, []llm.Message{assistant})
 
 	completeDone := make(chan error, 1)
 	go func() {
 		completeDone <- run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{})
 	}()
-	<-readerStarted
-
-	appendDone := make(chan error, 1)
-	go func() {
-		appendDone <- run.appendEvent("response.phase", map[string]any{"text": "persisting"})
-	}()
-	appendCompletedBeforeRead := false
 	select {
-	case err := <-appendDone:
-		if err != nil {
-			t.Fatalf("append phase: %v", err)
-		}
-		appendCompletedBeforeRead = true
-	case <-time.After(100 * time.Millisecond):
+	case err := <-completeDone:
+		t.Fatalf("terminal completed before persistence barrier: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
-	close(releaseReader)
-	if !appendCompletedBeforeRead {
-		if err := <-appendDone; err != nil {
-			t.Fatalf("append phase after release: %v", err)
-		}
+	if err := run.appendEvent("response.phase", map[string]any{"text": "persisting"}); err != nil {
+		t.Fatalf("append phase while terminal waits: %v", err)
 	}
+	finish(11, nil)
 	if err := <-completeDone; err != nil {
 		t.Fatalf("complete: %v", err)
-	}
-	if !appendCompletedBeforeRead {
-		t.Fatal("final revision I/O held responseRun.mu")
 	}
 
 	run.mu.Lock()
@@ -161,6 +250,31 @@ func TestResponseRunFinalRevisionReadDoesNotBlockEventMutex(t *testing.T) {
 	}
 	if payload["final_rev"] != float64(11) {
 		t.Fatalf("final_rev=%v, want 11", payload["final_rev"])
+	}
+}
+
+func TestResponseRunRejectsDurableHandoffWhenOwnedWriteFails(t *testing.T) {
+	run := newResponseRun("resp-write-failed", "sess-write-failed", "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	assistant := tagResponseRunMessage(ctx, llm.AssistantText("visible partial"), 0)
+	finishPersistence := beginResponseRunPersistence(ctx, []llm.Message{assistant})
+	finishPersistence(0, errors.New("database unavailable"))
+
+	if _, err := run.fail(map[string]any{"error": map[string]any{"message": "failed"}}, "server_error", "failed"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[len(run.events)-1].Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := payload["durable_handoff"].(bool); got {
+		t.Fatalf("durable_handoff=%v, want false", payload["durable_handoff"])
+	}
+	if got, _ := payload["durable_output_count"].(float64); got != 1 {
+		t.Fatalf("durable_output_count=%v, want 1", got)
+	}
+	if got := payload["durable_handoff_error"]; got != "database unavailable" {
+		t.Fatalf("durable_handoff_error=%v", got)
 	}
 }
 
@@ -286,7 +400,7 @@ func TestPersistResponseRunErrorEventStoresDurableNonLLMMarker(t *testing.T) {
 	runtime := &serveRuntime{store: store}
 	server := &serveServer{}
 
-	server.persistResponseRunErrorEvent(runtime, "sess_error", "resp_error", "timeout_error", "Responses WebSocket retries exhausted")
+	server.persistResponseRunErrorEvent(context.Background(), runtime, "sess_error", "resp_error", "timeout_error", "Responses WebSocket retries exhausted")
 
 	store.mu.Lock()
 	messages := append([]session.Message(nil), store.messages["sess_error"]...)
@@ -838,6 +952,75 @@ func TestResponseRunInteractiveRecoveryDoesNotDisableCompaction(t *testing.T) {
 	}
 }
 
+func TestResponseCreatedCarriesExactAnchorIdentity(t *testing.T) {
+	run := newResponseRun("resp_anchor", "sess_anchor", "", "mock", time.Now().Unix(), nil)
+	run.clientMessageID = "client-anchor"
+	run.anchorRowID = 42
+	run.startedCompactionSeq = 3
+	run.startedCompactionCount = 2
+	run.runEpoch = 7
+	if err := run.appendEvent("response.created", map[string]any{
+		"response": map[string]any{"id": run.id, "status": "in_progress"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run.mu.Lock()
+	data := append([]byte(nil), run.events[0].Data...)
+	run.mu.Unlock()
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := payload["client_message_id"].(string); got != "client-anchor" {
+		t.Fatalf("client_message_id=%q, want client-anchor", got)
+	}
+	if got := responseRunInt64Value(payload["anchor_row_id"], 0); got != 42 {
+		t.Fatalf("anchor_row_id=%d, want 42", got)
+	}
+	run.mu.Lock()
+	run.status = "completed"
+	run.mu.Unlock()
+	snapshot := run.snapshot()
+	if got, _ := snapshot["client_message_id"].(string); got != "client-anchor" {
+		t.Fatalf("snapshot client_message_id=%q, want client-anchor", got)
+	}
+	if got := responseRunInt64Value(snapshot["anchor_row_id"], 0); got != 42 {
+		t.Fatalf("snapshot anchor_row_id=%d, want 42", got)
+	}
+	if got := responseRunIntValue(snapshot["handoff_compaction_seq"], -1); got != 3 {
+		t.Fatalf("snapshot handoff_compaction_seq=%d, want 3", got)
+	}
+	if got := responseRunIntValue(snapshot["handoff_compaction_count"], 0); got != 2 {
+		t.Fatalf("snapshot handoff_compaction_count=%d, want 2", got)
+	}
+}
+
+func TestResponseRunRejectsInterjectionWithoutClientMessageID(t *testing.T) {
+	run := newResponseRun("resp_missing_interjection_id", "sess_test", "", "mock", time.Now().Unix(), nil)
+	state := newResponseRunStreamState("mock", "")
+	err := (&serveServer{}).appendResponseRunEvent(nil, run, state, llm.Event{Type: llm.EventInterjection, Text: "ambiguous"})
+	if err == nil || !strings.Contains(err.Error(), "client_message_id") {
+		t.Fatalf("missing interjection identity error = %v", err)
+	}
+}
+
+func TestResponseRunRecoverySynthesizesMissingLegacyInterjectionID(t *testing.T) {
+	run := newResponseRun("resp_legacy_interjection", "sess_test", "", "mock", time.Now().Unix(), nil)
+	if err := run.appendEvent("response.interjection", map[string]any{"text": "legacy interjection"}); err != nil {
+		t.Fatalf("append legacy interjection: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("recovery messages = %#v, want one synthesized user message", recovery["messages"])
+	}
+	id, _ := messages[0]["client_message_id"].(string)
+	if id == "" || messages[0]["id"] != id || messages[0]["content"] != "legacy interjection" {
+		t.Fatalf("legacy recovery message = %#v", messages[0])
+	}
+}
+
 func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	run := newResponseRun("resp_interjection", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	streamState := newResponseRunStreamState("mock", "")
@@ -846,7 +1029,7 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "before"}); err != nil {
 		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
 	}
-	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventInterjection, Text: "check X"}); err != nil {
+	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventInterjection, Text: "check X", InterjectionID: "client-check-x"}); err != nil {
 		t.Fatalf("append interjection: %v", err)
 	}
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "after"}); err != nil {
@@ -873,6 +1056,9 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if got := messages[1]["content"]; got != "check X" {
 		t.Fatalf("messages[1].content = %v, want check X", got)
 	}
+	if got := messages[1]["client_message_id"]; got != "client-check-x" {
+		t.Fatalf("messages[1].client_message_id = %v, want client-check-x", got)
+	}
 	if got := messages[1]["interruptState"]; got != "interject" {
 		t.Fatalf("messages[1].interruptState = %v, want interject", got)
 	}
@@ -883,7 +1069,7 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 		t.Fatalf("assistant segment ordinals = %v, %v; want 0, 1 across interjection", first, second)
 	}
 	atts := []map[string]any{{"name": "image 1", "type": "image/png"}}
-	if err := run.appendEvent("response.interjection", map[string]any{"text": "see image", "interjection_id": "img-1", "attachments": atts}); err != nil {
+	if err := run.appendEvent("response.interjection", map[string]any{"text": "see image", "client_message_id": "img-1", "attachments": atts}); err != nil {
 		t.Fatalf("append image interjection: %v", err)
 	}
 	recovery = run.recoveryPayloadLocked()

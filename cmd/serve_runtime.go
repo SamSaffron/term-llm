@@ -425,6 +425,9 @@ func interjectionFingerprint(msg llm.Message, displayText string, autoContinue b
 
 func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, autoContinue bool) (llm.InterruptAction, bool, error) {
 	interjectionID = strings.TrimSpace(interjectionID)
+	if interjectionID != "" && msg.Role == llm.RoleUser {
+		msg.ClientMessageID = interjectionID
+	}
 	fingerprint := ""
 	if interjectionID != "" {
 		var err error
@@ -713,7 +716,10 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		messages = append(messages, *sessionMsg)
 	}
-	if err := rt.store.ReplaceMessages(dbCtx, sessionID, messages); err != nil {
+	_, err := runResponseRunPersistence(ctx, snapshot, func() (int64, error) {
+		return replaceResponseRunMessages(dbCtx, rt.store, sessionID, messages)
+	})
+	if err != nil {
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
 		return false
 	}
@@ -759,17 +765,8 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 	return true
 }
 
-type compactedMessageReplacer interface {
-	ReplaceCompactedMessages(ctx context.Context, sessionID string, messages []session.Message) error
-}
-
 func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
-		return false
-	}
-	replacer, ok := rt.store.(compactedMessageReplacer)
-	if !ok {
-		log.Printf("[serve] session ReplaceCompactedMessages unsupported for %s", sessionID)
 		return false
 	}
 	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
@@ -783,7 +780,10 @@ func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID 
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		messages = append(messages, *sessionMsg)
 	}
-	if err := replacer.ReplaceCompactedMessages(dbCtx, sessionID, messages); err != nil {
+	_, err := runResponseRunPersistence(ctx, snapshot, func() (int64, error) {
+		return replaceCompactedResponseRunMessages(dbCtx, rt.store, sessionID, messages)
+	})
+	if err != nil {
 		log.Printf("[serve] session ReplaceCompactedMessages failed for %s: %v", sessionID, err)
 		return false
 	}
@@ -820,7 +820,10 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 		}
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		sessionMsg.TurnIndex = turnIndex
-		if err := rt.store.AddMessage(dbCtx, sessionID, sessionMsg); err != nil {
+		_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func() (int64, error) {
+			return addResponseRunMessage(dbCtx, rt.store, sessionID, sessionMsg)
+		})
+		if err != nil {
 			log.Printf("[serve] session AddMessage failed for %s: %v", sessionID, err)
 			return written
 		}
@@ -1456,7 +1459,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		sessionMsg.TurnIndex = turnIndex
 		if pendingAssistantMsgID != 0 {
 			sessionMsg.ID = pendingAssistantMsgID
-			err := session.UpdateStreamingMessage(dbCtx, rt.store, req.SessionID, sessionMsg, finalizeText)
+			_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func() (int64, error) {
+				return updateResponseRunStreamingMessage(dbCtx, rt.store, req.SessionID, sessionMsg, finalizeText)
+			})
 			if err == nil {
 				assistantSnapshotDirty = false
 				if finalizeText {
@@ -1479,7 +1484,10 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			sessionMsg = session.NewMessage(req.SessionID, assistantMsg, -1)
 			sessionMsg.TurnIndex = turnIndex
 		}
-		if err := rt.store.AddMessage(dbCtx, req.SessionID, sessionMsg); err != nil {
+		_, err := runResponseRunPersistence(persistCtx, []llm.Message{assistantMsg}, func() (int64, error) {
+			return addResponseRunMessage(dbCtx, rt.store, req.SessionID, sessionMsg)
+		})
+		if err != nil {
 			assistantSnapshotNeedsReconcile = true
 			appendOnlyPersisted = false
 			rt.historyPersisted = false
@@ -1578,7 +1586,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 		producedMu.Lock()
 		if len(produced) == 0 && result.Text.Len() > 0 {
-			produced = append(produced, llm.AssistantText(result.Text.String()))
+			produced = append(produced, tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0))
 		}
 		hasProduced := len(produced) > 0
 		producedMu.Unlock()
@@ -1681,7 +1689,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	newHistory = buildSnapshotLocked()
 	synthesizedAssistant := len(produced) == 0 && result.Text.Len() > 0
 	if synthesizedAssistant {
-		assistantMsg := llm.AssistantText(result.Text.String())
+		assistantMsg := tagResponseRunMessage(runCtx, llm.AssistantText(result.Text.String()), 0)
 		newHistory = append(newHistory, assistantMsg)
 		if appendOnlyPersisted {
 			produced = append(produced, assistantMsg)

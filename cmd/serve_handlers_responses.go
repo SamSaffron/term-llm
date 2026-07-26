@@ -77,6 +77,23 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
 		return
 	}
+	clientMessageID := strings.TrimSpace(req.ClientMessageID)
+	if isFirstPartyUIResponseRequest(r) && clientMessageID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is required for first-party requests")
+		return
+	}
+	if len(clientMessageID) > 200 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is too long")
+		return
+	}
+	if clientMessageID != "" {
+		for i := len(inputMessages) - 1; i >= 0; i-- {
+			if inputMessages[i].Role == llm.RoleUser {
+				inputMessages[i].ClientMessageID = clientMessageID
+				break
+			}
+		}
+	}
 
 	// External /v1/responses callers follow OpenAI-style chaining:
 	// previous_response_id continues a conversation; no previous response means a
@@ -361,8 +378,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	// ownership before starting that follow-up: otherwise the engine retains the
 	// queued interjection and can inject it again at the new run's first tool
 	// boundary, persisting the user's message twice.
-	if stateful && idempotencyKey != "" && isFirstPartyUIResponseRequest(r) && runtime.engine != nil {
-		runtime.engine.CancelInterjection(idempotencyKey)
+	clientMessageID := strings.TrimSpace(req.ClientMessageID)
+	if stateful && clientMessageID != "" && isFirstPartyUIResponseRequest(r) && runtime.engine != nil {
+		runtime.engine.CancelInterjection(clientMessageID)
 	}
 
 	cleanupRuntime := !stateful

@@ -232,7 +232,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		resp["lastResponseId"] = lastResponseID
 	}
 
-	if indexer, ok := transcriptIndexerForWeb(s.store); ok {
+	if indexer, ok := s.transcriptIndexerForWeb(); ok {
 		if rev, err := indexer.TranscriptRev(r.Context(), sessionID); err == nil {
 			resp["transcript_rev"] = rev
 		}
@@ -245,6 +245,12 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				run.mu.Lock()
 				resp["started_rev"] = run.startedRev
 				resp["run_epoch"] = run.runEpoch
+				if run.clientMessageID != "" {
+					resp["client_message_id"] = run.clientMessageID
+				}
+				if run.anchorRowID > 0 {
+					resp["anchor_row_id"] = run.anchorRowID
+				}
 				run.mu.Unlock()
 			}
 		}

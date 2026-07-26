@@ -457,9 +457,13 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"execution":   "main",
-		"response_id": run.id,
-		"events_url":  "/v1/responses/" + run.id + "/events",
+		"execution":         "main",
+		"response_id":       run.id,
+		"run_epoch":         run.runEpoch,
+		"started_rev":       run.startedRev,
+		"client_message_id": run.clientMessageID,
+		"anchor_row_id":     run.anchorRowID,
+		"events_url":        "/v1/responses/" + run.id + "/events",
 	})
 }
 

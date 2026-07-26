@@ -20,6 +20,10 @@ import (
 // exist (e.g., UpdateMessage against a deleted/never-persisted message ID).
 var ErrNotFound = errors.New("session: not found")
 
+// ErrTranscriptRevisionUnsupported indicates that a store does not support a
+// mutation method that reports the exact transcript revision it commits.
+var ErrTranscriptRevisionUnsupported = errors.New("session: transcript revision unsupported")
+
 // Store is the interface for session persistence.
 type Store interface {
 	// Session CRUD
@@ -69,6 +73,21 @@ type Store interface {
 
 	// Lifecycle
 	Close() error
+}
+
+// TranscriptRevisionWriter reports the exact revision committed by a message
+// mutation. Serve response handoff uses this optional capability instead of a
+// session-wide post-write revision sample.
+type TranscriptRevisionWriter interface {
+	AddMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message) (int64, error)
+	UpdateStreamingMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message, finalizeText bool) (int64, error)
+	ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
+}
+
+// CompactedTranscriptRevisionWriter reports the exact revision committed by an
+// atomic compaction replacement.
+type CompactedTranscriptRevisionWriter interface {
+	ReplaceCompactedMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
 }
 
 // GeneratedTitleUpdater is an optional Store capability for updating only the
@@ -209,6 +228,7 @@ type TranscriptIndexItem struct {
 	ID                      int64
 	Role                    string
 	Flags                   uint8
+	ClientMessageID         string
 	ResponseID              string
 	AssistantSegmentOrdinal int
 }

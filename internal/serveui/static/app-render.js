@@ -3,7 +3,7 @@
 
 const app = window.TermLLMApp;
 const {
-  STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
+  STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, asTimestamp, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, mountedConversationSessionId, isConversationMounted, conversationDOMFor,
   scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
   updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun,
@@ -181,7 +181,7 @@ const conversationMessageCount = (session) => {
   if (typeof session?.messageCount === 'number' && Number.isFinite(session.messageCount)) {
     return Math.max(session.messageCount, 0);
   }
-  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const messages = Array.isArray(window.TermLLMConversation.sessionMessages(session)) ? window.TermLLMConversation.sessionMessages(session) : [];
   return messages.filter((message) => message?.role === 'user' || message?.role === 'assistant').length;
 };
 
@@ -510,9 +510,9 @@ const createInterruptBadgeNode = (interruptState) => {
 };
 
 const createMetaNode = (created, message = null) => {
+  const timestamp = asTimestamp(created);
   const meta = document.createElement('div');
   meta.className = 'message-meta';
-
   if (message?.role === 'user') {
     const badge = createInterruptBadgeNode(message.interruptState);
     if (badge) {
@@ -521,9 +521,9 @@ const createMetaNode = (created, message = null) => {
   }
 
   const time = document.createElement('span');
-  time.setAttribute('data-created', String(created));
-  time.textContent = relativeTime(created);
-  time.title = fullDate(created);
+  time.setAttribute('data-created', String(timestamp));
+  time.textContent = relativeTime(timestamp);
+  time.title = fullDate(timestamp);
 
   meta.appendChild(time);
   return meta;
@@ -2137,7 +2137,7 @@ const isNormalUserBoundary = (message) => (
 );
 
 const getAssistantTurns = (session) => {
-  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const messages = Array.isArray(window.TermLLMConversation.sessionMessages(session)) ? window.TermLLMConversation.sessionMessages(session) : [];
   const turns = [];
   let items = [];
 
@@ -2364,7 +2364,7 @@ const syncTurnActionPanelForAssistant = (assistantId) => {
   if (!root || !assistantId) return;
 
   const session = ensureActiveSession();
-  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const messages = Array.isArray(window.TermLLMConversation.sessionMessages(session)) ? window.TermLLMConversation.sessionMessages(session) : [];
   let assistantIndex = -1;
 
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -2482,12 +2482,12 @@ const insertMountedMessageNode = (sessionOrId, message, node) => {
   // must never pull an individual durable row out of that container.
   if (node.parentNode && node.parentNode !== root) return node;
 
-  const messageIndex = session.messages.findIndex((candidate) => (
+  const messageIndex = window.TermLLMConversation.sessionMessages(session).findIndex((candidate) => (
     candidate === message || (candidate?.id && candidate.id === message.id)
   ));
   if (messageIndex >= 0) {
-    for (let index = messageIndex + 1; index < session.messages.length; index += 1) {
-      const later = session.messages[index];
+    for (let index = messageIndex + 1; index < window.TermLLMConversation.sessionMessages(session).length; index += 1) {
+      const later = window.TermLLMConversation.sessionMessages(session)[index];
       if (!later?.id || later.id === message.id) continue;
       let reference = findMessageElement(later.id, session);
       while (reference?.parentNode && reference.parentNode !== root) reference = reference.parentNode;
@@ -2831,7 +2831,7 @@ const renderMessages = (forceScroll = false) => {
   if (!session?.transcript) resetAssistantStreamRenders();
 
   const sessionId = session ? session.id : '';
-  const messages = session ? session.messages : [];
+  const messages = session ? window.TermLLMConversation.sessionMessages(session) : [];
   const sessionHistoryLoading = Boolean(session?._serverOnly);
   if (elements.messages?.dataset) elements.messages.dataset.sessionId = sessionId || '';
 

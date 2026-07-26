@@ -56,15 +56,15 @@ func TestSideQuestionOverlayAssetsAreWiredAndIsolated(t *testing.T) {
 	if strings.Index(jsSource, "entries.forEach") > strings.Index(jsSource, "appendExchange(transcript, side.question") {
 		t.Fatal("side transcript does not append history before the active exchange")
 	}
-	stream, err := StaticAsset("app-stream.js")
+	send, err := StaticAsset("app-send.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	streamSource := string(stream)
-	if !strings.Contains(streamSource, `/^\/side(?:\s|$)/i.test(prompt)`) {
+	sendSource := string(send)
+	if !strings.Contains(sendSource, `/^\/side(?:\s|$)/i.test(prompt)`) {
 		t.Fatal("web composer does not intercept /side before main submission")
 	}
-	if !strings.Contains(streamSource, "elements.promptInput.value = ''") {
+	if !strings.Contains(sendSource, "elements.promptInput.value = ''") {
 		t.Fatal("submitted /side command is not cleared from the main composer")
 	}
 	css, err := StaticAsset("app.css")

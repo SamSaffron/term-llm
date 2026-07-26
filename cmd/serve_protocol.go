@@ -24,9 +24,10 @@ import (
 )
 
 type sessionInterruptRequest struct {
-	Message        string          `json:"message"`
-	Content        json.RawMessage `json:"content"`
-	InterjectionID string          `json:"interjection_id"`
+	Message         string          `json:"message"`
+	Content         json.RawMessage `json:"content"`
+	InterjectionID  string          `json:"interjection_id"`
+	ClientMessageID string          `json:"client_message_id,omitempty"`
 }
 
 type sessionRuntimeEffortRequest struct {

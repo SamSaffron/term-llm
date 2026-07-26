@@ -5,13 +5,27 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { webcrypto } = require('crypto');
+const conversationAPI = require('./conversation.js');
+const projectedMessages = (session) => session?.transcript?.conversation
+  ? conversationAPI.sessionMessages(session)
+  : (Array.isArray(session?.messages) ? session.messages : []);
+const pendingIntents = (session) => [...(session?.transcript?.conversation?.intents?.values?.() || [])];
 
 const dir = __dirname;
-const transcriptStoreSource = fs.readFileSync(path.join(dir, 'transcript-store.js'), 'utf8');
+const transcriptWindowSource = fs.readFileSync(path.join(dir, 'transcript-window.js'), 'utf8');
+const activeResponseSource = fs.readFileSync(path.join(dir, 'active-response.js'), 'utf8');
+const conversationSource = fs.readFileSync(path.join(dir, 'conversation.js'), 'utf8');
 const coreSource = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
 const planSource = fs.readFileSync(path.join(dir, 'app-plan.js'), 'utf8');
+const sidebarSource = fs.readFileSync(path.join(dir, 'app-sidebar.js'), 'utf8');
+const sessionEventsSource = fs.readFileSync(path.join(dir, 'app-session-events.js'), 'utf8');
 const sessionsSource = fs.readFileSync(path.join(dir, 'app-sessions.js'), 'utf8')
   .replace('initialize();', 'window.__termllmInitializePromise = initialize();');
+const mcpSource = fs.readFileSync(path.join(dir, 'app-mcp.js'), 'utf8');
+const goalsLocationSource = fs.readFileSync(path.join(dir, 'app-goals-location.js'), 'utf8');
+const messageConvertSource = fs.readFileSync(path.join(dir, 'app-message-convert.js'), 'utf8');
+const intentStorageSource = fs.readFileSync(path.join(dir, 'intent-storage.js'), 'utf8');
+const sessionAdminSource = fs.readFileSync(path.join(dir, 'app-session-admin.js'), 'utf8');
 
 let failures = 0;
 
@@ -23,6 +37,13 @@ function fail(name, message, details) {
 
 function pass(name) {
   console.log('PASS:', name);
+}
+
+function persistedIntentEntries(storage, sessionId) {
+  const prefix = `term_llm_pending_intent:${encodeURIComponent(sessionId)}:`;
+  return [...storage.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, value]) => JSON.parse(value));
 }
 
 async function waitFor(predicate, message, attempts = 50) {
@@ -155,14 +176,14 @@ function isTranscriptBodiesURL(url, sessionId) {
   return Boolean(parsed && parsed.pathname === `/ui/v1/sessions/${sessionId}/transcript/bodies`);
 }
 
-function startupTranscriptSideload({ rev, ids, messages, etag = `\"startup-${rev}\"`, activeResponseId = '', startedRev = 0 }) {
+function startupTranscriptSideload({ rev, ids, messages, etag = `"startup-${rev}"`, activeResponseId = '', startedRev = 0, runEpoch = 1 }) {
   return {
     index_etag: etag,
     index: {
       rev,
       compaction_seq: -1,
       compaction_count: 0,
-      ...(activeResponseId ? { active_response_id: activeResponseId, started_rev: startedRev } : {}),
+      ...(activeResponseId ? { active_response_id: activeResponseId, started_rev: startedRev, run_epoch: runEpoch } : {}),
       rows: {
         ids,
         seqs: ids.map((_, index) => index),
@@ -335,6 +356,8 @@ async function createSessionsHarness(options = {}) {
   };
 
   const localStorage = {
+    get length() { return storage.size; },
+    key(index) { return [...storage.keys()][index] ?? null; },
     getItem(key) { return storage.has(key) ? storage.get(key) : null; },
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
@@ -426,19 +449,27 @@ async function createSessionsHarness(options = {}) {
   context.globalThis = context;
 
   vm.createContext(context);
-  vm.runInContext(transcriptStoreSource, context, { filename: 'transcript-store.js' });
-  windowObj.TranscriptStore = context.TranscriptStore;
-  windowObj.transcriptStoreFromMessages = context.transcriptStoreFromMessages;
-  windowObj.reconcileTranscriptProjection = context.reconcileTranscriptProjection;
-  windowObj.transcriptIsClientOwnedIntent = context.transcriptIsClientOwnedIntent;
+  vm.runInContext(transcriptWindowSource, context, { filename: 'transcript-window.js' });
+  windowObj.TranscriptWindow = context.TranscriptWindow;
+  vm.runInContext(activeResponseSource, context, { filename: 'active-response.js' });
+  vm.runInContext(conversationSource, context, { filename: 'conversation.js' });
+  context.ConversationController = windowObj.TermLLMConversation.ConversationController;
+  windowObj.ConversationController = context.ConversationController;
   windowObj.TRANSCRIPT_BUDGETS = context.TRANSCRIPT_BUDGETS;
   vm.runInContext(coreSource, context, { filename: 'app-core.js' });
   vm.runInContext(planSource, context, { filename: 'app-plan.js' });
 
   const app = windowObj.TermLLMApp;
+  vm.runInContext(sidebarSource, context, { filename: 'app-sidebar.js' });
   Object.assign(app, defaultAppStubs(app, options.appOverrides || {}));
 
+  vm.runInContext(mcpSource, context, { filename: 'app-mcp.js' });
+  vm.runInContext(goalsLocationSource, context, { filename: 'app-goals-location.js' });
+  vm.runInContext(messageConvertSource, context, { filename: 'app-message-convert.js' });
+  vm.runInContext(intentStorageSource, context, { filename: 'intent-storage.js' });
+  vm.runInContext(sessionAdminSource, context, { filename: 'app-session-admin.js' });
   vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
+  vm.runInContext(sessionEventsSource, context, { filename: 'app-session-events.js' });
   if (typeof options.onInitializeStarted === 'function') {
     options.onInitializeStarted({ app, windowObj, storage, elementMap });
   }
@@ -1039,7 +1070,7 @@ async function testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTrans
       },
       renderMessages() {
         const session = appRef?.state.sessions.find((item) => item.id === 'sess_3347');
-        const contents = session?.messages.map((message) => message.content) || [];
+        const contents = projectedMessages(session).map((message) => message.content) || [];
         events.push({ type: 'render', contents });
         if (contents.filter((content) => typeof content === 'string').length === 9) markSideloadRendered();
       },
@@ -1117,11 +1148,17 @@ async function testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitch
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
 
-  const transcript = new windowObj.TranscriptStore(session.id);
+  const transcript = new windowObj.ConversationController(session.id);
   session.transcript = transcript;
-  transcript.addOptimistic({
+  transcript.replaceActiveSnapshot({
+    id: 'resp_tool_overlap',
+    run_epoch: 1,
+    last_sequence_number: 9,
+    status: 'in_progress',
+    recovery: { messages: [{
     id: 'msg_441406d5-live-tools',
     role: 'tool-group',
+    responseId: 'resp_tool_overlap',
     status: 'running',
     created: 1200,
     tools: [
@@ -1129,18 +1166,14 @@ async function testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitch
       { id: 'call_XX3ODxDyeoIxc7ZUZwJm19qu', name: 'wait_for_jobs', status: 'done' },
       { id: 'call_newer_shell', name: 'shell', status: 'running' }
     ]
-  }, 7);
-  transcript.addOptimistic({
+  }, {
     id: 'msg_441406d5-live-assistant',
-    clientKey: 'msg_441406d5-live-assistant',
     role: 'assistant',
     content: 'durable answer plus live suffix',
-    revAtSend: 7,
-    durableSeqAtSend: 381,
     responseId: 'resp_tool_overlap',
-    responseStartedRev: 6,
+    assistantSegmentOrdinal: 0,
     created: 1190
-  }, 7);
+  }] } });
   const sideload = {
     index_etag: '"tool-overlap-7"',
     index: {
@@ -1149,11 +1182,16 @@ async function testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitch
       compaction_count: 0,
       active_response_id: 'resp_tool_overlap',
       started_rev: 6,
+      run_epoch: 1,
       rows: {
         ids: [381, 382],
         seqs: [381, 382],
         roles: 'ua',
-        flags: [0, 0]
+        flags: [0, 0],
+      response_ids: ['', 'resp_late_durable_tools'],
+      assistant_segment_ordinals: [-1, 0],
+        response_ids: ['', 'resp_tool_overlap'],
+        assistant_segment_ordinals: [-1, 0]
       }
     },
     bodies: {
@@ -1176,20 +1214,20 @@ async function testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitch
   };
 
   const assertUniqueProjection = (phase) => {
-    const groups = session.messages.filter((message) => message.role === 'tool-group');
-    const assistants = session.messages.filter((message) => message.role === 'assistant');
+    const groups = projectedMessages(session).filter((message) => message.role === 'tool-group');
+    const assistants = projectedMessages(session).filter((message) => message.role === 'assistant');
     const callIDs = groups.flatMap((group) => group.tools.map((tool) => tool.id));
     const unique = new Set(callIDs);
     if (unique.size !== callIDs.length) {
-      fail(name, `${phase} retained duplicate call IDs`, JSON.stringify(session.messages));
+      fail(name, `${phase} retained duplicate call IDs`, JSON.stringify(projectedMessages(session)));
       return false;
     }
-    if (groups.map((group) => group.id).join(',') !== 'srv_seq_382_tools_1,msg_441406d5-live-tools'
-        || groups[1].tools.map((tool) => tool.id).join(',') !== 'call_newer_shell') {
-      fail(name, `${phase} lost durable authority or newer optimistic order`, JSON.stringify(groups));
+    if (groups.map((group) => group.id).join(',') !== 'resp_tool_overlap:tools:call_GwHMMHXf28QA81Zfm9vgRMap'
+        || groups[0].tools.map((tool) => tool.id).join(',') !== 'call_GwHMMHXf28QA81Zfm9vgRMap,call_XX3ODxDyeoIxc7ZUZwJm19qu,call_newer_shell') {
+      fail(name, `${phase} lost whole-response active authority`, JSON.stringify(groups));
       return false;
     }
-    if (assistants.length !== 1 || assistants[0].id !== 'srv_seq_382_text_0'
+    if (assistants.length !== 1 || assistants[0].id !== 'resp_tool_overlap:assistant:0'
         || assistants[0].content !== 'durable answer plus live suffix') {
       fail(name, `${phase} duplicated or lost the assistant tail`, JSON.stringify(assistants));
       return false;
@@ -1202,178 +1240,7 @@ async function testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitch
   // Reproduce switching away: mounted bodies and the projected message array are
   // released, while the optimistic transcript tail remains available for resume.
   session.transcript.releaseBodies();
-  session.messages = [];
   if (!app.applySelectedTranscriptSideload(session, sideload) || !assertUniqueProjection('switch-back sideload')) return;
-
-  pass(name);
-}
-
-async function testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender() {
-  const name = 'transcript refresh publishes durable recovery tools once before render';
-  let appRef = null;
-  let renderCount = 0;
-  let projectionAtRender = [];
-  let optimisticAtRender = [];
-  const { app, storage, windowObj, elementMap } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (isTranscriptIndexURL(url, 'sess_late_durable_tools')) {
-        return new Response(null, { status: 304, headers: { ETag: '"late-tools-9"' } });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-    appOverrides: {
-      renderMessages() {
-        renderCount += 1;
-        const session = appRef?.state.sessions.find((item) => item.id === 'sess_late_durable_tools');
-        if (!session) return;
-        projectionAtRender = session.messages
-          .filter((message) => message.role === 'tool-group')
-          .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }));
-        optimisticAtRender = (session.transcript?.optimistic || [])
-          .filter((message) => message.role === 'tool-group')
-          .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }));
-        const mounted = elementMap.get('messages');
-        mounted.replaceChildren(...projectionAtRender.flatMap((group) => group.tools.map((toolID) => {
-          const node = makeNode();
-          node.dataset.toolId = toolID;
-          return node;
-        })));
-      }
-    },
-    onInitializeStarted({ app: startedApp }) { appRef = startedApp; }
-  });
-  const session = {
-    id: 'sess_late_durable_tools',
-    number: 957,
-    title: 'Late durable tools',
-    messages: [],
-    activeResponseId: 'resp_late_durable_tools',
-    lastSequenceNumber: 8
-  };
-  app.state.sessions.push(session);
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
-
-  // Recovery arrives first and owns the only projection while the durable
-  // transcript still trails the active response.
-  session.messages = [{
-    id: 'msg_c011_recovery_tools',
-    role: 'tool-group',
-    status: 'running',
-    created: 1200,
-    tools: [
-      { id: 'call_A', name: 'shell', status: 'done' },
-      { id: 'call_B', name: 'shell', status: 'done' },
-      { id: 'call_C', name: 'shell', status: 'done' },
-      { id: 'call_D', name: 'shell', status: 'running' }
-    ]
-  }];
-  app.reconcileSessionTranscriptProjection(session, { trackOptimisticTail: true });
-  app.renderMessages(false);
-
-  // A later transcript refresh materializes A/B/C durably. Publishing the
-  // combined durable + optimistic projection must reconcile both sources before
-  // the caller's single render boundary, retaining only newer optimistic D.
-  const transcript = session.transcript;
-  transcript.applyIndex({
-    rev: 9,
-    compaction_seq: -1,
-    compaction_count: 0,
-    active_response_id: session.activeResponseId,
-    started_rev: 7,
-    rows: {
-      ids: [436, 437],
-      seqs: [436, 437],
-      roles: 'ua',
-      flags: [0, 0]
-    }
-  }, '"late-tools-9"');
-  transcript.setViewport(1, 1, { deferBudget: true });
-  transcript.materialize([
-    { id: 436, sequence: 436, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'continue' }] },
-    {
-      id: 437,
-      sequence: 437,
-      role: 'assistant',
-      created_at: 1100,
-      parts: [
-        { type: 'tool_call', tool_call_id: 'call_A', tool_name: 'shell', tool_arguments: '{}' },
-        { type: 'tool_call', tool_call_id: 'call_B', tool_name: 'shell', tool_arguments: '{}' },
-        { type: 'tool_call', tool_call_id: 'call_C', tool_name: 'shell', tool_arguments: '{}' }
-      ]
-    }
-  ], { countFetch: false, deferBudget: true });
-  transcript.enforceBudget();
-
-  if (!app.refreshSessionMessagesFromTranscript(session)) {
-    fail(name, 'late durable transcript projection was not published');
-    return;
-  }
-  app.renderMessages(false);
-
-  const expectedProjection = JSON.stringify([
-    { id: 'srv_seq_437_tools_0', tools: ['call_A', 'call_B', 'call_C'] },
-    { id: 'msg_c011_recovery_tools', tools: ['call_D'] }
-  ]);
-  if (JSON.stringify(projectionAtRender) !== expectedProjection
-      || JSON.stringify(optimisticAtRender) !== JSON.stringify([{ id: 'msg_c011_recovery_tools', tools: ['call_D'] }])) {
-    fail(name, 'projection or transcript optimistic state was not reconciled before render', JSON.stringify({ projectionAtRender, optimisticAtRender }));
-    return;
-  }
-
-  const mounted = elementMap.get('messages');
-  for (const callID of ['call_A', 'call_B', 'call_C', 'call_D']) {
-    if (mounted.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
-      fail(name, `${callID} was not mounted exactly once after transcript refresh`);
-      return;
-    }
-  }
-  // Recovery tool output is a server projection: it lives in the in-memory
-  // overlay above, and must never be written to local storage where a reload
-  // could republish it beside the durable row that owns it.
-  const persisted = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
-  const persistedProjection = (persisted?.sessions?.[session.id] || [])
-    .filter((entry) => entry?.role !== 'user');
-  if (persistedProjection.length > 0) {
-    fail(name, 'server-produced recovery output reached persisted transcript optimistic state', JSON.stringify(persisted));
-    return;
-  }
-
-  // Repeated status-driven publication is idempotent, and an inactive session
-  // updates only data. Switching back renders the same unique projection.
-  const rendersBeforeInactiveRefresh = renderCount;
-  const durableGroup = session.messages.find((message) => message.id === 'srv_seq_437_tools_0');
-  session.messages = [durableGroup, {
-    id: 'msg_c011_recovery_tools',
-    role: 'tool-group',
-    status: 'running',
-    tools: [
-      { id: 'call_A', name: 'shell', status: 'done' },
-      { id: 'call_B', name: 'shell', status: 'done' },
-      { id: 'call_C', name: 'shell', status: 'done' },
-      { id: 'call_D', name: 'shell', status: 'running' }
-    ]
-  }];
-  app.state.activeSessionId = 'sess_other';
-  await app.refreshActiveSessionMessagesFromServer(session, { force: true });
-  await app.refreshActiveSessionMessagesFromServer(session, { force: true });
-  if (renderCount !== rendersBeforeInactiveRefresh || JSON.stringify(session.messages
-    .filter((message) => message.role === 'tool-group')
-    .map((message) => ({ id: message.id, tools: message.tools.map((tool) => tool.id) }))) !== expectedProjection) {
-    fail(name, 'inactive repeat refresh rendered or changed the reconciled projection');
-    return;
-  }
-  app.state.activeSessionId = session.id;
-  app.renderMessages(false);
-  for (const callID of ['call_A', 'call_B', 'call_C', 'call_D']) {
-    if (mounted.querySelectorAll(`[data-tool-id="${callID}"]`).length !== 1) {
-      fail(name, `${callID} was duplicated after switch back`);
-      return;
-    }
-  }
 
   pass(name);
 }
@@ -1420,8 +1287,8 @@ async function testMalformedStartupTranscriptSideloadFallsBack() {
   });
   app.stopSidebarStatusPoll();
   const session = app.state.sessions.find((item) => item.id === 'sess_41');
-  if (indexRequests !== 1 || bodyRequests !== 1 || session?.messages[0]?.content !== 'fallback') {
-    fail(name, 'fallback did not use the existing activation path', JSON.stringify({ indexRequests, bodyRequests, messages: session?.messages }));
+  if (indexRequests !== 1 || bodyRequests !== 1 || projectedMessages(session)[0]?.content !== 'fallback') {
+    fail(name, 'fallback did not use the existing activation path', JSON.stringify({ indexRequests, bodyRequests, messages: projectedMessages(session) }));
     return;
   }
   pass(name);
@@ -1472,8 +1339,8 @@ async function testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision
   await new Promise((resolve) => setImmediate(resolve));
   app.stopSidebarStatusPoll();
   const session = app.state.sessions.find((item) => item.id === 'sess_52');
-  if (indexRequests !== 1 || bodyRequests !== 1 || session?.transcript.rev !== 3 || session?.messages.at(-1)?.content !== '3') {
-    fail(name, 'newer state revision was lost or fetched redundantly', JSON.stringify({ indexRequests, bodyRequests, rev: session?.transcript.rev, messages: session?.messages }));
+  if (indexRequests !== 1 || bodyRequests !== 1 || session?.transcript.rev !== 3 || projectedMessages(session).at(-1)?.content !== '3') {
+    fail(name, 'newer state revision was lost or fetched redundantly', JSON.stringify({ indexRequests, bodyRequests, rev: session?.transcript.rev, messages: projectedMessages(session) }));
     return;
   }
   pass(name);
@@ -1522,13 +1389,13 @@ async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus
         markStateStarted();
         await stateGate;
         stateResolved = true;
-        return new Response(JSON.stringify({ active_run: true, active_response_id: 'resp_63', started_rev: 5, transcript_rev: 6 }), {
+        return new Response(JSON.stringify({ active_run: true, active_response_id: 'resp_63', run_epoch: 1, started_rev: 5, transcript_rev: 6 }), {
           status: 200, headers: { 'Content-Type': 'application/json' },
         });
       }
       if (parsed?.pathname === '/ui/v1/sessions/status') {
         statusRequests += 1;
-        return new Response(JSON.stringify({ sessions: [{ id: 'sess_63', active_response_id: 'resp_63', started_rev: 5, transcript_rev: 6 }] }), {
+        return new Response(JSON.stringify({ sessions: [{ id: 'sess_63', active_response_id: 'resp_63', run_epoch: 1, started_rev: 5, transcript_rev: 6 }] }), {
           status: 200, headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -1536,8 +1403,8 @@ async function testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus
     },
     appOverrides: {
       renderMessages() {
-        const contents = appRef?.state.sessions.find((item) => item.id === 'sess_63')?.messages
-          .map((message) => message.content) || [];
+        const selected = appRef?.state.sessions.find((item) => item.id === 'sess_63');
+        const contents = projectedMessages(selected).map((message) => message.content);
         events.push({ type: 'render', contents, stateResolved });
         if (contents.includes('active')) markSideloadRendered();
       },
@@ -1651,7 +1518,7 @@ async function testSidebarSwitchAppliesSelectedTranscriptBeforeAsyncStateAndSkil
     appOverrides: {
       renderMessages() {
         const visible = appRef?.state.sessions.find((item) => item.id === appRef.state.activeSessionId);
-        if (visible?.messages.some((message) => message.content === 'sideloaded switch')) events.push('render');
+        if (projectedMessages(visible).some((message) => message.content === 'sideloaded switch')) events.push('render');
       },
       applySessionDiffSummary(sessionId, summary) { appliedDiff = { sessionId, summary }; },
       applyCurrentPlanSummary(sessionId, summary) { appliedPlan = { sessionId, summary }; },
@@ -1708,8 +1575,8 @@ async function testSidebarSwitchAppliesSelectedTranscriptBeforeAsyncStateAndSkil
     fail(name, 'visible transcript remained coupled to runtime state or skills', JSON.stringify({ completedBeforeStateAndSkills, events }));
     return;
   }
-  if (target.messages[0]?.content !== 'sideloaded switch' || target.transcript?.rev !== 4) {
-    fail(name, 'selected transcript was not applied to the canonical target', JSON.stringify(target.messages));
+  if (projectedMessages(target)[0]?.content !== 'sideloaded switch' || target.transcript?.rev !== 4) {
+    fail(name, 'selected transcript was not applied to the canonical target', JSON.stringify(projectedMessages(target)));
     return;
   }
   if (appliedDiff?.sessionId !== target.id || appliedDiff.summary?.file_count !== 2
@@ -1792,12 +1659,12 @@ async function testRapidSidebarSwitchRejectsStaleSelectedTranscriptAndState() {
   await switchA;
   await new Promise((resolve) => setImmediate(resolve));
 
-  if (app.state.activeSessionId !== sessionB.id || sessionB.messages[0]?.content !== 'current B') {
-    fail(name, 'current B sideload did not remain selected', JSON.stringify({ active: app.state.activeSessionId, messages: sessionB.messages }));
+  if (app.state.activeSessionId !== sessionB.id || projectedMessages(sessionB)[0]?.content !== 'current B') {
+    fail(name, 'current B sideload did not remain selected', JSON.stringify({ active: app.state.activeSessionId, messages: projectedMessages(sessionB) }));
     return;
   }
-  if (sessionA.messages.some((message) => message.content === 'stale A') || Number(sessionA.transcript?.rev || 0) !== 0) {
-    fail(name, 'stale A sideload mutated its transcript after B won', JSON.stringify({ messages: sessionA.messages, rev: sessionA.transcript?.rev }));
+  if (projectedMessages(sessionA).some((message) => message.content === 'stale A') || Number(sessionA.transcript?.rev || 0) !== 0) {
+    fail(name, 'stale A sideload mutated its transcript after B won', JSON.stringify({ messages: projectedMessages(sessionA), rev: sessionA.transcript?.rev }));
     return;
   }
   if (stateSessions.includes('sess_a') || skillSessions.includes('sess_a')) {
@@ -1921,8 +1788,8 @@ async function testSidebarSwitchMalformedSideloadFallsBackExactlyOnce() {
 
   await app.switchToSession(target.id, { closeSidebar: false });
   await waitFor(() => order.includes('state'), 'fallback state hydration did not start');
-  if (indexRequests !== 1 || bodyRequests !== 1 || target.messages[0]?.content !== 'fallback once') {
-    fail(name, 'fallback request count or projection was incorrect', JSON.stringify({ indexRequests, bodyRequests, messages: target.messages }));
+  if (indexRequests !== 1 || bodyRequests !== 1 || projectedMessages(target)[0]?.content !== 'fallback once') {
+    fail(name, 'fallback request count or projection was incorrect', JSON.stringify({ indexRequests, bodyRequests, messages: projectedMessages(target) }));
     return;
   }
   if (JSON.stringify(order.slice(0, 4)) !== JSON.stringify(['selected', 'index', 'bodies', 'state'])) {
@@ -1959,15 +1826,15 @@ async function testSidebarSwitchActiveSideloadReconcilesNewerStartedRevision() {
       if (parsed?.pathname === '/ui/v1/sessions/sess_active_switch/state') {
         order.push('state');
         return new Response(JSON.stringify({
-          active_run: true, active_response_id: 'resp_new', started_rev: 5, transcript_rev: 6,
+          active_run: true, active_response_id: 'resp_new', run_epoch: 2, started_rev: 5, transcript_rev: 6,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (isTranscriptIndexURL(url, 'sess_active_switch')) {
         indexRequests += 1;
         order.push('index');
         return new Response(JSON.stringify({
-          rev: 5, compaction_seq: -1, compaction_count: 0,
-          active_response_id: 'resp_new', started_rev: 5,
+          rev: 6, compaction_seq: -1, compaction_count: 0,
+          active_response_id: 'resp_new', run_epoch: 2, started_rev: 5,
           rows: { ids: [41, 42], seqs: [0, 1], roles: 'uu', flags: [0, 0] },
         }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"active-switch-5"' } });
       }
@@ -1975,7 +1842,7 @@ async function testSidebarSwitchActiveSideloadReconcilesNewerStartedRevision() {
         bodyRequests += 1;
         order.push('bodies');
         return new Response(JSON.stringify({
-          rev: 5,
+          rev: 6,
           messages: [
             { id: 41, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'ready at four' }] },
             { id: 42, sequence: 1, role: 'user', parts: [{ type: 'text', text: 'started at five' }] },
@@ -1990,7 +1857,7 @@ async function testSidebarSwitchActiveSideloadReconcilesNewerStartedRevision() {
     appOverrides: {
       renderMessages() {
         const target = appRef?.state.sessions.find((item) => item.id === 'sess_active_switch');
-        if (target?.messages.some((message) => message.content === 'ready at four')) order.push('render');
+        if (projectedMessages(target).some((message) => message.content === 'ready at four')) order.push('render');
       },
       async resumeActiveResponse(session, options = {}) {
         order.push('resume');
@@ -2009,7 +1876,7 @@ async function testSidebarSwitchActiveSideloadReconcilesNewerStartedRevision() {
 
   await app.switchToSession(target.id, { closeSidebar: false });
   await waitFor(() => resumeCalls.length > 0, 'newer active response was not resumed');
-  if (indexRequests !== 1 || bodyRequests !== 1 || target.transcript?.rev !== 5) {
+  if (indexRequests !== 1 || bodyRequests !== 1 || target.transcript?.rev !== 6) {
     fail(name, 'newer started revision did not reconcile exactly once', JSON.stringify({ indexRequests, bodyRequests, rev: target.transcript?.rev }));
     return;
   }
@@ -2183,8 +2050,8 @@ async function testStartupSplashWaitsForDeepLinkedTranscriptRender() {
     return;
   }
   const session = app.state.sessions.find((item) => item.id === 'sess_3347');
-  if (!session || session.messages.map((message) => message.content).join(',') !== 'question,answer') {
-    fail(name, 'startup completed without the canonical transcript projection', JSON.stringify(session?.messages || []));
+  if (!session || projectedMessages(session).map((message) => message.content).join(',') !== 'question,answer') {
+    fail(name, 'startup completed without the canonical transcript projection', JSON.stringify(projectedMessages(session) || []));
     return;
   }
   pass(name);
@@ -2654,20 +2521,20 @@ async function testDeveloperMessagesAreHidden() {
     return;
   }
 
-  const developerMsg = session.messages.find(m => m.role === 'developer');
+  const developerMsg = projectedMessages(session).find(m => m.role === 'developer');
   if (developerMsg) {
     fail(name, 'developer message should not appear in converted messages');
     return;
   }
 
-  const devContent = session.messages.find(m => m.content && m.content.includes('You are Jarvis'));
+  const devContent = projectedMessages(session).find(m => m.content && m.content.includes('You are Jarvis'));
   if (devContent) {
     fail(name, 'developer message content leaked into another role', `role=${devContent.role}`);
     return;
   }
 
-  if (session.messages.length !== 2) {
-    fail(name, `expected 2 messages (user + assistant), got ${session.messages.length}`);
+  if (projectedMessages(session).length !== 2) {
+    fail(name, `expected 2 messages (user + assistant), got ${projectedMessages(session).length}`);
     return;
   }
 
@@ -3206,6 +3073,7 @@ async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
         return new Response(JSON.stringify({
           active_run: true,
           active_response_id: 'resp_resume_123',
+          run_epoch: 1,
           transcript_rev: 2,
           started_rev: 2
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -3339,6 +3207,7 @@ async function testSwitchToSessionAttachesChangedActiveResponseFromStartedRevisi
         return new Response(JSON.stringify({
           active_run: true,
           active_response_id: 'resp_resume_123',
+          run_epoch: 1,
           transcript_rev: 2,
           started_rev: 2
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -3585,6 +3454,7 @@ async function testResumeAndDrainFiringViaSync() {
         return new Response(JSON.stringify({
           active_run: true,
           active_response_id: 'resp_drain_456',
+          run_epoch: 1,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (url === '/ui/v1/sessions/status') {
@@ -3668,125 +3538,43 @@ async function testResumeAndDrainFiringViaSync() {
   pass(name);
 }
 
-async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
-  const name = 'idle sync with pending_interjection requeues it as follow-up via requeuePendingInterjections';
-  const requeueCalls = [];
-  const sendCalls = [];
-  let appRef = null;
-
-  const { app } = await createSessionsHarness({
+async function testSyncIgnoresPendingInterjectionWithoutExactID() {
+  const name = 'status pending_interjection without an exact id is ignored';
+  const trackCalls = [];
+  const h = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (url === '/ui/v1/sessions/sess_reload/state') {
+      if (String(url).includes('/state')) {
         return new Response(JSON.stringify({
-          active_run: false,
-          pending_interjection: { text: 'rescued prompt' }
+          active_run: true,
+          pending_interjection: { text: 'ambiguous prompt' }
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      if (isTailMessagesURL(url, 'sess_reload')) {
-        return new Response(JSON.stringify({ messages: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (url === '/ui/v1/sessions/status') {
-        return new Response(JSON.stringify({ sessions: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      throw new Error(`unexpected fetch ${url}`);
     },
     appOverrides: {
-      trackPendingInterjection(sessionId, prompt, messageId, action) {
-        appRef.state.pendingInterjections.push({ sessionId, prompt, messageId, action });
-      },
-      removePendingInterjectionById(messageId) {
-        const idx = appRef.state.pendingInterjections.findIndex(e => e.messageId === messageId);
-        if (idx >= 0) appRef.state.pendingInterjections.splice(idx, 1);
-      },
-      trackPendingInterruptCommit(sessionId, prompt, messageId) {
-        appRef.state.pendingInterruptCommits.push({ sessionId, prompt, messageId });
-      },
-      refreshPendingInterjectionBanner() {},
-      requeuePendingInterjections(session) {
-        requeueCalls.push(session.id);
-        const remaining = [];
-        for (const entry of appRef.state.pendingInterjections) {
-          if (entry.sessionId === session.id) {
-            appRef.state.queuedInterrupts.push({ sessionId: session.id, prompt: entry.prompt, messageId: entry.messageId });
-          } else {
-            remaining.push(entry);
-          }
-        }
-        appRef.state.pendingInterjections = remaining;
-      },
-      requeueUncommittedInterrupts() {},
-      drainInterruptQueueIfIdle(session) {
-        if (!session || session.id !== appRef.state.activeSessionId) return;
-        if (appRef.state.streaming || appRef.state.abortController) return;
-        const queuedIndex = appRef.state.queuedInterrupts.findIndex(entry => entry.sessionId === session.id);
-        if (queuedIndex >= 0) {
-          const [queued] = appRef.state.queuedInterrupts.splice(queuedIndex, 1);
-          void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
-        }
-      },
-      sendMessage(payload) {
-        sendCalls.push(payload);
-        return Promise.resolve();
-      },
+      trackPendingInterjection: (...args) => trackCalls.push(args),
+      refreshSidebarStatusPoll: () => {},
     }
   });
-  appRef = app;
-
+  const { app } = h;
+  const state = app.state;
   const session = {
-    id: 'sess_reload',
-    title: 'Reload test',
+    id: 'exact-status-id',
+    title: 'Exact identity',
     origin: 'web',
     created: 1710000000000,
     messages: [],
     activeResponseId: null,
     lastSequenceNumber: 0,
   };
-  app.state.sessions = [session];
-  app.state.activeSessionId = session.id;
-  app.state.draftSessionActive = false;
+  state.sessions = [session];
+  state.activeSessionId = session.id;
 
   await app.syncActiveSessionFromServer(session, false);
 
-  // The /state response says pending_interjection but active_run=false.
-  // syncActiveSessionFromServer should:
-  //   1. trackPendingInterjection (picks up pending_interjection from server)
-  //   2. in the terminal branch, requeuePendingInterjections → moves to queuedInterrupts
-  //   3. drainInterruptQueueIfIdle → sendMessage fires
-  if (requeueCalls.length === 0 || requeueCalls[0] !== session.id) {
-    fail(name, 'expected requeuePendingInterjections to be called on terminal state', JSON.stringify(requeueCalls));
-    return;
+  if (trackCalls.length !== 0) {
+    fail(name, `trackPendingInterjection called ${trackCalls.length} times without an exact id`);
   }
-
-  if (app.state.pendingInterjections.length !== 0) {
-    fail(name, 'pendingInterjections should be drained', JSON.stringify(app.state.pendingInterjections));
-    return;
-  }
-
-  if (sendCalls.length !== 1) {
-    fail(name, `expected 1 follow-up sendMessage, got ${sendCalls.length}`, JSON.stringify(sendCalls));
-    return;
-  }
-  if (sendCalls[0].prompt !== 'rescued prompt') {
-    fail(name, `follow-up prompt = ${sendCalls[0].prompt}, want "rescued prompt"`);
-    return;
-  }
-
-  pass(name);
 }
 
 async function testSyncUsesServerProvidedPendingInterjectionId() {
@@ -5302,7 +5090,7 @@ async function testStoppedRunReconciliationClearsProviderRetryOwner() {
   pass(name);
 }
 
-async function testSessionPruningDestroysTranscriptStores() {
+async function testSessionPruningDestroysConversationControllers() {
   const name = 'session pruning destroys transcript stores for removed sessions';
   const { app } = await createSessionsHarness();
   const destroyed = [];
@@ -5322,61 +5110,47 @@ async function testSessionPruningDestroysTranscriptStores() {
   pass(name);
 }
 
-async function testOptimisticTranscriptStorageIsPerSession() {
-  const name = 'optimistic transcript storage keeps independent per-session entries';
+async function testPendingIntentStorageMergesConcurrentWriters() {
+  const name = 'pending intent storage merges stale concurrent writers by exact id';
   const { app, storage } = await createSessionsHarness();
-  const first = { id: 'optimistic-a', messages: [] };
-  const second = { id: 'optimistic-b', messages: [] };
-  app.trackTranscriptOptimistic(first, { id: 'local-a', clientKey: 'send-a', role: 'user', content: 'a' });
-  app.trackTranscriptOptimistic(second, { id: 'local-b', clientKey: 'send-b', role: 'user', content: 'b' });
-  app.trackTranscriptOptimistic(first, { id: 'guardian-a', clientKey: 'guardian-a', role: 'event', content: 'review' });
-
-  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
-  const firstEntries = saved?.sessions?.[first.id] || [];
-  const secondEntries = saved?.sessions?.[second.id] || [];
-  if (firstEntries.length !== 1 || firstEntries[0].clientKey !== 'send-a' || secondEntries.length !== 1 || secondEntries[0].clientKey !== 'send-b') {
-    fail(name, 'one session clobbered another or persisted a display-only row', JSON.stringify(saved));
+  const firstTab = { id: 'shared-session' };
+  const secondTab = { id: 'shared-session' };
+  app.trackPendingIntent(firstTab, { id: 'intent-a', clientMessageId: 'intent-a', role: 'user', content: 'a' });
+  app.trackPendingIntent(secondTab, { id: 'intent-b', clientMessageId: 'intent-b', role: 'user', content: 'b' });
+  const merged = persistedIntentEntries(storage, firstTab.id).map((entry) => entry.clientMessageId).sort();
+  if (JSON.stringify(merged) !== JSON.stringify(['intent-a', 'intent-b'])) {
+    fail(name, 'second writer removed an unseen first-writer intent', JSON.stringify([...storage]));
     return;
   }
-  app.retireTranscriptOptimistic(first, 'send-a');
-  const retired = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
-  if (retired?.sessions?.[first.id] || retired?.sessions?.[second.id]?.[0]?.clientKey !== 'send-b') {
-    fail(name, 'retiring one optimistic writer removed the wrong session or left stale storage', JSON.stringify(retired));
+  app.retirePendingIntent(firstTab, 'intent-a');
+  const remaining = persistedIntentEntries(storage, firstTab.id).map((entry) => entry.clientMessageId);
+  if (JSON.stringify(remaining) !== JSON.stringify(['intent-b'])) {
+    fail(name, 'exact retirement removed another writer intent', JSON.stringify([...storage]));
     return;
   }
   pass(name);
 }
 
-async function testStreamProjectionNeverReachesLocalStorage() {
-  const name = 'streaming assistant and tool overlays stay in memory and never reach local storage';
+async function testOptimisticTranscriptStorageIsPerSession() {
+  const name = 'optimistic transcript storage keeps independent per-session entries';
   const { app, storage } = await createSessionsHarness();
-  const session = { id: 'projection-write-boundary', messages: [] };
-  const responseId = 'resp_write_boundary';
-  app.trackTranscriptOptimistic(session, {
-    id: 'msg_assistant', clientKey: `${responseId}:assistant:0`, role: 'assistant',
-    responseId, assistantSegmentOrdinal: 0, content: 'streamed text'
-  });
-  app.trackTranscriptOptimistic(session, {
-    id: 'msg_tools', clientKey: 'msg_tools', role: 'tool-group', responseId,
-    status: 'running', tools: [{ id: 'call_1', status: 'running' }]
-  });
-  app.trackTranscriptOptimistic(session, {
-    id: 'msg_user', clientKey: 'send-1', role: 'user', content: 'queued question'
-  });
+  const first = { id: 'optimistic-a', messages: [] };
+  const second = { id: 'optimistic-b', messages: [] };
+  app.trackPendingIntent(first, { id: 'local-a', clientMessageId: 'send-a', clientKey: 'send-a', role: 'user', content: 'a' });
+  app.trackPendingIntent(second, { id: 'local-b', clientMessageId: 'send-b', clientKey: 'send-b', role: 'user', content: 'b' });
+  app.trackPendingIntent(first, { id: 'guardian-a', clientKey: 'guardian-a', role: 'event', content: 'review' });
 
-  const inMemory = session.transcript.optimistic.map((entry) => entry.clientKey);
-  if (JSON.stringify(inMemory) !== JSON.stringify([`${responseId}:assistant:0`, 'msg_tools', 'send-1'])) {
-    fail(name, 'the in-memory overlay lost live streaming state', JSON.stringify(inMemory));
+  const firstEntries = persistedIntentEntries(storage, first.id);
+  const secondEntries = persistedIntentEntries(storage, second.id);
+  if (firstEntries.length !== 1 || firstEntries[0].clientKey !== 'send-a' || secondEntries.length !== 1 || secondEntries[0].clientKey !== 'send-b') {
+    fail(name, 'one session clobbered another or persisted a display-only row', JSON.stringify([...storage]));
     return;
   }
-  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
-  if (saved?.version !== 2) {
-    fail(name, 'storage was not stamped with the current version', JSON.stringify(saved));
-    return;
-  }
-  const savedKeys = (saved?.sessions?.[session.id] || []).map((entry) => entry.clientKey);
-  if (JSON.stringify(savedKeys) !== JSON.stringify(['send-1'])) {
-    fail(name, 'server-produced projection was written to local storage', JSON.stringify(saved));
+  app.retirePendingIntent(first, 'send-a');
+  const retiredFirst = persistedIntentEntries(storage, first.id);
+  const retiredSecond = persistedIntentEntries(storage, second.id);
+  if (retiredFirst.length !== 0 || retiredSecond[0]?.clientKey !== 'send-b') {
+    fail(name, 'retiring one optimistic writer removed the wrong session or left stale storage', JSON.stringify([...storage]));
     return;
   }
   pass(name);
@@ -5410,23 +5184,18 @@ async function testLegacyUnversionedStorageMigratesOnlyIntent() {
   app.state.sessions = [session];
   app.state.activeSessionId = sessionId;
   // Tracking a fresh send hydrates the store from legacy storage first.
-  app.trackTranscriptOptimistic(session, {
-    id: 'msg_new_user', clientKey: 'send-new', role: 'user', content: 'newly queued'
+  app.trackPendingIntent(session, {
+    id: 'msg_new_user', clientMessageId: 'send-new', clientKey: 'send-new', role: 'user', content: 'newly queued'
   });
 
-  const hydrated = session.transcript.optimistic.map((entry) => entry.clientKey);
+  const hydrated = pendingIntents(session).map((entry) => entry.clientKey);
   if (JSON.stringify(hydrated) !== JSON.stringify(['legacy-user', 'send-new'])) {
     fail(name, 'legacy hydration restored projection shadows or dropped queued intent', JSON.stringify(hydrated));
     return;
   }
-  const saved = JSON.parse(storage.get('term_llm_optimistic_transcript') || 'null');
-  if (saved?.version !== 2) {
-    fail(name, 'legacy payload was not rewritten at the current version', JSON.stringify(saved));
-    return;
-  }
-  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  const savedKeys = persistedIntentEntries(storage, sessionId).map((entry) => entry.clientKey).sort();
   if (JSON.stringify(savedKeys) !== JSON.stringify(['legacy-user', 'send-new'])) {
-    fail(name, 'legacy migration persisted the wrong entries', JSON.stringify(saved));
+    fail(name, 'legacy migration persisted the wrong entries', JSON.stringify([...storage]));
     return;
   }
   pass(name);
@@ -5519,28 +5288,23 @@ async function testReloadMigratesLegacyProjectionShadowsAtEqualRevision() {
     fail(name, 'reload did not settle on the unchanged server revision', JSON.stringify({ loaded, rev: session.transcript?.rev }));
     return;
   }
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  const assistants = projectedMessages(session).filter((message) => message.role === 'assistant');
   if (assistants.length !== 1 || assistants[0].durable !== true) {
-    fail(name, 'a legacy assistant shadow rendered beside the durable row it duplicates', JSON.stringify(session.messages));
+    fail(name, 'a legacy assistant shadow rendered beside the durable row it duplicates', JSON.stringify(projectedMessages(session)));
     return;
   }
-  if (session.messages.some((message) => ['tool-group', 'tool'].includes(message.role))) {
-    fail(name, 'a legacy tool shadow survived migration', JSON.stringify(session.messages));
+  if (projectedMessages(session).some((message) => ['tool-group', 'tool'].includes(message.role))) {
+    fail(name, 'a legacy tool shadow survived migration', JSON.stringify(projectedMessages(session)));
     return;
   }
-  const optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
+  const optimisticKeys = pendingIntents(session).map((entry) => entry.clientKey);
   if (JSON.stringify(optimisticKeys) !== JSON.stringify(['pending-user'])) {
     fail(name, 'migration dropped queued user intent or retained a projection shadow', JSON.stringify(optimisticKeys));
     return;
   }
-  const saved = JSON.parse(storage.get(storageKey) || 'null');
-  if (saved?.version !== 2) {
-    fail(name, 'migrated storage was not rewritten at the current version', JSON.stringify(saved));
-    return;
-  }
-  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  const savedKeys = persistedIntentEntries(storage, sessionId).map((entry) => entry.clientKey);
   if (JSON.stringify(savedKeys) !== JSON.stringify(['pending-user'])) {
-    fail(name, 'migrated storage retained server-produced projection', JSON.stringify(saved));
+    fail(name, 'migrated storage retained server-produced projection', JSON.stringify([...storage]));
     return;
   }
   pass(name);
@@ -5626,19 +5390,18 @@ async function testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdva
   app.state.draftSessionActive = false;
 
   const loaded = await app.syncTranscript(session, { reason: 'reload' });
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  const assistants = projectedMessages(session).filter((message) => message.role === 'assistant');
   if (!loaded || assistants.length !== 1 || assistants[0].durable !== true) {
-    fail(name, 'a stored assistant shadow rendered beside authoritative durable output', JSON.stringify(session.messages));
+    fail(name, 'a stored assistant shadow rendered beside authoritative durable output', JSON.stringify(projectedMessages(session)));
     return;
   }
-  if (JSON.stringify(session.transcript.optimistic.map((entry) => entry.clientKey)) !== JSON.stringify(['pending-user'])) {
-    fail(name, 'migration did not preserve only the genuinely pending user', JSON.stringify(session.transcript.optimistic));
+  if (JSON.stringify(pendingIntents(session).map((entry) => entry.clientKey)) !== JSON.stringify(['pending-user'])) {
+    fail(name, 'migration did not preserve only the genuinely pending user', JSON.stringify(pendingIntents(session)));
     return;
   }
-  const saved = JSON.parse(storage.get(storageKey) || 'null');
-  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  const savedKeys = persistedIntentEntries(storage, sessionId).map((entry) => entry.clientKey);
   if (JSON.stringify(savedKeys) !== JSON.stringify(['pending-user'])) {
-    fail(name, 'migrated storage retained the stale assistant identity', JSON.stringify(saved));
+    fail(name, 'migrated storage retained the stale assistant identity', JSON.stringify([...storage]));
     return;
   }
   pass(name);
@@ -5733,7 +5496,7 @@ async function testReloadScopesStalePersistedRetirementToCurrentActiveResponse()
   // the response that is still running. The live overlay is rebuilt from event
   // replay and the response snapshot, so storage keeps only queued intent.
   const expectedKeys = ['pending-user'];
-  const optimisticKeys = session.transcript.optimistic.map((entry) => entry.clientKey);
+  const optimisticKeys = pendingIntents(session).map((entry) => entry.clientKey);
   if (!loaded || session.transcript.activeRun?.id !== activeResponseId
       || JSON.stringify(optimisticKeys) !== JSON.stringify(expectedKeys)) {
     fail(name, 'reload during an active response restored stored projection or dropped queued intent', JSON.stringify({
@@ -5742,19 +5505,14 @@ async function testReloadScopesStalePersistedRetirementToCurrentActiveResponse()
     }));
     return;
   }
-  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  const assistants = projectedMessages(session).filter((message) => message.role === 'assistant');
   if (assistants.length !== 1 || assistants[0].durable !== true) {
-    fail(name, 'a stored assistant shadow rendered beside the durable row during an active response', JSON.stringify(session.messages));
+    fail(name, 'a stored assistant shadow rendered beside the durable row during an active response', JSON.stringify(projectedMessages(session)));
     return;
   }
-  const saved = JSON.parse(storage.get(storageKey) || 'null');
-  if (saved?.version !== 2) {
-    fail(name, 'storage was not rewritten at the current version during an active response', JSON.stringify(saved));
-    return;
-  }
-  const savedKeys = (saved?.sessions?.[sessionId] || []).map((entry) => entry.clientKey);
+  const savedKeys = persistedIntentEntries(storage, sessionId).map((entry) => entry.clientKey);
   if (JSON.stringify(savedKeys) !== JSON.stringify(expectedKeys)) {
-    fail(name, 'storage retained server-produced projection during an active response', JSON.stringify(saved));
+    fail(name, 'storage retained server-produced projection during an active response', JSON.stringify([...storage]));
     return;
   }
   pass(name);
@@ -5770,7 +5528,7 @@ async function testTranscriptProjectionAnnotatesCompactionBoundaryOnceAcrossSegm
     { id: 104, sequence: 14, role: 'assistant', created_at: 1400, parts: [{ type: 'text', text: 'second answer' }] },
   ];
   const session = { id: 'single-compaction-boundary', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   session.transcript.applyIndex({
     rev: 4,
     compaction_seq: 10,
@@ -5787,13 +5545,13 @@ async function testTranscriptProjectionAnnotatesCompactionBoundaryOnceAcrossSegm
     return;
   }
   app.refreshSessionMessagesFromTranscript(session);
-  const boundaries = session.messages.filter((message) => message.role === 'compaction-boundary');
+  const boundaries = projectedMessages(session).filter((message) => message.role === 'compaction-boundary');
   if (boundaries.length !== 1 || boundaries[0].id !== 'compaction_boundary_10') {
-    fail(name, 'global compaction metadata produced one marker per materialized segment', JSON.stringify(session.messages));
+    fail(name, 'global compaction metadata produced one marker per materialized segment', JSON.stringify(projectedMessages(session)));
     return;
   }
-  if (session.messages[0] !== boundaries[0] || session.messages[1]?.content !== 'first prompt') {
-    fail(name, 'single marker was not placed at the first visible post-compaction message', JSON.stringify(session.messages));
+  if (projectedMessages(session)[0] !== boundaries[0] || projectedMessages(session)[1]?.content !== 'first prompt') {
+    fail(name, 'single marker was not placed at the first visible post-compaction message', JSON.stringify(projectedMessages(session)));
     return;
   }
   pass(name);
@@ -5809,7 +5567,7 @@ async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
     { id: 104, sequence: 4, role: 'assistant', created_at: 4000, parts: [{ type: 'text', text: 'done' }] },
   ];
   const session = { id: 'durable-groups', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   session.transcript.applyIndex({
     rev: 4,
     compaction_seq: -1,
@@ -5822,15 +5580,15 @@ async function testGroupedToolRowsPreserveDurableRangesAndLaterAnchors() {
   app.state.draftSessionActive = false;
   app.refreshSessionMessagesFromTranscript(session);
 
-  const group = session.messages.find((message) => message.role === 'tool-group');
-  const later = session.messages.find((message) => message.role === 'assistant' && message.content === 'done');
-  const anchorIDs = session.messages.map((message) => message.durableRowId).filter((id) => id != null);
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
+  const later = projectedMessages(session).find((message) => message.role === 'assistant' && message.content === 'done');
+  const anchorIDs = projectedMessages(session).map((message) => message.durableRowId).filter((id) => id != null);
   if (!group || group.durableRowStartId !== 102 || group.durableRowEndId !== 103) {
-    fail(name, 'tool group did not retain its complete durable source range', JSON.stringify(session.messages));
+    fail(name, 'tool group did not retain its complete durable source range', JSON.stringify(projectedMessages(session)));
     return;
   }
   if (!later || later.durableRowId !== 104) {
-    fail(name, 'later assistant inherited the grouped tool result row ID', JSON.stringify(session.messages));
+    fail(name, 'later assistant inherited the grouped tool result row ID', JSON.stringify(projectedMessages(session)));
     return;
   }
   if (new Set(anchorIDs).size !== anchorIDs.length) {
@@ -5899,7 +5657,7 @@ async function testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping() {
   });
   app.stopSidebarStatusPoll();
   const session = { id: 'large-tool-turn', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id, { maxMaterializedTurns: 60, overscanTurns: 0 });
+  session.transcript = new windowObj.ConversationController(session.id, { maxMaterializedTurns: 60, overscanTurns: 0 });
   session.transcript.applyIndex({
     rev: raw.length,
     compaction_seq: -1,
@@ -5917,7 +5675,7 @@ async function testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping() {
 
   const loaded = await app.materializeTranscriptSegments(session, [0]);
   const materialized = session.transcript.segments.filter((segment) => segment.state === 'materialized');
-  const group = session.messages.find((message) => message.role === 'tool-group');
+  const group = projectedMessages(session).find((message) => message.role === 'tool-group');
   const farTool = group?.tools?.find((tool) => tool.id === `call-${toolCalls - 1}`);
   if (!loaded || requestedAnchors.length !== 1 || requestedAnchors[0] !== 1) {
     fail(name, 'client did not request exactly one turn anchor', JSON.stringify({ loaded, requestedAnchors }));
@@ -5962,14 +5720,14 @@ async function testTerminalTranscriptSyncQueuesBehindInflightRequest() {
     }
   });
   const session = { id: 'sync-race', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
 
   const ordinary = app.syncTranscript(session, { reason: 'ordinary' });
   while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
-  const terminal = app.noteTranscriptTerminal(session, 2);
+  const terminal = app.noteTranscriptTerminal(session, 'resp-sync-race', 2);
   resolveFirst(new Response(JSON.stringify({
     rev: 1, compaction_seq: -1, compaction_count: 0,
     rows: { ids: [], seqs: [], roles: '', flags: [] }
@@ -6004,14 +5762,14 @@ async function testSatisfiedTerminalSyncDoesNotRefetchTranscript() {
     }
   });
   const session = { id: 'satisfied-terminal-sync', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
 
   const activation = app.syncTranscript(session, { reason: 'activation' });
   while (typeof resolveFirst !== 'function') await new Promise((resolve) => setTimeout(resolve, 0));
-  const terminal = app.noteTranscriptTerminal(session, 2);
+  const terminal = app.noteTranscriptTerminal(session, 'resp-satisfied-terminal', 2);
   resolveFirst(new Response(JSON.stringify({
     rev: 2, compaction_seq: -1, compaction_count: 0,
     rows: { ids: [], seqs: [], roles: '', flags: [] }
@@ -6049,7 +5807,7 @@ async function testUntargetedForceQueuesBehindInflightRequest() {
     }
   });
   const session = { id: 'untargeted-force-sync', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
@@ -6087,7 +5845,7 @@ async function testForceScrollQueuesBehindSatisfiedInflightRequest() {
     }
   });
   const session = { id: 'force-scroll-sync', messages: [] };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
@@ -6108,8 +5866,8 @@ async function testForceScrollQueuesBehindSatisfiedInflightRequest() {
   pass(name);
 }
 
-async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
-  const name = 'active status attaches at started_rev without reconciling in-run revisions';
+async function testActiveStatusSyncsInRunTranscriptRevisionsWithoutDuplicatingActiveOutput() {
+  const name = 'active status syncs latest transcript revision while active output remains owned by the run';
   const fetchCalls = [];
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async (url) => {
@@ -6129,7 +5887,7 @@ async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
     }
   });
   const session = { id: 'sess_active_rev', messages: [], activeResponseId: null, lastSequenceNumber: 0 };
-  session.transcript = new windowObj.TranscriptStore(session.id);
+  session.transcript = new windowObj.ConversationController(session.id);
   session.transcript.applyIndex({ rev: 5, compaction_seq: -1, compaction_count: 0, rows: { ids: [], seqs: [], roles: '', flags: [] } });
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
@@ -6140,12 +5898,13 @@ async function testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal() {
   await app.reconcileTranscriptFromStatus([{
     id: session.id,
     active_response_id: 'resp_active',
+    run_epoch: 1,
     started_rev: 5,
     transcript_rev: 9,
     active_run: true
   }]);
-  if (fetchCalls.some((url) => isTranscriptIndexURL(url, session.id))) {
-    fail(name, 'status poll reconciled rows persisted after started_rev while the run was active', JSON.stringify(fetchCalls));
+  if (!fetchCalls.some((url) => isTranscriptIndexURL(url, session.id)) || session.transcript.rev !== 9) {
+    fail(name, 'status poll did not reconcile the latest durable revision during the active run', JSON.stringify({ fetchCalls, rev: session.transcript.rev }));
     return;
   }
   if (session.transcript.activeRun?.startedRev !== 5) {
@@ -6254,7 +6013,7 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
   };
 
   const session = { id: 'sess_huge_scroll', messages: [] };
-  const transcript = new windowObj.TranscriptStore(session.id, { maxMaterializedTurns: materializeBudget, overscanTurns: 8 });
+  const transcript = new windowObj.ConversationController(session.id, { maxMaterializedTurns: materializeBudget, overscanTurns: 8 });
   const ids = Array.from({ length: rowCount }, (_, index) => index + 1);
   transcript.applyIndex({
     rev: 1,
@@ -6325,8 +6084,8 @@ async function testHugeTranscriptGapTraversalStaysBoundedAndAnchored() {
       fail(name, `materialized transcript exceeded turn budget plus pinned exceptions at step ${step}`, `turns=${materialized.length} pinned=${pinnedMaterialized} bodies=${transcript.bodies.size}`);
       return;
     }
-    if (session.messages.length > materializeBudget + 3 || renderedDescriptorCount > materializeBudget + 3 || messages.children.length > materializeBudget + 3) {
-      fail(name, `rendered transcript exceeded sparse DOM bounds at step ${step}`, `messages=${session.messages.length} descriptors=${renderedDescriptorCount} DOM=${messages.children.length}`);
+    if (projectedMessages(session).length > materializeBudget + 3 || renderedDescriptorCount > materializeBudget + 3 || messages.children.length > materializeBudget + 3) {
+      fail(name, `rendered transcript exceeded sparse DOM bounds at step ${step}`, `messages=${projectedMessages(session).length} descriptors=${renderedDescriptorCount} DOM=${messages.children.length}`);
       return;
     }
     const first = Math.min(...materialized.map((segment) => segment.startOrdinal));
@@ -6393,8 +6152,8 @@ async function testTranscriptSyncCommitsOneRenderedProjection() {
   renders = 0;
 
   const loaded = await app.syncTranscript(session, { reason: 'activation' });
-  if (!loaded || session.messages.map((message) => message.content).join(',') !== 'question,answer') {
-    fail(name, 'sync did not commit the complete projected transcript', JSON.stringify({ loaded, messages: session.messages }));
+  if (!loaded || projectedMessages(session).map((message) => message.content).join(',') !== 'question,answer') {
+    fail(name, 'sync did not commit the complete projected transcript', JSON.stringify({ loaded, messages: projectedMessages(session) }));
     return;
   }
   if (renders !== 1) {
@@ -6454,8 +6213,9 @@ async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   await firstIndexStarted;
   const statusSync = app.reconcileTranscriptFromStatus([{
     id: sessionId,
-    transcript_rev: 9,
+    transcript_rev: 2,
     active_response_id: 'resp_inflight',
+    run_epoch: 1,
     started_rev: 2,
     active_run: true
   }]);
@@ -6525,167 +6285,6 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   pass(name);
 }
 
-async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh() {
-  const name = 'assistant tail ownership coalesces status prefix, terminal completion, and inactive refresh';
-  const sessionId = 'assistant-tail-race';
-  let phase = 'status';
-  let renderCount = 0;
-  const transcriptEnvelope = () => phase === 'status'
-    ? {
-      rev: 7,
-      compaction_seq: -1,
-      compaction_count: 0,
-      active_response_id: 'resp_assistant_tail',
-      started_rev: 7,
-      rows: {
-        ids: [401, 402], seqs: [401, 402], roles: 'ua', flags: [0, 0],
-        response_ids: ['', 'resp_assistant_tail'], assistant_segment_ordinals: [-1, 0]
-      }
-    }
-    : {
-      rev: 8,
-      compaction_seq: -1,
-      compaction_count: 0,
-      rows: {
-        ids: [401, 403], seqs: [401, 403], roles: 'ua', flags: [0, 0],
-        response_ids: ['', 'resp_assistant_tail'], assistant_segment_ordinals: [-1, 0]
-      }
-    };
-  const transcriptBodies = () => ({
-    rev: phase === 'status' ? 7 : 8,
-    messages: [
-      { id: 401, sequence: 401, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'question' }] },
-      {
-        id: phase === 'status' ? 402 : 403,
-        sequence: phase === 'status' ? 402 : 403,
-        role: 'assistant',
-        response_id: 'resp_assistant_tail',
-        assistant_segment_ordinal: 0,
-        created_at: 2000,
-        parts: [{
-          type: 'text',
-          text: phase === 'status' ? 'durable prefix' : 'durable prefix plus optimistic suffix'
-        }]
-      }
-    ]
-  });
-
-  const { app, windowObj, storage } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (isTranscriptIndexURL(url, sessionId)) {
-        return new Response(JSON.stringify(transcriptEnvelope()), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json', ETag: `"assistant-${phase}"` }
-        });
-      }
-      if (isTranscriptBodiesURL(url, sessionId)) {
-        return new Response(JSON.stringify(transcriptBodies()), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(JSON.stringify({ sessions: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    },
-    appOverrides: {
-      renderMessages() { renderCount += 1; }
-    }
-  });
-  app.stopSidebarStatusPoll();
-
-  const session = { id: sessionId, messages: [] };
-  session.transcript = new windowObj.TranscriptStore(sessionId);
-  session.transcript.applyIndex({
-    rev: 6,
-    compaction_seq: -1,
-    compaction_count: 0,
-    rows: { ids: [401], seqs: [401], roles: 'u', flags: [0] }
-  });
-  session.transcript.materialize(transcriptBodies().messages.slice(0, 1), { countFetch: false });
-  session.transcript.setViewport(0, 0);
-  session.transcript.setActiveRun('resp_assistant_tail', 7);
-  const optimistic = {
-    id: 'msg_assistant_tail',
-    clientKey: 'resp_assistant_tail:assistant:0',
-    role: 'assistant',
-    responseId: 'resp_assistant_tail',
-    assistantSegmentOrdinal: 0,
-    content: 'durable prefix plus optimistic suffix',
-    revAtSend: 7,
-    durableSeqAtSend: 401,
-    created: 2100
-  };
-  session.messages.push(optimistic);
-  app.trackTranscriptOptimistic(session, optimistic);
-  app.state.sessions = [session];
-  app.state.activeSessionId = sessionId;
-  app.state.draftSessionActive = false;
-  app.state.streaming = true;
-
-  const statusLoaded = await app.reconcileTranscriptFromStatus([{
-    id: sessionId,
-    transcript_rev: 7,
-    active_response_id: 'resp_assistant_tail',
-    started_rev: 7,
-    active_run: true
-  }]);
-  const statusAssistants = session.messages.filter((message) => message.role === 'assistant');
-  if (!statusLoaded || statusAssistants.length !== 1
-      || statusAssistants[0].id !== 'srv_seq_402_text_0'
-      || statusAssistants[0].content !== 'durable prefix plus optimistic suffix') {
-    fail(name, 'status projection duplicated or lost the active assistant tail', JSON.stringify(session.messages));
-    return;
-  }
-  if (session.transcript.optimistic.length !== 1) {
-    fail(name, 'partial durable coverage retired the live suffix source', JSON.stringify(session.transcript.optimistic));
-    return;
-  }
-
-  // Reproduce the live-only failure: a cursor/recovery race leaves the completed
-  // response overlay with a stale stable-looking ordinal. Ordinary identity
-  // reconciliation cannot pair ordinal 99 with durable ordinal 0, but terminal
-  // authority must still retire all server output owned by this response.
-  const driftedOverlay = session.transcript.optimistic[0];
-  driftedOverlay.assistantSegmentOrdinal = 99;
-  driftedOverlay.clientKey = 'resp_assistant_tail:assistant:99';
-  session.transcript.rebuildOptimisticIdentityIndex();
-
-  phase = 'terminal';
-  const terminalLoaded = await app.noteTranscriptTerminal(session, 8);
-  const terminalAssistants = session.messages.filter((message) => message.role === 'assistant');
-  if (!terminalLoaded || terminalAssistants.length !== 1
-      || terminalAssistants[0].id !== 'srv_seq_403_text_0'
-      || terminalAssistants[0].content !== 'durable prefix plus optimistic suffix') {
-    fail(name, 'terminal projection did not leave one complete durable assistant', JSON.stringify(session.messages));
-    return;
-  }
-  if (session.transcript.optimistic.length !== 0) {
-    fail(name, 'terminal completion did not clear the superseded optimistic assistant exactly once', JSON.stringify(session.transcript.optimistic));
-    return;
-  }
-  const persisted = JSON.parse(storage.get('term_llm_optimistic_transcript') || '{"sessions":{}}');
-  if (persisted.sessions?.[sessionId]) {
-    fail(name, 'terminal completion left superseded optimistic storage behind', JSON.stringify(persisted));
-    return;
-  }
-
-  const activeRenderCount = renderCount;
-  app.state.activeSessionId = 'different-session';
-  const inactiveLoaded = await app.syncTranscript(session, { reason: 'reconnect', force: true, targetRev: 8 });
-  if (!inactiveLoaded || renderCount !== activeRenderCount) {
-    fail(name, 'inactive transcript refresh touched the mounted DOM', JSON.stringify({ inactiveLoaded, renderCount, activeRenderCount }));
-    return;
-  }
-  if (session.messages.filter((message) => message.role === 'assistant').length !== 1) {
-    fail(name, 'inactive transcript refresh did not remain data-correct', JSON.stringify(session.messages));
-    return;
-  }
-
-  pass(name);
-}
-
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
@@ -6708,7 +6307,6 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testIdleStartupSchedulesNormalPollWithoutImmediateRequest();
   await testStartupTranscriptSideloadRendersBoundedFirstPaintWithoutTranscriptRequests();
   await testSelectedTranscriptSideloadReconcilesProjectedTailAcrossSwitchBack();
-  await testTranscriptRefreshPublishesReconciledRecoveryToolsBeforeRender();
   await testMalformedStartupTranscriptSideloadFallsBack();
   await testStartupTranscriptSideloadRevisionRaceFetchesOnlyNewerRevision();
   await testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus();
@@ -6740,9 +6338,9 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testConvertServerMessagesCorrelatesSuccessfulPlanResults();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
-  await testSessionPruningDestroysTranscriptStores();
+  await testSessionPruningDestroysConversationControllers();
+  await testPendingIntentStorageMergesConcurrentWriters();
   await testOptimisticTranscriptStorageIsPerSession();
-  await testStreamProjectionNeverReachesLocalStorage();
   await testLegacyUnversionedStorageMigratesOnlyIntent();
   await testReloadMigratesLegacyProjectionShadowsAtEqualRevision();
   await testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdvance();
@@ -6750,7 +6348,6 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testTranscriptSyncCommitsOneRenderedProjection();
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testInflightSyncAbsorbsQueuedZeroRevisionActivation();
-  await testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh();
   await testTranscriptProjectionAnnotatesCompactionBoundaryOnceAcrossSegments();
   await testGroupedToolRowsPreserveDurableRangesAndLaterAnchors();
   await testLargeToolTurnLoadsAsOneSegmentWithFarEndGrouping();
@@ -6760,12 +6357,12 @@ async function testAssistantTailOwnershipAcrossStatusTerminalAndInactiveRefresh(
   await testForceScrollQueuesBehindSatisfiedInflightRequest();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionAttachesChangedActiveResponseFromStartedRevision();
-  await testActiveStatusDefersInRunTranscriptRevisionsUntilTerminal();
+  await testActiveStatusSyncsInRunTranscriptRevisionsWithoutDuplicatingActiveOutput();
   await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
-  await testTerminalSyncRequeuesPendingInterjectionAsFollowUp();
+  await testSyncIgnoresPendingInterjectionWithoutExactID();
   await testSyncUsesServerProvidedPendingInterjectionId();
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();

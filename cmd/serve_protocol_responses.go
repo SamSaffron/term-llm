@@ -42,6 +42,7 @@ type responsesCreateRequest struct {
 	TopP               *float32                     `json:"top_p,omitempty"`
 	Stream             bool                         `json:"stream,omitempty"`
 	PreviousResponseID string                       `json:"previous_response_id,omitempty"`
+	ClientMessageID    string                       `json:"client_message_id,omitempty"`
 	ReasoningEffort    string                       `json:"reasoning_effort,omitempty"`
 	Reasoning          *responsesReasoningRequest   `json:"reasoning,omitempty"`
 	MultiAgent         *responsesMultiAgentRequest  `json:"multi_agent,omitempty"`

@@ -29,6 +29,7 @@ const STORAGE_BASE_KEYS = {
   notificationsEnabled: 'term_llm_notifications_enabled',
   lastNotifiedResponseId: 'term_llm_last_notified_response_id',
   draftMessages: 'term_llm_draft_messages',
+  pendingIntents: 'term_llm_pending_intent',
   optimisticTranscript: 'term_llm_optimistic_transcript'
 };
 
@@ -2052,6 +2053,10 @@ const sanitizeMessage = (msg) => {
     created: asTimestamp(msg.created)
   };
 
+  const clientMessageId = String(msg.clientMessageId || msg.client_message_id || '').trim();
+  if (clientMessageId) base.clientMessageId = clientMessageId;
+  const responseRequestId = String(msg.responseRequestId || '').trim();
+  if (responseRequestId) base.responseRequestId = responseRequestId;
   const responseId = String(msg.responseId || msg.response_id || '').trim();
   if (responseId) base.responseId = responseId;
   const segmentOrdinal = Number(msg.assistantSegmentOrdinal ?? msg.assistant_segment_ordinal);
@@ -2064,9 +2069,6 @@ const sanitizeMessage = (msg) => {
   if (Number.isFinite(segmentEndSequence) && segmentEndSequence > 0) base.segmentEndSequence = Math.trunc(segmentEndSequence);
   const runEpoch = Number(msg.runEpoch ?? msg.run_epoch);
   if (Number.isFinite(runEpoch) && runEpoch > 0) base.runEpoch = Math.trunc(runEpoch);
-  if (msg.optimistic === true) base.optimistic = true;
-  if (typeof msg.clientKey === 'string' && msg.clientKey) base.clientKey = msg.clientKey;
-
   if (role === 'user' || role === 'assistant' || role === 'error') {
     base.content = String(msg.content || '');
     if (role === 'assistant' && msg.usage && typeof msg.usage === 'object') {
@@ -2162,10 +2164,6 @@ const sanitizeMessage = (msg) => {
 
 const sanitizeSession = (session) => {
   if (!session || typeof session !== 'object') return null;
-  const messages = Array.isArray(session.messages)
-    ? session.messages.map(sanitizeMessage).filter(Boolean)
-    : [];
-
   const result = {
     id: typeof session.id === 'string' ? session.id : `sess_${generateUUID()}`,
     name: typeof session.name === 'string' ? session.name : '',
@@ -2177,18 +2175,8 @@ const sanitizeSession = (session) => {
     pinned: Boolean(session.pinned),
     created: asTimestamp(session.created),
     lastMessageAt: asTimestamp(session.lastMessageAt || session.last_message_at || session.created),
-    messages,
     lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,
     activeResponseId: typeof session.activeResponseId === 'string' ? session.activeResponseId : null,
-    lastSequenceNumber: Number.isFinite(Number(session.lastSequenceNumber)) ? Number(session.lastSequenceNumber) : 0,
-    responseEventCursors: session.responseEventCursors && typeof session.responseEventCursors === 'object'
-      ? Object.fromEntries(Object.entries(session.responseEventCursors).slice(-16).map(([id, cursor]) => [String(id), {
-          appliedSequence: Math.max(0, Number(cursor?.appliedSequence) || 0),
-          terminalSequence: Math.max(0, Number(cursor?.terminalSequence) || 0),
-          finalized: Boolean(cursor?.finalized),
-        }]))
-      : {},
-    latestRunEpoch: Math.max(0, Number(session.latestRunEpoch) || 0),
     sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null,
     lastUsage: session.lastUsage && typeof session.lastUsage === 'object' ? session.lastUsage : null,
     activeModel: typeof session.activeModel === 'string' ? session.activeModel : '',
@@ -2211,7 +2199,7 @@ const sanitizeSession = (session) => {
 const isEphemeralEmptySession = (session) => {
   if (!session || session._serverOnly) return false;
   const msgCount = Number(session.messageCount || 0);
-  return session.messages.length === 0
+  return window.TermLLMConversation.sessionMessages(session).length === 0
     && msgCount === 0
     && !session.lastResponseId
     && !session.activeResponseId;
@@ -2235,7 +2223,7 @@ const sessionHasCachedTranscript = (session) => Boolean(
   session
   && !session._serverOnly
   && (
-    (Array.isArray(session.messages) && session.messages.length > 0)
+    window.TermLLMConversation.sessionMessages(session).length > 0
     || (Array.isArray(session._history?.rawMessages) && session._history.rawMessages.length > 0)
   )
 );
@@ -2262,10 +2250,8 @@ const evictStaleSessionMessages = () => {
 
   for (const session of state.sessions) {
     if (!keep.has(session.id) && sessionHasCachedTranscript(session)) {
-      session.messages = [];
-      // Converted display messages and raw server history hold duplicate copies
-      // of large transcript strings/attachments. Dropping only messages leaves
-      // the raw representation reachable, so evict the complete hydration cache.
+      session.transcript?.releaseBodies?.();
+      delete session.transcript;
       delete session._history;
       session._serverOnly = true;
     }
@@ -2359,10 +2345,8 @@ const createSession = () => ({
   pinned: false,
   created: Date.now(),
   lastMessageAt: Date.now(),
-  messages: [],
   lastResponseId: null,
   activeResponseId: null,
-  lastSequenceNumber: 0,
   sessionUsage: null,
   lastUsage: null,
   activeModel: '',

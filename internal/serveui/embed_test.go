@@ -11,6 +11,80 @@ import (
 	"testing"
 )
 
+func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
+	lifecycle := []string{
+		"app-stream.js", "app-sessions.js", "app-render.js", "app-core.js",
+		"active-response.js", "conversation.js", "transcript-window.js",
+	}
+	lines := make(map[string]int, len(lifecycle))
+	total := 0
+	for _, name := range lifecycle {
+		body, err := StaticAsset(name)
+		if err != nil {
+			t.Fatalf("StaticAsset(%s): %v", name, err)
+		}
+		count := len(strings.Split(strings.TrimSuffix(string(body), "\n"), "\n"))
+		lines[name] = count
+		total += count
+	}
+	if total > 11500 {
+		t.Fatalf("lifecycle surface=%d lines, budget=11500 (%v)", total, lines)
+	}
+	for _, name := range []string{"app-stream.js", "app-sessions.js"} {
+		if lines[name] >= 1500 {
+			t.Fatalf("%s=%d lines, must be below 1500", name, lines[name])
+		}
+	}
+	if lines["app-render.js"] > 3069 || lines["app-core.js"] > 2650 {
+		t.Fatalf("shell/render grew beyond baseline: %v", lines)
+	}
+	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
+		if lines[name] > 1000 {
+			t.Fatalf("new lifecycle module %s=%d lines, budget=1000", name, lines[name])
+		}
+	}
+
+	entries, err := os.ReadDir("static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	productionLines := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join("static", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		productionLines += len(strings.Split(strings.TrimSuffix(string(body), "\n"), "\n"))
+	}
+	if productionLines >= 21015 {
+		t.Fatalf("first-party production JS=%d lines, must decrease from 21015", productionLines)
+	}
+
+	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
+		body, err := StaticAsset(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(body)
+		if name == "conversation.js" {
+			parts := strings.SplitN(source, "EFFECTS_SECTION_START", 2)
+			if len(parts) != 2 {
+				t.Fatal("conversation.js missing explicit pure/effects boundary")
+			}
+			source = parts[0]
+		}
+		for _, forbidden := range []string{"document.", "fetch(", "localStorage", "sessionStorage", "setTimeout(", "setInterval(", "TermLLMApp"} {
+			if strings.Contains(source, forbidden) {
+				t.Fatalf("pure lifecycle module %s accesses forbidden effect %q", name, forbidden)
+			}
+		}
+	}
+}
+
 func TestStaticAssetsSupportEmbeddedVideoPlayback(t *testing.T) {
 	renderJS, err := StaticAsset("app-render.js")
 	if err != nil {
@@ -248,23 +322,37 @@ func TestStaticAssetsEmbedProductionFilesOnly(t *testing.T) {
 	}
 }
 
-func TestTranscriptStoreJS(t *testing.T) {
+func TestTranscriptWindowJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not found in PATH, skipping JS transcript store tests")
+		t.Skip("node not found in PATH, skipping JS transcript window tests")
 	}
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not determine test file path")
 	}
-	script := filepath.Join(filepath.Dir(thisFile), "static", "transcript_store_test.js")
-	if _, err := os.Stat(script); err != nil {
-		t.Fatalf("transcript_store_test.js not found at %s: %v", script, err)
-	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "transcript_window_test.js")
 	out, err := exec.Command(node, script).CombinedOutput()
 	t.Log(string(out))
 	if err != nil {
-		t.Fatalf("transcript_store_test.js failed: %v", err)
+		t.Fatalf("transcript_window_test.js failed: %v", err)
+	}
+}
+
+func TestConversationLifecycleJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS conversation lifecycle tests")
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "conversation_test.js")
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("conversation_test.js failed: %v", err)
 	}
 }
 
@@ -714,17 +802,17 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 		}
 	}
 
-	streamJS, err := StaticAsset("app-stream.js")
+	effectsJS, err := StaticAsset("app-response-effects.js")
 	if err != nil {
-		t.Fatalf("StaticAsset(app-stream.js): %v", err)
+		t.Fatalf("StaticAsset(app-response-effects.js): %v", err)
 	}
 	for _, want := range []string{
 		"response.file_change",
 		"handleFileChangeEvent",
 		"refreshFileChangesAfterRun",
 	} {
-		if !strings.Contains(string(streamJS), want) {
-			t.Fatalf("app-stream.js missing %q", want)
+		if !strings.Contains(string(effectsJS), want) {
+			t.Fatalf("app-response-effects.js missing %q", want)
 		}
 	}
 
@@ -895,32 +983,39 @@ func TestStaticAssetsSupportEffortDropdown(t *testing.T) {
 		}
 	}
 
-	streamJS, err := StaticAsset("app-stream.js")
+	sendJS, err := StaticAsset("app-send.js")
 	if err != nil {
-		t.Fatalf("StaticAsset(app-stream.js): %v", err)
+		t.Fatalf("StaticAsset(app-send.js): %v", err)
 	}
-	streamSrc := string(streamJS)
 	for _, want := range []string{
-		"elements.effortSelect.value = state.selectedEffort",
-		"const newEffort = elements.effortSelect ? elements.effortSelect.value : ''",
-		"persist(STORAGE_KEYS.selectedEffort, state.selectedEffort || '')",
 		"const currentEffort = session.activeEffort || ''",
 		"body.reasoning_effort = activeEffort",
 		"body.model_swap = { mode: 'auto', fallback: 'handover' }",
 	} {
-		if !strings.Contains(streamSrc, want) {
-			t.Fatalf("app-stream.js missing %q", want)
+		if !strings.Contains(string(sendJS), want) {
+			t.Fatalf("app-send.js missing %q", want)
 		}
 	}
-	// Modal effort changes must not commit live — Cancel still discards the
-	// pending value. The listener records user intent only; connectToken commits
-	// the value on Save and uses that intent to authorize a runtime swap.
+	runtimeJS, err := StaticAsset("app-runtime.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-runtime.js): %v", err)
+	}
+	if !strings.Contains(string(runtimeJS), "persist(STORAGE_KEYS.selectedEffort, state.selectedEffort || '')") {
+		t.Fatal("app-runtime.js missing effort persistence")
+	}
+	modalsJS, err := StaticAsset("app-modals.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-modals.js): %v", err)
+	}
+	modalsSrc := string(modalsJS)
 	for _, want := range []string{
+		"elements.effortSelect.value = state.selectedEffort",
+		"const newEffort = elements.effortSelect ? elements.effortSelect.value : ''",
 		"elements.effortSelect?.addEventListener('change'",
 		"modalEffortSelectionDirty = true",
 	} {
-		if !strings.Contains(streamSrc, want) {
-			t.Fatalf("app-stream.js missing modal effort intent marker %q", want)
+		if !strings.Contains(modalsSrc, want) {
+			t.Fatalf("app-modals.js missing modal effort behavior %q", want)
 		}
 	}
 }
@@ -998,19 +1093,19 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 		}
 	}
 
-	sessionsJS, err := StaticAsset("app-sessions.js")
+	eventsJS, err := StaticAsset("app-session-events.js")
 	if err != nil {
-		t.Fatalf("StaticAsset(app-sessions.js): %v", err)
+		t.Fatalf("StaticAsset(app-session-events.js): %v", err)
 	}
-	sessionsSrc := string(sessionsJS)
+	eventsSrc := string(eventsJS)
 	for _, want := range []string{
 		"elements.sidebarToggleBtn.addEventListener('click', toggleSidebarCollapsed);",
 		"elements.sidebarRailNewChatBtn.addEventListener('click', async () => {",
 		"document.addEventListener('visibilitychange', async () => {",
 		"flushStreamPersistence();",
 	} {
-		if !strings.Contains(sessionsSrc, want) {
-			t.Fatalf("app-sessions.js missing %q", want)
+		if !strings.Contains(eventsSrc, want) {
+			t.Fatalf("app-session-events.js missing %q", want)
 		}
 	}
 

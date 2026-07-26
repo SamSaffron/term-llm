@@ -315,12 +315,14 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	var response struct {
 		Execution  string `json:"execution"`
 		ResponseID string `json:"response_id"`
+		RunEpoch   int64  `json:"run_epoch"`
+		StartedRev int64  `json:"started_rev"`
 		EventsURL  string `json:"events_url"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Execution != "main" || response.ResponseID == "" || response.EventsURL == "" {
+	if response.Execution != "main" || response.ResponseID == "" || response.RunEpoch <= 0 || response.EventsURL == "" {
 		t.Fatalf("main response = %#v", response)
 	}
 

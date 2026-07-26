@@ -3570,6 +3570,18 @@ func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_FirstPartyRequiresDedicatedClientMessageID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	req.Header.Set("Idempotency-Key", "request-not-a-message")
+	rr := httptest.NewRecorder()
+	(&serveServer{}).handleResponses(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "client_message_id") {
+		t.Fatalf("status/body = %d %s, want missing client_message_id", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
 	const (
 		sessionID = "sess_interjection_handoff"
@@ -3605,12 +3617,12 @@ func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
 	req.Header.Set("X-Term-LLM-UI-Version", "test")
 	rr := httptest.NewRecorder()
 	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
-		req:                responsesCreateRequest{Stream: true},
+		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
 		inputMessages:      []llm.Message{llm.UserText("same logical message")},
 		sessionID:          sessionID,
 		previousResponseID: "resp_previous",
 		previousDurable:    true,
-		idempotencyKey:     messageID,
+		idempotencyKey:     "request_interjection_handoff",
 	})
 
 	if rr.Code != http.StatusOK {

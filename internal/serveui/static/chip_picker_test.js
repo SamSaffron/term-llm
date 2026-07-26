@@ -11,6 +11,8 @@ const dir = __dirname;
 const coreSource = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
 const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const streamSource = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
+const runtimeSource = fs.readFileSync(path.join(dir, 'app-runtime.js'), 'utf8');
+const modalsSource = fs.readFileSync(path.join(dir, 'app-modals.js'), 'utf8');
 
 let failures = 0;
 function fail(name, message, details) {
@@ -232,6 +234,8 @@ function loadCoreAndStream(options = {}) {
   vm.runInNewContext(coreSource, ctx, { filename: 'app-core.js' });
   vm.runInNewContext(attachmentsSource, ctx, { filename: 'app-attachments.js' });
   vm.runInNewContext(streamSource, ctx, { filename: 'app-stream.js' });
+  vm.runInNewContext(runtimeSource, ctx, { filename: 'app-runtime.js' });
+  vm.runInNewContext(modalsSource, ctx, { filename: 'app-modals.js' });
   const app = ctx.window.TermLLMApp;
   return { ctx, app, elementMap, windowObj };
 }

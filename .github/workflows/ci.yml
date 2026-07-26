@@ -37,3 +37,11 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 10
+        run: npx --yes --package @playwright/test@1.54.1 playwright install --with-deps chromium
+
+      - name: Browser lifecycle smoke
+        timeout-minutes: 5
+        run: scripts/browser_lifecycle_smoke.sh

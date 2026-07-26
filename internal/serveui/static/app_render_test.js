@@ -7,7 +7,6 @@ const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-render.js'), 'utf8');
 const markdownStreaming = require(path.join(__dirname, 'markdown-streaming.js'));
-const { reconcileTranscriptProjection } = require('./transcript-store.js');
 let failures = 0;
 
 function fail(name, message, details) {
@@ -368,6 +367,10 @@ function createHarness(appOverrides = {}) {
     },
     INTERRUPT_BADGE_META: {},
     sanitizeInterruptState(value) { return value || ''; },
+    asTimestamp(value) {
+      const timestamp = Number(value);
+      return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
+    },
     relativeTime() { return 'now'; },
     fullDate() { return 'today'; },
     sessionBucket() { return 'Today'; },
@@ -391,6 +394,11 @@ function createHarness(appOverrides = {}) {
 
   const windowObj = {
     TermLLMApp: app,
+    TermLLMConversation: {
+      sessionMessages(session) {
+        return Array.isArray(session?.messages) ? session.messages : [];
+      }
+    },
     TermLLMDecoration: { decorateLightbox() {} },
     matchMedia() { return { matches: false }; },
     setTimeout(callback, ms) {
@@ -1046,6 +1054,35 @@ async function run(name, fn) {
       lastObservedLength < 1000,
       `expected cadence to use mutable tail length, got ${lastObservedLength}`
     );
+  });
+
+  await run('live tool groups render a valid fallback timestamp', () => {
+    const formatted = [];
+    const { app } = createHarness({
+      relativeTime(value) {
+        formatted.push(value);
+        return Number.isFinite(value) ? 'just now' : 'Invalid Date';
+      },
+      fullDate(value) {
+        formatted.push(value);
+        return Number.isFinite(value) ? 'today' : 'Invalid Date';
+      },
+    });
+    const group = {
+      id: 'live_tool_group',
+      role: 'tool-group',
+      status: 'running',
+      tools: [{ id: 'live_tool', name: 'grep', status: 'running', arguments: '{}' }],
+    };
+
+    const node = app.createToolGroupNode(group);
+    const time = node.querySelector('.message-meta span');
+    const created = Number(time?.getAttribute('data-created'));
+
+    assert(Number.isFinite(created) && created > 0, 'missing live timestamp should be normalized');
+    assertEqual(time.textContent, 'just now', 'relative timestamp remains valid');
+    assertEqual(time.title, 'today', 'full timestamp remains valid');
+    assert(formatted.length === 2 && formatted.every((value) => value === created), 'formatters receive the normalized timestamp');
   });
 
   await run('successful update_plan calls stay out of the transcript while running and failed calls remain visible', () => {
@@ -1926,104 +1963,6 @@ async function run(name, fn) {
       messages.children.map((node) => node.dataset.messageId).join(','),
       'msg_keep_going,tools_queue_agent,tools_wait_for_jobs',
       'live DOM follows session message order without requiring a reload'
-    );
-  });
-
-  await run('transcript reconciliation removes duplicate optimistic tool DOM without reload', () => {
-    const { app, session, messages } = createHarness();
-    session.transcript = {};
-    const durable = {
-      id: 'srv_seq_387_tools_1',
-      role: 'tool-group',
-      durable: true,
-      transcriptSegmentIndex: 0,
-      status: 'done',
-      tools: [
-        { id: 'call_shell_exact_a', name: 'shell', status: 'done', arguments: '{}' },
-        { id: 'call_shell_exact_b', name: 'shell', status: 'done', arguments: '{}' }
-      ],
-      created: 1000
-    };
-    const exactLive = {
-      id: 'msg_ba0-live-tools',
-      role: 'tool-group',
-      status: 'done',
-      tools: [
-        { id: 'call_shell_exact_a', name: 'shell', status: 'done', arguments: '{}' },
-        { id: 'call_shell_exact_b', name: 'shell', status: 'done', arguments: '{}' }
-      ],
-      created: 1100
-    };
-    const partialLive = {
-      id: 'msg_652-live-tools',
-      role: 'tool-group',
-      status: 'running',
-      tools: [
-        { id: 'call_shell_exact_b', name: 'shell', status: 'done', arguments: '{}' },
-        { id: 'call_shell_newer', name: 'shell', status: 'running', arguments: '{}' }
-      ],
-      created: 1200
-    };
-    session.messages = [durable, exactLive, partialLive];
-    app.renderMessages();
-    assertEqual(messages.querySelectorAll('.tool-group').length, 3, 'reproduction mounts durable and duplicate optimistic cards');
-
-    session.messages = reconcileTranscriptProjection(session.messages);
-    app.renderMessages();
-
-    assertEqual(messages.querySelectorAll('.tool-group').length, 2, 'covered optimistic group is removed in the mounted reconciliation');
-    assertEqual(messages.querySelectorAll('[data-tool-id="call_shell_exact_a"]').length, 1, 'first durable call ID appears once in DOM');
-    assertEqual(messages.querySelectorAll('[data-tool-id="call_shell_exact_b"]').length, 1, 'second durable call ID appears once in DOM');
-    assertEqual(messages.querySelectorAll('[data-tool-id="call_shell_newer"]').length, 1, 'newer optimistic-only call remains once in DOM');
-    assertEqual(
-      session.messages.map((message) => message.id).join(','),
-      'srv_seq_387_tools_1,msg_652-live-tools',
-      'session projection preserves durable then newer live ordering'
-    );
-  });
-
-  await run('transcript reconciliation hands one assistant DOM node from durable prefix to live suffix', () => {
-    const { app, session, messages } = createHarness();
-    session.transcript = { rev: 7, activeRun: { id: 'resp_assistant_dom', startedRev: 7 } };
-    const durable = {
-      id: 'srv_seq_402_text_0',
-      role: 'assistant',
-      content: 'durable prefix',
-      durable: true,
-      serverSeq: 402,
-      transcriptSegmentIndex: 0,
-      created: 1000
-    };
-    const optimistic = {
-      id: 'msg_assistant_dom',
-      clientKey: 'msg_assistant_dom',
-      role: 'assistant',
-      content: 'durable prefix plus live suffix',
-      optimistic: true,
-      revAtSend: 7,
-      durableSeqAtSend: 401,
-      created: 1100
-    };
-    session.messages = [durable, optimistic];
-    app.renderMessages();
-    assertEqual(messages.querySelectorAll('.assistant').length, 2, 'race reproduction mounts durable and optimistic assistant nodes');
-
-    session.messages = reconcileTranscriptProjection(session.messages, session.transcript);
-    app.renderMessages();
-
-    assertEqual(messages.querySelectorAll('.assistant').length, 1, 'projection boundary removes the superseded optimistic assistant node');
-    assertEqual(session.messages.length, 1, 'one authoritative assistant remains in session.messages');
-    assertEqual(session.messages[0].id, 'srv_seq_402_text_0', 'durable identity owns the coalesced assistant node');
-    assertEqual(session.messages[0].content, 'durable prefix plus live suffix', 'the optimistic-only suffix remains visible exactly once');
-    assertEqual(
-      messages.querySelectorAll('[data-message-id="srv_seq_402_text_0"]').length,
-      1,
-      'durable assistant identity is unique in the mounted DOM'
-    );
-    assertEqual(
-      messages.querySelectorAll('[data-message-id="msg_assistant_dom"]').length,
-      0,
-      'superseded optimistic assistant identity is removed from the mounted DOM'
     );
   });
 

@@ -46,6 +46,7 @@ type responseRunRecoveryMessage struct {
 	Status                  string
 	Usage                   map[string]any
 	InterruptState          string
+	ClientMessageID         string
 	ResponseID              string
 	AssistantSegmentOrdinal int
 	SegmentStartSequence    int64
@@ -70,26 +71,61 @@ type responseRunSegmentRange struct {
 	End   int64
 }
 
+type responseRunDurableHandoff struct {
+	Valid       bool
+	FinalRev    int64
+	OutputCount int
+	Error       string
+}
+
+type responseRunPersistenceLedger struct {
+	mu           sync.Mutex
+	idle         chan struct{}
+	inflight     int
+	maxRev       int64
+	outputKeys   map[string]struct{}
+	nextOutputID int64
+	failed       bool
+	failureText  string
+}
+
+func newResponseRunPersistenceLedger() *responseRunPersistenceLedger {
+	idle := make(chan struct{})
+	close(idle)
+	return &responseRunPersistenceLedger{
+		idle:       idle,
+		outputKeys: make(map[string]struct{}),
+	}
+}
+
 type responseRun struct {
-	mu                 sync.Mutex
-	terminalMu         sync.Mutex
-	id                 string
-	sessionID          string
-	previousResponseID string
-	model              string
-	reasoningEffort    string
-	reasoningEffortSet bool
-	created            int64
-	runEpoch           int64
-	startedRev         int64
-	finalRev           int64
-	finalRevReader     func() int64
-	status             string
-	errorType          string
-	errorMessage       string
-	usage              llm.Usage
-	sessionUsage       llm.Usage
-	lastSequenceNumber int64
+	mu                     sync.Mutex
+	terminalMu             sync.Mutex
+	id                     string
+	sessionID              string
+	previousResponseID     string
+	clientMessageID        string
+	anchorRowID            int64
+	model                  string
+	reasoningEffort        string
+	reasoningEffortSet     bool
+	created                int64
+	runEpoch               int64
+	startedRev             int64
+	startedCompactionSeq   int
+	startedCompactionCount int
+	finalRev               int64
+	finalRevReader         func() (int64, error)
+	durableHandoff         bool
+	durableOutputCount     int
+	durableHandoffErr      string
+	persistence            *responseRunPersistenceLedger
+	status                 string
+	errorType              string
+	errorMessage           string
+	usage                  llm.Usage
+	sessionUsage           llm.Usage
+	lastSequenceNumber     int64
 	// events[eventStart:] is the retained replay window; dropped prefix slots
 	// are zeroed and reclaimed in batches to avoid per-token slice copies.
 	events             []responseRunEvent
@@ -138,6 +174,11 @@ func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal 
 	if run == nil {
 		return msg
 	}
+	if msg.Role == llm.RoleUser {
+		msg.ResponseID = ""
+		msg.AssistantSegmentOrdinal = -1
+		return msg
+	}
 	msg.ResponseID = run.id
 	if msg.Role != llm.RoleAssistant {
 		msg.AssistantSegmentOrdinal = -1
@@ -154,21 +195,23 @@ func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal 
 
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
 	return &responseRun{
-		id:                 respID,
-		sessionID:          sessionID,
-		previousResponseID: previousResponseID,
-		model:              model,
-		created:            created,
-		status:             "in_progress",
-		maxRetainedEvents:  defaultResponseRunReplayLimit,
-		currentAssistant:   -1,
-		currentToolGroup:   -1,
-		segmentRanges:      make(map[int]responseRunSegmentRange),
-		compactionEnabled:  true,
-		subscribers:        make(map[int]chan responseRunEvent),
-		subscriberWarned:   make(map[int]bool),
-		subscriberDropped:  make(map[int]bool),
-		cancel:             cancel,
+		id:                   respID,
+		sessionID:            sessionID,
+		previousResponseID:   previousResponseID,
+		model:                model,
+		created:              created,
+		status:               "in_progress",
+		startedCompactionSeq: -1,
+		maxRetainedEvents:    defaultResponseRunReplayLimit,
+		currentAssistant:     -1,
+		currentToolGroup:     -1,
+		segmentRanges:        make(map[int]responseRunSegmentRange),
+		persistence:          newResponseRunPersistenceLedger(),
+		compactionEnabled:    true,
+		subscribers:          make(map[int]chan responseRunEvent),
+		subscriberWarned:     make(map[int]bool),
+		subscriberDropped:    make(map[int]bool),
+		cancel:               cancel,
 	}
 }
 
@@ -178,20 +221,256 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 	return r.appendEventLocked(event, payload, false)
 }
 
-func (r *responseRun) readFinalRev() int64 {
-	if r.finalRevReader == nil {
-		return 0
+func responseRunOwnedOutputKeys(runID string, messages []llm.Message) []string {
+	keys := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		if msg.ResponseID != runID {
+			continue
+		}
+		switch msg.Role {
+		case llm.RoleAssistant:
+			keys = append(keys, fmt.Sprintf("assistant:%d", msg.AssistantSegmentOrdinal))
+		case llm.RoleTool:
+			callID := ""
+			for _, part := range msg.Parts {
+				if part.ToolResult != nil && part.ToolResult.ID != "" {
+					callID = part.ToolResult.ID
+					break
+				}
+				if part.ToolCall != nil && part.ToolCall.ID != "" {
+					callID = part.ToolCall.ID
+					break
+				}
+			}
+			if callID != "" {
+				keys = append(keys, "tool:"+callID)
+			} else {
+				keys = append(keys, "")
+			}
+		case llm.RoleEvent:
+			if msg.SegmentStartSequence > 0 || msg.SegmentEndSequence > 0 {
+				keys = append(keys, fmt.Sprintf("event:%d:%d", msg.SegmentStartSequence, msg.SegmentEndSequence))
+			} else {
+				keys = append(keys, "")
+			}
+		}
 	}
-	return r.finalRevReader()
+	return keys
+}
+
+func beginResponseRunPersistence(ctx context.Context, messages []llm.Message) func(int64, error) {
+	run, _ := ctx.Value(responseRunContextKey{}).(*responseRun)
+	if run == nil || run.persistence == nil {
+		return func(int64, error) {}
+	}
+	keys := responseRunOwnedOutputKeys(run.id, messages)
+	if len(keys) == 0 {
+		return func(int64, error) {}
+	}
+
+	ledger := run.persistence
+	ledger.mu.Lock()
+	if ledger.inflight == 0 {
+		ledger.idle = make(chan struct{})
+	}
+	ledger.inflight++
+	for _, key := range keys {
+		if key == "" {
+			ledger.nextOutputID++
+			key = fmt.Sprintf("write:%d", ledger.nextOutputID)
+		}
+		ledger.outputKeys[key] = struct{}{}
+	}
+	ledger.mu.Unlock()
+
+	var once sync.Once
+	return func(rev int64, persistErr error) {
+		once.Do(func() {
+			ledger.mu.Lock()
+			if rev > ledger.maxRev {
+				ledger.maxRev = rev
+			}
+			if persistErr != nil {
+				ledger.failed = true
+				if ledger.failureText == "" {
+					ledger.failureText = persistErr.Error()
+				}
+			}
+			ledger.inflight--
+			if ledger.inflight == 0 {
+				close(ledger.idle)
+			}
+			ledger.mu.Unlock()
+		})
+	}
+}
+
+func runResponseRunPersistence(ctx context.Context, messages []llm.Message, persist func() (int64, error)) (rev int64, err error) {
+	finish := beginResponseRunPersistence(ctx, messages)
+	defer func() { finish(rev, err) }()
+	return persist()
+}
+
+func addResponseRunMessage(ctx context.Context, store session.Store, sessionID string, message *session.Message) (int64, error) {
+	writer, ok := store.(session.TranscriptRevisionWriter)
+	if !ok {
+		if err := store.AddMessage(ctx, sessionID, message); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	rev, err := writer.AddMessageWithTranscriptRev(ctx, sessionID, message)
+	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
+		if err := store.AddMessage(ctx, sessionID, message); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	return rev, err
+}
+
+func replaceResponseRunMessages(ctx context.Context, store session.Store, sessionID string, messages []session.Message) (int64, error) {
+	writer, ok := store.(session.TranscriptRevisionWriter)
+	if !ok {
+		if err := store.ReplaceMessages(ctx, sessionID, messages); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	rev, err := writer.ReplaceMessagesWithTranscriptRev(ctx, sessionID, messages)
+	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
+		if err := store.ReplaceMessages(ctx, sessionID, messages); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	return rev, err
+}
+
+func replaceCompactedResponseRunMessages(ctx context.Context, store session.Store, sessionID string, messages []session.Message) (int64, error) {
+	writer, ok := store.(session.CompactedTranscriptRevisionWriter)
+	if !ok {
+		replacer, supported := store.(interface {
+			ReplaceCompactedMessages(context.Context, string, []session.Message) error
+		})
+		if !supported {
+			return 0, errors.New("session store cannot replace compacted transcript")
+		}
+		if err := replacer.ReplaceCompactedMessages(ctx, sessionID, messages); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	rev, err := writer.ReplaceCompactedMessagesWithTranscriptRev(ctx, sessionID, messages)
+	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
+		replacer, supported := store.(interface {
+			ReplaceCompactedMessages(context.Context, string, []session.Message) error
+		})
+		if !supported {
+			return 0, errors.New("session store cannot replace compacted transcript")
+		}
+		if err := replacer.ReplaceCompactedMessages(ctx, sessionID, messages); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	return rev, err
+}
+
+func updateResponseRunStreamingMessage(ctx context.Context, store session.Store, sessionID string, message *session.Message, finalizeText bool) (int64, error) {
+	writer, ok := store.(session.TranscriptRevisionWriter)
+	if !ok {
+		if err := session.UpdateStreamingMessage(ctx, store, sessionID, message, finalizeText); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	rev, err := writer.UpdateStreamingMessageWithTranscriptRev(ctx, sessionID, message, finalizeText)
+	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
+		if err := session.UpdateStreamingMessage(ctx, store, sessionID, message, finalizeText); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	return rev, err
+}
+
+func (r *responseRun) readDurableHandoff() responseRunDurableHandoff {
+	return r.readDurableHandoffWithTimeout(responseRunRevisionReadTimeout)
+}
+
+func (r *responseRun) readDurableHandoffWithTimeout(timeout time.Duration) responseRunDurableHandoff {
+	if r == nil || r.persistence == nil {
+		return responseRunDurableHandoff{Valid: true}
+	}
+	ledger := r.persistence
+	if timeout <= 0 {
+		timeout = responseRunRevisionReadTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		ledger.mu.Lock()
+		if ledger.inflight == 0 {
+			break
+		}
+		idle := ledger.idle
+		ledger.mu.Unlock()
+		select {
+		case <-idle:
+			continue
+		case <-timer.C:
+			ledger.mu.Lock()
+			handoff := responseRunDurableHandoff{
+				Valid:       false,
+				FinalRev:    ledger.maxRev,
+				OutputCount: len(ledger.outputKeys),
+				Error:       "persistence barrier timed out",
+			}
+			ledger.mu.Unlock()
+			return handoff
+		}
+	}
+	outputCount := len(ledger.outputKeys)
+	maxRev := ledger.maxRev
+	failed := ledger.failed
+	errorText := ledger.failureText
+	ledger.mu.Unlock()
+
+	if !failed && outputCount > 0 && maxRev <= 0 && r.finalRevReader != nil {
+		var err error
+		maxRev, err = r.finalRevReader()
+		if err != nil {
+			failed = true
+			errorText = err.Error()
+		}
+	}
+	valid := !failed && (outputCount == 0 || maxRev > 0)
+	if !valid && errorText == "" {
+		errorText = "durable output has no transcript revision"
+	}
+	return responseRunDurableHandoff{
+		Valid:       valid,
+		FinalRev:    maxRev,
+		OutputCount: outputCount,
+		Error:       errorText,
+	}
+}
+
+func (r *responseRun) applyDurableHandoffLocked(handoff responseRunDurableHandoff) {
+	r.finalRev = handoff.FinalRev
+	r.durableHandoff = handoff.Valid
+	r.durableOutputCount = handoff.OutputCount
+	r.durableHandoffErr = handoff.Error
 }
 
 func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
 	r.terminalMu.Lock()
 	defer r.terminalMu.Unlock()
-	finalRev := r.readFinalRev()
+	handoff := r.readDurableHandoff()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.finalRev = finalRev
+	r.applyDurableHandoffLocked(handoff)
 	if r.cancelRequested {
 		r.status = "cancelled"
 		r.errorType = ""
@@ -224,13 +503,13 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 		return false, nil
 	}
 	r.mu.Unlock()
-	finalRev := r.readFinalRev()
+	handoff := r.readDurableHandoff()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.cancelRequested {
 		return false, nil
 	}
-	r.finalRev = finalRev
+	r.applyDurableHandoffLocked(handoff)
 	r.status = "cancelled"
 	r.errorType = ""
 	r.errorMessage = ""
@@ -242,10 +521,10 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (bool, error) {
 	r.terminalMu.Lock()
 	defer r.terminalMu.Unlock()
-	finalRev := r.readFinalRev()
+	handoff := r.readDurableHandoff()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.finalRev = finalRev
+	r.applyDurableHandoffLocked(handoff)
 	hadSubscribers := len(r.subscribers) > 0
 	r.status = "failed"
 	r.errorType = errType
@@ -285,15 +564,41 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	payload["run_epoch"] = r.runEpoch
 	if event == "response.created" {
 		payload["started_rev"] = r.startedRev
+		if r.clientMessageID != "" {
+			payload["client_message_id"] = r.clientMessageID
+		}
+		if r.anchorRowID > 0 {
+			payload["anchor_row_id"] = r.anchorRowID
+		}
 		if response := mapValue(payload["response"]); len(response) > 0 {
 			response["started_rev"] = r.startedRev
 			response["run_epoch"] = r.runEpoch
+			if r.clientMessageID != "" {
+				response["client_message_id"] = r.clientMessageID
+			}
+			if r.anchorRowID > 0 {
+				response["anchor_row_id"] = r.anchorRowID
+			}
 		}
 	}
 	if terminal {
 		payload["final_rev"] = r.finalRev
+		payload["durable_handoff"] = r.durableHandoff
+		payload["durable_output_count"] = r.durableOutputCount
+		payload["handoff_compaction_seq"] = r.startedCompactionSeq
+		payload["handoff_compaction_count"] = r.startedCompactionCount
+		if r.durableHandoffErr != "" {
+			payload["durable_handoff_error"] = r.durableHandoffErr
+		}
 		if response := mapValue(payload["response"]); len(response) > 0 {
 			response["final_rev"] = r.finalRev
+			response["durable_handoff"] = r.durableHandoff
+			response["durable_output_count"] = r.durableOutputCount
+			response["handoff_compaction_seq"] = r.startedCompactionSeq
+			response["handoff_compaction_count"] = r.startedCompactionCount
+			if r.durableHandoffErr != "" {
+				response["durable_handoff_error"] = r.durableHandoffErr
+			}
 		}
 	}
 	r.lastSequenceNumber++
@@ -508,17 +813,18 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
-		id := stringValue(payload["interjection_id"])
+		id := stringValue(payload["client_message_id"])
 		if id == "" {
 			id = r.nextRecoveryMessageIDLocked("user")
 		}
 		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
-			ID:             id,
-			Role:           "user",
-			Content:        []byte(text),
-			Created:        time.Now().UnixMilli(),
-			Attachments:    attachmentsFromPayload(payload["attachments"]),
-			InterruptState: "interject",
+			ID:              id,
+			Role:            "user",
+			Content:         []byte(text),
+			Created:         time.Now().UnixMilli(),
+			Attachments:     attachmentsFromPayload(payload["attachments"]),
+			InterruptState:  "interject",
+			ClientMessageID: id,
 		})
 		return
 	}
@@ -793,8 +1099,21 @@ func (r *responseRun) snapshot() map[string]any {
 		"run_epoch":            r.runEpoch,
 		"started_rev":          r.startedRev,
 	}
+	if r.clientMessageID != "" {
+		payload["client_message_id"] = r.clientMessageID
+	}
+	if r.anchorRowID > 0 {
+		payload["anchor_row_id"] = r.anchorRowID
+	}
 	if r.status != "in_progress" {
 		payload["final_rev"] = r.finalRev
+		payload["durable_handoff"] = r.durableHandoff
+		payload["durable_output_count"] = r.durableOutputCount
+		payload["handoff_compaction_seq"] = r.startedCompactionSeq
+		payload["handoff_compaction_count"] = r.startedCompactionCount
+		if r.durableHandoffErr != "" {
+			payload["durable_handoff_error"] = r.durableHandoffErr
+		}
 	}
 	if r.reasoningEffortSet {
 		payload["reasoning_effort"] = r.reasoningEffort
@@ -853,6 +1172,9 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		}
 		if msg.InterruptState != "" {
 			entry["interruptState"] = msg.InterruptState
+		}
+		if msg.ClientMessageID != "" {
+			entry["client_message_id"] = msg.ClientMessageID
 		}
 		if msg.Expanded {
 			entry["expanded"] = msg.Expanded
@@ -1470,18 +1792,25 @@ func (s *serveServer) suppressResponseRunServerToolEvent(runtime *serveRuntime, 
 	return s != nil && s.cfg.suppressServerTools && runtime != nil && runtime.isServerExecutedTool(toolName)
 }
 
-func (s *serveServer) persistResponseRunErrorEvent(runtime *serveRuntime, sessionID, respID, errType, errMessage string) {
+func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime *serveRuntime, sessionID, respID, errType, errMessage string) {
 	if runtime == nil || runtime.store == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(errMessage) == "" {
 		return
 	}
-	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	msg := llm.RunErrorEventMessage(llm.RunErrorMarker{
 		ResponseID: respID,
 		ErrorType:  errType,
 		Message:    errMessage,
 	})
-	if err := runtime.store.AddMessage(dbCtx, sessionID, session.NewMessage(sessionID, msg, -1)); err != nil {
+	msg.ResponseID = respID
+	_, err := runResponseRunPersistence(ctx, []llm.Message{msg}, func() (int64, error) {
+		return addResponseRunMessage(dbCtx, runtime.store, sessionID, session.NewMessage(sessionID, msg, -1))
+	})
+	if err != nil {
 		log.Printf("[serve] persist response run error event failed for %s: %v", sessionID, err)
 	}
 }
@@ -1631,15 +1960,16 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		}
 		return run.appendEvent("response.retry", payload)
 	case llm.EventInterjection:
+		if strings.TrimSpace(ev.InterjectionID) == "" {
+			return errors.New("interjection event is missing client_message_id")
+		}
 		// One or more committed interjections form a single user boundary before
 		// the next assistant text. Defer the ordinal bump until text arrives so a
 		// batch of interjections cannot create skipped segment identities.
 		state.assistantBoundaryPending = true
 		payload := map[string]any{
-			"text": ev.Text,
-		}
-		if ev.InterjectionID != "" {
-			payload["interjection_id"] = ev.InterjectionID
+			"text":              ev.Text,
+			"client_message_id": ev.InterjectionID,
 		}
 		if ev.InterjectionStatus != "" {
 			payload["status"] = string(ev.InterjectionStatus)
@@ -2033,16 +2363,12 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	}
 }
 
-func (s *serveServer) transcriptRevBestEffort(ctx context.Context, sessionID string) int64 {
-	indexer, ok := transcriptIndexerForWeb(s.store)
+func (s *serveServer) transcriptRev(ctx context.Context, sessionID string) (int64, error) {
+	indexer, ok := s.transcriptIndexerForWeb()
 	if !ok {
-		return 0
+		return 0, errors.New("revisioned transcript unavailable")
 	}
-	rev, err := indexer.TranscriptRev(ctx, sessionID)
-	if err != nil {
-		return 0
-	}
-	return rev
+	return indexer.TranscriptRev(ctx, sessionID)
 }
 
 const responseRunRevisionReadTimeout = 5 * time.Second
@@ -2052,12 +2378,21 @@ func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID s
 		return
 	}
 	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
-	run.startedRev = s.transcriptRevBestEffort(startedCtx, sessionID)
+	if indexer, ok := s.transcriptIndexerForWeb(); ok {
+		if snapshot, err := indexer.GetTranscriptSnapshot(startedCtx, sessionID); err == nil {
+			run.startedRev = snapshot.Rev
+			run.startedCompactionSeq = snapshot.CompactionSeq
+			run.startedCompactionCount = snapshot.CompactionCount
+			if len(snapshot.Items) > 0 {
+				run.anchorRowID = snapshot.Items[len(snapshot.Items)-1].ID
+			}
+		}
+	}
 	startedCancel()
-	run.finalRevReader = func() int64 {
+	run.finalRevReader = func() (int64, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
 		defer cancel()
-		return s.transcriptRevBestEffort(ctx, sessionID)
+		return s.transcriptRev(ctx, sessionID)
 	}
 }
 
@@ -2081,6 +2416,12 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - serve.response_timeout bounds orphan-run lifetime.
 	runCtx, cancel := context.WithTimeout(context.Background(), s.responseTimeout())
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
+	for i := len(inputMessages) - 1; i >= 0; i-- {
+		if inputMessages[i].Role == llm.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
+			run.clientMessageID = strings.TrimSpace(inputMessages[i].ClientMessageID)
+			break
+		}
+	}
 	runCtx = withResponseRunContext(runCtx, run)
 	s.configureResponseRunRevision(run, sessionID)
 	createdRun, duplicate, err := mgr.createOrGetByIdempotency(run, options.idempotencyKey)
@@ -2193,7 +2534,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 				errType = "conflict_error"
 			}
 			if !errors.Is(err, context.Canceled) {
-				s.persistResponseRunErrorEvent(runtime, sessionID, respID, errType, errMessage)
+				s.persistResponseRunErrorEvent(runCtx, runtime, sessionID, respID, errType, errMessage)
 			}
 			hadSubscribers, failErr := run.fail(map[string]any{
 				"error": map[string]any{
