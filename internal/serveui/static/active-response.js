@@ -28,6 +28,8 @@
     projection: [],
     assistantByOrdinal: new Map(),
     toolByCallID: new Map(),
+    // Internal semantic cursor: null or the exact current tool-group object in projection.
+    currentToolGroup: null,
   });
 
   const publicActiveRun = (run) => ({
@@ -62,7 +64,7 @@
     if (!id) throw new Error('response tool event is missing call_id');
     let entry = run.toolByCallID.get(id);
     if (entry) return entry;
-    let group = run.projection.findLast((candidate) => candidate.role === 'tool-group' && candidate.status === 'running');
+    let group = run.terminal ? null : run.currentToolGroup;
     if (!group) {
       const key = `${run.responseID}:tools:${id}`;
       group = {
@@ -76,7 +78,10 @@
         terminalPolicy: 'durable',
       };
       run.projection.push(group);
+    } else {
+      group.status = 'running';
     }
+    run.currentToolGroup = group;
     entry = {
       id,
       callId: id,
@@ -90,12 +95,15 @@
     return entry;
   };
 
-  const closeRunningToolGroups = (run) => {
+  const closeToolGroupsAtBoundary = (run) => {
     for (const group of run.projection) {
       if (group.role !== 'tool-group' || group.status !== 'running') continue;
       for (const tool of group.tools || []) if (tool.status === 'running') tool.status = 'done';
       group.status = 'done';
     }
+    // Execution completion only changes display status. Assistant text, user
+    // intent, and terminal events call this helper to end the semantic group.
+    run.currentToolGroup = null;
   };
 
   const validateEnvelope = (run, payload) => {
@@ -150,18 +158,20 @@
       case 'response.created':
         break;
       case 'response.output_text.delta': {
+        const delta = String(payload.delta || '');
+        if (!delta) break;
         const ordinal = payload.assistant_segment_ordinal ?? payload.output_index ?? 0;
         const existed = run.assistantByOrdinal.has(Math.max(0, int(ordinal)));
-        closeRunningToolGroups(run);
+        closeToolGroupsAtBoundary(run);
         const assistant = assistantEntry(run, ordinal);
         if (!existed) structural = true;
-        assistant.content += String(payload.delta || '');
+        assistant.content += delta;
         assistant.segmentStartSequence = assistant.segmentStartSequence || int(payload.segment_start_sequence, validation.sequence);
         assistant.segmentEndSequence = validation.sequence || assistant.segmentEndSequence || 0;
         break;
       }
       case 'response.output_text.new_segment':
-        closeRunningToolGroups(run);
+        closeToolGroupsAtBoundary(run);
         assistantEntry(run, payload.assistant_segment_ordinal ?? payload.output_index ?? 0);
         structural = true;
         break;
@@ -208,7 +218,7 @@
       case 'response.interjection': {
         const clientMessageId = String(payload.client_message_id || payload.interjection_id || '').trim();
         if (!clientMessageId) throw new Error('response interjection is missing client_message_id');
-        closeRunningToolGroups(run);
+        closeToolGroupsAtBoundary(run);
         if (!run.projection.some((entry) => entry.role === 'intent-ref' && entry.clientMessageId === clientMessageId)) {
           run.projection.push({
             key: `${run.responseID}:intent:${clientMessageId}`,
@@ -237,7 +247,7 @@
       case 'response.completed':
       case 'response.cancelled':
       case 'response.failed': {
-        closeRunningToolGroups(run);
+        closeToolGroupsAtBoundary(run);
         const finalRev = Math.max(0, int(payload.final_rev ?? payload.response?.final_rev));
         const durableOutputCount = Math.max(0, int(payload.durable_output_count ?? payload.response?.durable_output_count));
         const declaredHandoff = (payload.durable_handoff ?? payload.response?.durable_handoff) === true;
@@ -259,6 +269,7 @@
         run.projection = run.projection.filter((entry) => entry.role !== 'assistant' && entry.role !== 'tool-group');
         run.assistantByOrdinal.clear();
         run.toolByCallID.clear();
+        run.currentToolGroup = null;
         structural = true;
         break;
       case 'response.stream_error':
@@ -273,7 +284,9 @@
   const reduceDetachedReplay = (run, events) => {
     const candidate = createActiveRun({ responseId: run.responseID, runEpoch: run.runEpoch, anchor: run.anchor });
     candidate.lastSequence = run.lastSequence;
+    const currentToolGroupIndex = run.currentToolGroup ? run.projection.indexOf(run.currentToolGroup) : -1;
     candidate.projection = run.projection.map((entry) => clone(entry));
+    candidate.currentToolGroup = currentToolGroupIndex >= 0 ? candidate.projection[currentToolGroupIndex] : null;
     for (const entry of candidate.projection) {
       if (entry.role === 'assistant') candidate.assistantByOrdinal.set(int(entry.assistantSegmentOrdinal), entry);
       if (entry.role === 'tool-group') {
@@ -293,22 +306,27 @@
     run.lastSequence = Math.max(0, int(snapshot.last_sequence_number ?? snapshot?.recovery?.sequence_number));
     for (const message of snapshot?.recovery?.messages || snapshot?.messages || []) {
       if (message.role === 'assistant') {
+        closeToolGroupsAtBoundary(run);
         const entry = assistantEntry(run, message.assistant_segment_ordinal ?? 0);
         entry.content = String(message.content || message.text || '');
         entry.segmentStartSequence = int(message.segment_start_sequence);
         entry.segmentEndSequence = int(message.segment_end_sequence);
       } else if (message.role === 'tool-group') {
+        // Recovery uses the same semantic rule as live folding: adjacent tool
+        // rows continue one group unless an assistant or user row intervenes.
         const before = run.projection.length;
         for (const item of message.tools || []) Object.assign(toolEntry(run, item.id, item), clone(item));
         const group = run.projection.slice(before).find((entry) => entry.role === 'tool-group') || run.projection.findLast((entry) => entry.role === 'tool-group');
         if (group && message.status) group.status = String(message.status);
       } else if (message.role === 'user') {
+        closeToolGroupsAtBoundary(run);
         const clientMessageId = String(message.client_message_id || message.clientMessageId || message.id || '').trim();
         if (clientMessageId) run.projection.push({ key: `${responseId}:intent:${clientMessageId}`, role: 'intent-ref', clientMessageId, terminalPolicy: 'transient' });
       }
     }
     const terminalSource = snapshot?.response && typeof snapshot.response === 'object' ? { ...snapshot, ...snapshot.response } : snapshot;
     if (terminalSource.status && terminalSource.status !== 'in_progress') {
+      closeToolGroupsAtBoundary(run);
       const finalRev = Math.max(0, int(terminalSource.final_rev));
       const durableOutputCount = Math.max(0, int(terminalSource.durable_output_count));
       const declaredHandoff = terminalSource.durable_handoff === true;

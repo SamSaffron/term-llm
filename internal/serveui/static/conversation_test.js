@@ -195,6 +195,103 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
 })();
 
 (() => {
+  const conversation = conversationAPI.createConversation({ sessionId: 'sequential-tools', durable: envelope([], 0) });
+  conversationAPI.startActiveRun(conversation, { responseId: 'resp-sequential-tools', runEpoch: 1 });
+  const apply = (event, sequenceNumber, payload = {}) => conversationAPI.applyRunEvent(conversation, event, {
+    response_id: 'resp-sequential-tools', run_epoch: 1, sequence_number: sequenceNumber, ...payload
+  });
+
+  apply('response.output_item.added', 1, {
+    item: { type: 'function_call', call_id: 'call-1', name: 'read_file' }
+  });
+  apply('response.tool_exec.end', 2, { call_id: 'call-1', success: true });
+  apply('response.output_text.delta', 3, { assistant_segment_ordinal: 1, delta: '' });
+  apply('response.output_item.added', 4, {
+    item: { type: 'function_call', call_id: 'call-2', name: 'grep' }
+  });
+  apply('response.tool_exec.end', 5, { call_id: 'call-2', success: true });
+
+  let visible = conversationAPI.visibleMessages(conversation);
+  assert.deepEqual(visible.map((message) => message.role), ['tool-group']);
+  assert.deepEqual(visible[0].tools.map((tool) => tool.id), ['call-1', 'call-2']);
+  assert.equal(visible[0].status, 'done');
+
+  apply('response.output_text.delta', 6, {
+    assistant_segment_ordinal: 1, delta: 'I found another place to inspect.'
+  });
+  apply('response.output_item.added', 7, {
+    item: { type: 'function_call', call_id: 'call-3', name: 'read_file' }
+  });
+
+  visible = conversationAPI.visibleMessages(conversation);
+  assert.deepEqual(visible.map((message) => message.role), ['tool-group', 'assistant', 'tool-group']);
+  assert.deepEqual(visible[0].tools.map((tool) => tool.id), ['call-1', 'call-2']);
+  assert.deepEqual(visible[2].tools.map((tool) => tool.id), ['call-3']);
+})();
+
+(() => {
+  const run = active.createActiveRun({ responseId: 'detached-tools', runEpoch: 1 });
+  active.reduceResponseEvent(run, 'response.output_item.added', {
+    response_id: 'detached-tools', run_epoch: 1, sequence_number: 1,
+    item: { type: 'function_call', call_id: 'call-before-replay', name: 'read_file' }
+  });
+  active.reduceResponseEvent(run, 'response.tool_exec.end', {
+    response_id: 'detached-tools', run_epoch: 1, sequence_number: 2,
+    call_id: 'call-before-replay', success: true
+  });
+
+  const replayed = active.reduceDetachedReplay(run, [{
+    event: 'response.output_item.added',
+    payload: {
+      response_id: 'detached-tools', run_epoch: 1, sequence_number: 3,
+      item: { type: 'function_call', call_id: 'call-after-replay', name: 'grep' }
+    }
+  }]);
+
+  assert.deepEqual(run.projection[0].tools.map((tool) => tool.id), ['call-before-replay'], 'detached replay mutated the published group');
+  assert.deepEqual(replayed.projection.map((message) => message.role), ['tool-group']);
+  assert.deepEqual(replayed.projection[0].tools.map((tool) => tool.id), ['call-before-replay', 'call-after-replay']);
+})();
+
+(() => {
+  const recovered = active.activeRunFromSnapshot({
+    id: 'recovered-tools', run_epoch: 1, status: 'in_progress', last_sequence_number: 2,
+    recovery: { messages: [{
+      role: 'tool-group', status: 'done',
+      tools: [{ id: 'call-recovered', name: 'read_file', status: 'done', resultStatus: 'success' }]
+    }] }
+  });
+  active.reduceResponseEvent(recovered, 'response.output_item.added', {
+    response_id: 'recovered-tools', run_epoch: 1, sequence_number: 3,
+    item: { type: 'function_call', call_id: 'call-live', name: 'grep' }
+  });
+  assert.deepEqual(recovered.projection.map((message) => message.role), ['tool-group']);
+  assert.deepEqual(recovered.projection[0].tools.map((tool) => tool.id), ['call-recovered', 'call-live']);
+
+  const recoveredAdjacent = active.activeRunFromSnapshot({
+    id: 'recovered-adjacent-tools', run_epoch: 1, status: 'in_progress', last_sequence_number: 2,
+    recovery: { messages: [
+      { role: 'tool-group', status: 'done', tools: [{ id: 'call-adjacent-1', name: 'read_file', status: 'done' }] },
+      { role: 'tool-group', status: 'done', tools: [{ id: 'call-adjacent-2', name: 'grep', status: 'done' }] }
+    ] }
+  });
+  assert.deepEqual(recoveredAdjacent.projection.map((message) => message.role), ['tool-group']);
+  assert.deepEqual(recoveredAdjacent.projection[0].tools.map((tool) => tool.id), ['call-adjacent-1', 'call-adjacent-2']);
+
+  const recoveredBoundary = active.activeRunFromSnapshot({
+    id: 'recovered-tool-boundary', run_epoch: 1, status: 'in_progress', last_sequence_number: 3,
+    recovery: { messages: [
+      { role: 'tool-group', status: 'done', tools: [{ id: 'call-before-text', name: 'read_file', status: 'done' }] },
+      { role: 'assistant', assistant_segment_ordinal: 1, content: 'Inspecting another area.' },
+      { role: 'tool-group', status: 'done', tools: [{ id: 'call-after-text', name: 'grep', status: 'done' }] }
+    ] }
+  });
+  assert.deepEqual(recoveredBoundary.projection.map((message) => message.role), ['tool-group', 'assistant', 'tool-group']);
+  assert.deepEqual(recoveredBoundary.projection[0].tools.map((tool) => tool.id), ['call-before-text']);
+  assert.deepEqual(recoveredBoundary.projection[2].tools.map((tool) => tool.id), ['call-after-text']);
+})();
+
+(() => {
   const conversation = conversationAPI.createConversation({ sessionId: 'deltas', durable: envelope([], 0) });
   conversationAPI.startActiveRun(conversation, { responseId: 'resp-deltas', runEpoch: 1 });
   let structural = 0;

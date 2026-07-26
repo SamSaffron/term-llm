@@ -2941,13 +2941,13 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   }
 
   const toolGroups = projectedMessages(session).filter((message) => message.role === 'tool-group');
-  if (toolGroups.length !== 2) {
-    fail(name, `expected recovered and replayed tool groups, got ${toolGroups.length}`, JSON.stringify(toolGroups));
+  if (toolGroups.length !== 1) {
+    fail(name, `expected adjacent recovered and replayed tools in one group, got ${toolGroups.length}`, JSON.stringify(toolGroups));
     await cleanup();
     return;
   }
-  if (toolGroups.reduce((total, group) => total + group.tools.length, 0) !== 3) {
-    fail(name, 'expected recovered and replayed groups to contain 3 tools total', JSON.stringify(toolGroups));
+  if (toolGroups[0].tools.length !== 3) {
+    fail(name, 'expected recovered and replayed group to contain 3 tools total', JSON.stringify(toolGroups));
     await cleanup();
     return;
   }
@@ -5418,7 +5418,9 @@ async function testSuccessfulPlanToolCompletionRefetchesAuthoritativeState() {
     tool_name: 'update_plan',
     success: false,
   });
-  const failedTool = projectedMessages(session).findLast((message) => message.role === 'tool-group')?.tools?.[0];
+  const failedTool = projectedMessages(session)
+    .flatMap((message) => message.role === 'tool-group' ? message.tools || [] : [])
+    .find((candidate) => candidate.id === 'call_plan_failed');
   if (refreshes !== 1 || failedTool?.resultStatus !== 'error' || failedTool?.status !== 'error') {
     fail(name, 'failed execution refetched or lost generic error evidence', JSON.stringify({ refreshes, failedTool }));
     await cleanup();
