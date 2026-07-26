@@ -249,15 +249,31 @@ func (s *TerminalRenderer) scrollIdl(newbuf *RenderBuffer, n, del, ins int, blan
 	return true
 }
 
+// CanHardScroll reports whether HardScroll can accept the supplied buffer and
+// geometry without mutating renderer state. It lets callers prove the complete
+// contract before they shift their own retained cell buffer.
+func (s *TerminalRenderer) CanHardScroll(newbuf *RenderBuffer, n, top, bot int) bool {
+	if newbuf == nil || newbuf.Buffer == nil || s.curbuf == nil || s.curbuf.Buffer == nil ||
+		!s.flags.Contains(tFullscreen) || n == 0 || top < 0 || bot < top || bot >= newbuf.Height() ||
+		s.curbuf.Width() != newbuf.Width() || s.curbuf.Height() != newbuf.Height() {
+		return false
+	}
+	amount := n
+	if amount < 0 {
+		amount = -amount
+	}
+	return amount < bot-top+1
+}
+
 // HardScroll scrolls lines [top, bot] by n positions using terminal scroll
 // region sequences, then shifts curbuf to match. Positive n = content moves
 // up (new lines appear at bottom). Returns true if the terminal accepted the
-// scroll. Caller must ensure cellbuf is already shifted to match.
+// scroll. Caller must call CanHardScroll before mutating any parallel state.
 //
 // When HardScroll succeeds, scrollOptimize is skipped on the next Render call
 // because the scroll has already been handled.
 func (s *TerminalRenderer) HardScroll(newbuf *RenderBuffer, n, top, bot int) bool {
-	if s.curbuf == nil || !s.flags.Contains(tFullscreen) {
+	if !s.CanHardScroll(newbuf, n, top, bot) {
 		return false
 	}
 	ok := s.scrolln(newbuf, n, top, bot, newbuf.Height()-1)

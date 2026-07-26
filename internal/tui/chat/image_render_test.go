@@ -104,6 +104,84 @@ func TestReplacementPostFrameUploadIsSelfContained(t *testing.T) {
 	}
 }
 
+func TestDroppedPostFrameAcknowledgementRetransmitsBoundedTransitionThenConverges(t *testing.T) {
+	m := newTestChatModel(true)
+	image := postFrameImageState{
+		ImageID:     42,
+		PlacementID: 7,
+		WidthCells:  2,
+		HeightCells: 1,
+		ScreenRow:   3,
+		Upload:      "kitty-upload",
+	}
+	compose := func() (string, *postFrameImageReceipt) {
+		m.beginPostFrameImageComposition()
+		m.postFrameImageMu.Lock()
+		m.postFrameCurrentImages["image"] = image
+		m.postFrameImageMu.Unlock()
+		m.finishPostFrameImageComposition()
+		payload, receipt := m.postFrameImagePayloadForView()
+		return payload, receipt
+	}
+
+	first, firstReceipt := compose()
+	if firstReceipt == nil {
+		t.Fatal("first image transition had no receipt")
+	}
+	// Model Bubble Tea's bounded acknowledgement queue being full: the newest
+	// receipt is dropped and therefore never reaches handlePostFrameImageResult.
+	resultQueue := make(chan *postFrameImageReceipt, 1)
+	resultQueue <- &postFrameImageReceipt{}
+	select {
+	case resultQueue <- firstReceipt:
+		t.Fatal("full acknowledgement queue unexpectedly accepted receipt")
+	default:
+	}
+
+	second, acceptedReceipt := compose()
+	if second != first {
+		t.Fatalf("unacknowledged transition changed or accumulated across retransmit\nfirst:  %q\nsecond: %q", first, second)
+	}
+	if strings.Count(second, image.Upload) != 1 || strings.Count(second, "a=p") != 1 {
+		t.Fatalf("retransmit bandwidth grew beyond one complete transition: %q", second)
+	}
+	if acceptedReceipt == nil {
+		t.Fatal("retransmitted transition had no receipt")
+	}
+	if cmd := m.handlePostFrameImageResult(acceptedReceipt, nil); cmd != nil {
+		t.Fatal("accepted acknowledgement returned a command")
+	}
+
+	third, receipt := compose()
+	if third != "" || receipt != nil {
+		t.Fatalf("acknowledged image transition did not converge to empty payload: payload=%q receipt=%#v", third, receipt)
+	}
+}
+
+func TestLegacyPostFrameUploadPreservesCursor(t *testing.T) {
+	m := newTestChatModel(true)
+	m.pendingImageUploads = []string{"legacy-iterm-or-sixel-upload"}
+	m.beginPostFrameImageComposition()
+	m.finishPostFrameImageComposition()
+	if got, want := postFramePayloadForTest(m), "\x1b[slegacy-iterm-or-sixel-upload\x1b[u"; got != want {
+		t.Fatalf("legacy post-frame payload = %q, want cursor-preserving %q", got, want)
+	}
+}
+
+func TestChatViewportImagePlacementHasAbsoluteTerminalOrigin(t *testing.T) {
+	m := newTestChatModel(true)
+	if got := m.viewport.Style.GetVerticalFrameSize(); got != 0 {
+		t.Fatalf("chat viewport vertical frame size = %d, want zero for absolute image rows", got)
+	}
+	image := postFrameImageState{ImageID: 42, PlacementID: 7, WidthCells: 2, HeightCells: 1, ScreenRow: 3, Upload: "kitty-upload"}
+	m.beginPostFrameImageComposition()
+	m.postFrameCurrentImages["image"] = image
+	m.finishPostFrameImageComposition()
+	if payload := postFramePayloadForTest(m); !strings.Contains(payload, "\x1b[4;1H") {
+		t.Fatalf("zero-based viewport screen row was not placed at absolute terminal row 4: %q", payload)
+	}
+}
+
 func settleVisibleKittyImagesForTest(t *testing.T, m *Model) string {
 	t.Helper()
 	m.viewCache.lastSetContentAt = time.Time{}
@@ -528,6 +606,20 @@ func TestAltScreenNewImageDoesNotCleanupExistingImages(t *testing.T) {
 	}
 	if got := strings.Count(seq, "a=t"); got == 0 {
 		t.Fatalf("later image should queue post-frame Kitty upload, got %d in %q", got, seq)
+	}
+}
+
+func TestQueuePostFrameViewportImageRejectsRowsBelowScreen(t *testing.T) {
+	m := newTestChatModel(true)
+	m.postFrameRenderCache = map[string]postFrameImageState{
+		"image:direct-render:0:1": {ImageID: 42, WidthCells: 2, HeightCells: 1, Upload: "upload"},
+	}
+	m.beginPostFrameImageComposition()
+
+	m.queuePostFrameViewportImage(viewportImageArtifact{Key: "image", Path: "cached.png"}, 0, 0, 1, m.height)
+
+	if got := len(m.postFrameCurrentImages); got != 0 {
+		t.Fatalf("queued %d image placements below the terminal, want 0", got)
 	}
 }
 

@@ -1947,6 +1947,13 @@ func (m *Model) overlayVisibleViewportImages(visible []string, yOffset int) {
 	if m == nil || len(visible) == 0 || len(m.viewportImageBlocks) == 0 {
 		return
 	}
+	// Absolute-origin invariant: the chat viewport has no top/bottom style
+	// frame, so visible row zero is terminal row zero. Direct Kitty placements
+	// use that absolute screen row in PostFrame. If a future style adds vertical
+	// framing, reject placement rather than silently offsetting images from text.
+	if m.viewport.Style.GetVerticalFrameSize() != 0 {
+		return
+	}
 	viewportBottom := yOffset + len(visible)
 	for _, block := range m.viewportImageBlocks {
 		art, ok := m.viewportImageArtifacts[block.Key]

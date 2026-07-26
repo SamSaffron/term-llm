@@ -216,7 +216,7 @@ func (m *Model) resetPostFrameCurrentImages() {
 }
 
 func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, blockStartLine, startRow, rows, screenRow int) {
-	if m == nil || art.Path == "" || rows <= 0 || screenRow < 0 {
+	if m == nil || art.Path == "" || rows <= 0 || screenRow < 0 || screenRow >= m.height {
 		return
 	}
 	placementKey := fmt.Sprintf("%s:direct:%d:%d:%d", art.Key, blockStartLine, startRow, rows)
@@ -320,7 +320,14 @@ func (m *Model) finishPostFrameImageComposition() {
 	m.postFrameCurrentImages = nil
 
 	legacyUploads := append([]string(nil), m.pendingImageUploads...)
-	m.postFrameImageSeq = strings.Join(legacyUploads, "") + prefix + m.postFrameImageUploadSeq
+	legacySeq := strings.Join(legacyUploads, "")
+	if legacySeq != "" {
+		// Legacy inline protocols (notably iTerm2 and sixel) render at and may
+		// advance the current cursor. Keep their upload transaction from changing
+		// Bubble Tea's retained cursor position.
+		legacySeq = "\x1b[s" + legacySeq + "\x1b[u"
+	}
+	m.postFrameImageSeq = legacySeq + prefix + m.postFrameImageUploadSeq
 	if m.postFrameImagePlaceSeq != "" {
 		m.postFrameImageSeq += "\x1b[s" + m.postFrameImagePlaceSeq + "\x1b[u"
 	}

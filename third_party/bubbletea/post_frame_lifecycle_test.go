@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -101,6 +102,101 @@ func waitLifecycleRun(t *testing.T, done <-chan error, what string) error {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for %s", what)
 		return nil
+	}
+}
+
+type blockingLifecycleRenderer struct {
+	*cursedRenderer
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	active  atomic.Int32
+	maximum atomic.Int32
+}
+
+func (r *blockingLifecycleRenderer) flush(bool) error {
+	active := r.active.Add(1)
+	defer r.active.Add(-1)
+	for {
+		maximum := r.maximum.Load()
+		if active <= maximum || r.maximum.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return nil
+}
+
+func TestRendererConcurrentStartsKeepExactlyOneLoop(t *testing.T) {
+	output := &boundaryWriter{}
+	renderer := &blockingLifecycleRenderer{
+		cursedRenderer: newBoundaryRenderer(output),
+		entered:        make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+	p := NewProgram(&rendererLifecycleModel{}, WithOutput(output), WithFPS(120))
+	p.renderer = renderer
+
+	var starts sync.WaitGroup
+	for range 100 {
+		starts.Add(1)
+		go func() {
+			defer starts.Done()
+			p.startRenderer()
+		}()
+	}
+	starts.Wait()
+	waitLifecycle(t, renderer.entered, "renderer loop flush")
+	time.Sleep(50 * time.Millisecond)
+	if got := renderer.maximum.Load(); got != 1 {
+		close(renderer.release)
+		p.stopRenderer(true)
+		t.Fatalf("maximum concurrent renderer loops = %d, want 1", got)
+	}
+
+	close(renderer.release)
+	p.stopRenderer(true)
+	p.stopRenderer(true)
+	if got := renderer.active.Load(); got != 0 {
+		t.Fatalf("live renderer loops after synchronous stop = %d, want 0", got)
+	}
+}
+
+func TestRendererRepeatedStopStartJoinsEachLoop(t *testing.T) {
+	output := &boundaryWriter{}
+	p := NewProgram(&rendererLifecycleModel{}, WithOutput(output), WithFPS(120))
+	p.renderer = newBoundaryRenderer(output)
+
+	for cycle := range 100 {
+		p.startRenderer()
+		p.rendererLifecycleMu.Lock()
+		done := p.rendererLoopDone
+		p.rendererLifecycleMu.Unlock()
+		if done == nil {
+			t.Fatalf("cycle %d did not start a renderer loop", cycle)
+		}
+		p.startRenderer()
+		p.rendererLifecycleMu.Lock()
+		if p.rendererLoopDone != done {
+			p.rendererLifecycleMu.Unlock()
+			t.Fatalf("cycle %d repeated start replaced a live renderer loop", cycle)
+		}
+		p.rendererLifecycleMu.Unlock()
+
+		p.stopRenderer(cycle%2 == 0)
+		select {
+		case <-done:
+		default:
+			t.Fatalf("cycle %d stop returned before renderer loop exited", cycle)
+		}
+		p.stopRenderer(true)
+		p.rendererLifecycleMu.Lock()
+		if p.rendererLoopDone != nil || p.rendererStop != nil {
+			p.rendererLifecycleMu.Unlock()
+			t.Fatalf("cycle %d retained renderer loop state after stop", cycle)
+		}
+		p.rendererLifecycleMu.Unlock()
 	}
 }
 
@@ -219,6 +315,42 @@ func TestRendererTickerPanicRestoresTerminalModesAndDoesNotDeadlock(t *testing.T
 		if !bytes.Contains(joined, []byte(seq)) {
 			t.Fatalf("renderer panic did not restore %s; output=%q", name, joined)
 		}
+	}
+}
+
+func TestRendererRestartAfterTickerPanicStartsFreshLoop(t *testing.T) {
+	output := &boundaryWriter{}
+	model := &rendererLifecycleModel{}
+	p := newRendererLifecycleProgram(t, model, output)
+	p.renderer = &panicAfterFlushRenderer{cursedRenderer: newBoundaryRenderer(output)}
+
+	if err := waitLifecycleRun(t, runRendererLifecycleProgram(p), "renderer panic shutdown"); !errors.Is(err, ErrProgramPanic) {
+		t.Fatalf("Run() error = %v, want renderer panic", err)
+	}
+	p.rendererLifecycleMu.Lock()
+	if p.rendererLoopDone != nil || p.rendererStop != nil {
+		p.rendererLifecycleMu.Unlock()
+		t.Fatal("panic shutdown retained an unjoined renderer loop")
+	}
+	p.rendererLifecycleMu.Unlock()
+
+	if err := p.RestoreTerminal(); err != nil {
+		t.Fatalf("RestoreTerminal after renderer panic: %v", err)
+	}
+	const restoredFrame = "renderer restarted after panic"
+	view := NewView(restoredFrame)
+	view.AltScreen = true
+	p.renderer.render(view)
+	deadline := time.Now().Add(time.Second)
+	for testWrite := writeContaining(output.snapshot(), restoredFrame, 0); testWrite < 0 && time.Now().Before(deadline); testWrite = writeContaining(output.snapshot(), restoredFrame, 0) {
+		time.Sleep(time.Millisecond)
+	}
+	if writeContaining(output.snapshot(), restoredFrame, 0) < 0 {
+		_ = p.ReleaseTerminal()
+		t.Fatal("restarted renderer consumed stale stop signal and emitted no frame")
+	}
+	if err := p.ReleaseTerminal(); err != nil {
+		t.Fatalf("ReleaseTerminal after restart: %v", err)
 	}
 }
 

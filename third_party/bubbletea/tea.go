@@ -115,10 +115,12 @@ type View struct {
 	// mutex is released. Result delivery is bounded and best-effort: if the event
 	// loop has not drained the renderer queue, the newest acknowledgement is
 	// dropped rather than blocking rendering or shutdown. Owners must retain
-	// unacknowledged state so a later frame can retransmit it. The factory is not
-	// admitted for a failed renderer frame or after shutdown begins; a factory
-	// admitted by an already-running flush may finish during shutdown, but its
-	// message will not reach Update after Program termination.
+	// unacknowledged state so a later accepted frame can retransmit at most one
+	// complete current transition; payloads must not accumulate once per dropped
+	// result. The factory is not admitted for a failed renderer frame or after
+	// shutdown begins; a factory admitted by an already-running flush may finish
+	// during shutdown, but its message will not reach Update after Program
+	// termination.
 	PostFrameMsg func(error) Msg
 
 	// TerminalCleanup contains immutable terminal bytes that must be written when
@@ -520,14 +522,11 @@ type Program struct {
 	// modes keeps track of terminal modes that have been enabled or disabled.
 	ignoreSignals uint32
 
-	// ticker is the ticker that will be used to write to the renderer.
-	ticker *time.Ticker
-
-	// once is used to stop the renderer.
-	once sync.Once
-
-	// rendererDone is used to stop the renderer.
-	rendererDone chan struct{}
+	// rendererLifecycleMu serializes renderer loop start, stop, and join.
+	rendererLifecycleMu sync.Mutex
+	rendererStop        chan struct{}
+	rendererLoopDone    chan struct{}
+	rendererClosed      bool
 
 	// suspendFunc replaces the platform suspend operation in deterministic tests.
 	suspendFunc func()
@@ -589,7 +588,6 @@ func NewProgram(model Model, opts ...ProgramOption) *Program {
 		initialModel: model,
 		msgs:         make(chan Msg),
 		errs:         make(chan error, 1),
-		rendererDone: make(chan struct{}, 1),
 	}
 
 	// Apply all options to the program.
@@ -1185,9 +1183,9 @@ func (p *Program) shutdown(kill bool) {
 
 		// Check if the cancel reader has been setup before waiting and closing.
 		if p.cancelReader != nil {
-			// Cancel unblocks the reader. Always wait before Close, including Kill
-			// and panic paths, so the reader goroutine cannot race the underlying
-			// file descriptor while terminal state is being restored.
+			// Cancel reports whether this reader can be interrupted. Join before
+			// Close when it can; non-cancelable readers retain the bounded wait in
+			// releaseTerminal without claiming synchronous cancellation here.
 			if p.cancelReader.Cancel() {
 				p.waitForReadLoop()
 			}
@@ -1325,24 +1323,42 @@ func (p *Program) Printf(template string, args ...any) {
 	}
 }
 
-// startRenderer starts the renderer.
+// startRenderer starts one renderer loop. Repeated starts while the loop is
+// live are no-ops; an exited loop is joined and closed before replacement.
 func (p *Program) startRenderer() {
-	framerate := time.Second / time.Duration(p.fps)
-	if p.ticker == nil {
-		p.ticker = time.NewTicker(framerate)
-	} else {
-		// If the ticker already exists, it has been stopped and we need to
-		// reset it.
-		p.ticker.Reset(framerate)
+	p.rendererLifecycleMu.Lock()
+	defer p.rendererLifecycleMu.Unlock()
+
+	if p.renderer == nil {
+		return
+	}
+	if p.rendererLoopDone != nil {
+		select {
+		case <-p.rendererLoopDone:
+			p.rendererStop = nil
+			p.rendererLoopDone = nil
+			if !p.rendererClosed {
+				p.renderer.beginShutdown()
+				_ = p.renderer.flush(true)
+				_ = p.renderer.close()
+				p.rendererClosed = true
+			}
+		default:
+			return
+		}
 	}
 
-	// Since the renderer can be restarted after a stop, we need to reset
-	// the done channel and its corresponding sync.Once.
-	p.once = sync.Once{}
-
-	// Start the renderer.
 	p.renderer.start()
+	p.rendererClosed = false
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	p.rendererStop = stop
+	p.rendererLoopDone = done
+	ticker := time.NewTicker(time.Second / time.Duration(p.fps))
+	renderer := p.renderer
 	go func() {
+		defer close(done)
+		defer ticker.Stop()
 		defer func() {
 			if r := recover(); r != nil {
 				p.recoverFromGoPanic(r)
@@ -1350,35 +1366,35 @@ func (p *Program) startRenderer() {
 		}()
 		for {
 			select {
-			case <-p.rendererDone:
-				p.ticker.Stop()
+			case <-stop:
 				return
-
-			case <-p.ticker.C:
+			case <-ticker.C:
 				_ = p.flush()
-				_ = p.renderer.flush(false)
+				_ = renderer.flush(false)
 			}
 		}
 	}()
 }
 
-// stopRenderer stops the renderer.
-// If kill is true, the renderer will be stopped immediately without flushing
-// the last frame.
+// stopRenderer stops and joins the renderer loop before flushing or closing
+// renderer state. If kill is true, the final frame is discarded.
 func (p *Program) stopRenderer(kill bool) {
-	// Stop admitting result factories before signalling the ticker. A factory
-	// already running may finish, but no shutdown waits for it.
+	p.rendererLifecycleMu.Lock()
+	defer p.rendererLifecycleMu.Unlock()
+
+	if p.renderer == nil || p.rendererClosed {
+		return
+	}
 	p.renderer.beginShutdown()
-
-	// Stop the renderer before acquiring the mutex to avoid a deadlock.
-	p.once.Do(func() {
-		p.rendererDone <- struct{}{}
-	})
-
+	if p.rendererLoopDone != nil {
+		close(p.rendererStop)
+		<-p.rendererLoopDone
+		p.rendererStop = nil
+		p.rendererLoopDone = nil
+	}
 	if !kill {
-		// flush locks the mutex
 		_ = p.renderer.flush(true)
 	}
-
 	_ = p.renderer.close()
+	p.rendererClosed = true
 }

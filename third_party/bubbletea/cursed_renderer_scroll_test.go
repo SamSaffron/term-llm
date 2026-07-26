@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -75,6 +76,10 @@ func assertRendererCellsEqualContent(t *testing.T, r *cursedRenderer, content st
 		}
 		t.Fatal("cell buffers differ")
 	}
+	rendered := r.scr.RenderedBuffer()
+	if rendered == nil || !reflect.DeepEqual(rendered.Lines, want.Lines) {
+		t.Fatal("UV retained buffer differs from requested content")
+	}
 }
 
 func TestScrollLinesIndependent(t *testing.T) {
@@ -86,6 +91,13 @@ func TestScrollLinesIndependent(t *testing.T) {
 		{name: "plain", lines: []string{"plain", "界"}, want: true},
 		{name: "self-contained SGR", lines: []string{"\x1b[31mred\x1b[0m", "plain"}, want: true},
 		{name: "carried SGR", lines: []string{"\x1b[31mred", "inherits red"}},
+		{name: "C0 control", lines: []string{"\x01", "plain"}},
+		{name: "C1 control", lines: []string{"\u008a", "plain"}},
+		{name: "tab control", lines: []string{"column\tshift", "plain"}},
+		{name: "leading combining mark", lines: []string{"\u0360", "plain"}},
+		{name: "zero width joiner", lines: []string{"joined\u200d", "plain"}},
+		{name: "unicode noncharacter", lines: []string{"\uffff", "plain"}},
+		{name: "Kitty private-use placeholder", lines: []string{"\U0010eeee", "plain"}, want: true},
 		{name: "OSC hyperlink", lines: []string{"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"}},
 		{name: "cursor control", lines: []string{"\x1b[2Cmove\x1b[0m"}},
 	}
@@ -226,8 +238,50 @@ func TestVerticalScrollFastPathEmitsScrollRegionBytes(t *testing.T) {
 		}
 	}
 	joined := string(bytesJoin(output.snapshot()))
-	if !strings.Contains(joined, "\x1b[3;8r") {
+	set := "\x1b[3;8r"
+	reset := "\x1b[1;10r"
+	setAt, resetAt := strings.Index(joined, set), strings.Index(joined, reset)
+	if setAt < 0 {
 		t.Fatalf("hard scroll did not set expected body region: %q", joined)
+	}
+	if resetAt < setAt+len(set) {
+		t.Fatalf("hard scroll did not reset body region after use: %q", joined)
+	}
+	terminal := newVTTestTerminal(width, height)
+	if err := terminal.apply([]byte(joined)); err != nil {
+		t.Fatalf("interpret renderer output: %v", err)
+	}
+	if err := terminal.assertBalancedMargins(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerticalScrollDoesNotMutateCellbufWhenHardScrollPreconditionFails(t *testing.T) {
+	const width, height = 30, 8
+	oldLines := []string{"header", "a", "b", "c", "d", "e", "f", "footer"}
+	newLines := []string{"header", "b", "c", "d", "e", "f", "new", "footer"}
+	output := &boundaryWriter{}
+	r := newCursedRenderer(output, []string{"TERM=xterm-256color", "TERM_PROGRAM=Apple_Terminal"}, width, height)
+	view := NewView(strings.Join(oldLines, "\n"))
+	view.AltScreen = true
+	r.render(view)
+	if err := r.flush(false); err != nil {
+		t.Fatal(err)
+	}
+
+	before := r.cellbuf.Clone()
+	r.scr.SetFullscreen(false)
+	r.view = NewView(strings.Join(newLines, "\n"))
+	r.view.AltScreen = true
+	shift, top, bottom := detectContentShift(oldLines, newLines)
+	if shift == 0 {
+		t.Fatal("test setup did not produce an exact shift")
+	}
+	if r.drawVerticalScroll(newLines, shift, top, bottom) {
+		t.Fatal("vertical scroll succeeded without fullscreen HardScroll support")
+	}
+	if !reflect.DeepEqual(r.cellbuf.Lines, before.Lines) {
+		t.Fatal("failed HardScroll precondition mutated retained cell rows")
 	}
 }
 
@@ -256,17 +310,30 @@ func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
 			if len(part) > 64 {
 				part = part[:64]
 			}
+			// Keep this target focused on byte-stream equivalence for the
+			// incremental paths. Malformed CSI can overflow x/ansi before strategy
+			// selection, while controls and cross-grapheme code points deliberately
+			// force the full-frame path and have focused rejection tests above.
+			// Generated wrappers below still exercise valid ANSI sequences.
+			part = strings.ReplaceAll(strings.ToValidUTF8(part, "?"), "\x1b", "?")
+			part = strings.Map(func(r rune) rune {
+				if unicode.IsControl(r) || unicode.IsMark(r) || unicode.Is(unicode.Cf, r) ||
+					(!unicode.IsGraphic(r) && !unicode.Is(unicode.Co, r)) {
+					return '?'
+				}
+				return r
+			}, part)
 			switch i % 6 {
 			case 0:
 				lines[i] = ""
 			case 1:
 				lines[i] = "duplicate"
 			case 2:
-				lines[i] = "界 " + strings.ToValidUTF8(part, "?")
+				lines[i] = "界 " + part
 			case 3:
-				lines[i] = "\x1b[31m" + strings.ToValidUTF8(part, "?") + "\x1b[0m"
+				lines[i] = "\x1b[31m" + part + "\x1b[0m"
 			default:
-				lines[i] = strings.ToValidUTF8(part, "?")
+				lines[i] = part
 			}
 		}
 		next := append([]string(nil), lines...)
@@ -276,9 +343,12 @@ func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
 				next[i] = fmt.Sprintf("changed-%d-界", i)
 			}
 		case 1:
-			if len(next) >= 6 {
-				copy(next[1:len(next)-1], lines[2:len(lines)-1])
-				next[len(next)-2] = "new-scroll-row"
+			amount := 1 + int(rawTerminalHeight%3)
+			if len(next) >= amount+5 {
+				copy(next[1:len(next)-1], lines[1+amount:len(lines)-1])
+				for i := len(next) - 1 - amount; i < len(next)-1; i++ {
+					next[i] = fmt.Sprintf("new-scroll-row-%d", i)
+				}
 			} else {
 				next[len(next)-1] = "short-scroll-fallback"
 			}
@@ -317,11 +387,33 @@ func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
 		if !reflect.DeepEqual(incremental.cellbuf.Lines, full.cellbuf.Lines) ||
 			!reflect.DeepEqual(incremental.cellbuf.RenderBuffer, full.cellbuf.RenderBuffer) ||
 			!reflect.DeepEqual(incremental.lastContentLines, full.lastContentLines) {
-			t.Fatalf("incremental and forced-full retained cell/output state differs (terminal=%d content=%d mode=%d)", terminalHeight, contentHeight, rawMode%3)
+			t.Fatalf("incremental and forced-full retained cell state differs (terminal=%d content=%d mode=%d)", terminalHeight, contentHeight, rawMode%3)
 		}
-		if len(incrementalOutput.snapshot()) == 0 || len(fullOutput.snapshot()) == 0 {
-			t.Fatal("renderer produced no observable output state")
+		// RenderedBuffer is only UV's retained belief; it is useful for checking
+		// internal bookkeeping but is not an oracle for the bytes a terminal saw.
+		if !reflect.DeepEqual(incremental.scr.RenderedBuffer(), full.scr.RenderedBuffer()) {
+			t.Fatalf("incremental and forced-full UV retained state differs (terminal=%d content=%d mode=%d)", terminalHeight, contentHeight, rawMode%3)
 		}
+		incrementalStream := bytesJoin(incrementalOutput.snapshot())
+		fullStream := bytesJoin(fullOutput.snapshot())
+		if len(incrementalStream) == 0 || len(fullStream) == 0 {
+			t.Fatal("renderer produced no terminal output bytes")
+		}
+		incrementalTerminal := newVTTestTerminal(width, terminalHeight)
+		fullTerminal := newVTTestTerminal(width, terminalHeight)
+		if err := incrementalTerminal.apply(incrementalStream); err != nil {
+			t.Fatalf("interpret incremental output: %v", err)
+		}
+		if err := fullTerminal.apply(fullStream); err != nil {
+			t.Fatalf("interpret forced-full output: %v", err)
+		}
+		if err := incrementalTerminal.assertBalancedMargins(); err != nil {
+			t.Fatalf("incremental output left terminal state unsafe: %v", err)
+		}
+		if err := fullTerminal.assertBalancedMargins(); err != nil {
+			t.Fatalf("forced-full output left terminal state unsafe: %v", err)
+		}
+		assertVTTestTerminalsEqual(t, incrementalTerminal, fullTerminal)
 	})
 }
 

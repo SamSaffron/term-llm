@@ -15,9 +15,10 @@
 
 ## Build & Test
 - `go build` – Build binary
-- `go test ./...` – Run root-module tests only
-- `scripts/verify_nested_modules.sh` – Build, test, and vet reflow plus the owned Bubble Tea and Ultraviolet modules
-- `VERIFY_RACE=1 scripts/verify_nested_modules.sh` – Include nested race tests
+- `go test ./...` – Run root-module tests only. To isolate tests from developer-global skills/config while reusing the read-only module cache: `GOMODCACHE=$(go env GOMODCACHE); TEST_HOME=$(mktemp -d); HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" XDG_DATA_HOME="$TEST_HOME/data" XDG_CACHE_HOME="$TEST_HOME/cache" GOMODCACHE="$GOMODCACHE" go test ./...; rm -rf "$TEST_HOME"`
+- `scripts/verify_nested_modules.sh` – Build and vet reflow (which currently has no tests), and build, test, and vet the owned Bubble Tea and Ultraviolet modules
+- `VERIFY_RACE=1 scripts/verify_nested_modules.sh` – Include nested race execution; for reflow this is compilation coverage until tests are added
+- `scripts/fuzz_owned_renderer.sh` – Execute (not just seed-test) the renderer differential and exact-shift fuzz targets for a bounded 45 seconds by default
 - `scripts/cross_build_owned_renderer.sh` – Cross-build release targets and relevant renderer platforms
 - **Always run `gofmt -w .` after changes**
 

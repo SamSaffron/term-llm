@@ -51,6 +51,10 @@ jobs:
           VERIFY_RACE: '1'
         run: scripts/verify_nested_modules.sh
 
+      - name: Fuzz owned renderer differential and shift paths
+        timeout-minutes: 2
+        run: scripts/fuzz_owned_renderer.sh
+
       - name: Nested checkptr
         run: |
           for module in internal/reflow third_party/ultraviolet third_party/bubbletea; do
@@ -77,6 +81,7 @@ jobs:
           cache: true
           cache-dependency-path: |
             go.sum
+            internal/reflow/go.sum
             third_party/bubbletea/go.sum
             third_party/ultraviolet/go.sum
 

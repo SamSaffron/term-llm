@@ -372,11 +372,13 @@ func (s *cursedRenderer) flush(closing bool) (err error) {
 	didIncrementalDraw := false
 	if view.AltScreen {
 		newContentLines = splitLinesReuse(s.nextContentLines, view.Content)
-		if shift, top, bottom := detectContentShift(s.lastContentLines, newContentLines); shift != 0 {
-			didIncrementalDraw = s.drawVerticalScroll(newContentLines, shift, top, bottom)
-		}
-		if !didIncrementalDraw {
-			didIncrementalDraw = s.drawChangedRows(newContentLines)
+		if !s.forceRedraw {
+			if shift, top, bottom := detectContentShift(s.lastContentLines, newContentLines); shift != 0 {
+				didIncrementalDraw = s.drawVerticalScroll(newContentLines, shift, top, bottom)
+			}
+			if !didIncrementalDraw {
+				didIncrementalDraw = s.drawChangedRows(newContentLines)
+			}
 		}
 	}
 	if !didIncrementalDraw {

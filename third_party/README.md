@@ -80,15 +80,18 @@ From the repository root:
 ```sh
 scripts/verify_nested_modules.sh
 VERIFY_RACE=1 scripts/verify_nested_modules.sh
+scripts/fuzz_owned_renderer.sh
 
 (cd third_party/bubbletea && GODEBUG=checkptr=2 go test ./...)
 (cd third_party/ultraviolet && GODEBUG=checkptr=2 go test ./...)
 (cd third_party/bubbletea && go test -run '^$' -bench '^BenchmarkCursedRenderer$' -benchmem .)
 (cd third_party/ultraviolet && go test -run '^$' -bench '^BenchmarkRendererScroll' -benchmem .)
 
-# Isolate user configuration and skills for the complete application suite.
+# Isolate user configuration and skills for the complete application suite
+# while reusing the existing read-only module download cache.
+GOMODCACHE=$(go env GOMODCACHE)
 TEST_HOME=$(mktemp -d)
-HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" go test ./...
+HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" XDG_DATA_HOME="$TEST_HOME/data" XDG_CACHE_HOME="$TEST_HOME/cache" GOMODCACHE="$GOMODCACHE" go test ./...
 rm -rf "$TEST_HOME"
 ```
 
@@ -98,10 +101,14 @@ Cross-platform reachability for the owned modules is checked without executing f
 scripts/cross_build_owned_renderer.sh
 ```
 
-Renderer fuzz targets can be exercised with, for example:
+`internal/reflow` currently has no test files, so its entries in the nested script provide build, vet, checkptr, and race-instrumented compilation coverage rather than meaningful behavioral test coverage. Bubble Tea and Ultraviolet have the focused tests described above.
+
+Renderer fuzz targets are committed with regression corpus entries and CI executes both targets (rather than only replaying seeds):
 
 ```sh
-(cd third_party/bubbletea && go test -run '^$' -fuzz '^FuzzDetectContentShiftExactOverlap$' -fuzztime=10s .)
+scripts/fuzz_owned_renderer.sh
+# Optional longer local run:
+FUZZ_DIFFERENTIAL_TIME=60s FUZZ_SHIFT_TIME=30s scripts/fuzz_owned_renderer.sh
 ```
 
 There were no separate upstream NOTICE files at the pinned revisions.

@@ -192,6 +192,13 @@ func (s *TerminalRenderer) SetScrollOptim(v bool) {
 	}
 }
 
+// SkipScrollOptim skips whole-frame scroll detection on the next Render call.
+// Callers may use it only when they have already proved that untouched rows
+// still match the retained physical screen and no vertical shift is useful.
+func (s *TerminalRenderer) SkipScrollOptim() {
+	s.skipScrollOptim = true
+}
+
 // SetMapNewline sets whether the terminal is currently mapping newlines to
 // CRLF or carriage return and line feed. This is used to correctly determine
 // how to move the cursor when writing to the screen.
@@ -241,6 +248,17 @@ func (s *TerminalRenderer) SetFullscreen(v bool) {
 // and optimizations when the terminal is occupying the whole screen.
 func (s *TerminalRenderer) Fullscreen() bool {
 	return s.flags.Contains(tFullscreen)
+}
+
+// RenderedBuffer returns a snapshot of the renderer's retained cell model.
+// It is intended for internal differential verification and diagnostics; it
+// does not parse or prove the bytes observed by a terminal. Mutating the
+// returned Buffer does not affect the renderer.
+func (s *TerminalRenderer) RenderedBuffer() *Buffer {
+	if s.curbuf == nil || s.curbuf.Buffer == nil {
+		return nil
+	}
+	return s.curbuf.Buffer.Clone()
 }
 
 // SetRelativeCursor sets whether to use relative cursor movements.
@@ -846,6 +864,20 @@ func (s *TerminalRenderer) transformLine(newbuf *RenderBuffer, y int) {
 		return
 	}
 
+	// Inserting, deleting, or resuming a diff beside a wide cell can target its
+	// zero-width continuation column, which terminals do not expose as an
+	// independently writable cell. Redraw the complete changed line instead of
+	// risking a split glyph. ASCII-only lines retain the optimized path below.
+	for x := 0; x < newbuf.Width(); x++ {
+		oldCell, newCell := oldLine.At(x), newLine.At(x)
+		if (oldCell != nil && oldCell.Width > 1) || (newCell != nil && newCell.Width > 1) {
+			s.move(newbuf, 0, y)
+			s.emitRange(newbuf, newLine, newbuf.Width())
+			copy(oldLine, newLine)
+			return
+		}
+	}
+
 	blank = newLine.At(newbuf.Width() - 1)
 	if blank != nil && !canClearWith(blank) {
 		// Find the last differing cell
@@ -1191,6 +1223,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	if s.clear { //nolint:nestif
 		s.clearUpdate(newbuf)
 		s.clear = false
+		s.skipScrollOptim = false
 	} else if touchedLines > 0 {
 		// On Windows, there's a bug with Windows Terminal where [ansi.DECSTBM]
 		// misbehaves and moves the cursor outside of the scrolling region. For

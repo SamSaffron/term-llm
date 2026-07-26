@@ -9,7 +9,7 @@
 
 This directory is a reduced application module, not a mirror of a source-spike branch. Relative to the base above, term-llm owns:
 
-- `tea.go`, `renderer.go`, and `cursed_renderer*.go`: renderer-bound `PostFrame`/`TerminalCleanup`, exact acknowledgement scheduling, panic-safe renderer lifecycle, queued-view/scrollback synchronization, output-failure invalidation, bounded result delivery, and incremental changed-row/exact-scroll rendering;
+- `tea.go`, `renderer.go`, and `cursed_renderer*.go`: renderer-bound `PostFrame`/`TerminalCleanup`, exact acknowledgement scheduling, panic-safe renderer lifecycle, queued-view/scrollback synchronization, output-failure invalidation, bounded result delivery, and incremental changed-row/exact-scroll rendering. `Kill` cancels the input reader and waits up to 500 ms for its read loop before closing/restoring the terminal; this bounded join avoids descriptor races without allowing a broken platform cancellation to hang shutdown;
 - `screen.go`, `exec.go`, `tty*`, `termios*`, `signals*`, and input/event files: the lifecycle and platform surface reachable by term-llm and retained Bubbles/Huh packages;
 - focused renderer, lifecycle, geometry, short-write, queue, stress/fuzz, benchmark, program, option, command, screen, and exec tests plus retained goldens;
 - pruning documented in `../README.md`, including examples, tutorials, generic extension APIs, high-level logging/profile helpers, unused queries/events/options, rendererless mode, and their dependencies.

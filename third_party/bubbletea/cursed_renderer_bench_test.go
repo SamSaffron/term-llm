@@ -10,21 +10,24 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-type benchmarkCountingWriter struct {
+// benchmarkByteCounter deliberately does not copy or perform I/O. Benchmarks
+// using it measure renderer CPU/control-path cost and report bytes-counted/op;
+// only the explicitly named bytes.Buffer benchmark measures payload copying.
+type benchmarkByteCounter struct {
 	bytes int64
 }
 
-func (w *benchmarkCountingWriter) Write(p []byte) (int, error) {
+func (w *benchmarkByteCounter) Write(p []byte) (int, error) {
 	w.bytes += int64(len(p))
 	return len(p), nil
 }
 
-func (w *benchmarkCountingWriter) WriteString(s string) (int, error) {
+func (w *benchmarkByteCounter) WriteString(s string) (int, error) {
 	w.bytes += int64(len(s))
 	return len(s), nil
 }
 
-func (w *benchmarkCountingWriter) reset() { w.bytes = 0 }
+func (w *benchmarkByteCounter) reset() { w.bytes = 0 }
 
 type rendererBenchmarkSize struct {
 	width  int
@@ -131,7 +134,7 @@ func newBenchmarkRenderer(w io.Writer, size rendererBenchmarkSize) *cursedRender
 
 func benchmarkFlushView(b *testing.B, size rendererBenchmarkSize, initial View, next func(int) View) {
 	b.Helper()
-	w := &benchmarkCountingWriter{}
+	w := &benchmarkByteCounter{}
 	r := newBenchmarkRenderer(w, size)
 	r.render(initial)
 	if err := r.flush(false); err != nil {
@@ -148,7 +151,7 @@ func benchmarkFlushView(b *testing.B, size rendererBenchmarkSize, initial View, 
 		}
 	}
 	b.StopTimer()
-	b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-written/op")
+	b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-counted/op")
 }
 
 func benchmarkBounceFrame(i, frameCount int) int {
@@ -246,7 +249,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 			})
 
 			b.Run("inline-scrollback-insertion", func(b *testing.B) {
-				w := &benchmarkCountingWriter{}
+				w := &benchmarkByteCounter{}
 				r := newBenchmarkRenderer(w, size)
 				view := NewView(baseContent)
 				r.render(view)
@@ -264,7 +267,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 					}
 				}
 				b.StopTimer()
-				b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-written/op")
+				b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-counted/op")
 			})
 
 			b.Run("resize", func(b *testing.B) {
@@ -273,7 +276,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				assertBenchmarkFrame(b, smallerContent, smaller)
 				views := []View{base, NewView(smallerContent)}
 				views[1].AltScreen = true
-				w := &benchmarkCountingWriter{}
+				w := &benchmarkByteCounter{}
 				r := newBenchmarkRenderer(w, size)
 				r.render(views[0])
 				if err := r.flush(false); err != nil {
@@ -292,10 +295,10 @@ func BenchmarkCursedRenderer(b *testing.B) {
 					}
 				}
 				b.StopTimer()
-				b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-written/op")
+				b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-counted/op")
 			})
 
-			b.Run("post-frame-counting-writer-64KiB", func(b *testing.B) {
+			b.Run("post-frame-byte-counter-no-copy-64KiB", func(b *testing.B) {
 				payload := strings.Repeat("P", 64<<10)
 				benchmarkFlushView(b, size, base, func(int) View {
 					view := base
@@ -305,7 +308,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				})
 			})
 
-			b.Run("post-frame-bytes-buffer-64KiB", func(b *testing.B) {
+			b.Run("post-frame-bytes-buffer-copy-64KiB", func(b *testing.B) {
 				payload := strings.Repeat("P", 64<<10)
 				var w bytes.Buffer
 				w.Grow(len(payload) * 2)
@@ -321,6 +324,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				for range b.N {
 					view := base
 					view.PostFrame = payload
+					view.PostFrameMsg = func(error) Msg { return nil }
 					r.render(view)
 					if err := r.flush(false); err != nil {
 						b.Fatal(err)
@@ -329,9 +333,9 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				}
 			})
 
-			b.Run("coalesced-post-frame-counting-writer-64KiB", func(b *testing.B) {
+			b.Run("coalesced-post-frame-byte-counter-no-copy-64KiB", func(b *testing.B) {
 				payload := strings.Repeat("P", 64<<10)
-				w := &benchmarkCountingWriter{}
+				w := &benchmarkByteCounter{}
 				r := newBenchmarkRenderer(w, size)
 				r.render(base)
 				if err := r.flush(false); err != nil {
@@ -353,7 +357,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 					}
 				}
 				b.StopTimer()
-				b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-written/op")
+				b.ReportMetric(float64(w.bytes)/float64(b.N), "bytes-counted/op")
 			})
 		})
 	}

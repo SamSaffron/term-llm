@@ -2,6 +2,8 @@ package tea
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -77,10 +79,17 @@ func (s *cursedRenderer) drawVerticalScroll(newLines []string, shift, top, botto
 		!scrollLinesIndependent(s.lastContentLines) || !scrollLinesIndependent(newLines) {
 		return false
 	}
+	if !s.scr.CanHardScroll(s.cellbuf.RenderBuffer, shift, top, bottom-1) {
+		return false
+	}
 	if !shiftCellbufRegion(&s.cellbuf, top, bottom, shift) {
 		return false
 	}
 	if !s.scr.HardScroll(s.cellbuf.RenderBuffer, shift, top, bottom-1) {
+		// CanHardScroll proved that HardScroll must accept this geometry. If that
+		// contract ever changes, discard both incremental histories rather than
+		// continuing from the already-shifted cell buffer.
+		s.invalidateIncrementalLocked()
 		return false
 	}
 
@@ -143,6 +152,10 @@ func (s *cursedRenderer) drawChangedRows(newLines []string) bool {
 		s.cellbuf.TouchLine(0, row, max(0, width-1))
 		uv.NewStyledString(newLines[row]).DrawOver(s.cellbuf, uv.Rect(0, row, width, row+1))
 	}
+	// The old and new frames are identical at every other row, and each changed
+	// row was parsed independently above. A terminal scroll cannot improve this
+	// transition, so avoid rebuilding UV's whole-frame line hash map.
+	s.scr.SkipScrollOptim()
 	return true
 }
 
@@ -155,6 +168,26 @@ func scrollLinesIndependent(lines []string) bool {
 		hasSGR := false
 		for i := 0; i < len(line); i++ {
 			if line[i] != '\x1b' {
+				// C0 controls (including tabs, carriage returns, shifts, and
+				// cancels) can alter parser/cursor state across row boundaries.
+				// Incremental row parsing is safe only for printable text and the
+				// self-contained SGR sequences accepted below.
+				if line[i] < 0x20 || line[i] == 0x7f {
+					return false
+				}
+				if line[i] >= utf8.RuneSelf {
+					r, size := utf8.DecodeRuneInString(line[i:])
+					// The complete-frame grapheme parser can join combining/format
+					// code points to state retained from the preceding physical row.
+					// Parsing such a row in isolation is not equivalent. C1 controls,
+					// separators, unassigned/noncharacter scalars, and other non-graphic
+					// values have the same cross-row parser-state risk as C0 controls.
+					if unicode.IsControl(r) || unicode.IsMark(r) || unicode.Is(unicode.Cf, r) ||
+						(!unicode.IsGraphic(r) && !unicode.Is(unicode.Co, r)) {
+						return false
+					}
+					i += size - 1
+				}
 				continue
 			}
 			hasSGR = true

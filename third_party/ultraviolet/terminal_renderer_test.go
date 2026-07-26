@@ -1086,6 +1086,22 @@ func TestRendererPhantomCursor(t *testing.T) {
 	}
 }
 
+func TestRendererEraseResetsSkippedScrollOptimization(t *testing.T) {
+	var output bytes.Buffer
+	r := NewTerminalRenderer(&output, []string{"TERM=xterm-256color"})
+	r.SetFullscreen(true)
+	r.SkipScrollOptim()
+	r.Erase()
+
+	buf := NewRenderBuffer(8, 3)
+	buf.SetCell(0, 0, &Cell{Content: "x", Width: 1})
+	r.Render(buf)
+
+	if r.skipScrollOptim {
+		t.Fatal("clear render retained one-shot scroll optimization skip")
+	}
+}
+
 // Test line clearing optimizations
 func TestRendererLineClearingOptimizations(t *testing.T) {
 	var buf bytes.Buffer
