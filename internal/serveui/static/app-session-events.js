@@ -353,6 +353,10 @@ window.addEventListener('pagehide', () => {
 
 window.addEventListener('online', async () => {
   setConnectionState('', '');
+  // As with visibility recovery, reconcile durable history before waking the
+  // response stream. Replaying only the current response cannot recover turns
+  // that completed while this client was offline.
+  await app.startSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;
   if (session.activeResponseId && app.wakeResponseReconnect?.({

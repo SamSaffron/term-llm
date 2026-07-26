@@ -4113,9 +4113,19 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   const name = 'online visibility and pageshow wake the existing response reconnect loop';
   const wakeReasons = [];
   let resumeCalls = 0;
+  let onlineStatusCompleted = false;
+  let onlineWakeAfterStatus = false;
   const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (String(url).startsWith('/ui/v1/sessions/status')) onlineStatusCompleted = true;
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
     appOverrides: {
       wakeResponseReconnect({ reason, sessionId, responseId }) {
+        if (reason === 'online') onlineWakeAfterStatus = onlineStatusCompleted;
         wakeReasons.push(`${reason}:${sessionId}:${responseId}`);
         return true;
       },
@@ -4147,6 +4157,8 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   }
 
   await visibilityHandler({ type: 'visibilitychange' });
+  await app.stopSidebarStatusPoll();
+  onlineStatusCompleted = false;
   await onlineHandler({ type: 'online' });
   pageshowHandler({ type: 'pageshow', persisted: false });
 
@@ -4157,6 +4169,10 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   ];
   if (JSON.stringify(wakeReasons) !== JSON.stringify(want)) {
     fail(name, 'unexpected reconnect wake calls', JSON.stringify(wakeReasons));
+    return;
+  }
+  if (!onlineWakeAfterStatus) {
+    fail(name, 'online recovery woke the active response before authoritative status catch-up');
     return;
   }
   if (resumeCalls !== 0) {
