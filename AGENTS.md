@@ -15,8 +15,17 @@
 
 ## Build & Test
 - `go build` – Build binary
-- `go test ./...` – Run all tests
+- `go test ./...` – Run root-module tests only
+- `scripts/verify_nested_modules.sh` – Build, test, and vet reflow plus the owned Bubble Tea and Ultraviolet modules
+- `VERIFY_RACE=1 scripts/verify_nested_modules.sh` – Include nested race tests
+- `scripts/cross_build_owned_renderer.sh` – Cross-build release targets and relevant renderer platforms
 - **Always run `gofmt -w .` after changes**
+
+## Owned Modules
+- `third_party/bubbletea` and `third_party/ultraviolet` are reduced, application-owned modules; `internal/reflow` is also a nested local replacement.
+- Root `go test ./...` does not enter nested modules. Renderer/reflow changes are incomplete until the nested verification command passes.
+- Follow `third_party/README.md` for compatibility, pruning, provenance, and selective upstream sync. Do not replace either renderer directory wholesale.
+- `go install github.com/samsaffron/term-llm@latest` cannot use these local replacements. Build from a complete checkout or use release artifacts.
 
 ## Configuration
 - Config: `~/.config/term-llm/config.yaml`

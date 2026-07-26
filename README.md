@@ -33,11 +33,15 @@ $ term-llm exec "find all go files modified today"
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
 
-Or:
+For a source build, clone the repository and install from its root:
 
 ```bash
-go install github.com/samsaffron/term-llm@latest
+git clone https://github.com/samsaffron/term-llm.git
+cd term-llm
+go install .
 ```
+
+`go install github.com/samsaffron/term-llm@latest` cannot build this repository: the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules, and dependency-local replacements are not available to an external `go install ...@version` build. Use the installer/release archive or build from a complete checkout.
 
 ## 30-second quickstart
 
@@ -83,6 +87,20 @@ Common entry points:
 - [Usage tracking](https://term-llm.com/reference/usage-tracking/)
 - [Transcription](https://term-llm.com/guides/transcription/)
 - [Notifications](https://term-llm.com/guides/notifications/)
+
+## Contributing
+
+The root `go test ./...` command does not cross Go module boundaries. Run the owned nested-module verification as well:
+
+```bash
+go build ./...
+go test ./...
+go vet ./...
+scripts/verify_nested_modules.sh
+VERIFY_RACE=1 scripts/verify_nested_modules.sh
+```
+
+The checked-in renderer modules are deliberately reduced, application-owned sources rather than replaceable vendor snapshots. See [`third_party/README.md`](third_party/README.md) for their compatibility boundary, provenance, selective-sync workflow, fuzz/benchmark commands, and cross-build matrix. Run `scripts/cross_build_owned_renderer.sh` when changing platform or release-sensitive renderer code.
 
 ## License
 

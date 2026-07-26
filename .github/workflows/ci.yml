@@ -15,7 +15,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true                   # caches module download + build cache keyed on go.sum
+          cache: true                   # caches module download + build cache keyed on module sums
+          cache-dependency-path: |
+            go.sum
+            internal/reflow/go.sum
+            third_party/bubbletea/go.sum
+            third_party/ultraviolet/go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -38,6 +43,20 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build, test, vet, and race nested modules
+        env:
+          VERIFY_RACE: '1'
+        run: scripts/verify_nested_modules.sh
+
+      - name: Nested checkptr
+        run: |
+          for module in internal/reflow third_party/ultraviolet third_party/bubbletea; do
+            (cd "$module" && GODEBUG=checkptr=2 go test ./...)
+          done
+
       - name: Install Playwright Chromium
         timeout-minutes: 10
         run: npx --yes --package @playwright/test@1.54.1 playwright install --with-deps chromium
@@ -45,3 +64,21 @@ jobs:
       - name: Browser lifecycle smoke
         timeout-minutes: 5
         run: scripts/browser_lifecycle_smoke.sh
+
+  cross-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            third_party/bubbletea/go.sum
+            third_party/ultraviolet/go.sum
+
+      - name: Cross-build release and owned renderer targets
+        run: scripts/cross_build_owned_renderer.sh
