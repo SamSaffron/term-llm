@@ -41,7 +41,7 @@ func (m *Model) supportsServiceTierToggle() bool {
 		return false
 	}
 	switch m.providerType() {
-	case config.ProviderTypeChatGPT, config.ProviderTypeOpenAI:
+	case config.ProviderTypeChatGPT, config.ProviderTypeOpenAI, config.ProviderTypeCursorBin:
 		return true
 	default:
 		return false

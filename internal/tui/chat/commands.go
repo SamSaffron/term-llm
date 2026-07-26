@@ -133,7 +133,7 @@ func AllCommands() []Command {
 		},
 		{
 			Name:        "fast",
-			Description: "Toggle ChatGPT fast mode",
+			Description: "Toggle fast mode (OpenAI/ChatGPT priority, Cursor -fast)",
 			Usage:       "/fast",
 		},
 		{
@@ -1841,10 +1841,12 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 		return m.showFooterMuted("Fast mode disabled.")
 	}
 
-	// OpenAI supports service_tier at the request layer, but term-llm does not
-	// currently have model metadata for it. Let users opt in and let the API reject
+	// OpenAI and cursor-bin support fast mode at the request layer without live
+	// catalog metadata. OpenAI sends Responses service_tier; cursor-bin appends
+	// the Cursor model -fast suffix. Let users opt in and let the provider reject
 	// unsupported models, just as provider-level config does.
-	if m.providerType() == config.ProviderTypeOpenAI {
+	switch m.providerType() {
+	case config.ProviderTypeOpenAI, config.ProviderTypeCursorBin:
 		m.fastOverride = serviceTierFast
 		m.refreshEffectiveFastMode()
 		return m.showFooterSuccess("Fast mode enabled.")

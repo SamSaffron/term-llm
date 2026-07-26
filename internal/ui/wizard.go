@@ -47,6 +47,12 @@ func detectAvailableProviders() []providerOption {
 			hint:      "install and log in with the Grok Build CLI",
 		},
 		{
+			name:      "Cursor Agent CLI - Cursor login",
+			value:     "cursor-bin",
+			available: isCursorBinaryAvailable(),
+			hint:      "install Cursor Agent and run 'cursor-agent login'",
+		},
+		{
 			name:      "OpenAI - OPENAI_API_KEY",
 			value:     "openai",
 			available: os.Getenv("OPENAI_API_KEY") != "",
@@ -118,6 +124,11 @@ func isClaudeBinaryAvailable() bool {
 
 func isGrokBinaryAvailable() bool {
 	_, err := exec.LookPath("grok")
+	return err == nil
+}
+
+func isCursorBinaryAvailable() bool {
+	_, err := exec.LookPath("cursor-agent")
 	return err == nil
 }
 
@@ -251,6 +262,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 			"openai":     {Model: config.DefaultProviderModel("openai")},
 			"claude-bin": {Model: config.DefaultProviderModel("claude-bin")},
 			"grok-bin":   {Model: config.DefaultProviderModel("grok-bin")},
+			"cursor-bin": {Model: config.DefaultProviderModel("cursor-bin")},
 			"openrouter": {Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
 			"gemini":     {Model: config.DefaultProviderModel("gemini")},
 			"codeassist": {Model: "gemini-3.1-pro"},
@@ -430,6 +442,9 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"grok-bin": {
 				Model: config.DefaultProviderModel("grok-bin"),
+			},
+			"cursor-bin": {
+				Model: config.DefaultProviderModel("cursor-bin"),
 			},
 			"openrouter": {
 				Model:    config.DefaultProviderModel("openrouter"),

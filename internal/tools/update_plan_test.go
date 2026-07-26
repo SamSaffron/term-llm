@@ -74,6 +74,11 @@ func TestUpdatePlanToolSpec(t *testing.T) {
 	if spec.Name != UpdatePlanToolName {
 		t.Fatalf("name = %q", spec.Name)
 	}
+	for _, want := range []string{`"plan"`, `"step"`, `"status"`, `In each item, use exactly "step" and "status"`} {
+		if !strings.Contains(spec.Description, want) {
+			t.Fatalf("description missing %q: %q", want, spec.Description)
+		}
+	}
 	if got := spec.Schema["required"]; !reflect.DeepEqual(got, []string{"plan"}) {
 		t.Fatalf("required = %#v", got)
 	}
@@ -135,6 +140,37 @@ func TestUpdatePlanToolDoesNotCommitOnPersistenceFailure(t *testing.T) {
 	}
 	if strings.Contains(messagesText(messages), "Inspect") {
 		t.Fatalf("failed persistence changed in-memory snapshot: %#v", messages)
+	}
+}
+
+func TestUpdatePlanToolValidationErrorExplainsExactShape(t *testing.T) {
+	tool := NewUpdatePlanTool(NewPlanController(nil))
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "steps alias", raw: `{"steps":[{"id":"inspect","title":"Inspect code","status":"in_progress"}]}`, want: `unknown field "steps"`},
+		{name: "string plan", raw: `{"plan":"Inspect code","steps":[]}`, want: "cannot unmarshal string"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), json.RawMessage(tt.raw))
+			if err == nil {
+				t.Fatal("invalid plan shape accepted")
+			}
+			message := err.Error()
+			for _, want := range []string{
+				tt.want,
+				`required array field "plan"`,
+				`Use exactly "step" and "status" in each plan item`,
+				`{"explanation":"optional concise reason","plan":[{"step":"Inspect code","status":"in_progress"}]}`,
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("error missing %q: %v", want, err)
+				}
+			}
+		})
 	}
 }
 
@@ -254,8 +290,22 @@ func TestPlanControllerPromptGuidanceIsCallableOnlyContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[0].Role != llm.RoleDeveloper || !strings.Contains(llm.MessageText(messages[0]), "<update_plan_guidance>") {
+	if len(messages) != 2 || messages[0].Role != llm.RoleDeveloper {
 		t.Fatalf("callable guidance messages = %#v", messages)
+	}
+	guidance := llm.MessageText(messages[0])
+	if !strings.Contains(guidance, "<update_plan_guidance>") {
+		t.Fatalf("callable guidance messages = %#v", messages)
+	}
+	for _, want := range []string{
+		`{"explanation":"optional concise reason","plan":[{"step":"Inspect code","status":"in_progress"}]}`,
+		`use only the optional "explanation" alongside it`,
+		`Set "plan" to an array`,
+		`use exactly "step" for its text and "status" for its state`,
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("guidance missing %q: %q", want, guidance)
+		}
 	}
 	messages, err = tool.PrepareRequestContext(context.Background(), "", messages)
 	if err != nil || len(messages) != 2 {

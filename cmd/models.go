@@ -31,6 +31,7 @@ Examples:
   term-llm models --provider nearai     # list models from NEAR AI Cloud
   term-llm models --provider sambanova  # list models from SambaNova
   term-llm models --provider venice     # list models from Venice
+  term-llm models --provider cursor-bin # list/cache Cursor Agent models
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
   term-llm models --json                # output as JSON`,
@@ -61,6 +62,7 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeVenice:       true,
 	config.ProviderTypeNearAI:       true,
 	config.ProviderTypeSambaNova:    true,
+	config.ProviderTypeCursorBin:    true,
 }
 
 func runModels(cmd *cobra.Command, args []string) error {
@@ -142,6 +144,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("copilot provider: %w", err)
 		}
 		lister = provider
+	case config.ProviderTypeCursorBin:
+		lister = llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env)
 	case config.ProviderTypeOpenRouter:
 		apiKey := providerCfg.ResolvedAPIKey
 		if apiKey == "" {
@@ -197,6 +201,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 	timeout := 10 * time.Second
 	if providerType == config.ProviderTypeCopilot {
 		timeout = 6 * time.Minute
+	} else if providerType == config.ProviderTypeCursorBin {
+		timeout = 45 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -204,6 +210,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 	models, err := lister.ListModels(ctx)
 	if err == nil && providerType == config.ProviderTypeOpenRouter {
 		llm.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
+	}
+	if err == nil && providerType == config.ProviderTypeCursorBin {
+		llm.RefreshCursorBinCacheSync(models)
 	}
 	if err != nil {
 		// Provide helpful error messages for common issues

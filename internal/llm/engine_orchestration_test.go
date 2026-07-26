@@ -40,15 +40,17 @@ func eventTypes(events []Event) []EventType {
 }
 
 type inlineSyncToolProvider struct {
-	inline bool
-	calls  int
-	models []string
+	inline      bool
+	ordered     bool
+	calls       int
+	models      []string
+	leadingText string
 }
 
 func (p *inlineSyncToolProvider) Name() string       { return "inline-sync-test" }
 func (p *inlineSyncToolProvider) Credential() string { return "test" }
 func (p *inlineSyncToolProvider) Capabilities() Capabilities {
-	return Capabilities{ToolCalls: true, InlineToolLoop: p.inline}
+	return Capabilities{ToolCalls: true, InlineToolLoop: p.inline, OrderedInlineToolEvents: p.ordered}
 }
 func (p *inlineSyncToolProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.calls++
@@ -62,6 +64,11 @@ func (p *inlineSyncToolProvider) Stream(ctx context.Context, req Request) (Strea
 			return send.Send(Event{Type: EventDone})
 		}
 		if call == 1 {
+			if p.leadingText != "" {
+				if err := send.Send(Event{Type: EventTextDelta, Text: p.leadingText}); err != nil {
+					return err
+				}
+			}
 			response := make(chan ToolExecutionResponse, 1)
 			if err := send.Send(Event{
 				Type:         EventToolCall,
@@ -160,6 +167,94 @@ func TestEngineOrchestration_InlineSyncToolLoopDoesNotReinvokeProvider(t *testin
 	}
 	if text.String() != "inline final" {
 		t.Fatalf("text = %q, want inline final", text.String())
+	}
+}
+
+func TestEngineOrchestration_InlineSyncToolLoopPersistsEventOrder(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{inline: true, ordered: true, leadingText: "before tool"}
+	engine := NewEngine(provider, registry)
+	var persisted []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+		persisted = append(persisted, messages...)
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("unexpected error: %v", event.Err)
+		}
+	}
+
+	if len(persisted) < 1 || persisted[0].Role != RoleAssistant {
+		t.Fatalf("persisted messages = %+v", persisted)
+	}
+	parts := persisted[0].Parts
+	if len(parts) != 3 {
+		t.Fatalf("assistant parts = %+v, want text/tool/text", parts)
+	}
+	if parts[0].Type != PartText || parts[0].Text != "before tool" || parts[1].Type != PartToolCall || parts[2].Type != PartText || parts[2].Text != "inline final" {
+		t.Fatalf("assistant parts = %+v, want text/tool/text", parts)
+	}
+}
+
+func TestEngineOrchestration_InlineSyncToolLoopWithoutOrderedEventsKeepsLegacyPersistence(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{inline: true, leadingText: "before tool"}
+	engine := NewEngine(provider, registry)
+	var persisted []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+		persisted = append(persisted, messages...)
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("unexpected error: %v", event.Err)
+		}
+	}
+
+	if len(persisted) < 1 || persisted[0].Role != RoleAssistant {
+		t.Fatalf("persisted messages = %+v", persisted)
+	}
+	parts := persisted[0].Parts
+	if len(parts) != 2 {
+		t.Fatalf("assistant parts = %+v, want legacy text/tool ordering", parts)
+	}
+	if parts[0].Type != PartText || parts[0].Text != "before toolinline final" || parts[1].Type != PartToolCall {
+		t.Fatalf("assistant parts = %+v, want legacy text/tool ordering", parts)
 	}
 }
 

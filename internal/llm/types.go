@@ -96,12 +96,13 @@ type ProviderStateImporter interface {
 
 // Capabilities describe optional provider features.
 type Capabilities struct {
-	NativeWebSearch    bool // Provider has native web search capability
-	NativeWebFetch     bool // Provider has native URL fetch capability
-	ToolCalls          bool
-	SupportsToolChoice bool // Provider supports tool_choice to force specific tool use
-	ManagesOwnContext  bool // Provider manages its own context window (skip compaction)
-	InlineToolLoop     bool // Provider completes its MCP/tool loop inside one Stream invocation
+	NativeWebSearch         bool // Provider has native web search capability
+	NativeWebFetch          bool // Provider has native URL fetch capability
+	ToolCalls               bool
+	SupportsToolChoice      bool // Provider supports tool_choice to force specific tool use
+	ManagesOwnContext       bool // Provider manages its own context window (skip compaction)
+	InlineToolLoop          bool // Provider completes its MCP/tool loop inside one Stream invocation
+	OrderedInlineToolEvents bool // Provider requires streamed text/tool/text order preserved in persisted assistant parts
 }
 
 // Stream yields events until io.EOF.

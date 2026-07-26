@@ -25,6 +25,24 @@ func TestCreateProviderFromConfigGrokBin(t *testing.T) {
 	}
 }
 
+func TestCreateProviderFromConfigCursorBin(t *testing.T) {
+	provider, err := createProviderFromConfig("cursor-bin", &config.ProviderConfig{
+		Type:  config.ProviderTypeCursorBin,
+		Model: "grok-4.5-high-fast",
+		Env:   map[string]string{"CURSOR_API_ENDPOINT": "https://example.test"},
+	})
+	if err != nil {
+		t.Fatalf("createProviderFromConfig: %v", err)
+	}
+	cursor, ok := provider.(*CursorBinProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *CursorBinProvider", provider)
+	}
+	if cursor.model != "grok-4.5" || cursor.effort != "high" || !cursor.fast {
+		t.Fatalf("provider model/effort/fast = %q/%q/%v", cursor.model, cursor.effort, cursor.fast)
+	}
+}
+
 func TestNewProviderByNameGrokBinNeedsNoAPIKey(t *testing.T) {
 	provider, err := NewProviderByName(&config.Config{Providers: map[string]config.ProviderConfig{}}, "grok-bin", "grok-4.5")
 	if err != nil {
@@ -32,6 +50,16 @@ func TestNewProviderByNameGrokBinNeedsNoAPIKey(t *testing.T) {
 	}
 	if provider.Credential() != "grok-bin" {
 		t.Fatalf("credential = %q, want grok-bin", provider.Credential())
+	}
+}
+
+func TestNewProviderByNameCursorBinNeedsNoAPIKey(t *testing.T) {
+	provider, err := NewProviderByName(&config.Config{Providers: map[string]config.ProviderConfig{}}, "cursor-bin", "grok-4.5-low")
+	if err != nil {
+		t.Fatalf("NewProviderByName: %v", err)
+	}
+	if provider.Credential() != "cursor-bin" {
+		t.Fatalf("credential = %q, want cursor-bin", provider.Credential())
 	}
 }
 

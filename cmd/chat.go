@@ -1157,6 +1157,8 @@ func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string
 		return "claude-bin"
 	case strings.HasPrefix(lower, "grok cli ("):
 		return "grok-bin"
+	case strings.HasPrefix(lower, "cursor cli ("):
+		return "cursor-bin"
 	case strings.HasPrefix(lower, "debug"):
 		return "debug"
 	default:

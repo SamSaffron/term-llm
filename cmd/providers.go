@@ -38,6 +38,8 @@ func builtinHasOAuthCredentials(name string) bool {
 		}
 		_, err := os.Stat(authPath)
 		return err == nil
+	case "cursor-bin":
+		return llm.CursorBinHasCredentials()
 	}
 	return false
 }
@@ -145,6 +147,13 @@ var builtinProviderMeta = map[string]struct {
 		requiresKey:        false,
 		supportsListModels: false,
 		description:        "Grok Build CLI via local grok.com OAuth login",
+	},
+	"cursor-bin": {
+		credential:         "oauth",
+		envVar:             "CURSOR_API_KEY",
+		requiresKey:        false,
+		supportsListModels: true,
+		description:        "Cursor Agent via local Cursor login or CURSOR_API_KEY",
 	},
 	"vllm": {
 		credential:         "api_key",

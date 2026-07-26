@@ -137,6 +137,13 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "grok-4.5-xhigh"},
 		{ID: "grok-composer-2.5-fast"},
 	},
+	"cursor-bin": {
+		{ID: "auto-smart"},
+		{ID: "grok-4.5", ReasoningEfforts: []string{"low", "medium", "high"}},
+		{ID: "composer-2.5"},
+		{ID: "claude-sonnet-5"},
+		{ID: "gpt-5.6-sol"},
+	},
 	"xai": {
 		// Grok 4.1 (latest, 2M context)
 		{ID: "grok-4-1-fast", InputLimit: 1_970_000, OutputLimit: 32_000},
@@ -265,12 +272,17 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 }
 
 // ProviderModelIDs returns model IDs for a built-in provider.
-// Copilot is populated from the latest live model-list cache instead of a
-// hardcoded list. For callers that might receive a custom alias name, use
-// ResolveProviderModelIDs.
+// Copilot and cursor-bin prefer the latest live model-list cache when present;
+// cursor-bin falls back to its curated starter list when the cache is empty.
+// For callers that might receive a custom alias name, use ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
-	if resolveProviderType(provider) == "copilot" {
+	switch resolveProviderType(provider) {
+	case "copilot":
 		return GetCachedCopilotModels()
+	case "cursor-bin":
+		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
+			return ids
+		}
 	}
 	entries := ProviderModels[provider]
 	if entries == nil {
@@ -745,7 +757,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "grok-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "grok-bin", "cursor-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

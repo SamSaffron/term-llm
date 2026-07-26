@@ -27,6 +27,23 @@ func TestBuiltinProviderMetaGrokBin(t *testing.T) {
 		t.Fatalf("grok-bin metadata = %+v, want OAuth without required API key", meta)
 	}
 }
+
+func TestModelListSupportedTypesIncludesCursorBin(t *testing.T) {
+	if !modelListSupportedTypes[config.ProviderTypeCursorBin] {
+		t.Fatal("cursor-bin should be wired for dynamic model listing")
+	}
+}
+
+func TestBuiltinProviderMetaCursorBin(t *testing.T) {
+	meta, ok := builtinProviderMeta["cursor-bin"]
+	if !ok {
+		t.Fatal("cursor-bin provider metadata missing")
+	}
+	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
+		t.Fatalf("cursor-bin metadata = %+v", meta)
+	}
+}
+
 func TestBuiltinProviderMetaSambaNovaSupportsListModels(t *testing.T) {
 	meta, ok := builtinProviderMeta["sambanova"]
 	if !ok {

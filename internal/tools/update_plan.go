@@ -30,9 +30,14 @@ type PlanController struct {
 	promptGuidance bool
 }
 
-const updatePlanPromptGuidance = `<update_plan_guidance>
-Use update_plan for meaningful multi-step, uncertain, or cross-package work; skip it for trivial changes and informational requests. Normally publish 3–7 outcome-oriented steps and update them at meaningful transitions, not after every tool call. Keep at most one step in_progress, revise stale plans when the approach changes, complete verification steps only after verification succeeds, and mark every step completed before a successful final response.
+const (
+	updatePlanArgumentsExample = `{"explanation":"optional concise reason","plan":[{"step":"Inspect code","status":"in_progress"}]}`
+	updatePlanShapeGuidance    = `Expected an object with the required array field "plan" and optional string field "explanation". Use exactly "step" and "status" in each plan item; status must be "pending", "in_progress", or "completed". Example: ` + updatePlanArgumentsExample
+	updatePlanPromptGuidance   = `<update_plan_guidance>
+Use update_plan for meaningful multi-step, uncertain, or cross-package work. For trivial changes and informational requests, proceed directly. Normally publish 3–7 outcome-oriented steps and update them at meaningful transitions. Keep at most one step in_progress, revise stale plans when the approach changes, complete verification steps only after verification succeeds, and mark every step completed before a successful final response.
+Call update_plan with exactly this shape: ` + updatePlanArgumentsExample + `. Set "plan" to an array and use only the optional "explanation" alongside it. In each plan item, use exactly "step" for its text and "status" for its state.
 </update_plan_guidance>`
+)
 
 // NewPlanController creates a lightweight in-memory plan controller.
 func NewPlanController(store session.PlanSnapshotStore) *PlanController {
@@ -343,8 +348,10 @@ func NewUpdatePlanTool(controller *PlanController) *UpdatePlanTool {
 
 func (t *UpdatePlanTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
-		Name:        UpdatePlanToolName,
-		Description: "Publish the complete current execution plan. Each call replaces the previous ordered checklist; pass an empty plan to clear it.",
+		Name: UpdatePlanToolName,
+		Description: "Publish the complete current execution plan. Each call replaces the previous ordered checklist; pass an empty plan array to clear it. " +
+			`Use exactly {"plan":[{"step":"...","status":"pending|in_progress|completed"}],"explanation":"optional"}. ` +
+			`At the top level, use the required "plan" array and optional "explanation" string. In each item, use exactly "step" and "status".`,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -384,7 +391,7 @@ func (t *UpdatePlanTool) Spec() llm.ToolSpec {
 func (t *UpdatePlanTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	snapshot, err := planpkg.Parse(args)
 	if err != nil {
-		return llm.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "%v", err)
+		return llm.ToolOutput{}, NewToolErrorf(ErrInvalidParams, "invalid update_plan arguments: %v. %s", err, updatePlanShapeGuidance)
 	}
 	if err := t.controller.update(ctx, llm.SessionIDFromContext(ctx), snapshot); err != nil {
 		return llm.ToolOutput{}, NewToolErrorf(ErrExecutionFailed, "%v", err)

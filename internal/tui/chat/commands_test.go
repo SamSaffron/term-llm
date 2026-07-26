@@ -3363,6 +3363,36 @@ func TestFastCommandTogglesOpenAIWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestFastCommandTogglesCursorBinWithoutMetadata(t *testing.T) {
+	m := newTestChatModel(true)
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{
+		"cursor-bin": {Type: config.ProviderTypeCursorBin},
+	}}
+	m.providerKey = "cursor-bin"
+	m.modelName = "grok-4.5-high"
+
+	_, _ = m.ExecuteCommand("/fast")
+	if !m.fastMode {
+		t.Fatal("expected fast mode enabled for cursor-bin")
+	}
+	serviceTier, set := m.currentServiceTier()
+	if !set || serviceTier != llm.ServiceTierFast {
+		t.Fatalf("currentServiceTier() = (%q, %v), want fast override", serviceTier, set)
+	}
+	if !strings.Contains(m.footerMessage, "enabled") {
+		t.Fatalf("footer = %q, want enabled message", m.footerMessage)
+	}
+
+	_, _ = m.ExecuteCommand("/fast")
+	if m.fastMode {
+		t.Fatal("expected fast mode disabled for cursor-bin")
+	}
+	serviceTier, set = m.currentServiceTier()
+	if !set || serviceTier != "" {
+		t.Fatalf("currentServiceTier() = (%q, %v), want explicit clear", serviceTier, set)
+	}
+}
+
 func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
 	t.Parallel()
 

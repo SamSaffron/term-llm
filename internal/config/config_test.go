@@ -430,6 +430,7 @@ func TestInferProviderType(t *testing.T) {
 		{"zen", "", ProviderTypeZen},
 		{"claude-bin", "", ProviderTypeClaudeBin},
 		{"grok-bin", "", ProviderTypeGrokBin},
+		{"cursor-bin", "", ProviderTypeCursorBin},
 		{"vllm", "", ProviderTypeVLLM},
 		{"cerebras", "", ProviderTypeOpenAICompat},
 		{"groq", "", ProviderTypeOpenAICompat},

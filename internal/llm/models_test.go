@@ -22,6 +22,19 @@ func TestProviderModelsIncludeGrokBin(t *testing.T) {
 	}
 }
 
+func TestProviderModelsIncludeCursorBin(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ids := ProviderModelIDs("cursor-bin")
+	for _, want := range []string{"auto-smart", "grok-4.5", "composer-2.5"} {
+		if !containsModelID(ids, want) {
+			t.Fatalf("cursor-bin models missing %q: %v", want, ids)
+		}
+	}
+	if !containsModelID(GetBuiltInProviderNames(), "cursor-bin") {
+		t.Fatal("GetBuiltInProviderNames missing cursor-bin")
+	}
+}
+
 func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 	t.Parallel()
 
@@ -176,6 +189,8 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		// grok-bin CLI aliases have subscription-dependent context limits.
 		"grok-4.5": true, "grok-4.5-low": true, "grok-4.5-medium": true, "grok-4.5-high": true, "grok-4.5-xhigh": true,
 		"grok-composer-2.5-fast": true,
+		// cursor-bin models are account-dependent and Cursor manages context itself.
+		"auto-smart": true, "composer-2.5": true, "claude-sonnet-5": true,
 		// OpenRouter (slash in name, resolved via API cache)
 		"x-ai/grok-code-fast-1": true,
 		// Copilot models with no known limits

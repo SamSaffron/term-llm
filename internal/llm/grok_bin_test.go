@@ -147,6 +147,9 @@ func TestGrokBinProviderCapabilities(t *testing.T) {
 	if !caps.NativeWebSearch || !caps.NativeWebFetch || !caps.ToolCalls || !caps.ManagesOwnContext || !caps.InlineToolLoop {
 		t.Fatalf("capabilities = %+v, want native search/fetch, tool calls, managed context, and inline loop", caps)
 	}
+	if caps.OrderedInlineToolEvents {
+		t.Fatalf("capabilities = %+v, ordered inline tool events must remain Cursor-specific", caps)
+	}
 }
 
 func TestGrokBinProviderBuildArgsDisablesNativeTools(t *testing.T) {

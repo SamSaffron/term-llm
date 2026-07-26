@@ -2153,8 +2153,32 @@ turnLoop:
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
 		var syncToolCalls []ToolCall   // Track sync tool calls for message building
 		var syncToolResults []Message  // Track sync tool results for message building
-		var scratchpadEvents []Event   // Attempt-local visible model output that can be discarded/replayed until a tool boundary.
-		scratchpadCommitted := false   // True after provider completion or after a tool-call boundary makes assistant work durable.
+		capabilities := e.provider.Capabilities()
+		inlineToolLoop := capabilities.InlineToolLoop
+		preserveInlineToolOrder := inlineToolLoop && capabilities.OrderedInlineToolEvents
+		var inlineSyncParts []Part // Ordered assistant parts for providers whose inline stream order is semantically significant.
+		appendInlineText := func(text string) {
+			if !preserveInlineToolOrder || text == "" {
+				return
+			}
+			if n := len(inlineSyncParts); n > 0 && inlineSyncParts[n-1].Type == PartText {
+				inlineSyncParts[n-1].Text += text
+				return
+			}
+			inlineSyncParts = append(inlineSyncParts, Part{Type: PartText, Text: text})
+		}
+		buildOrderedInlineAssistant := func(parts []Part) Message {
+			return buildInterleavedAssistantMessageWithReasoningMetadata(
+				parts,
+				reasoningBuilder.String(),
+				reasoningSummaryParts,
+				reasoningItemID,
+				reasoningEncryptedContent,
+				reasoningKind,
+			)
+		}
+		var scratchpadEvents []Event // Attempt-local visible model output that can be discarded/replayed until a tool boundary.
+		scratchpadCommitted := false // True after provider completion or after a tool-call boundary makes assistant work durable.
 		stageOrSendModelEvent := func(event Event) error {
 			if !scratchpadCommitted {
 				scratchpadEvents = append(scratchpadEvents, event)
@@ -2176,15 +2200,23 @@ turnLoop:
 			}
 			partial := ensureToolCallIDs(calls)
 			partial = dedupeToolCalls(partial)
-			msg := buildAssistantMessageWithReasoningMetadata(
-				textBuilder.String(),
-				e.withToolPreview(partial),
-				reasoningBuilder.String(),
-				reasoningSummaryParts,
-				reasoningItemID,
-				reasoningEncryptedContent,
-				reasoningKind,
-			)
+			var msg Message
+			if preserveInlineToolOrder && len(partial) > 0 {
+				parts := append([]Part(nil), inlineSyncParts...)
+				latest := e.withToolPreview(partial[len(partial)-1:])[0]
+				parts = append(parts, Part{Type: PartToolCall, ToolCall: &latest})
+				msg = buildOrderedInlineAssistant(parts)
+			} else {
+				msg = buildAssistantMessageWithReasoningMetadata(
+					textBuilder.String(),
+					e.withToolPreview(partial),
+					reasoningBuilder.String(),
+					reasoningSummaryParts,
+					reasoningItemID,
+					reasoningEncryptedContent,
+					reasoningKind,
+				)
+			}
 			msg = attachProviderReplayParts(msg, providerReplayParts)
 			if len(msg.Parts) == 0 {
 				return
@@ -2234,15 +2266,20 @@ turnLoop:
 			recoveryPriorErr = cause
 
 			if len(toolCalls) == 0 && syncToolsExecuted {
-				assistantMsg := buildAssistantMessageWithReasoningMetadata(
-					textBuilder.String(),
-					e.withToolPreview(syncToolCalls),
-					reasoningBuilder.String(),
-					reasoningSummaryParts,
-					reasoningItemID,
-					reasoningEncryptedContent,
-					reasoningKind,
-				)
+				var assistantMsg Message
+				if preserveInlineToolOrder && len(inlineSyncParts) > 0 {
+					assistantMsg = buildOrderedInlineAssistant(inlineSyncParts)
+				} else {
+					assistantMsg = buildAssistantMessageWithReasoningMetadata(
+						textBuilder.String(),
+						e.withToolPreview(syncToolCalls),
+						reasoningBuilder.String(),
+						reasoningSummaryParts,
+						reasoningItemID,
+						reasoningEncryptedContent,
+						reasoningKind,
+					)
+				}
 				assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 				req.Messages = append(req.Messages, assistantMsg)
@@ -2615,6 +2652,7 @@ turnLoop:
 			// Accumulate text for callback
 			if event.Type == EventTextDelta && event.Text != "" {
 				textBuilder.WriteString(event.Text)
+				appendInlineText(event.Text)
 				if softCheckpointInProgress {
 					continue
 				}
@@ -2684,6 +2722,10 @@ turnLoop:
 					call, result, execErr := e.handleSyncToolExecution(ctx, event, send, req.Debug, req.DebugRaw)
 					syncToolsExecuted = true
 					syncToolCalls = append(syncToolCalls, call)
+					if preserveInlineToolOrder {
+						previewed := e.withToolPreview([]ToolCall{call})[0]
+						inlineSyncParts = append(inlineSyncParts, Part{Type: PartToolCall, ToolCall: &previewed})
+					}
 					// Build result message for this tool call
 					if execErr != nil {
 						syncToolResults = append(syncToolResults, ToolErrorMessage(call.ID, call.Name, execErr.Error(), nil))
@@ -2875,22 +2917,29 @@ turnLoop:
 
 		// If only sync tools were executed (MCP path), decide whether to continue
 		if len(toolCalls) == 0 && syncToolsExecuted {
-			// Build assistant message with text and sync tool calls
-			// This persists bridged CLI tool context for resume/rehydration.
-			assistantMsg := buildAssistantMessageWithReasoningMetadata(
-				textBuilder.String(),
-				e.withToolPreview(syncToolCalls),
-				reasoningBuilder.String(),
-				reasoningSummaryParts,
-				reasoningItemID,
-				reasoningEncryptedContent,
-				reasoningKind,
-			)
+			// Preserve the provider's streamed text/tool/text ordering. Cursor's inline
+			// MCP loop can emit a final assistant segment after one or more tools in the
+			// same stream; rebuilding from separate text/tool accumulators moves that
+			// final text above the tools when the persisted message replaces live output.
+			var assistantMsg Message
+			if preserveInlineToolOrder && len(inlineSyncParts) > 0 {
+				assistantMsg = buildOrderedInlineAssistant(inlineSyncParts)
+			} else {
+				assistantMsg = buildAssistantMessageWithReasoningMetadata(
+					textBuilder.String(),
+					e.withToolPreview(syncToolCalls),
+					reasoningBuilder.String(),
+					reasoningSummaryParts,
+					reasoningItemID,
+					reasoningEncryptedContent,
+					reasoningKind,
+				)
+			}
 			assistantMsg = attachProviderReplayParts(assistantMsg, providerReplayParts)
 			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
-			if !e.provider.Capabilities().InlineToolLoop {
+			if !inlineToolLoop {
 				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
 					return err
 				}
@@ -2931,7 +2980,7 @@ turnLoop:
 						return err
 					}
 				}
-				if !e.provider.Capabilities().InlineToolLoop {
+				if !inlineToolLoop {
 					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
 						return err
 					}
@@ -2949,7 +2998,7 @@ turnLoop:
 			// Inline-loop providers have already consumed tool results and streamed
 			// their final answer in this invocation. Persisted interjections are
 			// intentionally delivered on the next user turn.
-			if e.provider.Capabilities().InlineToolLoop {
+			if inlineToolLoop {
 				if err := send.Send(Event{Type: EventDone}); err != nil {
 					return err
 				}
@@ -3208,6 +3257,31 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 		call := toolCalls[i]
 		parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
 	}
+	return Message{Role: RoleAssistant, Parts: parts}
+}
+
+func buildInterleavedAssistantMessageWithReasoningMetadata(orderedParts []Part, reasoning string, reasoningSummaryParts []string, reasoningItemID, reasoningEncryptedContent string, reasoningKind ReasoningKind) Message {
+	parts := append([]Part(nil), orderedParts...)
+	metadata := buildAssistantMessageWithReasoningMetadata("", nil, reasoning, reasoningSummaryParts, reasoningItemID, reasoningEncryptedContent, reasoningKind)
+	if len(metadata.Parts) == 0 {
+		return Message{Role: RoleAssistant, Parts: parts}
+	}
+
+	metadataPart := metadata.Parts[0]
+	for i := range parts {
+		if parts[i].Type != PartText {
+			continue
+		}
+		parts[i].ReasoningContent = metadataPart.ReasoningContent
+		parts[i].ReasoningSummaryParts = metadataPart.ReasoningSummaryParts
+		parts[i].ReasoningItemID = metadataPart.ReasoningItemID
+		parts[i].ReasoningEncryptedContent = metadataPart.ReasoningEncryptedContent
+		parts[i].ReasoningKind = metadataPart.ReasoningKind
+		parts[i].ReasoningSummaryTitle = metadataPart.ReasoningSummaryTitle
+		return Message{Role: RoleAssistant, Parts: parts}
+	}
+
+	parts = append([]Part{metadataPart}, parts...)
 	return Message{Role: RoleAssistant, Parts: parts}
 }
 

@@ -104,6 +104,12 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewGrokBinProvider(model, nil)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeCursorBin:
+			if err := ValidateCursorBinModel(model); err != nil {
+				return nil, err
+			}
+			provider := NewCursorBinProvider(model, nil)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			provider := NewZenProvider("", model)
@@ -252,6 +258,8 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 			return NewClaudeBinProvider("", nil), nil
 		case config.ProviderTypeGrokBin:
 			return NewGrokBinProvider("", nil), nil
+		case config.ProviderTypeCursorBin:
+			return NewCursorBinProvider("", nil), nil
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			return NewZenProvider("", ""), nil
@@ -420,6 +428,12 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 			return nil, err
 		}
 		return NewGrokBinProvider(cfg.Model, cfg.Env), nil
+
+	case config.ProviderTypeCursorBin:
+		if err := ValidateCursorBinModel(cfg.Model); err != nil {
+			return nil, err
+		}
+		return NewCursorBinProvider(cfg.Model, cfg.Env), nil
 
 	case config.ProviderTypeOllama:
 		opts := OllamaOptions{
