@@ -47,6 +47,11 @@ require (
 
 replace github.com/muesli/reflow v0.3.0 => ./internal/reflow
 
+// term-llm owns these renderer modules; see third_party/README.md.
+replace charm.land/bubbletea/v2 => ./third_party/bubbletea
+
+replace github.com/charmbracelet/ultraviolet => ./third_party/ultraviolet
+
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.4 // indirect
@@ -68,7 +73,6 @@ require (
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20260119114936-fd556377ea59 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
-	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
