@@ -3,9 +3,12 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -39,6 +42,105 @@ func (r *capturingSpawnRunner) RunAgentWithOptions(ctx context.Context, agentNam
 
 func (r *capturingSpawnRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int, callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
 	return r.RunAgentWithOptions(ctx, agentName, prompt, depth, opts)
+}
+
+func TestSpawnRunnerWaitClosesRunAdmission(t *testing.T) {
+	runner := &SpawnAgentRunner{}
+	if !runner.beginRun() {
+		t.Fatal("beginRun() rejected before shutdown")
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		runner.Wait()
+		close(waitDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		runner.runMu.Lock()
+		draining := runner.draining
+		runner.runMu.Unlock()
+		if draining {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Wait() did not close run admission")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-waitDone:
+		t.Fatal("Wait() returned while a run was active")
+	default:
+	}
+
+	runner.endRun()
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("Wait() did not return after the active run ended")
+	}
+
+	if runner.beginRun() {
+		runner.endRun()
+		t.Fatal("beginRun() accepted a run after Wait began")
+	}
+	_, err := runner.runChildInternal(context.Background(), runpkg.ChildRunRequest{}, nil)
+	if !errors.Is(err, errSpawnAgentRunnerDraining) {
+		t.Fatalf("runChildInternal() error = %v, want %v", err, errSpawnAgentRunnerDraining)
+	}
+}
+
+func TestSpawnRunnerWaitContendsWithRunAdmission(t *testing.T) {
+	const workers = 32
+
+	runner := &SpawnAgentRunner{}
+	if !runner.beginRun() {
+		t.Fatal("beginRun() rejected before shutdown")
+	}
+
+	start := make(chan struct{})
+	rejected := make(chan struct{}, workers)
+	for range workers {
+		go func() {
+			<-start
+			for runner.beginRun() {
+				runtime.Gosched()
+				runner.endRun()
+			}
+			rejected <- struct{}{}
+		}()
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		<-start
+		runner.Wait()
+		close(waitDone)
+	}()
+	close(start)
+
+	for range workers {
+		select {
+		case <-rejected:
+		case <-time.After(time.Second):
+			runner.endRun()
+			t.Fatal("timed out waiting for run admission to close")
+		}
+	}
+
+	select {
+	case <-waitDone:
+		t.Fatal("Wait() returned while the initial run was active")
+	default:
+	}
+	runner.endRun()
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("Wait() did not return after all admitted runs ended")
+	}
 }
 
 func TestCompleteChildAgentUsesOutputToolAndRunsHookInChildDirectory(t *testing.T) {

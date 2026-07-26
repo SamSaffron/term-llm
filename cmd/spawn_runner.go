@@ -18,6 +18,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+var errSpawnAgentRunnerDraining = errors.New("spawn agent runner is shutting down")
+
 // SpawnAgentRunner implements the tools.SpawnAgentRunner interface.
 // It loads and runs sub-agents for the spawn_agent tool.
 type SpawnAgentRunner struct {
@@ -30,7 +32,9 @@ type SpawnAgentRunner struct {
 	parentBaseDir     string        // Fallback BaseDir for legacy callers
 	parentBaseDirFunc func() string // Returns the parent's current per-session BaseDir
 	warnFunc          func(format string, args ...any)
-	wg                sync.WaitGroup // tracks in-flight agent runs so callers can drain before closing the store
+	runMu             sync.Mutex
+	draining          bool
+	wg                sync.WaitGroup // tracks admitted agent runs so callers can drain before closing the store
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
@@ -107,10 +111,31 @@ func (r *SpawnAgentRunner) warn(format string, args ...any) {
 	}
 }
 
-// Wait blocks until all in-flight agent runs have completed.
-// Call this before closing the session store to avoid use-after-close errors.
+// Wait permanently prevents new agent runs from starting, then blocks until
+// all admitted runs have completed. The runner cannot be reused after Wait.
+// Call this before closing the session store.
 func (r *SpawnAgentRunner) Wait() {
+	r.runMu.Lock()
+	r.draining = true
+	r.runMu.Unlock()
 	r.wg.Wait()
+}
+
+// beginRun serializes run admission with Wait. A bare WaitGroup permits Add to
+// race with Wait while its count is zero, which is both invalid and capable of
+// letting a late tool execution outlive the session store.
+func (r *SpawnAgentRunner) beginRun() bool {
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+	if r.draining {
+		return false
+	}
+	r.wg.Add(1)
+	return true
+}
+
+func (r *SpawnAgentRunner) endRun() {
+	r.wg.Done()
 }
 
 // RunAgent loads and runs a sub-agent with the given prompt.
@@ -212,11 +237,13 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 }
 
 func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.ChildRunRequest, callback runpkg.ChildRunEventCallback) (runpkg.ChildRunResult, error) {
-	r.wg.Add(1)
-	defer r.wg.Done()
-
 	startedAt := time.Now()
 	emptyResult := runpkg.ChildRunResult{RunID: request.RunID, StartedAt: startedAt}
+	if !r.beginRun() {
+		return emptyResult, errSpawnAgentRunnerDraining
+	}
+	defer r.endRun()
+
 	agentName := strings.TrimSpace(request.AgentName)
 	if agentName == "" {
 		agentName = "developer"
