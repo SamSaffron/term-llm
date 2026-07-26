@@ -117,6 +117,16 @@
       this.compactionSeq = finiteInt(envelope?.compaction_seq, -1);
       this.compactionCount = finiteInt(envelope?.compaction_count, 0);
       this.rebuildSegments(oldSegmentState);
+      // Rewrites and compaction can retire the ordinals a viewport referred to.
+      // An invalid positive viewport pins nothing and corrupts eviction distance;
+      // reset it to the existing implicit-tail sentinel instead.
+      if (ids.length === 0) {
+        this.viewport = { firstOrdinal: -1, lastOrdinal: -1 };
+      } else if (this.viewport.firstOrdinal < 0 || this.viewport.lastOrdinal < 0
+        || this.viewport.firstOrdinal >= ids.length || this.viewport.lastOrdinal >= ids.length
+        || this.viewport.lastOrdinal < this.viewport.firstOrdinal) {
+        this.viewport = { firstOrdinal: -1, lastOrdinal: -1 };
+      }
       this.rev = incomingRev;
       if (etag) this.etag = String(etag);
       this.refreshPinnedSegments();

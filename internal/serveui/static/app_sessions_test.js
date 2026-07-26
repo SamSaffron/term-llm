@@ -6163,6 +6163,121 @@ async function testTranscriptSyncCommitsOneRenderedProjection() {
   pass(name);
 }
 
+async function testBottomPinnedTranscriptSyncKeepsFollowingTail() {
+  const name = 'bottom-pinned transcript sync keeps distant tails through repeated anchored commits';
+  const sessionId = 'follow-live-tail';
+  let servedTurns = 3;
+  const pendingTurns = [8, 13, 18];
+  let anchorID = 5;
+  const makeIndex = (turns) => {
+    const ids = Array.from({ length: turns * 2 }, (_, ordinal) => ordinal + 1);
+    return {
+      rev: turns * 2,
+      compaction_seq: -1,
+      compaction_count: 0,
+      rows: {
+        ids,
+        seqs: ids.map((id) => id - 1),
+        roles: 'ua'.repeat(turns),
+        flags: ids.map(() => 0),
+        response_ids: ids.map((id) => id % 2 === 0 ? `resp-${id / 2 - 1}` : ''),
+        assistant_segment_ordinals: ids.map((id) => id % 2 === 0 ? 0 : -1),
+      }
+    };
+  };
+  const turnBodies = (startIDs) => startIDs.flatMap((id) => [
+    { id, sequence: id - 1, role: 'user', parts: [{ type: 'text', text: `question-${id}` }] },
+    { id: id + 1, sequence: id, role: 'assistant', parts: [{ type: 'text', text: `answer-${id + 1}` }] },
+  ]);
+
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (isTranscriptIndexURL(url, sessionId)) {
+        servedTurns = pendingTurns.shift() || servedTurns;
+        return new Response(JSON.stringify(makeIndex(servedTurns)), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"tail-${servedTurns}"` }
+        });
+      }
+      if (isTranscriptBodiesURL(url, sessionId)) {
+        const ids = String(parsedTestURL(url)?.searchParams.get('ids') || '').split(',').filter(Boolean).map(Number);
+        return new Response(JSON.stringify({ rev: servedTurns * 2, messages: turnBodies(ids) }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: { renderMessages() {} }
+  });
+  app.stopSidebarStatusPoll();
+
+  const messages = app.elements.messages;
+  const chatScroll = app.elements.chatScroll;
+  chatScroll.clientHeight = 400;
+  chatScroll.getBoundingClientRect = () => ({ top: 0, bottom: 400 });
+  const anchorNode = {
+    dataset: {},
+    getBoundingClientRect: () => ({ top: 0, bottom: 40 })
+  };
+  Object.defineProperty(anchorNode.dataset, 'durableId', { get: () => String(anchorID) });
+  messages.querySelectorAll = (selector) => selector === '[data-durable-id]' ? [anchorNode] : [];
+  messages.querySelector = (selector) => String(selector) === `[data-durable-id="${anchorID}"]` ? anchorNode : null;
+
+  const session = { id: sessionId, messages: [] };
+  const transcript = new windowObj.ConversationController(sessionId, { maxMaterializedTurns: 3, overscanTurns: 0 });
+  transcript.applyIndex(makeIndex(3));
+  transcript.setViewport(5, 5);
+  transcript.materialize(turnBodies([1, 3, 5]), { countFetch: false });
+  session.transcript = transcript;
+  app.state.sessions = [session];
+  app.state.activeSessionId = sessionId;
+  app.state.draftSessionActive = false;
+  app.state.autoScroll = true;
+
+  for (const expectedTurns of [8, 13]) {
+    const loaded = await app.syncTranscript(session, { reason: 'tail-follow-regression', force: true });
+    const tail = transcript.segments[expectedTurns - 1];
+    const materialized = transcript.segments.filter((segment) => segment.state === 'materialized').length;
+    if (!loaded || transcript.ids.length !== expectedTurns * 2 || tail?.state !== 'materialized'
+      || transcript.viewport.lastOrdinal !== transcript.ids.length - 1 || materialized > 3) {
+      fail(name, 'bottom-owned sync lost or over-materialized a distant tail', JSON.stringify({
+        loaded,
+        expectedTurns,
+        viewport: transcript.viewport,
+        tailState: tail?.state,
+        materialized,
+      }));
+      return;
+    }
+    anchorID = expectedTurns * 2 - 1;
+  }
+
+  app.state.autoScroll = false;
+  const historicalAnchor = anchorID;
+  const loadedAway = await app.syncTranscript(session, { reason: 'preserve-history', force: true });
+  const materializedAway = transcript.segments.filter((segment) => segment.state === 'materialized').length;
+  if (!loadedAway || transcript.viewport.firstOrdinal !== historicalAnchor - 1
+    || transcript.viewport.lastOrdinal === transcript.ids.length - 1
+    || transcript.pinnedSegments.has(transcript.segments.length - 1)
+    || materializedAway > 3) {
+    fail(name, 'scrolled-away sync was dragged to or over-pinned the new tail', JSON.stringify({
+      loadedAway,
+      historicalAnchor,
+      viewport: transcript.viewport,
+      tailState: transcript.segments.at(-1)?.state,
+      materialized: transcript.segments.map((segment, index) => segment.state === 'materialized' ? index : null).filter((index) => index != null),
+      pinned: [...transcript.pinnedSegments],
+    }));
+    return;
+  }
+  transcript._checkInvariants();
+  pass(name);
+}
+
 async function testSatisfiedInflightRevisionDoesNotRefetchTranscript() {
   const name = 'in-flight sync absorbs forced active-status target satisfied by its response';
   const sessionId = 'coalesced-revision-sync';
@@ -6346,6 +6461,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testReloadRetiresStalePersistedAssistantIdentityAfterTerminalAdvance();
   await testReloadScopesStalePersistedRetirementToCurrentActiveResponse();
   await testTranscriptSyncCommitsOneRenderedProjection();
+  await testBottomPinnedTranscriptSyncKeepsFollowingTail();
   await testSatisfiedInflightRevisionDoesNotRefetchTranscript();
   await testInflightSyncAbsorbsQueuedZeroRevisionActivation();
   await testTranscriptProjectionAnnotatesCompactionBoundaryOnceAcrossSegments();

@@ -42,6 +42,36 @@ const index = {
   }), /sparse client_message_id/);
 })();
 
+(() => {
+  const window = new TranscriptWindow('compaction-viewport', { overscanTurns: 0 });
+  window.applyIndex({
+    rev: 6,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: {
+      ids: [1, 2, 3, 4, 5, 6],
+      seqs: [0, 1, 2, 3, 4, 5],
+      roles: 'uauaua',
+      flags: [0, 0, 0, 0, 0, 0],
+    },
+  });
+  window.setViewport(4, 5);
+  window.applyIndex({
+    rev: 7,
+    compaction_seq: 5,
+    compaction_count: 2,
+    rows: {
+      ids: [101, 102],
+      seqs: [0, 1],
+      roles: 'ua',
+      flags: [0, 0],
+    },
+  });
+  assert.deepEqual(window.viewport, { firstOrdinal: -1, lastOrdinal: -1 }, 'compaction resets a retired viewport to implicit tail ownership');
+  assert.deepEqual([...window.pinnedSegments], [0], 'compaction leaves the replacement tail pinned');
+  window._checkInvariants();
+})();
+
 (async () => {
   const window = new TranscriptWindow('anchor');
   window.applyIndex(index);
