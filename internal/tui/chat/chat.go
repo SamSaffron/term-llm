@@ -346,6 +346,13 @@ type Model struct {
 	viewport                viewport.Model // Scrollable viewport for alt screen mode
 	scrollToBottom          bool           // Flag to scroll to bottom after response completes
 	streamRenderMinInterval time.Duration
+	// Debounced alt-screen resize reflow state.
+	resizeReflowPending        bool
+	resizeReflowWasAtBottom    bool
+	resizeReflowScrollFraction float64
+	resizeReflowRestoreAnchor  bool
+	resizeReflowHadImages      bool
+	resizeReflowGeneration     uint64
 
 	// Render cache for alt screen mode (avoids re-rendering unchanged content)
 	viewCache struct {
@@ -1054,11 +1061,49 @@ func (m *Model) WantsReload() bool { return m.reloadRequested }
 // ReloadSessionID returns the session ID to resume after a reload, if any.
 func (m *Model) ReloadSessionID() string { return m.reloadSessionID }
 
+type resizeReflowMsg struct {
+	generation uint64
+}
+
+const resizeReflowDebounce = 75 * time.Millisecond
+
+func (m *Model) beginAltScreenResizeReflow() tea.Cmd {
+	if !m.altScreen || len(m.messages) == 0 {
+		m.resizeReflowPending = false
+		m.resizeReflowGeneration++
+		return nil
+	}
+	m.resizeReflowPending = true
+	m.resizeReflowGeneration++
+	generation := m.resizeReflowGeneration
+	return tea.Tick(resizeReflowDebounce, func(time.Time) tea.Msg {
+		return resizeReflowMsg{generation: generation}
+	})
+}
+
+func (m *Model) captureResizeReflowAnchor() {
+	m.resizeReflowWasAtBottom = m.viewport.AtBottom()
+	maxYOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height())
+	if maxYOffset == 0 {
+		m.resizeReflowScrollFraction = 0
+		return
+	}
+	m.resizeReflowScrollFraction = float64(m.viewport.YOffset()) / float64(maxYOffset)
+}
+
 func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	oldWidth := m.width
+	widthChanged := oldWidth > 0 && oldWidth != msg.Width
 	oldViewportHeight := 0
 	if m.altScreen {
 		oldViewportHeight = m.viewport.Height()
+		hadImages := len(m.viewportImageBlocks) > 0 || len(m.viewportImageArtifacts) > 0 || strings.Contains(m.viewCache.lastViewportView, "\U0010eeee")
+		if !m.resizeReflowPending {
+			m.captureResizeReflowAnchor()
+			m.resizeReflowHadImages = hadImages
+		} else if hadImages {
+			m.resizeReflowHadImages = true
+		}
 	}
 	m.selection = Selection{}
 	m.width = msg.Width
@@ -1074,8 +1119,8 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 		m.dialog.SetSize(m.width, m.height)
 	}
 
-	// Invalidate cached markdown renderings since they are width-dependent.
-	if m.tracker != nil {
+	// Invalidate cached markdown renderings only when their width changes.
+	if widthChanged && m.tracker != nil {
 		for i := range m.tracker.Segments {
 			m.tracker.Segments[i].Rendered = ""
 			m.tracker.Segments[i].SafeRendered = ""
@@ -1093,16 +1138,16 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 		m.tracker.ResizeStreamRenderers(m.width)
 	}
 
-	// Invalidate completed stream cache since it's width-dependent (Issue 1).
-	// Also invalidate history cache because renderHistory() skips the last turn
-	// when completedStream is non-empty — clearing it without rebuilding history
-	// would leave a stale cache that excludes the last assistant message.
-	m.resetAltScreenStreamingAppendCache()
-	if m.viewCache.completedStream != "" {
-		m.viewCache.completedStream = ""
-		m.invalidateHistoryCache()
-	} else {
-		m.bumpContentVersion()
+	// Completed streaming output and historical markdown are width-dependent.
+	// Height-only viewport changes can reuse them without rebuilding all messages.
+	if widthChanged {
+		m.resetAltScreenStreamingAppendCache()
+		if m.viewCache.completedStream != "" {
+			m.viewCache.completedStream = ""
+			m.invalidateHistoryCache()
+		} else {
+			m.bumpContentVersion()
+		}
 	}
 
 	// Resize viewport for alt screen mode.
@@ -1122,16 +1167,17 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	if m.altScreen {
 		m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
 		viewportHeightChanged := oldViewportHeight > 0 && oldViewportHeight != m.viewport.Height()
-		widthChanged := oldWidth > 0 && oldWidth != m.width
 		if widthChanged || viewportHeightChanged {
 			m.imageGeneration++
 			termimage.ClearCache()
 			termimage.Debugf(termimage.DefaultEnvironment(), "chat resize width %d->%d viewport_h %d->%d model_h=%d generation=%d: invalidate image viewport render", oldWidth, m.width, oldViewportHeight, m.viewport.Height(), m.height, m.imageGeneration)
-			if m.chatRenderer != nil {
-				m.chatRenderer.InvalidateCache()
+			if !widthChanged && viewportHeightChanged && m.resizeReflowHadImages {
+				m.invalidateHistoryCache()
 			}
 			m.viewCache.lastSetContentAt = time.Time{}
-			m.viewCache.lastViewportView = ""
+			// Keep the last rendered viewport available for the cheap resize frame.
+			// Bubble Tea erases the alt screen before delivering WindowSizeMsg; clearing
+			// this cache here would leave nothing to draw while a large history reflows.
 			m.viewCache.cachedTrackerVersion = 0
 			// Drop old-generation raw operations before queuing cleanup. Otherwise a
 			// resize that lands between View() and the upload flush can transmit stale
@@ -1757,10 +1803,35 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			cmd = tea.Batch(cmd, reportCmd)
 		}
 	}()
+	if m.resizeReflowPending {
+		_, isKey := msg.(tea.KeyPressMsg)
+		_, isMouse := msg.(tea.MouseMsg)
+		if isKey || isMouse {
+			oldYOffset := m.viewport.YOffset()
+			defer func() {
+				if m.resizeReflowPending && m.viewport.YOffset() != oldYOffset {
+					m.captureResizeReflowAnchor()
+				}
+			}()
+		}
+	}
 
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
 
+	if resizeMsg, ok := msg.(resizeReflowMsg); ok {
+		if resizeMsg.generation == m.resizeReflowGeneration {
+			m.resizeReflowPending = false
+			m.resizeReflowHadImages = false
+			if m.resizeReflowWasAtBottom {
+				m.scrollToBottom = true
+				m.resizeReflowRestoreAnchor = false
+			} else {
+				m.resizeReflowRestoreAnchor = true
+			}
+		}
+		return m, nil
+	}
 	if progress, ok := msg.(skillRunProgressMsg); ok {
 		return m, m.handleSkillRunProgress(progress)
 	}
@@ -1831,11 +1902,18 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		widthChanged := m.width > 0 && m.width != msg.Width
 		m.applyWindowSize(msg)
 
-		// In alt screen mode, just clear screen (View() renders history)
-		// In inline mode, reprint history to scrollback after clearing
+		// Bubble Tea clears the alternate screen before Update receives a width
+		// resize. Reflowing every historical message synchronously in the following
+		// View leaves that cleared screen visible for the entire reflow. Draw a
+		// fitted cached frame first and debounce the expensive rebuild. Height-only
+		// changes reuse width-dependent history and render immediately.
 		if m.altScreen {
+			if widthChanged {
+				return m, m.beginAltScreenResizeReflow()
+			}
 			return m, nil
 		}
 		if len(m.messages) > 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -61,7 +62,12 @@ func (m *Model) View() tea.View {
 
 	// Alt screen mode: use viewport for scrollable content
 	if m.altScreen {
-		content := m.viewAltScreen()
+		var content string
+		if m.resizeReflowPending {
+			content = m.viewAltScreenResizeFrame()
+		} else {
+			content = m.viewAltScreen()
+		}
 		if m.sideQuestion.Visible {
 			content = m.renderSideQuestionOverlay(content)
 		}
@@ -190,6 +196,38 @@ func (m *Model) imageSafeCursor() *tea.Cursor {
 	cur.Shape = tea.CursorBar
 	cur.Blink = false
 	return cur
+}
+
+// viewAltScreenResizeFrame renders only the already-visible viewport rows and
+// the freshly sized footer. Bubble Tea erases the alt screen before sending a
+// WindowSizeMsg, so this deliberately avoids touching width-dependent history
+// caches until the debounced resizeReflowMsg arrives.
+func (m *Model) viewAltScreenResizeFrame() string {
+	footer := m.buildFooterLayout()
+	m.syncAltScreenViewportHeight(footer.height)
+
+	width := max(1, m.width)
+	height := m.viewport.Height()
+	lines := strings.Split(m.viewCache.lastViewportView, "\n")
+	if m.resizeReflowHadImages {
+		// Old image placeholder cells no longer correspond to the resized image
+		// layout. A blank history area is safer until cleanup/repaint completes.
+		lines = nil
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i := range lines {
+		lines[i] = ansi.Cut(lines[i], 0, width)
+	}
+	blank := strings.Repeat(" ", width)
+	for len(lines) < height {
+		lines = append(lines, blank)
+	}
+
+	m.applyFooterLayout(height, footer)
+	frame := strings.Join(lines, "\n") + "\n" + footer.view
+	return m.overlayAltScreenPanels(frame, footer)
 }
 
 // viewAltScreen renders the full-screen alt screen view with scrollable viewport
@@ -338,6 +376,11 @@ func (m *Model) viewAltScreen() string {
 		if firstRender || ((m.streaming || m.activeSkillRunCount() > 0) && wasAtBottom) || m.scrollToBottom {
 			m.viewport.GotoBottom()
 			m.scrollToBottom = false
+			m.resizeReflowRestoreAnchor = false
+		} else if m.resizeReflowRestoreAnchor {
+			maxYOffset := max(0, m.viewport.TotalLineCount()-m.viewport.Height())
+			m.viewport.SetYOffset(int(math.Round(m.resizeReflowScrollFraction * float64(maxYOffset))))
+			m.resizeReflowRestoreAnchor = false
 		}
 	}
 

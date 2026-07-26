@@ -955,13 +955,202 @@ func TestViewAltScreen_HeightOnlyResizePreservesLastMessage(t *testing.T) {
 	}
 
 	// Simulate height-only resize (width stays the same).
-	_, _ = m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height - 5})
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height - 5})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("height-only resize should not debounce width-dependent history reflow")
+	}
 
-	// After resize, completedStream is cleared. The history cache must be
-	// invalidated so renderHistory() re-includes the last assistant turn.
+	// A height-only resize does not invalidate width-dependent completed content.
 	second := ui.StripANSI(m.View().Content)
 	if !strings.Contains(second, "world") {
 		t.Fatalf("expected 'world' to remain visible after height-only resize, got %q", second)
+	}
+}
+
+func TestViewAltScreen_LargeHistoryResizeKeepsImmediateFrameResponsive(t *testing.T) {
+	m := newTestChatModel(true)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m.messages = make([]session.Message, 1412)
+	for i := range m.messages {
+		role := llm.RoleUser
+		if i%2 == 1 {
+			role = llm.RoleAssistant
+		}
+		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 8)
+		m.messages[i] = session.Message{
+			ID:          int64(i + 1),
+			SessionID:   m.sess.ID,
+			Role:        role,
+			TextContent: text,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			Sequence:    i,
+		}
+	}
+	m.invalidateHistoryCache()
+	_ = m.View()
+	oldHistoryWidth := m.viewCache.historyWidth
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 72, Height: 22})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("large alt-screen resize should defer expensive history reflow")
+	}
+
+	immediate := m.View().Content
+	if m.viewCache.historyWidth != oldHistoryWidth {
+		t.Fatalf("immediate resize frame synchronously reflowed history to width %d", m.viewCache.historyWidth)
+	}
+	if got := lipgloss.Height(immediate); got != m.height {
+		t.Fatalf("immediate resize frame height = %d, want %d", got, m.height)
+	}
+	immediatePlain := ui.StripANSI(immediate)
+	if !strings.Contains(immediatePlain, "message ") {
+		t.Fatalf("immediate resize frame lost visible history: %q", immediatePlain)
+	}
+	if !strings.Contains(immediatePlain, "Type a message") {
+		t.Fatalf("immediate resize frame lost composer: %q", immediatePlain)
+	}
+
+	reflowMsg := cmd()
+	updated, _ = m.Update(reflowMsg)
+	m = updated.(*Model)
+	if m.resizeReflowPending {
+		t.Fatal("debounced resize reflow remained pending")
+	}
+	settled := m.View().Content
+	if m.viewCache.historyWidth != m.width {
+		t.Fatalf("settled history width = %d, want %d", m.viewCache.historyWidth, m.width)
+	}
+	if !strings.Contains(ui.StripANSI(settled), "message 1411") {
+		t.Fatalf("settled resize frame did not restore latest history: %q", ui.StripANSI(settled))
+	}
+}
+
+func TestViewAltScreen_ResizeFrameKeepsDialogOverlay(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("visible history"), 0)}
+	m.invalidateHistoryCache()
+	_ = m.View()
+	m.dialog.ShowContent("Resize help", "dialog body")
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: m.width - 8, Height: m.height})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("width resize should defer history reflow")
+	}
+	immediate := ui.StripANSI(m.View().Content)
+	if !strings.Contains(immediate, "Resize help") || !strings.Contains(immediate, "dialog body") {
+		t.Fatalf("resize frame lost dialog overlay: %q", immediate)
+	}
+}
+
+func TestViewAltScreen_ResizeFrameSuppressesStaleImagePlaceholders(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("visible history"), 0)}
+	m.viewCache.lastViewportView = "before\n\U0010eeee\nafter"
+	m.viewportImageBlocks = []viewportImageBlock{{}}
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: m.width - 8, Height: m.height})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("image resize should defer history reflow")
+	}
+	if immediate := m.View().Content; strings.Contains(immediate, "\U0010eeee") {
+		t.Fatalf("resize frame reused a stale terminal image placeholder: %q", immediate)
+	}
+}
+
+func TestViewAltScreen_ResizeReflowIgnoresStaleGeneration(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("history"), 0)}
+	_ = m.View()
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 76, Height: m.height})
+	m = updated.(*Model)
+	firstGeneration := m.resizeReflowGeneration
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 72, Height: m.height})
+	m = updated.(*Model)
+	secondGeneration := m.resizeReflowGeneration
+
+	updated, _ = m.Update(resizeReflowMsg{generation: firstGeneration})
+	m = updated.(*Model)
+	if !m.resizeReflowPending {
+		t.Fatal("stale resize generation settled a newer resize")
+	}
+	updated, _ = m.Update(resizeReflowMsg{generation: secondGeneration})
+	m = updated.(*Model)
+	if m.resizeReflowPending {
+		t.Fatal("latest resize generation did not settle")
+	}
+}
+
+func TestBeginAltScreenResizeReflowClearsPendingWithoutHistory(t *testing.T) {
+	m := newTestChatModel(true)
+	m.resizeReflowPending = true
+	m.resizeReflowGeneration = 7
+	m.messages = nil
+
+	if cmd := m.beginAltScreenResizeReflow(); cmd != nil {
+		t.Fatal("empty history should not schedule resize reflow")
+	}
+	if m.resizeReflowPending {
+		t.Fatal("empty history left resize reflow pending")
+	}
+	if m.resizeReflowGeneration != 8 {
+		t.Fatalf("resize generation = %d, want 8 to invalidate stale timers", m.resizeReflowGeneration)
+	}
+}
+
+func TestViewAltScreen_ResizeReflowPreservesScrolledAnchor(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = make([]session.Message, 120)
+	for i := range m.messages {
+		text := "anchor message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 12)
+		m.messages[i] = *session.NewMessage(m.sess.ID, llm.UserText(text), i)
+	}
+	m.invalidateHistoryCache()
+	_ = m.View()
+	oldMax := m.viewport.TotalLineCount() - m.viewport.Height()
+	m.viewport.SetYOffset(oldMax / 3)
+	oldFraction := float64(m.viewport.YOffset()) / float64(oldMax)
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: m.width - 20, Height: m.height})
+	m = updated.(*Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	_ = m.View()
+
+	newMax := m.viewport.TotalLineCount() - m.viewport.Height()
+	newFraction := float64(m.viewport.YOffset()) / float64(newMax)
+	if delta := newFraction - oldFraction; delta < -0.03 || delta > 0.03 {
+		t.Fatalf("resize scroll fraction changed from %.3f to %.3f", oldFraction, newFraction)
+	}
+}
+
+func TestViewAltScreen_ScrollDuringResizeOverridesBottomAnchor(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = make([]session.Message, 80)
+	for i := range m.messages {
+		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 10)
+		m.messages[i] = *session.NewMessage(m.sess.ID, llm.UserText(text), i)
+	}
+	m.invalidateHistoryCache()
+	_ = m.View()
+	if !m.viewport.AtBottom() {
+		t.Fatal("precondition: viewport should start at bottom")
+	}
+
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: m.width - 10, Height: m.height})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = updated.(*Model)
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	_ = m.View()
+	if m.viewport.AtBottom() {
+		t.Fatal("scrolling up during resize was overridden by the old bottom anchor")
 	}
 }
 
