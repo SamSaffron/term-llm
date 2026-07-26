@@ -552,6 +552,10 @@
       };
       return {
         capture: () => {
+          // Bottom stickiness is the anchor. Capturing a durable row here would
+          // restore an old ordinal after append-only growth and let final budget
+          // enforcement evict the newly fetched tail before it can render.
+          if (forceScroll || state.autoScroll) return null;
           const viewport = scrollRect();
           const nodes = Array.from(elements.messages.querySelectorAll?.('[data-durable-id]') || []);
           const node = nodes.find((candidate) => {
@@ -775,9 +779,10 @@
       }
     
       const adapter = transcriptViewportAdapter(session, options.forceScroll === true);
+      const followTail = Boolean(adapter && (options.forceScroll === true || state.autoScroll));
       const loaded = await transcript.withViewportAnchor(adapter, async () => {
         if (data) applyTranscriptIndex(transcript, data, resp.headers?.get?.('ETag') || '');
-        if (transcript.ids.length > 0 && transcript.viewport.firstOrdinal < 0) {
+        if (transcript.ids.length > 0 && (followTail || transcript.viewport.firstOrdinal < 0)) {
           const last = transcript.ids.length - 1;
           transcript.setViewport(last, last, { deferBudget: true });
         }
