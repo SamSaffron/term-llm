@@ -105,3 +105,60 @@ func BenchmarkLoggingStreamTextDeltas(b *testing.B) {
 		}
 	}
 }
+
+type scratchpadBenchmarkProvider struct {
+	events    []Event
+	toolCalls bool
+}
+
+func (p *scratchpadBenchmarkProvider) Name() string       { return "scratchpad-benchmark" }
+func (p *scratchpadBenchmarkProvider) Credential() string { return "test" }
+func (p *scratchpadBenchmarkProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: p.toolCalls}
+}
+func (p *scratchpadBenchmarkProvider) Stream(context.Context, Request) (Stream, error) {
+	return &benchmarkEventStream{events: p.events}, nil
+}
+
+func BenchmarkProviderStreamScratchpad(b *testing.B) {
+	const deltaCount = 4096
+	events := make([]Event, 0, deltaCount+1)
+	for i := 0; i < deltaCount; i++ {
+		if i%2 == 0 {
+			events = append(events, Event{Type: EventTextDelta, Text: "x"})
+		} else {
+			events = append(events, Event{Type: EventReasoningDelta, Text: "r", ReasoningKind: ReasoningKindRaw})
+		}
+	}
+	events = append(events, Event{Type: EventDone})
+
+	b.Run("Simple", func(b *testing.B) {
+		provider := &scratchpadBenchmarkProvider{events: events}
+		engine := NewEngine(provider, nil)
+		req := Request{Messages: []Message{UserText("benchmark")}}
+		b.SetBytes(deltaCount)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := engine.runSimpleScratchpad(context.Background(), req, eventSender{}); err != nil {
+				b.Fatalf("runSimpleScratchpad returned error: %v", err)
+			}
+		}
+	})
+
+	b.Run("Agentic", func(b *testing.B) {
+		provider := &scratchpadBenchmarkProvider{events: events, toolCalls: true}
+		engine := NewEngine(provider, NewToolRegistry())
+		req := Request{
+			Messages: []Message{UserText("benchmark")},
+			Tools:    []ToolSpec{{Name: "benchmark_tool", Schema: map[string]any{"type": "object"}}},
+			MaxTurns: 1,
+		}
+		b.SetBytes(deltaCount)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := engine.runLoop(context.Background(), req, eventSender{}); err != nil {
+				b.Fatalf("runLoop returned error: %v", err)
+			}
+		}
+	})
+}

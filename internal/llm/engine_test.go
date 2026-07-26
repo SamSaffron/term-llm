@@ -4990,6 +4990,7 @@ func TestEngineRetriesUncommittedTextScratchpadAfterStreamError(t *testing.T) {
 
 	var text strings.Builder
 	var retryEvents int
+	var discardEvents int
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -5002,6 +5003,7 @@ func TestEngineRetriesUncommittedTextScratchpadAfterStreamError(t *testing.T) {
 		case EventError:
 			t.Fatalf("unexpected stream error event: %v", event.Err)
 		case EventAttemptDiscard:
+			discardEvents++
 			text.Reset()
 		case EventRetry:
 			retryEvents++
@@ -5010,8 +5012,11 @@ func TestEngineRetriesUncommittedTextScratchpadAfterStreamError(t *testing.T) {
 		}
 	}
 
-	if retryEvents == 0 {
-		t.Fatalf("expected retry event")
+	if retryEvents != 1 {
+		t.Fatalf("retry events = %d, want 1", retryEvents)
+	}
+	if discardEvents != 1 {
+		t.Fatalf("discard events = %d, want 1 for visible provisional text", discardEvents)
 	}
 	if got := text.String(); got != "good" {
 		t.Fatalf("text = %q, want only committed retry output %q", got, "good")
@@ -5066,11 +5071,11 @@ func TestEngineRetriesAgenticUncommittedTextAfterStreamError(t *testing.T) {
 		}
 	}
 
-	if retryEvents == 0 {
-		t.Fatalf("expected retry event")
+	if retryEvents != 1 {
+		t.Fatalf("retry events = %d, want 1", retryEvents)
 	}
-	if discardEvents == 0 {
-		t.Fatalf("expected discard event for visible provisional text")
+	if discardEvents != 1 {
+		t.Fatalf("discard events = %d, want 1 for visible provisional text", discardEvents)
 	}
 	if got := text.String(); got != "good" {
 		t.Fatalf("text = %q, want only committed retry output %q", got, "good")
@@ -5083,8 +5088,69 @@ func TestEngineRetriesAgenticUncommittedTextAfterStreamError(t *testing.T) {
 	}
 }
 
+func TestEngineRetriesWithoutDiscardBeforeVisibleOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		agentic bool
+	}{
+		{name: "simple"},
+		{name: "agentic", agentic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &recoverTextProvider{failBeforeOutput: true}
+			registry := NewToolRegistry()
+			req := Request{Messages: []Message{UserText("hello")}, MaxTurns: 3}
+			if tc.agentic {
+				tool := &countingTool{}
+				registry.Register(tool)
+				req.Tools = []ToolSpec{tool.Spec()}
+			}
+			engine := NewEngine(provider, registry)
+			stream, err := engine.Stream(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			defer stream.Close()
+
+			var text strings.Builder
+			var retryEvents int
+			var discardEvents int
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Recv() error = %v", err)
+				}
+				switch event.Type {
+				case EventError:
+					t.Fatalf("unexpected stream error event: %v", event.Err)
+				case EventAttemptDiscard:
+					discardEvents++
+				case EventRetry:
+					retryEvents++
+				case EventTextDelta:
+					text.WriteString(event.Text)
+				}
+			}
+
+			if retryEvents != 1 {
+				t.Fatalf("retry events = %d, want 1", retryEvents)
+			}
+			if discardEvents != 0 {
+				t.Fatalf("discard events = %d, want 0 before visible output", discardEvents)
+			}
+			if got := text.String(); got != "good" {
+				t.Fatalf("text = %q, want %q", got, "good")
+			}
+		})
+	}
+}
+
 type recoverTextProvider struct {
-	calls []Request
+	calls            []Request
+	failBeforeOutput bool
 }
 
 func (p *recoverTextProvider) Name() string       { return "recover-text" }
@@ -5095,8 +5161,12 @@ func (p *recoverTextProvider) Capabilities() Capabilities {
 func (p *recoverTextProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.calls = append(p.calls, req)
 	if len(p.calls) == 1 {
+		var events []Event
+		if !p.failBeforeOutput {
+			events = []Event{{Type: EventTextDelta, Text: "bad"}}
+		}
 		return &errAfterEventsStream{
-			events: []Event{{Type: EventTextDelta, Text: "bad"}},
+			events: events,
 			err:    &StreamIncompleteError{Transport: "test stream", Terminal: "done", Err: errors.New("stream disconnected during text")},
 		}, nil
 	}
