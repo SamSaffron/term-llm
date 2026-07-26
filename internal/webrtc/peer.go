@@ -32,7 +32,10 @@ import (
 	"github.com/pion/stun/v3"
 )
 
-const maxFrameBytes = 10 * 1024 * 1024 // 10 MB
+const (
+	maxFrameBytes       = 10 * 1024 * 1024 // 10 MB
+	defaultSetupTimeout = 30 * time.Second
+)
 
 // Cap per-channel HTTP dispatches so one client cannot create an unbounded
 // number of expensive handler goroutines.
@@ -73,11 +76,12 @@ const maxChunkDataBytes = 16 * 1024
 
 // peer is the home-side WebRTC peer.
 type peer struct {
-	cfg     Config
-	handler http.Handler
-	cancel  context.CancelFunc
-	active  atomic.Int32
-	client  *http.Client
+	cfg          Config
+	handler      http.Handler
+	cancel       context.CancelFunc
+	active       atomic.Int32
+	client       *http.Client
+	setupTimeout time.Duration
 }
 
 // New creates and starts a WebRTC home peer.
@@ -100,10 +104,11 @@ func New(ctx context.Context, cfg Config, handler http.Handler) (Peer, error) {
 
 	peerCtx, cancel := context.WithCancel(ctx)
 	p := &peer{
-		cfg:     cfg,
-		handler: handler,
-		cancel:  cancel,
-		client:  &http.Client{Timeout: 15 * time.Second},
+		cfg:          cfg,
+		handler:      handler,
+		cancel:       cancel,
+		client:       &http.Client{Timeout: 15 * time.Second},
+		setupTimeout: defaultSetupTimeout,
 	}
 	go p.run(peerCtx)
 	return p, nil
@@ -456,6 +461,19 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	defer iceConn.Close()
 	log.Printf("webrtc: ICE accepted for session %s remote=%s", offer.SessionID, iceConn.RemoteAddr())
 
+	// Bound every setup layer after ICE. SCTP and data-channel accept do not
+	// accept contexts, so close ICE when the deadline expires to wake their
+	// pending reads and release this connection's active slot.
+	setupCtx, setupCancel := context.WithTimeout(ctx, p.setupTimeout)
+	stopSetupClose := context.AfterFunc(setupCtx, func() {
+		_ = iceConn.Close()
+		_ = agent.Close()
+	})
+	defer func() {
+		stopSetupClose()
+		setupCancel()
+	}()
+
 	// Run DTLS server handshake over the ICE connection.
 	log.Printf("webrtc: starting DTLS handshake for session %s", offer.SessionID)
 	pconn := dtlsnet.PacketConnFromConn(iceConn)
@@ -475,10 +493,14 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		},
 	})
 	if err != nil {
-		log.Printf("webrtc: DTLS handshake for session %s: %v", offer.SessionID, err)
+		log.Printf("webrtc: create DTLS server for session %s: %v", offer.SessionID, err)
 		return
 	}
 	defer dtlsConn.Close()
+	if err := dtlsConn.HandshakeContext(setupCtx); err != nil {
+		log.Printf("webrtc: DTLS handshake for session %s: %v", offer.SessionID, err)
+		return
+	}
 	log.Printf("webrtc: DTLS handshake complete for session %s", offer.SessionID)
 
 	// Establish SCTP association over DTLS.
@@ -511,6 +533,11 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		return
 	}
 	defer dc.Close()
+	if !stopSetupClose() {
+		log.Printf("webrtc: setup deadline reached as data channel opened for session %s: %v", offer.SessionID, setupCtx.Err())
+		return
+	}
+	setupCancel()
 
 	p.runDataChannel(ctx, dc, func() {
 		_ = sctpAssoc.Close()
