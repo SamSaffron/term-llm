@@ -145,6 +145,10 @@ func (m *Model) newView(content string) tea.View {
 	}
 	if m.autoSendQueue == nil && m.mouseMode {
 		v.MouseMode = tea.MouseModeCellMotion
+		if m.altScreen && len(m.viewCache.userMessageAnchors) > 0 {
+			// User-message controls require movement events without a pressed button.
+			v.MouseMode = tea.MouseModeAllMotion
+		}
 	}
 	if cur := m.imageSafeCursor(); cur != nil {
 		v.Cursor = cur
@@ -366,6 +370,7 @@ func (m *Model) viewAltScreen() string {
 		}
 		m.viewCache.lastSetContentAt = setContentEnd
 		m.captureReasoningClickSnapshot()
+		m.viewCache.userMessageAnchors = m.chatRenderer.UserMessageAnchorsSnapshot()
 		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
 		// On first render (including resumed sessions), anchor at latest content.
 		// On subsequent renders while a parent response or isolated child is live,
@@ -459,6 +464,7 @@ func (m *Model) viewAltScreen() string {
 	if m.selection.Active {
 		viewOutput = m.applySelectionHighlight(viewOutput)
 	}
+	viewOutput = m.applyUserPromptNavigation(viewOutput)
 
 	// Render viewport (scrollable area)
 	b.WriteString(viewOutput)

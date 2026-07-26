@@ -405,6 +405,8 @@ func TestCmdHelpOpensModal(t *testing.T) {
 		"Ctrl+Y",
 		"Copy selected conversation text",
 		"PageUp / PageDown",
+		"Ctrl+Up / Ctrl+Down",
+		"Jump between user prompts",
 		"Ctrl+J / Alt+Enter / Shift+Enter",
 		"Pickers and completions",
 		"Ctrl+T",
@@ -3870,8 +3872,12 @@ func TestViewReleasesTerminalModesWhileShellRuns(t *testing.T) {
 			if restoredView.AltScreen != altScreen {
 				t.Fatalf("restored view AltScreen = %t, want %t", restoredView.AltScreen, altScreen)
 			}
-			if restored.mouseMode && restoredView.MouseMode != tea.MouseModeCellMotion {
-				t.Fatalf("restored view mouse mode = %v, want cell motion", restoredView.MouseMode)
+			expectedMouseMode := tea.MouseModeCellMotion
+			if altScreen && len(restored.viewCache.userMessageAnchors) > 0 {
+				expectedMouseMode = tea.MouseModeAllMotion
+			}
+			if restored.mouseMode && restoredView.MouseMode != expectedMouseMode {
+				t.Fatalf("restored view mouse mode = %v, want %v", restoredView.MouseMode, expectedMouseMode)
 			}
 		})
 	}

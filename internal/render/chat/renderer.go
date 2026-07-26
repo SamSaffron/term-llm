@@ -122,6 +122,15 @@ type sigCacheEntry struct {
 	sig      uint64
 }
 
+// UserMessageAnchor locates a rendered user prompt in history content.
+type UserMessageAnchor struct {
+	MessageID          int64
+	StartLine          int
+	InteractiveEndLine int
+	EndLine            int
+	Preview            string
+}
+
 // Renderer implements ChatRenderer with virtualized rendering
 // and caching for performance.
 type Renderer struct {
@@ -138,6 +147,7 @@ type Renderer struct {
 
 	lastReasoningLineOrdinals map[int]int
 	lastReasoningHeaderCount  int
+	lastUserMessageAnchors    []UserMessageAnchor
 
 	// Configuration
 	markdownRenderer MarkdownRenderer
@@ -368,6 +378,7 @@ func (r *Renderer) renderAltScreen(state RenderState) string {
 func (r *Renderer) renderHistory(state RenderState) string {
 	r.lastReasoningLineOrdinals = make(map[int]int)
 	r.lastReasoningHeaderCount = 0
+	r.lastUserMessageAnchors = nil
 	if len(state.Messages) == 0 {
 		return ""
 	}
@@ -415,6 +426,20 @@ func (r *Renderer) renderHistory(state RenderState) string {
 				trailingNewlines += len(padding)
 			}
 			blockStartLine := lineCursor
+			if block.UserPreview != "" {
+				interactive := strings.TrimRight(block.Rendered, "\n")
+				interactiveLines := 0
+				if interactive != "" {
+					interactiveLines = strings.Count(interactive, "\n") + 1
+				}
+				r.lastUserMessageAnchors = append(r.lastUserMessageAnchors, UserMessageAnchor{
+					MessageID:          block.MessageID,
+					StartLine:          blockStartLine,
+					InteractiveEndLine: blockStartLine + interactiveLines,
+					EndLine:            blockStartLine + strings.Count(block.Rendered, "\n"),
+					Preview:            block.UserPreview,
+				})
+			}
 			for offsetIdx, offset := range block.ReasoningLineOffsets {
 				r.lastReasoningLineOrdinals[blockStartLine+offset] = reasoningOrdinal + offsetIdx
 			}
@@ -465,6 +490,15 @@ func (r *Renderer) ReasoningLineOrdinalsSnapshot() map[int]int {
 		out[line] = ordinal
 	}
 	return out
+}
+
+// UserMessageAnchorsSnapshot returns a copy of user prompt locations from the
+// most recent history render.
+func (r *Renderer) UserMessageAnchorsSnapshot() []UserMessageAnchor {
+	if r == nil || len(r.lastUserMessageAnchors) == 0 {
+		return nil
+	}
+	return append([]UserMessageAnchor(nil), r.lastUserMessageAnchors...)
 }
 
 // MessageHistorySignature fingerprints rendered message history so cache validity

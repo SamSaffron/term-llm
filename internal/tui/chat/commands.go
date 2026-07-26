@@ -930,6 +930,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 			title: "Navigation and selection",
 			rows: [][2]string{
 				{"PageUp / PageDown", "Scroll conversation"},
+				{"Ctrl+Up / Ctrl+Down", "Jump between user prompts"},
 				{"Up / Down", "Scroll when composer is empty; select queued interjections while streaming"},
 				{"Ctrl+Y", "Copy selected conversation text"},
 			},

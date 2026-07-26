@@ -33,6 +33,10 @@ type MessageBlock struct {
 	// (used for cache invalidation on resize)
 	Width int
 
+	// UserPreview is a whitespace-normalized preview for real user messages.
+	// It is empty for other roles and internal compaction messages.
+	UserPreview string
+
 	// FirstSegmentType/LastSegmentType describe the first and last rendered
 	// stream-equivalent segment in this block. History rendering uses them to
 	// preserve the same text/tool/thought spacing after sessions are reloaded.
@@ -123,6 +127,7 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 	r.lastSegmentType = ui.SegmentText
 	r.hasSegmentTypes = false
 	var content string
+	var userPreview string
 
 	switch msg.Role {
 	case llm.RoleUser:
@@ -130,6 +135,9 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 			content = r.renderCompactionSummaryPlaceholder(msg)
 		} else {
 			content = r.renderUserMessage(msg)
+			displayContent, _ := r.userDisplayParts(msg)
+			userPreview = strings.Join(strings.Fields(displayContent), " ")
+			userPreview = ansi.Truncate(userPreview, max(1, r.width-2), "…")
 		}
 		if strings.TrimSpace(content) != "" {
 			r.noteRenderedSegment(ui.SegmentText)
@@ -154,6 +162,7 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 		Rendered:             content,
 		Height:               countLines(content),
 		Width:                r.width,
+		UserPreview:          userPreview,
 		FirstSegmentType:     r.firstSegmentType,
 		LastSegmentType:      r.lastSegmentType,
 		HasSegmentTypes:      r.hasSegmentTypes,

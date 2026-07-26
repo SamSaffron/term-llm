@@ -394,7 +394,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Ctrl+C copies an active text selection, matching the status-line hint and
 	// preserving the long-standing selection workflow.
-	if m.selection.Active {
+	if m.selection.Active && key.Matches(msg, m.keyMap.Quit) {
 		cmd := m.copySelectionToClipboard()
 		m.selection = Selection{}
 		return m, cmd
@@ -863,6 +863,20 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	}
+
+	// Navigate between rendered user prompts in alt-screen history.
+	if m.altScreen {
+		if key.Matches(msg, m.keyMap.PreviousMessage) {
+			if m.jumpUserMessage(-1) {
+				return m, nil
+			}
+		}
+		if key.Matches(msg, m.keyMap.NextMessage) {
+			if m.jumpUserMessage(1) {
+				return m, nil
+			}
+		}
 	}
 
 	// Allow viewport scrolling even while streaming (in alt screen mode)

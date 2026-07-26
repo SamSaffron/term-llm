@@ -341,11 +341,19 @@ type Model struct {
 	worktreeBrowserOperation string
 
 	// Alt screen mode (full-screen rendering)
-	altScreen               bool
-	mouseMode               bool
-	viewport                viewport.Model // Scrollable viewport for alt screen mode
-	scrollToBottom          bool           // Flag to scroll to bottom after response completes
-	streamRenderMinInterval time.Duration
+	altScreen                    bool
+	mouseMode                    bool
+	stickyUserPromptHovered      bool
+	stickyUserPromptHoverAction  stickyUserPromptHoverAction
+	userPromptMouseKnown         bool
+	userPromptMouseX             int
+	userPromptMouseY             int
+	hoveredUserPromptAnchorIndex int
+	hoveredUserPromptRow         int
+	hoveredUserPromptSticky      bool
+	viewport                     viewport.Model // Scrollable viewport for alt screen mode
+	scrollToBottom               bool           // Flag to scroll to bottom after response completes
+	streamRenderMinInterval      time.Duration
 	// Debounced alt-screen resize reflow state.
 	resizeReflowPending        bool
 	resizeReflowWasAtBottom    bool
@@ -386,6 +394,7 @@ type Model struct {
 		lastSelection          Selection
 		lastContentStr         string // stored for lazy contentLines split
 		reasoningClickSnapshot reasoningClickSnapshot
+		userMessageAnchors     []render.UserMessageAnchor
 	}
 
 	// New chat renderer (virtualized rendering for large histories)
@@ -1944,6 +1953,11 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			if m.altScreen && m.handleSideQuestionSelectionMouse(msg) {
 				return m, nil
 			}
+		}
+		m.handleStickyUserPromptMouseHover(msg)
+		// The sticky user prompt owns the first viewport row while visible.
+		if m.handleStickyUserPromptMouseClick(msg) {
+			return m, nil
 		}
 		// Single-clicking a reasoning header toggles just that block. This runs
 		// before drag-selection, and only consumes clicks on recognized headers.

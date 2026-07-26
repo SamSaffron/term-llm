@@ -20,8 +20,10 @@ type KeyMap struct {
 	Tab         key.Binding
 
 	// History navigation
-	PageUp   key.Binding
-	PageDown key.Binding
+	PageUp          key.Binding
+	PageDown        key.Binding
+	PreviousMessage key.Binding
+	NextMessage     key.Binding
 
 	// Shortcuts
 	Help        key.Binding
@@ -94,6 +96,14 @@ func DefaultKeyMap() KeyMap {
 		PageDown: key.NewBinding(
 			key.WithKeys("pgdown"),
 			key.WithHelp("pgdown", "page down"),
+		),
+		PreviousMessage: key.NewBinding(
+			key.WithKeys("ctrl+up"),
+			key.WithHelp("ctrl+up", "previous prompt"),
+		),
+		NextMessage: key.NewBinding(
+			key.WithKeys("ctrl+down"),
+			key.WithHelp("ctrl+down", "next prompt"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("ctrl+/", "ctrl+_", "ctrl+h", "ctrl+?", "ctrl+shift+/"),
