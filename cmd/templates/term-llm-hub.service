@@ -1,0 +1,21 @@
+[Unit]
+Description=term-llm Hub
+Documentation=https://term-llm.com/guides/hub/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# User= (even root) makes systemd set HOME, which the Hub needs to resolve
+# its data dir and to discover contain workspaces under ~/.config/term-llm.
+# Stronger sandboxing (DynamicUser, ProtectHome) would break that discovery.
+User=root
+ExecStart={{.ExecStart}}
+EnvironmentFile=-{{.EnvFile}}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,33 @@ bearer as an operator/admin credential: anyone holding it can add nodes and make
 the Hub connect to addresses reachable from the Hub host. Use `--auth none` only
 for loopback-only local development.
 
+## Run as a systemd service
+
+`term-llm serve hub systemd` generates a systemd unit so the Hub survives
+reboots and restarts on crashes. Without `--install` it prints the unit to
+stdout for review; with `--install` (Linux, run with sudo) it writes
+`/etc/systemd/system/term-llm-hub.service`, stores the tokens in
+`/etc/term-llm-hub.env` (mode 0600), and enables and starts the service:
+
+```bash
+sudo term-llm serve hub systemd --host 0.0.0.0 --install
+# Installed /etc/systemd/system/term-llm-hub.service
+#   tokens: /etc/term-llm-hub.env
+#   service: enabled and started (term-llm-hub.service)
+#   registration: disabled
+#   generated Hub bearer token: ...
+#   logs: journalctl -u term-llm-hub.service -f
+```
+
+Hub flags you pass (such as `--host` or `--port`) are baked into the unit's
+`ExecStart` line. `--token` and `--registration-token` never appear in the
+unit: they live in the environment file, which the Hub reads via
+`TERM_LLM_HUB_TOKEN` and `TERM_LLM_HUB_REGISTRATION_TOKEN`. Reinstalling keeps
+tokens already present in the environment file unless you override them, so
+`sudo term-llm serve hub systemd --host 0.0.0.0 --port 9000 --install` updates
+the unit without rotating credentials. To stop and remove the service, run
+`sudo systemctl disable --now term-llm-hub.service`.
+
 ## Nodes
 
 The core object is a **node**: a reachable term-llm serve (web/API endpoint) with an identity, a URL + base path, an optional web bearer token, and a source. Nodes are discovered from three resolvers, re-resolved on every request so changes are picked up without a restart:

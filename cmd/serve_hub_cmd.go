@@ -126,7 +126,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	token, tokenSource, err := resolveServeToken(serveHubToken, os.Getenv("TERM_LLM_HUB_TOKEN"), requireAuth, generateServeToken)
+	token, tokenSource, err := resolveServeToken(serveHubToken, os.Getenv(serveHubTokenEnv), requireAuth, generateServeToken)
 	if err != nil {
 		return err
 	}
@@ -185,13 +185,20 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 
 func init() {
 	serveCmd.AddCommand(serveHubCmd)
-	serveHubCmd.Flags().StringVar(&serveHubHost, "host", "127.0.0.1", "Host to bind")
-	serveHubCmd.Flags().IntVar(&serveHubPort, "port", 8090, "Port to bind")
-	serveHubCmd.Flags().StringVar(&serveHubConfig, "config", "", "Path to a static nodes config file (YAML or JSON)")
-	serveHubCmd.Flags().BoolVar(&serveHubContain, "contain", true, "Discover nodes from local contain workspaces")
-	serveHubCmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
-	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer or none (none is loopback-only)")
-	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (defaults to $TERM_LLM_HUB_TOKEN, else auto-generated)")
-	serveHubCmd.Flags().StringVar(&serveHubBasePath, "base-path", "/", "URL prefix for the Hub dashboard/API when mounted behind a reverse proxy (e.g. /hub)")
-	serveHubCmd.Flags().StringVar(&serveHubRegistrationTokenFlag, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
+	addServeHubFlags(serveHubCmd)
+}
+
+// addServeHubFlags declares the Hub flags. `serve hub` and `serve hub systemd`
+// (which bakes them into the generated unit) share them via the same package
+// vars, which is safe because only one command runs per process.
+func addServeHubFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&serveHubHost, "host", "127.0.0.1", "Host to bind")
+	cmd.Flags().IntVar(&serveHubPort, "port", 8090, "Port to bind")
+	cmd.Flags().StringVar(&serveHubConfig, "config", "", "Path to a static nodes config file (YAML or JSON)")
+	cmd.Flags().BoolVar(&serveHubContain, "contain", true, "Discover nodes from local contain workspaces")
+	cmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
+	cmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer or none (none is loopback-only)")
+	cmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (defaults to $TERM_LLM_HUB_TOKEN, else auto-generated)")
+	cmd.Flags().StringVar(&serveHubBasePath, "base-path", "/", "URL prefix for the Hub dashboard/API when mounted behind a reverse proxy (e.g. /hub)")
+	cmd.Flags().StringVar(&serveHubRegistrationTokenFlag, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
 }
