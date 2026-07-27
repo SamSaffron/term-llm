@@ -19,8 +19,8 @@ jobs:
           cache-dependency-path: |
             go.sum
             internal/reflow/go.sum
-            third_party/bubbletea/go.sum
-            third_party/ultraviolet/go.sum
+            internal/terminal/runtime/go.sum
+            internal/terminal/renderer/go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -57,7 +57,7 @@ jobs:
 
       - name: Nested checkptr
         run: |
-          for module in internal/reflow third_party/ultraviolet third_party/bubbletea; do
+          for module in internal/reflow internal/terminal/renderer internal/terminal/runtime; do
             (cd "$module" && GODEBUG=checkptr=2 go test ./...)
           done
 
@@ -82,8 +82,8 @@ jobs:
           cache-dependency-path: |
             go.sum
             internal/reflow/go.sum
-            third_party/bubbletea/go.sum
-            third_party/ultraviolet/go.sum
+            internal/terminal/runtime/go.sum
+            internal/terminal/renderer/go.sum
 
-      - name: Cross-build release and owned renderer targets
-        run: scripts/cross_build_owned_renderer.sh
+      - name: Cross-build release and owned terminal targets
+        run: scripts/cross_build_owned_terminal.sh

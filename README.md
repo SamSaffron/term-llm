@@ -100,7 +100,7 @@ scripts/verify_nested_modules.sh
 VERIFY_RACE=1 scripts/verify_nested_modules.sh
 ```
 
-The checked-in renderer modules are deliberately reduced, application-owned sources rather than replaceable vendor snapshots. See [`third_party/README.md`](third_party/README.md) for their compatibility boundary, provenance, selective-sync workflow, fuzz/benchmark commands, and cross-build matrix. Run `scripts/cross_build_owned_renderer.sh` when changing platform or release-sensitive renderer code.
+The terminal event loop/runtime and cell/diff/output renderer under `internal/terminal/` are deliberately reduced, application-owned source modules rather than external dependency copies. They preserve the Bubble Tea and Ultraviolet module paths only because Bubbles and Huh require exact import and concrete type identity. See [`internal/terminal/README.md`](internal/terminal/README.md) for the ownership contract, architecture, provenance, selective-sync workflow, fuzz/benchmark commands, and cross-build matrix. Run `scripts/cross_build_owned_terminal.sh` when changing platform- or release-sensitive terminal code.
 
 ## License
 

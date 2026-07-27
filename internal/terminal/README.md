@@ -1,14 +1,24 @@
-# Owned terminal renderer modules
+# Owned internal terminal subsystem
 
-term-llm checks in the Bubble Tea and Ultraviolet code used by every terminal UI under `third_party/`. The root module resolves both modules to these directories with unversioned `replace` directives, so a normal build never obtains renderer code from a source-spike checkout or silently substitutes upstream code.
+term-llm maintains its terminal event loop/runtime and cell/diff/output renderer under `internal/terminal/`. These are application-owned source modules: their filesystem placement, pruning policy, behavior, tests, and selective upstream maintenance all belong to this repository. They are not external dependency copies, independently consumed libraries, or architecturally upstream-owned components.
 
-## Compatibility boundary
+## Architecture
 
-`bubbletea` deliberately retains the module path `charm.land/bubbletea/v2`. term-llm imports that path directly, and Bubbles `v2.1.0` and Huh `v2.0.3` exchange concrete Bubble Tea types through that path. Changing it would create distinct Go types and require unnecessary Bubbles/Huh forks. Ultraviolet likewise keeps `github.com/charmbracelet/ultraviolet`, but is an implementation dependency owned here because the Bubble Tea renderer changes depend on its exact behavior.
+- [`runtime/`](runtime/) is the reduced Bubble Tea-derived event loop and terminal runtime. It owns programs, input, commands, terminal mode transitions, render scheduling, exact frame acknowledgements, process handoff, and shutdown.
+- [`renderer/`](renderer/) is the reduced Ultraviolet-derived cell, diff, terminal-input, and output renderer. It owns retained cell state, incremental changed-row/exact-scroll output, terminal decoding, platform pollers/readers, and write recovery.
+- The root application, Bubbles, and Huh consume the runtime through `charm.land/bubbletea/v2`; the runtime consumes the renderer through `github.com/charmbracelet/ultraviolet`. The root `go.mod` pins both identities to these exact in-repository directories, and the runtime's nested `go.mod` pins its standalone renderer dependency to `../renderer`.
 
-These are application-specific source modules, not general-purpose forks. The compatibility contract is the source/API surface reachable from term-llm and its retained Bubbles/Huh versions. The owned modules and all 22 Bubbles/Huh packages have been compile-checked for `linux/amd64`, `darwin/arm64`, and `windows/amd64`, including each platform's selected terminal, poller, TTY, signal, termios, cancel-reader, and Bubbles file-picker files. The term-llm application and releases remain scoped to their existing Linux and macOS targets; renderer ownership does not add Windows application support.
+The runtime/renderer split is an internal architectural boundary. Bubble Tea and Ultraviolet name the upstream projects from which the retained code was derived; they do not describe maintenance ownership.
 
-The root `go.mod` has two renderer replacements under `./third_party` and the pre-existing owned reflow replacement under `./internal/reflow`. Bubble Tea's nested module has one module-local `../ultraviolet` replacement so its standalone tests exercise the owned Ultraviolet implementation; that path also stays inside `third_party`. There are no references to source-spike trees or other paths outside this repository. Because Go does not carry a dependency's `replace` directives into an external module build—and nested modules are excluded from the root module archive—`go install github.com/samsaffron/term-llm@latest` cannot assemble these sources. Install a release artifact or run `go install .` from a complete checkout.
+## Compatibility identities and Go module boundaries
+
+The runtime deliberately preserves the module path `charm.land/bubbletea/v2`. term-llm imports that path directly, and Bubbles `v2.1.0` and Huh `v2.0.3` exchange concrete Bubble Tea types through that exact path. Renaming the module would create distinct Go types and require unnecessary Bubbles/Huh copies. The renderer likewise preserves `github.com/charmbracelet/ultraviolet` so the runtime and root module resolve one exact renderer identity. These upstream names are compatibility identities only; filesystem placement and maintenance ownership remain term-llm's.
+
+Placing nested modules below the root module's `internal/` directory does not change their declared import paths or trigger Go's `internal` package visibility rule. Each nested `go.mod` establishes its own module root, so consumers still import `charm.land/bubbletea/v2` and `github.com/charmbracelet/ultraviolet`, neither of which contains an `internal` path element. Root builds, Bubbles/Huh compilation, standalone nested builds, and the exact-resolution buildguard exercise this boundary explicitly.
+
+These are application-specific source modules, not general-purpose library distributions. The compatibility contract is the source/API surface reachable from term-llm and its retained Bubbles/Huh versions. The owned modules and all 22 Bubbles/Huh packages have been compile-checked for `linux/amd64`, `darwin/arm64`, and `windows/amd64`, including each platform's selected terminal, poller, TTY, signal, termios, cancel-reader, and Bubbles file-picker files. The term-llm application and releases remain scoped to their existing Linux and macOS targets; terminal ownership does not add Windows application support.
+
+The root `go.mod` has exact replacements at `./internal/terminal/runtime` and `./internal/terminal/renderer`, plus the pre-existing owned reflow replacement at `./internal/reflow`. There are no references to source-spike trees or paths outside this repository. Because Go does not carry a dependency's `replace` directives into an external module build—and nested modules are excluded from the root module archive—`go install github.com/samsaffron/term-llm@latest` cannot assemble these sources. Install a release artifact or run `go install .` from a complete checkout.
 
 ## Retained source
 
@@ -71,7 +81,7 @@ Do not replace either directory wholesale or run an automated upstream merge. To
 3. Apply only the production files and focused tests required by the compatibility boundary. Preserve the owned renderer changes and both module paths.
 4. Re-run a whole-source import/symbol audit for term-llm, Bubbles, and Huh before deleting newly introduced APIs. Do not infer compatibility from the Linux chat package alone.
 5. Update the pinned base and selected-commit list in `UPSTREAM.md`, then repeat platform, race, checkptr, fuzz/stress, and benchmark checks.
-6. Run `go mod tidy` in the changed third-party module and at the repository root. The root build guard must continue to resolve both modules to their exact in-repository directories with `GOWORK=off`.
+6. Run `go mod tidy` in the changed owned terminal module and at the repository root. The root build guard must continue to resolve both modules to their exact in-repository directories with `GOWORK=off`.
 
 ## Tests and benchmarks
 
@@ -82,10 +92,10 @@ scripts/verify_nested_modules.sh
 VERIFY_RACE=1 scripts/verify_nested_modules.sh
 scripts/fuzz_owned_renderer.sh
 
-(cd third_party/bubbletea && GODEBUG=checkptr=2 go test ./...)
-(cd third_party/ultraviolet && GODEBUG=checkptr=2 go test ./...)
-(cd third_party/bubbletea && go test -run '^$' -bench '^BenchmarkCursedRenderer$' -benchmem .)
-(cd third_party/ultraviolet && go test -run '^$' -bench '^BenchmarkRendererScroll' -benchmem .)
+(cd internal/terminal/runtime && GODEBUG=checkptr=2 go test ./...)
+(cd internal/terminal/renderer && GODEBUG=checkptr=2 go test ./...)
+(cd internal/terminal/runtime && go test -run '^$' -bench '^BenchmarkCursedRenderer$' -benchmem .)
+(cd internal/terminal/renderer && go test -run '^$' -bench '^BenchmarkRendererScroll' -benchmem .)
 
 # Isolate user configuration and skills for the complete application suite
 # while reusing the existing read-only module download cache.
@@ -95,10 +105,10 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" XDG_DATA_HOME="$TEST_HOME/
 rm -rf "$TEST_HOME"
 ```
 
-Cross-platform reachability for the owned modules is checked without executing foreign binaries. Root application cross-builds should continue to use the Linux and macOS targets in `.goreleaser.yml`; Windows here verifies only the renderer boundary and must not drive unrelated application process-control changes:
+Cross-platform reachability for the owned terminal subsystem is checked without executing foreign binaries. Root application cross-builds should continue to use the Linux and macOS targets in `.goreleaser.yml`; Windows here verifies only the terminal runtime/renderer boundary and must not drive unrelated application process-control changes:
 
 ```sh
-scripts/cross_build_owned_renderer.sh
+scripts/cross_build_owned_terminal.sh
 ```
 
 `internal/reflow` currently has no test files, so its entries in the nested script provide build, vet, checkptr, and race-instrumented compilation coverage rather than meaningful behavioral test coverage. Bubble Tea and Ultraviolet have the focused tests described above.

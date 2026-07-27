@@ -7,7 +7,7 @@
 
 ## term-llm-owned divergence
 
-This directory is the reduced renderer implementation owned with Bubble Tea, not an independently published Ultraviolet fork. Relative to the base above, term-llm owns:
+This directory is the reduced terminal renderer owned by term-llm and maintained with the sibling runtime, not an independently published library. Relative to the base above, term-llm owns:
 
 - `styled.go`: incremental `StyledString.DrawOver` behavior used by changed-row and exposed-scroll repainting;
 - `terminal_renderer.go`, `terminal_renderer_hardscroll.go`, and renderer buffer/hash-map code: exact `HardScroll`, complete stale-row touching, wide-cell deletion correctness, and output-state regressions;

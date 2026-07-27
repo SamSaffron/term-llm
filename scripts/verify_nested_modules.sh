@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-modules="internal/reflow third_party/ultraviolet third_party/bubbletea"
+modules="internal/reflow internal/terminal/renderer internal/terminal/runtime"
 
 for module in $modules; do
   echo "==> $module: build"

@@ -6,6 +6,6 @@ set -eu
 differential_time=${FUZZ_DIFFERENTIAL_TIME:-30s}
 shift_time=${FUZZ_SHIFT_TIME:-15s}
 
-cd "$(dirname "$0")/../third_party/bubbletea"
+cd "$(dirname "$0")/../internal/terminal/runtime"
 go test -run '^$' -fuzz '^FuzzIncrementalRendererMatchesForcedFullRedraw$' -fuzztime="$differential_time" .
 go test -run '^$' -fuzz '^FuzzDetectContentShiftExactOverlap$' -fuzztime="$shift_time" .

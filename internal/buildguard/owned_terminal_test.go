@@ -15,7 +15,7 @@ func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("locate renderer dependency guard")
+		t.Fatal("locate owned terminal dependency guard")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
@@ -78,8 +78,8 @@ func requireLocalModule(t *testing.T, root, modulePath, replacement string) {
 func TestReleaseArchivesRetainOwnedModuleLicenses(t *testing.T) {
 	root := repositoryRoot(t)
 	licensePaths := []string{
-		"third_party/bubbletea/LICENSE",
-		"third_party/ultraviolet/LICENSE",
+		"internal/terminal/runtime/LICENSE",
+		"internal/terminal/renderer/LICENSE",
 		"internal/reflow/LICENSE",
 	}
 	for _, path := range licensePaths {
@@ -97,14 +97,14 @@ func TestReleaseArchivesRetainOwnedModuleLicenses(t *testing.T) {
 	}
 }
 
-func TestOwnedRendererModulesCannotSilentlyResolveUpstream(t *testing.T) {
+func TestOwnedTerminalModulesCannotSilentlyResolveUpstream(t *testing.T) {
 	root := repositoryRoot(t)
-	requireLocalModule(t, root, "charm.land/bubbletea/v2", "./third_party/bubbletea")
-	requireLocalModule(t, root, "github.com/charmbracelet/ultraviolet", "./third_party/ultraviolet")
+	requireLocalModule(t, root, "charm.land/bubbletea/v2", "./internal/terminal/runtime")
+	requireLocalModule(t, root, "github.com/charmbracelet/ultraviolet", "./internal/terminal/renderer")
 
-	requireFileMatch(t, filepath.Join(root, "go.mod"), `(?m)^replace\s+charm\.land/bubbletea/v2\s+=>\s+\./third_party/bubbletea\s*$`)
-	requireFileMatch(t, filepath.Join(root, "go.mod"), `(?m)^replace\s+github\.com/charmbracelet/ultraviolet\s+=>\s+\./third_party/ultraviolet\s*$`)
-	requireFileMatch(t, filepath.Join(root, "third_party", "bubbletea", "go.mod"), `(?m)^module\s+charm\.land/bubbletea/v2\s*$`)
-	requireFileMatch(t, filepath.Join(root, "third_party", "bubbletea", "go.mod"), `(?m)^replace\s+github\.com/charmbracelet/ultraviolet\s+=>\s+\.\./ultraviolet\s*$`)
-	requireFileMatch(t, filepath.Join(root, "third_party", "ultraviolet", "go.mod"), `(?m)^module\s+github\.com/charmbracelet/ultraviolet\s*$`)
+	requireFileMatch(t, filepath.Join(root, "go.mod"), `(?m)^replace\s+charm\.land/bubbletea/v2\s+=>\s+\./internal/terminal/runtime\s*$`)
+	requireFileMatch(t, filepath.Join(root, "go.mod"), `(?m)^replace\s+github\.com/charmbracelet/ultraviolet\s+=>\s+\./internal/terminal/renderer\s*$`)
+	requireFileMatch(t, filepath.Join(root, "internal", "terminal", "runtime", "go.mod"), `(?m)^module\s+charm\.land/bubbletea/v2\s*$`)
+	requireFileMatch(t, filepath.Join(root, "internal", "terminal", "runtime", "go.mod"), `(?m)^replace\s+github\.com/charmbracelet/ultraviolet\s+=>\s+\.\./renderer\s*$`)
+	requireFileMatch(t, filepath.Join(root, "internal", "terminal", "renderer", "go.mod"), `(?m)^module\s+github\.com/charmbracelet/ultraviolet\s*$`)
 }

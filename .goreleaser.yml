@@ -24,8 +24,8 @@ archives:
     files:
       - README.md
       - LICENSE
-      - third_party/bubbletea/LICENSE
-      - third_party/ultraviolet/LICENSE
+      - internal/terminal/runtime/LICENSE
+      - internal/terminal/renderer/LICENSE
       - internal/reflow/LICENSE
 
 # Release configuration

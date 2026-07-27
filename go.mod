@@ -47,10 +47,10 @@ require (
 
 replace github.com/muesli/reflow v0.3.0 => ./internal/reflow
 
-// term-llm owns these renderer modules; see third_party/README.md.
-replace charm.land/bubbletea/v2 => ./third_party/bubbletea
+// term-llm owns this terminal subsystem; see internal/terminal/README.md.
+replace charm.land/bubbletea/v2 => ./internal/terminal/runtime
 
-replace github.com/charmbracelet/ultraviolet => ./third_party/ultraviolet
+replace github.com/charmbracelet/ultraviolet => ./internal/terminal/renderer
 
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
