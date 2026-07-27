@@ -78,6 +78,12 @@ var (
 	serveHubRegistrationToken   string
 )
 
+const (
+	servePlatformInitialRetryDelay = time.Second
+	servePlatformMaxRetryDelay     = 30 * time.Second
+	servePlatformRetryResetAfter   = time.Minute
+)
+
 var serveCmd = &cobra.Command{
 	Use:   "serve <platform> [platform...]",
 	Short: "Run the agent as a server (web, api, jobs, Telegram, or any combination)",
@@ -754,9 +760,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		wg.Add(1)
 		go func(p serve.Platform) {
 			defer wg.Done()
-			if err := p.Run(ctx, cfg, serveSettings); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("[%s] error: %v", p.Name(), err)
-			}
+			runPlatformSupervisor(ctx, cfg, serveSettings, p, servePlatformInitialRetryDelay)
 		}(p)
 	}
 
@@ -780,6 +784,46 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 
 	wg.Wait()
 	return nil
+}
+
+func runPlatformSupervisor(ctx context.Context, cfg *config.Config, settings serve.Settings, platform serve.Platform, initialRetryDelay time.Duration) {
+	retryDelay := initialRetryDelay
+	for {
+		startedAt := time.Now()
+		err := platform.Run(ctx, cfg, settings)
+		if ctx.Err() != nil {
+			return
+		}
+
+		if time.Since(startedAt) >= servePlatformRetryResetAfter {
+			retryDelay = initialRetryDelay
+		}
+		if err != nil {
+			log.Printf("[%s] error: %v; retrying in %s", platform.Name(), err, retryDelay)
+		} else {
+			log.Printf("[%s] stopped unexpectedly; retrying in %s", platform.Name(), retryDelay)
+		}
+
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+
+		if retryDelay < servePlatformMaxRetryDelay {
+			retryDelay *= 2
+			if retryDelay > servePlatformMaxRetryDelay {
+				retryDelay = servePlatformMaxRetryDelay
+			}
+		}
+	}
 }
 
 // newServeEngineWithTools creates a new engine with tools wired up for serving.
