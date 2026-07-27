@@ -1,11 +1,6 @@
 package llm
 
-import (
-	"errors"
-	"fmt"
-	"io"
-	"testing"
-)
+import "testing"
 
 func TestResolveBedrockModelID(t *testing.T) {
 	tests := []struct {
@@ -143,77 +138,3 @@ func TestBedrockModelSuffixParsing(t *testing.T) {
 		})
 	}
 }
-
-func TestBedrockStreamEOFNormalization(t *testing.T) {
-	// Verify that bedrockStream converts EOF error events to Done events.
-	tests := []struct {
-		name      string
-		event     Event
-		wantType  EventType
-		wantIsEOF bool
-	}{
-		{
-			name:     "EOF error becomes Done",
-			event:    Event{Type: EventError, Err: fmt.Errorf("anthropic streaming error: %w", io.EOF)},
-			wantType: EventDone,
-		},
-		{
-			name:     "bare EOF error becomes Done",
-			event:    Event{Type: EventError, Err: io.EOF},
-			wantType: EventDone,
-		},
-		{
-			name:     "non-EOF error passes through",
-			event:    Event{Type: EventError, Err: fmt.Errorf("some other error")},
-			wantType: EventError,
-		},
-		{
-			name:     "text delta passes through",
-			event:    Event{Type: EventTextDelta, Text: "hello"},
-			wantType: EventTextDelta,
-		},
-		{
-			name:     "done passes through",
-			event:    Event{Type: EventDone},
-			wantType: EventDone,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create a mock stream that returns a single event then EOF
-			ch := make(chan Event, 1)
-			ch <- tt.event
-			close(ch)
-
-			s := &bedrockStream{inner: &mockStream{ch: ch}}
-			got, err := s.Recv()
-			if err != nil {
-				t.Fatalf("Recv() error = %v", err)
-			}
-			if got.Type != tt.wantType {
-				t.Errorf("event type = %v, want %v", got.Type, tt.wantType)
-			}
-		})
-	}
-}
-
-// mockStream is a minimal Stream implementation for testing.
-type mockStream struct {
-	ch <-chan Event
-}
-
-func (s *mockStream) Recv() (Event, error) {
-	event, ok := <-s.ch
-	if !ok {
-		return Event{}, io.EOF
-	}
-	return event, nil
-}
-
-func (s *mockStream) Close() error { return nil }
-
-// Silence unused import warnings for test helpers.
-var (
-	_ = fmt.Sprintf
-	_ = errors.Is
-)

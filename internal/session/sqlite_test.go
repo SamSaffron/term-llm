@@ -255,6 +255,9 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	if got := store.db.Stats().MaxOpenConnections; got != 1 {
 		t.Fatalf("MaxOpenConnections = %d, want 1 for :memory: databases", got)
 	}
+	if store.readDB != nil {
+		t.Fatal(":memory: database unexpectedly has a separate read connection")
+	}
 }
 
 func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
@@ -266,6 +269,88 @@ func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
 
 	if got := store.db.Stats().MaxOpenConnections; got != 1 {
 		t.Fatalf("MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	}
+	if store.readDB == nil {
+		t.Fatal("file-backed database has no transcript read connection")
+	}
+	if got := store.readDB.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("read MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	}
+	var cacheSize int
+	if err := store.readDB.QueryRow("PRAGMA cache_size").Scan(&cacheSize); err != nil {
+		t.Fatalf("read cache_size: %v", err)
+	}
+	if cacheSize != -64000 {
+		t.Fatalf("read cache_size = %d, want -64000", cacheSize)
+	}
+}
+
+func TestSQLiteFileURI(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "POSIX special characters", path: "/tmp/a #?%.db", want: "file:///tmp/a%20%23%3F%25.db"},
+		{name: "Windows drive", path: `C:\Users\sam\sessions.db`, want: "file:///C:/Users/sam/sessions.db"},
+		{name: "Windows UNC", path: `\\server\share\sessions.db`, want: "file:////server/share/sessions.db"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sqliteFileURI(tt.path); got != tt.want {
+				t.Fatalf("sqliteFileURI(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewSQLiteStoreEscapesTranscriptReaderPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions #100%.db")
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if store.readDB == nil {
+		t.Fatal("file-backed database has no transcript read connection")
+	}
+	var table string
+	if err := store.readDB.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").Scan(&table); err != nil {
+		t.Fatalf("query schema through transcript reader: %v", err)
+	}
+	if table != "sessions" {
+		t.Fatalf("table = %q, want sessions", table)
+	}
+}
+
+func TestSQLiteStoreTranscriptReadDoesNotOccupyWriterConnection(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	readTx, err := store.transcriptReadDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin transcript read: %v", err)
+	}
+	defer readTx.Rollback()
+	var id string
+	if err := readTx.QueryRowContext(ctx, "SELECT id FROM sessions WHERE id = ?", sess.ID).Scan(&id); err != nil {
+		t.Fatalf("establish transcript snapshot: %v", err)
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := store.AddMessage(writeCtx, sess.ID, NewMessage(sess.ID, llm.UserText("concurrent write"), -1)); err != nil {
+		t.Fatalf("AddMessage while transcript read is open: %v", err)
 	}
 }
 

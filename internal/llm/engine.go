@@ -1623,7 +1623,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 			return err
 		}
 
-		var scratchpad []Event
+		var scratchpadHasDiscardableOutput bool
 		var textBuilder strings.Builder
 		var reasoningBuilder strings.Builder
 		var reasoningTextItemID string
@@ -1659,7 +1659,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 				if event.Text != "" {
 					textBuilder.WriteString(event.Text)
 				}
-				scratchpad = append(scratchpad, event)
+				scratchpadHasDiscardableOutput = true
 				if err := send.Send(event); err != nil {
 					_ = stream.Close()
 					return err
@@ -1680,7 +1680,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 					reasoningEncryptedContent = event.ReasoningEncryptedContent
 					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
-				scratchpad = append(scratchpad, event)
+				scratchpadHasDiscardableOutput = true
 				if err := send.Send(event); err != nil {
 					_ = stream.Close()
 					return err
@@ -1692,13 +1692,13 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 					metrics.CachedInputTokens += event.Use.CachedInputTokens
 					metrics.CacheWriteTokens += event.Use.CacheWriteTokens
 				}
-				scratchpad = append(scratchpad, event)
+				scratchpadHasDiscardableOutput = true
 				if err := send.Send(event); err != nil {
 					_ = stream.Close()
 					return err
 				}
 			case EventImageGenerated:
-				scratchpad = append(scratchpad, event)
+				scratchpadHasDiscardableOutput = true
 				if err := send.Send(event); err != nil {
 					_ = stream.Close()
 					return err
@@ -1723,7 +1723,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 				return failed
 			}
 			attempt := retry + 1
-			if len(scratchpad) > 0 {
+			if scratchpadHasDiscardableOutput {
 				if err := send.Send(Event{Type: EventAttemptDiscard}); err != nil {
 					return err
 				}
@@ -2177,16 +2177,16 @@ turnLoop:
 				reasoningKind,
 			)
 		}
-		var scratchpadEvents []Event // Attempt-local visible model output that can be discarded/replayed until a tool boundary.
-		scratchpadCommitted := false // True after provider completion or after a tool-call boundary makes assistant work durable.
+		var scratchpadHasDiscardableOutput bool // Whether attempt-local model output needs discarding on an uncommitted retry.
+		scratchpadCommitted := false            // True after provider completion or after a tool-call boundary makes assistant work durable.
 		stageOrSendModelEvent := func(event Event) error {
 			if !scratchpadCommitted {
-				scratchpadEvents = append(scratchpadEvents, event)
+				scratchpadHasDiscardableOutput = true
 			}
 			return send.Send(event)
 		}
 		flushScratchpad := func() error {
-			scratchpadEvents = nil
+			scratchpadHasDiscardableOutput = false
 			scratchpadCommitted = true
 			return nil
 		}
@@ -2454,7 +2454,7 @@ turnLoop:
 			}
 			uncommittedStreamRetries++
 			uncommittedPriorErr = cause
-			if len(scratchpadEvents) > 0 {
+			if scratchpadHasDiscardableOutput {
 				if err := send.Send(Event{Type: EventAttemptDiscard}); err != nil {
 					return false, err
 				}
@@ -2470,7 +2470,7 @@ turnLoop:
 			slog.Debug("retrying failed uncommitted model stream", "attempt", uncommittedStreamRetries, "error", cause)
 			// Drop all attempt-local assistant output. Nothing from this provider
 			// attempt crossed a durable boundary, so replaying the same request is safe.
-			scratchpadEvents = nil
+			scratchpadHasDiscardableOutput = false
 			if softCheckpointInProgress {
 				softCompactionUsage = Usage{}
 			}

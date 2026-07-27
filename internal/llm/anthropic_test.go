@@ -3,7 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1160,6 +1162,149 @@ data: {"type":"message_stop"}
 				t.Errorf("text content = %q, want %q", textContent, tt.wantText)
 			}
 		})
+	}
+}
+
+func TestAnthropicStreamsRejectMissingMessageStop(t *testing.T) {
+	tests := []struct {
+		name      string
+		search    bool
+		sse       string
+		wantEvent EventType
+	}{
+		{
+			name:      "standard partial text",
+			wantEvent: EventTextDelta,
+			sse: "event: message_start\n" +
+				`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n" +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}` + "\n\n",
+		},
+		{
+			name:      "beta active server tool",
+			search:    true,
+			wantEvent: EventToolExecStart,
+			sse: "event: message_start\n" +
+				`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n" +
+				"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}` + "\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, tt.sse)
+			}))
+			defer ts.Close()
+
+			client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
+			provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+			stream, err := provider.Stream(context.Background(), Request{
+				Messages: []Message{UserText("test")},
+				Search:   tt.search,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			defer stream.Close()
+
+			var sawPartial, sawError, sawDone, sawSuccessfulToolEnd, sawFailedToolEnd bool
+			for {
+				event, recvErr := stream.Recv()
+				if errors.Is(recvErr, io.EOF) {
+					break
+				}
+				if recvErr != nil {
+					t.Fatalf("Recv() error: %v", recvErr)
+				}
+				if event.Type == tt.wantEvent {
+					sawPartial = true
+				}
+				switch event.Type {
+				case EventError:
+					sawError = true
+					var incomplete *StreamIncompleteError
+					if !errors.As(event.Err, &incomplete) {
+						t.Fatalf("error = %T %v, want StreamIncompleteError", event.Err, event.Err)
+					}
+					if incomplete.Transport != "Anthropic SSE" || incomplete.Terminal != "message_stop" {
+						t.Errorf("incomplete error = %+v, want Anthropic SSE message_stop", incomplete)
+					}
+				case EventDone:
+					sawDone = true
+				case EventToolExecEnd:
+					if event.ToolSuccess {
+						sawSuccessfulToolEnd = true
+					} else {
+						sawFailedToolEnd = true
+					}
+				}
+			}
+
+			if !sawPartial {
+				t.Fatalf("missing partial stream event %v", tt.wantEvent)
+			}
+			if !sawError {
+				t.Fatal("missing EventError")
+			}
+			if sawDone {
+				t.Fatal("truncated stream emitted EventDone")
+			}
+			if sawSuccessfulToolEnd {
+				t.Fatal("truncated stream reported server tool success")
+			}
+			if tt.search && !sawFailedToolEnd {
+				t.Fatal("truncated server tool did not emit failed end event")
+			}
+		})
+	}
+}
+
+func TestValidateAnthropicStreamEnd(t *testing.T) {
+	tests := []struct {
+		name           string
+		streamErr      error
+		sawMessageStop bool
+		wantIncomplete bool
+		wantOtherError bool
+	}{
+		{name: "direct HTTP terminal", sawMessageStop: true},
+		{name: "Bedrock terminal EOF", streamErr: io.EOF, sawMessageStop: true},
+		{name: "direct HTTP truncated", wantIncomplete: true},
+		{name: "Bedrock truncated EOF", streamErr: io.EOF, wantIncomplete: true},
+		{name: "other stream error", streamErr: errors.New("decode failed"), wantOtherError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAnthropicStreamEnd(tt.streamErr, tt.sawMessageStop)
+			var incomplete *StreamIncompleteError
+			if got := errors.As(err, &incomplete); got != tt.wantIncomplete {
+				t.Fatalf("incomplete = %v, error = %v, want %v", got, err, tt.wantIncomplete)
+			}
+			if tt.wantOtherError && (err == nil || !strings.Contains(err.Error(), "decode failed")) {
+				t.Fatalf("error = %v, want original stream error", err)
+			}
+			if !tt.wantIncomplete && !tt.wantOtherError && err != nil {
+				t.Fatalf("error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestFinishAnthropicServerToolFailurePreservesBothErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	streamErr := &StreamIncompleteError{Transport: "Anthropic SSE", Terminal: "message_stop"}
+	err := finishAnthropicServerToolFailure(eventSender{ctx: ctx, ch: make(chan Event)}, "web_search", streamErr)
+	if !errors.Is(err, streamErr) {
+		t.Fatalf("error = %v, want original stream error", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want send cancellation", err)
 	}
 }
 

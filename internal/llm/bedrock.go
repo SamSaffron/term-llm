@@ -2,9 +2,7 @@ package llm
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -181,34 +179,5 @@ func (p *BedrockProvider) Capabilities() Capabilities {
 }
 
 func (p *BedrockProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	s, err := p.inner.Stream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return &bedrockStream{inner: s}, nil
-}
-
-// bedrockStream wraps a Stream to handle Bedrock's eventstream EOF behavior.
-// Bedrock signals stream completion with EOF, which the Anthropic SDK reports
-// as an error. This wrapper converts EOF errors into normal completion.
-type bedrockStream struct {
-	inner Stream
-}
-
-func (s *bedrockStream) Recv() (Event, error) {
-	event, err := s.inner.Recv()
-	if err != nil {
-		return event, err
-	}
-	// Bedrock's eventstream decoder signals completion with EOF.
-	// The Anthropic SDK wraps this as "anthropic streaming error: EOF".
-	// Convert it to a normal Done event.
-	if event.Type == EventError && event.Err != nil && errors.Is(event.Err, io.EOF) {
-		return Event{Type: EventDone}, nil
-	}
-	return event, nil
-}
-
-func (s *bedrockStream) Close() error {
-	return s.inner.Close()
+	return p.inner.Stream(ctx, req)
 }

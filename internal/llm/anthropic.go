@@ -3,7 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -281,6 +283,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		}
 
 		var lastUsage *Usage
+		sawMessageStop := false
 		var streamOpts []option.RequestOption
 		if p.use1m {
 			streamOpts = append(streamOpts, option.WithHeaderAdd("anthropic-beta", the1mBetaHeader))
@@ -342,10 +345,12 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 						lastUsage.CacheWriteTokens = int(variant.Usage.CacheCreationInputTokens)
 					}
 				}
+			case anthropic.MessageStopEvent:
+				sawMessageStop = true
 			}
 		}
-		if err := stream.Err(); err != nil {
-			return fmt.Errorf("anthropic streaming error: %w", err)
+		if err := validateAnthropicStreamEnd(stream.Err(), sawMessageStop); err != nil {
+			return err
 		}
 		if lastUsage != nil {
 			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
@@ -357,6 +362,30 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		}
 		return nil
 	}), nil
+}
+
+func validateAnthropicStreamEnd(streamErr error, sawMessageStop bool) error {
+	// The Anthropic HTTP decoder reports a clean terminal read as nil, while
+	// the shared Bedrock eventstream decoder reports io.EOF after message_stop.
+	// Normalize that transport difference only after validating the protocol's
+	// required terminal event so a truncated Bedrock stream cannot become Done.
+	if streamErr != nil && !errors.Is(streamErr, io.EOF) {
+		return fmt.Errorf("anthropic streaming error: %w", streamErr)
+	}
+	if !sawMessageStop {
+		return &StreamIncompleteError{Transport: "Anthropic SSE", Terminal: "message_stop"}
+	}
+	return nil
+}
+
+func finishAnthropicServerToolFailure(send eventSender, toolName string, streamErr error) error {
+	if toolName == "" {
+		return streamErr
+	}
+	if sendErr := send.Send(Event{Type: EventToolExecEnd, ToolName: toolName, ToolSuccess: false}); sendErr != nil {
+		return errors.Join(streamErr, sendErr)
+	}
+	return streamErr
 }
 
 func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (Stream, error) {
@@ -441,6 +470,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		currentServerTool := ""
 		currentServerToolIndex := int64(-1)
 		var lastUsage *Usage
+		sawMessageStop := false
 
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
@@ -526,10 +556,12 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 						lastUsage.CacheWriteTokens = int(variant.Usage.CacheCreationInputTokens)
 					}
 				}
+			case anthropic.BetaRawMessageStopEvent:
+				sawMessageStop = true
 			}
 		}
-		if err := stream.Err(); err != nil {
-			return fmt.Errorf("anthropic streaming error: %w", err)
+		if err := validateAnthropicStreamEnd(stream.Err(), sawMessageStop); err != nil {
+			return finishAnthropicServerToolFailure(send, currentServerTool, err)
 		}
 		if currentServerTool != "" {
 			if err := send.Send(Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}); err != nil {

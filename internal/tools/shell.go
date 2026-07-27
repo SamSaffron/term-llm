@@ -214,8 +214,8 @@ func (t *ShellTool) Spec() llm.ToolSpec {
 				},
 				"affected_paths": map[string]interface{}{
 					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "Optional files or glob patterns (relative to working_dir, or absolute) this command may create, modify, or delete. Always declare them when running scripts or commands that change files: without this hint, change tracking is best-effort (git status and previously tracked files only) and changes may be missed.",
+					"items":       map[string]interface{}{"type": "string", "minLength": 1},
+					"description": "Optional authoritative files or glob patterns (relative to working_dir, or absolute) this command may create, modify, or delete. When provided, only matching non-ignored paths are tracked for this call; paths outside this scope are not inspected. Always declare them when running scripts or commands that change files: without this hint, change tracking is best-effort (git status and previously tracked files only) and changes may be missed.",
 				},
 			},
 			"required":             []string{"command"},

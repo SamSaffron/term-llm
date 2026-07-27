@@ -196,9 +196,13 @@ func streamGeminiResponses(ctx context.Context, client *http.Client, baseURL, ap
 
 func readGeminiSSE(r io.Reader, handle func(*geminiGenerateContentResponse) error) error {
 	decoder := newSSEDecoder(r, sseDecoderOptions{Transport: "Gemini SSE"})
+	sawTerminal := false
 	for {
 		_, data, err := decoder.Next()
 		if err == io.EOF {
+			if !sawTerminal {
+				return &StreamIncompleteError{Transport: "Gemini SSE", Terminal: "candidate finishReason"}
+			}
 			return nil
 		}
 		if err != nil {
@@ -218,7 +222,14 @@ func readGeminiSSE(r io.Reader, handle func(*geminiGenerateContentResponse) erro
 		if err := geminiResponseError(&response, true); err != nil {
 			return err
 		}
+		if len(response.Candidates) > 0 && response.Candidates[0] != nil {
+			sawTerminal = sawTerminal || isGeminiSuccessfulTerminalReason(response.Candidates[0].FinishReason)
+		}
 	}
+}
+
+func isGeminiSuccessfulTerminalReason(reason string) bool {
+	return reason == "STOP" || reason == "MAX_TOKENS"
 }
 
 func geminiResponseError(response *geminiGenerateContentResponse, checkFinishReason bool) error {

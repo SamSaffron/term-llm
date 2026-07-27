@@ -36,8 +36,9 @@ type shellSnapshotEntry struct {
 }
 
 // shellSnapshot holds the pre-exec state used to detect file changes made by
-// a shell command. Three layers feed it: declared affected_paths globs, the
-// session's already-tracked paths, and git status when inside a repository.
+// a shell command. Non-empty affected_paths form an authoritative bounded
+// scope. Without them, previously tracked session paths and Git status provide
+// broader best-effort fallback tracking.
 type shellSnapshot struct {
 	sessionID    string
 	workDir      string
@@ -78,6 +79,7 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		return nil
 	}
 
+	patterns = normalizeShellPatterns(patterns)
 	snap := &shellSnapshot{
 		sessionID:    sessionID,
 		workDir:      workDir,
@@ -90,10 +92,13 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		snap.gitRoot = repo.Root
 	}
 
-	sessionPaths := recorder.SessionPaths(ctx, sessionID)
-	// When the caller supplied bounded hints, trust that scope and avoid the
-	// repo-wide git status fallback. Commands that omit hints still get the
-	// broader best-effort dirty/untracked detection below.
+	var sessionPaths []string
+	if len(patterns) == 0 {
+		sessionPaths = recorder.SessionPaths(ctx, sessionID)
+	}
+	// When the caller supplied bounded hints, trust that scope and avoid both
+	// historical session paths and the repo-wide git status fallback. Commands
+	// that omit hints still get the broader best-effort detection below.
 	hasBoundedHints := len(patterns) > 0 || len(sessionPaths) > 0
 	if snap.gitRoot != "" && !hasBoundedHints {
 		snap.gitStatus = gitStatusPorcelain(ctx, snap.gitRoot)
@@ -105,9 +110,9 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		// and literal entries can still name generated files. In a git repository,
 		// keep these hints aligned with Git's notion of source files: ignored
 		// build/cache artifacts should not enter the tracked file-change set just
-		// because an affected_paths entry happened to match them. Session-tracked
-		// paths are appended below and intentionally bypass this filter, preserving
-		// an explicit per-session escape hatch.
+		// because an affected_paths entry happened to match them. When hints are
+		// omitted, session-tracked paths are appended below and intentionally
+		// bypass this filter as a per-session escape hatch.
 		candidates = filterGitIgnoredCandidates(ctx, snap.gitRoot, candidates)
 	}
 	if snap.gitStatus != nil {
@@ -296,6 +301,16 @@ func (snap *shellSnapshot) statAndMaybeRead(path string) *shellSnapshotEntry {
 
 // errShellGlobLimit terminates a glob walk once enough candidates are found.
 var errShellGlobLimit = errors.New("shell glob match limit reached")
+
+func normalizeShellPatterns(patterns []string) []string {
+	normalized := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if pattern = strings.TrimSpace(pattern); pattern != "" {
+			normalized = append(normalized, pattern)
+		}
+	}
+	return normalized
+}
 
 // expandShellPatterns resolves affected_paths entries (files or globs,
 // relative to workDir or absolute) into absolute paths. Literal paths are

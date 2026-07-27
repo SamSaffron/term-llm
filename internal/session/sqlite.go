@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
 	db                       *sql.DB
+	readDB                   *sql.DB
 	cfg                      Config
 	hasGeneratedTitles       bool // true if sessions table has generated title columns
 	hasCompactionSeq         bool // true if sessions table has compaction_seq column
@@ -199,6 +201,25 @@ CREATE TABLE messages (
     segment_end_sequence INTEGER NOT NULL DEFAULT 0
 )`
 
+func sqliteFileURI(path string) string {
+	slashPath := filepath.ToSlash(path)
+	windowsDrivePath := len(path) >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
+	windowsUNCPath := strings.HasPrefix(path, `\\`)
+	if windowsDrivePath || windowsUNCPath {
+		// Keep URI generation independently testable on non-Windows builders.
+		slashPath = strings.ReplaceAll(path, `\`, "/")
+	}
+
+	u := url.URL{Scheme: "file", Path: slashPath}
+	// Drive-letter paths need a leading slash. UNC paths retain their leading
+	// double slash as an empty-authority file URI (file:////server/share), since
+	// stock SQLite rejects non-empty authorities other than localhost.
+	if windowsDrivePath && !strings.HasPrefix(slashPath, "/") {
+		u.Path = "/" + slashPath
+	}
+	return u.String()
+}
+
 // NewSQLiteStore creates a new SQLite-based session store.
 func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	dbPath, err := ResolveDBPath(cfg.Path)
@@ -219,15 +240,15 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	// - busy_timeout(5000): Wait up to 5 seconds when database is locked
 	// - synchronous(NORMAL): Balanced durability/performance for WAL mode
 	dsn := dbPath
+	if dbPath != ":memory:" {
+		dsn = sqliteFileURI(dbPath)
+	}
 	if cfg.ReadOnly && dbPath != ":memory:" {
-		dsn = "file:" + filepath.ToSlash(dbPath) + "?mode=ro"
-	}
-	if strings.Contains(dsn, "?") {
-		dsn += "&"
+		dsn += "?mode=ro&_pragma=query_only(1)"
 	} else {
-		dsn += "?"
+		dsn += "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 	}
-	dsn += "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
+	dsn += "&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -274,6 +295,35 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		if err := store.cleanup(); err != nil {
 			// Log but don't fail
 			fmt.Fprintf(os.Stderr, "warning: session cleanup failed: %v\n", err)
+		}
+	}
+
+	// File-backed WAL databases can serve reads while the single writer is
+	// active. Keep transcript scans on one dedicated read-only connection so
+	// decoding long tool-heavy histories cannot occupy the writer connection.
+	// If an unusual filesystem could not enter WAL mode, retain the serialized
+	// single-connection behavior rather than introducing rollback-journal locks.
+	if dbPath != ":memory:" && !cfg.ReadOnly {
+		var journalMode string
+		if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("read database journal mode: %w", err)
+		}
+		if strings.EqualFold(journalMode, "wal") {
+			readDSN := sqliteFileURI(dbPath) + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
+			readDB, err := sql.Open("sqlite", readDSN)
+			if err != nil {
+				db.Close()
+				return nil, fmt.Errorf("open transcript read database: %w", err)
+			}
+			readDB.SetMaxOpenConns(1)
+			readDB.SetMaxIdleConns(1)
+			if err := readDB.Ping(); err != nil {
+				readDB.Close()
+				db.Close()
+				return nil, fmt.Errorf("connect transcript read database: %w", err)
+			}
+			store.readDB = readDB
 		}
 	}
 
@@ -3386,10 +3436,17 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 	return false
 }
 
+func (s *SQLiteStore) transcriptReadDB() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
+}
+
 // GetTranscriptSnapshot returns the complete transcript envelope from one
 // SQLite read transaction.
 func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.transcriptReadDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return TranscriptSnapshot{}, fmt.Errorf("begin transcript index read: %w", err)
 	}
@@ -3492,7 +3549,7 @@ func (s *SQLiteStore) GetTranscriptIndex(ctx context.Context, sessionID string) 
 // durable rows it expands to, so a giant tool turn never approaches SQLite's
 // variable limit.
 func (s *SQLiteStore) GetMessagesByTranscriptRanges(ctx context.Context, sessionID string, ranges []TranscriptRange) (int64, []Message, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.transcriptReadDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return 0, nil, fmt.Errorf("begin transcript bodies read: %w", err)
 	}
@@ -3937,9 +3994,13 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 	return subs, rows.Err()
 }
 
-// Close closes the database connection.
+// Close closes the database connections.
 func (s *SQLiteStore) Close() error {
-	return s.db.Close()
+	var readErr error
+	if s.readDB != nil {
+		readErr = s.readDB.Close()
+	}
+	return errors.Join(readErr, s.db.Close())
 }
 
 // setCurrentColumns records optional columns that are guaranteed to exist after
