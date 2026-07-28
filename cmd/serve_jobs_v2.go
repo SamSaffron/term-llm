@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -1607,6 +1608,12 @@ func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2R
 	}()
 }
 
+const (
+	jobsV2NotifyMaxAttempts       = 3
+	jobsV2NotifyAttemptTimeout    = 10 * time.Second
+	jobsV2NotifyInitialRetryDelay = time.Second
+)
+
 func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
@@ -1615,11 +1622,55 @@ func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, res
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := m.notifyDone(ctx, run, job, status, result, exitReason, truncated, errText); err != nil {
-		_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
+
+	var notifyErr error
+	for attempt := 1; attempt <= jobsV2NotifyMaxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), jobsV2NotifyAttemptTimeout)
+		notifyErr = m.notifyDone(ctx, run, job, status, result, exitReason, truncated, errText)
+		cancel()
+		if notifyErr == nil {
+			return
+		}
+		if attempt == jobsV2NotifyMaxAttempts || !jobsV2NotifyErrorRetryable(notifyErr) {
+			break
+		}
+
+		delay := jobsV2NotifyRetryDelay(notifyErr, attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-m.doneChan():
+			stopTimer(timer)
+			_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": notifyErr.Error()})
+			return
+		}
 	}
+	_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": notifyErr.Error()})
+}
+
+func jobsV2NotifyErrorRetryable(err error) bool {
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) {
+		return providerhttp.RetryableStatus(statusErr.HTTPStatusCode())
+	}
+	// Persistence and network errors do not generally expose a status code.
+	// Treat them as transient; retries remain bounded by jobsV2NotifyMaxAttempts.
+	return true
+}
+
+func jobsV2NotifyRetryDelay(err error, failedAttempt int) time.Duration {
+	var retryAfterErr interface {
+		RetryAfterDelay() (time.Duration, bool)
+	}
+	if errors.As(err, &retryAfterErr) {
+		if delay, ok := retryAfterErr.RetryAfterDelay(); ok && delay >= 0 {
+			return delay
+		}
+	}
+	if failedAttempt < 1 {
+		failedAttempt = 1
+	}
+	return jobsV2NotifyInitialRetryDelay * time.Duration(1<<(failedAttempt-1))
 }
 
 func (m *jobsV2Manager) addRunEvent(runID, eventType, message string, payload any) error {

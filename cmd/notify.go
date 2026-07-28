@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -99,7 +102,11 @@ type telegramSendRequest struct {
 
 type telegramSendResponse struct {
 	OK          bool   `json:"ok"`
+	ErrorCode   int    `json:"error_code"`
 	Description string `json:"description"`
+	Parameters  struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
 }
 
 func normalizeTelegramParseMode(parseMode string) (string, error) {
@@ -147,11 +154,13 @@ func sendTelegramMessage(ctx context.Context, token string, chatID int64, messag
 		return fmt.Errorf("read telegram response: %w", err)
 	}
 
+	var apiResp telegramSendResponse
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("telegram send failed: status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		_ = json.Unmarshal(respBody, &apiResp)
+		message := fmt.Sprintf("telegram send failed: status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		return providerhttp.NewStatusErrorMessageString(message, resp.StatusCode, resp.Status, telegramErrorHeaders(resp.Header, apiResp.Parameters.RetryAfter), string(respBody))
 	}
 
-	var apiResp telegramSendResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return fmt.Errorf("decode telegram response: %w", err)
 	}
@@ -160,10 +169,25 @@ func sendTelegramMessage(ctx context.Context, token string, chatID int64, messag
 		if detail == "" {
 			detail = "unknown error"
 		}
-		return fmt.Errorf("telegram send failed: %s", detail)
+		message := fmt.Sprintf("telegram send failed: %s", detail)
+		if apiResp.ErrorCode != 0 {
+			return providerhttp.NewStatusErrorMessageString(message, apiResp.ErrorCode, "", telegramErrorHeaders(resp.Header, apiResp.Parameters.RetryAfter), string(respBody))
+		}
+		return errors.New(message)
 	}
 
 	return nil
+}
+
+func telegramErrorHeaders(header http.Header, retryAfterSeconds int) http.Header {
+	header = header.Clone()
+	if retryAfterSeconds > 0 && header.Get("Retry-After") == "" {
+		if header == nil {
+			header = make(http.Header)
+		}
+		header.Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	}
+	return header
 }
 
 func logTelegramNotifySession(ctx context.Context, cfg *config.Config, chatID int64, message string, errWriter io.Writer) {

@@ -3,17 +3,28 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
+
+type jobsV2NotifyTransientTestError struct{}
+
+func (jobsV2NotifyTransientTestError) Error() string {
+	return "transient notify failure"
+}
+
+func (jobsV2NotifyTransientTestError) RetryAfterDelay() (time.Duration, bool) {
+	return time.Millisecond, true
+}
 
 func TestJobsV2CreateJobSanitizesNotifyOriginFromBody(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 0, nil)
@@ -269,9 +280,102 @@ func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
 	}
 }
 
-func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
+func TestJobsV2NotifyRetriesTransientFailures(t *testing.T) {
+	attempts := 0
 	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
-		return errors.New("notify failed")
+		attempts++
+		if attempts < jobsV2NotifyMaxAttempts {
+			return jobsV2NotifyTransientTestError{}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "notify-retry-success",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+
+	mgr.notifyRunDone(run, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, exitReasonNatural, false, "")
+	if attempts != jobsV2NotifyMaxAttempts {
+		t.Fatalf("notification attempts = %d, want %d", attempts, jobsV2NotifyMaxAttempts)
+	}
+	events, _, err := mgr.ListRunEvents(run.ID, 0, 20, 0)
+	if err != nil {
+		t.Fatalf("ListRunEvents: %v", err)
+	}
+	for _, ev := range events {
+		if ev.EventType == "notify_failed" {
+			t.Fatalf("unexpected notify_failed event after successful retry: %#v", events)
+		}
+	}
+}
+
+func TestJobsV2NotifyPermanentHTTPFailureDoesNotRetry(t *testing.T) {
+	attempts := 0
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+		attempts++
+		return providerhttp.NewStatusErrorString("Telegram", http.StatusBadRequest, "400 Bad Request", nil, "bad chat")
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "notify-permanent-failure",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+
+	mgr.notifyRunDone(run, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, exitReasonNatural, false, "")
+	if attempts != 1 {
+		t.Fatalf("notification attempts = %d, want 1 for permanent HTTP failure", attempts)
+	}
+	events, _, err := mgr.ListRunEvents(run.ID, 0, 20, 0)
+	if err != nil {
+		t.Fatalf("ListRunEvents: %v", err)
+	}
+	notifyFailures := 0
+	for _, ev := range events {
+		if ev.EventType == "notify_failed" {
+			notifyFailures++
+		}
+	}
+	if notifyFailures != 1 {
+		t.Fatalf("notify_failed events = %d, want 1: %#v", notifyFailures, events)
+	}
+}
+
+func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
+	var attempts atomic.Int32
+	mgr, err := newJobsV2ManagerWithNotifier(":memory:", 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+		attempts.Add(1)
+		return jobsV2NotifyTransientTestError{}
 	})
 	if err != nil {
 		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
@@ -318,14 +422,17 @@ func TestJobsV2NotifyFailureDoesNotChangeRunStatus(t *testing.T) {
 		}
 		return false
 	}, "async notify_failed event")
-	foundNotifyFailure := false
+	notifyFailures := 0
 	for _, ev := range events {
 		if ev.EventType == "notify_failed" {
-			foundNotifyFailure = true
+			notifyFailures++
 		}
 	}
-	if !foundNotifyFailure {
-		t.Fatalf("expected notify_failed event, got %#v", events)
+	if got := attempts.Load(); got != jobsV2NotifyMaxAttempts {
+		t.Fatalf("notification attempts = %d, want %d", got, jobsV2NotifyMaxAttempts)
+	}
+	if notifyFailures != 1 {
+		t.Fatalf("notify_failed events = %d, want 1: %#v", notifyFailures, events)
 	}
 }
 
