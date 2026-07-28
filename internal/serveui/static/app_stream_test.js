@@ -3238,7 +3238,7 @@ async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
 }
 
 async function testResumeActiveResponseHeartbeatCancelSlowsAndRecovers() {
-  const name = 'resumeActiveResponse heartbeat cancellations keep recovering with slow backoff';
+  const name = 'resumeActiveResponse heartbeat cancellations survive state reconciliation failure and keep recovering';
   const responseId = 'resp_events_heartbeat_retry';
   const intervalCallbacks = [];
   const retryDelays = [];
@@ -3302,6 +3302,7 @@ async function testResumeActiveResponseHeartbeatCancelSlowsAndRecovers() {
   const { app, elements, state, cleanup } = harness;
   app.syncActiveSessionFromServer = async (session) => {
     syncCalls += 1;
+    if (syncCalls === 1) throw new Error('transient state reconciliation failure');
     session.activeResponseId = responseId;
     return { active_run: true, active_response_id: responseId };
   };

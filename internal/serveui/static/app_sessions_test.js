@@ -3381,6 +3381,96 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
   pass(name);
 }
 
+async function testIdleSidebarTruthClearsStuckTransportOwnership() {
+  const name = 'idle sidebar truth clears stale streaming ownership even with an attached controller';
+  let appRef = null;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/sess_stuck/state') {
+        return new Response(JSON.stringify({
+          active_run: false,
+          transcript_rev: 0,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_stuck')) {
+        return new Response(JSON.stringify({ messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [{
+          id: 'sess_stuck',
+          active_run: false,
+          transcript_rev: 0,
+        }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      detachResponseStream() {
+        const controller = appRef.state.abortController;
+        appRef.state.abortController = null;
+        appRef.state.currentStreamSessionId = '';
+        appRef.state.currentStreamResponseId = '';
+        appRef.state.streaming = false;
+        controller?.abort();
+      },
+    },
+  });
+  appRef = app;
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_stuck',
+    title: 'Stuck stream',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: 'resp_already_done',
+    lastSequenceNumber: 48,
+  };
+  session.transcript = new windowObj.ConversationController(session.id);
+  const controller = new AbortController();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.streaming = true;
+  app.state.currentStreamSessionId = session.id;
+  app.state.currentStreamResponseId = session.activeResponseId;
+  app.state.abortController = controller;
+  app.setSessionOptimisticBusy(session, true);
+  app.setSessionServerActiveRun(session, true);
+
+  await app.startSidebarStatusPoll();
+
+  const remaining = {
+    activeResponseId: session.activeResponseId,
+    currentStreamSessionId: app.state.currentStreamSessionId,
+    currentStreamResponseId: app.state.currentStreamResponseId,
+    hasController: Boolean(app.state.abortController),
+    streaming: app.state.streaming,
+    optimisticBusy: Boolean(session.__optimisticBusy),
+    serverActive: Boolean(session.__serverActiveRun),
+  };
+  if (controller.signal.aborted !== true
+    || remaining.activeResponseId
+    || remaining.currentStreamSessionId
+    || remaining.currentStreamResponseId
+    || remaining.hasController
+    || remaining.streaming
+    || remaining.optimisticBusy
+    || remaining.serverActive) {
+    fail(name, 'idle server truth did not fully clear local response ownership', JSON.stringify(remaining));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionProgressStatePrefersLocalAndServerSignals() {
   const name = 'session progress state combines optimistic local state with server truth';
   const { app } = await createSessionsHarness();
@@ -6583,6 +6673,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testActiveStatusSyncsInRunTranscriptRevisionsWithoutDuplicatingActiveOutput();
   await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
+  await testIdleSidebarTruthClearsStuckTransportOwnership();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
   await testSyncIgnoresPendingInterjectionWithoutExactID();

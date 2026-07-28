@@ -341,6 +341,25 @@ const pollSidebarStatus = (isRecovery = false) => {
         app.updateSidebarStatus(data.sessions);
         await app.reconcileTranscriptFromStatus(data.sessions, { sampledRunEpochs });
         if (!isCurrent()) return false;
+        const active = app.getActiveSession?.();
+        const activeStatus = active ? data.sessions.find((entry) => entry?.id === active.id) : null;
+        const localOwnsResponse = Boolean(active && (
+          active.activeResponseId
+          || (state.currentStreamSessionId === active.id && state.currentStreamResponseId)
+          || (state.streaming && state.activeSessionId === active.id)
+        ));
+        if (activeStatus && !activeStatus.active_run && !activeStatus.active_response_id && localOwnsResponse) {
+          // Status polling is independent of SSE. If it says idle while the
+          // transport claims ownership, force selected-session reconciliation;
+          // a dead event stream never gets to veto authoritative server truth.
+          try {
+            const result = await app.syncActiveSessionFromServer(active, true, { skipMessagesFetch: true });
+            if (result?.kind === 'retry') app.scheduleSessionStatePoll?.(active.id, 0);
+          } catch (_err) {
+            app.scheduleSessionStatePoll?.(active.id, 0);
+          }
+          if (!isCurrent()) return false;
+        }
         // Discover sessions created in other tabs/devices
         const localIds = new Set(state.sessions.map((s) => s.id));
         const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));

@@ -29,7 +29,12 @@ const rebaseSessionAssetURL = (url) => (
 );
 
 const resumeAndDrain = (session, options) => {
-  void resumeActiveResponse(session, options).finally(() => {
+  void resumeActiveResponse(session, options).catch(() => {
+    // A failed replay/reconciliation attempt must not strand local active state.
+    // The state endpoint is authoritative and the poll remains independent of
+    // the response transport, so retry truth reconciliation even if streaming dies.
+    if (session?.id) scheduleSessionStatePoll(session.id, 0);
+  }).finally(() => {
     drainInterruptQueueIfIdle(session);
   });
 };
@@ -374,7 +379,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
   stopSessionStatePoll();
   sessionStatePollTimer = setTimeout(async () => {
     const active = getActiveSession();
-    if (!active || active.id !== sessionId || state.abortController) {
+    if (!active || active.id !== sessionId) {
       stopSessionStatePoll();
       return;
     }
@@ -386,7 +391,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
     }
     if (syncResult?.kind === 'retry') {
       const stillActive = getActiveSession();
-      if (stillActive && stillActive.id === sessionId && !state.abortController) {
+      if (stillActive && stillActive.id === sessionId) {
         scheduleSessionStatePoll(sessionId, SESSION_STATE_POLL_RETRY);
       }
     }
@@ -589,17 +594,28 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     return loadResult;
   }
 
-  if (!activeRun && !state.abortController) {
+  if (!activeRun) {
     if (sampledRunEpoch < Math.max(0, Number(transcript?.latestRunEpoch) || 0)) {
       window.TermLLMConversation?.transcriptDiagnostic?.('stale_status_rejection', {
         responseId: session.activeResponseId || transcript?.activeRun?.id || '',
         transcriptRev: transcript?.rev,
       });
+      // The local transcript advanced while this state request was in flight.
+      // Do not apply the stale result, but never leave it as the final word:
+      // immediately sample authoritative state again, independently of whether
+      // a response transport still owns an AbortController.
+      if (isStillActive()) scheduleSessionStatePoll(session.id, 0);
       return loadResult;
     }
     if (isStillActive()) stopSessionStatePoll();
-    if (session.activeResponseId || (isStillActive() && state.currentStreamResponseId)) {
-      clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    const inactiveResponseId = session.activeResponseId || (
+      state.currentStreamSessionId === session.id ? state.currentStreamResponseId : ''
+    );
+    if (state.currentStreamSessionId === session.id) {
+      detachResponseStream();
+    }
+    if (inactiveResponseId) {
+      clearActiveResponseTracking(session, inactiveResponseId);
       saveSessions();
     }
     setSessionOptimisticBusy(session, false);

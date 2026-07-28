@@ -1045,7 +1045,14 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
       if (state.abortController) {
         state.abortController = null;
       }
-      await app.syncActiveSessionFromServer(session, false);
+      try {
+        await app.syncActiveSessionFromServer(session, false);
+      } catch (err) {
+        // State reconciliation is a fallback inside an infinite recovery loop.
+        // A transient transcript/state error must not terminate that loop and
+        // leave activeResponseId behind with no transport owner.
+        console.warn('[stream] session-state reconciliation failed; continuing reconnect', err);
+      }
       if (!ownsResumeKey()) {
         setStreaming(Boolean(state.currentStreamResponseId));
         return false;
