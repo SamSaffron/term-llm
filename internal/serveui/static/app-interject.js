@@ -46,6 +46,26 @@ const discardPendingInterruptCommit = (messageId) => {
   state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.messageId !== messageId);
 };
 
+const settleOrphanedEvaluatingInterjections = (session) => {
+  if (!session?.id) return 0;
+  const tracked = new Set();
+  for (const entry of state.pendingInterruptCommits) {
+    if (entry.sessionId === session.id && entry.messageId) tracked.add(entry.messageId);
+  }
+  for (const entry of state.pendingInterjections) {
+    if (entry.sessionId === session.id && entry.messageId) tracked.add(entry.messageId);
+  }
+
+  let settled = 0;
+  for (const message of window.TermLLMConversation.sessionMessages(session)) {
+    if (message?.role !== 'user' || message.interruptState !== 'evaluating' || tracked.has(message.id)) continue;
+    setInterruptMessageState(session, message.id, 'failed');
+    settled += 1;
+  }
+  if (settled > 0) app.persistPendingIntents?.(session);
+  return settled;
+};
+
 const requeueUncommittedInterrupts = (session) => {
   if (!session?.id) return;
   const remaining = [];
@@ -320,6 +340,7 @@ Object.assign(app, {
   trackPendingInterruptCommit,
   resolvePendingInterruptCommitById,
   discardPendingInterruptCommit,
+  settleOrphanedEvaluatingInterjections,
   requeueUncommittedInterrupts,
   drainInterruptQueueIfIdle,
   setInterruptMessageState,
