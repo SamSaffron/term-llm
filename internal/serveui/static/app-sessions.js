@@ -29,11 +29,18 @@ const rebaseSessionAssetURL = (url) => (
 );
 
 const resumeAndDrain = (session, options) => {
-  void resumeActiveResponse(session, options).catch(() => {
-    // A failed replay/reconciliation attempt must not strand local active state.
-    // The state endpoint is authoritative and the poll remains independent of
-    // the response transport, so retry truth reconciliation even if streaming dies.
-    if (session?.id) scheduleSessionStatePoll(session.id, 0);
+  void resumeActiveResponse(session, options).catch(async () => {
+    const expectedResponseId = String(options?.responseId || session?.activeResponseId || '').trim();
+    const stillOwnsFailedTransport = Boolean(expectedResponseId
+      && state.currentStreamSessionId === session?.id
+      && state.currentStreamResponseId === expectedResponseId);
+    if (stillOwnsFailedTransport) detachResponseStream();
+    try {
+      const result = await syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
+      if (result?.kind === 'retry' && session?.id) scheduleSessionStatePoll(session.id, 0);
+    } catch (_err) {
+      if (session?.id) scheduleSessionStatePoll(session.id, 0);
+    }
   }).finally(() => {
     drainInterruptQueueIfIdle(session);
   });
@@ -379,7 +386,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
   stopSessionStatePoll();
   sessionStatePollTimer = setTimeout(async () => {
     const active = getActiveSession();
-    if (!active || active.id !== sessionId) {
+    if (!active || active.id !== sessionId || state.abortController) {
       stopSessionStatePoll();
       return;
     }
@@ -391,7 +398,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
     }
     if (syncResult?.kind === 'retry') {
       const stillActive = getActiveSession();
-      if (stillActive && stillActive.id === sessionId) {
+      if (stillActive && stillActive.id === sessionId && !state.abortController) {
         scheduleSessionStatePoll(sessionId, SESSION_STATE_POLL_RETRY);
       }
     }
@@ -417,6 +424,12 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   const busyBefore = sessionHasInProgressState(session);
   const sampledRunEpoch = Math.max(0, Number(session.transcript?.latestRunEpoch) || 0);
+  const sampledTransport = {
+    controller: state.abortController,
+    generation: Number(state.streamGeneration || 0),
+    sessionId: String(state.currentStreamSessionId || '').trim(),
+    responseId: String(state.currentStreamResponseId || '').trim(),
+  };
 
   const loadResult = await loadServerSessionState(requestSessionId);
   if (loadResult.kind === 'auth') {
@@ -600,18 +613,25 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
         responseId: session.activeResponseId || transcript?.activeRun?.id || '',
         transcriptRev: transcript?.rev,
       });
-      // The local transcript advanced while this state request was in flight.
-      // Do not apply the stale result, but never leave it as the final word:
-      // immediately sample authoritative state again, independently of whether
-      // a response transport still owns an AbortController.
-      if (isStillActive()) scheduleSessionStatePoll(session.id, 0);
+      return loadResult;
+    }
+    const transportUnchanged = state.abortController === sampledTransport.controller
+      && Number(state.streamGeneration || 0) === sampledTransport.generation
+      && String(state.currentStreamSessionId || '').trim() === sampledTransport.sessionId
+      && String(state.currentStreamResponseId || '').trim() === sampledTransport.responseId;
+    const sampledOwnedResponse = sampledTransport.sessionId === session.id && Boolean(sampledTransport.responseId);
+    const currentOwnsTransport = state.currentStreamSessionId === session.id && Boolean(state.currentStreamResponseId);
+    // An idle response sampled before a new send must not cancel that send. A
+    // transport may only be retired when this request observed its stable,
+    // server-issued response ID both before and after the state round trip.
+    if ((state.abortController || currentOwnsTransport) && !(sampledOwnedResponse && transportUnchanged)) {
       return loadResult;
     }
     if (isStillActive()) stopSessionStatePoll();
     const inactiveResponseId = session.activeResponseId || (
       state.currentStreamSessionId === session.id ? state.currentStreamResponseId : ''
     );
-    if (state.currentStreamSessionId === session.id) {
+    if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) {
       detachResponseStream();
     }
     if (inactiveResponseId) {

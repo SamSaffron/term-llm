@@ -343,15 +343,12 @@ const pollSidebarStatus = (isRecovery = false) => {
         if (!isCurrent()) return false;
         const active = app.getActiveSession?.();
         const activeStatus = active ? data.sessions.find((entry) => entry?.id === active.id) : null;
-        const localOwnsResponse = Boolean(active && (
-          active.activeResponseId
-          || (state.currentStreamSessionId === active.id && state.currentStreamResponseId)
-          || (state.streaming && state.activeSessionId === active.id)
-        ));
-        if (activeStatus && !activeStatus.active_run && !activeStatus.active_response_id && localOwnsResponse) {
-          // Status polling is independent of SSE. If it says idle while the
-          // transport claims ownership, force selected-session reconciliation;
-          // a dead event stream never gets to veto authoritative server truth.
+        const ownedResponseId = String(active?.activeResponseId || (
+          state.currentStreamSessionId === active?.id ? state.currentStreamResponseId : ''
+        ) || '').trim();
+        if (activeStatus && !activeStatus.active_run && !activeStatus.active_response_id && ownedResponseId) {
+          // Status is independent of SSE. Confirm selected-session truth when a
+          // server-issued response ID remains locally owned after status says idle.
           try {
             const result = await app.syncActiveSessionFromServer(active, true, { skipMessagesFetch: true });
             if (result?.kind === 'retry') app.scheduleSessionStatePoll?.(active.id, 0);

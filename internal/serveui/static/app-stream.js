@@ -1037,20 +1037,11 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
       consecutiveHeartbeatAborts = 0;
       setConnectionState('Checking session state\u2026', 'bad');
       setReconnectDiagnostic('checking-state', reconnectReason, 0);
-      // Temporarily clear the abort controller so syncActiveSessionFromServer
-      // can act on the server state.  The !activeRun && !state.abortController
-      // branch inside sync refuses to clear tracking while a controller is set,
-      // but our own retry loop is the one that set it — creating a deadlock
-      // where the loop never exits even after the server confirms the run is done.
-      if (state.abortController) {
-        state.abortController = null;
-      }
       try {
         await app.syncActiveSessionFromServer(session, false);
       } catch (err) {
-        // State reconciliation is a fallback inside an infinite recovery loop.
-        // A transient transcript/state error must not terminate that loop and
-        // leave activeResponseId behind with no transport owner.
+        // This is a fallback inside an infinite recovery loop. A transient
+        // state/transcript error is unknown, not terminal: keep reconnecting.
         console.warn('[stream] session-state reconciliation failed; continuing reconnect', err);
       }
       if (!ownsResumeKey()) {

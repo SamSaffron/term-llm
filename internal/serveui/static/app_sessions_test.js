@@ -3381,29 +3381,117 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
   pass(name);
 }
 
-async function testIdleSidebarTruthClearsStuckTransportOwnership() {
-  const name = 'idle sidebar truth clears stale streaming ownership even with an attached controller';
-  let appRef = null;
-  const { app, windowObj } = await createSessionsHarness({
-    fetchImpl: async (url) => {
-      if (url === '/ui/v1/sessions/sess_stuck/state') {
-        return new Response(JSON.stringify({
-          active_run: false,
-          transcript_rev: 0,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (isTailMessagesURL(url, 'sess_stuck')) {
-        return new Response(JSON.stringify({ messages: [] }), {
+async function testIdleStateRetiresOnlySampledTransportOwnership() {
+  const name = 'idle state retires a stable response transport without killing a newer local run';
+
+  const runScenario = async ({ startNewRunDuringState }) => {
+    const sessionId = startNewRunDuringState ? 'sess_idle_race' : 'sess_idle_stable';
+    const responseId = 'resp_finished';
+    let appRef = null;
+    let controller = null;
+    const { app, windowObj } = await createSessionsHarness({
+      fetchImpl: async (url) => {
+        if (url === `/ui/v1/sessions/${sessionId}/state`) {
+          if (startNewRunDuringState) {
+            controller = new AbortController();
+            appRef.setSessionOptimisticBusy(appRef.state.sessions[0], true);
+            appRef.state.currentStreamSessionId = sessionId;
+            appRef.state.currentStreamResponseId = '';
+            appRef.state.abortController = controller;
+            appRef.state.streaming = true;
+          }
+          return new Response(JSON.stringify({ active_run: false, transcript_rev: 0 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ sessions: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
-      }
-      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions/status') {
+      },
+      appOverrides: {
+        detachResponseStream() {
+          const owned = appRef.state.abortController;
+          appRef.state.streamGeneration += 1;
+          appRef.state.abortController = null;
+          appRef.state.currentStreamSessionId = '';
+          appRef.state.currentStreamResponseId = '';
+          appRef.state.streaming = false;
+          owned?.abort();
+        },
+      },
+    });
+    appRef = app;
+    app.stopSidebarStatusPoll();
+    const session = {
+      id: sessionId,
+      title: 'Idle ownership race',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+      activeResponseId: startNewRunDuringState ? null : responseId,
+      lastSequenceNumber: 0,
+    };
+    session.transcript = new windowObj.ConversationController(session.id);
+    app.state.sessions = [session];
+    app.state.activeSessionId = session.id;
+    app.state.draftSessionActive = false;
+    if (!startNewRunDuringState) {
+      controller = new AbortController();
+      app.state.currentStreamSessionId = session.id;
+      app.state.currentStreamResponseId = responseId;
+      app.state.abortController = controller;
+      app.state.streaming = true;
+    }
+
+    await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+    return { app, session, controller };
+  };
+
+  const stable = await runScenario({ startNewRunDuringState: false });
+  if (!stable.controller.signal.aborted
+    || stable.session.activeResponseId
+    || stable.app.state.abortController
+    || stable.app.state.currentStreamResponseId
+    || stable.app.state.streaming) {
+    fail(name, 'stable finished transport was not retired');
+    return;
+  }
+
+  const raced = await runScenario({ startNewRunDuringState: true });
+  if (raced.controller.signal.aborted
+    || raced.app.state.abortController !== raced.controller
+    || raced.app.state.currentStreamSessionId !== raced.session.id
+    || raced.app.state.currentStreamResponseId !== ''
+    || !raced.app.state.streaming) {
+    fail(name, 'idle sample killed transport ownership created after the request began');
+    return;
+  }
+
+  pass(name);
+}
+
+async function testIdleSidebarStatusPreservesUnacknowledgedPost() {
+  const name = 'idle sidebar status cannot abort a response POST before it has a response id';
+  const sessionId = 'sess_uploading';
+  let appRef = null;
+  const controller = new AbortController();
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const path = parsedTestURL(url)?.pathname;
+      if (path === '/ui/v1/sessions/status') {
         return new Response(JSON.stringify({ sessions: [{
-          id: 'sess_stuck',
+          id: sessionId,
           active_run: false,
           transcript_rev: 0,
         }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path === `/ui/v1/sessions/${sessionId}/state`) {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 0 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
       return new Response(JSON.stringify({ sessions: [] }), {
         status: 200,
@@ -3412,62 +3500,45 @@ async function testIdleSidebarTruthClearsStuckTransportOwnership() {
     },
     appOverrides: {
       detachResponseStream() {
-        const controller = appRef.state.abortController;
+        const owned = appRef.state.abortController;
         appRef.state.abortController = null;
         appRef.state.currentStreamSessionId = '';
         appRef.state.currentStreamResponseId = '';
         appRef.state.streaming = false;
-        controller?.abort();
+        owned?.abort();
       },
     },
   });
   appRef = app;
   app.stopSidebarStatusPoll();
-
   const session = {
-    id: 'sess_stuck',
-    title: 'Stuck stream',
+    id: sessionId,
+    title: 'Uploading',
     origin: 'web',
     created: 1710000000000,
     messages: [],
-    activeResponseId: 'resp_already_done',
-    lastSequenceNumber: 48,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
   };
   session.transcript = new windowObj.ConversationController(session.id);
-  const controller = new AbortController();
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
-  app.state.streaming = true;
-  app.state.currentStreamSessionId = session.id;
-  app.state.currentStreamResponseId = session.activeResponseId;
-  app.state.abortController = controller;
   app.setSessionOptimisticBusy(session, true);
-  app.setSessionServerActiveRun(session, true);
+  app.state.currentStreamSessionId = session.id;
+  app.state.currentStreamResponseId = '';
+  app.state.abortController = controller;
+  app.state.streaming = true;
 
   await app.startSidebarStatusPoll();
 
-  const remaining = {
-    activeResponseId: session.activeResponseId,
-    currentStreamSessionId: app.state.currentStreamSessionId,
-    currentStreamResponseId: app.state.currentStreamResponseId,
-    hasController: Boolean(app.state.abortController),
-    streaming: app.state.streaming,
-    optimisticBusy: Boolean(session.__optimisticBusy),
-    serverActive: Boolean(session.__serverActiveRun),
-  };
-  if (controller.signal.aborted !== true
-    || remaining.activeResponseId
-    || remaining.currentStreamSessionId
-    || remaining.currentStreamResponseId
-    || remaining.hasController
-    || remaining.streaming
-    || remaining.optimisticBusy
-    || remaining.serverActive) {
-    fail(name, 'idle server truth did not fully clear local response ownership', JSON.stringify(remaining));
+  if (controller.signal.aborted
+    || app.state.abortController !== controller
+    || !app.state.streaming
+    || !app.sessionHasInProgressState(session)) {
+    fail(name, 'sidebar idle status aborted an unacknowledged response POST');
     return;
   }
-
   pass(name);
 }
 
@@ -6673,7 +6744,8 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testActiveStatusSyncsInRunTranscriptRevisionsWithoutDuplicatingActiveOutput();
   await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
-  await testIdleSidebarTruthClearsStuckTransportOwnership();
+  await testIdleStateRetiresOnlySampledTransportOwnership();
+  await testIdleSidebarStatusPreservesUnacknowledgedPost();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
   await testSyncIgnoresPendingInterjectionWithoutExactID();
