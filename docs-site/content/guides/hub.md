@@ -24,30 +24,33 @@ for loopback-only local development.
 
 ## Run as a systemd service
 
-`term-llm serve hub systemd` generates a systemd unit so the Hub survives
-reboots and restarts on crashes. Without `--install` it prints the unit to
-stdout for review; with `--install` (Linux, run with sudo) it writes
-`/etc/systemd/system/term-llm-hub.service`, stores the tokens in
-`/etc/term-llm-hub.env` (mode 0600), and enables and starts the service:
+An example unit lives at
+[`ops/systemd/term-llm-hub.service`](https://github.com/samsaffron/term-llm/blob/main/ops/systemd/term-llm-hub.service)
+so the Hub survives reboots and restarts on crashes. Copy it, adjust the
+`ExecStart` flags, give it the tokens, and enable it:
 
 ```bash
-sudo term-llm serve hub systemd --host 0.0.0.0 --install
-# Installed /etc/systemd/system/term-llm-hub.service
-#   tokens: /etc/term-llm-hub.env
-#   service: enabled and started (term-llm-hub.service)
-#   registration: disabled
-#   generated Hub bearer token: ...
-#   logs: journalctl -u term-llm-hub.service -f
+sudo cp ops/systemd/term-llm-hub.service /etc/systemd/system/
+sudo install -m 600 /dev/null /etc/term-llm-hub.env
+echo "TERM_LLM_HUB_TOKEN=$(openssl rand -base64 32 | tr -d '=+/')" | sudo tee -a /etc/term-llm-hub.env >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now term-llm-hub
+journalctl -u term-llm-hub -f
 ```
 
-Hub flags you pass (such as `--host` or `--port`) are baked into the unit's
-`ExecStart` line. `--token` and `--registration-token` never appear in the
-unit: they live in the environment file, which the Hub reads via
-`TERM_LLM_HUB_TOKEN` and `TERM_LLM_HUB_REGISTRATION_TOKEN`. Reinstalling keeps
-tokens already present in the environment file unless you override them, so
-`sudo term-llm serve hub systemd --host 0.0.0.0 --port 9000 --install` updates
-the unit without rotating credentials. To stop and remove the service, run
-`sudo systemctl disable --now term-llm-hub.service`.
+Tokens live in `/etc/term-llm-hub.env` (mode 0600) rather than the unit, so
+they never appear in `systemctl show` or process listings; the Hub reads them
+via `TERM_LLM_HUB_TOKEN` and `TERM_LLM_HUB_REGISTRATION_TOKEN`.
+
+The example defaults to a sandboxed service (`DynamicUser=`, no home access):
+nodes are added via the dashboard, a `--config` file, or reverse
+self-registration. Auto-discovery of local `term-llm contain` workspaces needs
+access to their `.env` files and loopback ports, so the unit includes a
+commented root variant for that setup — or run the unit as a [systemd user
+service](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+under the account that owns the workspaces (`loginctl enable-linger <user>`)
+to keep discovery without root. To stop and remove the service, run
+`sudo systemctl disable --now term-llm-hub`.
 
 ## Nodes
 
