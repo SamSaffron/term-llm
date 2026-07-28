@@ -1085,6 +1085,105 @@ async function run(name, fn) {
     assert(formatted.length === 2 && formatted.every((value) => value === created), 'formatters receive the normalized timestamp');
   });
 
+  await run('expanded tool groups stay open when the row object is rebuilt', async () => {
+    const { app, messages } = createHarness();
+    const live = {
+      id: 'resp_1:tools:call_1',
+      role: 'tool-group',
+      responseId: 'resp_1',
+      status: 'running',
+      tools: [{ id: 'call_1', callId: 'call_1', name: 'grep', status: 'running', arguments: '{"pattern":"needle"}' }],
+    };
+
+    const node = app.createToolGroupNode(live);
+    messages.appendChild(node);
+    const toggle = node.querySelector('.tool-group-toggle');
+    await toggle.dispatchEvent({ type: 'click' });
+    assertEqual(toggle.getAttribute('aria-expanded'), 'true', 'click expands the group');
+    assert(node.querySelector('.tool-group-details').classList.contains('open'), 'details open after click');
+
+    // A later tool arrives and the transcript republishes the row as a new
+    // object (live projection row, then its durable replacement).
+    const rebuilt = {
+      id: 'msg_7_tools_0',
+      role: 'tool-group',
+      responseId: 'resp_1',
+      status: 'done',
+      tools: [
+        { id: 'call_1', name: 'grep', status: 'done', arguments: '{"pattern":"needle"}' },
+        { id: 'call_2', name: 'read_file', status: 'done', arguments: '{"path":"main.go"}' },
+      ],
+    };
+    const rebuiltNode = app.createToolGroupNode(rebuilt);
+    assertEqual(rebuiltNode.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'true', 'rebuilt group stays expanded');
+    assert(rebuiltNode.querySelector('.tool-group-details').classList.contains('open'), 'rebuilt details stay open');
+
+    // Collapsing is equally sticky.
+    await rebuiltNode.querySelector('.tool-group-toggle').dispatchEvent({ type: 'click' });
+    const collapsed = app.createToolGroupNode({ ...rebuilt, id: 'msg_9_tools_0' });
+    assertEqual(collapsed.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'false', 'collapse survives rebuild');
+    assert(!collapsed.querySelector('.tool-group-details').classList.contains('open'), 'collapsed details stay closed');
+  });
+
+  await run('expanded legacy tool cards stay open when the row object is rebuilt', async () => {
+    const { app, messages } = createHarness();
+    const tool = { id: 'call_9', role: 'tool', name: 'shell', status: 'running', arguments: '{"command":"ls"}' };
+    const node = app.createToolCard(tool);
+    messages.appendChild(node);
+
+    await node.querySelector('.tool-toggle').dispatchEvent({ type: 'click' });
+    assertEqual(node.querySelector('.tool-toggle').getAttribute('aria-expanded'), 'true', 'click expands the card');
+
+    const rebuilt = app.createToolCard({ id: 'call_9', role: 'tool', name: 'shell', status: 'done', arguments: '{"command":"ls"}' });
+    assertEqual(rebuilt.querySelector('.tool-toggle').getAttribute('aria-expanded'), 'true', 'rebuilt card stays expanded');
+    assert(rebuilt.querySelector('.tool-details').classList.contains('open'), 'rebuilt card details stay open');
+  });
+
+  await run('tool expansion does not leak across sessions or responses that reuse a call id', async () => {
+    const { app, messages } = createHarness();
+    const { state } = app;
+    // Providers such as Ollama synthesize call_0/call_1 per response, so the
+    // same call id genuinely recurs in other responses and other sessions.
+    const groupFor = (responseId) => ({
+      id: `${responseId}:tools:call_1`,
+      role: 'tool-group',
+      responseId,
+      status: 'done',
+      tools: [{ id: 'call_1', callId: 'call_1', name: 'grep', status: 'done', arguments: '{"pattern":"x"}' }],
+    });
+
+    const opened = app.createToolGroupNode(groupFor('resp_1'));
+    messages.appendChild(opened);
+    await opened.querySelector('.tool-group-toggle').dispatchEvent({ type: 'click' });
+    assertEqual(opened.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'true', 'first group expands');
+
+    const otherResponse = app.createToolGroupNode(groupFor('resp_2'));
+    assertEqual(otherResponse.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'false', 'later response with the same call id stays closed');
+
+    state.activeSessionId = 's2';
+    const otherSession = app.createToolGroupNode(groupFor('resp_1'));
+    assertEqual(otherSession.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'false', 'another session with the same ids stays closed');
+
+    // Collapsing elsewhere must not reach back into the session that is open.
+    await otherSession.querySelector('.tool-group-toggle').dispatchEvent({ type: 'click' });
+    await otherSession.querySelector('.tool-group-toggle').dispatchEvent({ type: 'click' });
+    state.activeSessionId = 's1';
+    assertEqual(app.createToolGroupNode(groupFor('resp_1')).querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'true', 'original session keeps its open block');
+  });
+
+  await run('tool rows without a call identity never share one expansion bucket', async () => {
+    const { app, messages } = createHarness();
+    const anonymous = (id) => ({ id, role: 'tool-group', status: 'done', tools: [{ name: 'grep', status: 'done', arguments: '{}' }] });
+
+    const first = app.createToolGroupNode(anonymous('anon_a'));
+    messages.appendChild(first);
+    await first.querySelector('.tool-group-toggle').dispatchEvent({ type: 'click' });
+
+    const second = app.createToolGroupNode(anonymous('anon_b'));
+    assertEqual(second.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'false', 'unrelated unidentified group stays closed');
+    assertEqual(first.querySelector('.tool-group-toggle').getAttribute('aria-expanded'), 'false', 'unidentified group cannot latch open');
+  });
+
   await run('successful update_plan calls stay out of the transcript while running and failed calls remain visible', () => {
     const { app, messages } = createHarness();
     const tool = {
@@ -1102,7 +1201,7 @@ async function run(name, fn) {
       }),
       argumentsFinalized: true,
     };
-    const group = { id: 'plan_group', role: 'tool-group', status: 'done', tools: [tool], expanded: false };
+    const group = { id: 'plan_group', role: 'tool-group', status: 'done', tools: [tool] };
     const node = app.createToolGroupNode(group);
     messages.appendChild(node);
 
@@ -1167,7 +1266,6 @@ async function run(name, fn) {
       id: 'mixed_plan_group',
       role: 'tool-group',
       status: 'done',
-      expanded: true,
       tools: [
         { id: 'before', name: 'grep', status: 'done', resultStatus: 'success', arguments: '{"pattern":"x"}' },
         { id: 'plan', name: 'update_plan', status: 'done', resultStatus: 'success', arguments: '{"plan":[{"step":"Work","status":"completed"}]}' },

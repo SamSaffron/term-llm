@@ -2132,7 +2132,6 @@ const sanitizeMessage = (msg) => {
     base.arguments = String(msg.arguments || '');
     base.status = msg.status === 'done' ? 'done' : (msg.status === 'error' ? 'error' : 'running');
     if (msg.resultStatus === 'success' || msg.resultStatus === 'error') base.resultStatus = msg.resultStatus;
-    base.expanded = Boolean(msg.expanded);
     if (Array.isArray(msg.images) && msg.images.length > 0) {
       base.images = msg.images.map((url) => rebaseHubAssetURL(url)).filter(Boolean);
     }
@@ -2154,7 +2153,6 @@ const sanitizeMessage = (msg) => {
       }
       return tool;
     }) : [];
-    base.expanded = Boolean(msg.expanded);
     base.status = msg.status === 'done' ? 'done' : 'running';
     return base;
   }

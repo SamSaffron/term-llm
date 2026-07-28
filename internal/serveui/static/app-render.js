@@ -1378,6 +1378,52 @@ const finalizeAssistantStreamRender = (message) => {
   syncTurnActionPanelForAssistant(message.id);
 };
 
+// Tool expansion is view state, not message state: rows are rebuilt on every
+// transcript refresh and a live row is later replaced by its durable twin under
+// a new message id, so a flag on the message object dies as soon as the next
+// tool arrives. Key the open set by call identity instead, which survives both
+// shapes. Call ids only need to be unique within a response (Ollama synthesizes
+// call_0, call_1 per response), so session and response scope the key; only the
+// active session is ever mounted, so its id is the right scope at every caller.
+const expandedToolKeys = new Set();
+const toolExpansionKey = (message) => {
+  const tools = Array.isArray(message?.tools) ? message.tools : null;
+  const owner = tools ? tools.find((tool) => String(tool?.callId || tool?.id || '').trim()) : message;
+  const id = String(owner?.callId || owner?.id || '').trim();
+  // A row with no call identity has nothing stable to remember, so refuse a key
+  // rather than let every unidentified row share one bucket.
+  if (!id) return '';
+  const session = String(state.activeSessionId || '').trim();
+  return `${session}:${String(message?.responseId || '').trim()}:${tools ? 'group' : 'tool'}:${id}`;
+};
+
+const isToolExpanded = (message) => {
+  const key = toolExpansionKey(message);
+  return Boolean(key) && expandedToolKeys.has(key);
+};
+
+// Collapsing deletes its key, so this only ever holds blocks the user chose to
+// leave open and is already bounded by explicit intent. Evicting by age would
+// silently collapse a block that is still open — the very bug this state fixes
+// — so reclaim by dropping keys belonging to sessions that are gone.
+const pruneExpandedToolKeys = () => {
+  if (expandedToolKeys.size <= 256) return;
+  const live = new Set((state.sessions || []).map((session) => String(session?.id || '').trim()));
+  for (const key of expandedToolKeys) {
+    if (!live.has(key.slice(0, key.indexOf(':')))) expandedToolKeys.delete(key);
+  }
+};
+
+const toggleToolExpanded = (message) => {
+  const key = toolExpansionKey(message);
+  if (!key) return false;
+  const expanded = !expandedToolKeys.has(key);
+  if (expanded) expandedToolKeys.add(key);
+  else expandedToolKeys.delete(key);
+  pruneExpandedToolKeys();
+  return expanded;
+};
+
 const isSuccessfulPlanUpdate = (tool) => Boolean(
   tool?.name === 'update_plan'
   && tool?.status === 'done'
@@ -1396,7 +1442,7 @@ const createToolCard = (message) => {
   const toggle = document.createElement('button');
   toggle.className = 'tool-toggle';
   toggle.type = 'button';
-  toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+  toggle.setAttribute('aria-expanded', isToolExpanded(message) ? 'true' : 'false');
 
   const arrow = document.createElement('span');
   arrow.className = 'tool-arrow';
@@ -1411,7 +1457,7 @@ const createToolCard = (message) => {
   status.textContent = message.status === 'done' ? '[done]' : '[running…]';
 
   const details = document.createElement('div');
-  details.className = `tool-details${message.expanded ? ' open' : ''}`;
+  details.className = `tool-details${isToolExpanded(message) ? ' open' : ''}`;
 
   const label = document.createElement('div');
   label.className = 'tool-details-label';
@@ -1428,10 +1474,9 @@ const createToolCard = (message) => {
   toggle.appendChild(status);
 
   toggle.addEventListener('click', () => {
-    message.expanded = !message.expanded;
-    toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
-    details.classList.toggle('open', message.expanded);
-    saveSessions();
+    const expanded = toggleToolExpanded(message);
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    details.classList.toggle('open', expanded);
   });
 
   card.appendChild(toggle);
@@ -1798,10 +1843,10 @@ const updateToolNode = (message) => {
     status.textContent = message.status === 'done' ? '[done]' : '[running…]';
   }
   if (toggle) {
-    toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+    toggle.setAttribute('aria-expanded', isToolExpanded(message) ? 'true' : 'false');
   }
   if (details) {
-    details.classList.toggle('open', Boolean(message.expanded));
+    details.classList.toggle('open', isToolExpanded(message));
   }
   if (args) {
     args.textContent = message.arguments || '(waiting for arguments…)';
@@ -1901,7 +1946,7 @@ const createToolGroupNode = (message) => {
   const toggle = document.createElement('button');
   toggle.className = 'tool-group-toggle';
   toggle.type = 'button';
-  toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+  toggle.setAttribute('aria-expanded', isToolExpanded(message) ? 'true' : 'false');
 
   const arrow = document.createElement('span');
   arrow.className = 'tool-arrow';
@@ -1928,10 +1973,9 @@ const createToolGroupNode = (message) => {
   renderToolGroupDetails(details, message);
 
   toggle.addEventListener('click', () => {
-    message.expanded = !message.expanded;
-    toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
-    details.classList.toggle('open', message.expanded);
-    saveSessions();
+    const expanded = toggleToolExpanded(message);
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    details.classList.toggle('open', expanded);
   });
 
   card.appendChild(toggle);
@@ -2108,7 +2152,7 @@ const syncGenericToolEntry = (entry, tool) => {
 
 const renderToolGroupDetails = (details, message) => {
   const tools = transcriptVisibleTools(message);
-  details.className = `tool-group-details${message?.expanded ? ' open' : ''}`;
+  details.className = `tool-group-details${isToolExpanded(message) ? ' open' : ''}`;
 
   const liveIDs = new Set(tools.map((tool) => String(tool.id || '')));
   Array.from(details.children || []).forEach((entry) => {
@@ -2455,7 +2499,7 @@ const updateToolGroupNode = (message) => {
 
   const toggle = node.querySelector('.tool-group-toggle');
   if (toggle) {
-    toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+    toggle.setAttribute('aria-expanded', isToolExpanded(message) ? 'true' : 'false');
   }
 };
 
@@ -2586,7 +2630,7 @@ const messageRenderKey = (message) => {
         name: message.name || '',
         status: message.status || '',
         arguments: message.arguments || '',
-        expanded: Boolean(message.expanded),
+        expanded: isToolExpanded(message),
         created: message.created || 0,
         images: Array.isArray(message.images) ? message.images : []
       });
@@ -2594,7 +2638,7 @@ const messageRenderKey = (message) => {
       return JSON.stringify({
         role: message.role,
         status: message.status || '',
-        expanded: Boolean(message.expanded),
+        expanded: isToolExpanded(message),
         created: message.created || 0,
         images: Array.isArray(message.images) ? message.images : [],
         tools: Array.isArray(message.tools)

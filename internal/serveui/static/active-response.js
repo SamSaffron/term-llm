@@ -73,7 +73,6 @@
         role: 'tool-group',
         responseId: run.responseID,
         tools: [],
-        expanded: false,
         status: 'running',
         terminalPolicy: 'durable',
       };

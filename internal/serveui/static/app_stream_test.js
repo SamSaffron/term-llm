@@ -2909,7 +2909,6 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
         role: 'tool-group',
         created: 1001,
         status: 'done',
-        expanded: false,
         tools: [
           { id: 'call_1', name: 'read_file', arguments: '{"path":"a.txt"}', status: 'done', created: 1001 },
           { id: 'call_2', name: 'grep', arguments: '{"pattern":"needle"}', status: 'done', created: 1002 },

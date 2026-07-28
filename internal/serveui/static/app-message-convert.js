@@ -298,7 +298,6 @@ const convertServerMessages = (serverMessages, options = {}) => {
         id: toolGroupId(msg, partIndex),
         role: 'tool-group',
         tools: [],
-        expanded: false,
         status: 'done',
         created,
         ...(serverMessageSequence(msg) !== null ? { serverSeq: serverMessageSequence(msg) } : {})

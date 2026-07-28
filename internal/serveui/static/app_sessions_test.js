@@ -3153,7 +3153,6 @@ async function testSwitchToSessionAttachesChangedActiveResponseFromStartedRevisi
           role: 'tool-group',
           created: 1710000002000,
           status: 'done',
-          expanded: false,
           tools: [
             { id: 'call_1', name: 'read_file', arguments: '{"path":"README.md"}', status: 'done', created: 1710000002000 },
           ],
