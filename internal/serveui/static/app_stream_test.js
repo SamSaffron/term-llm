@@ -565,6 +565,9 @@ function createHarness(options = {}) {
       }
       return session.transcript.addPendingIntent(message, session.transcript.rev);
     },
+    retirePendingIntent(session, messageOrKey) {
+      return session?.transcript?.removePendingIntent?.(messageOrKey) || [];
+    },
     persistPendingIntents() {},
     refreshSessionMessagesFromTranscript(session) {
       const transcript = session?.transcript;
@@ -1444,14 +1447,15 @@ async function testInactiveInterruptHelpersDoNotTouchVisibleDOM() {
   pass(name);
 }
 
-async function testIdleRecoverySettlesOnlyOrphanedEvaluatingInterjections() {
-  const name = 'idle recovery marks orphaned evaluating interjections failed but preserves tracked transactions';
+async function testIdleRecoveryRetiresOnlyUnownedInterjectionIntents() {
+  const name = 'idle recovery removes unowned evaluating and failed interjections but preserves tracked transactions';
   const harness = createHarness();
   const { app, state, cleanup } = harness;
   const intents = [
     { id: 'msg_orphan', clientMessageId: 'msg_orphan', role: 'user', content: 'taking forever', created: 1000, interruptState: 'evaluating' },
-    { id: 'msg_tracked', clientMessageId: 'msg_tracked', role: 'user', content: 'still classifying', created: 1001, interruptState: 'evaluating' },
-    { id: 'msg_queued', clientMessageId: 'msg_queued', role: 'user', content: 'already queued', created: 1002, interruptState: 'queue' },
+    { id: 'msg_failed', clientMessageId: 'msg_failed', role: 'user', content: 'already failed', created: 1001, interruptState: 'error' },
+    { id: 'msg_tracked', clientMessageId: 'msg_tracked', role: 'user', content: 'still classifying', created: 1002, interruptState: 'evaluating' },
+    { id: 'msg_queued', clientMessageId: 'msg_queued', role: 'user', content: 'already queued', created: 1003, interruptState: 'queue' },
   ];
   const session = {
     id: 'session_orphaned_interjection',
@@ -1471,13 +1475,15 @@ async function testIdleRecoverySettlesOnlyOrphanedEvaluatingInterjections() {
     messageId: 'msg_tracked',
   }];
 
-  const settled = app.settleOrphanedEvaluatingInterjections(session);
+  const retired = app.retireUnownedInterjectionIntents(session);
   const messages = projectedMessages(session);
-  if (settled !== 1
-    || messages.find((message) => message.id === 'msg_orphan')?.interruptState !== 'error'
+  if (retired !== 2
+    || messages.some((message) => message.id === 'msg_orphan' || message.id === 'msg_failed')
+    || session.transcript.conversation.intents.has('msg_orphan')
+    || session.transcript.conversation.intents.has('msg_failed')
     || messages.find((message) => message.id === 'msg_tracked')?.interruptState !== 'evaluating'
     || messages.find((message) => message.id === 'msg_queued')?.interruptState !== 'queue') {
-    fail(name, 'orphan settlement changed the wrong interjection state', JSON.stringify(messages));
+    fail(name, 'orphan retirement changed the wrong pending intents', JSON.stringify(messages));
     await cleanup();
     return;
   }
@@ -6880,7 +6886,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
   await testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM();
   await testInactiveInterruptHelpersDoNotTouchVisibleDOM();
-  await testIdleRecoverySettlesOnlyOrphanedEvaluatingInterjections();
+  await testIdleRecoveryRetiresOnlyUnownedInterjectionIntents();
   await testInactiveSessionPromptEventsRemainActionable();
   await testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
