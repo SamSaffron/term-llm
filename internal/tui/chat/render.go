@@ -28,11 +28,32 @@ import (
 const maxViewLines = 8
 
 // View renders the model
-func (m *Model) View() tea.View {
+func (m *Model) View() (view tea.View) {
+	composePostFrameImages := m != nil && m.altScreen && !m.externalProcessActive && !m.quitting && m.postFrameImageCompositionEnabled()
+	if composePostFrameImages {
+		m.beginPostFrameImageComposition()
+	}
+	defer func() {
+		if composePostFrameImages {
+			m.finishPostFrameImageComposition()
+		}
+		payload, receipt := m.postFrameImagePayloadForView()
+		view.PostFrame = payload
+		if payload != "" && receipt != nil {
+			view.PostFrameMsg = func(err error) tea.Msg {
+				return postFrameImageResultMsg{Receipt: receipt, Err: err}
+			}
+		}
+		if m != nil && m.altScreen && m.hasPostFrameImageActivity() {
+			view.TerminalCleanup = m.imageCleanupSequence()
+		}
+	}()
+
 	// Return a mode-free frame before ExecProcess releases the renderer. This
 	// prevents a queued render from re-enabling alt-screen, mouse, or keyboard
-	// protocols while an interactive child owns the terminal. Post-frame output
-	// is suppressed separately as the hard guard against asynchronous writes.
+	// protocols while an interactive child owns the terminal. Because image bytes
+	// are carried only by View.PostFrame, this frame also replaces any unflushed
+	// placement before the child takes ownership.
 	if m.externalProcessActive {
 		return tea.NewView("")
 	}
@@ -43,16 +64,19 @@ func (m *Model) View() tea.View {
 
 	// Inspector mode uses alternate screen
 	if m.inspectorMode && m.inspectorModel != nil {
+		m.resetPostFrameCurrentImages()
 		return m.inspectorModel.View()
 	}
 
 	// Worktree browser mode uses its dedicated full-screen view.
 	if m.worktreeBrowserMode && m.worktreeBrowserModel != nil {
+		m.resetPostFrameCurrentImages()
 		return m.worktreeBrowserModel.View()
 	}
 
 	// Resume browser mode uses the dedicated sessions browser view
 	if m.resumeBrowserMode && m.resumeBrowserModel != nil {
+		m.resetPostFrameCurrentImages()
 		return m.resumeBrowserModel.View()
 	}
 
@@ -189,7 +213,7 @@ func (m *Model) composerCursor() *tea.Cursor {
 }
 
 func (m *Model) needsImageSafeCursor() bool {
-	return m != nil && m.altScreen && (len(m.viewportImageArtifacts) > 0 || len(m.pendingImageUploads) > 0 || len(m.uploadedImageKeys) > 0 || len(m.placedImageKeys) > 0)
+	return m != nil && m.altScreen && (len(m.viewportImageArtifacts) > 0 || len(m.pendingImageUploads) > 0 || len(m.ownedKittyImageIDs) > 0)
 }
 
 func (m *Model) imageSafeCursor() *tea.Cursor {
@@ -426,7 +450,7 @@ func (m *Model) viewAltScreen() string {
 						lines = splitViewportContentLines(m.viewCache.lastContentStr)
 					}
 				}
-				m.viewCache.lastViewportView = m.renderAltScreenViewportLinesWithImages(lines)
+				m.viewCache.lastViewportView = m.renderAltScreenViewportLines(lines)
 			} else {
 				m.viewCache.lastViewportView = m.viewport.View()
 			}
@@ -1890,13 +1914,8 @@ func (m *Model) renderAltScreenViewportLines(lines []string) string {
 	}
 
 	visible := slices.Clone(lines[yOffset:bottom])
-	if len(m.viewportImageBlocks) > 0 && m.usePostFrameImageComposition() {
-		m.beginPostFrameImageComposition()
-		m.overlayVisibleViewportImages(visible, yOffset)
-		m.finishPostFrameImageComposition()
-	} else {
-		m.overlayVisibleViewportImages(visible, yOffset)
-	}
+	m.resetPostFrameCurrentImages()
+	m.overlayVisibleViewportImages(visible, yOffset)
 	if xOffset := m.viewport.XOffset(); xOffset > 0 && contentWidth > 0 {
 		for i := range visible {
 			visible[i] = ansi.Cut(visible[i], xOffset, xOffset+contentWidth)
@@ -1924,12 +1943,15 @@ func (m *Model) renderAltScreenViewportLines(lines []string) string {
 		Render(rendered)
 }
 
-func (m *Model) renderAltScreenViewportLinesWithImages(lines []string) string {
-	return m.renderAltScreenViewportLines(lines)
-}
-
 func (m *Model) overlayVisibleViewportImages(visible []string, yOffset int) {
-	if m == nil || len(visible) == 0 || len(m.viewportImageBlocks) == 0 || m.imagePlaceholdersSuppressed {
+	if m == nil || len(visible) == 0 || len(m.viewportImageBlocks) == 0 {
+		return
+	}
+	// Absolute-origin invariant: the chat viewport has no top/bottom style
+	// frame, so visible row zero is terminal row zero. Direct Kitty placements
+	// use that absolute screen row in PostFrame. If a future style adds vertical
+	// framing, reject placement rather than silently offsetting images from text.
+	if m.viewport.Style.GetVerticalFrameSize() != 0 {
 		return
 	}
 	viewportBottom := yOffset + len(visible)
@@ -1952,45 +1974,25 @@ func (m *Model) overlayVisibleViewportImages(visible []string, yOffset int) {
 		}
 
 		displayArt := art
-		if art.Path != "" && m.usePostFrameImageComposition() {
+		if art.Path != "" {
 			m.queuePostFrameViewportImage(art, block.StartLine, sliceStart, sliceRows, visibleTop-yOffset)
 			continue
-		} else if art.Path != "" {
-			var rendered bool
-			displayArt, rendered = m.renderViewportImageSliceArtifact(art, sliceStart, sliceRows)
-			if !rendered {
-				continue
-			}
-		} else if len(displayArt.Rows) == 0 {
+		}
+		if len(displayArt.Rows) == 0 {
 			continue
 		}
 
 		uploadKey := m.viewportImageUploadKey(displayArt.Key)
 		if displayArt.Upload != "" {
-			if m.uploadedImageKeys == nil {
-				m.uploadedImageKeys = make(map[string]struct{})
-			}
-			if _, uploaded := m.uploadedImageKeys[uploadKey]; !uploaded {
-				m.queueImageUpload(uploadKey, displayArt.Upload)
-				// Keep the reserved blank rows from the backing viewport content.
-				// Placeholders are injected only after the upload has been flushed.
-				continue
-			}
+			m.queueImageUpload(uploadKey, displayArt.Upload)
 		}
-		placeKey := uploadKey + ":place"
 		if displayArt.Place != "" {
-			if m.placedImageKeys == nil {
-				m.placedImageKeys = make(map[string]struct{})
-			}
-			if _, placed := m.placedImageKeys[placeKey]; !placed {
-				m.queueImagePlacement(placeKey, displayArt.Place)
-				// The virtual placement must be acknowledged by our flush bookkeeping
-				// before placeholders enter the viewport, so resize/redraw ordering cannot
-				// bind a new image to stale placeholder cells.
-				continue
-			}
+			m.queueImagePlacement(uploadKey+":place", displayArt.Place)
 		}
 
+		// Upload/placement bytes share this exact renderer frame's PostFrame,
+		// so placeholder cells can be present immediately without a Raw-message
+		// acknowledgement round trip.
 		rows := displayArt.Rows
 		if art.Path == "" && sliceStart > 0 {
 			if sliceStart >= len(rows) {

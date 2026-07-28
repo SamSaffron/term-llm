@@ -43,16 +43,23 @@ type shellOptions struct {
 	Command string
 }
 
-// setShellTerminalHandoff keeps the render pause and asynchronous image-output
-// suppression in one lifecycle operation. The latter is the hard guarantee
-// that a pending post-frame timer cannot write into the child process's screen.
+// setShellTerminalHandoff keeps the render pause and image boundary in one
+// lifecycle operation. A mode-free View replaces any queued image payload
+// before Bubble Tea releases the renderer; the first restored View then carries
+// a complete upload/placement payload.
 func (m *Model) setShellTerminalHandoff(active bool) {
 	if m == nil {
 		return
 	}
 	m.pausedForExternalUI = active
 	m.externalProcessActive = active
-	m.setPostFrameImageSuppressed(active)
+	if !active {
+		// A child process can alter either terminal screen and Kitty's image state.
+		// Invalidate acknowledgements so the first restored View carries cleanup and
+		// a complete upload/placement transition.
+		m.resetImageUploadState()
+		m.invalidateImageViewportContent()
+	}
 }
 
 func parseShellArgs(rawArgs string) (shellOptions, error) {

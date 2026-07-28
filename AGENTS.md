@@ -15,8 +15,19 @@
 
 ## Build & Test
 - `go build` – Build binary
-- `go test ./...` – Run all tests
+- `go test ./...` – Run root-module tests only. To isolate tests from developer-global skills/config while reusing the read-only module cache: `GOMODCACHE=$(go env GOMODCACHE); TEST_HOME=$(mktemp -d); HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" XDG_DATA_HOME="$TEST_HOME/data" XDG_CACHE_HOME="$TEST_HOME/cache" GOMODCACHE="$GOMODCACHE" go test ./...; rm -rf "$TEST_HOME"`
+- `scripts/verify_nested_modules.sh` – Build and vet reflow (which currently has no tests), and build, test, and vet the owned terminal runtime and renderer
+- `VERIFY_RACE=1 scripts/verify_nested_modules.sh` – Include nested race execution; for reflow this is compilation coverage until tests are added
+- `scripts/fuzz_owned_renderer.sh` – Execute (not just seed-test) the renderer differential and exact-shift fuzz targets for a bounded 45 seconds by default
+- `scripts/cross_build_owned_terminal.sh` – Cross-build release targets and relevant owned terminal platforms
 - **Always run `gofmt -w .` after changes**
+
+## Owned Terminal Subsystem
+- `internal/terminal/runtime` and `internal/terminal/renderer` are reduced, application-owned nested modules; `internal/reflow` is also a nested local replacement.
+- The runtime and renderer preserve the upstream module identities `charm.land/bubbletea/v2` and `github.com/charmbracelet/ultraviolet` only for exact Bubbles/Huh import and type compatibility. Their filesystem placement and maintenance ownership are internal to term-llm.
+- Root `go test ./...` does not enter nested modules. Terminal/reflow changes are incomplete until the nested verification command passes.
+- Follow `internal/terminal/README.md` for architecture, compatibility, pruning, provenance, and selective upstream sync. Do not replace either owned terminal directory wholesale.
+- `go install github.com/samsaffron/term-llm@latest` cannot use these local replacements. Build from a complete checkout or use release artifacts.
 
 ## Configuration
 - Config: `~/.config/term-llm/config.yaml`

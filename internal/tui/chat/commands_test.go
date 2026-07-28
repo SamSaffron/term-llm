@@ -3431,6 +3431,13 @@ func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
 	}
 }
 
+func requireFullTestSuite(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping subprocess/integration test in short mode")
+	}
+}
+
 func runWorktreeOperationTestCmd(t *testing.T, cmd tea.Cmd) worktreeOperationDoneMsg {
 	t.Helper()
 	raw := cmd()
@@ -3453,6 +3460,7 @@ func runWorktreeOperationTestCmd(t *testing.T, cmd tea.Cmd) worktreeOperationDon
 }
 
 func TestCmdWorktreePromoteBranchUsesBoundWorktreeName(t *testing.T) {
+	requireFullTestSuite(t)
 	t.Parallel()
 
 	repo := newGitRepoForChatWorktreeTest(t)
@@ -3546,6 +3554,7 @@ func TestCmdWorktreeNewRejectsInvalidArguments(t *testing.T) {
 }
 
 func TestCmdWorktreeNewCleanLeavesChangesInRoot(t *testing.T) {
+	requireFullTestSuite(t)
 	repo := newGitRepoForChatWorktreeTest(t)
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("root work in progress\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile README: %v", err)
@@ -3892,12 +3901,6 @@ func TestShellExitErrorRestoresRendering(t *testing.T) {
 	if restored.externalProcessActive || restored.pausedForExternalUI {
 		t.Fatal("shell error left external process rendering state active")
 	}
-	restored.postFrameImageMu.Lock()
-	imageSuppressed := restored.postFrameImageSuppressed
-	restored.postFrameImageMu.Unlock()
-	if imageSuppressed {
-		t.Fatal("shell error left post-frame images suppressed")
-	}
 	if !restored.View().AltScreen {
 		t.Fatal("shell error did not restore alternate-screen rendering")
 	}
@@ -4103,6 +4106,7 @@ func TestBoundWorktreeDirPrefersActiveSessionCWD(t *testing.T) {
 }
 
 func TestCmdWorktreePromoteDefaultsToActiveSessionCWD(t *testing.T) {
+	requireFullTestSuite(t)
 	repo := newGitRepoForChatWorktreeTest(t)
 	wtA, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-active-a"})
 	if err != nil {
@@ -4133,6 +4137,7 @@ func TestCmdWorktreePromoteDefaultsToActiveSessionCWD(t *testing.T) {
 }
 
 func TestCmdWorktreePromoteDefaultAppliesRemovesAndRebinds(t *testing.T) {
+	requireFullTestSuite(t)
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-cleanup-tui"})
 	if err != nil {
@@ -4163,6 +4168,7 @@ func TestCmdWorktreePromoteDefaultAppliesRemovesAndRebinds(t *testing.T) {
 }
 
 func TestCmdWorktreePromoteConflictOpensAssistedRecovery(t *testing.T) {
+	requireFullTestSuite(t)
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-conflict"})
 	if err != nil {
@@ -4222,6 +4228,7 @@ func TestWorktreePromoteInUsePromptNoKeepsWorktree(t *testing.T) {
 }
 
 func TestPendingWorktreePromoteInUseYesRemoves(t *testing.T) {
+	requireFullTestSuite(t)
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-in-use-yes"})
 	if err != nil {
@@ -4255,6 +4262,7 @@ func TestPendingWorktreePromoteInUseYesRemoves(t *testing.T) {
 }
 
 func TestCmdWorktreePromoteValidationRunsAsynchronously(t *testing.T) {
+	requireFullTestSuite(t)
 	m := newTestChatModel(false)
 	invalid := filepath.Join(t.TempDir(), "missing")
 	m.sess = &session.Session{ID: "async-merge", CWD: invalid, WorktreeDir: invalid}
@@ -4429,6 +4437,7 @@ func TestPendingWorktreeRecoveryBindFailureKeepsPromptRetryable(t *testing.T) {
 }
 
 func TestAssistedRecoverySnapshotsChangesMadeAfterConflictPrompt(t *testing.T) {
+	requireFullTestSuite(t)
 	repo := newGitRepoForChatWorktreeTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "assist-fresh-snapshot"})
 	if err != nil {

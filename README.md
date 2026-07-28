@@ -33,11 +33,15 @@ $ term-llm exec "find all go files modified today"
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
 
-Or:
+For a source build, clone the repository and install from its root:
 
 ```bash
-go install github.com/samsaffron/term-llm@latest
+git clone https://github.com/samsaffron/term-llm.git
+cd term-llm
+go install .
 ```
+
+`go install github.com/samsaffron/term-llm@latest` cannot build this repository: the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules, and dependency-local replacements are not available to an external `go install ...@version` build. Use the installer/release archive or build from a complete checkout.
 
 ## 30-second quickstart
 
@@ -83,6 +87,26 @@ Common entry points:
 - [Usage tracking](https://term-llm.com/reference/usage-tracking/)
 - [Transcription](https://term-llm.com/guides/transcription/)
 - [Notifications](https://term-llm.com/guides/notifications/)
+
+## Contributing
+
+The root `go test ./...` command does not cross Go module boundaries. During development, use Go's standard short mode to skip subprocess-heavy integration tests:
+
+```bash
+go test -short ./...
+```
+
+Before submitting or merging, run the complete root suite and the owned nested-module verification:
+
+```bash
+go build ./...
+go test ./...
+go vet ./...
+scripts/verify_nested_modules.sh
+VERIFY_RACE=1 scripts/verify_nested_modules.sh
+```
+
+The terminal event loop/runtime and cell/diff/output renderer under `internal/terminal/` are deliberately reduced, application-owned source modules rather than external dependency copies. They preserve the Bubble Tea and Ultraviolet module paths only because Bubbles and Huh require exact import and concrete type identity. See [`internal/terminal/README.md`](internal/terminal/README.md) for the ownership contract, architecture, provenance, selective-sync workflow, fuzz/benchmark commands, and cross-build matrix. Run `scripts/cross_build_owned_terminal.sh` when changing platform- or release-sensitive terminal code.
 
 ## License
 

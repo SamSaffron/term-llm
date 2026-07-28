@@ -1,0 +1,5 @@
+go test fuzz v1
+[]byte("plain\x00same\x00wide")
+uint8(8)
+uint8(8)
+uint8(1)

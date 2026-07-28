@@ -1,6 +1,9 @@
 package termimage
 
-import "fmt"
+import (
+	"strconv"
+	"strings"
+)
 
 // KittyDeleteVisibleSequence returns a Kitty graphics command that deletes all
 // image placements currently visible on the terminal screen and asks the
@@ -18,7 +21,8 @@ func KittyDeleteImageSequence(imageIDs ...uint32) string {
 	if len(imageIDs) == 0 {
 		return ""
 	}
-	out := ""
+	var out strings.Builder
+	out.Grow(len(imageIDs) * 24)
 	seen := make(map[uint32]struct{}, len(imageIDs))
 	for _, id := range imageIDs {
 		if id == 0 {
@@ -28,9 +32,11 @@ func KittyDeleteImageSequence(imageIDs ...uint32) string {
 			continue
 		}
 		seen[id] = struct{}{}
-		out += fmt.Sprintf("\x1b_Ga=d,i=%d,q=2\x1b\\", id)
+		out.WriteString("\x1b_Ga=d,i=")
+		out.WriteString(strconv.FormatUint(uint64(id), 10))
+		out.WriteString(",q=2\x1b\\")
 	}
-	return out
+	return out.String()
 }
 
 // CleanupSequence returns terminal image cleanup bytes appropriate for env.
