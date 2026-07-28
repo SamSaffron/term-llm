@@ -181,6 +181,7 @@ func newImagePipelineProbe(t *testing.T, frame string) *postFramePipelineProbe {
 }
 
 func TestRealBubbleTeaPostFramePipelineLifecycleOrdering(t *testing.T) {
+	requireFullTestSuite(t)
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 	termimage.ClearCache()
 
@@ -206,11 +207,14 @@ func TestRealBubbleTeaPostFramePipelineLifecycleOrdering(t *testing.T) {
 	scrollbackWrite := testWriteContaining(writes, probeScrollbackMarker, 0)
 	imageFrameWrite := testWriteContaining(writes, probeImageFrame, 0)
 	scrollFrameWrite := testWriteContaining(writes, probeScrollFrame, imageFrameWrite+1)
-	if rawWrite < 0 || scrollbackWrite < 0 || imageFrameWrite < 0 || scrollFrameWrite < 0 {
-		t.Fatalf("missing lifecycle markers raw=%d scrollback=%d image-frame=%d scroll-frame=%d in %q", rawWrite, scrollbackWrite, imageFrameWrite, scrollFrameWrite, writes)
+	if rawWrite < 0 || imageFrameWrite < 0 || scrollFrameWrite < 0 {
+		t.Fatalf("missing lifecycle markers raw=%d image-frame=%d scroll-frame=%d in %q", rawWrite, imageFrameWrite, scrollFrameWrite, writes)
 	}
-	if !(rawWrite < imageFrameWrite && scrollbackWrite < imageFrameWrite) {
-		t.Fatalf("raw/scrollback ordering raw=%d scrollback=%d image-frame=%d, want unmanaged output before image frame", rawWrite, scrollbackWrite, imageFrameWrite)
+	if scrollbackWrite >= 0 {
+		t.Fatalf("Println emitted unmanaged scrollback in alt-screen mode at write %d", scrollbackWrite)
+	}
+	if rawWrite >= imageFrameWrite {
+		t.Fatalf("raw ordering raw=%d image-frame=%d, want raw output before image frame", rawWrite, imageFrameWrite)
 	}
 	placements := testWritesContaining(writes, "a=p", imageFrameWrite+1, scrollFrameWrite)
 	if len(placements) != 1 {
@@ -257,6 +261,7 @@ func TestRealBubbleTeaPostFramePipelineLifecycleOrdering(t *testing.T) {
 }
 
 func TestRealBubbleTeaPostFramePipelineExecProcessHandoff(t *testing.T) {
+	requireFullTestSuite(t)
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 	termimage.ClearCache()
 
@@ -289,6 +294,7 @@ func TestRealBubbleTeaPostFramePipelineExecProcessHandoff(t *testing.T) {
 }
 
 func TestRealBubbleTeaKittyCleanupOnAbnormalTermination(t *testing.T) {
+	requireFullTestSuite(t)
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 
 	tests := []struct {
@@ -402,6 +408,7 @@ func (w *failPostFrameCapture) attemptCount() int {
 }
 
 func TestRealBubbleTeaPersistentPostFrameFailurePausesUntilNextGeneration(t *testing.T) {
+	requireFullTestSuite(t)
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 	termimage.ClearCache()
 

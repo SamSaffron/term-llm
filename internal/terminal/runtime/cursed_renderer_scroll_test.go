@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestDetectContentShiftRequiresExactCompleteOverlap(t *testing.T) {
@@ -100,6 +101,8 @@ func TestScrollLinesIndependent(t *testing.T) {
 		{name: "Kitty private-use placeholder", lines: []string{"\U0010eeee", "plain"}, want: true},
 		{name: "OSC hyperlink", lines: []string{"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"}},
 		{name: "cursor control", lines: []string{"\x1b[2Cmove\x1b[0m"}},
+		{name: "SGR intermediate byte", lines: []string{"\x1b[ m\x1b[m"}},
+		{name: "private SGR parameter", lines: []string{"\x1b[?m\x1b[m"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -277,7 +280,7 @@ func TestVerticalScrollDoesNotMutateCellbufWhenHardScrollPreconditionFails(t *te
 	if shift == 0 {
 		t.Fatal("test setup did not produce an exact shift")
 	}
-	if r.drawVerticalScroll(newLines, shift, top, bottom) {
+	if r.drawVerticalScroll(newLines, scrollLinesIndependent(newLines), shift, top, bottom) {
 		t.Fatal("vertical scroll succeeded without fullscreen HardScroll support")
 	}
 	if !reflect.DeepEqual(r.cellbuf.Lines, before.Lines) {
@@ -291,6 +294,107 @@ func bytesJoin(parts [][]byte) []byte {
 		b.Write(part)
 	}
 	return []byte(b.String())
+}
+
+func FuzzScrollLinesIndependentImpliesEquivalentRowParsing(f *testing.F) {
+	f.Add([]byte("plain\x00\x1b[31mred\x1b[0m\x00界"))
+	f.Add([]byte("\x1b[1mbold\x1b[m\x00next"))
+	f.Add([]byte("\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"))
+	f.Fuzz(func(t *testing.T, seed []byte) {
+		if len(seed) > 512 {
+			seed = seed[:512]
+		}
+		rawLines := strings.Split(string(seed), "\x00")
+		if len(rawLines) > 8 {
+			rawLines = rawLines[:8]
+		}
+		lines := make([]string, len(rawLines))
+		for i, line := range rawLines {
+			if len(line) > 64 {
+				line = line[:64]
+			}
+			lines[i] = strings.ToValidUTF8(line, "?")
+		}
+		if !scrollLinesIndependent(lines) {
+			return
+		}
+
+		const width = 256
+		whole := uv.NewScreenBuffer(width, len(lines))
+		uv.NewStyledString(strings.Join(lines, "\n")).Draw(whole, whole.Bounds())
+		rows := uv.NewScreenBuffer(width, len(lines))
+		for row, line := range lines {
+			uv.NewStyledString(line).DrawOver(rows, uv.Rect(0, row, width, row+1))
+		}
+		if !reflect.DeepEqual(whole.Lines, rows.Lines) {
+			t.Fatalf("independent row parsing differs from complete-frame parsing for %#q", lines)
+		}
+	})
+}
+
+func FuzzShiftCellbufRegionMatchesRotation(f *testing.F) {
+	f.Add(uint8(8), int8(1), uint8(1), uint8(7))
+	f.Add(uint8(8), int8(-2), uint8(0), uint8(8))
+	f.Add(uint8(4), int8(12), uint8(0), uint8(4))
+	f.Fuzz(func(t *testing.T, rawHeight uint8, rawShift int8, rawTop, rawBottom uint8) {
+		height := 1 + int(rawHeight%32)
+		top := int(rawTop % uint8(height+2))
+		bottom := int(rawBottom % uint8(height+2))
+		shift := int(rawShift)
+		buf := uv.NewScreenBuffer(4, height)
+		for row := 0; row < height; row++ {
+			buf.SetCell(0, row, &uv.Cell{Content: fmt.Sprintf("%02d", row), Width: 1})
+			buf.TouchLine(0, row, 3)
+		}
+		before := buf.Clone()
+		beforeTouched := make([]*uv.LineData, len(buf.Touched))
+		for row, touched := range buf.Touched {
+			if touched != nil {
+				copy := *touched
+				beforeTouched[row] = &copy
+			}
+		}
+
+		ok := shiftCellbufRegion(&buf, top, bottom, shift)
+		amount := shift
+		if amount < 0 {
+			amount = -amount
+		}
+		wantOK := top >= 0 && bottom <= height && top < bottom && amount >= 1 && amount < bottom-top && amount <= 10
+		if ok != wantOK {
+			t.Fatalf("shift result = %v, want %v (height=%d top=%d bottom=%d shift=%d)", ok, wantOK, height, top, bottom, shift)
+		}
+		if !ok {
+			if !reflect.DeepEqual(buf.Lines, before.Lines) || !reflect.DeepEqual(buf.Touched, beforeTouched) {
+				t.Fatal("rejected shift mutated the buffer")
+			}
+			return
+		}
+
+		for row := 0; row < height; row++ {
+			if row < top || row >= bottom {
+				if !reflect.DeepEqual(buf.Lines[row], before.Lines[row]) {
+					t.Fatalf("row %d outside shifted region changed", row)
+				}
+				continue
+			}
+			source := row + shift
+			if source < top || source >= bottom {
+				for column := range buf.Lines[row] {
+					if buf.Lines[row][column] != uv.EmptyCell {
+						t.Fatalf("exposed cell (%d,%d) = %#v, want empty", column, row, buf.Lines[row][column])
+					}
+				}
+			} else if !reflect.DeepEqual(buf.Lines[row], before.Lines[source]) {
+				t.Fatalf("row %d does not match source row %d", row, source)
+			}
+		}
+		for row, touched := range buf.Touched {
+			if touched != nil {
+				t.Fatalf("touched row %d was not reset", row)
+			}
+		}
+	})
 }
 
 func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
@@ -323,6 +427,22 @@ func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
 				}
 				return r
 			}, part)
+			// The VT oracle consumes output rune by rune. Exclude inputs whose
+			// grapheme-cluster width differs from the sum of isolated rune widths;
+			// terminals cluster these correctly, but the intentionally small oracle
+			// would report a false physical-screen divergence.
+			isolatedWidth := 0
+			for _, r := range part {
+				isolatedWidth += ansi.StringWidth(string(r))
+			}
+			if ansi.StringWidth(part) != isolatedWidth {
+				part = strings.Map(func(r rune) rune {
+					if r >= unicode.MaxASCII {
+						return '?'
+					}
+					return r
+				}, part)
+			}
 			switch i % 6 {
 			case 0:
 				lines[i] = ""

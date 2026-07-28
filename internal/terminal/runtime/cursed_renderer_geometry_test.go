@@ -3,6 +3,7 @@ package tea
 import (
 	"bytes"
 	"io"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -74,6 +75,70 @@ func TestCursedRendererInsertAboveDoesNotRedrawUnchangedFrame(t *testing.T) {
 	}
 	if !strings.Contains(joined, "committed") {
 		t.Fatalf("missing scrollback insertion: %q", joined)
+	}
+}
+
+func TestCursedRendererInsertAboveIgnoredInAltScreen(t *testing.T) {
+	output := &boundaryWriter{}
+	r := newBoundaryRenderer(output)
+	view := NewView("stable alt-screen frame")
+	view.AltScreen = true
+	r.render(view)
+	if err := r.flush(false); err != nil {
+		t.Fatal(err)
+	}
+
+	before := output.snapshot()
+	beforeCells := r.cellbuf.Clone()
+	if err := r.insertAbove("must not enter the alt screen"); err != nil {
+		t.Fatal(err)
+	}
+	after := output.snapshot()
+	if len(after) != len(before) {
+		t.Fatalf("alt-screen insertion emitted output: %q", bytes.Join(after[len(before):], nil))
+	}
+	if !reflect.DeepEqual(r.cellbuf.Lines, beforeCells.Lines) {
+		t.Fatal("alt-screen insertion mutated retained cells")
+	}
+}
+
+func TestCursedRendererResizeRepaintsIdenticalView(t *testing.T) {
+	tests := []struct {
+		name       string
+		altScreen  bool
+		width      int
+		height     int
+		cellHeight int
+	}{
+		{name: "inline width", width: 32, height: 8, cellHeight: 1},
+		{name: "alt screen width", altScreen: true, width: 32, height: 8, cellHeight: 8},
+		{name: "alt screen height", altScreen: true, width: 40, height: 10, cellHeight: 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := &boundaryWriter{}
+			r := newCursedRenderer(output, []string{"TERM=xterm-256color", "TERM_PROGRAM=Apple_Terminal"}, 40, 8)
+			view := NewView("identical frame")
+			view.AltScreen = tt.altScreen
+			r.render(view)
+			if err := r.flush(false); err != nil {
+				t.Fatal(err)
+			}
+
+			start := len(output.snapshot())
+			r.resize(tt.width, tt.height)
+			r.render(view)
+			if err := r.flush(false); err != nil {
+				t.Fatal(err)
+			}
+			joined := bytes.Join(output.snapshot()[start:], nil)
+			if !bytes.Contains(joined, []byte("identical frame")) {
+				t.Fatalf("identical view was not repainted after resize: %q", joined)
+			}
+			if r.cellbuf.Width() != tt.width || r.cellbuf.Height() != tt.cellHeight {
+				t.Fatalf("retained geometry = %dx%d, want %dx%d", r.cellbuf.Width(), r.cellbuf.Height(), tt.width, tt.cellHeight)
+			}
+		})
 	}
 }
 

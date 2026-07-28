@@ -90,7 +90,13 @@ Common entry points:
 
 ## Contributing
 
-The root `go test ./...` command does not cross Go module boundaries. Run the owned nested-module verification as well:
+The root `go test ./...` command does not cross Go module boundaries. During development, use Go's standard short mode to skip subprocess-heavy integration tests:
+
+```bash
+go test -short ./...
+```
+
+Before submitting or merging, run the complete root suite and the owned nested-module verification:
 
 ```bash
 go build ./...

@@ -2,10 +2,23 @@ package uv
 
 import (
 	"image/color"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
 )
+
+func TestStyledStringRejectsExcessiveCSIParams(t *testing.T) {
+	input := "\x1b[" + strings.Repeat(";", 32) + "0msafe"
+	buf := NewScreenBuffer(8, 1)
+	NewStyledString(input).Draw(buf, buf.Bounds())
+	for x, want := range "safe" {
+		cell := buf.CellAt(x, 0)
+		if cell == nil || cell.Content != string(want) {
+			t.Fatalf("cell %d = %#v, want %q", x, cell, string(want))
+		}
+	}
+}
 
 func TestStyledString(t *testing.T) {
 	cases := []struct {

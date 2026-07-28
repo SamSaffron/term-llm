@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\x00\x1b[ m\x1b[m\x00")

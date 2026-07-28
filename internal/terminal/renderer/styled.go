@@ -111,6 +111,39 @@ func (s *StyledString) Bounds() Rectangle {
 	return Rect(0, 0, w, h)
 }
 
+// oversizedCSIParams returns the length of a CSI sequence with enough parameter
+// separators to overflow x/ansi's fixed 32-entry parser buffer. A zero result
+// means the input is not such a sequence.
+func oversizedCSIParams[T []byte | string](str T) int {
+	start := 0
+	switch {
+	case len(str) >= 2 && str[0] == '\x1b' && str[1] == '[':
+		start = 2
+	case len(str) >= 1 && str[0] == 0x9b:
+		start = 1
+	default:
+		return 0
+	}
+
+	separators := 0
+	for i := start; i < len(str); i++ {
+		c := str[i]
+		if c == ';' || c == ':' {
+			separators++
+		}
+		if c >= 0x40 && c <= 0x7e {
+			if separators >= 32 {
+				return i + 1
+			}
+			return 0
+		}
+	}
+	if separators >= 32 {
+		return len(str)
+	}
+	return 0
+}
+
 // printString draws a string starting at the given position. If s is nil, it
 // will build and return a slice of [Line]s instead (unwrapped, ignoring bounds).
 func printString[T []byte | string](
@@ -142,6 +175,15 @@ func printString[T []byte | string](
 	var link Link
 	var state byte
 	for len(str) > 0 {
+		if n := oversizedCSIParams(str); n > 0 {
+			// x/ansi's fixed-size parameter buffer panics when a CSI contains
+			// more parameters than it can retain. Treat such an unreasonable
+			// control sequence as malformed and continue with following text.
+			p.Reset()
+			state = 0
+			str = str[n:]
+			continue
+		}
 		seq, width, n, newState := decoder(str, state, p)
 		switch width {
 		case 1, 2, 3, 4: // wide cells can go up to 4 cells wide

@@ -816,7 +816,19 @@ func (p *EventDecoder) parseOsc(b []byte) (int, Event) {
 		return i, ignoredEvent(b[:i])
 	case ansi.ESC:
 		if i >= len(b) || b[i] != '\\' {
-			if cmd == -1 || (start == 0 && end == 2) {
+			// A second disjunct here tested "start == 0 && end == 2", the
+			// payload boundary of the two-byte "ESC ]" introducer only. It was
+			// also redundant: reaching the terminator at that boundary means no
+			// command digits were scanned, which already implies cmd == -1.
+			if cmd == -1 {
+				if b[0] != ansi.ESC {
+					// The 8-bit OSC introducer is a single byte and contains no
+					// ESC, so this abandoned sequence has no Alt+<key> reading.
+					// Reporting one would invent a key press out of a data byte
+					// and consume that byte as part of the introducer.
+					// Resynchronize after the introducer alone.
+					return 1, UnknownEvent(b[:1])
+				}
 				return 2, defaultKey()
 			}
 
@@ -832,7 +844,15 @@ func (p *EventDecoder) parseOsc(b []byte) (int, Event) {
 		return i, UnknownEvent(b[:i])
 	}
 
-	data := string(b[start:end])
+	// start is only set once a ";" separates the command from its payload, and
+	// it is then always past the introducer. A zero value means the sequence
+	// carried no payload, so the command handlers below must see an empty one:
+	// slicing from zero would hand them a "payload" that begins with the
+	// introducer bytes, which then decode as a clipboard selection or a color.
+	var data string
+	if start > 0 {
+		data = string(b[start:end])
+	}
 	switch cmd {
 	case 10:
 		return i, ForegroundColorEvent{ansi.XParseColor(data)}
@@ -862,6 +882,13 @@ func (p *EventDecoder) parseOsc(b []byte) (int, Event) {
 // parseStTerminated parses a control sequence that gets terminated by a ST character.
 func (p *EventDecoder) parseStTerminated(intro8, intro7 byte, fn func([]byte) Event) func([]byte) (int, Event) {
 	defaultKey := func(b []byte) (int, Event) {
+		if b[0] != ansi.ESC {
+			// The 8-bit introducer is a single byte and contains no ESC, so
+			// this abandoned sequence has no Alt+<key> reading. Reporting one
+			// would invent a key press out of a data byte and consume that byte
+			// as part of the introducer. Resynchronize after the introducer.
+			return 1, UnknownEvent(b[:1])
+		}
 		switch intro8 {
 		case ansi.SOS:
 			return 2, KeyPressEvent{Code: unicode.ToLower(rune(b[1])), Mod: ModShift | ModAlt}
@@ -1630,7 +1657,15 @@ const x10MouseByteOffset = 32
 //
 // See: http://www.xfree86.org/current/ctlseqs.html#Mouse%20Tracking
 func parseX10MouseEvent(buf []byte) Event {
-	v := buf[3:6]
+	// The Cb/Cx/Cy payload is the final three bytes of the sequence. Its offset
+	// is not fixed: the 7-bit introducer "ESC [ M" is three bytes but the 8-bit
+	// C1 form "CSI M" is only two, so indexing from the front reads past the end
+	// of a C1 report, or decodes the wrong bytes when the backing array happens
+	// to be longer.
+	if len(buf) < 3 {
+		return UnknownCsiEvent(buf)
+	}
+	v := buf[len(buf)-3:]
 	b := int(v[0])
 	if b >= x10MouseByteOffset {
 		// XXX: b < 32 should be impossible, but we're being defensive.

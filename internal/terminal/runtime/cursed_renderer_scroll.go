@@ -74,9 +74,9 @@ func equalStringLines(a, b []string) bool {
 // parses only newly exposed rows. UV's HardScroll marks the complete physical
 // region touched (the #137/#143 stale-row fix), so repeated or blank rows are
 // still re-diffed even when they equal the previous row at the same index.
-func (s *cursedRenderer) drawVerticalScroll(newLines []string, shift, top, bottom int) bool {
+func (s *cursedRenderer) drawVerticalScroll(newLines []string, newLinesIndependent bool, shift, top, bottom int) bool {
 	if shift == 0 || !s.view.AltScreen || top < 0 || bottom > s.cellbuf.Height() || top >= bottom ||
-		!scrollLinesIndependent(s.lastContentLines) || !scrollLinesIndependent(newLines) {
+		!s.lastContentIndependent || !newLinesIndependent {
 		return false
 	}
 	if !s.scr.CanHardScroll(s.cellbuf.RenderBuffer, shift, top, bottom-1) {
@@ -119,9 +119,10 @@ func (s *cursedRenderer) drawVerticalScroll(newLines []string, shift, top, botto
 	return true
 }
 
-func (s *cursedRenderer) drawChangedRows(newLines []string) bool {
+func (s *cursedRenderer) drawChangedRows(newLines []string, newLinesIndependent bool) bool {
 	if !s.view.AltScreen || len(newLines) != len(s.lastContentLines) ||
-		len(newLines) > s.cellbuf.Height() || len(s.cellbuf.Touched) < len(newLines) {
+		len(newLines) > s.cellbuf.Height() || len(s.cellbuf.Touched) < len(newLines) ||
+		!s.lastContentIndependent || !newLinesIndependent {
 		return false
 	}
 	var changedRows [16]int
@@ -137,9 +138,6 @@ func (s *cursedRenderer) drawChangedRows(newLines []string) bool {
 		}
 	}
 	if changedCount == 0 {
-		return false
-	}
-	if !scrollLinesIndependent(s.lastContentLines) || !scrollLinesIndependent(newLines) {
 		return false
 	}
 
@@ -165,46 +163,87 @@ func (s *cursedRenderer) drawChangedRows(newLines []string) bool {
 // full reset; OSC links and all cursor/mode controls force the full-frame path.
 func scrollLinesIndependent(lines []string) bool {
 	for _, line := range lines {
-		hasSGR := false
-		for i := 0; i < len(line); i++ {
-			if line[i] != '\x1b' {
-				// C0 controls (including tabs, carriage returns, shifts, and
-				// cancels) can alter parser/cursor state across row boundaries.
-				// Incremental row parsing is safe only for printable text and the
-				// self-contained SGR sequences accepted below.
-				if line[i] < 0x20 || line[i] == 0x7f {
-					return false
-				}
-				if line[i] >= utf8.RuneSelf {
-					r, size := utf8.DecodeRuneInString(line[i:])
-					// The complete-frame grapheme parser can join combining/format
-					// code points to state retained from the preceding physical row.
-					// Parsing such a row in isolation is not equivalent. C1 controls,
-					// separators, unassigned/noncharacter scalars, and other non-graphic
-					// values have the same cross-row parser-state risk as C0 controls.
-					if unicode.IsControl(r) || unicode.IsMark(r) || unicode.Is(unicode.Cf, r) ||
-						(!unicode.IsGraphic(r) && !unicode.Is(unicode.Co, r)) {
-						return false
-					}
-					i += size - 1
-				}
-				continue
-			}
-			hasSGR = true
-			if i+2 >= len(line) || line[i+1] != '[' {
-				return false
-			}
-			i += 2
-			for i < len(line) && (line[i] < 0x40 || line[i] > 0x7e) {
-				i++
-			}
-			if i >= len(line) || line[i] != 'm' {
-				return false
-			}
-		}
-		if hasSGR && !strings.HasSuffix(line, "\x1b[0m") && !strings.HasSuffix(line, "\x1b[m") {
+		if !lineScrollIndependent(line) {
 			return false
 		}
+	}
+	return true
+}
+
+// contentLinesIndependent reports scrollLinesIndependent(lines) while reusing
+// the verdict already proven for the retained frame. Independence is a property
+// of a row on its own, so a row whose text is unchanged from the retained frame
+// carries that frame's verdict and does not need rescanning. Scanning every row
+// of every frame twice per flush was the single largest cost of an incremental
+// redraw.
+func (s *cursedRenderer) contentLinesIndependent(lines []string) bool {
+	if !s.lastContentIndependent {
+		// Some retained row failed, so no row inherits a proof from it.
+		return scrollLinesIndependent(lines)
+	}
+	for i, line := range lines {
+		if i < len(s.lastContentLines) && line == s.lastContentLines[i] {
+			continue
+		}
+		if !lineScrollIndependent(line) {
+			return false
+		}
+	}
+	return true
+}
+
+// lineScrollIndependent reports whether one row parses the same in isolation as
+// it does inside the complete frame.
+func lineScrollIndependent(line string) bool {
+	hasSGR := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if c >= 0x20 && c < 0x7f {
+			// Printable ASCII, by far the common case.
+			continue
+		}
+		if c != '\x1b' {
+			// C0 controls and DEL (including tabs, carriage returns, shifts,
+			// and cancels) can alter parser/cursor state across row boundaries.
+			// Incremental row parsing is safe only for printable text and the
+			// self-contained SGR sequences accepted below.
+			if c < utf8.RuneSelf {
+				return false
+			}
+			r, size := utf8.DecodeRuneInString(line[i:])
+			// The complete-frame grapheme parser can join combining/format
+			// code points to state retained from the preceding physical row.
+			// Parsing such a row in isolation is not equivalent. C1 controls,
+			// separators, unassigned/noncharacter scalars, and other non-graphic
+			// values have the same cross-row parser-state risk as C0 controls.
+			if unicode.IsControl(r) || unicode.IsMark(r) || unicode.Is(unicode.Cf, r) ||
+				(!unicode.IsGraphic(r) && !unicode.Is(unicode.Co, r)) {
+				return false
+			}
+			i += size - 1
+			continue
+		}
+		hasSGR = true
+		if i+2 >= len(line) || line[i+1] != '[' {
+			return false
+		}
+		i += 2
+		// SGR accepts only parameter bytes before its final 'm'. CSI
+		// intermediate bytes (and embedded controls) can make the complete
+		// parser carry different state across the following newline.
+		for i < len(line) {
+			b := line[i]
+			if (b < '0' || b > '9') && b != ';' && b != ':' {
+				break
+			}
+			i++
+		}
+		if i >= len(line) || line[i] != 'm' {
+			return false
+		}
+	}
+	if hasSGR && !strings.HasSuffix(line, "\x1b[0m") && !strings.HasSuffix(line, "\x1b[m") {
+		return false
 	}
 	return true
 }

@@ -38,8 +38,12 @@ type cursedRenderer struct {
 	postFrameMsgs    chan Msg
 	lastContentLines []string
 	nextContentLines []string
-	forceRedraw      bool
-	shuttingDown     atomic.Bool
+	// lastContentIndependent caches scrollLinesIndependent(lastContentLines).
+	// The predicate is a pure per-row property, so the retained frame's verdict
+	// is reused instead of rescanning every retained row on every flush.
+	lastContentIndependent bool
+	forceRedraw            bool
+	shuttingDown           atomic.Bool
 }
 
 var _ renderer = &cursedRenderer{}
@@ -366,18 +370,24 @@ func (s *cursedRenderer) flush(closing bool) (err error) {
 		s.cellbuf.Resize(frameArea.Dx(), frameArea.Dy())
 		s.nextContentLines = s.lastContentLines[:0]
 		s.lastContentLines = nil
+		s.lastContentIndependent = true
 	}
 
 	var newContentLines []string
+	// A frame with no retained rows is vacuously independent.
+	newContentIndependent := true
 	didIncrementalDraw := false
 	if view.AltScreen {
 		newContentLines = splitLinesReuse(s.nextContentLines, view.Content)
+		// Both incremental paths need this verdict, and the next flush reuses it
+		// for the rows it retains, so compute it exactly once per frame.
+		newContentIndependent = s.contentLinesIndependent(newContentLines)
 		if !s.forceRedraw {
 			if shift, top, bottom := detectContentShift(s.lastContentLines, newContentLines); shift != 0 {
-				didIncrementalDraw = s.drawVerticalScroll(newContentLines, shift, top, bottom)
+				didIncrementalDraw = s.drawVerticalScroll(newContentLines, newContentIndependent, shift, top, bottom)
 			}
 			if !didIncrementalDraw {
-				didIncrementalDraw = s.drawChangedRows(newContentLines)
+				didIncrementalDraw = s.drawChangedRows(newContentLines, newContentIndependent)
 			}
 		}
 	}
@@ -660,9 +670,11 @@ func (s *cursedRenderer) flush(closing bool) (err error) {
 	if view.AltScreen {
 		s.nextContentLines = s.lastContentLines[:0]
 		s.lastContentLines = newContentLines
+		s.lastContentIndependent = newContentIndependent
 	} else {
 		s.nextContentLines = s.lastContentLines[:0]
 		s.lastContentLines = nil
+		s.lastContentIndependent = true
 	}
 	postFrameErr = s.writePostFrame(postFrame)
 	postFrameMsg = msg
@@ -720,6 +732,7 @@ func (s *cursedRenderer) invalidateIncrementalLocked() {
 	s.forceRedraw = true
 	s.nextContentLines = s.lastContentLines[:0]
 	s.lastContentLines = nil
+	s.lastContentIndependent = true
 	s.scr.Erase()
 }
 
@@ -735,6 +748,7 @@ func reset(s *cursedRenderer) {
 	s.forceRedraw = false
 	s.lastContentLines = nil
 	s.nextContentLines = nil
+	s.lastContentIndependent = true
 	scr := uv.NewTerminalRenderer(&s.buf, s.env)
 	scr.SetColorProfile(s.profile)
 	scr.SetRelativeCursor(true) // Always start in inline mode
@@ -862,6 +876,13 @@ func (s *cursedRenderer) insertAbove(str string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Unmanaged scrollback has no meaning in the alternate screen and shifting
+	// it would desynchronize the physical terminal from the retained buffers.
+	// This also preserves the long-standing Println/Printf contract.
+	if s.scr.Fullscreen() {
+		return nil
+	}
 
 	var sb strings.Builder
 	w, h := s.cellbuf.Width(), s.cellbuf.Height()

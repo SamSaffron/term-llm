@@ -71,6 +71,22 @@ type cursor struct {
 	Position
 }
 
+// resetTouchedLines returns every line to the clean state that follows a
+// render, reusing each slot's existing record. A record is owned exclusively
+// by its slot — [RenderBuffer.TouchLine] mutates it in place and nothing
+// copies records between slots or buffers — so reuse reproduces the state a
+// freshly allocated record would carry without allocating one per line on
+// every frame.
+func resetTouchedLines(touched []*LineData) {
+	for i, d := range touched {
+		if d == nil {
+			touched[i] = &LineData{FirstCell: -1, LastCell: -1}
+			continue
+		}
+		*d = LineData{FirstCell: -1, LastCell: -1}
+	}
+}
+
 // LineData represents the metadata for a line.
 type LineData struct {
 	// First and last changed cell indices.
@@ -1254,17 +1270,9 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 				changedLines++
 			}
 
-			// Mark line changed successfully.
-			if i < len(newbuf.Touched) && i <= newbuf.Height()-1 {
-				newbuf.Touched[i] = &LineData{
-					FirstCell: -1, LastCell: -1,
-				}
-			}
-			if i < len(s.curbuf.Touched) && i < s.curbuf.Height()-1 {
-				s.curbuf.Touched[i] = &LineData{
-					FirstCell: -1, LastCell: -1,
-				}
-			}
+			// Lines are not marked clean here: nothing between this loop and
+			// the buffer sync below reads Touched, and the sync resets every
+			// line of both buffers anyway.
 		}
 	}
 
@@ -1273,17 +1281,11 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	}
 
 	// Sync windows and screen
-	newbuf.Touched = make([]*LineData, newHeight)
-	for i := range newbuf.Touched {
-		newbuf.Touched[i] = &LineData{
-			FirstCell: -1, LastCell: -1,
-		}
+	if len(newbuf.Touched) != newHeight {
+		newbuf.Touched = make([]*LineData, newHeight)
 	}
-	for i := range s.curbuf.Touched {
-		s.curbuf.Touched[i] = &LineData{
-			FirstCell: -1, LastCell: -1,
-		}
-	}
+	resetTouchedLines(newbuf.Touched)
+	resetTouchedLines(s.curbuf.Touched)
 
 	if curWidth != newWidth || curHeight != newHeight {
 		// Resize the old buffer to match the new buffer.
