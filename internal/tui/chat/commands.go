@@ -2814,6 +2814,64 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) snapshotActiveHelperConversation() (string, []llm.Message) {
+	m.messagesMu.Lock()
+	snapshot := append([]session.Message(nil), m.messages...)
+	compactionIdx := m.compactionIdx
+	m.messagesMu.Unlock()
+
+	systemPrompt := ""
+	for _, msg := range snapshot {
+		if msg.Role == llm.RoleSystem {
+			if text := strings.TrimSpace(llm.MessageText(msg.ToLLMMessage())); text != "" {
+				systemPrompt = text
+				break
+			}
+		}
+	}
+	if compactionIdx > 0 {
+		if compactionIdx >= len(snapshot) {
+			snapshot = nil
+		} else {
+			snapshot = snapshot[compactionIdx:]
+		}
+	}
+
+	messages := make([]llm.Message, 0, len(snapshot))
+	for _, msg := range snapshot {
+		if msg.Role != llm.RoleSystem {
+			messages = append(messages, msg.ToLLMMessage())
+		}
+	}
+	return systemPrompt, messages
+}
+
+func (m *Model) helperCompactionConfig() llm.CompactionConfig {
+	cfg := llm.DefaultCompactionConfig()
+	if m.engine != nil && m.engine.InputLimit() > 0 {
+		cfg.InputLimit = m.engine.InputLimit()
+	} else if limit := llm.InputLimitForProviderModel(m.providerKey, m.modelName); limit > 0 {
+		cfg.InputLimit = limit
+	}
+	return cfg
+}
+
+func (m *Model) beginHelperStream(phase string, resetRetainedTracker bool) context.Context {
+	m.clearFooterMessage()
+	m.streaming = true
+	if resetRetainedTracker {
+		m.resetRetainedStreamTracker()
+	}
+	m.phase = phase
+	m.streamStartTime = time.Now()
+	if m.altScreen {
+		m.scrollToBottom = true
+	}
+	ctx, cancel := context.WithCancel(m.rootContext())
+	m.streamCancelFunc = cancel
+	return ctx
+}
+
 func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 	m.pauseGoalForLocalAction("paused for context compaction")
 	m.setTextareaValue("")
@@ -2837,52 +2895,12 @@ func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage("Cannot compress while streaming. Wait for the response to finish.")
 	}
 
-	// Need at least a couple of messages to make compaction worthwhile
-	m.messagesMu.Lock()
-	snapshot := make([]session.Message, len(m.messages))
-	copy(snapshot, m.messages)
-	compIdx := m.compactionIdx
-	m.messagesMu.Unlock()
-
-	messagesStart := compIdx
-	if messagesStart > 0 {
-		if messagesStart < len(snapshot) {
-			snapshot = snapshot[messagesStart:]
-		} else {
-			snapshot = nil
-		}
-	}
-
-	if len(snapshot) < 2 {
+	systemPrompt, llmMessages := m.snapshotActiveHelperConversation()
+	if len(llmMessages) < 2 {
 		return m.showSystemMessage("Not enough conversation history to compress.")
 	}
 
-	// Build llm.Message slice from session messages, separating system prompt
-	var llmMessages []llm.Message
-	var systemPrompt string
-	for _, msg := range snapshot {
-		if msg.Role == llm.RoleSystem {
-			for _, p := range msg.Parts {
-				if p.Text != "" {
-					systemPrompt = p.Text
-					break
-				}
-			}
-			continue
-		}
-		llmMessages = append(llmMessages, msg.ToLLMMessage())
-	}
-
-	if len(llmMessages) == 0 {
-		return m.showSystemMessage("No conversation messages to compress.")
-	}
-
-	compactConfig := llm.DefaultCompactionConfig()
-	if m.engine != nil && m.engine.InputLimit() > 0 {
-		compactConfig.InputLimit = m.engine.InputLimit()
-	} else if limit := llm.InputLimitForProviderModel(m.providerKey, m.modelName); limit > 0 {
-		compactConfig.InputLimit = limit
-	}
+	compactConfig := m.helperCompactionConfig()
 	model := m.modelName
 	provider := m.provider
 	phase := llm.PhaseCompacting
@@ -2890,19 +2908,7 @@ func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
 		phase = llm.PhaseCompactingSummarizeHistory
 	}
 
-	m.clearFooterMessage()
-	m.streaming = true
-	// Drop the retained previous-turn tracker so it is not re-rendered as
-	// streaming content while compaction runs.
-	m.resetRetainedStreamTracker()
-	m.phase = phase
-	m.streamStartTime = time.Now()
-	if m.altScreen {
-		m.scrollToBottom = true
-	}
-
-	ctx, cancel := context.WithCancel(m.rootContext())
-	m.streamCancelFunc = cancel
+	ctx := m.beginHelperStream(phase, true)
 
 	return m, tea.Batch(
 		func() tea.Msg {
@@ -3270,13 +3276,10 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Compress mode (or auto fallback): LLM compression
-	m.messagesMu.Lock()
-	snapshot := make([]session.Message, len(m.messages))
-	copy(snapshot, m.messages)
-	m.messagesMu.Unlock()
-
-	if len(snapshot) < 2 {
+	// Compress mode (or auto fallback): generate from the active conversation
+	// boundary shared with /compact, excluding history hidden by prior compaction.
+	currentSystemPrompt, llmMessages := m.snapshotActiveHelperConversation()
+	if len(llmMessages) < 2 {
 		result := llm.HandoverFromFile("(No prior conversation to hand over.)", transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
 		return m, func() tea.Msg {
 			return handoverDoneMsg{
@@ -3287,57 +3290,18 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Build llm.Message slice, extract system prompt
-	var llmMessages []llm.Message
-	var currentSystemPrompt string
-	for _, msg := range snapshot {
-		if msg.Role == llm.RoleSystem {
-			for _, p := range msg.Parts {
-				if p.Text != "" {
-					currentSystemPrompt = p.Text
-					break
-				}
-			}
-			continue
-		}
-		llmMessages = append(llmMessages, msg.ToLLMMessage())
-	}
-
-	if len(llmMessages) == 0 {
-		result := llm.HandoverFromFile("(No prior conversation to hand over.)", transientHandoverSystemPrompt, sourceAgent, targetAgent.Name)
-		return m, func() tea.Msg {
-			return handoverDoneMsg{
-				result:      result,
-				agentName:   agentName,
-				providerStr: providerStr,
-			}
-		}
-	}
-
-	compactConfig := llm.DefaultCompactionConfig()
+	compactConfig := m.helperCompactionConfig()
+	allowProviderFork := m.handoverToolDoneCh == nil
 	model := m.modelName
 	provider := m.provider
 
-	m.clearFooterMessage()
-	m.streaming = true
 	// A tool-initiated handover continues the current engine stream, so leave
-	// its tracker intact; only a manual /handover starts fresh and should drop
-	// the retained previous-turn tracker to avoid re-rendering it.
-	if m.handoverToolDoneCh == nil {
-		m.resetRetainedStreamTracker()
-	}
-	m.phase = "Handover"
-	m.streamStartTime = time.Now()
-	if m.altScreen {
-		m.scrollToBottom = true
-	}
-
-	ctx, cancel := context.WithCancel(m.rootContext())
-	m.streamCancelFunc = cancel
+	// its tracker intact; only a manual /handover starts fresh.
+	ctx := m.beginHelperStream("Handover", m.handoverToolDoneCh == nil)
 
 	return m, tea.Batch(
 		func() tea.Msg {
-			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, transientHandoverSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig)
+			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, transientHandoverSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig, llm.HandoverOptions{AllowProviderFork: allowProviderFork})
 			return handoverDoneMsg{result: result, err: err, agentName: agentName, providerStr: providerStr}
 		},
 		m.spinner.Tick,
@@ -3482,20 +3446,9 @@ func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalM
 }
 
 func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) (tea.Model, tea.Cmd) {
-	ctx, cancel := context.WithCancel(m.rootContext())
-	m.streamCancelFunc = cancel
-	m.clearFooterMessage()
-	m.streaming = true
 	// As with the LLM handover path, only drop the retained tracker for a
 	// manual handover; a tool-initiated handover continues the engine stream.
-	if m.handoverToolDoneCh == nil {
-		m.resetRetainedStreamTracker()
-	}
-	m.phase = "Handover"
-	m.streamStartTime = time.Now()
-	if m.altScreen {
-		m.scrollToBottom = true
-	}
+	ctx := m.beginHelperStream("Handover", m.handoverToolDoneCh == nil)
 
 	return m, tea.Batch(
 		handoverScriptCmd(ctx, m.handoverApprovalMgr, scriptAgent, sourceAgent, targetAgent, providerStr, confirmed, instructions),
@@ -3611,6 +3564,8 @@ func applyHandoverInstructions(result *llm.HandoverResult, instructions string) 
 		NewMessages: llm.ReconstructHandoverHistory(handoverSystemPrompt(result.NewMessages), document, result.SourceAgent, result.TargetAgent),
 		SourceAgent: result.SourceAgent,
 		TargetAgent: result.TargetAgent,
+		Model:       result.Model,
+		Usage:       result.Usage,
 	}
 }
 

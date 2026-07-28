@@ -320,6 +320,7 @@ func buildGeminiContents(messages []Message) (string, []*geminiContent) {
 	messages = sanitizeToolHistory(messages)
 
 	var systemParts []string
+	var pendingDeveloper []string
 	contents := make([]*geminiContent, 0, len(messages))
 
 	for _, msg := range messages {
@@ -328,8 +329,18 @@ func buildGeminiContents(messages []Message) (string, []*geminiContent) {
 			if text := collectTextParts(msg.Parts); text != "" {
 				systemParts = append(systemParts, text)
 			}
+		case RoleDeveloper:
+			if text := collectTextParts(msg.Parts); text != "" {
+				pendingDeveloper = append(pendingDeveloper, text)
+			}
 		case RoleUser:
-			content := buildGeminiContent(geminiRoleUser, msg.Parts)
+			parts := msg.Parts
+			if len(pendingDeveloper) > 0 {
+				prefix := fmt.Sprintf("<developer>\n%s\n</developer>\n\n", strings.Join(pendingDeveloper, "\n\n"))
+				parts = prependTextToParts(prefix, parts)
+				pendingDeveloper = nil
+			}
+			content := buildGeminiContent(geminiRoleUser, parts)
 			if content != nil {
 				contents = append(contents, content)
 			}

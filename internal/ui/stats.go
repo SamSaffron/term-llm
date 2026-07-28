@@ -19,6 +19,7 @@ type UsageCall struct {
 	GenerationTime    time.Duration
 	ObservedOutput    bool
 	Compaction        bool
+	Handover          bool
 	SideQuestion      bool
 	Guardian          bool
 }
@@ -166,6 +167,27 @@ func (s *SessionStats) AddCompactionUsageForModel(model string, input, output, c
 	s.CompactionCachedInputTokens += cached
 	s.CompactionCacheWriteTokens += cacheWrite
 	s.CompactionLLMCallCount++
+}
+
+// AddHandoverUsageForModel records handover-helper usage without disturbing
+// main-request timing or treating it as context compaction.
+func (s *SessionStats) AddHandoverUsageForModel(model string, input, output, cached, cacheWrite int) {
+	if input == 0 && output == 0 && cached == 0 && cacheWrite == 0 {
+		return
+	}
+	s.InputTokens += input
+	s.OutputTokens += output
+	s.CachedInputTokens += cached
+	s.CacheWriteTokens += cacheWrite
+	s.LLMCallCount++
+	s.usageCalls = append(s.usageCalls, UsageCall{
+		Model:             strings.TrimSpace(model),
+		InputTokens:       input,
+		OutputTokens:      output,
+		CachedInputTokens: cached,
+		CacheWriteTokens:  cacheWrite,
+		Handover:          true,
+	})
 }
 
 // AddSideQuestionUsageForModel records side-question usage in aggregate token,

@@ -155,13 +155,16 @@ type Request struct {
 	// vision helpers) that must not participate in provider-side conversation/session
 	// state. Stateful providers should avoid resuming an existing session and must
 	// not update their stored session boundary.
-	Ephemeral                bool
-	Messages                 []Message
-	ApprovalTranscriptPrefix []Message // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
-	Tools                    []ToolSpec
-	ToolChoice               ToolChoice
-	LastTurnToolChoice       *ToolChoice // If set, force this tool choice on the last agentic turn
-	ParallelToolCalls        bool
+	Ephemeral bool
+	// IncludeDeveloperInContinuation keeps a developer policy immediately before
+	// the latest user turn when building a server-state continuation suffix.
+	IncludeDeveloperInContinuation bool
+	Messages                       []Message
+	ApprovalTranscriptPrefix       []Message // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
+	Tools                          []ToolSpec
+	ToolChoice                     ToolChoice
+	LastTurnToolChoice             *ToolChoice // If set, force this tool choice on the last agentic turn
+	ParallelToolCalls              bool
 	// AllowedToolsPresent applies an internal, request-scoped execution filter.
 	// It is consumed by runtimes before calling Engine.Stream and is not provider metadata.
 	// A present empty AllowedTools slice intentionally blocks every callable tool.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -485,41 +484,29 @@ func Run(ctx context.Context, provider llm.Provider, req llm.Request, emit func(
 		return Result{}, err
 	}
 	defer stream.Close()
-	var response strings.Builder
-	var usage llm.Usage
-	for {
-		event, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return Result{Response: response.String(), Usage: usage}, err
-		}
+
+	errToolAttempt := errors.New("side question attempted tool use")
+	collected, err := llm.CollectTextStream(stream, func(event llm.Event) error {
 		switch event.Type {
-		case llm.EventTextDelta:
-			response.WriteString(event.Text)
-		case llm.EventAttemptDiscard:
-			response.Reset()
-		case llm.EventUsage:
-			if event.Use != nil {
-				usage.Add(*event.Use)
-			}
 		case llm.EventToolCall, llm.EventToolExecStart, llm.EventToolExecEnd:
-			warning := llm.Event{Type: llm.EventTextDelta, Text: ToolAttemptResponse}
 			if emit != nil {
-				emit(warning)
+				emit(llm.Event{Type: llm.EventTextDelta, Text: ToolAttemptResponse})
 			}
-			return Result{Response: ToolAttemptResponse, Usage: usage, Synthetic: true}, nil
-		case llm.EventError:
-			if event.Err != nil {
-				return Result{Response: response.String(), Usage: usage}, event.Err
+			return errToolAttempt
+		default:
+			if emit != nil {
+				emit(event)
 			}
+			return nil
 		}
-		if emit != nil {
-			emit(event)
-		}
+	})
+	if errors.Is(err, errToolAttempt) {
+		return Result{Response: ToolAttemptResponse, Usage: collected.Usage, Synthetic: true}, nil
 	}
-	return Result{Response: strings.TrimSpace(response.String()), Usage: usage}, nil
+	if err != nil {
+		return Result{Response: collected.Text, Usage: collected.Usage}, err
+	}
+	return Result{Response: strings.TrimSpace(collected.Text), Usage: collected.Usage}, nil
 }
 
 func reqReasoningMode(req llm.Request) string {

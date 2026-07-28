@@ -242,6 +242,25 @@ func (m *Model) recordGuardianUsage(ctx context.Context, model string, u llm.Usa
 	}
 }
 
+func (m *Model) recordHandoverUsage(ctx context.Context, sessionID, model string, u llm.Usage) {
+	if u.BillableCountersZero() {
+		return
+	}
+	if m.stats == nil {
+		m.stats = ui.NewSessionStats()
+	}
+	m.stats.AddHandoverUsageForModel(model, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	if m.store != nil && sessionID != "" {
+		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	}
+	if m.sess != nil && (sessionID == "" || m.sess.ID == sessionID) {
+		m.sess.InputTokens += u.InputTokens
+		m.sess.OutputTokens += u.OutputTokens
+		m.sess.CachedInputTokens += u.CachedInputTokens
+		m.sess.CacheWriteTokens += u.CacheWriteTokens
+	}
+}
+
 func (m *Model) recordCompactionUsage(ctx context.Context, sessionID, model string, u llm.Usage) {
 	if m.stats == nil {
 		m.stats = ui.NewSessionStats()

@@ -263,6 +263,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		Model:                           model,
 		Instructions:                    instructions,
 		Messages:                        req.Messages,
+		IncludeDeveloperInContinuation:  req.IncludeDeveloperInContinuation,
 		FileUploadPolicy:                p.effectiveFileUploadPolicy(),
 		ExtractInstructionsFromMessages: true,
 		Tools:                           tools,
@@ -304,6 +305,16 @@ func (p *ChatGPTProvider) ResetConversation() {
 		p.responsesClient.ResetConversation()
 	}
 }
+
+func (p *ChatGPTProvider) isolateHelperConversation() Provider {
+	clone := *p
+	clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
+	return &clone
+}
+
+// ChatGPTProvider intentionally does not implement helperConversationForker:
+// its continuation state is WebSocket-connection-local and cannot be safely
+// resumed by an independently cloned helper client.
 
 // NewChatGPTResponsesClient builds a ResponsesClient pre-configured for the
 // chatgpt.com backend endpoint, handling auth, refresh, and rate-limit error

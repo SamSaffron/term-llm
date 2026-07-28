@@ -74,6 +74,7 @@ type ClaudeBinProvider struct {
 	effort       string // reasoning effort for opus: "low", "medium", "high", "max", or ""
 	sessionID    string // For session continuity with --resume
 	messagesSent int    // Track messages already in session to avoid re-sending
+	forkSession  bool   // Add --fork-session when resuming an isolated branch.
 	toolExecutor mcphttp.ToolExecutor
 	preferOAuth  bool              // If true, clear ANTHROPIC_API_KEY to force OAuth auth
 	extraEnv     map[string]string // Extra subprocess env vars from provider config
@@ -217,6 +218,41 @@ func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, n
 func (p *ClaudeBinProvider) ResetConversation() {
 	p.sessionID = ""
 	p.messagesSent = 0
+}
+
+func (p *ClaudeBinProvider) cloneHelperProvider() *ClaudeBinProvider {
+	if p == nil {
+		return nil
+	}
+	clone := NewClaudeBinProvider(p.model, nil)
+	clone.effort = p.effort
+	clone.preferOAuth = p.preferOAuth
+	clone.enableHooks = p.enableHooks
+	if len(p.extraEnv) > 0 {
+		clone.extraEnv = make(map[string]string, len(p.extraEnv))
+		for key, value := range p.extraEnv {
+			clone.extraEnv[key] = value
+		}
+	}
+	return clone
+}
+
+func (p *ClaudeBinProvider) isolateHelperConversation() Provider {
+	return p.cloneHelperProvider()
+}
+
+func (p *ClaudeBinProvider) forkHelperConversation() (Provider, bool) {
+	if p == nil || strings.TrimSpace(p.sessionID) == "" || p.messagesSent <= 0 {
+		return nil, false
+	}
+	clone := p.cloneHelperProvider()
+	clone.sessionID = p.sessionID
+	// Forked helper requests carry only their new policy/trigger suffix. The
+	// resumed Claude session supplies the parent context, so no local transcript
+	// offset should be applied to the helper request.
+	clone.messagesSent = 0
+	clone.forkSession = true
+	return clone, true
 }
 
 type claudeBinProviderState struct {
@@ -1134,6 +1170,9 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 	// must never append themselves to an existing Claude CLI session.
 	if !req.Ephemeral && p.sessionID != "" {
 		args = append(args, "--resume", p.sessionID)
+		if p.forkSession {
+			args = append(args, "--fork-session")
+		}
 	}
 
 	return args, effort

@@ -1229,6 +1229,9 @@ func TestCompactClampsOutputTokens(t *testing.T) {
 	if provider.Requests[0].MaxOutputTokens != 4_096 {
 		t.Errorf("MaxOutputTokens = %d, want 4096 (clamped)", provider.Requests[0].MaxOutputTokens)
 	}
+	if !provider.Requests[0].Ephemeral || provider.Requests[0].MaxTurns != 1 {
+		t.Fatalf("compaction request ephemeral=%v max_turns=%d, want isolated one-shot", provider.Requests[0].Ephemeral, provider.Requests[0].MaxTurns)
+	}
 }
 
 func TestCompactRecompactsAlreadyCompacted(t *testing.T) {
@@ -1278,16 +1281,18 @@ func TestCompactRecompactsAlreadyCompacted(t *testing.T) {
 	}
 }
 
-func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string) (Provider, *OpenAIProvider, <-chan struct {
-	PreviousResponseID string
-	Input              []ResponsesInputItem
-}) {
+type capturedResponsesRequest struct {
+	PreviousResponseID string                       `json:"previous_response_id"`
+	Input              []ResponsesInputItem         `json:"input"`
+	Reasoning          *ResponsesReasoning          `json:"reasoning"`
+	MultiAgent         *ResponsesMultiAgent         `json:"multi_agent"`
+	PromptCacheOptions *ResponsesPromptCacheOptions `json:"prompt_cache_options"`
+}
+
+func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string) (Provider, *OpenAIProvider, <-chan capturedResponsesRequest) {
 	t.Helper()
 
-	captured := make(chan struct {
-		PreviousResponseID string
-		Input              []ResponsesInputItem
-	}, 1)
+	captured := make(chan capturedResponsesRequest, 1)
 
 	sse := strings.Join([]string{
 		"event: response.output_text.delta",
@@ -1304,10 +1309,7 @@ func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string)
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			defer r.Body.Close()
 
-			var payload struct {
-				PreviousResponseID string               `json:"previous_response_id"`
-				Input              []ResponsesInputItem `json:"input"`
-			}
+			var payload capturedResponsesRequest
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				return nil, err
@@ -1315,13 +1317,7 @@ func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string)
 			if err := json.Unmarshal(body, &payload); err != nil {
 				return nil, err
 			}
-			captured <- struct {
-				PreviousResponseID string
-				Input              []ResponsesInputItem
-			}{
-				PreviousResponseID: payload.PreviousResponseID,
-				Input:              payload.Input,
-			}
+			captured <- payload
 
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -1380,14 +1376,15 @@ func TestCompactUsesIsolatedProviderConversationState(t *testing.T) {
 	}
 }
 
-func TestHandoverUsesIsolatedProviderConversationState(t *testing.T) {
+func TestHandoverUsesForkedProviderConversationState(t *testing.T) {
 	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
 
 	result, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
 		UserText("hello"),
 		AssistantText("hi"),
 		UserText("prepare handover"),
-	}, "source", "target", DefaultCompactionConfig())
+		AssistantText("ready to hand over"),
+	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
 	if err != nil {
 		t.Fatalf("Handover failed: %v", err)
 	}
@@ -1401,14 +1398,105 @@ func TestHandoverUsesIsolatedProviderConversationState(t *testing.T) {
 
 	select {
 	case req := <-captured:
-		if req.PreviousResponseID != "" {
-			t.Fatalf("handover previous_response_id = %q, want empty", req.PreviousResponseID)
+		if req.PreviousResponseID != "resp_live" {
+			t.Fatalf("handover previous_response_id = %q, want resp_live", req.PreviousResponseID)
 		}
-		if len(req.Input) < 4 {
-			t.Fatalf("handover input length = %d, want full history plus prompt", len(req.Input))
+		if len(req.Input) != 2 {
+			t.Fatalf("handover input length = %d, want developer policy plus user trigger: %#v", len(req.Input), req.Input)
+		}
+		if req.Input[0].Role != "developer" || !strings.Contains(fmt.Sprint(req.Input[0].Content), "handing over") {
+			t.Fatalf("handover fork policy = %#v, want developer instruction", req.Input[0])
+		}
+		if req.Input[1].Role != "user" {
+			t.Fatalf("handover fork trigger = %#v, want user message", req.Input[1])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for handover request capture")
+	}
+}
+
+func TestHandoverForkDoesNotInheritOpenAIAdvancedOptions(t *testing.T) {
+	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
+	liveProvider.model = "gpt-5.6-sol"
+	liveProvider.responsesOptions = ResponsesOptions{
+		ReasoningMode: "pro",
+		MultiAgent: MultiAgentOptions{
+			Enabled:                true,
+			EnabledSet:             true,
+			MaxConcurrentSubagents: 4,
+		},
+		PromptCache: PromptCacheOptions{Mode: "explicit", TTL: "30m"},
+	}
+
+	_, err := Handover(context.Background(), provider, "gpt-5.6-sol", "current sys", "new sys", []Message{
+		UserText("hello"),
+		AssistantText("ready to hand over"),
+	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	if err != nil {
+		t.Fatalf("Handover failed: %v", err)
+	}
+
+	select {
+	case req := <-captured:
+		if req.PreviousResponseID != "resp_live" {
+			t.Fatalf("handover previous_response_id = %q, want resp_live", req.PreviousResponseID)
+		}
+		if req.MultiAgent != nil || req.PromptCacheOptions != nil || (req.Reasoning != nil && (req.Reasoning.Mode != "" || req.Reasoning.Context != "")) {
+			t.Fatalf("forked helper inherited advanced Responses options: reasoning=%+v multi_agent=%+v prompt_cache=%+v", req.Reasoning, req.MultiAgent, req.PromptCacheOptions)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handover request capture")
+	}
+}
+
+func TestConversationEndsAtSettledAssistantIgnoresHistoricalOrphanedToolCall(t *testing.T) {
+	messages := []Message{
+		UserText("old turn"),
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{ID: "orphan", Name: "shell"}}}},
+		UserText("new turn"),
+		AssistantText("settled answer"),
+	}
+	if !conversationEndsAtSettledAssistant(messages) {
+		t.Fatal("an orphaned call before the latest user turn should not hide the current settled boundary")
+	}
+}
+
+func TestConversationEndsAtSettledAssistantIgnoresTrailingEvents(t *testing.T) {
+	messages := []Message{
+		UserText("question"),
+		AssistantText("answer"),
+		{Role: RoleEvent, Parts: []Part{{Type: PartText, Text: "timeline marker"}}},
+	}
+	if !conversationEndsAtSettledAssistant(messages) {
+		t.Fatal("trailing event should not hide a settled assistant boundary")
+	}
+}
+
+func TestHandoverFallsBackWhenTranscriptIsPastProviderBoundary(t *testing.T) {
+	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
+
+	_, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+		UserText("this turn has no provider response"),
+	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	if err != nil {
+		t.Fatalf("Handover failed: %v", err)
+	}
+	if liveProvider.responsesClient.LastResponseID != "resp_live" {
+		t.Fatalf("live LastResponseID = %q, want resp_live", liveProvider.responsesClient.LastResponseID)
+	}
+
+	select {
+	case req := <-captured:
+		if req.PreviousResponseID != "" {
+			t.Fatalf("fallback previous_response_id = %q, want empty", req.PreviousResponseID)
+		}
+		if len(req.Input) < 5 {
+			t.Fatalf("fallback input length = %d, want full history and handover framing: %#v", len(req.Input), req.Input)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fallback handover request capture")
 	}
 }
 
@@ -2092,9 +2180,125 @@ func TestExpandWithEffortVariants(t *testing.T) {
 	}
 }
 
+type helperCapabilityProvider struct {
+	*MockProvider
+	isolated  Provider
+	forked    Provider
+	forkCalls int
+}
+
+func (p *helperCapabilityProvider) isolateHelperConversation() Provider {
+	return p.isolated
+}
+
+func (p *helperCapabilityProvider) forkHelperConversation() (Provider, bool) {
+	p.forkCalls++
+	return p.forked, p.forked != nil
+}
+
+func TestHelperConversationProviderUsesCapabilities(t *testing.T) {
+	isolated := NewMockProvider("isolated")
+	forked := NewMockProvider("forked")
+	live := &helperCapabilityProvider{
+		MockProvider: NewMockProvider("live"),
+		isolated:     isolated,
+		forked:       forked,
+	}
+
+	if got := isolatedConversationProvider(live); got != isolated {
+		t.Fatalf("isolated provider = %T %v, want capability result", got, got)
+	}
+	got, ok := forkConversationProvider(live)
+	if !ok || got != forked {
+		t.Fatalf("fork provider = %T %v, %v, want capability result", got, got, ok)
+	}
+}
+
+func TestHandoverDisablesProviderForkWhenBoundaryIsNotExplicitlyAllowed(t *testing.T) {
+	isolated := NewMockProvider("isolated").AddTextResponse("brief")
+	live := &helperCapabilityProvider{
+		MockProvider: NewMockProvider("live"),
+		isolated:     isolated,
+		forked:       NewMockProvider("forked").AddTextResponse("wrong path"),
+	}
+
+	_, err := Handover(context.Background(), live, "test-model", "system", "", []Message{
+		UserText("request"),
+		AssistantText("settled response"),
+	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: false})
+	if err != nil {
+		t.Fatalf("Handover: %v", err)
+	}
+	if live.forkCalls != 0 {
+		t.Fatalf("fork capability called %d times, want zero", live.forkCalls)
+	}
+	if len(isolated.Requests) != 1 || !isolated.Requests[0].Ephemeral {
+		t.Fatalf("isolated requests = %#v, want one ephemeral helper", isolated.Requests)
+	}
+}
+
+func TestHandoverDoesNotForkWithPendingToolCall(t *testing.T) {
+	isolated := NewMockProvider("isolated").AddTextResponse("brief")
+	live := &helperCapabilityProvider{
+		MockProvider: NewMockProvider("live"),
+		isolated:     isolated,
+		forked:       NewMockProvider("forked").AddTextResponse("wrong path"),
+	}
+
+	_, err := Handover(context.Background(), live, "test-model", "system", "", []Message{
+		UserText("request"),
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartText, Text: "starting handover"},
+				{Type: PartToolCall, ToolCall: &ToolCall{ID: "pending", Name: "initiate_handover"}},
+			},
+		},
+	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	if err != nil {
+		t.Fatalf("Handover: %v", err)
+	}
+	if live.forkCalls != 0 {
+		t.Fatalf("fork capability called %d times with pending tool call", live.forkCalls)
+	}
+}
+
+func TestForkConversationProvider_ClaudeBinUsesForkSession(t *testing.T) {
+	live := NewClaudeBinProvider("opus-max", nil)
+	live.sessionID = "session-live"
+	live.messagesSent = 4
+
+	forked, ok := forkConversationProvider(WrapWithRetry(live, DefaultRetryConfig()))
+	if !ok {
+		t.Fatal("expected claude-bin conversation fork")
+	}
+	retry, ok := forked.(*RetryProvider)
+	if !ok {
+		t.Fatalf("fork provider = %T, want RetryProvider", forked)
+	}
+	clone, ok := retry.inner.(*ClaudeBinProvider)
+	if !ok {
+		t.Fatalf("fork inner provider = %T, want ClaudeBinProvider", retry.inner)
+	}
+	args, _ := clone.buildArgs(context.Background(), Request{}, eventSender{})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--resume session-live") || !strings.Contains(joined, "--fork-session") {
+		t.Fatalf("fork args = %q, want resume plus fork-session", joined)
+	}
+	if clone.messagesSent != 0 {
+		t.Fatalf("fork messagesSent = %d, want helper-local boundary 0", clone.messagesSent)
+	}
+	if live.sessionID != "session-live" || live.messagesSent != 4 {
+		t.Fatalf("live provider mutated: session=%q messages=%d", live.sessionID, live.messagesSent)
+	}
+}
+
 func TestHandoverEndToEnd(t *testing.T) {
 	provider := NewMockProvider("test")
-	provider.AddTextResponse("## Objective\nBuild feature X\n\n## Pending Tasks\n1. Implement handler\n2. Add tests")
+	provider.AddTurn(MockTurn{
+		Text:  "## Objective\nBuild feature X\n\n## Pending Tasks\n1. Implement handler\n2. Add tests",
+		Usage: Usage{InputTokens: 120, OutputTokens: 40, CachedInputTokens: 80},
+	})
 
 	messages := []Message{
 		UserText("I want to build feature X"),
@@ -2104,7 +2308,7 @@ func TestHandoverEndToEnd(t *testing.T) {
 	}
 
 	config := DefaultCompactionConfig()
-	result, err := Handover(context.Background(), provider, "test-model", "You are a planner.", "You are a developer.", messages, "planner", "developer", config)
+	result, err := Handover(context.Background(), provider, "test-model", "You are a planner.", "You are a developer.", messages, "planner", "developer", config, HandoverOptions{AllowProviderFork: true})
 	if err != nil {
 		t.Fatalf("Handover failed: %v", err)
 	}
@@ -2117,6 +2321,9 @@ func TestHandoverEndToEnd(t *testing.T) {
 	}
 	if result.TargetAgent != "developer" {
 		t.Errorf("target agent = %q, want developer", result.TargetAgent)
+	}
+	if result.Model != "test-model" || result.Usage.InputTokens != 120 || result.Usage.OutputTokens != 40 || result.Usage.CachedInputTokens != 80 {
+		t.Fatalf("handover helper metadata = model %q usage %+v", result.Model, result.Usage)
 	}
 
 	// NewMessages should have: [system] + [handover doc] + [assistant ack]
@@ -2147,11 +2354,30 @@ func TestHandoverEndToEnd(t *testing.T) {
 		t.Error("system prompt should be the new agent's prompt")
 	}
 
-	// Verify the handover prompt was sent to the provider
+	// Handover policy is privileged context, followed by a minimal user trigger so
+	// providers without a native developer role can preserve the instruction.
 	req := provider.Requests[0]
-	lastMsg := req.Messages[len(req.Messages)-1]
-	if !strings.Contains(lastMsg.Parts[0].Text, "handing over") {
-		t.Error("last request message should contain handover prompt")
+	if !req.Ephemeral || req.MaxTurns != 1 {
+		t.Fatalf("fallback handover request ephemeral=%v max_turns=%d, want isolated one-shot", req.Ephemeral, req.MaxTurns)
+	}
+	if len(req.Messages) < 2 {
+		t.Fatalf("handover request messages = %#v", req.Messages)
+	}
+	policy := req.Messages[len(req.Messages)-2]
+	if policy.Role != RoleDeveloper || !strings.Contains(MessageText(policy), "handing over") {
+		t.Fatalf("handover policy = %#v, want developer instruction", policy)
+	}
+	policyText := MessageText(policy)
+	for _, want := range []string{"800–1200 words", "Remove narrative detail before removing facts needed to continue"} {
+		if !strings.Contains(policyText, want) {
+			t.Fatalf("handover policy missing concise briefing guidance %q: %q", want, policyText)
+		}
+	}
+	if strings.Contains(policyText, "3000 words") {
+		t.Fatalf("handover policy retained superseded 3000-word budget: %q", policyText)
+	}
+	if trigger := req.Messages[len(req.Messages)-1]; trigger.Role != RoleUser {
+		t.Fatalf("handover trigger role = %q, want user", trigger.Role)
 	}
 }
 
@@ -2180,7 +2406,7 @@ func TestHandoverEmptyMessages(t *testing.T) {
 	provider := NewMockProvider("test")
 	config := DefaultCompactionConfig()
 
-	_, err := Handover(context.Background(), provider, "test-model", "", "", nil, "planner", "developer", config)
+	_, err := Handover(context.Background(), provider, "test-model", "", "", nil, "planner", "developer", config, HandoverOptions{})
 	if err == nil {
 		t.Error("Handover with nil messages should return error")
 	}

@@ -62,6 +62,28 @@ func TestAddGuardianUsagePreservesMainContextHintsAndPendingTiming(t *testing.T)
 	}
 }
 
+func TestAddHandoverUsagePreservesMainContextHintsAndPendingTiming(t *testing.T) {
+	s := NewSessionStats()
+	s.SetModel("main-model")
+	s.AddUsage(100, 20, 5, 0)
+	lastInput, lastOutput, peak := s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens
+	requestStart := time.Now().Add(-time.Second)
+	s.requestStartTime = requestStart
+
+	s.AddHandoverUsageForModel("helper-model", 1000, 50, 100, 10)
+
+	if s.lastInputTokens != lastInput || s.lastOutputTokens != lastOutput || s.peakInputTokens != peak {
+		t.Fatalf("handover usage changed main context hints: last=%d/%d peak=%d", s.lastInputTokens, s.lastOutputTokens, s.peakInputTokens)
+	}
+	if s.requestStartTime != requestStart {
+		t.Fatal("handover usage changed pending request timing")
+	}
+	calls, _ := s.UsageCalls()
+	if len(calls) != 2 || !calls[1].Handover || calls[1].Model != "helper-model" {
+		t.Fatalf("handover usage call = %+v", calls)
+	}
+}
+
 func TestAddSideQuestionUsagePreservesMainContextHintsAndPendingTiming(t *testing.T) {
 	stats := NewSessionStats()
 	stats.SetModel("main-model")

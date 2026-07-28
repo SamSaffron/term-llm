@@ -2,6 +2,26 @@ package llm
 
 import "testing"
 
+func TestBuildGeminiCLIContents_DeveloperRole(t *testing.T) {
+	_, contents := buildGeminiCLIContents([]Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "preserve this policy"}}},
+		UserText("create the briefing"),
+	})
+
+	if len(contents) != 1 || contents[0]["role"] != "user" {
+		t.Fatalf("contents = %#v, want one user message", contents)
+	}
+	parts, ok := contents[0]["parts"].([]map[string]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("user parts = %#v, want one text part", contents[0]["parts"])
+	}
+	got, _ := parts[0]["text"].(string)
+	want := "<developer>\npreserve this policy\n</developer>\n\ncreate the briefing"
+	if got != want {
+		t.Fatalf("user text = %q, want %q", got, want)
+	}
+}
+
 func TestBuildGeminiCLIContents_DropsDanglingToolCalls(t *testing.T) {
 	_, contents := buildGeminiCLIContents([]Message{
 		UserText("Run shell"),

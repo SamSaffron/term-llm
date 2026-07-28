@@ -8061,7 +8061,7 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 			if len(providersByCreate[providerName]) == 1 {
 				provider.AddTextResponse("old-1")
 			} else {
-				provider.AddTextResponse("handover doc")
+				provider.AddTurn(llm.MockTurn{Text: "handover doc", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3}})
 			}
 		case "new":
 			provider.AddError(errors.New("400 invalid_request: messages contain incompatible reasoning"))
@@ -8112,6 +8112,22 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 	if len(providersByCreate["old"]) < 2 || len(providersByCreate["old"][1].Requests) != 1 {
 		t.Fatalf("expected helper old provider to generate handover")
 	}
+	persisted, err := store.Get(context.Background(), "swap-handover")
+	if err != nil || persisted == nil {
+		t.Fatalf("Get session after successful handover swap: %v", err)
+	}
+	if persisted.InputTokens != 11 || persisted.OutputTokens != 3 {
+		t.Fatalf("persisted successful handover usage = %d/%d, want 11/3 exactly once", persisted.InputTokens, persisted.OutputTokens)
+	}
+	current, ok := manager.Get("swap-handover")
+	if !ok || current.cumulativeUsage.InputTokens != 11 || current.cumulativeUsage.OutputTokens != 3 {
+		t.Fatalf("successful runtime handover usage = %+v ok=%v, want 11 input/3 output", func() llm.Usage {
+			if current == nil {
+				return llm.Usage{}
+			}
+			return current.cumulativeUsage
+		}(), ok)
+	}
 
 	storedMessages, err := store.GetMessages(context.Background(), "swap-handover", 0, 0)
 	if err != nil {
@@ -8152,7 +8168,7 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 				provider.AddTextResponse("old-1")
 				provider.AddTextResponse("old-2")
 			} else {
-				provider.AddTextResponse("handover doc")
+				provider.AddTurn(llm.MockTurn{Text: "handover doc", Usage: llm.Usage{InputTokens: 11, OutputTokens: 3}})
 			}
 		case "new":
 			provider.AddError(errors.New("400 invalid_request: messages contain incompatible reasoning"))
@@ -8205,6 +8221,12 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 	}
 	if sess.ProviderKey != "old" || sess.Model != "old-model" {
 		t.Fatalf("session runtime after rollback = %s/%s, want old/old-model", sess.ProviderKey, sess.Model)
+	}
+	if sess.InputTokens != 11 || sess.OutputTokens != 3 {
+		t.Fatalf("session handover usage after rollback = %d/%d, want 11/3", sess.InputTokens, sess.OutputTokens)
+	}
+	if current.cumulativeUsage.InputTokens != 11 || current.cumulativeUsage.OutputTokens != 3 {
+		t.Fatalf("runtime handover usage after rollback = %+v, want 11 input/3 output", current.cumulativeUsage)
 	}
 	storedMessages, err := store.GetMessages(context.Background(), "swap-fail", 0, 0)
 	if err != nil {

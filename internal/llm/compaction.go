@@ -6,11 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
-
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
 const (
@@ -556,24 +553,13 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 		return result, nil
 	}
 
-	var reqMessages []Message
-	if systemPrompt != "" {
-		reqMessages = append(reqMessages, SystemText(systemPrompt))
-	}
-	reqMessages = append(reqMessages, prepareMessagesForSummaryHelper(prepared.SummaryMessages)...)
-
-	if inputLimit > 0 {
-		maxInputTokens := inputLimit * 3 / 4
-		reqMessages = trimMessagesToFit(reqMessages, maxInputTokens)
-	}
-
-	if len(reqMessages) > 0 {
-		lastRole := reqMessages[len(reqMessages)-1].Role
-		if lastRole == RoleUser || lastRole == RoleTool {
-			reqMessages = append(reqMessages, AssistantText("I'll now write the continuation brief."))
-		}
-	}
-	reqMessages = append(reqMessages, UserText(contextContinuationBriefPrompt))
+	reqMessages := buildHelperRequestMessages(
+		systemPrompt,
+		prepareMessagesForSummaryHelper(prepared.SummaryMessages),
+		inputLimit,
+		"I'll now write the continuation brief.",
+		UserText(contextContinuationBriefPrompt),
+	)
 
 	budget := config.SummaryTokenBudget
 	if budget <= 0 {
@@ -585,58 +571,27 @@ func SoftCompact(ctx context.Context, provider Provider, model, systemPrompt str
 		Model:           model,
 		Messages:        reqMessages,
 		MaxOutputTokens: budget,
+		MaxTurns:        1,
+		Ephemeral:       true,
 	})
 	if err != nil {
 		return fallbackToHard(fmt.Errorf("soft compaction stream failed: %w", err), Usage{})
 	}
 	defer stream.Close()
 
-	var brief strings.Builder
-	var reasoningSummary strings.Builder
-	var reasoningSummaryItemID string
-	var usage Usage
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fallbackToHard(fmt.Errorf("soft compaction recv failed: %w", err), usage)
-		}
-		switch event.Type {
-		case EventTextDelta:
-			brief.WriteString(event.Text)
-		case EventReasoningDelta:
-			if isDisplayableReasoningSummaryEvent(event) {
-				internalreasoning.AppendStreamItemText(&reasoningSummary, &reasoningSummaryItemID, event.Text, event.ReasoningItemID)
-				if len(event.ReasoningSummaryParts) > 0 {
-					reasoningSummary.Reset()
-					reasoningSummary.WriteString(strings.Join(event.ReasoningSummaryParts, "\n\n"))
-					if event.ReasoningItemID != "" {
-						reasoningSummaryItemID = event.ReasoningItemID
-					}
-				}
-			}
-		case EventUsage:
-			if event.Use != nil {
-				usage.Add(*event.Use)
-			}
-		case EventAttemptDiscard:
-			brief.Reset()
-			reasoningSummary.Reset()
-			reasoningSummaryItemID = ""
-			usage = Usage{}
-		}
+	collected, err := CollectTextStream(stream, nil)
+	if err != nil {
+		return fallbackToHard(fmt.Errorf("soft compaction recv failed: %w", err), collected.Usage)
 	}
 
-	briefText := continuationBriefFromTextAndReasoning(brief.String(), reasoningSummary.String())
+	briefText := continuationBriefFromTextAndReasoning(collected.Text, collected.ReasoningSummary)
 	if briefText == "" {
-		return fallbackToHard(fmt.Errorf("soft compaction produced empty brief"), usage)
+		return fallbackToHard(fmt.Errorf("soft compaction produced empty brief"), collected.Usage)
 	}
 
 	result := compactionResultFromBriefPrepared(systemPrompt, briefText, prepared, originalCount, config)
 	result.Model = strings.TrimSpace(model)
-	result.Usage = usage
+	result.Usage = collected.Usage
 	return result, nil
 }
 
@@ -1462,28 +1417,26 @@ func truncateVisible(text string, maxChars int) string {
 
 func runeLen(s string) int { return len([]rune(s)) }
 
-// isolatedConversationProvider returns a provider instance that can service
-// helper requests like compaction/handover without mutating the live
-// provider-side conversation state.
-func isolatedConversationProvider(provider Provider) Provider {
-	switch p := provider.(type) {
-	case *RetryProvider:
-		return &RetryProvider{inner: isolatedConversationProvider(p.inner), config: p.config}
-	case *OpenAIProvider:
-		clone := *p
-		clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
-		return &clone
-	case *ChatGPTProvider:
-		clone := *p
-		clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
-		return &clone
-	case *CopilotProvider:
-		clone := *p
-		clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
-		return &clone
-	default:
-		return provider
+// buildHelperRequestMessages constructs a bounded one-shot helper request. The
+// trailing framing should end in a user turn; bridge is inserted when history
+// otherwise ends in user/tool so provider role alternation remains valid.
+func buildHelperRequestMessages(systemPrompt string, history []Message, inputLimit int, bridge string, trailing ...Message) []Message {
+	capacity := len(history) + len(trailing) + 2
+	reqMessages := make([]Message, 0, capacity)
+	if strings.TrimSpace(systemPrompt) != "" {
+		reqMessages = append(reqMessages, SystemText(systemPrompt))
 	}
+	reqMessages = append(reqMessages, history...)
+	if inputLimit > 0 {
+		reqMessages = trimMessagesToFit(reqMessages, inputLimit*3/4)
+	}
+	if len(reqMessages) > 0 {
+		lastRole := reqMessages[len(reqMessages)-1].Role
+		if (lastRole == RoleUser || lastRole == RoleTool) && strings.TrimSpace(bridge) != "" {
+			reqMessages = append(reqMessages, AssistantText(bridge))
+		}
+	}
+	return append(reqMessages, trailing...)
 }
 
 // Compact generates a structured continuation brief for the older conversation
@@ -1513,32 +1466,13 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	}
 	prepared := prepareCompactionContext(messages, config, "")
 
-	// Build request: [system] + summary prefix messages + compaction instruction.
-	var reqMessages []Message
-	if systemPrompt != "" {
-		reqMessages = append(reqMessages, SystemText(systemPrompt))
-	}
-	reqMessages = append(reqMessages, prepareMessagesForSummaryHelper(prepared.SummaryMessages)...)
-
-	// If messages exceed the input limit, trim from the front (after system)
-	// to fit. This handles reactive compaction where we're already at or past
-	// the context window. Keep ~75% of the input limit for conversation
-	// messages, reserving the rest for the output budget and framing.
-	// Use provider-effective limit if set, else fall back to canonical.
-	if inputLimit > 0 {
-		maxInputTokens := inputLimit * 3 / 4
-		reqMessages = trimMessagesToFit(reqMessages, maxInputTokens)
-	}
-
-	// Ensure valid role alternation: if the last message is user or tool,
-	// insert a minimal assistant message before the compaction user message.
-	if len(reqMessages) > 0 {
-		lastRole := reqMessages[len(reqMessages)-1].Role
-		if lastRole == RoleUser || lastRole == RoleTool {
-			reqMessages = append(reqMessages, AssistantText("I'll now summarize our conversation."))
-		}
-	}
-	reqMessages = append(reqMessages, UserText(compactionPrompt))
+	reqMessages := buildHelperRequestMessages(
+		systemPrompt,
+		prepareMessagesForSummaryHelper(prepared.SummaryMessages),
+		inputLimit,
+		"I'll now summarize our conversation.",
+		UserText(compactionPrompt),
+	)
 
 	budget := config.SummaryTokenBudget
 	if budget <= 0 {
@@ -1556,52 +1490,20 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		Model:           model,
 		Messages:        reqMessages,
 		MaxOutputTokens: budget,
+		MaxTurns:        1,
+		Ephemeral:       true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compaction stream failed: %w", err)
 	}
 	defer stream.Close()
 
-	// Collect the structured continuation brief.
-	var brief strings.Builder
-	var reasoningSummary strings.Builder
-	var reasoningSummaryItemID string
-	var usage Usage
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("compaction recv failed: %w", err)
-		}
-		switch event.Type {
-		case EventTextDelta:
-			brief.WriteString(event.Text)
-		case EventReasoningDelta:
-			if isDisplayableReasoningSummaryEvent(event) {
-				internalreasoning.AppendStreamItemText(&reasoningSummary, &reasoningSummaryItemID, event.Text, event.ReasoningItemID)
-				if len(event.ReasoningSummaryParts) > 0 {
-					reasoningSummary.Reset()
-					reasoningSummary.WriteString(strings.Join(event.ReasoningSummaryParts, "\n\n"))
-					if event.ReasoningItemID != "" {
-						reasoningSummaryItemID = event.ReasoningItemID
-					}
-				}
-			}
-		case EventUsage:
-			if event.Use != nil {
-				usage.Add(*event.Use)
-			}
-		case EventAttemptDiscard:
-			brief.Reset()
-			reasoningSummary.Reset()
-			reasoningSummaryItemID = ""
-			usage = Usage{}
-		}
+	collected, err := CollectTextStream(stream, nil)
+	if err != nil {
+		return nil, fmt.Errorf("compaction recv failed: %w", err)
 	}
 
-	briefText := continuationBriefFromTextAndReasoning(brief.String(), reasoningSummary.String())
+	briefText := continuationBriefFromTextAndReasoning(collected.Text, collected.ReasoningSummary)
 	if briefText == "" {
 		return nil, fmt.Errorf("compaction produced empty brief")
 	}
@@ -1611,7 +1513,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// continuation brief, then a bounded raw suffix.
 	result := compactionResultFromBriefPrepared(systemPrompt, briefText, prepared, originalCount, config)
 	result.Model = strings.TrimSpace(model)
-	result.Usage = usage
+	result.Usage = collected.Usage
 	return result, nil
 }
 
@@ -1621,6 +1523,14 @@ type HandoverResult struct {
 	NewMessages []Message // [system] + [handover doc as user] + [assistant ack]
 	SourceAgent string
 	TargetAgent string
+	Model       string
+	Usage       Usage
+}
+
+// HandoverOptions controls whether generation may branch from live provider
+// state. Callers must only enable forking at a settled provider boundary.
+type HandoverOptions struct {
+	AllowProviderFork bool
 }
 
 const handoverPromptTemplate = `You are handing over this conversation to a different agent (%s -> %s). Create a structured handover briefing that the new agent can use to continue the work.
@@ -1634,91 +1544,132 @@ Your handover document must include:
 
 Be specific and concrete — include exact file paths, function names, error messages, and code snippets when relevant. The new agent has no other context beyond this document.
 
-Budget: keep your briefing under 3000 words.`
+Aim for roughly 800–1200 words. Prioritize exact current state, pending work, file paths, function names, errors, test results, and constraints. Remove narrative detail before removing facts needed to continue.`
+
+const handoverTriggerPrompt = "Create the handover briefing now."
 
 // handoverPrefix is prepended to the handover document in the reconstructed message history.
 func handoverPrefix(source, target string) string {
 	return fmt.Sprintf("[Agent Handover: @%s -> @%s]\n\n", source, target)
 }
 
+func conversationEndsAtSettledAssistant(messages []Message) bool {
+	last := len(messages) - 1
+	for last >= 0 && messages[last].Role == RoleEvent {
+		last--
+	}
+	if last < 0 || messages[last].Role != RoleAssistant {
+		return false
+	}
+	pending := make(map[string]struct{})
+	// Only unresolved calls in the current user turn can make the live provider
+	// boundary unsafe. An abandoned call in older local history cannot still be
+	// pending if the provider subsequently accepted another user turn.
+	start := 0
+	for i := last; i >= 0; i-- {
+		if messages[i].Role == RoleUser {
+			start = i
+			break
+		}
+	}
+	for _, message := range messages[start : last+1] {
+		for _, part := range message.Parts {
+			if part.ToolCall != nil {
+				if id := strings.TrimSpace(part.ToolCall.ID); id != "" {
+					pending[id] = struct{}{}
+				}
+			}
+			if part.ToolResult != nil {
+				delete(pending, strings.TrimSpace(part.ToolResult.ID))
+			}
+		}
+	}
+	return len(pending) == 0
+}
+
 // Handover generates a handover document from the conversation history using
 // the outgoing provider. This is the Tier 2 fallback used when file-based
 // handover is not available. The result contains reconstructed messages suitable
 // for the new agent: [new system prompt] + [handover doc] + [assistant ack].
-func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt, newSystemPrompt string, messages []Message, sourceAgent, targetAgent string, config CompactionConfig) (*HandoverResult, error) {
+func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt, newSystemPrompt string, messages []Message, sourceAgent, targetAgent string, config CompactionConfig, options HandoverOptions) (*HandoverResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages to hand over")
 	}
 
+	settledBoundary := conversationEndsAtSettledAssistant(messages)
 	messages = sanitizeToolHistory(messages)
 
-	// Build request: [system] + sanitized messages + handover instruction.
-	var reqMessages []Message
-	if currentSystemPrompt != "" {
-		reqMessages = append(reqMessages, SystemText(currentSystemPrompt))
-	}
-	reqMessages = append(reqMessages, messages...)
-
-	// Trim to fit input limits (same logic as Compact).
-	inputLimit := config.InputLimit
-	if inputLimit <= 0 {
-		inputLimit = InputLimitForModel(model)
-	}
-	if inputLimit > 0 {
-		maxInputTokens := inputLimit * 3 / 4
-		reqMessages = trimMessagesToFit(reqMessages, maxInputTokens)
-	}
-
-	// Ensure valid role alternation before appending the handover prompt.
-	if len(reqMessages) > 0 {
-		lastRole := reqMessages[len(reqMessages)-1].Role
-		if lastRole == RoleUser || lastRole == RoleTool {
-			reqMessages = append(reqMessages, AssistantText("I'll now prepare the handover briefing."))
-		}
-	}
-
 	prompt := fmt.Sprintf(handoverPromptTemplate, sourceAgent, targetAgent)
-	reqMessages = append(reqMessages, UserText(prompt))
+	policy := Message{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: prompt}}}
+	trigger := UserText(handoverTriggerPrompt)
+
+	// A settled assistant response is the exact provider boundary from which a
+	// handover can branch. Reuse that server-side state when the provider supports
+	// an isolated native fork; otherwise preserve the established full-history path.
+	var handoverProvider Provider
+	forked := options.AllowProviderFork && settledBoundary
+	if forked {
+		handoverProvider, forked = forkConversationProvider(provider)
+	}
+
+	var reqMessages []Message
+	if forked {
+		// Claude CLI consumes this out-of-band as --system-prompt. Responses
+		// continuation deliberately filters it and sends only policy + trigger.
+		if currentSystemPrompt != "" {
+			reqMessages = append(reqMessages, SystemText(currentSystemPrompt))
+		}
+		reqMessages = append(reqMessages, policy, trigger)
+	} else {
+		handoverProvider = isolatedConversationProvider(provider)
+		inputLimit := config.InputLimit
+		if inputLimit <= 0 {
+			inputLimit = InputLimitForModel(model)
+		}
+		reqMessages = buildHelperRequestMessages(
+			currentSystemPrompt,
+			messages,
+			inputLimit,
+			"I'll now prepare the handover briefing.",
+			policy,
+			trigger,
+		)
+	}
 
 	budget := 12_000 // Slightly larger budget than compaction for handover precision
 	budget = ClampOutputTokens(budget, model)
 
-	stream, err := isolatedConversationProvider(provider).Stream(ctx, Request{
-		Model:           model,
-		Messages:        reqMessages,
-		MaxOutputTokens: budget,
+	stream, err := handoverProvider.Stream(ctx, Request{
+		Model:                          model,
+		Messages:                       reqMessages,
+		MaxOutputTokens:                budget,
+		MaxTurns:                       1,
+		Ephemeral:                      !forked,
+		IncludeDeveloperInContinuation: forked,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("handover stream failed: %w", err)
 	}
 	defer stream.Close()
 
-	var document strings.Builder
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("handover recv failed: %w", err)
-		}
-		if event.Type == EventTextDelta {
-			document.WriteString(event.Text)
-		}
+	collected, err := CollectTextStream(stream, nil)
+	if err != nil {
+		return nil, fmt.Errorf("handover recv failed: %w", err)
 	}
-
-	if document.Len() == 0 {
+	if strings.TrimSpace(collected.Text) == "" {
 		return nil, fmt.Errorf("handover produced empty document")
 	}
 
 	// Reconstruct messages for the new agent with the new system prompt.
-	newMessages := ReconstructHandoverHistory(newSystemPrompt, document.String(), sourceAgent, targetAgent)
+	newMessages := ReconstructHandoverHistory(newSystemPrompt, collected.Text, sourceAgent, targetAgent)
 
 	return &HandoverResult{
-		Document:    document.String(),
+		Document:    collected.Text,
 		NewMessages: newMessages,
 		SourceAgent: sourceAgent,
 		TargetAgent: targetAgent,
+		Model:       strings.TrimSpace(model),
+		Usage:       collected.Usage,
 	}, nil
 }
 

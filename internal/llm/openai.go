@@ -140,13 +140,14 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	responsesReq := ResponsesRequest{
-		Model:            model,
-		Messages:         req.Messages,
-		FileUploadPolicy: p.effectiveFileUploadPolicy(),
-		Tools:            tools,
-		Include:          []string{"reasoning.encrypted_content"},
-		Stream:           true,
-		SessionID:        req.SessionID,
+		Model:                          model,
+		Messages:                       req.Messages,
+		IncludeDeveloperInContinuation: req.IncludeDeveloperInContinuation,
+		FileUploadPolicy:               p.effectiveFileUploadPolicy(),
+		Tools:                          tools,
+		Include:                        []string{"reasoning.encrypted_content"},
+		Stream:                         true,
+		SessionID:                      req.SessionID,
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
@@ -224,6 +225,26 @@ func (p *OpenAIProvider) ResetConversation() {
 	if p.responsesClient != nil {
 		p.responsesClient.ResetConversation()
 	}
+}
+
+func (p *OpenAIProvider) isolateHelperConversation() Provider {
+	clone := *p
+	clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
+	return &clone
+}
+
+func (p *OpenAIProvider) forkHelperConversation() (Provider, bool) {
+	client, ok := cloneResponsesClientForkConversation(p.responsesClient)
+	if !ok {
+		return nil, false
+	}
+	clone := *p
+	clone.responsesClient = client
+	// A handover fork reuses only the server-side conversation boundary. It must
+	// not inherit live execution features such as multi-agent or programmatic
+	// tool calling, which can make a one-shot briefing invoke unrelated tools.
+	clone.responsesOptions = ResponsesOptions{}
+	return &clone, true
 }
 
 // normalizeSchemaForOpenAI ensures schema meets OpenAI's requirements:

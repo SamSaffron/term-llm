@@ -135,6 +135,48 @@ mcp:
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`, `contain`.
 
+## Handing a conversation to another agent
+
+In chat, use `/handover` to prepare context for a different agent and start it in a new session:
+
+```text
+/handover @developer
+/handover @reviewer openai:gpt-5.6-sol
+```
+
+The source agent controls how the handover document is produced:
+
+```yaml
+enable_handover: true
+handover_mode: file # light, file, script, compress, or empty for auto
+handover_script: ./prepare-handover # required by script mode
+```
+
+| Mode | Behavior |
+|---|---|
+| `light` | Uses the latest assistant response without another model call. |
+| `file` | Reads the session's pinned handover document. The agent must have `enable_handover: true`. |
+| `script` | Runs `handover_script` after approval and uses its stdout. Shell operators are not accepted. |
+| `compress` | Asks the outgoing model for a structured continuation briefing. |
+| `empty` | Tries the maintained file first when handover files are enabled, then falls back to model-generated compression. |
+
+A handover target may also declare `handover_script`. Target-side scripts are shown in the preview first and run only after the operator confirms the handover.
+
+### Model-generated handover tiers
+
+When no maintained file, light response, or script supplies the document, term-llm uses one of two isolated model paths:
+
+1. **Native provider fork.** At a settled manual handover boundary, Claude CLI branches with `--resume ... --fork-session`, while the OpenAI Responses API branches from `previous_response_id`. OpenAI sends only the handover policy and short trigger as new input. Claude sends those same new conversational messages and re-applies the current source system prompt through `--system-prompt`. The live source conversation remains unchanged.
+2. **Ephemeral full-history fallback.** If provider state cannot be safely forked, term-llm sends the active post-compaction transcript to an isolated one-turn helper request. ChatGPT and Copilot currently use this path.
+
+Tool-initiated handovers deliberately do not fork the active provider. The parent model may still be waiting for the `initiate_handover` tool result, so an ephemeral helper avoids branching from an unresolved tool call or racing provider state.
+
+The generated briefing aims for roughly 800–1200 words and prioritizes current state, pending work, exact paths and functions, errors, test results, and constraints. The output-token ceiling remains higher than the visible word target because reasoning models may count hidden reasoning against the same allowance.
+
+The briefing is previewed before anything is committed. Confirming creates a new target-agent session through the normal startup pipeline, including its system prompt, skills, tools, permissions, MCP configuration, and working-directory binding. The source session is marked complete only after the target session is ready. Cancelling leaves the source session active.
+
+Any model call used to generate the briefing is charged to the source session and recorded as handover usage, even when the preview is later cancelled.
+
 ## Structured ask output
 
 Use `output_tool` when an agent must return a machine-consumable artifact to `term-llm ask` instead of relying on freeform prose. In `ask`, a configured output tool is the agent's final return channel: successful completion requires the model to call that tool. If the model naturally finishes without calling it, `ask` runs a constrained finalization pass that preserves the original tool context, forces the output tool when the provider supports named tool choice, and otherwise strongly instructs the model that the task is done and it must call the output tool. If the tool still is not called, `ask` fails nonzero and does not run `on_complete`.

@@ -2143,6 +2143,54 @@ func TestUpdate_CompactDone_PersistErrorDoesNotMutateMemory(t *testing.T) {
 	}
 }
 
+func TestSnapshotHelperConversationUsesActiveCompactionBoundary(t *testing.T) {
+	m := newTestChatModel(false)
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.SystemText("system policy"), 0),
+		*session.NewMessage(m.sess.ID, llm.UserText("hidden user"), 1),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("hidden assistant"), 2),
+		*session.NewMessage(m.sess.ID, llm.UserText("active summary"), 3),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("active acknowledgement"), 4),
+	}
+	m.compactionIdx = 3
+
+	systemPrompt, messages := m.snapshotActiveHelperConversation()
+	if systemPrompt != "system policy" {
+		t.Fatalf("system prompt = %q, want system policy", systemPrompt)
+	}
+	if len(messages) != 2 || llm.MessageText(messages[0]) != "active summary" || llm.MessageText(messages[1]) != "active acknowledgement" {
+		t.Fatalf("active helper messages = %#v", messages)
+	}
+}
+
+func TestUpdateHandoverDoneRecordsHelperUsage(t *testing.T) {
+	store := &mockStore{}
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = &session.Session{ID: "source-session"}
+
+	_, _ = m.Update(handoverDoneMsg{
+		result: &llm.HandoverResult{
+			Document: "brief",
+			Model:    "helper-model",
+			Usage:    llm.Usage{InputTokens: 100, OutputTokens: 20, CachedInputTokens: 50},
+		},
+		agentName: "target",
+	})
+
+	if len(store.metricUpdates) != 1 {
+		t.Fatalf("metric updates = %+v, want one handover update", store.metricUpdates)
+	}
+	update := store.metricUpdates[0]
+	if update.id != "source-session" || update.input != 100 || update.output != 20 || update.cached != 50 {
+		t.Fatalf("handover metric update = %+v", update)
+	}
+	calls, _ := m.stats.UsageCalls()
+	if len(calls) != 1 || !calls[0].Handover || calls[0].Model != "helper-model" {
+		t.Fatalf("handover usage calls = %+v", calls)
+	}
+}
+
 func TestCmdHandover_StartDoesNotPrintStatusLine(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}

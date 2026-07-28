@@ -940,6 +940,7 @@ func buildGeminiCLIContents(messages []Message) (string, []map[string]interface{
 	messages = sanitizeToolHistory(messages)
 
 	var systemParts []string
+	var pendingDeveloper []string
 	contents := make([]map[string]interface{}, 0, len(messages))
 
 	for i := 0; i < len(messages); i++ {
@@ -949,8 +950,18 @@ func buildGeminiCLIContents(messages []Message) (string, []map[string]interface{
 			if text := collectTextParts(msg.Parts); text != "" {
 				systemParts = append(systemParts, text)
 			}
+		case RoleDeveloper:
+			if text := collectTextParts(msg.Parts); text != "" {
+				pendingDeveloper = append(pendingDeveloper, text)
+			}
 		case RoleUser:
-			content := buildGeminiCLIUserContent(msg.Parts)
+			parts := msg.Parts
+			if len(pendingDeveloper) > 0 {
+				prefix := fmt.Sprintf("<developer>\n%s\n</developer>\n\n", strings.Join(pendingDeveloper, "\n\n"))
+				parts = prependTextToParts(prefix, parts)
+				pendingDeveloper = nil
+			}
+			content := buildGeminiCLIUserContent(parts)
 			if content != nil {
 				contents = append(contents, content)
 			}

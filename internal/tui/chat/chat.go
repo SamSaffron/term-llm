@@ -2168,6 +2168,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			}
 			return m.showFooterError("Handover failed: no result returned.")
 		}
+		m.recordHandoverUsage(context.Background(), sessionIDOf(m.sess), msg.result.Model, msg.result.Usage)
 		if msg.confirmed {
 			if m.pendingHandover == nil {
 				m.pendingHandover = &handoverDoneMsg{

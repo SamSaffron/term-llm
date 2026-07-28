@@ -386,7 +386,7 @@ func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseMo
 		return nil, fmt.Errorf("previous provider is unavailable for handover")
 	}
 	config := llm.DefaultCompactionConfig()
-	return llm.Handover(ctx, provider, previousModel, runtimeSystemPrompt(exec.previous), runtimeSystemPrompt(exec.candidate), messages, sourceLabel, targetLabel, config)
+	return llm.Handover(ctx, provider, previousModel, runtimeSystemPrompt(exec.previous), runtimeSystemPrompt(exec.candidate), messages, sourceLabel, targetLabel, config, llm.HandoverOptions{AllowProviderFork: true})
 }
 
 func runtimeSystemPrompt(rt *serveRuntime) string {
@@ -534,6 +534,46 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 	}
 }
 
+func addRuntimeUsage(rt *serveRuntime, usage llm.Usage) {
+	if rt == nil || usage.IsZero() {
+		return
+	}
+	rt.mu.Lock()
+	rt.cumulativeUsage.Add(usage)
+	rt.mu.Unlock()
+}
+
+func (s *serveServer) recordModelSwapHandoverUsage(ctx context.Context, sessionID string, exec *responseModelSwapExecution, usage llm.Usage) {
+	if exec == nil || usage.IsZero() {
+		return
+	}
+
+	// The source runtime survives rollback, so account there as soon as the
+	// helper finishes. The candidate receives the same cumulative usage after
+	// its retry history is seeded; only one of the two runtimes survives.
+	addRuntimeUsage(exec.previous, usage)
+
+	if s.store == nil || sessionID == "" || usage.BillableCountersZero() {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := s.store.UpdateMetrics(dbCtx, sessionID, 0, 0, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens); err != nil {
+		log.Printf("[serve] failed to persist model-swap handover usage for %s: %v", sessionID, err)
+		return
+	}
+	if exec.previous != nil {
+		exec.previous.mu.Lock()
+		if meta := exec.previous.sessionMeta; meta != nil {
+			meta.InputTokens += usage.InputTokens
+			meta.OutputTokens += usage.OutputTokens
+			meta.CachedInputTokens += usage.CachedInputTokens
+			meta.CacheWriteTokens += usage.CacheWriteTokens
+		}
+		exec.previous.mu.Unlock()
+	}
+}
+
 func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtime *serveRuntime, run *responseRun, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID, respID, model string, created int64, options startResponseRunOptions) {
 	exec := options.modelSwap
 	mgr := s.ensureResponseRuns()
@@ -651,6 +691,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		return
 	}
 
+	s.recordModelSwapHandoverUsage(runCtx, sessionID, exec, handover.Usage)
 	appendProgress("handover_done", fmt.Sprintf("Handover ready; retrying on %s…", exec.plan.targetLabel(runtime)))
 	seedRuntimeHistory(runtime, nil)
 	fallbackInput := append(copyLLMMessageSlice(handover.NewMessages), inputMessages...)
@@ -667,6 +708,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		failRun("invalid_request_error", modelSwapCombinedError(err, retryErr))
 		return
 	}
+	addRuntimeUsage(runtime, handover.Usage)
+	result.Usage.Add(handover.Usage)
+	result.SessionUsage.Add(handover.Usage)
 
 	if options.uiSession {
 		runtime.clearLastUIRunError()
@@ -725,6 +769,7 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 		s.restoreModelSwapRollback(ctx, sessionID, exec, runtime, "failed", "handover")
 		return serveRunResult{}, "", modelSwapCombinedError(err, handoverErr)
 	}
+	s.recordModelSwapHandoverUsage(ctx, sessionID, exec, handover.Usage)
 	seedRuntimeHistory(runtime, nil)
 	fallbackInput := append(copyLLMMessageSlice(handover.NewMessages), inputMessages...)
 	result, retryErr := runtime.Run(ctx, true, true, fallbackInput, llmReq)
@@ -733,6 +778,9 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 		s.restoreModelSwapRollback(ctx, sessionID, exec, runtime, "failed", "handover")
 		return serveRunResult{}, "", modelSwapCombinedError(err, retryErr)
 	}
+	addRuntimeUsage(runtime, handover.Usage)
+	result.Usage.Add(handover.Usage)
+	result.SessionUsage.Add(handover.Usage)
 	exec.markCommitted()
 	s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "")
 	s.persistModelSwapMarker(ctx, sessionID, exec.plan, runtime, "succeeded", "handover")

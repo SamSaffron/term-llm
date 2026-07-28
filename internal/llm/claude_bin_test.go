@@ -971,6 +971,65 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_t
 	}
 }
 
+func TestHandoverClaudeBinForkSendsOnlyHelperSuffix(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	stdinFile := filepath.Join(dir, "stdin.txt")
+	claudePath := filepath.Join(dir, "claude")
+	const script = `#!/bin/sh
+printf '%s\n' "$@" > "$CLAUDE_ARGS_FILE"
+cat > "$CLAUDE_STDIN_FILE"
+printf '%s\n' '{"type":"system","session_id":"forked-session","model":"sonnet","tools":[]}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"handover brief"}}}'
+printf '%s\n' '{"type":"result","is_error":false,"result":"handover brief","usage":{"input_tokens":5,"output_tokens":3,"cache_read_input_tokens":100}}'
+`
+	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CLAUDE_ARGS_FILE", argsFile)
+	t.Setenv("CLAUDE_STDIN_FILE", stdinFile)
+
+	live := NewClaudeBinProvider("sonnet", nil)
+	live.sessionID = "live-session"
+	live.messagesSent = 99 // Deliberately unrelated to the helper request shape.
+	result, err := Handover(context.Background(), live, "sonnet", "system policy", "", []Message{
+		UserText("old conversation sentinel"),
+		AssistantText("settled response"),
+	}, "source", "target", DefaultCompactionConfig(), HandoverOptions{AllowProviderFork: true})
+	if err != nil {
+		t.Fatalf("Handover: %v", err)
+	}
+	if result.Document != "handover brief" {
+		t.Fatalf("document = %q", result.Document)
+	}
+
+	argsBytes, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsBytes)
+	if !strings.Contains(args, "--resume\nlive-session\n") || !strings.Contains(args, "--fork-session\n") {
+		t.Fatalf("fork args missing resume/fork:\n%s", args)
+	}
+	stdinBytes, err := os.ReadFile(stdinFile)
+	if err != nil {
+		t.Fatalf("read stdin: %v", err)
+	}
+	stdin := string(stdinBytes)
+	if strings.Contains(stdin, "old conversation sentinel") || strings.Contains(stdin, "settled response") {
+		t.Fatalf("fork stdin replayed parent transcript:\n%s", stdin)
+	}
+	for _, want := range []string{"handing over", handoverTriggerPrompt} {
+		if !strings.Contains(stdin, want) {
+			t.Fatalf("fork stdin missing %q:\n%s", want, stdin)
+		}
+	}
+	if live.sessionID != "live-session" || live.messagesSent != 99 {
+		t.Fatalf("live provider mutated: session=%q messages=%d", live.sessionID, live.messagesSent)
+	}
+}
+
 func TestClaudeBinProvider_EphemeralToolStreamExposesBridgeWhenStandalone(t *testing.T) {
 	dir := t.TempDir()
 	readyFile := dir + "/ready"

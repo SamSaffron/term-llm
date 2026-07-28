@@ -14,6 +14,25 @@ import (
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
+func TestBuildGeminiContents_DeveloperRole(t *testing.T) {
+	_, contents := buildGeminiContents([]Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "preserve this policy"}}},
+		UserText("create the briefing"),
+	})
+
+	if len(contents) != 1 || contents[0].Role != geminiRoleUser {
+		t.Fatalf("contents = %#v, want one user message", contents)
+	}
+	if len(contents[0].Parts) != 1 {
+		t.Fatalf("user parts = %#v, want one text part", contents[0].Parts)
+	}
+	got := contents[0].Parts[0].Text
+	want := "<developer>\npreserve this policy\n</developer>\n\ncreate the briefing"
+	if got != want {
+		t.Fatalf("user text = %q, want %q", got, want)
+	}
+}
+
 func TestBuildGeminiContents_DropsDanglingToolCalls(t *testing.T) {
 	_, contents := buildGeminiContents([]Message{
 		UserText("Run shell"),

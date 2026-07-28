@@ -80,6 +80,7 @@ type ResponsesRequest struct {
 	Input                           []ResponsesInputItem         `json:"input"`
 	Messages                        []Message                    `json:"-"`               // Optional raw transcript for lazy input materialization
 	ExtractInstructionsFromMessages bool                         `json:"-"`               // When lazily materializing Input from Messages, omit system messages because they are sent via Instructions.
+	IncludeDeveloperInContinuation  bool                         `json:"-"`               // Include the developer policy immediately preceding the latest user continuation.
 	Tools                           []any                        `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
 	ToolChoice                      any                          `json:"tool_choice,omitempty"`
 	ParallelToolCalls               *bool                        `json:"parallel_tool_calls,omitempty"`
@@ -353,6 +354,10 @@ func BuildResponsesContinuationInput(messages []Message) []ResponsesInputItem {
 // payload needed for a server-state continuation, using the supplied file policy
 // for any new file parts.
 func BuildResponsesContinuationInputWithFilePolicy(messages []Message, policy *FileUploadPolicy) []ResponsesInputItem {
+	return buildResponsesContinuationInputWithFilePolicy(messages, policy, false)
+}
+
+func buildResponsesContinuationInputWithFilePolicy(messages []Message, policy *FileUploadPolicy, includeDeveloper bool) []ResponsesInputItem {
 	messages = FilterConversationMessages(messages)
 	if len(messages) == 0 {
 		return nil
@@ -378,6 +383,9 @@ func BuildResponsesContinuationInputWithFilePolicy(messages []Message, policy *F
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i].Role == RoleUser {
 				start = i
+				if includeDeveloper && i > 0 && messages[i-1].Role == RoleDeveloper {
+					start = i - 1
+				}
 				break
 			}
 		}
@@ -767,6 +775,30 @@ func (c *ResponsesClient) setLastResponseIDIfGeneration(generation uint64, respo
 }
 
 func cloneResponsesClientFreshConversation(c *ResponsesClient) *ResponsesClient {
+	return cloneResponsesClient(c)
+}
+
+// cloneResponsesClientForkConversation creates an independent client whose
+// first request branches from the live client's current server-side response.
+// The clone may advance its own response chain without mutating the live one.
+func cloneResponsesClientForkConversation(c *ResponsesClient) (*ResponsesClient, bool) {
+	if c == nil || c.DisableServerState {
+		return nil, false
+	}
+	lastResponseID, generation, _ := c.responseState()
+	if lastResponseID == "" {
+		return nil, false
+	}
+	clone := cloneResponsesClient(c)
+	clone.LastResponseID = lastResponseID
+	clone.responseStateGeneration = generation
+	// Helper requests do not carry the main runtime's session ID. Pin the fork
+	// to their empty session key so ResponsesClient uses the copied parent.
+	clone.responseStateSessionID = ""
+	return clone, true
+}
+
+func cloneResponsesClient(c *ResponsesClient) *ResponsesClient {
 	if c == nil {
 		return nil
 	}
@@ -820,7 +852,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			return continuationInput
 		}
 		if len(req.Messages) > 0 {
-			continuationInput = BuildResponsesContinuationInputWithFilePolicy(req.Messages, req.FileUploadPolicy)
+			continuationInput = buildResponsesContinuationInputWithFilePolicy(req.Messages, req.FileUploadPolicy, req.IncludeDeveloperInContinuation)
 		} else {
 			continuationInput = filterToNewInput(buildFullInput())
 		}
