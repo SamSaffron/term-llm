@@ -144,6 +144,54 @@ func (f *fakeBotSender) overLimitEditTexts() []string {
 	return out
 }
 
+type pacedFinalBotSender struct {
+	*fakeBotSender
+	mu               sync.Mutex
+	minEditInterval  time.Duration
+	lastEdit         time.Time
+	rejectNextEdit   bool
+	rateLimitedEdits int
+}
+
+func (f *pacedFinalBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
+	if _, ok := c.(tgbotapi.EditMessageTextConfig); ok {
+		f.mu.Lock()
+		now := time.Now()
+		if f.rejectNextEdit {
+			f.rejectNextEdit = false
+			f.rateLimitedEdits++
+			f.mu.Unlock()
+			return tgbotapi.Message{}, &tgbotapi.Error{Code: http.StatusTooManyRequests, Message: "Too Many Requests"}
+		}
+		if !f.lastEdit.IsZero() && now.Sub(f.lastEdit) < f.minEditInterval {
+			f.rateLimitedEdits++
+			f.mu.Unlock()
+			return tgbotapi.Message{}, &tgbotapi.Error{Code: http.StatusTooManyRequests, Message: "Too Many Requests"}
+		}
+		f.lastEdit = now
+		f.mu.Unlock()
+	}
+	return f.fakeBotSender.Send(c)
+}
+
+func (f *pacedFinalBotSender) rateLimitCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rateLimitedEdits
+}
+
+type permanentFinalEditErrorBotSender struct {
+	*fakeBotSender
+	err error
+}
+
+func (f *permanentFinalEditErrorBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
+	if _, ok := c.(tgbotapi.EditMessageTextConfig); ok {
+		return tgbotapi.Message{}, f.err
+	}
+	return f.fakeBotSender.Send(c)
+}
+
 type blockingTextProvider struct {
 	text           string
 	firstChunkSent chan struct{}
@@ -773,12 +821,20 @@ func TestStreamReply_FinalEditChunksFastLongResponse(t *testing.T) {
 
 	mgr, sess := newTestMgrAndSession(h)
 	mgr.tickerInterval = time.Hour
-	bot := &fakeBotSender{maxEditRunes: telegramMaxMessageLen}
+	mgr.editInterval = 10 * time.Millisecond
+	bot := &pacedFinalBotSender{
+		fakeBotSender:   &fakeBotSender{maxEditRunes: telegramMaxMessageLen},
+		minEditInterval: mgr.editInterval,
+		rejectNextEdit:  true,
+	}
 
 	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
 		t.Fatalf("streamReply returned error: %v", err)
 	}
 
+	if got := bot.rateLimitCount(); got != 1 {
+		t.Fatalf("rate-limited edit count = %d; want the injected first failure only", got)
+	}
 	if rejected := bot.overLimitEditTexts(); len(rejected) != 0 {
 		t.Fatalf("attempted %d over-limit edits; first had %d runes", len(rejected), utf8.RuneCountInString(rejected[0]))
 	}
@@ -794,6 +850,26 @@ func TestStreamReply_FinalEditChunksFastLongResponse(t *testing.T) {
 	}
 	if got := strings.Join(edits, ""); got != response {
 		t.Fatalf("joined edit chunks length = %d; want %d", len(got), len(response))
+	}
+}
+
+func TestStreamReply_FinalEditPermanentFailureReturnsError(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("complete answer")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.tickerInterval = time.Hour
+	bot := &permanentFinalEditErrorBotSender{
+		fakeBotSender: &fakeBotSender{},
+		err:           &tgbotapi.Error{Code: http.StatusBadRequest, Message: "message cannot be edited"},
+	}
+
+	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+	if err == nil {
+		t.Fatal("streamReply returned nil after permanent final edit failure")
+	}
+	if !strings.Contains(err.Error(), "deliver complete Telegram response") {
+		t.Fatalf("streamReply error = %q; want final delivery context", err)
 	}
 }
 

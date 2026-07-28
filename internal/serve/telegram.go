@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +32,9 @@ import (
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
+const telegramFinalDeliveryTimeout = 30 * time.Second
+const telegramFinalDeliveryMaxAttempts = 3
+const telegramTransientRetryDelay = 500 * time.Millisecond
 
 // defaultStreamEventTimeout is used when telegramSessionMgr.streamEventTimeout is zero.
 const defaultStreamEventTimeout = 10 * time.Minute
@@ -125,6 +130,35 @@ func (r *telegramCancelOnCloseReadCloser) Close() error {
 // handleMessage, allowing tests to supply a fake without a live connection.
 type botSender interface {
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+}
+
+func telegramSendErrorRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *tgbotapi.Error
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == http.StatusTooManyRequests || apiErr.Code == http.StatusRequestTimeout || apiErr.Code >= 500
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") || strings.Contains(msg, "too many requests")
+}
+
+func telegramSendRetryDelay(err error, editInterval time.Duration) time.Duration {
+	var apiErr *tgbotapi.Error
+	if errors.As(err, &apiErr) {
+		if apiErr.RetryAfter > 0 {
+			return time.Duration(apiErr.RetryAfter) * time.Second
+		}
+		if apiErr.Code == http.StatusTooManyRequests && editInterval > 0 {
+			return editInterval
+		}
+	}
+	return telegramTransientRetryDelay
 }
 
 // botFileGetter is the subset of tgbotapi.BotAPI used for downloading files.
@@ -561,6 +595,7 @@ type telegramSessionMgr struct {
 	allowedUsernames map[string]struct{}
 	messageSlots     chan struct{}
 	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
+	editInterval     time.Duration // 0 means use minEditInterval; overridden in tests
 
 	// streamEventTimeout bounds how long the stream watchdog waits between events
 	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
@@ -1912,12 +1947,18 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	editInterval := m.editInterval
+	if editInterval <= 0 {
+		editInterval = minEditInterval
+	}
+
 	currentMsgID := placeholder.MessageID
 	msgStart := 0       // byte offset in the full text where the current Telegram message begins
 	needNewMsg := false // true when overflow happened but next placeholder not yet created
 
 	var lastSentContent string
 	var lastEditTime time.Time
+	var lastSuccessfulEditTime time.Time
 	lastVisibleChange := time.Now()
 	streamStart := time.Now()
 	spinChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
@@ -1927,7 +1968,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		if !force && content == lastSentContent {
 			return false
 		}
-		if !force && !lastEditTime.IsZero() && time.Since(lastEditTime) < minEditInterval {
+		if !force && !lastEditTime.IsZero() && time.Since(lastEditTime) < editInterval {
 			return false
 		}
 		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
@@ -1941,6 +1982,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		contentChanged := content != lastSentContent
 		lastSentContent = content
 		lastEditTime = time.Now()
+		lastSuccessfulEditTime = lastEditTime
 		if contentChanged {
 			lastVisibleChange = lastEditTime
 		}
@@ -1978,6 +2020,104 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			needNewMsg = true
 		}
 		return prose, true
+	}
+
+	waitForFinalDelay := func(deliveryCtx context.Context, delay time.Duration) error {
+		if err := deliveryCtx.Err(); err != nil {
+			return err
+		}
+		if delay <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-deliveryCtx.Done():
+			return deliveryCtx.Err()
+		}
+	}
+
+	waitForFinalPace := func(deliveryCtx context.Context) error {
+		if lastSuccessfulEditTime.IsZero() {
+			return nil
+		}
+		return waitForFinalDelay(deliveryCtx, time.Until(lastSuccessfulEditTime.Add(editInterval)))
+	}
+
+	sendFinal := func(deliveryCtx context.Context, chattable tgbotapi.Chattable) (tgbotapi.Message, error) {
+		var lastErr error
+		for attempt := 1; attempt <= telegramFinalDeliveryMaxAttempts; attempt++ {
+			if err := waitForFinalPace(deliveryCtx); err != nil {
+				return tgbotapi.Message{}, fmt.Errorf("pace final Telegram delivery: %w", err)
+			}
+			msg, sendErr := bot.Send(chattable)
+			if sendErr == nil {
+				return msg, nil
+			}
+			lastErr = sendErr
+			if !telegramSendErrorRetryable(sendErr) {
+				return tgbotapi.Message{}, fmt.Errorf("final Telegram delivery failed: %w", sendErr)
+			}
+			if attempt == telegramFinalDeliveryMaxAttempts {
+				break
+			}
+			retryDelay := telegramSendRetryDelay(sendErr, editInterval)
+			log.Printf("[telegram] transient final delivery failure (chat %d, attempt %d/%d), retrying in %s: %v", chatID, attempt, telegramFinalDeliveryMaxAttempts, retryDelay, sendErr)
+			if err := waitForFinalDelay(deliveryCtx, retryDelay); err != nil {
+				return tgbotapi.Message{}, fmt.Errorf("final Telegram delivery retry interrupted (%v): %w", lastErr, err)
+			}
+		}
+		return tgbotapi.Message{}, fmt.Errorf("final Telegram delivery failed after %d attempts: %w", telegramFinalDeliveryMaxAttempts, lastErr)
+	}
+
+	sendFinalEdit := func(deliveryCtx context.Context, msgID int, content string) error {
+		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
+		edit.ParseMode = tgbotapi.ModeHTML
+		if _, err := sendFinal(deliveryCtx, edit); err != nil {
+			return err
+		}
+		contentChanged := content != lastSentContent
+		lastSentContent = content
+		lastEditTime = time.Now()
+		lastSuccessfulEditTime = lastEditTime
+		if contentChanged {
+			lastVisibleChange = lastEditTime
+		}
+		return nil
+	}
+
+	ensureFinalCurrentMessage := func(deliveryCtx context.Context) error {
+		if !needNewMsg {
+			return nil
+		}
+		newMsg, err := sendFinal(deliveryCtx, tgbotapi.NewMessage(chatID, "⏳"))
+		if err != nil {
+			return fmt.Errorf("send continuation placeholder: %w", err)
+		}
+		currentMsgID = newMsg.MessageID
+		lastSentContent = ""
+		lastEditTime = time.Time{}
+		lastVisibleChange = time.Now()
+		needNewMsg = false
+		return nil
+	}
+
+	sendFinalProseChunks := func(deliveryCtx context.Context, prose string) (string, error) {
+		for utf8.RuneCountInString(prose) > telegramMaxMessageLen {
+			if err := ensureFinalCurrentMessage(deliveryCtx); err != nil {
+				return prose, err
+			}
+			chunk, splitAtBytes := prefixRunes(prose, telegramMaxMessageLen)
+			if err := sendFinalEdit(deliveryCtx, currentMsgID, chunk); err != nil {
+				return prose, err
+			}
+			msgStart += splitAtBytes
+			prose = prose[splitAtBytes:]
+			needNewMsg = true
+		}
+		return prose, nil
 	}
 
 	salvagePartialHistory := func(persistCtx context.Context, fallbackOp string) {
@@ -2203,6 +2343,10 @@ loop:
 	imagesToSend := append([]string(nil), collectedImages...)
 	textMu.Unlock()
 
+	finalDeliveryCtx, cancelFinalDelivery := context.WithTimeout(ctx, telegramFinalDeliveryTimeout)
+	defer cancelFinalDelivery()
+	var finalDeliveryErr error
+
 	prose := ""
 	if msgStart < len(full) {
 		prose = full[msgStart:]
@@ -2210,21 +2354,21 @@ loop:
 	switch {
 	case prose != "":
 		// There is new content to show in the current window.
-		prose, ok := sendProseChunks(prose, true)
-		if !ok {
+		prose, finalDeliveryErr = sendFinalProseChunks(finalDeliveryCtx, prose)
+		if finalDeliveryErr != nil {
 			break
 		}
-		if !ensureCurrentMessage() {
+		if finalDeliveryErr = ensureFinalCurrentMessage(finalDeliveryCtx); finalDeliveryErr != nil {
 			break
 		}
-		sendEdit(currentMsgID, prose, true)
+		finalDeliveryErr = sendFinalEdit(finalDeliveryCtx, currentMsgID, prose)
 	case full == "":
 		// Nothing was produced at all — show a fallback in the original placeholder.
+		fallback := "(no response)"
 		if ran {
-			sendEdit(currentMsgID, "(done)", true)
-		} else {
-			sendEdit(currentMsgID, "(no response)", true)
+			fallback = "(done)"
 		}
+		finalDeliveryErr = sendFinalEdit(finalDeliveryCtx, currentMsgID, fallback)
 		if m.settings.Debug || m.settings.DebugRaw {
 			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
 				chatID,
@@ -2333,6 +2477,9 @@ loop:
 		})
 	}
 
+	if finalDeliveryErr != nil {
+		return fmt.Errorf("deliver complete Telegram response: %w", finalDeliveryErr)
+	}
 	return nil
 }
 
