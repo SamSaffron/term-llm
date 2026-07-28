@@ -652,7 +652,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
       setConnectionState('', '');
       setStreaming(false);
     }
-    app.settleOrphanedEvaluatingInterjections?.(session);
+    app.retireUnownedInterjectionIntents?.(session);
     requeuePendingInterjections(session);
     drainInterruptQueueIfIdle(session);
   }

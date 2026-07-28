@@ -46,7 +46,7 @@ const discardPendingInterruptCommit = (messageId) => {
   state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.messageId !== messageId);
 };
 
-const settleOrphanedEvaluatingInterjections = (session) => {
+const retireUnownedInterjectionIntents = (session) => {
   if (!session?.id) return 0;
   const tracked = new Set();
   for (const entry of state.pendingInterruptCommits) {
@@ -56,14 +56,24 @@ const settleOrphanedEvaluatingInterjections = (session) => {
     if (entry.sessionId === session.id && entry.messageId) tracked.add(entry.messageId);
   }
 
-  let settled = 0;
+  const retiredIds = [];
   for (const message of window.TermLLMConversation.sessionMessages(session)) {
-    if (message?.role !== 'user' || message.interruptState !== 'evaluating' || tracked.has(message.id)) continue;
-    setInterjectionPhase(session, message.id, 'failed');
-    settled += 1;
+    if (message?.role !== 'user'
+      || (message.interruptState !== 'evaluating' && message.interruptState !== 'error')
+      || tracked.has(message.id)) continue;
+    const removed = app.retirePendingIntent?.(session, message.id) || [];
+    if (removed.length > 0) retiredIds.push(message.id);
   }
-  if (settled > 0) app.persistPendingIntents?.(session);
-  return settled;
+  if (retiredIds.length === 0) return 0;
+
+  app.refreshSessionMessagesFromTranscript?.(session);
+  const conversationDOM = conversationDOMFor?.(session);
+  if (conversationDOM) {
+    for (const node of conversationDOM.querySelectorAll('[data-message-id]')) {
+      if (retiredIds.includes(node.getAttribute('data-message-id'))) node.remove();
+    }
+  }
+  return retiredIds.length;
 };
 
 const requeueUncommittedInterrupts = (session) => {
@@ -354,7 +364,7 @@ Object.assign(app, {
   trackPendingInterruptCommit,
   resolvePendingInterruptCommitById,
   discardPendingInterruptCommit,
-  settleOrphanedEvaluatingInterjections,
+  retireUnownedInterjectionIntents,
   requeueUncommittedInterrupts,
   drainInterruptQueueIfIdle,
   setInterruptMessageState,

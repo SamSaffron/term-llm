@@ -3271,7 +3271,7 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
   const name = 'idle session sync rescues pending interrupt commits';
   const sendCalls = [];
   const requeueCalls = [];
-  const settleCalls = [];
+  const retireCalls = [];
   let appRef = null;
 
   const { app } = await createSessionsHarness({
@@ -3306,8 +3306,8 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
       });
     },
     appOverrides: {
-      settleOrphanedEvaluatingInterjections(session) {
-        settleCalls.push(session.id);
+      retireUnownedInterjectionIntents(session) {
+        retireCalls.push(session.id);
       },
       requeueUncommittedInterrupts(session) {
         requeueCalls.push(session.id);
@@ -3359,8 +3359,8 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
 
   await app.syncActiveSessionFromServer(session, false);
 
-  if (settleCalls.length !== 1 || settleCalls[0] !== session.id) {
-    fail(name, 'expected idle sync to settle orphaned evaluating interjections', JSON.stringify(settleCalls));
+  if (retireCalls.length !== 1 || retireCalls[0] !== session.id) {
+    fail(name, 'expected idle sync to retire unowned interjection intents', JSON.stringify(retireCalls));
     return;
   }
   if (requeueCalls.length !== 1 || requeueCalls[0] !== session.id) {
