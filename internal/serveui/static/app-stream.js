@@ -1235,15 +1235,14 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
 const cancelActiveResponse = async (session) => {
   const responseId = String(session?.activeResponseId || state.currentStreamResponseId || '').trim();
 
-  // Instant UI feedback: tear down the local stream before the server POST.
-  // If the run is blocked in a tool (e.g. a shell tool hung on cmd.Wait),
-  // the /cancel POST can take seconds to return. Aborting the reader here
-  // makes Stop feel responsive; the POST below still drives the
-  // authoritative server-side cancel.
+  // Instant UI feedback: fully detach the local stream before the server POST.
+  // Merely aborting its controller leaves the controller registered until the
+  // async reader unwinds. A fast /cancel response can then schedule a state poll
+  // that refuses to run because it still sees that stale controller.
+  // Detaching synchronously makes Stop final locally; the POST below still
+  // drives the authoritative server-side cancel.
   state.expectCanceledRun = true;
-  if (state.abortController) {
-    state.abortController.abort();
-  }
+  detachResponseStream();
   setConnectionState('Cancelling\u2026');
 
   if (!responseId) {

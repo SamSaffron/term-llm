@@ -4644,7 +4644,9 @@ async function testCancelActiveResponseTearsDownLocallyBeforeServerPost() {
   const { app, state, connectionStates, getCancelRequested, releaseCancel, cleanup } = harness;
 
   const controller = new AbortController();
+  state.streaming = true;
   state.abortController = controller;
+  state.currentStreamSessionId = 'session_1';
   state.currentStreamResponseId = 'resp_test';
   const session = { id: 'session_1', activeResponseId: 'resp_test' };
   state.sessions = [session];
@@ -4657,6 +4659,18 @@ async function testCancelActiveResponseTearsDownLocallyBeforeServerPost() {
 
   if (!controller.signal.aborted) {
     fail(name, 'abortController was not aborted synchronously');
+    releaseCancel();
+    await cancelPromise.catch(() => {});
+    await cleanup();
+    return;
+  }
+  if (state.abortController || state.currentStreamSessionId || state.currentStreamResponseId || state.streaming) {
+    fail(name, 'local stream ownership was not cleared synchronously', JSON.stringify({
+      hasController: Boolean(state.abortController),
+      streamSessionId: state.currentStreamSessionId,
+      streamResponseId: state.currentStreamResponseId,
+      streaming: state.streaming,
+    }));
     releaseCancel();
     await cancelPromise.catch(() => {});
     await cleanup();
