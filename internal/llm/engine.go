@@ -2190,14 +2190,9 @@ turnLoop:
 			scratchpadCommitted = true
 			return nil
 		}
-		// fireSnapshot invokes the AssistantSnapshotCallback with the currently
-		// accumulated assistant state plus the supplied tool calls. Called before
-		// each EventToolCall send so consumers persist "as we go" — content
-		// survives process death between emission and tool execution.
-		fireSnapshot := func(calls []ToolCall) {
-			if snapshotCallback == nil {
-				return
-			}
+		// buildPartialAssistant materializes the assistant message accumulated so
+		// far in this turn, including the supplied tool calls.
+		buildPartialAssistant := func(calls []ToolCall) Message {
 			partial := ensureToolCallIDs(calls)
 			partial = dedupeToolCalls(partial)
 			var msg Message
@@ -2217,7 +2212,17 @@ turnLoop:
 					reasoningKind,
 				)
 			}
-			msg = attachProviderReplayParts(msg, providerReplayParts)
+			return attachProviderReplayParts(msg, providerReplayParts)
+		}
+		// fireSnapshot invokes the AssistantSnapshotCallback with the currently
+		// accumulated assistant state plus the supplied tool calls. Called before
+		// each EventToolCall send so consumers persist "as we go" — content
+		// survives process death between emission and tool execution.
+		fireSnapshot := func(calls []ToolCall) {
+			if snapshotCallback == nil {
+				return
+			}
+			msg := buildPartialAssistant(calls)
 			if len(msg.Parts) == 0 {
 				return
 			}
@@ -2385,8 +2390,7 @@ turnLoop:
 				}
 			}
 
-			transcriptForApproval := append(append([]Message(nil), req.ApprovalTranscriptPrefix...), req.Messages...)
-			transcriptForApproval = append(transcriptForApproval, assistantMsg)
+			transcriptForApproval := buildApprovalTranscript(req.ApprovalTranscriptPrefix, req.Messages, assistantMsg)
 			toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw, transcriptForApproval)
 			if err != nil {
 				return false, err
@@ -2713,13 +2717,19 @@ turnLoop:
 						ToolName:   event.ToolName,
 						Tool:       event.Tool,
 					}
-					fireSnapshot(append(append([]ToolCall(nil), syncToolCalls...), *event.Tool))
+					pendingSyncCalls := append(append([]ToolCall(nil), syncToolCalls...), *event.Tool)
+					fireSnapshot(pendingSyncCalls)
 					if err := send.Send(forwardEvent); err != nil {
 						return err
 					}
 
-					// Handle synchronous execution: emit events to TUI and send result back
-					call, result, execErr := e.handleSyncToolExecution(ctx, event, send, req.Debug, req.DebugRaw)
+					// Handle synchronous execution: emit events to TUI and send result back.
+					// CLI-bridge providers (claude-bin, grok-bin, cursor-bin) execute
+					// inline and never reach executeToolCalls, so the approval transcript
+					// must be attached here or guardian reviews with no evidence.
+					syncToolCtx := ContextWithApprovalTranscript(ctx, buildApprovalTranscript(
+						req.ApprovalTranscriptPrefix, req.Messages, buildPartialAssistant(pendingSyncCalls), syncToolResults...))
+					call, result, execErr := e.handleSyncToolExecution(syncToolCtx, event, send, req.Debug, req.DebugRaw)
 					syncToolsExecuted = true
 					syncToolCalls = append(syncToolCalls, call)
 					if preserveInlineToolOrder {
@@ -3122,8 +3132,7 @@ turnLoop:
 			}
 		}
 
-		transcriptForApproval := append(append([]Message(nil), req.ApprovalTranscriptPrefix...), req.Messages...)
-		transcriptForApproval = append(transcriptForApproval, assistantMsg)
+		transcriptForApproval := buildApprovalTranscript(req.ApprovalTranscriptPrefix, req.Messages, assistantMsg)
 		toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw, transcriptForApproval)
 		if err != nil {
 			return err
@@ -3283,6 +3292,66 @@ func buildInterleavedAssistantMessageWithReasoningMetadata(orderedParts []Part, 
 
 	parts = append([]Part{metadataPart}, parts...)
 	return Message{Role: RoleAssistant, Parts: parts}
+}
+
+// buildApprovalTranscript assembles the policy-review evidence a tool approval
+// reviewer sees: review-only prefix (e.g. a parent agent's transcript), the
+// durable conversation, the in-progress assistant turn that requested the tool,
+// and any tool results already produced this turn. Guardian denies when it finds
+// no real operator message here, so every tool-execution path must build it.
+//
+// results are appended after the assistant message rather than interleaved with
+// the calls that produced them. Providers with an inline tool loop (grok-bin,
+// cursor-bin) can therefore present the Nth review with one assistant message
+// listing calls 1..N followed by results 1..N-1, which reads as a single planned
+// batch rather than a call/result chain. All evidence is present and guardian
+// stamps each entry with an index, but the causal link between a tool result and
+// a command it induced is flattened. Restoring it needs per-call assistant
+// segments, which the non-ordered path cannot currently reconstruct.
+func buildApprovalTranscript(prefix, messages []Message, assistant Message, results ...Message) []Message {
+	transcript := make([]Message, 0, len(prefix)+len(messages)+1+len(results))
+	transcript = appendApprovalEvidence(transcript, prefix...)
+	transcript = appendApprovalEvidence(transcript, messages...)
+	if stripped := withoutProviderReplayParts(assistant); len(stripped.Parts) > 0 {
+		transcript = append(transcript, stripped)
+	}
+	return appendApprovalEvidence(transcript, results...)
+}
+
+func appendApprovalEvidence(dst []Message, messages ...Message) []Message {
+	for _, msg := range messages {
+		dst = append(dst, withoutProviderReplayParts(msg))
+	}
+	return dst
+}
+
+// withoutProviderReplayParts drops opaque provider protocol state from a message
+// destined for policy review. Replay parts carry encrypted/provider-private
+// payloads that exist only to be echoed back to the provider; they are never
+// rendered as review evidence and must not reach a reviewer. Stripping happens
+// here rather than at each caller because durable history, a parent agent's
+// prefix, and the in-progress assistant turn can all carry replay parts, and
+// only this choke point sees every source. The returned message shares the
+// original parts; the input is never mutated.
+func withoutProviderReplayParts(msg Message) Message {
+	replays := 0
+	for _, part := range msg.Parts {
+		if part.Type == PartProviderReplay {
+			replays++
+		}
+	}
+	if replays == 0 {
+		return msg
+	}
+	parts := make([]Part, 0, len(msg.Parts)-replays)
+	for _, part := range msg.Parts {
+		if part.Type == PartProviderReplay {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	msg.Parts = parts
+	return msg
 }
 
 // executeToolCalls executes multiple tool calls, potentially in parallel.
