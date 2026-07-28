@@ -1448,18 +1448,21 @@ async function testIdleRecoverySettlesOnlyOrphanedEvaluatingInterjections() {
   const name = 'idle recovery marks orphaned evaluating interjections failed but preserves tracked transactions';
   const harness = createHarness();
   const { app, state, cleanup } = harness;
+  const intents = [
+    { id: 'msg_orphan', clientMessageId: 'msg_orphan', role: 'user', content: 'taking forever', created: 1000, interruptState: 'evaluating' },
+    { id: 'msg_tracked', clientMessageId: 'msg_tracked', role: 'user', content: 'still classifying', created: 1001, interruptState: 'evaluating' },
+    { id: 'msg_queued', clientMessageId: 'msg_queued', role: 'user', content: 'already queued', created: 1002, interruptState: 'queue' },
+  ];
   const session = {
     id: 'session_orphaned_interjection',
     title: 'Orphaned interjection',
-    messages: [
-      { id: 'msg_orphan', role: 'user', content: 'taking forever', created: 1000, interruptState: 'evaluating' },
-      { id: 'msg_tracked', role: 'user', content: 'still classifying', created: 1001, interruptState: 'evaluating' },
-      { id: 'msg_queued', role: 'user', content: 'already queued', created: 1002, interruptState: 'queue' },
-    ],
+    messages: [],
     activeResponseId: null,
     lastSequenceNumber: 0,
     number: 1,
   };
+  session.transcript = new ConversationController(session.id);
+  for (const intent of intents) session.transcript.addPendingIntent(intent, 0);
   state.sessions.push(session);
   state.activeSessionId = session.id;
   state.pendingInterruptCommits = [{
@@ -1471,7 +1474,7 @@ async function testIdleRecoverySettlesOnlyOrphanedEvaluatingInterjections() {
   const settled = app.settleOrphanedEvaluatingInterjections(session);
   const messages = projectedMessages(session);
   if (settled !== 1
-    || messages.find((message) => message.id === 'msg_orphan')?.interruptState !== 'failed'
+    || messages.find((message) => message.id === 'msg_orphan')?.interruptState !== 'error'
     || messages.find((message) => message.id === 'msg_tracked')?.interruptState !== 'evaluating'
     || messages.find((message) => message.id === 'msg_queued')?.interruptState !== 'queue') {
     fail(name, 'orphan settlement changed the wrong interjection state', JSON.stringify(messages));

@@ -59,7 +59,7 @@ const settleOrphanedEvaluatingInterjections = (session) => {
   let settled = 0;
   for (const message of window.TermLLMConversation.sessionMessages(session)) {
     if (message?.role !== 'user' || message.interruptState !== 'evaluating' || tracked.has(message.id)) continue;
-    setInterruptMessageState(session, message.id, 'failed');
+    setInterjectionPhase(session, message.id, 'failed');
     settled += 1;
   }
   if (settled > 0) app.persistPendingIntents?.(session);
@@ -105,10 +105,24 @@ const setInterruptMessageState = (session, messageId, interruptState) => {
   if (!messageId) return;
   const normalized = sanitizeInterruptState(interruptState);
   if (!normalized) return;
-  const message = window.TermLLMConversation.sessionMessages(session).find(m => m.id === messageId && m.role === 'user');
+  const intents = session?.transcript?.conversation?.intents;
+  let canonical = intents?.get?.(messageId) || null;
+  if (!canonical && intents?.values) {
+    canonical = [...intents.values()].find(message => (
+      message?.id === messageId
+      || message?.clientMessageId === messageId
+      || message?.client_message_id === messageId
+    )) || null;
+  }
+  const projected = window.TermLLMConversation.sessionMessages(session)
+    .find(message => message.id === messageId && message.role === 'user');
+  const message = canonical || projected;
   if (!message) return;
   message.interruptState = normalized;
-  updateVisibleUserNode(session, message);
+  if (canonical) app.refreshSessionMessagesFromTranscript?.(session);
+  const visibleMessage = window.TermLLMConversation.sessionMessages(session)
+    .find(entry => entry.id === messageId && entry.role === 'user') || message;
+  updateVisibleUserNode(session, visibleMessage);
 };
 
 // Transition an interjection to a lifecycle phase, updating both the inline
