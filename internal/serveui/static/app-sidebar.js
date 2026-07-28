@@ -341,6 +341,22 @@ const pollSidebarStatus = (isRecovery = false) => {
         app.updateSidebarStatus(data.sessions);
         await app.reconcileTranscriptFromStatus(data.sessions, { sampledRunEpochs });
         if (!isCurrent()) return false;
+        const active = app.getActiveSession?.();
+        const activeStatus = active ? data.sessions.find((entry) => entry?.id === active.id) : null;
+        const ownedResponseId = String(active?.activeResponseId || (
+          state.currentStreamSessionId === active?.id ? state.currentStreamResponseId : ''
+        ) || '').trim();
+        if (activeStatus && !activeStatus.active_run && !activeStatus.active_response_id && ownedResponseId) {
+          // Status is independent of SSE. Confirm selected-session truth when a
+          // server-issued response ID remains locally owned after status says idle.
+          try {
+            const result = await app.syncActiveSessionFromServer(active, true, { skipMessagesFetch: true });
+            if (result?.kind === 'retry') app.scheduleSessionStatePoll?.(active.id, 0);
+          } catch (_err) {
+            app.scheduleSessionStatePoll?.(active.id, 0);
+          }
+          if (!isCurrent()) return false;
+        }
         // Discover sessions created in other tabs/devices
         const localIds = new Set(state.sessions.map((s) => s.id));
         const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));

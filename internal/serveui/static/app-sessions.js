@@ -29,7 +29,19 @@ const rebaseSessionAssetURL = (url) => (
 );
 
 const resumeAndDrain = (session, options) => {
-  void resumeActiveResponse(session, options).finally(() => {
+  void resumeActiveResponse(session, options).catch(async () => {
+    const expectedResponseId = String(options?.responseId || session?.activeResponseId || '').trim();
+    const stillOwnsFailedTransport = Boolean(expectedResponseId
+      && state.currentStreamSessionId === session?.id
+      && state.currentStreamResponseId === expectedResponseId);
+    if (stillOwnsFailedTransport) detachResponseStream();
+    try {
+      const result = await syncActiveSessionFromServer(session, true, { skipMessagesFetch: true });
+      if (result?.kind === 'retry' && session?.id) scheduleSessionStatePoll(session.id, 0);
+    } catch (_err) {
+      if (session?.id) scheduleSessionStatePoll(session.id, 0);
+    }
+  }).finally(() => {
     drainInterruptQueueIfIdle(session);
   });
 };
@@ -412,6 +424,12 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   const busyBefore = sessionHasInProgressState(session);
   const sampledRunEpoch = Math.max(0, Number(session.transcript?.latestRunEpoch) || 0);
+  const sampledTransport = {
+    controller: state.abortController,
+    generation: Number(state.streamGeneration || 0),
+    sessionId: String(state.currentStreamSessionId || '').trim(),
+    responseId: String(state.currentStreamResponseId || '').trim(),
+  };
 
   const loadResult = await loadServerSessionState(requestSessionId);
   if (loadResult.kind === 'auth') {
@@ -589,7 +607,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     return loadResult;
   }
 
-  if (!activeRun && !state.abortController) {
+  if (!activeRun) {
     if (sampledRunEpoch < Math.max(0, Number(transcript?.latestRunEpoch) || 0)) {
       window.TermLLMConversation?.transcriptDiagnostic?.('stale_status_rejection', {
         responseId: session.activeResponseId || transcript?.activeRun?.id || '',
@@ -597,9 +615,27 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
       });
       return loadResult;
     }
+    const transportUnchanged = state.abortController === sampledTransport.controller
+      && Number(state.streamGeneration || 0) === sampledTransport.generation
+      && String(state.currentStreamSessionId || '').trim() === sampledTransport.sessionId
+      && String(state.currentStreamResponseId || '').trim() === sampledTransport.responseId;
+    const sampledOwnedResponse = sampledTransport.sessionId === session.id && Boolean(sampledTransport.responseId);
+    const currentOwnsTransport = state.currentStreamSessionId === session.id && Boolean(state.currentStreamResponseId);
+    // An idle response sampled before a new send must not cancel that send. A
+    // transport may only be retired when this request observed its stable,
+    // server-issued response ID both before and after the state round trip.
+    if ((state.abortController || currentOwnsTransport) && !(sampledOwnedResponse && transportUnchanged)) {
+      return loadResult;
+    }
     if (isStillActive()) stopSessionStatePoll();
-    if (session.activeResponseId || (isStillActive() && state.currentStreamResponseId)) {
-      clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    const inactiveResponseId = session.activeResponseId || (
+      state.currentStreamSessionId === session.id ? state.currentStreamResponseId : ''
+    );
+    if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) {
+      detachResponseStream();
+    }
+    if (inactiveResponseId) {
+      clearActiveResponseTracking(session, inactiveResponseId);
       saveSessions();
     }
     setSessionOptimisticBusy(session, false);

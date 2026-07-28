@@ -3381,6 +3381,167 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
   pass(name);
 }
 
+async function testIdleStateRetiresOnlySampledTransportOwnership() {
+  const name = 'idle state retires a stable response transport without killing a newer local run';
+
+  const runScenario = async ({ startNewRunDuringState }) => {
+    const sessionId = startNewRunDuringState ? 'sess_idle_race' : 'sess_idle_stable';
+    const responseId = 'resp_finished';
+    let appRef = null;
+    let controller = null;
+    const { app, windowObj } = await createSessionsHarness({
+      fetchImpl: async (url) => {
+        if (url === `/ui/v1/sessions/${sessionId}/state`) {
+          if (startNewRunDuringState) {
+            controller = new AbortController();
+            appRef.setSessionOptimisticBusy(appRef.state.sessions[0], true);
+            appRef.state.currentStreamSessionId = sessionId;
+            appRef.state.currentStreamResponseId = '';
+            appRef.state.abortController = controller;
+            appRef.state.streaming = true;
+          }
+          return new Response(JSON.stringify({ active_run: false, transcript_rev: 0 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+      appOverrides: {
+        detachResponseStream() {
+          const owned = appRef.state.abortController;
+          appRef.state.streamGeneration += 1;
+          appRef.state.abortController = null;
+          appRef.state.currentStreamSessionId = '';
+          appRef.state.currentStreamResponseId = '';
+          appRef.state.streaming = false;
+          owned?.abort();
+        },
+      },
+    });
+    appRef = app;
+    app.stopSidebarStatusPoll();
+    const session = {
+      id: sessionId,
+      title: 'Idle ownership race',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+      activeResponseId: startNewRunDuringState ? null : responseId,
+      lastSequenceNumber: 0,
+    };
+    session.transcript = new windowObj.ConversationController(session.id);
+    app.state.sessions = [session];
+    app.state.activeSessionId = session.id;
+    app.state.draftSessionActive = false;
+    if (!startNewRunDuringState) {
+      controller = new AbortController();
+      app.state.currentStreamSessionId = session.id;
+      app.state.currentStreamResponseId = responseId;
+      app.state.abortController = controller;
+      app.state.streaming = true;
+    }
+
+    await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+    return { app, session, controller };
+  };
+
+  const stable = await runScenario({ startNewRunDuringState: false });
+  if (!stable.controller.signal.aborted
+    || stable.session.activeResponseId
+    || stable.app.state.abortController
+    || stable.app.state.currentStreamResponseId
+    || stable.app.state.streaming) {
+    fail(name, 'stable finished transport was not retired');
+    return;
+  }
+
+  const raced = await runScenario({ startNewRunDuringState: true });
+  if (raced.controller.signal.aborted
+    || raced.app.state.abortController !== raced.controller
+    || raced.app.state.currentStreamSessionId !== raced.session.id
+    || raced.app.state.currentStreamResponseId !== ''
+    || !raced.app.state.streaming) {
+    fail(name, 'idle sample killed transport ownership created after the request began');
+    return;
+  }
+
+  pass(name);
+}
+
+async function testIdleSidebarStatusPreservesUnacknowledgedPost() {
+  const name = 'idle sidebar status cannot abort a response POST before it has a response id';
+  const sessionId = 'sess_uploading';
+  let appRef = null;
+  const controller = new AbortController();
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const path = parsedTestURL(url)?.pathname;
+      if (path === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [{
+          id: sessionId,
+          active_run: false,
+          transcript_rev: 0,
+        }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (path === `/ui/v1/sessions/${sessionId}/state`) {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 0 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      detachResponseStream() {
+        const owned = appRef.state.abortController;
+        appRef.state.abortController = null;
+        appRef.state.currentStreamSessionId = '';
+        appRef.state.currentStreamResponseId = '';
+        appRef.state.streaming = false;
+        owned?.abort();
+      },
+    },
+  });
+  appRef = app;
+  app.stopSidebarStatusPoll();
+  const session = {
+    id: sessionId,
+    title: 'Uploading',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  session.transcript = new windowObj.ConversationController(session.id);
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.setSessionOptimisticBusy(session, true);
+  app.state.currentStreamSessionId = session.id;
+  app.state.currentStreamResponseId = '';
+  app.state.abortController = controller;
+  app.state.streaming = true;
+
+  await app.startSidebarStatusPoll();
+
+  if (controller.signal.aborted
+    || app.state.abortController !== controller
+    || !app.state.streaming
+    || !app.sessionHasInProgressState(session)) {
+    fail(name, 'sidebar idle status aborted an unacknowledged response POST');
+    return;
+  }
+  pass(name);
+}
+
 async function testSessionProgressStatePrefersLocalAndServerSignals() {
   const name = 'session progress state combines optimistic local state with server truth';
   const { app } = await createSessionsHarness();
@@ -6583,6 +6744,8 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testActiveStatusSyncsInRunTranscriptRevisionsWithoutDuplicatingActiveOutput();
   await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
+  await testIdleStateRetiresOnlySampledTransportOwnership();
+  await testIdleSidebarStatusPreservesUnacknowledgedPost();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
   await testSyncIgnoresPendingInterjectionWithoutExactID();
