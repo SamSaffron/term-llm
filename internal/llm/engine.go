@@ -3567,9 +3567,10 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 		return cancelledToolCallMessages(calls, err), nil
 	}
 
-	// Fast path: single call, no concurrency overhead
+	// Single calls still run asynchronously so cancellation cannot be held
+	// hostage by a non-cooperative tool implementation.
 	if len(calls) == 1 {
-		return e.executeSingleToolCallSafe(ContextWithApprovalTranscript(ctx, transcript), calls[0], send, debug, debugRaw)
+		return e.executeSingleToolCallCancellable(ContextWithApprovalTranscript(ctx, transcript), calls[0], send, debug, debugRaw)
 	}
 
 	if !parallel {
@@ -3579,7 +3580,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 			if err := ctx.Err(); err != nil {
 				return append(results, cancelledToolCallMessages(calls[i:], err)...), nil
 			}
-			msgs, err := e.executeSingleToolCallSafe(toolCtx, call, send, debug, debugRaw)
+			msgs, err := e.executeSingleToolCallCancellable(toolCtx, call, send, debug, debugRaw)
 			if err != nil {
 				return nil, err
 			}
@@ -3677,6 +3678,29 @@ func cancelledToolCallMessages(calls []ToolCall, err error) []Message {
 		msgs = append(msgs, cancelledToolCallMessage(call, err))
 	}
 	return msgs
+}
+
+// executeSingleToolCallCancellable lets the engine abandon a tool that fails to
+// return after its context is cancelled. The buffered channel ensures a late
+// completion cannot strand the tool goroutine while reporting its result.
+func (e *Engine) executeSingleToolCallCancellable(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+	type executionResult struct {
+		messages []Message
+		err      error
+	}
+
+	resultChan := make(chan executionResult, 1)
+	go func() {
+		messages, err := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
+		resultChan <- executionResult{messages: messages, err: err}
+	}()
+
+	select {
+	case result := <-resultChan:
+		return result.messages, result.err
+	case <-ctx.Done():
+		return []Message{cancelledToolCallMessage(call, ctx.Err())}, nil
+	}
 }
 
 // executeSingleToolCallSafe wraps executeSingleToolCall with panic recovery.
@@ -3824,14 +3848,28 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
 	} else {
 		toolCtx := ContextWithCallID(ctx, callID)
-		func() {
+		type executionResult struct {
+			output ToolOutput
+			err    error
+		}
+		resultChan := make(chan executionResult, 1)
+		go func() {
+			var execution executionResult
 			defer func() {
 				if r := recover(); r != nil {
-					err = fmt.Errorf("Error: tool panicked: %v", r)
+					execution.err = fmt.Errorf("Error: tool panicked: %v", r)
 				}
+				resultChan <- execution
 			}()
-			result, err = tool.Execute(toolCtx, call.Arguments)
+			execution.output, execution.err = tool.Execute(toolCtx, call.Arguments)
 		}()
+
+		select {
+		case execution := <-resultChan:
+			result, err = execution.output, execution.err
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
 	}
 
 	// Truncate large tool outputs (global limit, then compaction limit).

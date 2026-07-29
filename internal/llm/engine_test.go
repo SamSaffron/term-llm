@@ -1216,6 +1216,38 @@ func (t *cancellableDelayTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type contextIgnoringTool struct {
+	name    string
+	started chan struct{}
+	release chan struct{}
+}
+
+func newContextIgnoringTool(name string) *contextIgnoringTool {
+	return &contextIgnoringTool{
+		name:    name,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (t *contextIgnoringTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        t.name,
+		Description: "Blocks without observing context cancellation",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *contextIgnoringTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	close(t.started)
+	<-t.release
+	return TextOutput("late result"), nil
+}
+
+func (t *contextIgnoringTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 func TestEngineParallelToolExecution(t *testing.T) {
 	t.Parallel()
 
@@ -1439,6 +1471,145 @@ func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {
 		if !tr.IsError || !strings.Contains(tr.Content, context.Canceled.Error()) {
 			t.Fatalf("result %d = %+v, want cancellation error result", i, tr)
 		}
+	}
+}
+
+func TestExecuteToolCallsSingleReturnsOnContextCancel(t *testing.T) {
+	tool := newContextIgnoringTool("stuck_single_tool")
+	defer close(tool.release)
+
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(&fakeProvider{}, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	call := ToolCall{ID: "call-1", Name: tool.name, Arguments: json.RawMessage(`{}`)}
+	type callResult struct {
+		messages []Message
+		err      error
+	}
+	done := make(chan callResult, 1)
+	go func() {
+		messages, err := engine.executeToolCalls(ctx, []ToolCall{call}, false, eventSender{}, false, false)
+		done <- callResult{messages: messages, err: err}
+	}()
+
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for single tool execution to start")
+	}
+	cancel()
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("executeToolCalls error = %v, want synthesized cancellation result", result.err)
+		}
+		if len(result.messages) != 1 || len(result.messages[0].Parts) == 0 || result.messages[0].Parts[0].ToolResult == nil {
+			t.Fatalf("executeToolCalls messages = %#v, want one tool result", result.messages)
+		}
+		toolResult := result.messages[0].Parts[0].ToolResult
+		if toolResult.ID != call.ID || !toolResult.IsError || !strings.Contains(toolResult.Content, context.Canceled.Error()) {
+			t.Fatalf("tool result = %+v, want paired cancellation error for %q", toolResult, call.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executeToolCalls did not return after cancellation")
+	}
+}
+
+func TestEngineStreamCloseReturnsWhenSingleToolIgnoresCancellation(t *testing.T) {
+	tool := newContextIgnoringTool("stuck_stream_tool")
+	defer close(tool.release)
+
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		if call == 0 {
+			return []Event{
+				{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: tool.name, Arguments: json.RawMessage(`{}`)}},
+				{Type: EventDone},
+			}
+		}
+		return []Event{{Type: EventDone}}
+	}}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("run the tool")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stream tool execution to start")
+	}
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- stream.Close()
+	}()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return after cancelling a stuck tool")
+	}
+}
+
+func TestHandleSyncToolExecutionReturnsOnContextCancel(t *testing.T) {
+	tool := newContextIgnoringTool("stuck_sync_tool")
+	defer close(tool.release)
+
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(&fakeProvider{}, registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	event := Event{
+		Type:         EventToolCall,
+		ToolCallID:   "sync-1",
+		Tool:         &ToolCall{ID: "sync-1", Name: tool.name, Arguments: json.RawMessage(`{}`)},
+		ToolResponse: make(chan ToolExecutionResponse, 1),
+	}
+
+	type syncResult struct {
+		call   ToolCall
+		output ToolOutput
+		err    error
+	}
+	done := make(chan syncResult, 1)
+	go func() {
+		call, output, err := engine.handleSyncToolExecution(ctx, event, eventSender{}, false, false)
+		done <- syncResult{call: call, output: output, err: err}
+	}()
+
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for synchronous tool execution to start")
+	}
+	cancel()
+
+	select {
+	case result := <-done:
+		if result.call.ID != event.ToolCallID {
+			t.Fatalf("returned call ID = %q, want %q", result.call.ID, event.ToolCallID)
+		}
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("handleSyncToolExecution error = %v, want context.Canceled", result.err)
+		}
+		if result.output.Content != "" {
+			t.Fatalf("handleSyncToolExecution output = %q, want no late output", result.output.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handleSyncToolExecution did not return after cancellation")
 	}
 }
 
