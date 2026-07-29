@@ -236,7 +236,11 @@
         let entry = run.projection.find((candidate) => candidate.key === key);
         if (!entry) {
           const role = event === 'response.phase' ? 'phase' : (event === 'response.model_swap.progress' ? 'model-swap' : 'event');
-          entry = { key, id: key, role, responseId: run.responseID, terminalPolicy: 'transient', transient: true, content: '' };
+          // A model-swap row has a durable replacement at handoff. Keep the
+          // live row mounted through terminal state so it does not disappear
+          // and reappear (or appear to move) while that replacement arrives.
+          const terminalPolicy = role === 'model-swap' ? 'durable' : 'transient';
+          entry = { key, id: key, role, responseId: run.responseID, terminalPolicy, transient: true, content: '' };
           run.projection.push(entry);
           structural = true;
         }

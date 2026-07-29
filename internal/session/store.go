@@ -84,6 +84,84 @@ type TranscriptRevisionWriter interface {
 	ReplaceMessagesWithTranscriptRev(ctx context.Context, sessionID string, messages []Message) (int64, error)
 }
 
+// ClientMessageBatchLookup retrieves durable first-party intents by identity.
+type ClientMessageBatchLookup interface {
+	GetMessagesByClientMessageIDs(ctx context.Context, sessionID string, clientMessageIDs []string) (map[string]*Message, error)
+}
+
+// FindMessagesByClientMessageIDs uses a batch capability when available and
+// otherwise performs at most one full transcript scan.
+func FindMessagesByClientMessageIDs(ctx context.Context, store Store, sessionID string, clientMessageIDs []string) (map[string]*Message, error) {
+	found := make(map[string]*Message)
+	wanted := make(map[string]struct{}, len(clientMessageIDs))
+	for _, rawID := range clientMessageIDs {
+		if id := strings.TrimSpace(rawID); id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if store == nil || strings.TrimSpace(sessionID) == "" || len(wanted) == 0 {
+		return found, nil
+	}
+	if lookup, ok := store.(ClientMessageBatchLookup); ok {
+		return lookup.GetMessagesByClientMessageIDs(ctx, sessionID, clientMessageIDs)
+	}
+	if lookup, ok := store.(ClientMessageLookup); ok {
+		for id := range wanted {
+			message, err := lookup.GetMessageByClientMessageID(ctx, sessionID, id)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			found[id] = message
+		}
+		return found, nil
+	}
+	messages, err := store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		id := strings.TrimSpace(messages[i].ClientMessageID)
+		if _, ok := wanted[id]; !ok {
+			continue
+		}
+		message := messages[i]
+		found[id] = &message
+	}
+	return found, nil
+}
+
+// ClientMessageLookup retrieves the durable owner of a first-party user intent.
+// Implementations should return ErrNotFound when the identity is absent.
+type ClientMessageLookup interface {
+	GetMessageByClientMessageID(ctx context.Context, sessionID, clientMessageID string) (*Message, error)
+}
+
+// FindMessageByClientMessageID uses an indexed lookup when available and falls
+// back to scanning stores that do not implement the optional capability.
+func FindMessageByClientMessageID(ctx context.Context, store Store, sessionID, clientMessageID string) (*Message, error) {
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	if store == nil || strings.TrimSpace(sessionID) == "" || clientMessageID == "" {
+		return nil, ErrNotFound
+	}
+	if lookup, ok := store.(ClientMessageLookup); ok {
+		return lookup.GetMessageByClientMessageID(ctx, sessionID, clientMessageID)
+	}
+	messages, err := store.GetMessages(ctx, sessionID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		if strings.TrimSpace(messages[i].ClientMessageID) == clientMessageID {
+			message := messages[i]
+			return &message, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 // CompactedTranscriptRevisionWriter reports the exact revision committed by an
 // atomic compaction replacement.
 type CompactedTranscriptRevisionWriter interface {

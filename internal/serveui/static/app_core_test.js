@@ -623,34 +623,27 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
   pass(name);
 })();
 
-(function testInterjectionPhaseMapsToValidBadgeAndBannerInvariant() {
-  const name = 'INTERJECTION_PHASE maps every phase to a valid badge with terminal phases non-cancellable';
+(function testInterjectionPhaseKeepsOnlyPendingWorkInComposerBanner() {
+  const name = 'INTERJECTION_PHASE keeps pending work in composer and committed work out';
   const phases = app.INTERJECTION_PHASE;
   if (!phases) {
     fail(name, 'expected INTERJECTION_PHASE to be exported from app-core');
     return;
   }
-  // Snapshot of the single source of truth. The whole point of the table is that
-  // the inline badge and the pending banner cannot disagree, so we pin both
-  // columns per phase. Terminal phases (committed/failed/willQueue/willCancel)
-  // MUST carry banner === null so an injected/finished interjection can never
-  // linger in the cancellable "will incorporate" bar — the original heisenstate.
   const expected = {
-    evaluating: { badge: 'evaluating', banner: 'deciding' },
-    queued: { badge: 'pending_interject', banner: 'interject' },
-    willQueue: { badge: 'queue', banner: null },
-    willCancel: { badge: 'cancel', banner: null },
-    committed: { badge: 'interject', banner: null },
-    failed: { badge: 'error', banner: null }
+    evaluating: 'deciding',
+    queued: 'interject',
+    willQueue: 'queue',
+    willCancel: 'cancel_queue',
+    committed: null,
+    failed: null
   };
-  for (const [phase, spec] of Object.entries(expected)) {
+  for (const [phase, banner] of Object.entries(expected)) {
     const got = phases[phase];
     if (!got) { fail(name, `missing phase ${phase}`); return; }
-    if (got.badge !== spec.badge) { fail(name, `phase ${phase} badge=${got.badge}, want ${spec.badge}`); return; }
-    if (got.banner !== spec.banner) { fail(name, `phase ${phase} banner=${JSON.stringify(got.banner)}, want ${JSON.stringify(spec.banner)}`); return; }
-    // Every badge must be a real INTERRUPT_BADGE_META state.
-    if (!app.sanitizeInterruptState(got.badge)) {
-      fail(name, `phase ${phase} badge "${got.badge}" is not a valid INTERRUPT_BADGE_META state`);
+    if (got.banner !== banner) { fail(name, `phase ${phase} banner=${JSON.stringify(got.banner)}, want ${JSON.stringify(banner)}`); return; }
+    if (Object.prototype.hasOwnProperty.call(got, 'badge')) {
+      fail(name, `phase ${phase} must not define an optimistic stream badge`);
       return;
     }
   }

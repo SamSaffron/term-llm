@@ -60,7 +60,12 @@ const normalizeError = async (response) => {
     message = parsed.error.message;
   }
 
-  return { status: response.status, message };
+  return {
+    status: response.status,
+    message,
+    type: String(parsed?.error?.type || ''),
+    code: String(parsed?.error?.code || '')
+  };
 };
 
 const hasSessionContinuationContext = (session) => Boolean(
@@ -479,6 +484,22 @@ const notifyTranscriptTerminal = (session, responseId, payload = {}) => {
   return handler(session, responseId, finalRev, runEpoch, durableHandoff, handoffError);
 };
 
+const terminalTranscriptHandoffs = new Map();
+const trackTranscriptTerminalHandoff = (session, responseId, payload = {}) => {
+  const sessionId = String(session?.id || '').trim();
+  const handoff = Promise.resolve(notifyTranscriptTerminal(session, responseId, payload)).catch((err) => {
+    console.warn('[transcript] terminal handoff failed', err);
+    return false;
+  });
+  if (!sessionId) return handoff;
+  terminalTranscriptHandoffs.set(sessionId, handoff);
+  void handoff.finally(() => {
+    if (terminalTranscriptHandoffs.get(sessionId) === handoff) terminalTranscriptHandoffs.delete(sessionId);
+  });
+  return handoff;
+};
+const awaitTranscriptTerminalHandoff = (session) => terminalTranscriptHandoffs.get(String(session?.id || '').trim()) || Promise.resolve(false);
+
 const isSessionVisible = (session) => {
   if (!session) return false;
   if (typeof isConversationMounted === 'function') return isConversationMounted(session);
@@ -628,6 +649,18 @@ const mergeHistoricalReplayStage = async (session, _streamState, stage) => {
   const transcript = session?.transcript;
   if (!transcript) throw new Error('historical replay requires a transcript');
   await window.TermLLMConversation.enqueueDetachedReplay(transcript, stage.events);
+  for (const item of stage.events) {
+    if (item?.event !== 'response.interjection') continue;
+    const payload = item.payload || {};
+    const clientMessageId = String(payload.client_message_id || payload.interjection_id || '').trim();
+    if (!clientMessageId) continue;
+    app.commitPendingInterjection?.(session, clientMessageId, {
+      content: payload.text,
+      attachments: payload.attachments,
+      created: payload.created,
+    });
+  }
+  app.refreshPendingInterjectionBanner?.();
   app.refreshSessionMessagesFromTranscript?.(session);
   app.persistPendingIntents?.(session);
   if (isSessionVisible(session)) renderMessages(false);
@@ -806,15 +839,6 @@ const recoverResponseStateFromSnapshot = async (session, responseId) => {
   return snapshot;
 };
 
-const clearCommittedInterjectionPendingState = (clientMessageId) => {
-  const id = String(clientMessageId || '').trim();
-  if (!id) return { pending: null, committed: null };
-  const pending = app.removePendingInterjectionById(id);
-  const committed = app.resolvePendingInterruptCommitById(id)
-    || (pending?.messageId ? app.resolvePendingInterruptCommitById(pending.messageId) : null);
-  return { pending, committed };
-};
-
 const applyResponseRecoverySnapshot = (session, payload) => {
   if (!session || !payload || typeof payload !== 'object') return false;
 
@@ -855,13 +879,9 @@ const applyResponseRecoverySnapshot = (session, payload) => {
     ));
     for (const message of recoveredInterjections) {
       const clientMessageId = String(message.clientMessageId || message.client_message_id || '').trim();
-      const intent = session.transcript?.conversation?.intents?.get(clientMessageId);
-      if (intent) {
-        intent.interruptState = 'interject';
-        if (Array.isArray(message.attachments)) intent.attachments = message.attachments;
-      }
-      clearCommittedInterjectionPendingState(clientMessageId);
+      app.commitPendingInterjection?.(session, clientMessageId, message);
     }
+    app.refreshPendingInterjectionBanner?.();
 
     const transcript = session.transcript;
     if (transcript) {
@@ -894,24 +914,26 @@ const applyResponseRecoverySnapshot = (session, payload) => {
   updateSessionUsageDisplay(session);
 
   const terminalStatus = ['completed', 'failed', 'cancelled'].includes(String(payload.status || ''));
+  const continuationResponseId = String(payload.continuation_response_id || '').trim();
   const firstFinalization = !terminalStatus
     || String(session.activeResponseId || '') === responseId
     || (state.currentStreamSessionId === session.id && String(state.currentStreamResponseId || '') === responseId);
   if (payload.status === 'completed' && firstFinalization) {
     clearTerminalPendingEffort(session);
-    if (responseId) session.lastResponseId = responseId;
+    if (continuationResponseId || responseId) session.lastResponseId = continuationResponseId || responseId;
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     app.requeuePendingInterjections(session);
-    void notifyTranscriptTerminal(session, responseId, payload);
+    void trackTranscriptTerminalHandoff(session, responseId, payload);
   } else if ((payload.status === 'failed' || payload.status === 'cancelled') && firstFinalization) {
     clearTerminalPendingEffort(session);
+    if (continuationResponseId) session.lastResponseId = continuationResponseId;
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     app.requeuePendingInterjections(session);
-    void notifyTranscriptTerminal(session, responseId, payload);
+    void trackTranscriptTerminalHandoff(session, responseId, payload);
   } else if (!terminalStatus && responseId) {
     const runEpoch = Math.max(0, Number(payload.run_epoch) || 0);
     const latestRunEpoch = Math.max(0, Number(session.transcript?.latestRunEpoch) || 0);
@@ -1337,6 +1359,15 @@ const refreshSessionFromServerTruth = async (session, pollOnActive = false) => {
 };
 
 const recoverInterruptFailure = async (session, prompt, messageId, attachments = []) => {
+  const pending = state.pendingInterjections.find((entry) => entry.messageId === messageId);
+  if (pending?.cancelRequested) {
+    app.removePendingInterjectionById(messageId);
+    app.discardPendingInterruptCommit(messageId);
+    state.queuedInterrupts = state.queuedInterrupts.filter((entry) => entry.messageId !== messageId);
+    persistAndRefreshShell();
+    return true;
+  }
+
   const syncResult = await refreshSessionFromServerTruth(session, true);
   const runtimeState = app.runtimeStateFromSyncResult(syncResult);
   if (!runtimeState) {
@@ -1344,20 +1375,9 @@ const recoverInterruptFailure = async (session, prompt, messageId, attachments =
   }
   if (app.runtimeHasActiveRun(runtimeState)) {
     app.discardPendingInterruptCommit(messageId);
-    app.removePendingInterjectionById(messageId);
-    const existing = window.TermLLMConversation.sessionMessages(session).find(m => m.id === messageId && m.role === 'user');
-    if (existing) {
-      app.setInterruptMessageState(session, messageId, 'queue');
-      if (Array.isArray(attachments) && attachments.length > 0 && !existing.attachments) {
-        existing.attachments = attachments.map(cloneAttachmentForMessage);
-        updateVisibleUserNode(session, existing);
-      }
-    } else {
-      app.addInlineInterruptMessage(session, prompt, messageId, 'queue', attachments);
-    }
+    app.updatePendingInterjectionAction(messageId, 'queue');
     app.queueInterruptFollowUp(session.id, prompt, messageId, attachments);
     persistAndRefreshShell();
-    scrollVisibleStreamToBottom(session, true);
     app.clearDraftMessageForSession(session.id);
     return true;
   }
@@ -1369,6 +1389,7 @@ const recoverInterruptFailure = async (session, prompt, messageId, attachments =
   await app.sendMessage({
     prompt,
     attachments,
+    reuseMessageId: messageId,
     _skipContinuationRefresh: true
   });
   return true;
@@ -1409,6 +1430,8 @@ Object.assign(app, {
   detachResponseStream,
   clearActiveResponseTracking,
   notifyTranscriptTerminal,
+  trackTranscriptTerminalHandoff,
+  awaitTranscriptTerminalHandoff,
   createResponseStreamState,
   applyResponseRecoverySnapshot,
   responseEventSequence,

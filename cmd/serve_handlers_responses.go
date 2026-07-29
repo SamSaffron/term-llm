@@ -7,11 +7,29 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+var errResponseClientMessageAlreadyCommitted = errors.New("response client message is already committed")
+
+const maxResponseClientMessageIDLength = 200
+
+type followUpClaimLease struct {
+	once   sync.Once
+	engine *llm.Engine
+	ids    []string
+}
+
+func (l *followUpClaimLease) Release() {
+	if l == nil || l.engine == nil || len(l.ids) == 0 {
+		return
+	}
+	l.once.Do(func() { l.engine.ReleaseClaimedInterjections(l.ids) })
+}
 
 type resolvedResponsesRequest struct {
 	req                responsesCreateRequest
@@ -43,6 +61,81 @@ func validateResponseReasoningMode(provider, model, mode string, explicit bool) 
 		return "", true, nil
 	}
 	return normalized, false, nil
+}
+
+func prepareResponseClientMessageIDs(messages []llm.Message, requestID string, firstParty bool) (bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	if !firstParty {
+		// Item-level identities are reserved for the first-party UI contract.
+		for i := range messages {
+			messages[i].ClientMessageID = ""
+		}
+		if requestID != "" {
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == llm.RoleUser {
+					messages[i].ClientMessageID = requestID
+					break
+				}
+			}
+		}
+		return false, nil
+	}
+
+	userIndexes := make([]int, 0, len(messages))
+	for i := range messages {
+		if messages[i].Role == llm.RoleUser {
+			userIndexes = append(userIndexes, i)
+		}
+	}
+	identifiedBatch := len(messages) > 1 && len(userIndexes) == len(messages)
+	if !identifiedBatch {
+		if len(userIndexes) > 0 {
+			last := userIndexes[len(userIndexes)-1]
+			itemID := strings.TrimSpace(messages[last].ClientMessageID)
+			if itemID != "" && itemID != requestID {
+				return false, fmt.Errorf("top-level client_message_id must match the final user message")
+			}
+			for _, index := range userIndexes {
+				messages[index].ClientMessageID = ""
+			}
+			messages[last].ClientMessageID = requestID
+		}
+		return false, nil
+	}
+
+	ids := make([]string, 0, len(messages))
+	seen := make(map[string]struct{}, len(messages))
+	for i := range messages {
+		id := strings.TrimSpace(messages[i].ClientMessageID)
+		if id == "" {
+			return false, fmt.Errorf("each batched user message requires client_message_id")
+		}
+		if len(id) > maxResponseClientMessageIDLength {
+			return false, fmt.Errorf("client_message_id is too long")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false, fmt.Errorf("duplicate client_message_id %q in user batch", id)
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if ids[len(ids)-1] != requestID {
+		return false, fmt.Errorf("top-level client_message_id must match the final batched user message")
+	}
+	return true, nil
+}
+
+func responseClientMessageIDs(messages []llm.Message) []string {
+	ids := make([]string, 0, len(messages))
+	for i := range messages {
+		if messages[i].Role != llm.RoleUser {
+			continue
+		}
+		if id := strings.TrimSpace(messages[i].ClientMessageID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -78,21 +171,22 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
-	if isFirstPartyUIResponseRequest(r) && clientMessageID == "" {
+	firstParty := isFirstPartyUIResponseRequest(r)
+	if firstParty && clientMessageID == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is required for first-party requests")
 		return
 	}
-	if len(clientMessageID) > 200 {
+	if len(clientMessageID) > maxResponseClientMessageIDLength {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is too long")
 		return
 	}
-	if clientMessageID != "" {
-		for i := len(inputMessages) - 1; i >= 0; i-- {
-			if inputMessages[i].Role == llm.RoleUser {
-				inputMessages[i].ClientMessageID = clientMessageID
-				break
-			}
-		}
+	identifiedUserBatch, err := prepareResponseClientMessageIDs(inputMessages, clientMessageID, firstParty)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if identifiedUserBatch && req.PreviousResponseID != "" {
+		replaceHistory = false
 	}
 
 	// External /v1/responses callers follow OpenAI-style chaining:
@@ -102,7 +196,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	sessionID := ""
 	previousDurable := false
 	if req.PreviousResponseID != "" {
-		if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages); status != 0 {
+		if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages, identifiedUserBatch); status != 0 {
 			errType := "invalid_request_error"
 			if status == http.StatusConflict {
 				errType = "conflict_error"
@@ -158,6 +252,17 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest) {
 	req := rr.req
 	inputMessages := rr.inputMessages
+	if isFirstPartyUIResponseRequest(r) && len(responseClientMessageIDs(inputMessages)) == 0 {
+		clientMessageID := strings.TrimSpace(req.ClientMessageID)
+		if clientMessageID != "" {
+			for i := len(inputMessages) - 1; i >= 0; i-- {
+				if inputMessages[i].Role == llm.RoleUser {
+					inputMessages[i].ClientMessageID = clientMessageID
+					break
+				}
+			}
+		}
+	}
 	replaceHistory := rr.replaceHistory
 	sessionID := rr.sessionID
 	previousResponseID := rr.previousResponseID
@@ -249,6 +354,91 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	var runtime *serveRuntime
 	var stateful bool
 	var modelSwapExec *responseModelSwapExecution
+	var followUpOwner *serveRuntime
+	var followUpOwnerStateful bool
+	var followUpClaims *followUpClaimLease
+
+	claimUIFollowUp := func(rt *serveRuntime, ownsSession bool) error {
+		clientMessageIDs := responseClientMessageIDs(inputMessages)
+		if !ownsSession || len(clientMessageIDs) == 0 || !isFirstPartyUIResponseRequest(r) || rt == nil {
+			return nil
+		}
+
+		rt.mu.Lock()
+		if rt.store != nil && !rt.ensurePersistedSession(ctx, sessionID, inputMessages) {
+			rt.mu.Unlock()
+			return errors.New("failed to hydrate session history before client message claim")
+		}
+		history := copyLLMMessageSlice(rt.history)
+		rt.mu.Unlock()
+
+		trailingStart := len(history)
+		for trailingStart > 0 && history[trailingStart-1].Role == llm.RoleUser {
+			trailingStart--
+		}
+		foundInHistory := make(map[string]bool, len(clientMessageIDs))
+		trailingUnanswered := make(map[string]bool, len(clientMessageIDs))
+		for i := range history {
+			id := strings.TrimSpace(history[i].ClientMessageID)
+			if id == "" {
+				continue
+			}
+			foundInHistory[id] = true
+			if i >= trailingStart {
+				trailingUnanswered[id] = true
+			}
+		}
+
+		durableMessages := make(map[string]*session.Message)
+		if rt.store != nil {
+			var lookupErr error
+			durableMessages, lookupErr = session.FindMessagesByClientMessageIDs(ctx, rt.store, sessionID, clientMessageIDs)
+			if lookupErr != nil {
+				return fmt.Errorf("lookup client_message_ids: %w", lookupErr)
+			}
+		}
+		for _, clientMessageID := range clientMessageIDs {
+			_, durableExists := durableMessages[clientMessageID]
+			if (foundInHistory[clientMessageID] || durableExists) && !trailingUnanswered[clientMessageID] {
+				return fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, clientMessageID)
+			}
+		}
+
+		claims := make([]llm.InterjectionClaimStatus, len(clientMessageIDs))
+		for i := range claims {
+			claims[i] = llm.InterjectionClaimNotFound
+		}
+		if rt.engine != nil {
+			claims = rt.engine.ClaimInterjections(clientMessageIDs)
+		}
+		claimedIDs := make([]string, 0, len(clientMessageIDs))
+		hasNewClaim := false
+		hasExistingOwner := false
+		for _, claim := range claims {
+			hasNewClaim = hasNewClaim || claim == llm.InterjectionClaimed
+			hasExistingOwner = hasExistingOwner || claim == llm.InterjectionClaimFollowUpOwned
+		}
+		if hasNewClaim && hasExistingOwner {
+			return errServeSessionBusy
+		}
+		for i, claim := range claims {
+			switch claim {
+			case llm.InterjectionClaimed:
+				claimedIDs = append(claimedIDs, clientMessageIDs[i])
+			case llm.InterjectionClaimCommitted:
+				return fmt.Errorf("%w: %q", errResponseClientMessageAlreadyCommitted, clientMessageIDs[i])
+			case llm.InterjectionClaimFollowUpOwned:
+				if !trailingUnanswered[clientMessageIDs[i]] {
+					return errServeSessionBusy
+				}
+			}
+		}
+		if len(claimedIDs) > 0 {
+			followUpClaims = &followUpClaimLease{engine: rt.engine, ids: claimedIDs}
+		}
+		return nil
+	}
+
 	freshProvider := reqProvider
 	if freshConversation && freshProvider == "" {
 		freshProvider = defaultProvider
@@ -291,6 +481,12 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 		runtime = modelSwapExec.candidate
 		stateful = true
+		followUpOwner = modelSwapExec.previous
+		followUpOwnerStateful = true
+		if followUpOwner == nil {
+			followUpOwner = previousRuntime
+			followUpOwnerStateful = previousStateful
+		}
 	} else {
 		var err error
 		if previousResponseID != "" || rr.uiStream {
@@ -335,6 +531,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			}
 			s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
 		}
+		followUpOwner = runtime
+		followUpOwnerStateful = stateful
 	}
 
 	effectiveProvider := strings.TrimSpace(reqProvider)
@@ -372,16 +570,29 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	if freshConversation {
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir)
 	}
-
-	// A first-party web interjection that reaches a text-only response boundary is
-	// re-sent as a normal follow-up with the same logical message ID. Transfer
-	// ownership before starting that follow-up: otherwise the engine retains the
-	// queued interjection and can inject it again at the new run's first tool
-	// boundary, persisting the user's message twice.
-	clientMessageID := strings.TrimSpace(req.ClientMessageID)
-	if stateful && clientMessageID != "" && isFirstPartyUIResponseRequest(r) && runtime.engine != nil {
-		runtime.engine.CancelInterjection(clientMessageID)
+	if err := claimUIFollowUp(followUpOwner, followUpOwnerStateful); err != nil {
+		if modelSwapExec != nil {
+			modelSwapExec.markRolledBack()
+		}
+		if !stateful {
+			s.unregisterResponseIDs(runtime)
+			runtime.Close()
+		}
+		if errors.Is(err, errResponseClientMessageAlreadyCommitted) {
+			writeOpenAIError(w, http.StatusConflict, "client_message_already_committed", err.Error())
+		} else if errors.Is(err, errServeSessionBusy) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+		} else {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		}
+		return
 	}
+	claimsTransferred := false
+	defer func() {
+		if !claimsTransferred {
+			followUpClaims.Release()
+		}
+	}()
 
 	cleanupRuntime := !stateful
 	if cleanupRuntime {
@@ -486,10 +697,15 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if req.Stream {
+		var claimsDone func()
+		if followUpClaims != nil {
+			claimsDone = followUpClaims.Release
+			claimsTransferred = true
+		}
 		if rr.uiStream && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, claimsDone)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey, claimsDone)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -717,11 +933,12 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey string) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey string, onDone func()) bool {
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		previousResponseID:        previousResponseID,
 		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
 		modelSwap:                 modelSwap,
 		idempotencyKey:            idempotencyKey,
+		onDone:                    onDone,
 	})
 }

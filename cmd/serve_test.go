@@ -225,6 +225,44 @@ func (p *stagedProvider) Stream(ctx context.Context, req llm.Request) (llm.Strea
 	return &stagedStream{ctx: streamCtx, cancel: cancel, events: ch}, nil
 }
 
+type cancelPreserveProvider struct {
+	mu            sync.Mutex
+	requests      []llm.Request
+	secondStarted chan struct{}
+	secondOnce    sync.Once
+}
+
+func (p *cancelPreserveProvider) Name() string       { return "cancel-preserve" }
+func (p *cancelPreserveProvider) Credential() string { return "test" }
+func (p *cancelPreserveProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+func (p *cancelPreserveProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	call := len(p.requests)
+	p.mu.Unlock()
+	switch call {
+	case 1:
+		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{
+			ID:        "call-preserved-context",
+			Name:      "slow_tool",
+			Arguments: json.RawMessage(`{}`),
+		}}}}, nil
+	case 2:
+		p.secondOnce.Do(func() { close(p.secondStarted) })
+		return &serveRuntimeBlockingStream{ctx: ctx}, nil
+	default:
+		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "follow-up saw context"}}}, nil
+	}
+}
+
+func (p *cancelPreserveProvider) Requests() []llm.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]llm.Request(nil), p.requests...)
+}
+
 func newServeHTTPTestServer(srv *serveServer) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/responses", srv.handleResponses)
@@ -1118,6 +1156,49 @@ func TestParseResponsesInput_String(t *testing.T) {
 	}
 	if got := msgs[0].Parts[0].Text; got != "hello" {
 		t.Fatalf("text = %q, want %q", got, "hello")
+	}
+}
+
+func TestParseResponsesInput_PreservesPerItemClientMessageIDs(t *testing.T) {
+	msgs, replaceHistory, err := parseResponsesInput(json.RawMessage(`[
+		{"type":"message","role":"user","client_message_id":"msg-first","content":"first"},
+		{"type":"message","role":"user","client_message_id":"msg-second","content":"second"}
+	]`))
+	if err != nil {
+		t.Fatalf("parseResponsesInput: %v", err)
+	}
+	if !replaceHistory {
+		t.Fatal("ordinary multi-message input unexpectedly changed from replacement semantics")
+	}
+	if len(msgs) != 2 || msgs[0].ClientMessageID != "msg-first" || msgs[1].ClientMessageID != "msg-second" {
+		t.Fatalf("parsed client identities = %#v", msgs)
+	}
+}
+
+func TestPrepareResponseClientMessageIDs_ValidatesFirstPartyBatch(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleUser, ClientMessageID: "msg-first"},
+		{Role: llm.RoleUser, ClientMessageID: "msg-second"},
+	}
+	isBatch, err := prepareResponseClientMessageIDs(messages, "msg-second", true)
+	if err != nil || !isBatch {
+		t.Fatalf("valid batch: isBatch=%v err=%v", isBatch, err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		messages  []llm.Message
+		requestID string
+	}{
+		{name: "missing item id", messages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: "msg-first"}, {Role: llm.RoleUser}}, requestID: "msg-second"},
+		{name: "duplicate item id", messages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: "same"}, {Role: llm.RoleUser, ClientMessageID: "same"}}, requestID: "same"},
+		{name: "wrong final id", messages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: "msg-first"}, {Role: llm.RoleUser, ClientMessageID: "msg-second"}}, requestID: "other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := prepareResponseClientMessageIDs(test.messages, test.requestID, true); err == nil {
+				t.Fatal("expected batch identity validation error")
+			}
+		})
 	}
 }
 
@@ -3633,6 +3714,384 @@ func TestHandleResponses_UIFollowUpClaimsQueuedInterjection(t *testing.T) {
 	}
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+}
+
+func TestHandleResponses_UIQueuedFollowUpBatchRunsOnceAndPersistsDistinctRows(t *testing.T) {
+	const sessionID = "sess-ui-follow-up-batch"
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("initial answer").AddTextResponse("one batched answer")
+	runtime := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+		store:        store,
+	}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) { return runtime, nil })
+	defer manager.Close()
+	srv := &serveServer{store: store, sessionMgr: manager, cfgRef: &config.Config{DefaultProvider: "mock"}}
+
+	code, first := doResponsesFirstParty(t, srv, `{"input":"start","client_message_id":"msg-start","model":"mock-model"}`, sessionID)
+	if code != http.StatusOK {
+		t.Fatalf("initial status = %d body=%#v", code, first)
+	}
+	previousID, _ := first["id"].(string)
+	if previousID == "" {
+		t.Fatalf("initial response missing id: %#v", first)
+	}
+
+	for _, queued := range []struct{ id, text string }{{"msg-first", "first queued"}, {"msg-second", "second queued"}} {
+		runtime.engine.QueueInterjection(llm.QueuedInterjection{ID: queued.id, Message: llm.UserText(queued.text), DisplayText: queued.text})
+	}
+	body := `{"input":[` +
+		`{"type":"message","role":"user","client_message_id":"msg-first","content":"first queued"},` +
+		`{"type":"message","role":"user","client_message_id":"msg-second","content":"second queued"}` +
+		`],"client_message_id":"msg-second","previous_response_id":"` + previousID + `"}`
+	code, second := doResponsesFirstParty(t, srv, body)
+	if code != http.StatusOK {
+		t.Fatalf("batch status = %d body=%#v", code, second)
+	}
+	if pending := runtime.engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("batched follow-up retained engine queue ownership: %#v", pending)
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider request count = %d, want initial + one batch", len(provider.Requests))
+	}
+	lastRequest := provider.Requests[1]
+	var batchUsers []llm.Message
+	for _, message := range lastRequest.Messages {
+		if message.Role == llm.RoleUser && (message.ClientMessageID == "msg-first" || message.ClientMessageID == "msg-second") {
+			batchUsers = append(batchUsers, message)
+		}
+	}
+	if len(batchUsers) != 2 || batchUsers[0].ClientMessageID != "msg-first" || batchUsers[1].ClientMessageID != "msg-second" {
+		t.Fatalf("provider batch users = %#v", batchUsers)
+	}
+
+	stored, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	var storedBatch []session.Message
+	batchAssistantCount := 0
+	for _, message := range stored {
+		if message.ClientMessageID == "msg-first" || message.ClientMessageID == "msg-second" {
+			storedBatch = append(storedBatch, message)
+		}
+		if message.Role == llm.RoleAssistant && message.TextContent == "one batched answer" {
+			batchAssistantCount++
+		}
+	}
+	if len(storedBatch) != 2 || storedBatch[0].ClientMessageID != "msg-first" || storedBatch[1].ClientMessageID != "msg-second" {
+		t.Fatalf("stored batch users = %#v", storedBatch)
+	}
+	if batchAssistantCount != 1 {
+		t.Fatalf("batched assistant response count = %d, want 1; messages=%#v", batchAssistantCount, stored)
+	}
+}
+
+func TestHandleResponses_UIFollowUpStartFailureReleasesClaim(t *testing.T) {
+	const (
+		sessionID = "sess-follow-up-start-failure"
+		messageID = "msg-follow-up-start-failure"
+	)
+	provider := &serveRuntimeErrorProvider{err: errors.New("provider failed before response")}
+	engine := llm.NewEngine(provider, nil)
+	entry := llm.QueuedInterjection{ID: messageID, Message: llm.UserText("retry me")}
+	engine.QueueInterjection(entry)
+	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	runs := newServeResponseRunManager()
+	runs.Close()
+	srv := &serveServer{sessionMgr: manager, responseRuns: runs}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req: responsesCreateRequest{Stream: true, ClientMessageID: messageID}, inputMessages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: messageID}},
+		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_start_failure",
+	})
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rr.Code, rr.Body.String())
+	}
+	if _, status := engine.QueueInterjectionWithStatus(entry); status != llm.InterjectionQueueQueued {
+		t.Fatalf("claim was not released after start failure: %q", status)
+	}
+}
+
+func TestHandleResponses_UIFollowUpRunFailureReleasesClaim(t *testing.T) {
+	const (
+		sessionID = "sess-follow-up-run-failure"
+		messageID = "msg-follow-up-run-failure"
+	)
+	provider := &serveRuntimeErrorProvider{err: errors.New("provider failed before response")}
+	engine := llm.NewEngine(provider, nil)
+	entry := llm.QueuedInterjection{ID: messageID, Message: llm.UserText("retry me")}
+	engine.QueueInterjection(entry)
+	runtime := &serveRuntime{provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model"}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{sessionMgr: manager, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req: responsesCreateRequest{Stream: true, ClientMessageID: messageID}, inputMessages: []llm.Message{{Role: llm.RoleUser, ClientMessageID: messageID}},
+		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_run_failure",
+	})
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "event: response.failed") {
+		t.Fatalf("run failure response status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if _, status := engine.QueueInterjectionWithStatus(entry); status != llm.InterjectionQueueQueued {
+		t.Fatalf("claim was not released after run failure: %q", status)
+	}
+}
+
+func TestHandleResponses_UIFollowUpRejectsCommittedInterjection(t *testing.T) {
+	const (
+		sessionID = "sess_committed_interjection_handoff"
+		messageID = "msg_committed_interjection_handoff"
+	)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	engine := llm.NewEngine(provider, nil)
+	engine.QueueInterjection(llm.QueuedInterjection{
+		ID:          messageID,
+		Message:     llm.UserText("already committed"),
+		DisplayText: "already committed",
+	})
+	if drained := engine.DrainInterjections(); len(drained) != 1 {
+		t.Fatalf("drained interjections = %#v, want one", drained)
+	}
+	runtime := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	runtime.Touch()
+
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{sessionMgr: manager, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
+		inputMessages:      []llm.Message{llm.UserText("already committed")},
+		sessionID:          sessionID,
+		previousResponseID: "resp_previous",
+		previousDurable:    true,
+		idempotencyKey:     "request_committed_interjection_handoff",
+	})
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"type":"client_message_already_committed"`) {
+		t.Fatalf("body missing typed committed conflict: %s", rr.Body.String())
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
+	}
+}
+
+func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredRetry(t *testing.T) {
+	const (
+		sessionID = "sess_trailing_retry"
+		messageID = "msg_trailing_retry"
+	)
+	provider := llm.NewMockProvider("mock").AddTextResponse("retry succeeded")
+	engine := llm.NewEngine(provider, nil)
+	trailing := llm.UserText("retry me")
+	trailing.ClientMessageID = messageID
+	runtime := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		defaultModel: "mock-model",
+		history:      []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), trailing},
+	}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{sessionMgr: manager, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
+		inputMessages:      []llm.Message{llm.UserText("retry me")},
+		sessionID:          sessionID,
+		previousResponseID: "resp_previous",
+		previousDurable:    true,
+		idempotencyKey:     "request_trailing_retry",
+	})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+}
+
+func TestHandleResponses_UIFollowUpAllowsTrailingUnansweredBatchRetry(t *testing.T) {
+	const sessionID = "sess-trailing-batch-retry"
+	provider := llm.NewMockProvider("mock").AddTextResponse("batch retry succeeded")
+	engine := llm.NewEngine(provider, nil)
+	first := llm.UserText("first")
+	first.ClientMessageID = "msg-first"
+	second := llm.UserText("second")
+	second.ClientMessageID = "msg-second"
+	for _, message := range []llm.Message{first, second} {
+		engine.QueueInterjection(llm.QueuedInterjection{ID: message.ClientMessageID, Message: message})
+	}
+	engine.ClaimInterjections([]string{first.ClientMessageID, second.ClientMessageID})
+	runtime := &serveRuntime{
+		provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model",
+		history: []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), first, second},
+	}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{sessionMgr: manager, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req: responsesCreateRequest{Stream: true, ClientMessageID: second.ClientMessageID}, inputMessages: []llm.Message{first, second},
+		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_batch_retry",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+}
+
+func TestHandleResponses_UIFollowUpRejectsMixedOwnedAndPendingBatch(t *testing.T) {
+	const sessionID = "sess-mixed-batch-ownership"
+	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	engine := llm.NewEngine(provider, nil)
+	first := llm.UserText("first")
+	first.ClientMessageID = "msg-owned"
+	second := llm.UserText("second")
+	second.ClientMessageID = "msg-pending"
+	for _, message := range []llm.Message{first, second} {
+		engine.QueueInterjection(llm.QueuedInterjection{ID: message.ClientMessageID, Message: message})
+	}
+	engine.ClaimInterjection(first.ClientMessageID)
+	runtime := &serveRuntime{
+		provider: provider, providerKey: provider.Name(), engine: engine, defaultModel: "mock-model",
+		history: []llm.Message{llm.UserText("earlier"), llm.AssistantText("done"), first, second},
+	}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{sessionMgr: manager, responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req: responsesCreateRequest{Stream: true, ClientMessageID: second.ClientMessageID}, inputMessages: []llm.Message{first, second},
+		sessionID: sessionID, previousResponseID: "resp_previous", previousDurable: true, idempotencyKey: "request_mixed_ownership",
+	})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
+	}
+	if _, status := engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: second.ClientMessageID, Message: second}); status != llm.InterjectionQueueAlreadyQueued {
+		t.Fatalf("pending batch member was transferred despite mixed ownership: %q", status)
+	}
+}
+
+func TestHandleResponses_UIFollowUpRejectsColdDurableDuplicate(t *testing.T) {
+	const (
+		sessionID = "sess_cold_durable_duplicate"
+		messageID = "msg_cold_durable_duplicate"
+	)
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Create(ctx, &session.Session{ID: sessionID, Provider: "mock", Model: "mock-model", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	persisted := session.NewMessage(sessionID, llm.UserText("already durable"), -1)
+	persisted.ClientMessageID = messageID
+	if err := store.AddMessage(ctx, sessionID, persisted); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	if err := store.AddMessage(ctx, sessionID, session.NewMessage(sessionID, llm.AssistantText("already answered"), -1)); err != nil {
+		t.Fatalf("Add assistant: %v", err)
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	runtime := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+		store:        store,
+	}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{sessionMgr: manager, responseRuns: newServeResponseRunManager(), store: store}
+	defer srv.responseRuns.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	rr := httptest.NewRecorder()
+	srv.handleResolvedResponses(rr, req, req.Context(), resolvedResponsesRequest{
+		req:                responsesCreateRequest{Stream: true, ClientMessageID: messageID},
+		inputMessages:      []llm.Message{llm.UserText("already durable")},
+		sessionID:          sessionID,
+		previousResponseID: "resp_previous",
+		previousDurable:    true,
+		idempotencyKey:     "request_cold_durable_duplicate",
+	})
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
 	}
 }
 
@@ -6648,6 +7107,24 @@ func doResponses(t *testing.T, srv *serveServer, bodyJSON string) (int, map[stri
 	return rr.Code, result
 }
 
+// doResponsesFirstParty sends a non-streaming first-party UI request.
+func doResponsesFirstParty(t *testing.T, srv *serveServer, bodyJSON string, sessionID ...string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(bodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	if len(sessionID) > 0 && sessionID[0] != "" {
+		req.Header.Set("session_id", sessionID[0])
+	}
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+	var result map[string]any
+	if rr.Body.Len() > 0 {
+		_ = json.Unmarshal(rr.Body.Bytes(), &result)
+	}
+	return rr.Code, result
+}
+
 // doResponsesWithHeader sends a non-streaming /v1/responses request with a session_id header.
 func doResponsesWithHeader(t *testing.T, srv *serveServer, bodyJSON, sessionID string) (int, map[string]any) {
 	t.Helper()
@@ -7970,14 +8447,40 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 		},
 	}
 
-	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"old","model":"old-model"}`, "swap-naive")
+	code, resp1 := doResponsesFirstParty(t, srv, `{"input":"hello","client_message_id":"swap-initial","provider":"old","model":"old-model"}`, "swap-naive")
 	if code != http.StatusOK {
 		t.Fatalf("first status = %d, want 200", code)
 	}
 	respID := resp1["id"].(string)
-	code, resp2 := doResponses(t, srv, `{"input":"continue","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
+
+	code, conflict := doResponsesFirstParty(t, srv, `{"input":"hello","client_message_id":"swap-initial","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
+	if code != http.StatusConflict {
+		t.Fatalf("duplicate swap status = %d, want 409 body=%#v", code, conflict)
+	}
+	conflictErr, _ := conflict["error"].(map[string]any)
+	if conflictErr["type"] != "client_message_already_committed" {
+		t.Fatalf("duplicate swap error = %#v", conflict)
+	}
+	currentAfterConflict, ok := manager.Get("swap-naive")
+	if !ok || currentAfterConflict == nil || currentAfterConflict.providerKey != "old" {
+		t.Fatalf("duplicate swap replaced previous runtime: current=%#v ok=%v", currentAfterConflict, ok)
+	}
+
+	previousRuntime, ok := manager.Get("swap-naive")
+	if !ok || previousRuntime == nil {
+		t.Fatal("previous runtime missing before model swap")
+	}
+	previousRuntime.engine.QueueInterjection(llm.QueuedInterjection{
+		ID:          "swap-follow-up",
+		Message:     llm.UserText("continue"),
+		DisplayText: "continue",
+	})
+	code, resp2 := doResponsesFirstParty(t, srv, `{"input":"continue","client_message_id":"swap-follow-up","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("swap status = %d, want 200", code)
+	}
+	if pending := previousRuntime.engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("model swap claimed candidate instead of previous runtime: %#v", pending)
 	}
 	if got := responseOutputText(t, resp2); got != "new-1" {
 		t.Fatalf("response text = %q, want new-1", got)
@@ -9597,6 +10100,107 @@ func TestStartResponseRunProviderDeadlineDoesNotClaimRunTimeout(t *testing.T) {
 	}
 	if !sawFailed {
 		t.Fatal("deadline-exceeded run replay missing response.failed terminal event")
+	}
+}
+
+func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) {
+	const sessionID = "sess-cancel-preserves-tools"
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	provider := &cancelPreserveProvider{secondStarted: make(chan struct{})}
+	registry := llm.NewToolRegistry()
+	tool := &testServeDelayTool{}
+	registry.Register(tool)
+	runtime := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, registry),
+		defaultModel: "test-model",
+		store:        store,
+	}
+	runtime.Touch()
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+	putTestSession(manager, sessionID, runtime)
+	srv := &serveServer{
+		store:        store,
+		sessionMgr:   manager,
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(runtime, true, false, []llm.Message{llm.UserText("gather context")}, llm.Request{
+		SessionID:  sessionID,
+		MaxTurns:   5,
+		Tools:      []llm.ToolSpec{tool.Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+	}, sessionID, startResponseRunOptions{uiSession: true})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+
+	select {
+	case <-provider.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider did not reach the post-tool turn")
+	}
+
+	action, _, err := runtime.InterruptMessage(context.Background(), llm.UserText("stop right away"), "stop right away", "msg-stop-now", nil, false)
+	if err != nil {
+		t.Fatalf("InterruptMessage: %v", err)
+	}
+	if action != llm.InterruptCancel {
+		t.Fatalf("action = %q, want cancel", action)
+	}
+
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		return run.snapshot()["status"] == "cancelled"
+	}, "classified cancellation to become terminal")
+
+	snapshot := run.snapshot()
+	continuationID, _ := snapshot["continuation_response_id"].(string)
+	if !strings.HasPrefix(continuationID, durableResponseMessagePrefix) {
+		t.Fatalf("continuation_response_id = %q, want durable message cursor; snapshot=%#v", continuationID, snapshot)
+	}
+
+	stored, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	foundToolResult := false
+	for _, message := range stored {
+		for _, part := range message.Parts {
+			if message.Role == llm.RoleTool && part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "slept") {
+				foundToolResult = true
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("completed tool result was lost on cancellation: %#v", stored)
+	}
+
+	code, response := doResponses(t, srv, `{"input":"use what you gathered","previous_response_id":"`+continuationID+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("follow-up status = %d, want 200 body=%#v", code, response)
+	}
+	requests := provider.Requests()
+	if len(requests) < 3 {
+		t.Fatalf("provider requests = %d, want at least 3", len(requests))
+	}
+	foundPriorToolResult := false
+	for _, message := range requests[len(requests)-1].Messages {
+		for _, part := range message.Parts {
+			if message.Role == llm.RoleTool && part.ToolResult != nil && strings.Contains(part.ToolResult.Content, "slept") {
+				foundPriorToolResult = true
+			}
+		}
+	}
+	if !foundPriorToolResult {
+		t.Fatalf("follow-up provider request lost completed tool context: %#v", requests[len(requests)-1].Messages)
 	}
 }
 

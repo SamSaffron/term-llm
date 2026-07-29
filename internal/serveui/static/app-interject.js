@@ -78,71 +78,51 @@ const retireUnownedInterjectionIntents = (session) => {
 
 const requeueUncommittedInterrupts = (session) => {
   if (!session?.id) return;
+  const cancelled = new Set(state.pendingInterjections
+    .filter((entry) => entry.sessionId === session.id && entry.cancelRequested)
+    .map((entry) => entry.messageId));
   const remaining = [];
   for (const entry of state.pendingInterruptCommits) {
     if (entry.sessionId !== session.id) {
       remaining.push(entry);
       continue;
     }
+    if (cancelled.has(entry.messageId)) continue;
     queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments);
   }
   state.pendingInterruptCommits = remaining;
 };
-
-const drainInterruptQueueIfIdle = (session) => {
-  if (!session || session.id !== state.activeSessionId) return;
-  if (state.streaming || state.abortController) return;
-  requeueUncommittedInterrupts(session);
-  requeuePendingInterjections(session);
-  const queuedSkillIndex = Array.isArray(state.queuedSkillInvocations)
-    ? state.queuedSkillInvocations.findIndex((entry) => entry.sessionId === session.id)
-    : -1;
-  if (queuedSkillIndex >= 0) {
-    const [queued] = state.queuedSkillInvocations.splice(queuedSkillIndex, 1);
-    void app.invokeSkill(session, queued.invocation, { reuseMessageId: queued.messageId });
-    return;
-  }
-  const queuedIndex = state.queuedInterrupts.findIndex(entry => entry.sessionId === session.id);
-  if (queuedIndex >= 0) {
-    const [queued] = state.queuedInterrupts.splice(queuedIndex, 1);
-    elements.promptInput.value = queued.prompt;
-    app.autoGrowPrompt();
-    void sendMessage({ prompt: queued.prompt, attachments: queued.attachments || [], reuseMessageId: queued.messageId, _skipContinuationRefresh: true });
-  }
+const drainingFollowUpSessions = new Set();
+const drainInterruptQueueIfIdle = async (session) => {
+  const sessionId = String(session?.id || '').trim();
+  if (!sessionId || sessionId !== state.activeSessionId || drainingFollowUpSessions.has(sessionId) || state.streaming || state.abortController) return;
+  drainingFollowUpSessions.add(sessionId);
+  try {
+    await app.awaitTranscriptTerminalHandoff?.(session);
+    if (sessionId !== state.activeSessionId || state.streaming || state.abortController || session.activeResponseId) return;
+    requeueUncommittedInterrupts(session);
+    requeuePendingInterjections(session);
+    const queuedSkillIndex = Array.isArray(state.queuedSkillInvocations) ? state.queuedSkillInvocations.findIndex((entry) => entry.sessionId === sessionId) : -1;
+    if (queuedSkillIndex >= 0) {
+      const [queued] = state.queuedSkillInvocations.splice(queuedSkillIndex, 1);
+      void app.invokeSkill(session, queued.invocation, { reuseMessageId: queued.messageId });
+      return;
+    }
+    const queued = state.queuedInterrupts.filter((entry) => entry.sessionId === sessionId);
+    if (queued.length === 0) return;
+    state.queuedInterrupts = state.queuedInterrupts.filter((entry) => entry.sessionId !== sessionId);
+    let markTransferred;
+    const transferred = new Promise((resolve) => { markTransferred = resolve; });
+    const sending = sendMessage({ followUps: queued, _onTransportStarted: markTransferred });
+    await Promise.race([sending, transferred]);
+  } finally { drainingFollowUpSessions.delete(sessionId); }
 };
-
-const setInterruptMessageState = (session, messageId, interruptState) => {
-  if (!messageId) return;
-  const normalized = sanitizeInterruptState(interruptState);
-  if (!normalized) return;
-  const intents = session?.transcript?.conversation?.intents;
-  let canonical = intents?.get?.(messageId) || null;
-  if (!canonical && intents?.values) {
-    canonical = [...intents.values()].find(message => (
-      message?.id === messageId
-      || message?.clientMessageId === messageId
-      || message?.client_message_id === messageId
-    )) || null;
-  }
-  const projected = window.TermLLMConversation.sessionMessages(session)
-    .find(message => message.id === messageId && message.role === 'user');
-  const message = canonical || projected;
-  if (!message) return;
-  message.interruptState = normalized;
-  if (canonical) app.refreshSessionMessagesFromTranscript?.(session);
-  const visibleMessage = window.TermLLMConversation.sessionMessages(session)
-    .find(entry => entry.id === messageId && entry.role === 'user') || message;
-  updateVisibleUserNode(session, visibleMessage);
-};
-
-// Transition an interjection to a lifecycle phase, updating both the inline
-// badge and the pending banner from the single INTERJECTION_PHASE spec so the
-// two views cannot drift out of sync. A null banner clears the pending entry
-// (no longer cancellable); otherwise the banner action is updated in place.
-const setInterjectionPhase = (session, messageId, phase) => {
+// Transition pending composer state from the shared lifecycle spec. Pending
+// interjections are deliberately not transcript intents; the committed event is
+// the only transition that materializes a stream message.
+const setInterjectionPhase = (_session, messageId, phase) => {
   const spec = INTERJECTION_PHASE[phase];
   if (!spec) return;
-  setInterruptMessageState(session, messageId, spec.badge);
   if (spec.banner === null) {
     removePendingInterjectionById(messageId);
   } else {
@@ -150,34 +130,54 @@ const setInterjectionPhase = (session, messageId, phase) => {
   }
 };
 
-const addInlineInterruptMessage = (session, prompt, messageId, interruptState, attachments = []) => {
-  const normalized = sanitizeInterruptState(interruptState) || 'evaluating';
+const materializeCommittedInterjection = (session, messageId, committedMessage = null) => {
+  const id = String(messageId || '').trim();
+  if (!session || !id) return null;
+  const intents = session.transcript?.conversation?.intents;
+  const existing = intents?.get?.(id);
+  if (existing) {
+    existing.interruptState = 'interject';
+    if (Array.isArray(committedMessage?.attachments) && committedMessage.attachments.length > 0) {
+      existing.attachments = committedMessage.attachments.map(cloneAttachmentForMessage);
+    }
+    return existing;
+  }
+
+  const pending = state.pendingInterruptCommits.find((entry) => entry.messageId === id)
+    || state.pendingInterjections.find((entry) => entry.messageId === id);
+  const prompt = String(committedMessage?.content ?? committedMessage?.text ?? pending?.prompt ?? '');
   const message = {
-    id: messageId || generateId('msg'),
-    clientMessageId: messageId || '',
+    id,
+    clientMessageId: id,
     role: 'user',
     content: prompt,
-    created: Date.now(),
-    interruptState: normalized
+    created: Number(committedMessage?.created) || Date.now(),
+    interruptState: 'interject'
   };
+  const attachments = Array.isArray(committedMessage?.attachments) && committedMessage.attachments.length > 0
+    ? committedMessage.attachments
+    : pending?.attachments;
   if (Array.isArray(attachments) && attachments.length > 0) {
     message.attachments = attachments.map(cloneAttachmentForMessage);
   }
-  app.trackPendingIntent?.(session, message);
+  return app.trackPendingIntent?.(session, message) || message;
+};
 
-  if (isSessionVisible(session)) {
-    const emptyState = elements.messages.querySelector('.empty-state');
-    if (emptyState) emptyState.remove();
-  }
-  appendStreamMessageNode(session, message);
-  if (isSessionVisible(session)) syncTurnActionPanels();
-  return message;
+const commitPendingInterjection = (session, messageId, committedMessage = null) => {
+  const id = String(messageId || '').trim();
+  if (!id) return null;
+  const intent = materializeCommittedInterjection(session, id, committedMessage);
+  removePendingInterjectionById(id, { refresh: false });
+  resolvePendingInterruptCommitById(id);
+  state.queuedInterrupts = state.queuedInterrupts.filter((entry) => entry.messageId !== id);
+  return intent;
 };
 
 const PENDING_INTERJECTION_LABELS = {
   deciding: 'deciding…',
   interject: 'will incorporate',
   queue: 'queued',
+  cancel_queue: 'cancelling response; queued',
   cancel: 'cancelling'
 };
 
@@ -187,48 +187,55 @@ const truncateForBanner = (text, max = 80) => {
   return value.slice(0, max - 1) + '…';
 };
 
-const refreshPendingInterjectionBanner = () => {
-  const banner = elements.pendingInterjectionBanner;
-  if (!banner) return;
-  const activeId = String(state.activeSessionId || '').trim();
-  if (!activeId) {
-    banner.classList.add('hidden');
-    banner.innerHTML = '';
-    return;
-  }
-  let latest = null;
-  for (const entry of state.pendingInterjections) {
-    if (entry.sessionId !== activeId) continue;
-    latest = entry;
-  }
-  if (!latest) {
-    banner.classList.add('hidden');
-    banner.innerHTML = '';
-    return;
-  }
-  const label = PENDING_INTERJECTION_LABELS[latest.action] || PENDING_INTERJECTION_LABELS.deciding;
-  banner.innerHTML = '';
+const createPendingInterjectionRow = (entry) => {
+  const row = document.createElement('div');
+  row.className = 'pending-interjection-row';
+  row.dataset.messageId = entry.messageId;
+  row.setAttribute('role', 'listitem');
+
   const icon = document.createElement('span');
   icon.className = 'pending-interjection-icon';
   icon.textContent = '⏳';
   const text = document.createElement('span');
   text.className = 'pending-interjection-text';
-  text.textContent = truncateForBanner(latest.prompt);
+  text.textContent = truncateForBanner(entry.prompt);
   const tag = document.createElement('span');
   tag.className = 'pending-interjection-label';
+  const label = PENDING_INTERJECTION_LABELS[entry.action] || PENDING_INTERJECTION_LABELS.deciding;
   tag.textContent = `(${label})`;
-  banner.appendChild(icon);
-  banner.appendChild(text);
-  banner.appendChild(tag);
-  if (latest.action === 'interject' || latest.action === 'queue') {
+  row.appendChild(icon);
+  row.appendChild(text);
+  row.appendChild(tag);
+
+  if (entry.action !== 'cancel') {
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'pending-interjection-cancel';
     cancel.textContent = 'Cancel';
-    cancel.addEventListener('click', () => cancelPendingInterjection(latest));
-    banner.appendChild(cancel);
+    cancel.setAttribute('aria-label', `Cancel pending message: ${truncateForBanner(entry.prompt, 40)}`);
+    cancel.addEventListener('click', () => cancelPendingInterjection(entry));
+    row.appendChild(cancel);
   }
+  return row;
+};
+
+const refreshPendingInterjectionBanner = () => {
+  const banner = elements.pendingInterjectionBanner;
+  if (!banner) return;
+  const activeId = String(state.activeSessionId || '').trim();
+  const pending = activeId
+    ? state.pendingInterjections.filter((entry) => entry.sessionId === activeId)
+    : [];
+  banner.innerHTML = '';
+  if (pending.length === 0) {
+    banner.classList.add('hidden');
+    return;
+  }
+  banner.setAttribute('role', 'list');
+  banner.setAttribute('aria-label', 'Pending messages');
+  for (const entry of pending) banner.appendChild(createPendingInterjectionRow(entry));
   banner.classList.remove('hidden');
+  banner.scrollTop = banner.scrollHeight;
 };
 
 const trackPendingInterjection = (sessionId, prompt, messageId, action, attachments = []) => {
@@ -252,24 +259,42 @@ const updatePendingInterjectionAction = (messageId, action) => {
   refreshPendingInterjectionBanner();
 };
 
-const removePendingInterjectionById = (messageId) => {
+const removePendingInterjectionById = (messageId, options = {}) => {
   if (!messageId) return null;
   const idx = state.pendingInterjections.findIndex(entry => entry.messageId === messageId);
   if (idx < 0) return null;
   const [entry] = state.pendingInterjections.splice(idx, 1);
-  refreshPendingInterjectionBanner();
+  if (options.refresh !== false) refreshPendingInterjectionBanner();
   return entry;
 };
 
 const cancelPendingInterjection = async (entry) => {
   if (!entry?.sessionId || !entry?.messageId) return;
+  if (entry.action === 'deciding') {
+    if (!entry.transportStarted) {
+      removePendingInterjectionById(entry.messageId);
+      discardPendingInterruptCommit(entry.messageId);
+      state.queuedInterrupts = state.queuedInterrupts.filter((queued) => queued.messageId !== entry.messageId);
+      return;
+    }
+    entry.cancelRequested = true;
+    entry.action = 'cancel';
+    discardPendingInterruptCommit(entry.messageId);
+    state.queuedInterrupts = state.queuedInterrupts.filter((queued) => queued.messageId !== entry.messageId);
+    refreshPendingInterjectionBanner();
+    return;
+  }
   try {
-    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(entry.sessionId)}/interjections/${encodeURIComponent(entry.messageId)}`, {
-      method: 'DELETE',
-      headers: requestHeaders(entry.sessionId)
-    });
-    if (!response.ok) throw await normalizeError(response);
+    if (entry.action === 'interject') {
+      const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(entry.sessionId)}/interjections/${encodeURIComponent(entry.messageId)}`, {
+        method: 'DELETE',
+        headers: requestHeaders(entry.sessionId)
+      });
+      if (!response.ok) throw await normalizeError(response);
+    }
     removePendingInterjectionById(entry.messageId);
+    discardPendingInterruptCommit(entry.messageId);
+    state.queuedInterrupts = state.queuedInterrupts.filter((queued) => queued.messageId !== entry.messageId);
     const session = state.sessions.find(s => s.id === entry.sessionId);
     if (session) {
       app.retirePendingIntent?.(session, entry.messageId);
@@ -285,28 +310,18 @@ const cancelPendingInterjection = async (entry) => {
   }
 };
 
-const discardPendingInterruptStateForSession = (session) => {
-  if (!session?.id) return;
-  state.pendingInterjections = state.pendingInterjections.filter(entry => entry.sessionId !== session.id);
-  state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.sessionId !== session.id);
-  refreshPendingInterjectionBanner();
-};
-
 const requeuePendingInterjections = (session) => {
   if (!session?.id) return;
-  const remaining = [];
   for (const entry of state.pendingInterjections) {
-    if (entry.sessionId !== session.id) {
-      remaining.push(entry);
-      continue;
-    }
+    if (entry.sessionId !== session.id || entry.cancelRequested) continue;
+    entry.action = 'queue';
+    discardPendingInterruptCommit(entry.messageId);
     queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments);
   }
-  state.pendingInterjections = remaining;
   refreshPendingInterjectionBanner();
 };
 
-const interruptActiveRun = async (session, prompt, messageId, contentParts = null, attachments = []) => {
+const interruptActiveRunNow = async (session, prompt, messageId, contentParts = null, attachments = []) => {
   const body = Array.isArray(contentParts) && contentParts.length > 0
     ? { message: prompt, content: prompt ? [...contentParts, { type: 'input_text', text: prompt }] : contentParts, interjection_id: messageId, client_message_id: messageId }
     : { message: prompt, interjection_id: messageId, client_message_id: messageId };
@@ -327,11 +342,25 @@ const interruptActiveRun = async (session, prompt, messageId, contentParts = nul
     ? actionRaw
     : 'queue';
 
+  const pendingEntry = state.pendingInterjections.find((entry) => entry.messageId === messageId);
+  if (pendingEntry?.cancelRequested) {
+    if (action === 'interject') {
+      const cancelResponse = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interjections/${encodeURIComponent(messageId)}`, {
+        method: 'DELETE',
+        headers: requestHeaders(session.id)
+      });
+      if (!cancelResponse.ok) throw await normalizeError(cancelResponse);
+    }
+    removePendingInterjectionById(messageId);
+    discardPendingInterruptCommit(messageId);
+    state.queuedInterrupts = state.queuedInterrupts.filter((entry) => entry.messageId !== messageId);
+    saveSessions();
+    return 'discarded';
+  }
+
   if (action === 'interject') {
-    // The engine has only *queued* the interjection at this point; it remains
-    // cancellable (banner "will incorporate") until drainInterjections() commits
-    // it and emits response.interjection, which advances it to the committed
-    // phase ("✓ injected"). See INTERJECTION_PHASE in app-core.
+    // The engine has only queued the interjection at this point; keep it in
+    // the cancellable composer banner until response.interjection commits it.
     setInterjectionPhase(session, messageId, 'queued');
   } else {
     setInterjectionPhase(session, messageId, action === 'cancel' ? 'willCancel' : 'willQueue');
@@ -345,8 +374,33 @@ const interruptActiveRun = async (session, prompt, messageId, contentParts = nul
   }
 
   saveSessions();
-  scrollVisibleStreamToBottom(session, true);
   return action;
+};
+
+const interruptMutationTails = new Map();
+
+// Serialize interrupt classification per session. The stack is updated
+// immediately, but server queue ownership follows the same FIFO order the user
+// sees above the composer.
+const interruptActiveRun = (session, prompt, messageId, contentParts = null, attachments = []) => {
+  const sessionId = String(session?.id || '').trim();
+  const previous = interruptMutationTails.get(sessionId) || Promise.resolve();
+  const request = previous.then(() => {
+    const entry = state.pendingInterjections.find((item) => item.messageId === messageId);
+    if (!entry || entry.cancelRequested) {
+      removePendingInterjectionById(messageId);
+      discardPendingInterruptCommit(messageId);
+      state.queuedInterrupts = state.queuedInterrupts.filter((item) => item.messageId !== messageId);
+      return 'discarded';
+    }
+    if (entry) entry.transportStarted = true;
+    return interruptActiveRunNow(session, prompt, messageId, contentParts, attachments);
+  });
+  const tail = request.then(() => undefined, () => undefined).finally(() => {
+    if (interruptMutationTails.get(sessionId) === tail) interruptMutationTails.delete(sessionId);
+  });
+  interruptMutationTails.set(sessionId, tail);
+  return request;
 };
 
 const runtimeStateFromSyncResult = (result) => (
@@ -367,9 +421,9 @@ Object.assign(app, {
   retireUnownedInterjectionIntents,
   requeueUncommittedInterrupts,
   drainInterruptQueueIfIdle,
-  setInterruptMessageState,
   setInterjectionPhase,
-  addInlineInterruptMessage,
+  materializeCommittedInterjection,
+  commitPendingInterjection,
   PENDING_INTERJECTION_LABELS,
   truncateForBanner,
   refreshPendingInterjectionBanner,
@@ -377,7 +431,6 @@ Object.assign(app, {
   updatePendingInterjectionAction,
   removePendingInterjectionById,
   cancelPendingInterjection,
-  discardPendingInterruptStateForSession,
   requeuePendingInterjections,
   interruptActiveRun,
   runtimeStateFromSyncResult,

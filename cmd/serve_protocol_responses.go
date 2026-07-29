@@ -104,6 +104,7 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 				if err != nil {
 					return nil, false, fmt.Errorf("user message: %w", err)
 				}
+				msg.ClientMessageID = strings.TrimSpace(jsonString(item["client_message_id"]))
 				messages = append(messages, msg)
 				userCount++
 			}

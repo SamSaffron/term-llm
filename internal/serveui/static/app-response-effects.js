@@ -15,7 +15,7 @@ const {
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
   renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
 } = app;
-const { rebaseStreamAssetURL, forceSidebarStatusRefreshSoon, normalizeEffortForCompare, clearSessionPendingEffort, clearTerminalPendingEffort, classifyRecoverableContinuationFailure, setActiveResponseTracking, scheduleStreamPersistence, flushStreamPersistence, clearActiveResponseTracking, notifyTranscriptTerminal, isSessionVisible, updateVisibleToolGroupNode, enqueueVisibleAssistantStreamUpdate, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, scheduleVisibleStreamScroll, responseStreamOwnerId, clearProviderRetryForEvent, applyResponseRecoverySnapshot, addErrorMessage } = app;
+const { rebaseStreamAssetURL, forceSidebarStatusRefreshSoon, normalizeEffortForCompare, clearSessionPendingEffort, clearTerminalPendingEffort, classifyRecoverableContinuationFailure, setActiveResponseTracking, scheduleStreamPersistence, flushStreamPersistence, clearActiveResponseTracking, isSessionVisible, updateVisibleToolGroupNode, enqueueVisibleAssistantStreamUpdate, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, scheduleVisibleStreamScroll, responseStreamOwnerId, clearProviderRetryForEvent, applyResponseRecoverySnapshot, addErrorMessage } = app;
 
 const applyRecoveredInteractiveFact = (session, event, payload = {}) => {
   if (event === 'response.ask_user.prompt') {
@@ -225,14 +225,13 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (event === 'response.interjection') {
     const clientMessageId = String(payload?.client_message_id || '').trim();
     if (!clientMessageId) return { terminal: false, protocolError: 'interjection missing client_message_id' };
-    const transcript = session.transcript;
-    const intent = transcript?.conversation?.intents?.get(clientMessageId);
-    if (intent) {
-      intent.interruptState = 'interject';
-      if (Array.isArray(payload.attachments) && payload.attachments.length > 0) intent.attachments = payload.attachments;
-    }
-    app.removePendingInterjectionById(clientMessageId);
-    app.resolvePendingInterruptCommitById(clientMessageId);
+    const intent = app.commitPendingInterjection?.(session, clientMessageId, {
+      content: payload?.text,
+      attachments: payload?.attachments,
+      created: payload?.created,
+    });
+    if (intent) intent.interruptState = 'interject';
+    app.refreshPendingInterjectionBanner?.();
     app.refreshSessionMessagesFromTranscript?.(session);
     if (isSessionVisible(session)) app.renderMessages?.();
     saveSessions();
@@ -286,7 +285,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       void app.refreshCurrentPlanFromServer?.(session);
     }
     scrollVisibleStreamToBottom(session);
-    void notifyTranscriptTerminal(session, responseId, payload);
+    void app.trackTranscriptTerminalHandoff(session, responseId, payload);
     return { terminal: true };
   }
 
@@ -295,13 +294,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (lifecycleResult?.duplicate) {
       return { terminal: true, repeatedTerminal: true };
     }
+    const durableResponseId = String(payload?.response?.id || '').trim();
+    if (durableResponseId) session.lastResponseId = durableResponseId;
     streamState.closeToolGroup();
-    if (state.expectCanceledRun) {
-      app.discardPendingInterruptStateForSession(session);
-      state.expectCanceledRun = false;
-    } else {
-      app.requeuePendingInterjections(session);
-    }
+    app.requeuePendingInterjections(session);
+    state.expectCanceledRun = false;
     clearTerminalPendingEffort(session);
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
@@ -314,7 +311,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
-    void notifyTranscriptTerminal(session, responseId, payload);
+    void app.trackTranscriptTerminalHandoff(session, responseId, payload);
     return { terminal: true };
   }
 
@@ -323,6 +320,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (lifecycleResult?.duplicate) {
       return { terminal: true, repeatedTerminal: true };
     }
+    const durableResponseId = String(payload?.response?.id || '').trim();
+    if (durableResponseId) session.lastResponseId = durableResponseId;
     const errorMessage = payload?.error?.message || 'The response failed.';
     const lowered = errorMessage.toLowerCase();
     const recoverableContinuationFailure = classifyRecoverableContinuationFailure(
@@ -342,11 +341,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     state.expectCanceledRun = false;
 
     streamState.closeToolGroup();
-    if (canceledByInterrupt) {
-      app.discardPendingInterruptStateForSession(session);
-    } else {
-      app.requeuePendingInterjections(session);
-    }
+    app.requeuePendingInterjections(session);
     clearTerminalPendingEffort(session);
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
@@ -360,7 +355,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     forceSidebarStatusRefreshSoon();
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session, true);
-    void notifyTranscriptTerminal(session, responseId, payload);
+    void app.trackTranscriptTerminalHandoff(session, responseId, payload);
     return {
       terminal: true,
       error: recoverableContinuationFailure

@@ -3203,17 +3203,27 @@
 
     .pending-interjection {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      flex-direction: column;
+      gap: 0.4rem;
+      max-height: min(40vh, 18rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
       margin: 0 0.3rem 0.45rem;
-      padding: 0.5rem 0.85rem;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: var(--surface-2);
       color: var(--muted);
       font-size: 0.88rem;
       font-style: italic;
       line-height: 1.3;
+    }
+
+    .pending-interjection-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 0;
+      padding: 0.5rem 0.85rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
     }
 
     .pending-interjection.hidden {
@@ -3236,6 +3246,26 @@
       flex-shrink: 0;
       opacity: 0.75;
       font-style: normal;
+    }
+
+    .pending-interjection-cancel {
+      margin-left: auto;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0.3rem 0.65rem;
+      font: inherit;
+      font-size: 0.8rem;
+      font-style: normal;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .pending-interjection-cancel:hover {
+      background: var(--surface-3);
+      border-color: var(--border-strong);
     }
 
     .composer-box {

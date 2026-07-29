@@ -42,7 +42,6 @@ const saveDraftMessages = (drafts) => {
   try {
     localStorage.setItem(draftMessagesStorageKey(), JSON.stringify(cleaned));
   } catch (err) {
-    // localStorage can be full or disabled; draft preservation is best-effort.
     console.warn('[drafts] failed to save draft messages', err);
   }
   return cleaned;
@@ -102,21 +101,32 @@ const restoreLatestDraftMessage = () => {
 
 const { requestHeaders, normalizeError, hasSessionContinuationContext, effectiveEffortForCompare, clearRuntimeSelectionIntent, classifyRecoverableContinuationFailure, sleep, streamReconnectDelay, streamReconnectLabel, isTransientPreResponsePostError, setActiveResponseTracking, HEARTBEAT_STALE_THRESHOLD, heartbeatUploadGraceThreshold, attachResponseStream, detachResponseStream, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, createResponseStreamState, consumeResponseStream, resumeActiveResponse, setStreaming, recoverInterruptFailure, addErrorMessage } = app;
 
+const restoreQueuedFollowUps = (entries, sessionId) => {
+  for (const entry of entries) {
+    if (!state.queuedInterrupts.some((queued) => queued.sessionId === sessionId && queued.messageId === entry.messageId)) state.queuedInterrupts.push(entry);
+  }
+};
 const sendMessage = async (options = {}) => {
-  const promptSource = typeof options.prompt === 'string' ? options.prompt : elements.promptInput.value;
+  let followUps = Array.isArray(options.followUps)
+    ? options.followUps.filter((entry) => entry && String(entry.messageId || '').trim()) : [];
+  const cancellableFollowUpIDs = new Set(state.pendingInterjections
+    .filter((entry) => followUps.some((queued) => queued.messageId === entry.messageId)).map((entry) => entry.messageId));
+  const batchingFollowUps = followUps.length > 0;
+  const promptSource = batchingFollowUps ? followUps[followUps.length - 1].prompt
+    : (typeof options.prompt === 'string' ? options.prompt : elements.promptInput.value);
   const prompt = String(promptSource || '').trim();
-  const pendingAttachments = Array.isArray(options.attachments)
-    ? [...options.attachments]
-    : [...state.attachments];
+  const pendingAttachments = batchingFollowUps ? []
+    : (Array.isArray(options.attachments) ? [...options.attachments] : [...state.attachments]);
 
-  if (!prompt && pendingAttachments.length === 0) return;
+  if (!batchingFollowUps && !prompt && pendingAttachments.length === 0) return;
 
   if (!state.connected) {
+    if (batchingFollowUps) restoreQueuedFollowUps(followUps, followUps[0]?.sessionId);
     app.openAuthModal('Connect before sending a message.', true);
     return;
   }
 
-  if (/^\/(goal|mcp|model|new)$/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/(goal|mcp|model|new)$/i.test(prompt)) {
     const command = prompt.toLowerCase();
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
@@ -138,7 +148,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  if (/^\/(compact|compress)$/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/(compact|compress)$/i.test(prompt)) {
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
     app.autoGrowPrompt();
@@ -178,7 +188,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  if (/^\/side(?:\s|$)/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/side(?:\s|$)/i.test(prompt)) {
     const question = prompt.replace(/^\/side\b/i, '').trim();
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
@@ -187,7 +197,7 @@ const sendMessage = async (options = {}) => {
   }
 
   let session = getActiveSession();
-  const skillInvocation = pendingAttachments.length === 0
+  const skillInvocation = !batchingFollowUps && pendingAttachments.length === 0
     ? app.matchSkillInvocation?.(prompt)
     : null;
   const heartbeatPostRetryCount = Math.max(0, Number(options._heartbeatPostRetry || 0));
@@ -211,6 +221,10 @@ const sendMessage = async (options = {}) => {
     await app.invokeSkill(session, skillInvocation);
     return;
   }
+  if (activeSessionBusy && batchingFollowUps && !retryingHeartbeatPost) {
+    restoreQueuedFollowUps(followUps, session.id);
+    return;
+  }
   if (activeSessionBusy && !retryingHeartbeatPost) {
     const pendingMessageId = generateId('msg');
     let requestAttachmentParts = [];
@@ -224,26 +238,18 @@ const sendMessage = async (options = {}) => {
         return;
       }
     }
-
     stageDraftMessage(prompt, session.id);
     app.trackPendingInterruptCommit(session.id, prompt, pendingMessageId, pendingAttachments);
     app.trackPendingInterjection(session.id, prompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'deciding', pendingAttachments);
-    app.addInlineInterruptMessage(session, prompt, pendingMessageId, 'evaluating', pendingAttachments);
     persistAndRefreshShell();
-    scrollVisibleStreamToBottom(session, true);
-
     elements.promptInput.value = '';
     state.attachments = [];
     renderAttachments();
     app.autoGrowPrompt();
-
     try {
       await app.interruptActiveRun(session, prompt, pendingMessageId, requestAttachmentParts, pendingAttachments);
       clearDraftMessageForSession(session.id);
     } catch (err) {
-      // Interrupt can fail after backend restart or stale runtime state. For any
-      // non-auth HTTP failure, resync server truth before deciding whether to
-      // queue locally, retry as a fresh message, or surface the original error.
       if (err?.status && err.status !== 401) {
         try {
           const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId, pendingAttachments);
@@ -254,7 +260,6 @@ const sendMessage = async (options = {}) => {
           err = recoveryErr;
         }
       }
-
       app.discardPendingInterruptCommit(pendingMessageId);
       app.setInterjectionPhase(session, pendingMessageId, 'failed');
       const message = err?.message || 'Failed to interrupt active run.';
@@ -271,27 +276,32 @@ const sendMessage = async (options = {}) => {
     }
     return;
   }
-
   const controller = new AbortController();
   controller._heartbeatAbort = false;
   let requestAttachmentParts = [];
-  if (pendingAttachments.length > 0) {
-    try {
-      requestAttachmentParts = await buildAttachmentInputParts(pendingAttachments, controller.signal);
-    } catch (err) {
-      try {
-        controller.abort();
-      } catch {
-        // Ignore abort failures while tearing down attachment reads.
+  const batchAttachmentParts = new Map();
+  try {
+    if (batchingFollowUps) {
+      for (const entry of followUps) {
+        const attachments = Array.isArray(entry.attachments) ? entry.attachments : [];
+        batchAttachmentParts.set(entry.messageId, attachments.length > 0
+          ? await buildAttachmentInputParts(attachments, controller.signal)
+          : []);
       }
-      const message = err?.message || 'Failed to read attachment.';
-      alert(message);
-      return;
+    } else if (pendingAttachments.length > 0) {
+      requestAttachmentParts = await buildAttachmentInputParts(pendingAttachments, controller.signal);
     }
+  } catch (err) {
+    try { controller.abort(); } catch {}
+    alert(err?.message || 'Failed to read attachment.');
+    if (batchingFollowUps) restoreQueuedFollowUps(followUps, session?.id);
+    return;
   }
-
+  if (batchingFollowUps) {
+    followUps = followUps.filter((queued) => !cancellableFollowUpIDs.has(queued.messageId) || state.pendingInterjections.some((pending) => pending.messageId === queued.messageId && !pending.cancelRequested));
+    if (followUps.length === 0) return;
+  }
   const wasDraftSessionSend = !session || state.draftSessionActive;
-
   if (!session) {
     session = createSession();
     state.sessions.unshift(session);
@@ -299,11 +309,9 @@ const sendMessage = async (options = {}) => {
     state.draftSessionActive = false;
     updateURL(sessionSlug(session));
   }
-
   if (wasDraftSessionSend && session?.id && state.activeSessionId === session.id && elements.messages?.dataset) {
     elements.messages.dataset.sessionId = session.id;
   }
-
   const shouldRefreshMissingContinuation = !options._skipContinuationRefresh && Boolean(
     session
     && !session.activeResponseId
@@ -315,100 +323,109 @@ const sendMessage = async (options = {}) => {
       await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
       session = getActiveSession() || session;
     } catch (_err) {
-      // Best effort only: if the continuation cursor is still unavailable we
-      // fall back to the local session state below.
     }
     if (state.streaming || session.activeResponseId) {
       return sendMessage({ ...options, _skipContinuationRefresh: true });
     }
   }
-
   const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';
-  stageDraftMessage(prompt, session.id);
-  let userMessage = reuseMessageId
-    ? window.TermLLMConversation.sessionMessages(session).find(m => m.id === reuseMessageId && m.role === 'user') || null
-    : null;
-  const isNewUserMessage = !userMessage;
-
-  if (!userMessage) {
-    userMessage = {
-      id: generateId('msg'),
-      role: 'user',
-      content: prompt,
-      created: Date.now()
-    };
-  } else {
-    userMessage.content = prompt;
-    delete userMessage.interruptState;
+  const messageSpecs = batchingFollowUps ? followUps.map((entry) => ({
+    prompt: String(entry.prompt || '').trim(),
+    attachments: Array.isArray(entry.attachments) ? entry.attachments : [],
+    messageId: String(entry.messageId || '').trim(),
+    requestParts: batchAttachmentParts.get(entry.messageId) || [],
+  })) : [{ prompt, attachments: pendingAttachments, messageId: reuseMessageId, requestParts: requestAttachmentParts }];
+  for (const spec of messageSpecs) {
+    if (!spec.messageId) continue;
+    app.removePendingInterjectionById?.(spec.messageId, batchingFollowUps ? { refresh: false } : undefined);
+    app.discardPendingInterruptCommit?.(spec.messageId);
   }
-  userMessage.clientMessageId = String(userMessage.clientMessageId || userMessage.id || '').trim();
-  userMessage.responseRequestId = String(userMessage.responseRequestId || generateId('request')).trim();
+  if (batchingFollowUps) app.refreshPendingInterjectionBanner?.();
+  if (!batchingFollowUps) stageDraftMessage(prompt, session.id);
+  const userMessages = [];
+  for (const spec of messageSpecs) {
+    let message = spec.messageId ? window.TermLLMConversation.sessionMessages(session)
+      .find((entry) => entry.id === spec.messageId && entry.role === 'user') || null : null;
+    const isNew = !message;
+    if (!message) {
+      message = { id: spec.messageId || generateId('msg'), role: 'user', content: spec.prompt, created: Date.now() };
+    } else {
+      message.content = spec.prompt;
+      delete message.interruptState;
+    }
+    message.clientMessageId = String(message.clientMessageId || message.id || '').trim();
+    if (spec.attachments.length > 0) message.attachments = spec.attachments.map(cloneAttachmentForMessage);
+    else delete message.attachments;
+    if (isNew) message = app.trackPendingIntent?.(session, message) || message;
+    if (isNew) appendStreamMessageNode(session, message);
+    else updateVisibleUserNode(session, message);
+    userMessages.push(message);
+  }
+  const userMessage = userMessages[userMessages.length - 1];
+  userMessage.responseRequestId = String(userMessage.responseRequestId || options.responseRequestId || generateId('request')).trim();
+  let followUpBatchRestored = false;
+  const restoreFollowUpBatch = () => {
+    if (!batchingFollowUps || followUpBatchRestored) return;
+    followUpBatchRestored = true;
+    restoreQueuedFollowUps(followUps, session.id);
+    for (const spec of messageSpecs) {
+      app.trackPendingInterjection?.(session.id, spec.prompt, spec.messageId, 'queue', spec.attachments);
+      app.retirePendingIntent?.(session, spec.messageId);
+    }
+    app.refreshSessionMessagesFromTranscript?.(session);
+    if (isSessionVisible(session)) app.renderMessages?.();
+  };
   session.lastMessageAt = Date.now();
-
-  if (pendingAttachments.length > 0) {
-    userMessage.attachments = pendingAttachments.map(cloneAttachmentForMessage);
-  } else {
-    delete userMessage.attachments;
-  }
-  if (isNewUserMessage) {
-    userMessage = app.trackPendingIntent?.(session, userMessage) || userMessage;
-  }
-
   if (!session.title || session.title === 'New chat') {
-    session.title = truncate(prompt || pendingAttachments[0]?.name || 'Image', 60);
+    const firstSpec = messageSpecs[0];
+    session.title = truncate(firstSpec.prompt || firstSpec.attachments[0]?.name || 'Image', 60);
   }
-
   if (isSessionVisible(session)) {
     const hadEmptyState = elements.messages.querySelector('.empty-state');
     if (hadEmptyState) hadEmptyState.remove();
+    syncTurnActionPanels();
   }
-
-  if (isNewUserMessage) {
-    appendStreamMessageNode(session, userMessage);
-  } else {
-    updateVisibleUserNode(session, userMessage);
-  }
-  if (isSessionVisible(session)) syncTurnActionPanels();
-
   setSessionOptimisticBusy(session, true);
   persistAndRefreshShell();
-
-  elements.promptInput.value = '';
-  if (!Array.isArray(options.attachments)) {
-    state.attachments = [];
-    renderAttachments();
+  if (!batchingFollowUps) {
+    elements.promptInput.value = '';
+    if (!Array.isArray(options.attachments)) {
+      state.attachments = [];
+      renderAttachments();
+    }
+    app.autoGrowPrompt();
   }
-  app.autoGrowPrompt();
   scrollVisibleStreamToBottom(session, true);
-
   state.expectCanceledRun = false;
   const sendGeneration = state.streamGeneration;
   attachResponseStream(session, '', controller);
   setStreaming(true);
+  options._onTransportStarted?.();
   app.refreshSidebarStatusPoll?.();
   const streamState = createResponseStreamState(session);
   let previousResponseId = '';
-
   try {
-    // Build input content: plain string or array with file/image parts
-    let inputContent;
-    if (requestAttachmentParts.length > 0) {
-      const contentParts = requestAttachmentParts.slice();
-      if (prompt) {
-        contentParts.push({ type: 'input_text', text: prompt });
+    const input = messageSpecs.map((spec, index) => {
+      let content;
+      if (spec.requestParts.length > 0) {
+        content = spec.requestParts.slice();
+        if (spec.prompt) content.push({ type: 'input_text', text: spec.prompt });
+      } else {
+        content = spec.prompt;
       }
-      inputContent = contentParts;
-    } else {
-      inputContent = prompt;
-    }
-
+      return {
+        type: 'message',
+        role: 'user',
+        client_message_id: userMessages[index].clientMessageId,
+        content,
+      };
+    });
     const body = {
       stream: true,
       include_server_tools: true,
       client_message_id: userMessage.clientMessageId,
-      input: [{ type: 'message', role: 'user', content: inputContent }]
+      input
     };
-
     previousResponseId = String(session.lastResponseId || '').trim();
     if (!previousResponseId && session.worktreeDir) {
       body.worktree_dir = session.worktreeDir;
@@ -416,7 +433,6 @@ const sendMessage = async (options = {}) => {
     if (previousResponseId) {
       body.previous_response_id = previousResponseId;
     }
-
     app.canonicalizeSelectedModelEffort();
     const currentProvider = session.provider || '';
     const currentModel = session.activeModel || '';
@@ -433,7 +449,6 @@ const sendMessage = async (options = {}) => {
       || effectiveEffortForCompare(targetModel || currentModel, targetEffort)
         !== effectiveEffortForCompare(currentModel || targetModel, currentEffort)
     );
-
     const modeInfo = app.modelMetadataFor(targetModel || currentModel);
     const reasoningModes = Array.isArray(modeInfo?.reasoning_modes) ? modeInfo.reasoning_modes : [];
     const supportsReasoningMode = reasoningModes.includes('pro');
@@ -449,7 +464,6 @@ const sendMessage = async (options = {}) => {
         localStorage.setItem(STORAGE_KEYS.selectedReasoningMode, 'standard');
       }
     }
-
     if (targetModel) {
       body.model = targetModel;
     }
@@ -471,7 +485,6 @@ const sendMessage = async (options = {}) => {
         body.provider = session.provider;
       }
     }
-
     const headers = requestHeaders(session.id);
     headers['Idempotency-Key'] = userMessage.responseRequestId;
     headers['X-Term-LLM-Request-ID'] = userMessage.responseRequestId;
@@ -498,14 +511,12 @@ const sendMessage = async (options = {}) => {
     if (wasDraftSessionSend) {
       clearDraftMessageForSession('');
     }
-
     if (headerResponseId) {
       setActiveResponseTracking(session, headerResponseId, 0);
       clearRuntimeSelectionIntent(session);
       attachResponseStream(session, headerResponseId, controller);
       saveSessions();
     }
-
     if (!response.body) {
       if (!session.activeResponseId) {
         throw { status: 0, message: 'No response body from server.' };
@@ -522,9 +533,6 @@ const sendMessage = async (options = {}) => {
         throw result.error;
       }
       if (!result.stale && controller._heartbeatAbort && !session.activeResponseId) {
-        // A body can be attached without an x-response-id. Reader cancellation
-        // then completes normally, so route it through the pre-response retry
-        // path instead of treating the send as terminal.
         throw new Error('Heartbeat timed out before the response ID was received.');
       }
       if (!result.stale
@@ -534,12 +542,7 @@ const sendMessage = async (options = {}) => {
         await resumeActiveResponse(session, { streamState, responseId });
       }
     }
-
-    // Keep explicit runtime intent across any pre-response POST rebuild. Once
-    // this request has completed or attached to a durable response, subsequent
-    // sends should use the server-confirmed session runtime again.
     clearRuntimeSelectionIntent(session);
-
     if (sendGeneration === state.streamGeneration) {
       const lastAssistant = window.TermLLMConversation.sessionMessages(session).findLast(m => m.role === 'assistant');
       if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
@@ -555,12 +558,32 @@ const sendMessage = async (options = {}) => {
       return;
     }
 
-    // If the stream was detached (New Chat, switched session), don't
-    // touch DOM or streaming state for this session.
     if (sendGeneration !== state.streamGeneration) {
       return;
     }
 
+    if (err?.status === 409 && err?.type === 'client_message_already_committed') {
+      clearRuntimeSelectionIntent(session);
+      for (const message of userMessages) {
+        app.commitPendingInterjection?.(session, message.clientMessageId, message);
+      }
+      app.refreshPendingInterjectionBanner?.();
+      app.refreshSessionMessagesFromTranscript?.(session);
+      if (isSessionVisible(session)) app.renderMessages?.();
+      clearDraftMessageForSession(session.id);
+      try {
+        await app.syncActiveSessionFromServer?.(session, false);
+      } catch {
+      }
+      persistAndRefreshShell();
+      return;
+    }
+
+    const inheritBatchRestore = async (retryOptions) => {
+      const result = await sendMessage(retryOptions);
+      if (result?.followUpBatchRestored) followUpBatchRestored = true;
+      return result;
+    };
     const retryPreResponsePost = async () => {
       const retryCount = heartbeatPostRetryCount;
       const retryOptions = {
@@ -583,10 +606,11 @@ const sendMessage = async (options = {}) => {
       const retryGeneration = state.streamGeneration;
       await sleep(streamReconnectDelay(retryCount));
       if (state.streamGeneration !== retryGeneration || state.activeSessionId !== session.id) {
+        restoreFollowUpBatch();
         persistAndRefreshShell();
-        return;
+        return { followUpBatchRestored };
       }
-      return sendMessage(retryOptions);
+      return inheritBatchRestore(retryOptions);
     };
 
     if (!session.activeResponseId && (
@@ -634,7 +658,7 @@ const sendMessage = async (options = {}) => {
           retryOptions.attachments = userMessage.attachments.map(cloneAttachmentForMessage);
         }
         detachResponseStream();
-        return sendMessage(retryOptions);
+        return inheritBatchRestore(retryOptions);
       }
 
       const continuationChanged = String(session.lastResponseId || '').trim() !== previousResponseId;
@@ -649,14 +673,10 @@ const sendMessage = async (options = {}) => {
           retryOptions.attachments = userMessage.attachments.map(cloneAttachmentForMessage);
         }
         detachResponseStream();
-        return sendMessage(retryOptions);
+        return inheritBatchRestore(retryOptions);
       }
     }
 
-    // Clear our own controller so syncActiveSessionFromServer can act on
-    // server state freely (its !state.abortController guard would block
-    // cleanup otherwise).  If sync triggers a new resume, it will set a
-    // fresh controller — the check below detects that case.
     if (state.abortController === controller) {
       state.abortController = null;
     }
@@ -668,25 +688,25 @@ const sendMessage = async (options = {}) => {
 
     setSessionOptimisticBusy(session, false);
     app.refreshSidebarStatusPoll?.();
+    restoreFollowUpBatch();
     const message = err?.message || 'Network error. Please try again.';
     addErrorMessage(message, session);
     if (err?.status === 401) {
       app.handleAuthFailure();
     }
-    if (!String(elements.promptInput.value || '').trim()) {
+    if (!batchingFollowUps && !String(elements.promptInput.value || '').trim()) {
       elements.promptInput.value = prompt;
       app.autoGrowPrompt();
     }
 
     persistAndRefreshShell();
     scrollVisibleStreamToBottom(session, true);
+    return { followUpBatchRestored };
   } finally {
     if (state.abortController === controller) {
       state.abortController = null;
     }
 
-    // If the stream was detached (New Chat, switched session), don't
-    // touch streaming state — the navigation already set it correctly.
     if (sendGeneration !== state.streamGeneration) {
       return;
     }
@@ -703,6 +723,7 @@ const sendMessage = async (options = {}) => {
     }
     setStreaming(stillActive);
     refreshRelativeTimes();
+    if (followUpBatchRestored) return;
     if (stillActive) {
       return;
     }

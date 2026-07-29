@@ -24,7 +24,7 @@ func TestValidateDurableContinuationInput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDurableContinuationInput(tt.messages)
+			err := validateDurableContinuationInput(tt.messages, false)
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
 			}
@@ -32,5 +32,18 @@ func TestValidateDurableContinuationInput(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateDurableContinuationInput_AllowsExplicitIdentifiedUserBatch(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleUser, ClientMessageID: "msg-first"},
+		{Role: llm.RoleUser, ClientMessageID: "msg-second"},
+	}
+	if err := validateDurableContinuationInput(messages, true); err != nil {
+		t.Fatalf("identified batch rejected: %v", err)
+	}
+	if err := validateDurableContinuationInput(messages, false); err == nil {
+		t.Fatal("unflagged multiple-user continuation must remain rejected")
 	}
 }

@@ -3899,6 +3899,89 @@ func TestEngineInterjection_WithIDEmitsMatchingEvent(t *testing.T) {
 	t.Fatal("expected EventInterjection to be emitted")
 }
 
+func TestClaimInterjectionsBatchIsAtomic(t *testing.T) {
+	engine := NewEngine(&fakeProvider{}, nil)
+	committed := QueuedInterjection{ID: "msg-committed", Message: UserText("committed")}
+	engine.QueueInterjection(committed)
+	engine.DrainInterjections()
+	for _, id := range []string{"msg-first", "msg-second"} {
+		engine.QueueInterjection(QueuedInterjection{ID: id, Message: UserText(id)})
+	}
+
+	statuses := engine.ClaimInterjections([]string{"msg-first", committed.ID})
+	if len(statuses) != 2 || statuses[0] != InterjectionClaimed || statuses[1] != InterjectionClaimCommitted {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 2 {
+		t.Fatalf("conflicted batch partially claimed queue: %#v", pending)
+	}
+
+	statuses = engine.ClaimInterjections([]string{"msg-first", "msg-second"})
+	if statuses[0] != InterjectionClaimed || statuses[1] != InterjectionClaimed {
+		t.Fatalf("claimable statuses = %#v", statuses)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("claimed batch remained queued: %#v", pending)
+	}
+}
+
+func TestQueueInterjectionDeduplicatesStableID(t *testing.T) {
+	engine := NewEngine(&fakeProvider{}, nil)
+	entry := QueuedInterjection{
+		ID:          "msg_duplicate",
+		Message:     UserText("only once"),
+		DisplayText: "only once",
+	}
+
+	if got := engine.QueueInterjection(entry); got != entry.ID {
+		t.Fatalf("first id = %q, want %q", got, entry.ID)
+	}
+	if got := engine.QueueInterjection(entry); got != entry.ID {
+		t.Fatalf("duplicate id = %q, want %q", got, entry.ID)
+	}
+
+	pending := engine.ListPendingInterjections()
+	if len(pending) != 1 {
+		t.Fatalf("pending interjections = %d, want 1: %#v", len(pending), pending)
+	}
+	if pending[0].Message.ClientMessageID != entry.ID {
+		t.Fatalf("message client id = %q, want %q", pending[0].Message.ClientMessageID, entry.ID)
+	}
+	if claimed := engine.ClaimInterjection(entry.ID); claimed != InterjectionClaimed {
+		t.Fatalf("queued claim = %q, want %q", claimed, InterjectionClaimed)
+	}
+	engine.QueueInterjection(entry)
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("claimed id was requeued: %#v", pending)
+	}
+	if claimed := engine.ClaimInterjection(entry.ID); claimed != InterjectionClaimFollowUpOwned {
+		t.Fatalf("claimed tombstone = %q, want %q", claimed, InterjectionClaimFollowUpOwned)
+	}
+	if _, status := engine.QueueInterjectionWithStatus(entry); status != InterjectionQueueFollowUpOwned {
+		t.Fatalf("claimed requeue status = %q, want %q", status, InterjectionQueueFollowUpOwned)
+	}
+	engine.ReleaseClaimedInterjections([]string{entry.ID})
+	if _, status := engine.QueueInterjectionWithStatus(entry); status != InterjectionQueueQueued {
+		t.Fatalf("released requeue status = %q, want %q", status, InterjectionQueueQueued)
+	}
+	engine.CancelInterjection(entry.ID)
+
+	committedEntry := entry
+	committedEntry.ID = "msg_committed"
+	engine.QueueInterjection(committedEntry)
+	if drained := engine.DrainInterjections(); len(drained) != 1 {
+		t.Fatalf("drained interjections = %#v, want one", drained)
+	}
+	if claimed := engine.ClaimInterjection(committedEntry.ID); claimed != InterjectionClaimCommitted {
+		t.Fatalf("committed claim = %q, want %q", claimed, InterjectionClaimCommitted)
+	}
+	engine.ResetConversation()
+	engine.QueueInterjection(committedEntry)
+	if pending := engine.ListPendingInterjections(); len(pending) != 1 {
+		t.Fatalf("reset conversation retained committed tombstone: %#v", pending)
+	}
+}
+
 // TestEngineInterjection_NoToolCalls verifies that an interjection stays in the
 // channel when the LLM returns no tool calls (text-only response).
 func TestEngineInterjection_NoToolCalls(t *testing.T) {
@@ -4211,6 +4294,13 @@ func TestEngineInterjection_CancelQueuedAndCommittedLifecycle(t *testing.T) {
 	}
 	if got := engine.DrainInterjection(); got != "" {
 		t.Fatalf("drain after cancel = %q, want empty", got)
+	}
+	engine.QueueInterjection(QueuedInterjection{ID: "cancel-me", Message: UserText("reuse me")})
+	if pending := engine.ListPendingInterjections(); len(pending) != 1 || pending[0].ID != "cancel-me" {
+		t.Fatalf("cancelled ID was not reusable: %#v", pending)
+	}
+	if !engine.CancelInterjection("cancel-me") {
+		t.Fatal("expected reused interjection to cancel")
 	}
 
 	engine.QueueInterjection(QueuedInterjection{ID: "commit-me", Message: UserText("keep me")})

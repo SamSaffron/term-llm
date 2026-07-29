@@ -143,7 +143,11 @@ type Engine struct {
 	// Messages are injected FIFO after the current turn's tool results, before
 	// the next LLM turn. While entries remain in this queue they are cancellable;
 	// draining atomically commits them for the next provider request.
-	pendingInterjections []queuedInterjection
+	pendingInterjections       []queuedInterjection
+	claimedInterjectionIDs     map[string]struct{}
+	claimedInterjectionOrder   []string
+	committedInterjectionIDs   map[string]struct{}
+	committedInterjectionOrder []string
 
 	// pendingRequestRuntime is a same-provider model/effort override requested
 	// while an agentic loop is active. It is drained at the next provider-turn
@@ -189,6 +193,24 @@ const (
 	InterjectionCommitted InterjectionStatus = "committed"
 )
 
+type InterjectionQueueStatus string
+
+const (
+	InterjectionQueueQueued        InterjectionQueueStatus = "queued"
+	InterjectionQueueAlreadyQueued InterjectionQueueStatus = "already_queued"
+	InterjectionQueueFollowUpOwned InterjectionQueueStatus = "follow_up_owned"
+	InterjectionQueueCommitted     InterjectionQueueStatus = "committed"
+)
+
+type InterjectionClaimStatus string
+
+const (
+	InterjectionClaimNotFound      InterjectionClaimStatus = "not_found"
+	InterjectionClaimed            InterjectionClaimStatus = "claimed"
+	InterjectionClaimFollowUpOwned InterjectionClaimStatus = "follow_up_owned"
+	InterjectionClaimCommitted     InterjectionClaimStatus = "committed"
+)
+
 // QueuedInterjection is a structured user message submitted while a run is active.
 // Queued entries are cancellable until the engine drains them into a provider turn.
 type QueuedInterjection struct {
@@ -202,6 +224,8 @@ type QueuedInterjection struct {
 type queuedInterjection = QueuedInterjection
 
 var engineInterjectionID atomic.Uint64
+
+const interjectionIdentityLimit = 1024
 
 func nextEngineInterjectionID() string {
 	return fmt.Sprintf("interject_%d", engineInterjectionID.Add(1))
@@ -322,6 +346,10 @@ func (e *Engine) ResetConversation() {
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
 	e.systemPrompt = ""
+	e.claimedInterjectionIDs = nil
+	e.claimedInterjectionOrder = nil
+	e.committedInterjectionIDs = nil
+	e.committedInterjectionOrder = nil
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
 
@@ -746,13 +774,35 @@ func (e *Engine) InterjectWithID(id, text string) {
 // QueueInterjection appends a structured interjection to the FIFO pending queue
 // and returns its stable ID. The message role is normalized to RoleUser.
 func (e *Engine) QueueInterjection(entry QueuedInterjection) string {
+	id, _ := e.QueueInterjectionWithStatus(entry)
+	return id
+}
+
+// QueueInterjectionWithStatus reports whether the stable identity was newly
+// queued, already queued, transferred to a follow-up, or already committed.
+func (e *Engine) QueueInterjectionWithStatus(entry QueuedInterjection) (string, InterjectionQueueStatus) {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
-	if strings.TrimSpace(entry.ID) == "" {
+	entry.ID = strings.TrimSpace(entry.ID)
+	if entry.ID == "" {
 		entry.ID = nextEngineInterjectionID()
 	}
+	if _, claimed := e.claimedInterjectionIDs[entry.ID]; claimed {
+		return entry.ID, InterjectionQueueFollowUpOwned
+	}
+	if _, committed := e.committedInterjectionIDs[entry.ID]; committed {
+		return entry.ID, InterjectionQueueCommitted
+	}
+	for i := range e.pendingInterjections {
+		if e.pendingInterjections[i].ID == entry.ID {
+			return entry.ID, InterjectionQueueAlreadyQueued
+		}
+	}
 	entry.Message.Role = RoleUser
+	if strings.TrimSpace(entry.Message.ClientMessageID) == "" {
+		entry.Message.ClientMessageID = entry.ID
+	}
 	if entry.DisplayText == "" {
 		entry.DisplayText = MessageText(entry.Message)
 		if strings.TrimSpace(entry.DisplayText) == "" {
@@ -761,11 +811,80 @@ func (e *Engine) QueueInterjection(entry QueuedInterjection) string {
 	}
 	entry.Status = InterjectionQueued
 	e.pendingInterjections = append(e.pendingInterjections, entry)
-	return entry.ID
+	return entry.ID, InterjectionQueueQueued
 }
 
-// CancelInterjection removes a queued, not-yet-committed interjection. It returns
-// false if the ID is unknown or has already been drained for a provider request.
+// ClaimInterjections atomically transfers queued interjections to one normal
+// follow-up request. IDs must be unique. If any ID is already committed or
+// owned by another follow-up, no queued entry is removed.
+func (e *Engine) ClaimInterjections(ids []string) []InterjectionClaimStatus {
+	statuses := make([]InterjectionClaimStatus, len(ids))
+	if len(ids) == 0 {
+		return statuses
+	}
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+
+	pending := make(map[string]struct{}, len(e.pendingInterjections))
+	for i := range e.pendingInterjections {
+		pending[e.pendingInterjections[i].ID] = struct{}{}
+	}
+	claimable := true
+	claimedIDs := make(map[string]struct{}, len(ids))
+	for i, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		_, isPending := pending[id]
+		_, isClaimed := e.claimedInterjectionIDs[id]
+		_, isCommitted := e.committedInterjectionIDs[id]
+		switch {
+		case id == "":
+			statuses[i] = InterjectionClaimNotFound
+		case isPending:
+			statuses[i] = InterjectionClaimed
+			claimedIDs[id] = struct{}{}
+		case isClaimed:
+			statuses[i] = InterjectionClaimFollowUpOwned
+			claimable = false
+		case isCommitted:
+			statuses[i] = InterjectionClaimCommitted
+			claimable = false
+		default:
+			statuses[i] = InterjectionClaimNotFound
+		}
+	}
+	if !claimable || len(claimedIDs) == 0 {
+		return statuses
+	}
+
+	kept := e.pendingInterjections[:0]
+	for i := range e.pendingInterjections {
+		entry := e.pendingInterjections[i]
+		if _, claimed := claimedIDs[entry.ID]; claimed {
+			e.rememberClaimedInterjectionIDLocked(entry.ID)
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	for i := len(kept); i < len(e.pendingInterjections); i++ {
+		e.pendingInterjections[i] = QueuedInterjection{}
+	}
+	e.pendingInterjections = kept
+	return statuses
+}
+
+// ClaimInterjection atomically transfers a queued interjection to a normal
+// follow-up request. A committed result means the engine already drained the ID
+// and the caller must not submit it again.
+func (e *Engine) ClaimInterjection(id string) InterjectionClaimStatus {
+	statuses := e.ClaimInterjections([]string{id})
+	if len(statuses) == 0 {
+		return InterjectionClaimNotFound
+	}
+	return statuses[0]
+}
+
+// CancelInterjection removes a queued, not-yet-committed interjection without
+// transferring its identity to follow-up ownership.
 func (e *Engine) CancelInterjection(id string) bool {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -774,14 +893,44 @@ func (e *Engine) CancelInterjection(id string) bool {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 	for i := range e.pendingInterjections {
-		if e.pendingInterjections[i].ID == id {
-			copy(e.pendingInterjections[i:], e.pendingInterjections[i+1:])
-			e.pendingInterjections[len(e.pendingInterjections)-1] = QueuedInterjection{}
-			e.pendingInterjections = e.pendingInterjections[:len(e.pendingInterjections)-1]
-			return true
+		if e.pendingInterjections[i].ID != id {
+			continue
 		}
+		copy(e.pendingInterjections[i:], e.pendingInterjections[i+1:])
+		e.pendingInterjections[len(e.pendingInterjections)-1] = QueuedInterjection{}
+		e.pendingInterjections = e.pendingInterjections[:len(e.pendingInterjections)-1]
+		return true
 	}
 	return false
+}
+
+// ReleaseClaimedInterjections ends temporary follow-up ownership. Durable
+// history remains authoritative for requests that reached persistence.
+func (e *Engine) ReleaseClaimedInterjections(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	released := make(map[string]struct{}, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		delete(e.claimedInterjectionIDs, id)
+		released[id] = struct{}{}
+	}
+	kept := e.claimedInterjectionOrder[:0]
+	for _, id := range e.claimedInterjectionOrder {
+		if _, drop := released[id]; !drop {
+			kept = append(kept, id)
+		}
+	}
+	for i := len(kept); i < len(e.claimedInterjectionOrder); i++ {
+		e.claimedInterjectionOrder[i] = ""
+	}
+	e.claimedInterjectionOrder = kept
 }
 
 // DiscardPendingInterjections removes all queued, not-yet-committed
@@ -854,6 +1003,57 @@ func (e *Engine) PeekInterjection() string {
 	return b.String()
 }
 
+func rememberBoundedInterjectionID(ids map[string]struct{}, order []string, id string) (map[string]struct{}, []string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ids, order
+	}
+	if ids == nil {
+		ids = make(map[string]struct{})
+	}
+	if _, exists := ids[id]; exists {
+		return ids, order
+	}
+	ids[id] = struct{}{}
+	order = append(order, id)
+	if len(order) <= interjectionIdentityLimit {
+		return ids, order
+	}
+	oldest := order[0]
+	copy(order, order[1:])
+	order[len(order)-1] = ""
+	order = order[:len(order)-1]
+	delete(ids, oldest)
+	return ids, order
+}
+
+func (e *Engine) rememberClaimedInterjectionIDLocked(id string) {
+	e.claimedInterjectionIDs, e.claimedInterjectionOrder = rememberBoundedInterjectionID(
+		e.claimedInterjectionIDs, e.claimedInterjectionOrder, id,
+	)
+}
+
+func (e *Engine) rememberCommittedInterjectionIDLocked(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	delete(e.claimedInterjectionIDs, id)
+	e.committedInterjectionIDs, e.committedInterjectionOrder = rememberBoundedInterjectionID(
+		e.committedInterjectionIDs, e.committedInterjectionOrder, id,
+	)
+}
+
+func (e *Engine) markInterjectionsCommittedLocked(entries []queuedInterjection) {
+	if len(entries) == 0 {
+		return
+	}
+	for i := range entries {
+		entries[i].Status = InterjectionCommitted
+		e.rememberCommittedInterjectionIDLocked(entries[i].ID)
+	}
+}
+
 // drainInterjections atomically commits all queued interjections.
 func (e *Engine) drainInterjections() []queuedInterjection {
 	e.callbackMu.Lock()
@@ -864,9 +1064,7 @@ func (e *Engine) drainInterjections() []queuedInterjection {
 	}
 	out := make([]queuedInterjection, len(e.pendingInterjections))
 	copy(out, e.pendingInterjections)
-	for i := range out {
-		out[i].Status = InterjectionCommitted
-	}
+	e.markInterjectionsCommittedLocked(out)
 	e.pendingInterjections = nil
 	return out
 }
@@ -888,9 +1086,7 @@ func (e *Engine) drainAutoContinueInterjections() []queuedInterjection {
 	}
 	out := make([]queuedInterjection, n)
 	copy(out, e.pendingInterjections[:n])
-	for i := range out {
-		out[i].Status = InterjectionCommitted
-	}
+	e.markInterjectionsCommittedLocked(out)
 	copy(e.pendingInterjections, e.pendingInterjections[n:])
 	for i := len(e.pendingInterjections) - n; i < len(e.pendingInterjections); i++ {
 		e.pendingInterjections[i] = queuedInterjection{}

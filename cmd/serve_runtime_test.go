@@ -961,6 +961,61 @@ func (p *serveRuntimeErrorProvider) Stream(ctx context.Context, req llm.Request)
 	return nil, p.err
 }
 
+func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *testing.T) {
+	provider := &serveRuntimeBlockingProvider{streamStarted: make(chan struct{})}
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "test-model",
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	run := newResponseRun("resp-interrupt-cancel", "sess-interrupt-cancel", "", "test-model", time.Now().Unix(), cancelRun)
+	runErrCh := make(chan error, 1)
+	go func() {
+		_, err := rt.Run(withResponseRunContext(runCtx, run), false, false, []llm.Message{llm.UserText("gather context")}, llm.Request{
+			SessionID: "sess-interrupt-cancel",
+		})
+		runErrCh <- err
+	}()
+
+	select {
+	case <-provider.streamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not start")
+	}
+
+	rt.engine.QueueInterjection(llm.QueuedInterjection{ID: "msg-earlier-queued", Message: llm.UserText("earlier queued")})
+	action, _, err := rt.InterruptMessage(context.Background(), llm.UserText("stop right away"), "stop right away", "msg-stop", nil, false)
+	if err != nil {
+		t.Fatalf("InterruptMessage: %v", err)
+	}
+	if action != llm.InterruptCancel {
+		t.Fatalf("action = %q, want cancel", action)
+	}
+	if pending := rt.engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("classified cancel retained engine interjections: %#v", pending)
+	}
+
+	select {
+	case err := <-runErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not stop")
+	}
+
+	run.mu.Lock()
+	cancelRequested := run.cancelRequested
+	run.mu.Unlock()
+	if !cancelRequested {
+		t.Fatal("classified cancel did not mark the response run as cancellation-requested")
+	}
+}
+
 func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 	provider := &serveRuntimeBlockingProvider{streamStarted: make(chan struct{})}
 	engine := llm.NewEngine(provider, llm.NewToolRegistry())

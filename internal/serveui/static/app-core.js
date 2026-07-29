@@ -1042,25 +1042,16 @@ const INTERRUPT_BADGE_META = {
   error: { className: 'error', icon: '⚠', label: 'failed' }
 };
 
-// Single source of truth for the interjection lifecycle. Each phase maps to the
-// inline message badge state (a key of INTERRUPT_BADGE_META) and the pending
-// banner action (a key of PENDING_INTERJECTION_LABELS, or null when the
-// interjection is no longer pending/cancellable). Callers transition by phase
-// via setInterjectionPhase() so the badge and banner can never disagree — the
-// "injected badge + still-cancellable banner" heisenstate is unrepresentable.
-//   evaluating → classifying the interrupt (optimistic, pre-server)
-//   queued     → server accepted as interject; queued but still cancellable
-//   willQueue  → will be sent as a normal follow-up (not an interject)
-//   willCancel → cancels the active run, then re-sent as a follow-up
-//   committed  → engine drained it into the request; final, one-shot
-//   failed     → interrupt request errored
+// Pending interjections live only in the composer banner. The stream receives a
+// user message exclusively from response.interjection after the engine commits
+// it. A null banner means there is no longer a pending/cancellable item.
 const INTERJECTION_PHASE = {
-  evaluating: { badge: 'evaluating', banner: 'deciding' },
-  queued: { badge: 'pending_interject', banner: 'interject' },
-  willQueue: { badge: 'queue', banner: null },
-  willCancel: { badge: 'cancel', banner: null },
-  committed: { badge: 'interject', banner: null },
-  failed: { badge: 'error', banner: null }
+  evaluating: { banner: 'deciding' },
+  queued: { banner: 'interject' },
+  willQueue: { banner: 'queue' },
+  willCancel: { banner: 'cancel_queue' },
+  committed: { banner: null },
+  failed: { banner: null }
 };
 
 const sanitizeInterruptState = (value) => {
@@ -2221,7 +2212,7 @@ const sessionHasCachedTranscript = (session) => Boolean(
   session
   && !session._serverOnly
   && (
-    window.TermLLMConversation.sessionMessages(session).length > 0
+    (window.TermLLMConversation?.sessionMessages?.(session) || session.messages || []).length > 0
     || (Array.isArray(session._history?.rawMessages) && session._history.rawMessages.length > 0)
   )
 );
@@ -2249,6 +2240,7 @@ const evictStaleSessionMessages = () => {
   for (const session of state.sessions) {
     if (!keep.has(session.id) && sessionHasCachedTranscript(session)) {
       session.transcript?.releaseBodies?.();
+      session.messages = [];
       delete session.transcript;
       delete session._history;
       session._serverOnly = true;

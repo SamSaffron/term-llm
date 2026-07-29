@@ -80,7 +80,7 @@ type durablePreviousResponseResolution struct {
 	latestID  string
 }
 
-func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message) (durablePreviousResponseResolution, int, string) {
+func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message, allowIdentifiedUserBatch bool) (durablePreviousResponseResolution, int, string) {
 	msgID, ok := parseDurableResponseMessageID(previousResponseID)
 	if !ok {
 		return durablePreviousResponseResolution{}, 0, ""
@@ -88,7 +88,7 @@ func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, prev
 	if s.store == nil {
 		return durablePreviousResponseResolution{}, http.StatusBadRequest, fmt.Sprintf("previous_response_id %q not found (session history is unavailable)", previousResponseID)
 	}
-	if err := validateDurableContinuationInput(inputMessages); err != nil {
+	if err := validateDurableContinuationInput(inputMessages, allowIdentifiedUserBatch); err != nil {
 		return durablePreviousResponseResolution{}, http.StatusBadRequest, err.Error()
 	}
 
@@ -119,8 +119,22 @@ func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, prev
 	return durablePreviousResponseResolution{sessionID: msg.SessionID, latestID: durableResponseIDForMessageID(msg.ID)}, 0, ""
 }
 
-func validateDurableContinuationInput(inputMessages []llm.Message) error {
+func validateDurableContinuationInput(inputMessages []llm.Message, allowIdentifiedUserBatch bool) error {
 	if len(inputMessages) == 1 && inputMessages[0].Role == llm.RoleUser {
+		return nil
+	}
+	if allowIdentifiedUserBatch && len(inputMessages) > 1 {
+		seen := make(map[string]struct{}, len(inputMessages))
+		for i := range inputMessages {
+			id := strings.TrimSpace(inputMessages[i].ClientMessageID)
+			if inputMessages[i].Role != llm.RoleUser || id == "" {
+				return fmt.Errorf("identified user batch requires only user messages with client_message_id")
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return fmt.Errorf("identified user batch contains duplicate client_message_id %q", id)
+			}
+			seen[id] = struct{}{}
+		}
 		return nil
 	}
 	if len(inputMessages) > 0 {

@@ -3766,6 +3766,59 @@ func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message
 	return &msg, nil
 }
 
+// GetMessagesByClientMessageIDs resolves a batch through the indexed lookup.
+func (s *SQLiteStore) GetMessagesByClientMessageIDs(ctx context.Context, sessionID string, clientMessageIDs []string) (map[string]*Message, error) {
+	found := make(map[string]*Message, len(clientMessageIDs))
+	for _, rawID := range clientMessageIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		message, err := s.GetMessageByClientMessageID(ctx, sessionID, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		found[id] = message
+	}
+	return found, nil
+}
+
+// GetMessageByClientMessageID retrieves a first-party user message by its
+// session-scoped stable identity.
+func (s *SQLiteStore) GetMessageByClientMessageID(ctx context.Context, sessionID, clientMessageID string) (*Message, error) {
+	if !s.hasMessageClientID {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+s.messageSelectCols()+`
+		FROM messages
+		WHERE session_id = ? AND client_message_id = ?
+		ORDER BY id ASC
+		LIMIT 1`, sessionID, clientMessageID)
+	var msg Message
+	var partsJSON string
+	var durationMs sql.NullInt64
+	err := row.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
+		&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail,
+		&msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan message by client_message_id: %w", err)
+	}
+	if durationMs.Valid {
+		msg.DurationMs = durationMs.Int64
+	}
+	if err := msg.SetPartsFromJSON(partsJSON); err != nil {
+		return nil, fmt.Errorf("deserialize parts: %w", err)
+	}
+	return &msg, nil
+}
+
 // GetLatestVisibleMessageID retrieves the latest persisted user/assistant message id for a session.
 func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
 	var msgID int64

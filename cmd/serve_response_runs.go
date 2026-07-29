@@ -119,6 +119,7 @@ type responseRun struct {
 	durableHandoff         bool
 	durableOutputCount     int
 	durableHandoffErr      string
+	continuationResponseID string
 	persistence            *responseRunPersistenceLedger
 	status                 string
 	errorType              string
@@ -158,6 +159,14 @@ type startResponseRunOptions struct {
 }
 
 type responseRunContextKey struct{}
+
+func responseRunFromContext(ctx context.Context) *responseRun {
+	if ctx == nil {
+		return nil
+	}
+	run, _ := ctx.Value(responseRunContextKey{}).(*responseRun)
+	return run
+}
 
 func withResponseRunContext(ctx context.Context, run *responseRun) context.Context {
 	if ctx == nil || run == nil {
@@ -457,6 +466,13 @@ func (r *responseRun) readDurableHandoffWithTimeout(timeout time.Duration) respo
 	}
 }
 
+func (r *responseRun) applyTerminalContinuationLocked(payload map[string]any) {
+	response := mapValue(payload["response"])
+	if id := stringValue(response["id"]); id != "" {
+		r.continuationResponseID = id
+	}
+}
+
 func (r *responseRun) applyDurableHandoffLocked(handoff responseRunDurableHandoff) {
 	r.finalRev = handoff.FinalRev
 	r.durableHandoff = handoff.Valid
@@ -471,6 +487,7 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applyDurableHandoffLocked(handoff)
+	r.applyTerminalContinuationLocked(payload)
 	if r.cancelRequested {
 		r.status = "cancelled"
 		r.errorType = ""
@@ -510,6 +527,7 @@ func (r *responseRun) finishCancelled(payload map[string]any) (bool, error) {
 		return false, nil
 	}
 	r.applyDurableHandoffLocked(handoff)
+	r.applyTerminalContinuationLocked(payload)
 	r.status = "cancelled"
 	r.errorType = ""
 	r.errorMessage = ""
@@ -525,6 +543,7 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applyDurableHandoffLocked(handoff)
+	r.applyTerminalContinuationLocked(payload)
 	hadSubscribers := len(r.subscribers) > 0
 	r.status = "failed"
 	r.errorType = errType
@@ -1101,6 +1120,9 @@ func (r *responseRun) snapshot() map[string]any {
 	}
 	if r.clientMessageID != "" {
 		payload["client_message_id"] = r.clientMessageID
+	}
+	if r.continuationResponseID != "" {
+		payload["continuation_response_id"] = r.continuationResponseID
 	}
 	if r.anchorRowID > 0 {
 		payload["anchor_row_id"] = r.anchorRowID
@@ -2396,6 +2418,18 @@ func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID s
 	}
 }
 
+func (s *serveServer) responseRunContinuationID(ctx context.Context, runtime *serveRuntime, sessionID, responseID string) string {
+	continuationID := responseID
+	if durableID := s.latestDurableResponseIDForSessionBestEffort(ctx, sessionID); durableID != "" {
+		continuationID = durableID
+	}
+	if continuationID != responseID {
+		s.registerResponseID(runtime, responseID, sessionID)
+	}
+	s.registerResponseID(runtime, continuationID, sessionID)
+	return continuationID
+}
+
 func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) (*responseRun, error) {
 	mgr := s.ensureResponseRuns()
 
@@ -2427,6 +2461,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	createdRun, duplicate, err := mgr.createOrGetByIdempotency(run, options.idempotencyKey)
 	if err != nil {
 		cancel()
+		if options.onDone != nil {
+			options.onDone()
+		}
 		return nil, err
 	}
 	if duplicate {
@@ -2460,6 +2497,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		cancel()
 		mgr.clearActiveRun(sessionID, respID)
 		mgr.delete(respID)
+		if options.onDone != nil {
+			options.onDone()
+		}
 		return nil, err
 	}
 
@@ -2506,9 +2546,10 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		})
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
+				continuationID := s.responseRunContinuationID(runCtx, runtime, sessionID, respID)
 				cancelled, cancelErr := run.finishCancelled(map[string]any{
 					"response": map[string]any{
-						"id":      respID,
+						"id":      continuationID,
 						"object":  "response",
 						"created": created,
 						"model":   model,
@@ -2536,7 +2577,15 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			if !errors.Is(err, context.Canceled) {
 				s.persistResponseRunErrorEvent(runCtx, runtime, sessionID, respID, errType, errMessage)
 			}
+			continuationID := s.responseRunContinuationID(runCtx, runtime, sessionID, respID)
 			hadSubscribers, failErr := run.fail(map[string]any{
+				"response": map[string]any{
+					"id":      continuationID,
+					"object":  "response",
+					"created": created,
+					"model":   model,
+					"status":  "failed",
+				},
 				"error": map[string]any{
 					"message": errMessage,
 					"type":    errType,
@@ -2567,15 +2616,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		if options.resetResponseIDsOnSuccess {
 			s.unregisterSessionResponseIDs(sessionID)
 		}
-		durableID := s.latestDurableResponseIDForSessionBestEffort(runCtx, sessionID)
-		completedID := respID
-		if durableID != "" {
-			completedID = durableID
-		}
-		if completedID != respID {
-			s.registerResponseID(runtime, respID, sessionID)
-		}
-		s.registerResponseID(runtime, completedID, sessionID)
+		completedID := s.responseRunContinuationID(runCtx, runtime, sessionID, respID)
 		finalModel := streamState.appliedModel(model)
 		finalEffort, finalEffortSet := streamState.appliedReasoningEffort(llmReq.ReasoningEffort)
 		if options.uiSession && (finalModel != model || finalEffort != strings.TrimSpace(llmReq.ReasoningEffort) || finalEffortSet != (strings.TrimSpace(llmReq.ReasoningEffort) != "")) {
@@ -2602,6 +2643,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		cancel()
 		mgr.clearActiveRun(sessionID, respID)
 		mgr.delete(respID)
+		if options.onDone != nil {
+			options.onDone()
+		}
 		return nil, err
 	}
 

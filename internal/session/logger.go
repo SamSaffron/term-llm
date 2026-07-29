@@ -244,6 +244,25 @@ func (s *LoggingStore) GetMessageByID(ctx context.Context, msgID int64) (*Messag
 	return msg, err
 }
 
+// GetMessagesByClientMessageIDs unwraps the logger so fallback stores are
+// scanned once rather than once per identity.
+func (s *LoggingStore) GetMessagesByClientMessageIDs(ctx context.Context, sessionID string, clientMessageIDs []string) (map[string]*Message, error) {
+	messages, err := FindMessagesByClientMessageIDs(ctx, s.Store, sessionID, clientMessageIDs)
+	if err != nil {
+		s.logOnce("GetMessagesByClientMessageIDs", err)
+	}
+	return messages, err
+}
+
+// GetMessageByClientMessageID wraps an optional indexed client identity lookup.
+func (s *LoggingStore) GetMessageByClientMessageID(ctx context.Context, sessionID, clientMessageID string) (*Message, error) {
+	msg, err := FindMessageByClientMessageID(ctx, s.Store, sessionID, clientMessageID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("GetMessageByClientMessageID", err)
+	}
+	return msg, err
+}
+
 // GetLatestVisibleMessageID returns the latest persisted user/assistant message id for a session.
 func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error) {
 	getter, ok := s.Store.(interface {

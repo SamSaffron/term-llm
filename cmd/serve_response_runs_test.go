@@ -18,6 +18,30 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+func TestResponseRunCancelledSnapshotRetainsDurableContinuationID(t *testing.T) {
+	run := newResponseRun("resp-cancelled-run", "sess-cancelled-run", "", "test-model", time.Now().Unix(), nil)
+	run.finalRevReader = func() (int64, error) { return 4, nil }
+	run.mu.Lock()
+	run.cancelRequested = true
+	run.mu.Unlock()
+
+	cancelled, err := run.finishCancelled(map[string]any{
+		"response": map[string]any{
+			"id":     "resp_msg_42",
+			"status": "cancelled",
+		},
+	})
+	if err != nil {
+		t.Fatalf("finishCancelled: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("finishCancelled did not finalize requested cancellation")
+	}
+	if got := run.snapshot()["continuation_response_id"]; got != "resp_msg_42" {
+		t.Fatalf("continuation_response_id = %v, want resp_msg_42", got)
+	}
+}
+
 func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testing.T) {
 	run := newResponseRun("resp-content-independent", "sess-content-independent", "", "test", time.Now().Unix(), nil)
 	run.finalRevReader = func() (int64, error) { return 3, nil }

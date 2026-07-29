@@ -98,6 +98,37 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
 })();
 
 (() => {
+  const conversation = conversationAPI.createConversation({ sessionId: 'model-swap-position', durable: envelope([
+    { id: 1, durableRowId: 1, role: 'user', durable: true, clientMessageId: 'swap-trigger', content: 'continue differently' },
+  ], 1) });
+  conversationAPI.startActiveRun(conversation, { responseId: 'resp-swap-position', runEpoch: 1, anchor: { clientMessageId: 'swap-trigger' } });
+  conversationAPI.applyRunEvent(conversation, 'response.model_swap.progress', {
+    response_id: 'resp-swap-position', run_epoch: 1, sequence_number: 1, text: 'Switching provider…'
+  });
+  conversationAPI.applyRunEvent(conversation, 'response.output_text.delta', {
+    response_id: 'resp-swap-position', run_epoch: 1, sequence_number: 2, delta: 'new answer'
+  });
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map((message) => message.role), ['user', 'model-swap', 'assistant']);
+
+  conversationAPI.applyRunEvent(conversation, 'response.completed', {
+    response_id: 'resp-swap-position', run_epoch: 1, sequence_number: 3,
+    final_rev: 3, durable_handoff: true, durable_output_count: 2
+  });
+  assert.deepEqual(
+    conversationAPI.visibleMessages(conversation).map((message) => message.role),
+    ['user', 'model-swap', 'assistant'],
+    'model swap status must keep its stream position until durable handoff'
+  );
+
+  conversationAPI.applyDurable(conversation, envelope([
+    { id: 1, durableRowId: 1, role: 'user', durable: true, clientMessageId: 'swap-trigger', content: 'continue differently' },
+    { id: 2, durableRowId: 2, role: 'model-swap', durable: true, responseId: 'resp-swap-position', content: '↔ Model switched' },
+    { id: 3, durableRowId: 3, role: 'assistant', durable: true, responseId: 'resp-swap-position', content: 'new answer' },
+  ], 3));
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map((message) => message.role), ['user', 'model-swap', 'assistant']);
+})();
+
+(() => {
   const conversation = conversationAPI.createConversation({ sessionId: 'interjection', durable: envelope([], 0) });
   conversationAPI.addIntent(conversation, { id: 'interject-local', clientMessageId: 'client-interject', role: 'user', content: 'change direction' });
   conversationAPI.startActiveRun(conversation, { responseId: 'resp-interject', runEpoch: 3 });

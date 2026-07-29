@@ -80,6 +80,7 @@ type serveRuntime struct {
 
 type runtimeInterruptState struct {
 	cancel          context.CancelFunc
+	requestCancel   func()
 	done            chan struct{}
 	currentTask     string
 	toolsRun        []string
@@ -93,6 +94,7 @@ type runtimeInterjectionCall struct {
 	done        chan struct{}
 	fingerprint string
 	action      llm.InterruptAction
+	err         error
 	completedAt time.Time
 }
 
@@ -457,7 +459,7 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 			rt.interruptMu.Unlock()
 			select {
 			case <-existing.done:
-				return existing.action, true, nil
+				return existing.action, true, existing.err
 			case <-ctx.Done():
 				return llm.InterruptInterject, true, ctx.Err()
 			}
@@ -474,6 +476,7 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 		return llm.InterruptInterject, false, fmt.Errorf("session has no active stream")
 	}
 	cancel := state.cancel
+	requestCancel := state.requestCancel
 	activity := llm.InterruptActivity{
 		CurrentTask: state.currentTask,
 		ToolsRun:    append([]string(nil), state.toolsRun...),
@@ -500,22 +503,32 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 	}
 	action := llm.ClassifyInterrupt(classifyCtx, fastProvider, classifyText, activity)
 	classifyCancel()
+	var resultErr error
 	switch action {
 	case llm.InterruptCancel:
-		if cancel != nil {
+		if rt.engine != nil {
+			rt.engine.DiscardPendingInterjections()
+		}
+		if requestCancel != nil {
+			requestCancel()
+		} else if cancel != nil {
 			cancel()
 		}
 	case llm.InterruptInterject:
-		rt.engine.QueueInterjection(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText, AutoContinue: autoContinue})
+		_, queueStatus := rt.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText, AutoContinue: autoContinue})
+		if queueStatus == llm.InterjectionQueueFollowUpOwned || queueStatus == llm.InterjectionQueueCommitted {
+			resultErr = fmt.Errorf("interjection %q is already %s", interjectionID, queueStatus)
+		}
 	}
 	if call != nil {
 		rt.interruptMu.Lock()
 		call.action = action
+		call.err = resultErr
 		call.completedAt = time.Now()
 		close(call.done)
 		rt.interruptMu.Unlock()
 	}
-	return action, false, nil
+	return action, false, resultErr
 }
 
 // ensureSessionInStore creates the session record in the database if it doesn't
@@ -1054,12 +1067,10 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		rt.historyPersisted = false
 	}
 	if stateful && !replaceHistory && hasUserMessage(inputMessages) {
-		// A cancelled/interrupted run can leave the persisted transcript ending in
-		// a user message with no assistant reply. Drop that orphan before appending
-		// the next submitted user turn; the snapshot persistence path below rewrites
-		// the store so providers never see consecutive user turns. If the UI retries
-		// the same prompt, this also avoids answering it twice.
-		rt.dropTrailingUserHistory()
+		// A cancelled run can leave unanswered users at the durable tail. Remove
+		// legacy unidentified or same-ID retry rows, but preserve distinct identified
+		// intents so stacked follow-ups remain part of the provider context.
+		rt.dropTrailingUserHistory(inputMessages)
 	}
 
 	baseHistory := make([]llm.Message, len(rt.history))
@@ -1149,8 +1160,13 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		activeModel = strings.TrimSpace(rt.defaultModel)
 	}
 	activeModel, activeEffort = normalizeProviderModelEffort(runtimeProviderKey(rt), activeModel, activeEffort)
+	var requestCancel func()
+	if responseRun := responseRunFromContext(ctx); responseRun != nil {
+		requestCancel = func() { responseRun.cancelRun() }
+	}
 	intState := &runtimeInterruptState{
 		cancel:          runCancel,
+		requestCancel:   requestCancel,
 		done:            make(chan struct{}),
 		currentTask:     lastUserText(inputMessages),
 		model:           activeModel,
@@ -1239,7 +1255,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		persistPlatformInjectionLocked()
 	}
 
-	appendOnlyPersisted := persisted && !replaceHistory && rt.historyPersisted
+	appendOnlyPersisted := persisted && !replaceHistory && rt.historyPersisted && !isIdentifiedUserBatch(inputMessages)
 	initialPersisted := false
 	initialMessages := make([]llm.Message, 0, len(inputMessages)+1)
 	if systemPromptInjected {
@@ -1753,12 +1769,24 @@ func (rt *serveRuntime) restorePlatformInjectionStateFromHistory() {
 	}
 }
 
-func (rt *serveRuntime) dropTrailingUserHistory() {
+func (rt *serveRuntime) dropTrailingUserHistory(incoming []llm.Message) {
 	if rt == nil || len(rt.history) == 0 {
 		return
 	}
+	incomingIDs := make(map[string]struct{}, len(incoming))
+	for i := range incoming {
+		if id := strings.TrimSpace(incoming[i].ClientMessageID); id != "" {
+			incomingIDs[id] = struct{}{}
+		}
+	}
 	trimmedLen := len(rt.history)
 	for trimmedLen > 0 && rt.history[trimmedLen-1].Role == llm.RoleUser {
+		id := strings.TrimSpace(rt.history[trimmedLen-1].ClientMessageID)
+		if id != "" {
+			if _, retrying := incomingIDs[id]; !retrying {
+				break
+			}
+		}
 		trimmedLen--
 	}
 	if trimmedLen == len(rt.history) {
@@ -1771,6 +1799,18 @@ func (rt *serveRuntime) dropTrailingUserHistory() {
 	// the next persistence step down the snapshot path so the store is reconciled
 	// before the provider response streams.
 	rt.historyPersisted = false
+}
+
+func isIdentifiedUserBatch(messages []llm.Message) bool {
+	if len(messages) < 2 {
+		return false
+	}
+	for i := range messages {
+		if messages[i].Role != llm.RoleUser || strings.TrimSpace(messages[i].ClientMessageID) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func hasUserMessage(messages []llm.Message) bool {
