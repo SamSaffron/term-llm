@@ -22,6 +22,13 @@ func init() {
 	update.SetupUpdateChecks(rootCmd, Version)
 	rootCmd.Version = versionString()
 	rootCmd.SetVersionTemplate("{{printf \"%s version %s\\n\" .Name .Version}}")
+	defaultHelpFunc := rootCmd.HelpFunc()
+	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		defaultHelpFunc(cmd, args)
+		if cmd == rootCmd {
+			fmt.Fprintf(cmd.OutOrStdout(), "\nExamples:\n%s\n", rootExamples)
+		}
+	})
 	rootCmd.PersistentFlags().BoolVar(&debugRaw, "debug-raw", false, "Emit raw debug logs with timestamps")
 	rootCmd.PersistentFlags().BoolVar(&showStats, "stats", false, "Show session statistics (time, tokens, tool calls)")
 	rootCmd.PersistentFlags().BoolVar(&noSession, "no-session", false, "Disable session persistence (no reads/writes to sessions database)")
@@ -34,14 +41,7 @@ func init() {
 	rootCmd.AddCommand(memoryCmd)
 }
 
-var rootCmd = &cobra.Command{
-	Use:   "term-llm",
-	Short: "Your AI toolkit, from terminal to web",
-	Long: `Chat with models, delegate work to agents, generate commands, edit code,
-create media, and automate recurring work—from your terminal or browser.
-
-Examples:
-  term-llm chat @developer                    # agentic coding
+const rootExamples = `  term-llm chat @developer                    # agentic coding
   term-llm serve web --agent developer        # launch the web UI
   term-llm ask @commit-message                # generate commit message
   term-llm exec "show disk usage"             # generate a shell command
@@ -50,7 +50,13 @@ Examples:
   term-llm contain new jarvis                 # create a self-hosted personal AI agent (a Claw)
 
   term-llm config                             # view configuration
-  term-llm config completion zsh              # shell completions`,
+  term-llm config completion zsh              # shell completions`
+
+var rootCmd = &cobra.Command{
+	Use:   "term-llm",
+	Short: "Your AI toolkit, from terminal to web",
+	Long: `Chat with models, delegate work to agents, generate commands, edit code,
+create media, and automate recurring work—from your terminal or browser.`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
