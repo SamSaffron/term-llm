@@ -1,68 +1,76 @@
 # Repository Guidelines
 
-## Project Structure
-- `main.go` – CLI entry point
-- `cmd/` – Command wiring and CLI helpers
-- `internal/config/` – Configuration loading/saving
-- `internal/llm/` – `Provider` interface + implementations (anthropic, openai, gemini, etc.)
-- `internal/image/` – `ImageProvider` interface for image generation
-- `internal/tools/` – Tool registry, execution, and permission checks
-- `internal/edit/` – Edit parsing/matching/execution
-- `internal/tui/`, `internal/ui/` – TUI layout and rendering
-- `internal/search/` – Web search providers (Brave, Google, DuckDuckGo)
-- `internal/mcp/` – MCP client/server wiring
-- `internal/testutil/` – Test harness, mocks, and assertions
+## Working Approach
+- Work from the repository root. Find the owning package, nearby tests, and an existing pattern with `rg` before editing.
+- Make the smallest coherent change; remove superseded paths unless compatibility is required and documented.
+- Never change user config, credentials, caches, or generated artifacts to make tests pass.
+- Before finishing, inspect `git diff`, run checks for every touched area, and report commands and omissions.
 
-## Build & Test
-- `go build` – Build binary
-- `go test ./...` – Run root-module tests only. To isolate tests from developer-global skills/config while reusing the read-only module cache: `GOMODCACHE=$(go env GOMODCACHE); TEST_HOME=$(mktemp -d); HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" XDG_DATA_HOME="$TEST_HOME/data" XDG_CACHE_HOME="$TEST_HOME/cache" GOMODCACHE="$GOMODCACHE" go test ./...; rm -rf "$TEST_HOME"`
-- `scripts/verify_nested_modules.sh` – Build and vet reflow (which currently has no tests), and build, test, and vet the owned terminal runtime and renderer
-- `VERIFY_RACE=1 scripts/verify_nested_modules.sh` – Include nested race execution; for reflow this is compilation coverage until tests are added
-- `scripts/fuzz_owned_renderer.sh` – Execute (not just seed-test) the renderer differential and exact-shift fuzz targets for a bounded 45 seconds by default
-- `scripts/cross_build_owned_terminal.sh` – Cross-build release targets and relevant owned terminal platforms
-- **Always run `gofmt -w .` after changes**
+## Project Map
+- `main.go`, `cmd/` – CLI entry point, commands, and cross-package wiring
+- `internal/config/`, `internal/llm/` – config/provider resolution; provider implementations, engine, compaction, and mocks (`llm/factory.go` constructs providers)
+- `internal/tools/`, `internal/edit/` – tool registry/permissions and file editing
+- `internal/serve/`, `internal/serveui/` – server primitives and embedded web UI
+- `internal/tui/`, `internal/ui/`, `internal/render/` – terminal presentation
+- `internal/agents/`, `internal/jobs/`, `internal/memory/`, `internal/mcp/` – core subsystems
+- `internal/testutil/` – engine/TUI harnesses, mock tools, and assertions
+- `internal/terminal/`, `internal/reflow/` – application-owned nested modules
 
-## Owned Terminal Subsystem
-- `internal/terminal/runtime` and `internal/terminal/renderer` are reduced, application-owned nested modules; `internal/reflow` is also a nested local replacement.
-- The runtime and renderer preserve the upstream module identities `charm.land/bubbletea/v2` and `github.com/charmbracelet/ultraviolet` only for exact Bubbles/Huh import and type compatibility. Their filesystem placement and maintenance ownership are internal to term-llm.
-- Root `go test ./...` does not enter nested modules. Terminal/reflow changes are incomplete until the nested verification command passes.
-- Follow `internal/terminal/README.md` for architecture, compatibility, pruning, provenance, and selective upstream sync. Do not replace either owned terminal directory wholesale.
-- `go install github.com/samsaffron/term-llm@latest` cannot use these local replacements. Build from a complete checkout or use release artifacts.
+## Build and Test
+Use the Go version in `go.mod`. Run the narrowest relevant test during development:
 
-## Configuration
-- Config: `~/.config/term-llm/config.yaml`
-- API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, `SAMBANOVA_API_KEY`, `BFL_API_KEY`
-- **Do not commit API keys or local config**
+```sh
+go test ./internal/llm -run '^TestName$'
+```
 
-## Coding Style
-- Standard `gofmt` formatting
-- Idiomatic Go names (CamelCase exported, mixedCaps unexported)
-- Small, focused functions with explicit error handling
-- Wrap errors with context: `fmt.Errorf("operation failed: %w", err)`
-- **When adding features, find similar existing code first**
-- Remove superseded code, state, handlers, and tests in the same change. Do not leave dead or unreachable compatibility paths unless they are explicitly required and documented.
+Before completion, run root-module checks unless only documentation changed:
 
-## Testing
-- **Write a failing test first**, then fix code to make it pass
-- Tests live alongside code as `*_test.go` files
-- Use `internal/llm/mock_provider.go` for scripted LLM responses
-- Use `internal/testutil/harness.go` for engine-level testing
-- Use table-driven tests for multiple cases
+```sh
+gofmt -w <changed-go-files>
+go build ./...
+go test ./...
+go vet ./...
+```
 
-## Adding Tools
-- Wire through registry in `internal/tools/`
-- Add permission checks in `internal/tools/permissions.go`
+`go test ./...` may read global config and skills. For isolation, preserve the module cache but use a temporary home:
 
-## Web UI (internal/serveui/static/)
-- `markdown-setup.js`: **single source of truth for marked.js configuration**. Both the browser (loaded as a `<script>` before `app-core.js`) and the Node.js test suite (`require()`) use this file. Do not put `marked.use(...)` calls anywhere else.
-- `markdown_test.js`: Node.js test runner for markdown rendering rules; run via `TestMarkdownSetupJS` in `embed_test.go`. Add cases here when changing markdown behaviour.
-- When adding a new first-party JS file, wire it into: `index.html` (script tag), `sw.js` (SHELL_ASSETS), `embed.go` (`RenderIndexHTML` and `RenderServiceWorker` replacement tables).
-- JS tests run automatically as part of `go test ./...` if `node` is in PATH.
+```sh
+GOMODCACHE="$(go env GOMODCACHE)"
+TEST_HOME="$(mktemp -d)"; trap 'rm -rf "$TEST_HOME"' EXIT
+HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/config" \
+  XDG_DATA_HOME="$TEST_HOME/data" XDG_CACHE_HOME="$TEST_HOME/cache" \
+  GOMODCACHE="$GOMODCACHE" go test ./...
+```
 
-## Commits
-- Short, imperative, unprefixed messages (e.g., "add shell history integration")
-- Keep commits focused; don't mix unrelated changes
+JavaScript tests run through Go tests only when `node` is on `PATH`. Match extra checks in `.github/workflows/ci.yml` for browser lifecycle, release, or cross-platform code.
 
-Always build and test test changes you make, never commit anything the user will handle it.
+## Nested Terminal and Reflow Modules
+`internal/reflow`, `internal/terminal/runtime`, and `internal/terminal/renderer` have their own `go.mod` files. Root `go test ./...` does not enter them.
 
-This is a go project, files use TABS AND SPACES, be mindful when editing, always use `gofmt -w .` after making changes to ensure consistent formatting.
+- Changes there require `scripts/verify_nested_modules.sh`; set `VERIFY_RACE=1` for CI race coverage.
+- For terminal changes, follow `internal/terminal/README.md` for architecture, compatibility, benchmarks, checkptr, fuzzing, and upstream sync. When relevant, run `scripts/fuzz_owned_renderer.sh` and `scripts/cross_build_owned_terminal.sh`.
+- Runtime and renderer keep upstream module identities only for Bubbles/Huh compatibility; never replace either directory wholesale.
+- Because local replacements break `go install ...@latest`, build a checkout or use a release artifact.
+
+## Testing Conventions
+- Add a regression test that fails before the fix when practical. Keep tests beside code as `*_test.go`; use table-driven cases for meaningful variants.
+- Use `internal/llm/mock_provider.go` for scripted provider turns and recorded requests. Use `internal/testutil/harness.go` for engine-level behavior rather than invoking a live model.
+- Test observable behavior and failure paths, not implementation trivia. Avoid network access, real API keys, timing sleeps, and dependence on the user's home directory.
+
+## Common Change Paths
+### Providers and configuration
+- Trace provider changes through the implementation, `internal/llm/factory.go`, config schema/defaults, model listing, and tests; do not update only the transport.
+- Config lives under `$XDG_CONFIG_HOME/term-llm/config.yaml` (falling back to `~/.config/term-llm/config.yaml`). Credential names and supported providers are defined in code; do not maintain a second static list here.
+
+### Tools
+- Wire tools through the registry in `internal/tools/` and update `internal/tools/permissions.go` when access policy changes.
+- Cover permission denial as well as successful execution.
+
+### Web UI (`internal/serveui/static/`)
+- `markdown-setup.js` is the single source of truth for marked.js configuration in both browser and Node tests. Add rendering cases to `markdown_test.js`.
+- For a new first-party asset, update the `//go:embed` inputs and render/version tables in `internal/serveui/embed.go`, plus `index.html` and `sw.js` (`SHELL_ASSETS`). Add or update `embed_test.go` coverage.
+
+## Go Style and Commits
+- Use standard `gofmt`; exported names are CamelCase and unexported names mixedCaps.
+- Keep functions focused and errors explicit. Wrap propagated errors with context: `fmt.Errorf("operation: %w", err)`.
+- If asked to commit, use a short imperative, unprefixed subject and keep unrelated changes out of the commit.
