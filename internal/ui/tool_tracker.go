@@ -234,7 +234,20 @@ func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string, toolArg
 
 // HandleToolEnd updates the status of a pending tool by its call ID.
 func (t *ToolTracker) HandleToolEnd(callID string, success bool) {
+	t.HandleToolEndWithInfo(callID, success, "")
+}
+
+// HandleToolEndWithInfo completes a tool and backfills provider details that
+// were unavailable when the tool started (for example a native search query).
+func (t *ToolTracker) HandleToolEndWithInfo(callID string, success bool, toolInfo string) {
 	t.RecordActivity()
+	if toolInfo != "" {
+		for i := range t.Segments {
+			if t.Segments[i].Type == SegmentTool && t.Segments[i].ToolCallID == callID {
+				t.Segments[i].ToolInfo = toolInfo
+			}
+		}
+	}
 	t.Segments = UpdateToolStatus(t.Segments, callID, success)
 	t.Version++
 }

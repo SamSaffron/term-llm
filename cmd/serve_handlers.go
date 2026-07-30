@@ -865,8 +865,10 @@ type sessionMessagePartEntry struct {
 	Text            string                         `json:"text,omitempty"`
 	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
 	ToolName        string                         `json:"tool_name,omitempty"`
+	ToolInfo        string                         `json:"tool_info,omitempty"`
 	ToolArgs        string                         `json:"tool_arguments,omitempty"`
 	ToolCallID      string                         `json:"tool_call_id,omitempty"`
+	ToolStatus      string                         `json:"tool_status,omitempty"`
 	AskUserSummary  string                         `json:"ask_user_summary,omitempty"`
 	ImageURL        string                         `json:"image_url,omitempty"`
 	Images          []string                       `json:"images,omitempty"`
@@ -1458,6 +1460,21 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 						ImageURL: imageURL,
 						MimeType: mimeType,
 					})
+				}
+			case llm.PartToolActivity:
+				if p.ToolActivity != nil {
+					pe := sessionMessagePartEntry{
+						Type:       "tool_activity",
+						ToolName:   p.ToolActivity.Name,
+						ToolInfo:   p.ToolActivity.Info,
+						ToolCallID: p.ToolActivity.ID,
+						ToolStatus: p.ToolActivity.Status,
+						ToolError:  p.ToolActivity.Status == llm.ToolActivityFailed,
+					}
+					if len(p.ToolActivity.Arguments) > 0 {
+						pe.ToolArgs = string(p.ToolActivity.Arguments)
+					}
+					entry.Parts = append(entry.Parts, pe)
 				}
 			case llm.PartToolCall:
 				if p.ToolCall != nil {

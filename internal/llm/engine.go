@@ -1811,6 +1811,7 @@ func isCommittedStreamRecoveryError(err error) bool {
 
 func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send eventSender) error {
 	turnCallback := e.getTurnCallback()
+	snapshotCallback := e.getSnapshotCallback()
 	var priorErr error
 	for retry := 0; ; retry++ {
 		providerReq := e.prepareProviderRequest(req)
@@ -1827,8 +1828,25 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 		var reasoningEncryptedContent string
 		var reasoningSummaryParts []string
 		var reasoningKind ReasoningKind
+		var providerReplayParts []Part
 		var metrics TurnMetrics
 		var failed error
+		fireSnapshot := func() {
+			if snapshotCallback == nil {
+				return
+			}
+			msg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(), nil, reasoningBuilder.String(), reasoningSummaryParts,
+				reasoningItemID, reasoningEncryptedContent, reasoningKind,
+			)
+			msg = attachProviderReplayParts(msg, providerReplayParts)
+			if len(msg.Parts) == 0 {
+				return
+			}
+			cbCtx, cancel := callbackContext(ctx)
+			_ = snapshotCallback(cbCtx, 0, msg)
+			cancel()
+		}
 
 		for {
 			if err := e.consumeChaosFailure(); err != nil {
@@ -1899,6 +1917,18 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 					_ = stream.Close()
 					return err
 				}
+			case EventToolActivity:
+				if event.ToolActivity != nil {
+					providerReplayParts = upsertToolActivityPart(providerReplayParts, event.ToolActivity)
+					scratchpadHasDiscardableOutput = true
+					fireSnapshot()
+				}
+			case EventProviderReplay:
+				if event.ProviderReplay != nil && len(event.ProviderReplay.Raw) > 0 {
+					replay := &ProviderReplayItem{Raw: append(json.RawMessage(nil), event.ProviderReplay.Raw...)}
+					providerReplayParts = append(providerReplayParts, Part{Type: PartProviderReplay, ProviderReplay: replay})
+					scratchpadHasDiscardableOutput = true
+				}
 			case EventDone:
 				// The engine emits one done event after committing the scratchpad.
 			default:
@@ -1931,10 +1961,10 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 			continue
 		}
 
-		if textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && priorErr != nil {
+		if textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && len(providerReplayParts) == 0 && priorErr != nil {
 			return priorErr
 		}
-		if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "") {
+		if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" || len(providerReplayParts) > 0) {
 			reasoningText := reasoningBuilder.String()
 			if reasoningText == "" && len(reasoningSummaryParts) > 0 {
 				reasoningText = strings.Join(reasoningSummaryParts, "\n\n")
@@ -1956,6 +1986,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 				ReasoningKind:             reasoningKind,
 				ReasoningSummaryTitle:     reasoningTitle,
 			}}}
+			finalMsg = attachProviderReplayParts(finalMsg, providerReplayParts)
 			cbCtx, cancel := callbackContext(ctx)
 			_ = turnCallback(cbCtx, 0, []Message{finalMsg}, metrics)
 			cancel()
@@ -1965,8 +1996,35 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 }
 
 func attachProviderReplayParts(msg Message, parts []Part) Message {
+	seenActivities := make(map[string]struct{})
+	for _, part := range parts {
+		if part.Type != PartToolActivity || part.ToolActivity == nil {
+			continue
+		}
+		activity := cloneToolActivity(part.ToolActivity)
+		key := activity.ID + "\x00" + activity.Name
+		if _, seen := seenActivities[key]; seen {
+			continue
+		}
+		seenActivities[key] = struct{}{}
+		msg.Parts = append(msg.Parts, Part{Type: PartToolActivity, ToolActivity: activity})
+	}
 	msg.Parts = append(msg.Parts, cloneProviderReplayParts(parts)...)
 	return msg
+}
+
+func upsertToolActivityPart(parts []Part, activity *ToolActivity) []Part {
+	if activity == nil {
+		return parts
+	}
+	for i := range parts {
+		if parts[i].Type == PartToolActivity && parts[i].ToolActivity != nil &&
+			parts[i].ToolActivity.ID == activity.ID && parts[i].ToolActivity.Name == activity.Name {
+			parts[i].ToolActivity = cloneToolActivity(activity)
+			return parts
+		}
+	}
+	return append(parts, Part{Type: PartToolActivity, ToolActivity: cloneToolActivity(activity)})
 }
 
 func cloneProviderReplayParts(parts []Part) []Part {
@@ -2805,9 +2863,17 @@ turnLoop:
 				}
 				continue
 			}
+			if event.Type == EventToolActivity {
+				if event.ToolActivity != nil {
+					providerReplayParts = upsertToolActivityPart(providerReplayParts, event.ToolActivity)
+					fireSnapshot(toolCalls)
+				}
+				continue
+			}
 			if event.Type == EventProviderReplay {
 				if event.ProviderReplay != nil && len(event.ProviderReplay.Raw) > 0 {
-					providerReplayParts = append(providerReplayParts, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: append(json.RawMessage(nil), event.ProviderReplay.Raw...)}})
+					replay := &ProviderReplayItem{Raw: append(json.RawMessage(nil), event.ProviderReplay.Raw...)}
+					providerReplayParts = append(providerReplayParts, Part{Type: PartProviderReplay, ProviderReplay: replay})
 				}
 				continue
 			}
@@ -3012,10 +3078,10 @@ turnLoop:
 		req.Search = false
 
 		if len(toolCalls) == 0 && !syncToolsExecuted {
-			if recoveredToolWork && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && recoveryPriorErr != nil {
+			if recoveredToolWork && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && len(providerReplayParts) == 0 && recoveryPriorErr != nil {
 				return recoveryPriorErr
 			}
-			if uncommittedPriorErr != nil && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" {
+			if uncommittedPriorErr != nil && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && len(providerReplayParts) == 0 {
 				return uncommittedPriorErr
 			}
 			// No tools called - check if we should restore original tool choice and retry once

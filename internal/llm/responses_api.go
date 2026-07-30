@@ -228,6 +228,16 @@ type responsesOutputItem struct {
 	// For image_generation_call
 	Result        string `json:"result,omitempty"`         // base64-encoded image payload
 	RevisedPrompt string `json:"revised_prompt,omitempty"` // model's revised prompt
+	// For web_search_call
+	Status string                   `json:"status,omitempty"`
+	Action responsesWebSearchAction `json:"action,omitempty"`
+}
+
+type responsesWebSearchAction struct {
+	Type    string `json:"type,omitempty"`
+	Query   string `json:"query,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Pattern string `json:"pattern,omitempty"`
 }
 
 type responsesReasoningSummaryPart struct {

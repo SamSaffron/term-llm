@@ -82,3 +82,72 @@ func TestResponsesUsageClampsInconsistentUncachedInput(t *testing.T) {
 		t.Fatalf("lastUsage = %+v, want clamped uncached input", handler.lastUsage)
 	}
 }
+
+func TestResponsesWebSearchCallEmitsToolLifecycle(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 3)
+	send := eventSender{ctx: context.Background(), ch: events}
+
+	completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.added",
+		"output_index":1,
+		"item":{"id":"ws_1","type":"web_search_call","status":"in_progress"}
+	}`), "response.output_item.added", send)
+	if err != nil || completed {
+		t.Fatalf("added event completed=%t error=%v", completed, err)
+	}
+	start := <-events
+	if start.Type != EventToolExecStart || start.ToolCallID != "ws_1" || start.ToolName != WebSearchToolName {
+		t.Fatalf("start event = %+v, want native web search tool start", start)
+	}
+
+	completed, err = handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done",
+		"output_index":1,
+		"item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"current Go release"}}
+	}`), "response.output_item.done", send)
+	if err != nil || completed {
+		t.Fatalf("done item event completed=%t error=%v", completed, err)
+	}
+	end := <-events
+	if end.Type != EventToolExecEnd || end.ToolCallID != "ws_1" || end.ToolName != WebSearchToolName || !end.ToolSuccess || end.ToolInfo != "(current Go release)" {
+		t.Fatalf("end event = %+v, want successful native web search tool end", end)
+	}
+	activityEvent := <-events
+	activity := activityEvent.ToolActivity
+	if activityEvent.Type != EventToolActivity || activity == nil || activity.ID != "ws_1" || activity.Name != WebSearchToolName || activity.Info != "(current Go release)" || string(activity.Arguments) != `{"query":"current Go release"}` || activity.Status != ToolActivityCompleted {
+		t.Fatalf("tool activity event = %+v", activityEvent)
+	}
+	if len(handler.replayItems) != 1 {
+		t.Fatalf("replay items = %#v, want opaque replay separate from display activity", handler.replayItems)
+	}
+}
+
+func TestResponsesWebSearchDoneWithoutAddedEmitsFailedLifecycle(t *testing.T) {
+	handler := newResponsesStreamEventHandler(&ResponsesClient{}, 0, false, "test", false, "", false)
+	events := make(chan Event, 3)
+
+	completed, err := handler.HandleJSONEvent([]byte(`{
+		"type":"response.output_item.done",
+		"output_index":3,
+		"item":{"type":"web_search_call","status":"failed","action":{"type":"open_page","url":"https://example.com"}}
+	}`), "response.output_item.done", eventSender{ctx: context.Background(), ch: events})
+	if err != nil || completed {
+		t.Fatalf("done item event completed=%t error=%v", completed, err)
+	}
+	start := <-events
+	end := <-events
+	if start.Type != EventToolExecStart || start.ToolCallID != "web_search:3" || start.ToolInfo != "(https://example.com)" {
+		t.Fatalf("start event = %+v, want fallback native web search start", start)
+	}
+	if end.Type != EventToolExecEnd || end.ToolCallID != start.ToolCallID || end.ToolSuccess {
+		t.Fatalf("end event = %+v, want failed native web search end", end)
+	}
+	activityEvent := <-events
+	if activityEvent.Type != EventToolActivity || activityEvent.ToolActivity == nil || activityEvent.ToolActivity.Status != ToolActivityFailed {
+		t.Fatalf("activity event = %+v, want failed persisted web search activity", activityEvent)
+	}
+	if len(handler.replayItems) != 1 {
+		t.Fatalf("replay items = %#v, want opaque failed web search replay", handler.replayItems)
+	}
+}

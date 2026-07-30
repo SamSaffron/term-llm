@@ -215,6 +215,7 @@ const (
 	PartFile            PartType = "file"
 	PartToolCall        PartType = "tool_call"
 	PartToolResult      PartType = "tool_result"
+	PartToolActivity    PartType = "tool_activity"    // Persisted display-only provider-managed tool activity; never sent to providers.
 	PartProviderReplay  PartType = "provider_replay"  // Hidden provider protocol state; never rendered/exported.
 	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
 )
@@ -327,6 +328,7 @@ type Part struct {
 	FilePath                  string         // Local filesystem path to the file (when available)
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
+	ToolActivity              *ToolActivity
 	ProviderReplay            *ProviderReplayItem        // Opaque Responses output item used only for stateless continuation.
 	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
 }
@@ -354,9 +356,32 @@ type SkillActivationProvenance struct {
 	ActivatedAt         string   `json:"activated_at"`
 }
 
+const (
+	ToolActivityCompleted = "completed"
+	ToolActivityFailed    = "failed"
+)
+
+// ToolActivity is a display-only record of a provider-managed tool invocation.
+// It is persisted with assistant history but ignored by provider request builders.
+type ToolActivity struct {
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name"`
+	Info      string          `json:"info,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Status    string          `json:"status"` // "completed" or "failed"
+}
+
+func cloneToolActivity(activity *ToolActivity) *ToolActivity {
+	if activity == nil {
+		return nil
+	}
+	cloned := *activity
+	cloned.Arguments = append(json.RawMessage(nil), activity.Arguments...)
+	return &cloned
+}
+
 // ProviderReplayItem preserves a completed Responses output item byte-for-byte.
-// Raw is persisted in session Parts JSON but deliberately omitted from render,
-// text extraction, approval transcripts, and exports.
+// Raw is persisted for provider continuation but omitted from display and exports.
 type ProviderReplayItem struct {
 	Raw json.RawMessage `json:"raw"`
 }
@@ -513,6 +538,7 @@ const (
 	EventInterjection   EventType = "interjection"    // User interjected a message mid-stream
 	EventModelSwitch    EventType = "model_switch"    // Request model changed at a provider-turn boundary
 	EventImageGenerated EventType = "image_generated" // Emitted when a built-in image_generation tool returns an image
+	EventToolActivity   EventType = "tool_activity"   // Internal-only durable display state for provider-managed tools.
 	EventProviderReplay EventType = "provider_replay" // Internal-only opaque Responses output item.
 )
 
@@ -563,6 +589,7 @@ type Event struct {
 	// ToolResponse is set when a provider needs synchronous bridged tool execution.
 	// The engine will execute the tool and send the result back on this channel.
 	ToolResponse   chan<- ToolExecutionResponse
+	ToolActivity   *ToolActivity       // For EventToolActivity; persisted for display and never forwarded to providers.
 	ProviderReplay *ProviderReplayItem // For EventProviderReplay; never forwarded to UI consumers.
 	// Image fields (for EventImageGenerated)
 	ImageData     []byte // Raw decoded image bytes

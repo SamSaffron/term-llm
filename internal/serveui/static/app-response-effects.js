@@ -41,6 +41,7 @@ const RESPONSE_PROJECTION_EVENTS = new Set([
   'response.output_item.added',
   'response.function_call_arguments.delta',
   'response.output_item.done',
+  'response.tool_exec.start',
   'response.tool_exec.end',
 ]);
 

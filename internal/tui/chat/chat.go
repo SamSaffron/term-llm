@@ -2507,7 +2507,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.stats.ToolEnd()
 			// Update segment status
 			if m.tracker != nil {
-				m.tracker.HandleToolEnd(ev.ToolCallID, ev.ToolSuccess)
+				m.tracker.HandleToolEndWithInfo(ev.ToolCallID, ev.ToolSuccess, ev.ToolInfo)
 
 				// Remove from subagent tracker when spawn_agent completes
 				if m.subagentTracker != nil {

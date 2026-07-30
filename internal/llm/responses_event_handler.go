@@ -19,6 +19,7 @@ type responsesStreamEventHandler struct {
 	outputItems                    []ResponsesInputItem
 	replayItems                    []ProviderReplayItem
 	visibleMessageByOutputIndex    map[int]bool
+	webSearchStarted               map[string]struct{}
 	sawTextDelta                   bool
 	allowResponseState             bool
 	stateSessionID                 string
@@ -38,6 +39,7 @@ func newResponsesStreamEventHandler(client *ResponsesClient, responseStateGenera
 		toolState:                      newResponsesToolState(),
 		reasoningState:                 newResponsesReasoningState(),
 		visibleMessageByOutputIndex:    make(map[int]bool),
+		webSearchStarted:               make(map[string]struct{}),
 	}
 }
 
@@ -213,6 +215,14 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		}
 		if itemEvent.Item.Type == "function_call" {
 			h.toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
+		} else if itemEvent.Item.Type == "web_search_call" {
+			callID := responsesWebSearchCallID(itemEvent.Item.ID, itemEvent.OutputIndex)
+			if _, started := h.webSearchStarted[callID]; !started {
+				if err := sendEvent(Event{Type: EventToolExecStart, ToolCallID: callID, ToolName: WebSearchToolName}); err != nil {
+					return false, err
+				}
+				h.webSearchStarted[callID] = struct{}{}
+			}
 		} else if itemEvent.Item.Type == "reasoning" {
 			h.reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
 		} else if itemEvent.Item.Type == "message" {
@@ -253,6 +263,41 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
 			h.toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
 			h.toolState.SetCaller(doneEvent.OutputIndex, doneEvent.Item.Caller)
+		} else if doneEvent.Item.Type == "web_search_call" {
+			callID := responsesWebSearchCallID(doneEvent.Item.ID, doneEvent.OutputIndex)
+			toolInfo := responsesWebSearchToolInfo(doneEvent.Item.Action)
+			toolArgs := responsesWebSearchToolArguments(doneEvent.Item.Action)
+			toolSucceeded := strings.EqualFold(doneEvent.Item.Status, "completed")
+			status := ToolActivityFailed
+			if toolSucceeded {
+				status = ToolActivityCompleted
+			}
+			activity := &ToolActivity{
+				ID:        callID,
+				Name:      WebSearchToolName,
+				Info:      toolInfo,
+				Arguments: toolArgs,
+				Status:    status,
+			}
+			if _, started := h.webSearchStarted[callID]; !started {
+				if err := sendEvent(Event{Type: EventToolExecStart, ToolCallID: callID, ToolName: WebSearchToolName, ToolInfo: toolInfo}); err != nil {
+					return false, err
+				}
+				h.webSearchStarted[callID] = struct{}{}
+			}
+			if err := sendEvent(Event{
+				Type:        EventToolExecEnd,
+				ToolCallID:  callID,
+				ToolName:    WebSearchToolName,
+				ToolInfo:    toolInfo,
+				ToolArgs:    toolArgs,
+				ToolSuccess: toolSucceeded,
+			}); err != nil {
+				return false, err
+			}
+			if err := sendEvent(Event{Type: EventToolActivity, ToolActivity: activity}); err != nil {
+				return false, err
+			}
 		} else if doneEvent.Item.Type == "reasoning" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
 			h.reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
@@ -442,6 +487,81 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		return false, fmt.Errorf("Responses API error: unknown error")
 	}
 	return false, nil
+}
+
+func responsesWebSearchCallID(itemID string, outputIndex int) string {
+	if itemID != "" {
+		return itemID
+	}
+	return fmt.Sprintf("web_search:%d", outputIndex)
+}
+
+func responsesWebSearchToolArguments(action responsesWebSearchAction) json.RawMessage {
+	args := make(map[string]string)
+	switch action.Type {
+	case "search":
+		if action.Query != "" {
+			args["query"] = action.Query
+		}
+	case "open_page":
+		if action.URL != "" {
+			args["url"] = action.URL
+		}
+	case "find":
+		if action.URL != "" {
+			args["url"] = action.URL
+		}
+		if action.Pattern != "" {
+			args["pattern"] = action.Pattern
+		}
+	default:
+		if action.Query != "" {
+			args["query"] = action.Query
+		}
+		if action.URL != "" {
+			args["url"] = action.URL
+		}
+		if action.Pattern != "" {
+			args["pattern"] = action.Pattern
+		}
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func responsesWebSearchToolInfo(action responsesWebSearchAction) string {
+	var value string
+	switch action.Type {
+	case "search":
+		value = action.Query
+	case "open_page":
+		value = action.URL
+	case "find":
+		value = action.Pattern
+		if value == "" {
+			value = action.URL
+		}
+	}
+	if value == "" {
+		switch {
+		case action.Query != "":
+			value = action.Query
+		case action.URL != "":
+			value = action.URL
+		case action.Pattern != "":
+			value = action.Pattern
+		}
+	}
+	if value == "" {
+		return ""
+	}
+	return "(" + value + ")"
 }
 
 func responsesOutputItemToInputItem(item responsesOutputItem) []ResponsesInputItem {

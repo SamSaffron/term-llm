@@ -455,7 +455,10 @@ func RenderToolCallFromPartWithStatus(tc *llm.ToolCall, width int, expanded bool
 	}
 
 	circle := SuccessCircle()
-	if status == ToolError {
+	switch status {
+	case ToolPending:
+		circle = PendingCircle()
+	case ToolError:
 		circle = ErrorCircle()
 	}
 

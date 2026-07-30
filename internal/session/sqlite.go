@@ -3423,6 +3423,10 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 			if role == llm.RoleEvent && part.SkillActivation != nil {
 				return true
 			}
+		case llm.PartToolActivity:
+			if part.ToolActivity != nil {
+				return true
+			}
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
 				return true

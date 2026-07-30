@@ -441,6 +441,39 @@ func TestRenderer_RenderAltScreen_IncludesFullHistory(t *testing.T) {
 	}
 }
 
+func TestRenderer_HistoricalNativeToolActivityPrecedesAnswer(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := []session.Message{{
+		ID:   1,
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "Here is the latest Discourse news."},
+			{Type: llm.PartToolActivity, ToolActivity: &llm.ToolActivity{
+				ID:     "ws_1",
+				Name:   llm.WebSearchToolName,
+				Info:   "(discourse news)",
+				Status: llm.ToolActivityCompleted,
+			}},
+		},
+		Sequence: 0,
+	}}
+
+	output := ui.StripANSI(renderer.Render(RenderState{
+		Messages: messages,
+		Viewport: ViewportState{Height: 24, AtBottom: true},
+		Mode:     RenderModeAltScreen,
+		Width:    80,
+		Height:   24,
+	}))
+	searchAt := strings.Index(output, "web_search (discourse news)")
+	answerAt := strings.Index(output, "Here is the latest Discourse news.")
+	if searchAt < 0 || answerAt < 0 || searchAt > answerAt {
+		t.Fatalf("native search activity should survive reload before the answer, got %q", output)
+	}
+}
+
 func TestRenderer_HistoricalToolCallUsesErrorCircleForFailedResult(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)

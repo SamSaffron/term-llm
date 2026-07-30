@@ -1930,6 +1930,12 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			"tool_name": ev.ToolName,
 			"success":   ev.ToolSuccess,
 		}
+		if ev.ToolInfo != "" {
+			payload["tool_info"] = ev.ToolInfo
+		}
+		if len(ev.ToolArgs) > 0 {
+			payload["tool_arguments"] = string(ev.ToolArgs)
+		}
 		if len(ev.ToolImages) > 0 {
 			if imageURLs := s.toolImageURLs(ev.ToolImages); len(imageURLs) > 0 {
 				payload["images"] = imageURLs

@@ -2784,6 +2784,42 @@ async function testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded() {
   pass(name);
 }
 
+async function testConvertServerMessagesRestoresNativeToolActivityBeforeAnswer() {
+  const name = 'server native tool activity survives reload before final answer';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([{
+    id: 8,
+    sequence: 8,
+    role: 'assistant',
+    created_at: 1800,
+    parts: [
+      { type: 'text', text: 'Here is the latest Discourse news.' },
+      {
+        type: 'tool_activity',
+        tool_name: 'web_search',
+        tool_call_id: 'ws_native',
+        tool_info: '(discourse news)',
+        tool_arguments: '{"query":"discourse news"}',
+        tool_status: 'completed'
+      }
+    ]
+  }]);
+
+  const group = converted[0];
+  const tool = group?.tools?.[0];
+  if (converted.length !== 2 || group?.role !== 'tool-group' || tool?.id !== 'ws_native'
+      || tool?.name !== 'web_search' || tool?.status !== 'done' || tool?.resultStatus !== 'success'
+      || tool?.arguments !== '{"query":"discourse news"}'
+      || converted[1]?.role !== 'assistant' || converted[1]?.content !== 'Here is the latest Discourse news.'
+      || !String(converted[1]?.id || '').endsWith('_text_0')) {
+    fail(name, 'native activity was missing or ordered after the answer', JSON.stringify(converted));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testConvertServerMessagesRestoresAskUserAnswerAfterTool() {
   const name = 'server ask_user result restores its answer immediately after the tool group';
   const { app } = await createSessionsHarness();
@@ -6810,6 +6846,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testConvertServerMessagesSuppressesAuthoritativeCompactionTailFlag();
   await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
+  await testConvertServerMessagesRestoresNativeToolActivityBeforeAnswer();
   await testConvertServerMessagesRestoresAskUserAnswerAfterTool();
   await testConvertServerMessagesAttachesToolResultImages();
   await testConvertServerMessagesAttachesToolErrorsWithoutPhantoms();

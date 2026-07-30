@@ -112,6 +112,8 @@ func isSanitizablePart(part Part) bool {
 	switch part.Type {
 	case PartToolCall:
 		return part.ToolCall != nil
+	case PartToolActivity:
+		return part.ToolActivity != nil
 	case PartToolResult:
 		return part.ToolResult != nil
 	default:
@@ -285,6 +287,12 @@ func clonePart(part Part) (Part, bool) {
 			call.ThoughtSig = append([]byte(nil), call.ThoughtSig...)
 		}
 		cloned.ToolCall = &call
+
+	case PartToolActivity:
+		if part.ToolActivity == nil {
+			return Part{}, false
+		}
+		cloned.ToolActivity = cloneToolActivity(part.ToolActivity)
 
 	case PartToolResult:
 		if part.ToolResult == nil {

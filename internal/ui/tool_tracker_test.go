@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestToolTrackerHandleToolEndBackfillsInfo(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("ws-1", "web_search", "", nil)
+	tracker.HandleToolEndWithInfo("ws-1", true, "(discourse news)")
+
+	if len(tracker.Segments) != 1 || tracker.Segments[0].ToolInfo != "(discourse news)" || tracker.Segments[0].ToolStatus != ToolSuccess {
+		t.Fatalf("segment = %+v, want completed search with final query", tracker.Segments)
+	}
+}
+
 func TestToolExpandHintShownOnFirstToolOnly(t *testing.T) {
 	tracker := NewToolTracker()
 	tracker.HandleToolStart("call-1", "read_file", "(a.go)", nil)

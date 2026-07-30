@@ -449,10 +449,12 @@ const convertServerMessages = (serverMessages, options = {}) => {
       }, msg));
       continue;
     }
-
+    // Display-only provider activities happened before the final answer.
+    const indexedParts = parts.map((part, index) => ({ part, index }));
+    const activities = indexedParts.filter(({ part }) => part.type === 'tool_activity');
+    const assistantParts = activities.length ? activities.concat(indexedParts.filter(({ part }) => part.type !== 'tool_activity')) : indexedParts;
     // Walk through assistant parts in order to preserve interleaving with tool calls.
-    for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
-      const part = parts[partIndex];
+    for (const { part, index: partIndex } of assistantParts) {
       if (part.type === 'text' && part.text && String(part.text).trim() !== '') {
         flushGroup();
         result.push(addDurableSource({
@@ -462,32 +464,26 @@ const convertServerMessages = (serverMessages, options = {}) => {
           created,
           ...(seq !== null ? { serverSeq: seq } : {})
         }, msg));
-      } else if (part.type === 'tool_call') {
+      } else if (part.type === 'tool_call' || part.type === 'tool_activity') {
         const group = ensureToolGroup(created, msg, partIndex);
         const toolId = part.tool_call_id || fallbackToolId(msg, partIndex);
+        const isActivity = part.type === 'tool_activity', failed = Boolean(part.tool_error) || String(part.tool_status || '').toLowerCase() === 'failed';
+        const status = failed ? 'error' : 'done';
         let toolEntry = group.tools.find((entry) => entry.id === toolId);
         if (!toolEntry) {
-          toolEntry = {
-            id: toolId,
-            name: part.tool_name || 'tool',
-            arguments: part.tool_arguments || '',
-            status: part.tool_error ? 'error' : 'done',
-            ...(part.tool_error ? { resultStatus: 'error' } : {}),
-            created
-          };
+          toolEntry = { id: toolId, name: part.tool_name || 'tool', arguments: part.tool_arguments || '', status, created };
           group.tools.push(toolEntry);
         } else {
           toolEntry.name = part.tool_name || toolEntry.name || 'tool';
           toolEntry.arguments = part.tool_arguments || toolEntry.arguments || '';
-          toolEntry.status = part.tool_error ? 'error' : 'done';
-          if (part.tool_error) toolEntry.resultStatus = 'error';
+          toolEntry.status = status;
         }
+        if (failed || isActivity) toolEntry.resultStatus = failed ? 'error' : 'success';
         appendUniqueImages(toolEntry, normalizeImages(part.images));
       } else if (part.type === 'tool_result') {
         attachToolResultState(part, created, msg, partIndex);
       }
     }
-
   }
 
   flushGroup();

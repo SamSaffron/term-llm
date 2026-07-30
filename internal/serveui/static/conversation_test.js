@@ -46,6 +46,24 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
 })();
 
 (() => {
+  const run = active.createActiveRun({ responseId: 'native-search', runEpoch: 1 });
+  active.reduceResponseEvent(run, 'response.tool_exec.start', {
+    response_id: 'native-search', run_epoch: 1, sequence_number: 1,
+    call_id: 'ws_native', tool_name: 'web_search'
+  });
+  assert.equal(run.projection.length, 1);
+  assert.equal(run.projection[0].role, 'tool-group');
+  assert.equal(run.projection[0].tools[0].name, 'web_search');
+  assert.equal(run.projection[0].tools[0].status, 'running');
+  active.reduceResponseEvent(run, 'response.tool_exec.end', {
+    response_id: 'native-search', run_epoch: 1, sequence_number: 2,
+    call_id: 'ws_native', tool_name: 'web_search', tool_arguments: '{"query":"discourse news"}', success: true
+  });
+  assert.equal(run.projection[0].tools[0].status, 'done');
+  assert.equal(run.projection[0].tools[0].arguments, '{"query":"discourse news"}');
+})();
+
+(() => {
   const conversation = conversationAPI.createConversation({ sessionId: 'normal', durable: envelope([], 0) });
   conversationAPI.addIntent(conversation, { id: 'local-1', clientMessageId: 'client-1', role: 'user', content: 'question' });
   conversationAPI.startActiveRun(conversation, { responseId: 'resp-1', runEpoch: 1, anchor: { clientMessageId: 'client-1' } });

@@ -93,7 +93,6 @@
     run.toolByCallID.set(id, entry);
     return entry;
   };
-
   const closeToolGroupsAtBoundary = (run) => {
     for (const group of run.projection) {
       if (group.role !== 'tool-group' || group.status !== 'running') continue;
@@ -104,7 +103,6 @@
     // intent, and terminal events call this helper to end the semantic group.
     run.currentToolGroup = null;
   };
-
   const validateEnvelope = (run, payload) => {
     const owner = responseID(payload);
     if (!owner) {
@@ -142,7 +140,6 @@
     }
     return { duplicate: false, sequence };
   };
-
   const reduceResponseEvent = (source, event, payload = {}) => {
     const run = source;
     if (!run || !run.responseID) throw new Error('active response is required');
@@ -151,7 +148,6 @@
     if (validation.duplicate && event !== 'response.stream_error') {
       return { run, changed: false, duplicate: true, structural: false };
     }
-
     let structural = false;
     switch (event) {
       case 'response.created':
@@ -204,8 +200,18 @@
         }
         break;
       }
+      case 'response.tool_exec.start': {
+        const callID = String(payload.call_id || '').trim(), existed = run.toolByCallID.has(callID);
+        const tool = toolEntry(run, callID, { name: payload.tool_name, arguments: payload.tool_arguments });
+        if (payload.tool_name) tool.name = String(payload.tool_name);
+        if (payload.tool_arguments && !tool.arguments) tool.arguments = String(payload.tool_arguments);
+        tool.status = 'running'; structural = !existed;
+        break;
+      }
       case 'response.tool_exec.end': {
-        const tool = toolEntry(run, payload.call_id, payload);
+        const callID = String(payload.call_id || '').trim(), tool = toolEntry(run, callID, { name: payload.tool_name, arguments: payload.tool_arguments });
+        if (payload.tool_name) tool.name = String(payload.tool_name);
+        if (payload.tool_arguments) tool.arguments = String(payload.tool_arguments);
         tool.status = payload.success === false ? 'error' : 'done';
         tool.resultStatus = payload.success === false ? 'error' : 'success';
         if (Array.isArray(payload.images) && payload.images.length) tool.images = payload.images.slice();

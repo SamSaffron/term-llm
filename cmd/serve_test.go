@@ -6165,6 +6165,7 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 			{Type: llm.PartText, Text: "Let me search for that"},
 			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "web_search", Arguments: json.RawMessage(`{"query":"go"}`)}},
 			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-2", Name: "read_url", Arguments: json.RawMessage(`{"url":"https://go.dev"}`)}},
+			{Type: llm.PartToolActivity, ToolActivity: &llm.ToolActivity{ID: "ws-native", Name: llm.WebSearchToolName, Info: "(discourse news)", Arguments: json.RawMessage(`{"query":"discourse news"}`), Status: llm.ToolActivityCompleted}},
 		},
 	}, -1)
 	if err := store.AddMessage(ctx, "sess-parts", msg); err != nil {
@@ -6187,8 +6188,10 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 				Type       string `json:"type"`
 				Text       string `json:"text"`
 				ToolName   string `json:"tool_name"`
+				ToolInfo   string `json:"tool_info"`
 				ToolArgs   string `json:"tool_arguments"`
 				ToolCallID string `json:"tool_call_id"`
+				ToolStatus string `json:"tool_status"`
 				ImageURL   string `json:"image_url"`
 				MimeType   string `json:"mime_type"`
 			} `json:"parts"`
@@ -6205,8 +6208,8 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	if m.Role != "assistant" {
 		t.Fatalf("role = %q, want assistant", m.Role)
 	}
-	if len(m.Parts) != 3 {
-		t.Fatalf("parts count = %d, want 3", len(m.Parts))
+	if len(m.Parts) != 4 {
+		t.Fatalf("parts count = %d, want 4", len(m.Parts))
 	}
 
 	// Text part
@@ -6223,6 +6226,11 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	// Second tool call (was lost before due to break)
 	if m.Parts[2].Type != "tool_call" || m.Parts[2].ToolName != "read_url" || m.Parts[2].ToolCallID != "call-2" {
 		t.Fatalf("part[2] = %+v, want read_url tool_call", m.Parts[2])
+	}
+	// Provider-managed activity is display-only but must reach web history.
+	if m.Parts[3].Type != "tool_activity" || m.Parts[3].ToolName != "web_search" || m.Parts[3].ToolCallID != "ws-native" ||
+		m.Parts[3].ToolInfo != "(discourse news)" || m.Parts[3].ToolArgs != `{"query":"discourse news"}` || m.Parts[3].ToolStatus != llm.ToolActivityCompleted {
+		t.Fatalf("part[3] = %+v, want native web search activity", m.Parts[3])
 	}
 }
 

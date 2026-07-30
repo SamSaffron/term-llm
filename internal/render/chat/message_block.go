@@ -411,6 +411,30 @@ func (r *MessageBlockRenderer) findToolResult(toolCallID string) *llm.ToolResult
 func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) string {
 	var b strings.Builder
 	hasContent := false
+	var activities []*llm.ToolActivity
+	for _, part := range msg.Parts {
+		if part.Type == llm.PartToolActivity && part.ToolActivity != nil {
+			activities = append(activities, part.ToolActivity)
+		}
+	}
+	activitiesRendered := false
+	renderActivities := func() {
+		if activitiesRendered {
+			return
+		}
+		activitiesRendered = true
+		for _, activity := range activities {
+			status := ui.ToolSuccess
+			if activity.Status == llm.ToolActivityFailed {
+				status = ui.ToolError
+			}
+			call := &llm.ToolCall{ID: activity.ID, Name: activity.Name, ToolInfo: activity.Info, Arguments: activity.Arguments}
+			b.WriteString(ui.RenderToolCallFromPartWithStatus(call, r.width, r.toolsExpanded, status))
+			b.WriteString("\n")
+			r.noteRenderedSegment(ui.SegmentTool)
+			hasContent = true
+		}
+	}
 
 	for _, part := range msg.Parts {
 		switch part.Type {
@@ -423,6 +447,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				hasContent = true
 				r.reasoningRenderedCount++
 			}
+			renderActivities()
 			if part.Text != "" {
 				rendered := r.renderMarkdown(part.Text)
 				b.WriteString(rendered)
@@ -490,6 +515,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 			// Skip PartToolResult - they're in user messages and verbose
 		}
 	}
+	renderActivities()
 
 	// Fallback: if no parts rendered, use TextContent (for backward compatibility)
 	if !hasContent && msg.TextContent != "" {
