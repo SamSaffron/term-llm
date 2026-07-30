@@ -1,7 +1,5 @@
 'use strict';
-
 (function initAppSkills() {
-
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
@@ -15,14 +13,12 @@ const {
   renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
 } = app;
 const { requestHeaders, normalizeError, parseSSEStream, sleep, streamReconnectDelay, setActiveResponseTracking, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, scrollVisibleStreamToBottom, resumeActiveResponse, setStreaming, drainInterruptQueueIfIdle, addErrorMessage } = app;
-
 const skillRunStore = () => {
   if (!state.skillRunsById || typeof state.skillRunsById !== 'object') {
     state.skillRunsById = {};
   }
   return state.skillRunsById;
 };
-
 const skillRunAPIURL = (value) => {
   const path = String(value || '').trim();
   if (!path) return '';
@@ -30,11 +26,8 @@ const skillRunAPIURL = (value) => {
   if (path.startsWith('/')) return `${UI_PREFIX}${path}`;
   return `${UI_PREFIX}/${path}`;
 };
-
 const skillRunIsTerminal = (status) => ['complete', 'failed', 'cancelled'].includes(String(status || '').toLowerCase());
-
 const skillRunMessages = new Map();
-
 const skillRunMessageFor = (session, run) => {
   if (!session || !run?.id) return null;
   let message = skillRunMessages.get(`${session.id}:${run.id}`) || null;
@@ -58,7 +51,6 @@ const skillRunMessageFor = (session, run) => {
   }
   return message;
 };
-
 const renderSkillRun = (run) => {
   const session = state.sessions.find((entry) => entry.id === run?.sessionId) || null;
   if (!session) return;
@@ -80,7 +72,6 @@ const renderSkillRun = (run) => {
   if (isSessionVisible(session)) updateVisibleUserNode(session, message);
   persistAndRefreshShell();
 };
-
 const progressTextForSkillRun = (data) => {
   if (!data || typeof data !== 'object') return '';
   const type = String(data.Type || data.type || '').toLowerCase();
@@ -93,7 +84,6 @@ const progressTextForSkillRun = (data) => {
   if (text) return text;
   return type.replaceAll('_', ' ');
 };
-
 const applySkillRunEvent = (run, envelope) => {
   if (!run || !envelope || typeof envelope !== 'object') return false;
   const sequence = Number(envelope.sequence || 0);
@@ -118,7 +108,6 @@ const applySkillRunEvent = (run, envelope) => {
   renderSkillRun(run);
   return true;
 };
-
 const followSkillRun = async (run) => {
   if (!run || !run.id || skillRunIsTerminal(run.status) || run.following) return;
   run.following = true;
@@ -165,7 +154,6 @@ const followSkillRun = async (run) => {
     run.controller = null;
   }
 };
-
 const upsertSkillRunSnapshot = (sessionId, snapshot, eventsURL = '') => {
   const id = String(snapshot?.id || snapshot?.run_id || '').trim();
   if (!id) return null;
@@ -186,12 +174,10 @@ const upsertSkillRunSnapshot = (sessionId, snapshot, eventsURL = '') => {
   if (!skillRunIsTerminal(run.status)) void followSkillRun(run);
   return run;
 };
-
 const reconcileSkillRuns = (sessionId, snapshots) => {
   if (!sessionId || !Array.isArray(snapshots)) return;
   snapshots.forEach((snapshot) => upsertSkillRunSnapshot(sessionId, snapshot));
 };
-
 const cancelSkillRun = async (sessionId, runId) => {
   const run = skillRunStore()[runId];
   if (run && !skillRunIsTerminal(run.status)) {
@@ -212,7 +198,6 @@ const cancelSkillRun = async (sessionId, runId) => {
   }
   return response.json().catch(() => ({}));
 };
-
 const appendSkillInvocationMessage = (session, invocation, reuseMessageId = '') => {
   let message = reuseMessageId
     ? window.TermLLMConversation.sessionMessages(session).find((entry) => entry.id === reuseMessageId && entry.role === 'user') || null
@@ -225,13 +210,13 @@ const appendSkillInvocationMessage = (session, invocation, reuseMessageId = '') 
       created: Date.now(),
     };
     message.clientMessageId = message.id;
+    if (invocation.execution === 'isolated') message.transient = true;
     app.trackPendingIntent?.(session, message);
     appendStreamMessageNode(session, message);
   }
   delete message.interruptState;
   return message;
 };
-
 const invokeSkill = async (session, invocation, options = {}) => {
   if (!session || !invocation) return false;
   let execution = invocation.execution;
@@ -252,8 +237,8 @@ const invokeSkill = async (session, invocation, options = {}) => {
   try {
     const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/skills/invoke`, {
       method: 'POST',
-      headers: requestHeaders(session.id),
-      body: JSON.stringify({ name: invocation.name, arguments: invocation.arguments || '' }),
+      headers: { ...requestHeaders(session.id), 'Idempotency-Key': `skill_${message.clientMessageId || message.id}` },
+      body: JSON.stringify({ name: invocation.name, arguments: invocation.arguments || '', client_message_id: message.clientMessageId || message.id }),
     });
     if (!response.ok) throw await normalizeError(response);
     const payload = await response.json();
@@ -262,7 +247,7 @@ const invokeSkill = async (session, invocation, options = {}) => {
       upsertSkillRunSnapshot(session.id, {
         id: payload.run_id,
         skill: invocation.name,
-        status: 'running',
+        status: payload.status || 'running',
         child_session_id: payload.child_session_id,
         started_at: new Date().toISOString(),
       }, payload.events_url);
@@ -281,6 +266,21 @@ const invokeSkill = async (session, invocation, options = {}) => {
     await resumeActiveResponse(session, { responseId });
     return true;
   } catch (error) {
+    if (error?.status === 409 && error?.type === 'client_message_already_committed') {
+      let synced = false;
+      try {
+        await app.syncActiveSessionFromServer?.(session, false);
+        synced = true;
+      } catch {
+      }
+      if (synced) {
+        app.retirePendingIntent?.(session, message);
+        app.refreshSessionMessagesFromTranscript?.(session);
+        if (isSessionVisible(session)) app.renderMessages?.();
+      }
+      persistAndRefreshShell();
+      return true;
+    }
     addErrorMessage(error?.message || 'Failed to invoke skill.', session);
     if (error?.status === 401) app.handleAuthFailure();
     if (!String(elements.promptInput.value || '').trim()) {

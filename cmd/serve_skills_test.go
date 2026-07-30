@@ -25,11 +25,13 @@ import (
 type fakeServeSkillChildRunner struct {
 	mu      sync.Mutex
 	request runpkg.ChildRunRequest
+	calls   int
 }
 
 func (r *fakeServeSkillChildRunner) RunChild(ctx context.Context, request runpkg.ChildRunRequest, callback runpkg.ChildRunEventCallback) (runpkg.ChildRunResult, error) {
 	r.mu.Lock()
 	r.request = request
+	r.calls++
 	r.mu.Unlock()
 	if callback != nil {
 		callback(request.RunID, tools.SubagentEvent{Type: tools.SubagentEventText, Text: "working"})
@@ -41,6 +43,12 @@ func (r *fakeServeSkillChildRunner) requestSnapshot() runpkg.ChildRunRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.request
+}
+
+func (r *fakeServeSkillChildRunner) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
 }
 
 func TestSessionMessageEntriesExposeSkillProvenance(t *testing.T) {
@@ -232,21 +240,29 @@ func TestServeSessionSkillInvokeEnforcesPolicyAndStartsIsolatedRun(t *testing.T)
 		t.Fatalf("malformed args status = %d body=%s", badArgs.Code, badArgs.Body.String())
 	}
 
-	started := invoke(`{"name":"forked","arguments":"internal/config"}`)
+	started := invoke(`{"name":"forked","arguments":"internal/config","client_message_id":"isolated-client-1"}`)
 	if started.Code != http.StatusAccepted {
 		t.Fatalf("isolated invoke status = %d body=%s", started.Code, started.Body.String())
 	}
 	var response struct {
-		Execution      string `json:"execution"`
-		RunID          string `json:"run_id"`
-		ChildSessionID string `json:"child_session_id"`
-		EventsURL      string `json:"events_url"`
+		Execution       string `json:"execution"`
+		RunID           string `json:"run_id"`
+		ChildSessionID  string `json:"child_session_id"`
+		ClientMessageID string `json:"client_message_id"`
+		EventsURL       string `json:"events_url"`
 	}
 	if err := json.Unmarshal(started.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Execution != "isolated" || response.RunID == "" || response.EventsURL == "" {
+	if response.Execution != "isolated" || response.RunID == "" || response.ClientMessageID != "isolated-client-1" || response.EventsURL == "" {
 		t.Fatalf("isolated response = %#v", response)
+	}
+	replayed := invoke(`{"name":"forked","arguments":"internal/config","client_message_id":"isolated-client-1"}`)
+	var replayedResponse struct {
+		RunID string `json:"run_id"`
+	}
+	if replayed.Code != http.StatusAccepted || json.Unmarshal(replayed.Body.Bytes(), &replayedResponse) != nil || replayedResponse.RunID != response.RunID {
+		t.Fatalf("isolated replay status/body = %d %s, want run %s", replayed.Code, replayed.Body.String(), response.RunID)
 	}
 
 	deadline := time.Now().Add(time.Second)
@@ -254,6 +270,9 @@ func TestServeSessionSkillInvokeEnforcesPolicyAndStartsIsolatedRun(t *testing.T)
 		time.Sleep(time.Millisecond)
 	}
 	childRequest := runner.requestSnapshot()
+	if runner.callCount() != 1 {
+		t.Fatalf("isolated child invocation count = %d, want 1", runner.callCount())
+	}
 	if childRequest.Kind != runpkg.ChildRunIsolatedSkill || !strings.Contains(childRequest.Prompt, "Review internal/config.") || !strings.Contains(childRequest.Prompt, "# Skill: forked") || !strings.Contains(childRequest.Prompt, "**Description:** Forked review") || childRequest.ParentSessionID != "sess-a" {
 		t.Fatalf("isolated child request = %#v", childRequest)
 	}
@@ -286,7 +305,7 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	setup, root := serveSkillTestSetup(t)
 	store := newServeRuntimeTestStore()
 	store.sessions["sess-main"] = &session.Session{ID: "sess-main", CWD: root, Provider: "mock", Model: "mock-model"}
-	provider := llm.NewMockProvider("mock").AddTextResponse("Main skill response")
+	provider := newStagedProvider("Main skill ", "response")
 	engine := llm.NewEngine(provider, nil)
 	engine.RegisterTool(tools.NewReadFileTool(nil, tools.OutputLimits{}))
 	runtime := &serveRuntime{provider: provider, providerKey: "mock", engine: engine, store: store, defaultModel: "mock-model"}
@@ -304,36 +323,67 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	}
 	srv.ensureResponseRuns().clearActiveRun("sess-main", "resp-existing")
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-main/skills/invoke", strings.NewReader(`{"name":"default","arguments":"scope"}`))
+	missingIDReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-main/skills/invoke", strings.NewReader(`{"name":"default"}`))
+	missingIDReq.Header.Set("Content-Type", "application/json")
+	missingIDReq.Header.Set("session_id", "sess-main")
+	missingIDReq.Header.Set("X-Term-LLM-UI-Version", "test")
+	missingIDRR := httptest.NewRecorder()
+	srv.handleSessionByID(missingIDRR, missingIDReq)
+	if missingIDRR.Code != http.StatusBadRequest || !strings.Contains(missingIDRR.Body.String(), "client_message_id") {
+		t.Fatalf("first-party missing client ID status/body = %d %s", missingIDRR.Code, missingIDRR.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-main/skills/invoke", strings.NewReader(`{"name":"default","arguments":"scope","client_message_id":"skill-client-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("session_id", "sess-main")
+	req.Header.Set("X-Term-LLM-UI-Version", "test")
+	req.Header.Set("Idempotency-Key", "skill_skill-client-1")
 	rr := httptest.NewRecorder()
 	srv.handleSessionByID(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("main invoke status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	var response struct {
-		Execution  string `json:"execution"`
-		ResponseID string `json:"response_id"`
-		RunEpoch   int64  `json:"run_epoch"`
-		StartedRev int64  `json:"started_rev"`
-		EventsURL  string `json:"events_url"`
+		Execution       string `json:"execution"`
+		ResponseID      string `json:"response_id"`
+		RunEpoch        int64  `json:"run_epoch"`
+		StartedRev      int64  `json:"started_rev"`
+		ClientMessageID string `json:"client_message_id"`
+		EventsURL       string `json:"events_url"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Execution != "main" || response.ResponseID == "" || response.RunEpoch <= 0 || response.EventsURL == "" {
+	if response.Execution != "main" || response.ResponseID == "" || response.RunEpoch <= 0 || response.ClientMessageID != "skill-client-1" || response.EventsURL == "" {
 		t.Fatalf("main response = %#v", response)
 	}
+	select {
+	case <-provider.firstSent:
+	case <-time.After(time.Second):
+		t.Fatal("main skill response did not start")
+	}
+	replayReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-main/skills/invoke", strings.NewReader(`{"name":"default","arguments":"scope","client_message_id":"skill-client-1"}`))
+	replayReq.Header = req.Header.Clone()
+	replayRR := httptest.NewRecorder()
+	srv.handleSessionByID(replayRR, replayReq)
+	var replayResponse struct {
+		ResponseID string `json:"response_id"`
+	}
+	if replayRR.Code != http.StatusAccepted || json.Unmarshal(replayRR.Body.Bytes(), &replayResponse) != nil || replayResponse.ResponseID != response.ResponseID {
+		t.Fatalf("in-flight replay status/body = %d %s, want response %s", replayRR.Code, replayRR.Body.String(), response.ResponseID)
+	}
+	provider.mu.Lock()
+	requestCount := len(provider.requests)
+	provider.mu.Unlock()
+	if requestCount != 1 {
+		t.Fatalf("provider request count after in-flight replay = %d, want 1", requestCount)
+	}
+	close(provider.releaseSecond)
 
 	deadline := time.Now().Add(2 * time.Second)
-	var requests []llm.Request
-	for len(requests) == 0 && time.Now().Before(deadline) {
-		requests = provider.RecordedRequests()
-		if len(requests) == 0 {
-			time.Sleep(time.Millisecond)
-		}
-	}
+	provider.mu.Lock()
+	requests := append([]llm.Request(nil), provider.requests...)
+	provider.mu.Unlock()
 	if len(requests) == 0 {
 		t.Fatal("main skill response never reached provider")
 	}
@@ -341,9 +391,16 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 		t.Fatalf("explicit-empty skill advertised tools to provider: %#v", requests[0].Tools)
 	}
 	var contextText strings.Builder
+	sawClientMessageID := false
 	for _, message := range requests[0].Messages {
 		contextText.WriteString(llm.MessageText(message))
 		contextText.WriteByte('\n')
+		if message.Role == llm.RoleUser && message.ClientMessageID == "skill-client-1" {
+			sawClientMessageID = true
+		}
+	}
+	if !sawClientMessageID {
+		t.Fatalf("provider request did not preserve skill client message identity: %#v", requests[0].Messages)
 	}
 	for _, want := range []string{"Default body", "Invocation arguments", "scope", "/default scope"} {
 		if !strings.Contains(contextText.String(), want) {
@@ -373,12 +430,19 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 		t.Fatalf("persisted main skill provenance = %#v", provenance)
 	}
 	activationCount := 0
+	persistedClientMessageID := false
 	for _, message := range persistedMessages {
+		if message.Role == llm.RoleUser && message.ClientMessageID == "skill-client-1" {
+			persistedClientMessageID = true
+		}
 		for _, part := range message.Parts {
 			if part.Type == llm.PartSkillActivation && part.SkillActivation != nil && part.SkillActivation.Name == "default" {
 				activationCount++
 			}
 		}
+	}
+	if !persistedClientMessageID {
+		t.Fatalf("persisted main skill user message lost client identity: %#v", persistedMessages)
 	}
 	if activationCount != 1 {
 		t.Fatalf("persisted main skill activation count = %d, want 1; messages=%#v", activationCount, persistedMessages)
@@ -388,6 +452,22 @@ func TestServeSessionMainSkillStartsStructuredResponseAndRestoresToolPolicy(t *t
 	}
 	if !engine.IsToolAllowed(tools.ReadFileToolName) {
 		t.Fatal("main skill explicit-empty tool filter was not restored after response")
+	}
+
+	duplicateReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-main/skills/invoke", strings.NewReader(`{"name":"default","arguments":"scope","client_message_id":"skill-client-1"}`))
+	duplicateReq.Header.Set("Content-Type", "application/json")
+	duplicateReq.Header.Set("session_id", "sess-main")
+	duplicateReq.Header.Set("X-Term-LLM-UI-Version", "test")
+	duplicateRR := httptest.NewRecorder()
+	srv.handleSessionByID(duplicateRR, duplicateReq)
+	if duplicateRR.Code != http.StatusConflict || !strings.Contains(duplicateRR.Body.String(), `"type":"client_message_already_committed"`) {
+		t.Fatalf("duplicate main skill status/body = %d %s", duplicateRR.Code, duplicateRR.Body.String())
+	}
+	provider.mu.Lock()
+	requestCount = len(provider.requests)
+	provider.mu.Unlock()
+	if requestCount != 1 {
+		t.Fatalf("provider request count after duplicate = %d, want 1", requestCount)
 	}
 }
 

@@ -1447,6 +1447,52 @@ async function testIdleRecoveryRetiresOnlyUnownedInterjectionIntents() {
   pass(name);
 }
 
+async function testAskUserAnswerHasStableClientIdentity() {
+  const name = 'ask-user answer tracks a stable client message identity';
+  const harness = createHarness({
+    fetchImpl: async (url, requestOptions, { Response }) => {
+      if (url === '/ui/v1/sessions/session_ask_identity/ask_user' && requestOptions.method === 'POST') {
+        return new Response(JSON.stringify({
+          status: 'ok',
+          answers: [{ question_index: 0, header: 'Choice', selected: 'A', is_custom: false }],
+          summary: 'Choice: A',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, state, elements, cleanup } = harness;
+  const session = { id: 'session_ask_identity', title: 'Ask identity', messages: [] };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.askUser = {
+    sessionId: session.id,
+    callId: 'call_choice',
+    activeTab: 0,
+    questions: [{ header: 'Choice', question: 'Pick one', options: [{ label: 'A' }] }],
+  };
+  elements.askUserModalBody.querySelector = (selector) => (
+    selector === 'input[name="ask_user_0"]:checked' ? { value: 'A' } : null
+  );
+
+  await app.submitAskUserModal(false);
+
+  const userMessages = projectedMessages(session).filter((message) => message.role === 'user');
+  if (elements.askUserError.textContent) {
+    fail(name, 'successful answer surfaced an error', elements.askUserError.textContent);
+    await cleanup();
+    return;
+  }
+  if (userMessages.length !== 1 || !userMessages[0].clientMessageId || userMessages[0].clientMessageId !== userMessages[0].id || userMessages[0].transient !== true) {
+    fail(name, 'answer was not tracked as a transient intent with matching stable identity', JSON.stringify(userMessages));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testInactiveSessionPromptEventsRemainActionable() {
   const name = 'inactive ask-user and approval prompt events still create actionable modal state';
   const harness = createHarness();
@@ -7128,7 +7174,8 @@ async function testMainSkillUsesStructuredInvocationAndResponseStream() {
     },
     fetchImpl: async (url, requestOptions, { Response, ReadableStream, encoder }) => {
       if (url === '/ui/v1/sessions/session_skill_main/skills/invoke') {
-        return new Response(JSON.stringify({ execution: 'main', response_id: responseId, run_epoch: 1, started_rev: 0, events_url: `/v1/responses/${responseId}/events` }), {
+        const request = JSON.parse(String(requestOptions.body || '{}'));
+        return new Response(JSON.stringify({ execution: 'main', response_id: responseId, run_epoch: 1, started_rev: 0, client_message_id: request.client_message_id, events_url: `/v1/responses/${responseId}/events` }), {
           status: 202,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -7164,8 +7211,8 @@ async function testMainSkillUsesStructuredInvocationAndResponseStream() {
 
   const invoke = fetchCalls.find((call) => call.url.endsWith('/skills/invoke'));
   const body = invoke?.body ? JSON.parse(invoke.body) : null;
-  if (!invoke || invoke.method !== 'POST' || body?.name !== 'explain' || body?.arguments !== 'src/main.go') {
-    fail(name, 'structured invocation request was not sent', JSON.stringify(fetchCalls));
+  if (!invoke || invoke.method !== 'POST' || body?.name !== 'explain' || body?.arguments !== 'src/main.go' || !body?.client_message_id || invoke.headers?.['Idempotency-Key'] !== `skill_${body.client_message_id}`) {
+    fail(name, 'structured invocation request did not carry the client message identity', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -7176,6 +7223,82 @@ async function testMainSkillUsesStructuredInvocationAndResponseStream() {
   }
   if (!projectedMessages(session).some((message) => message.role === 'assistant' && message.content === 'explained')) {
     fail(name, 'normal response event stream was not consumed', JSON.stringify({ messages: projectedMessages(session), active: session.transcript?.conversation?.active, fetchCalls }));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
+async function testCommittedMainSkillConflictReconcilesWithoutError() {
+  const name = 'committed main skill conflict reconciles server truth without an error row';
+  let syncCount = 0;
+  const harness = createHarness({
+    matchSkillInvocation(value) {
+      return value === '/explain retry' ? { name: 'explain', arguments: 'retry', execution: 'main', invocation: value } : null;
+    },
+    onSyncActiveSessionFromServer() {
+      syncCount += 1;
+      return { active_run: false };
+    },
+    fetchImpl: async (url, _requestOptions, { Response }) => {
+      if (url === '/ui/v1/sessions/session_skill_conflict/skills/invoke') {
+        return new Response(JSON.stringify({ error: { type: 'client_message_already_committed', message: 'already committed' } }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  const session = { id: 'session_skill_conflict', title: 'Skills', messages: [], activeResponseId: null, lastResponseId: null, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = '/explain retry';
+
+  await app.sendMessage();
+
+  const pendingIntentCount = session.transcript?.conversation?.intents?.size || 0;
+  if (syncCount !== 1 || pendingIntentCount !== 0 || projectedMessages(session).some((message) => message.role === 'error')) {
+    fail(name, 'committed conflict was not reconciled cleanly', JSON.stringify({ syncCount, pendingIntentCount, messages: projectedMessages(session) }));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
+async function testCommittedMainSkillConflictKeepsIntentWhenReconcileFails() {
+  const name = 'committed main skill conflict keeps the intent when reconciliation fails';
+  const harness = createHarness({
+    matchSkillInvocation(value) {
+      return value === '/explain offline' ? { name: 'explain', arguments: 'offline', execution: 'main', invocation: value } : null;
+    },
+    onSyncActiveSessionFromServer() {
+      throw new Error('offline');
+    },
+    fetchImpl: async (url, _requestOptions, { Response }) => {
+      if (url === '/ui/v1/sessions/session_skill_sync_failure/skills/invoke') {
+        return new Response(JSON.stringify({ error: { type: 'client_message_already_committed', message: 'already committed' } }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  const session = { id: 'session_skill_sync_failure', title: 'Skills', messages: [], activeResponseId: null, lastResponseId: null, lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = '/explain offline';
+
+  await app.sendMessage();
+
+  const pendingIntentCount = session.transcript?.conversation?.intents?.size || 0;
+  if (pendingIntentCount !== 1 || projectedMessages(session).some((message) => message.role === 'error')) {
+    fail(name, 'failed reconciliation dropped the intent or surfaced an error', JSON.stringify({ pendingIntentCount, messages: projectedMessages(session) }));
     await cleanup();
     return;
   }
@@ -7244,8 +7367,9 @@ async function testIsolatedSkillStreamsIndependentlyAndCancelsIndependently() {
 
   await app.sendMessage();
   const progressVisible = await waitFor(() => app.skillRunMessageFor(session, { id: runId })?.progress === 'checking diff', 500);
-  if (!progressVisible || !state.streaming || state.currentStreamResponseId !== 'resp_parent') {
-    fail(name, 'child progress disturbed or failed to coexist with parent stream');
+  const invocationMessage = projectedMessages(session).find((entry) => entry.role === 'user' && entry.content === '/review staged');
+  if (!progressVisible || !state.streaming || state.currentStreamResponseId !== 'resp_parent' || invocationMessage?.transient !== true) {
+    fail(name, 'child progress or transient invocation disturbed or failed to coexist with parent stream');
     releaseRun();
     await cleanup();
     return;
@@ -7305,6 +7429,8 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch();
   await testUnknownSlashTextRemainsNormalMessage();
   await testMainSkillUsesStructuredInvocationAndResponseStream();
+  await testCommittedMainSkillConflictReconcilesWithoutError();
+  await testCommittedMainSkillConflictKeepsIntentWhenReconcileFails();
   await testIsolatedSkillStreamsIndependentlyAndCancelsIndependently();
   await testModelEffortOptionsFollowMetadata();
   await testResponseCreatedRecordsStartedTranscriptRevision();
@@ -7316,6 +7442,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
   await testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM();
   await testIdleRecoveryRetiresOnlyUnownedInterjectionIntents();
+  await testAskUserAnswerHasStableClientIdentity();
   await testInactiveSessionPromptEventsRemainActionable();
   await testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();

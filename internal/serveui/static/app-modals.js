@@ -381,9 +381,9 @@ const submitAskUserModal = async (cancelled = false) => {
             role: 'user',
             content: summary,
             created: Date.now(),
-            askUser: true
+            askUser: true, transient: true
           };
-          app.trackPendingIntent?.(session, message);
+          app.trackPendingIntent?.(session, Object.assign(message, { clientMessageId: message.id }));
           if (isSessionVisible(session)) {
             const empty = elements.messages.querySelector('.empty-state');
             if (empty) empty.remove();

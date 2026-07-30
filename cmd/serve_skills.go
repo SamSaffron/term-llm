@@ -45,6 +45,7 @@ type serveSkillRun struct {
 	ID                string
 	SessionID         string
 	ChildSessionID    string
+	ClientMessageID   string
 	SkillName         string
 	Agent             string
 	Status            string
@@ -370,8 +371,9 @@ func serveBuiltinSlashNames() map[string]bool {
 }
 
 type serveSkillInvokeRequest struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Name            string `json:"name"`
+	Arguments       string `json:"arguments"`
+	ClientMessageID string `json:"client_message_id"`
 }
 
 func (s *serveServer) handleSessionSkillInvoke(w http.ResponseWriter, r *http.Request, sess *session.Session) {
@@ -380,6 +382,15 @@ func (s *serveServer) handleSessionSkillInvoke(w http.ResponseWriter, r *http.Re
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid skill invocation: "+err.Error())
+		return
+	}
+	clientMessageID := strings.TrimSpace(request.ClientMessageID)
+	if len(clientMessageID) > maxResponseClientMessageIDLength {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is too long")
+		return
+	}
+	if isFirstPartyUIResponseRequest(r) && clientMessageID == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is required for first-party skill invocations")
 		return
 	}
 	setup := s.skillsForServeSession(sess)
@@ -393,10 +404,10 @@ func (s *serveServer) handleSessionSkillInvoke(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if activation.Metadata.Execution == skills.SkillExecutionIsolatedAgent {
-		s.startServeIsolatedSkill(w, r, sess, activation)
+		s.startServeIsolatedSkill(w, r, sess, activation, clientMessageID)
 		return
 	}
-	s.startServeMainSkill(w, r, sess, activation)
+	s.startServeMainSkill(w, r, sess, activation, clientMessageID)
 }
 
 func writeServeSkillActivationError(w http.ResponseWriter, err error) {
@@ -415,12 +426,44 @@ func writeServeSkillActivationError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request, sess *session.Session, activation *skills.Activation) {
+func writeServeMainSkillResponse(w http.ResponseWriter, run *responseRun) {
+	run.mu.Lock()
+	payload := map[string]any{
+		"execution":         "main",
+		"response_id":       run.id,
+		"run_epoch":         run.runEpoch,
+		"started_rev":       run.startedRev,
+		"client_message_id": run.clientMessageID,
+		"anchor_row_id":     run.anchorRowID,
+		"events_url":        "/v1/responses/" + run.id + "/events",
+	}
+	run.mu.Unlock()
+	writeJSON(w, http.StatusAccepted, payload)
+}
+
+func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request, sess *session.Session, activation *skills.Activation, clientMessageID string) {
 	if s.sessionMgr == nil {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", "session runtime is unavailable")
 		return
 	}
-	if activeID := s.ensureResponseRuns().activeRunID(sess.ID); activeID != "" {
+	manager := s.ensureResponseRuns()
+	idempotencyKey := responseIdempotencyKeyFromRequest(r)
+	if existing, ok := manager.getByIdempotencyKey(sess.ID, idempotencyKey); ok {
+		writeServeMainSkillResponse(w, existing)
+		return
+	}
+	if clientMessageID != "" && s.store != nil {
+		committed, lookupErr := session.FindMessagesByClientMessageIDs(r.Context(), s.store, sess.ID, []string{clientMessageID})
+		if lookupErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "lookup client_message_id: "+lookupErr.Error())
+			return
+		}
+		if committed[clientMessageID] != nil {
+			writeOpenAIError(w, http.StatusConflict, "client_message_already_committed", fmt.Sprintf("%s: %q", errResponseClientMessageAlreadyCommitted, clientMessageID))
+			return
+		}
+	}
+	if activeID := manager.activeRunID(sess.ID); activeID != "" {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "a response is already active for this session")
 		return
 	}
@@ -436,9 +479,11 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 	provenance := serveSkillProvenance(activation)
 	provenance.Status = "running"
 	instructions := skills.RenderActivationInstructions(activation)
+	userMessage := llm.UserText(display)
+	userMessage.ClientMessageID = clientMessageID
 	inputMessages := []llm.Message{
 		{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: instructions}}},
-		llm.UserText(display),
+		userMessage,
 	}
 	run, err := s.startResponseRun(runtime, true, false, inputMessages, llm.Request{
 		SessionID:           sess.ID,
@@ -448,6 +493,7 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 	}, sess.ID, startResponseRunOptions{
 		previousResponseID: runtime.getLastResponseID(),
 		uiSession:          true,
+		idempotencyKey:     idempotencyKey,
 		runtimeSetup: func(req *llm.Request) error {
 			return setupServeMainSkillRequest(runtime, activation, req)
 		},
@@ -456,15 +502,7 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"execution":         "main",
-		"response_id":       run.id,
-		"run_epoch":         run.runEpoch,
-		"started_rev":       run.startedRev,
-		"client_message_id": run.clientMessageID,
-		"anchor_row_id":     run.anchorRowID,
-		"events_url":        "/v1/responses/" + run.id + "/events",
-	})
+	writeServeMainSkillResponse(w, run)
 }
 
 func setupServeMainSkillRequest(runtime *serveRuntime, activation *skills.Activation, req *llm.Request) error {
@@ -519,6 +557,9 @@ func (s *serveServer) registerServeSkillRun(run *serveSkillRun) error {
 	for _, existing := range s.skillRuns {
 		if existing.SessionID != run.SessionID {
 			continue
+		}
+		if run.ClientMessageID != "" && existing.ClientMessageID == run.ClientMessageID {
+			return errServeSkillRunActive
 		}
 		existing.mu.Lock()
 		active := existing.Status == "running" || existing.Status == "cancelling"
@@ -609,7 +650,41 @@ func (s *serveServer) stopServeSkillRuns(ctx context.Context) error {
 	}
 }
 
-func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Request, sess *session.Session, activation *skills.Activation) {
+func (s *serveServer) serveSkillRunByClientMessageID(sessionID, clientMessageID string) *serveSkillRun {
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	if clientMessageID == "" {
+		return nil
+	}
+	s.skillRunsMu.Lock()
+	defer s.skillRunsMu.Unlock()
+	for _, run := range s.skillRuns {
+		if run != nil && run.SessionID == sessionID && run.ClientMessageID == clientMessageID {
+			return run
+		}
+	}
+	return nil
+}
+
+func writeServeIsolatedSkillResponse(w http.ResponseWriter, sessionID string, run *serveSkillRun) {
+	run.mu.Lock()
+	childSessionID := run.ChildSessionID
+	status := run.Status
+	run.mu.Unlock()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"execution":         "isolated",
+		"run_id":            run.ID,
+		"child_session_id":  childSessionID,
+		"status":            status,
+		"client_message_id": run.ClientMessageID,
+		"events_url":        "/v1/sessions/" + sessionID + "/skill-runs/" + run.ID + "/events",
+	})
+}
+
+func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Request, sess *session.Session, activation *skills.Activation, clientMessageID string) {
+	if existing := s.serveSkillRunByClientMessageID(sess.ID, clientMessageID); existing != nil {
+		writeServeIsolatedSkillResponse(w, sess.ID, existing)
+		return
+	}
 	var runtime *serveRuntime
 	if s.sessionMgr != nil {
 		runtime, _, _ = s.runtimeForRequest(r.Context(), sess.ID)
@@ -623,8 +698,13 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 	childSessionID := session.NewID()
 	runCtx, cancel := context.WithCancel(context.Background())
 	run := newServeSkillRun(runID, sess.ID, childSessionID, activation, cancel)
+	run.ClientMessageID = strings.TrimSpace(clientMessageID)
 	if registerErr := s.registerServeSkillRun(run); registerErr != nil {
 		cancel()
+		if existing := s.serveSkillRunByClientMessageID(sess.ID, clientMessageID); existing != nil {
+			writeServeIsolatedSkillResponse(w, sess.ID, existing)
+			return
+		}
 		if errors.Is(registerErr, errServeSkillRunsStopping) {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", registerErr.Error())
 		} else if errors.Is(registerErr, errServeSkillRunActive) {
@@ -678,12 +758,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 		s.scheduleServeSkillRunCleanup(run)
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"execution":        "isolated",
-		"run_id":           runID,
-		"child_session_id": childSessionID,
-		"events_url":       "/v1/sessions/" + sess.ID + "/skill-runs/" + runID + "/events",
-	})
+	writeServeIsolatedSkillResponse(w, sess.ID, run)
 }
 
 func (s *serveServer) serveSkillChildRunner(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error) {
