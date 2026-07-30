@@ -36,16 +36,21 @@ func init() {
 
 var rootCmd = &cobra.Command{
 	Use:   "term-llm",
-	Short: "Translate natural language to CLI commands",
-	Long: `term-llm uses AI to suggest shell commands based on your description.
+	Short: "Your AI toolkit, from terminal to web",
+	Long: `Chat with models, delegate work to agents, generate commands, edit code,
+create media, and automate recurring work—from your terminal or browser.
 
 Examples:
-  term-llm exec "find all go files modified today"
-  term-llm exec "compress this folder" --auto-pick
-  term-llm exec "show disk usage" -s    # with web search
+  term-llm chat @developer                    # agentic coding
+  term-llm serve web --agent developer        # launch the web UI
+  term-llm ask @commit-message                # generate commit message
+  term-llm exec "show disk usage"             # generate a shell command
+  term-llm edit "add tests" -f main.go        # edit a file
+  term-llm image "a smiling cat"              # generate image and add to clipboard
+  term-llm contain new jarvis                 # create a self-hosted personal AI agent (a Claw)
 
-  term-llm config                       # view configuration
-  term-llm config completion zsh        # shell completions`,
+  term-llm config                             # view configuration
+  term-llm config completion zsh              # shell completions`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
