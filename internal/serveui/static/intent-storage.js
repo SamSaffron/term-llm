@@ -1,12 +1,9 @@
 'use strict';
-
 (function initIntentStorage() {
 const app = window.TermLLMApp;
 const { STORAGE_KEYS } = app;
-
 const PENDING_INTENT_LIMIT = 256;
 const LEGACY_INTENT_STORAGE_MARKER = ':intent:';
-
 const transcriptIntentStoragePrefix = (sessionId = '') => (
   `${STORAGE_KEYS.pendingIntents}:${encodeURIComponent(String(sessionId || ''))}:`
 );
@@ -144,6 +141,9 @@ const persistPendingIntents = (session) => {
       const key = transcriptIntentStorageKey(session.id, entry.clientMessageId);
       localStorage.setItem(key, JSON.stringify(entry));
     }
+    const acknowledgedIntentIDs = transcript?.conversation?.acknowledgedIntentIDs;
+    for (const id of acknowledgedIntentIDs || []) removePendingIntentStorage(session.id, id);
+    acknowledgedIntentIDs?.clear?.();
     for (const message of transcript?.publishedMessages || []) {
       if (message?.durable !== true || message?.role !== 'user') continue;
       removePendingIntentStorage(session.id, message.clientMessageId || message.client_message_id);

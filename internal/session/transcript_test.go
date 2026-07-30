@@ -210,6 +210,24 @@ func TestSQLiteStoreTranscriptIndexMatchesPlanResultDisplayVisibility(t *testing
 	}
 }
 
+func TestSQLiteStoreTranscriptIndexIncludesAskUserResultBody(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
+		Type:       llm.PartToolResult,
+		ToolResult: &llm.ToolResult{ID: "call-ask", Name: "ask_user", Content: `{"answers":[{"header":"Choice","selected":"A"}]}`},
+	}}}, -1)
+	if err := store.AddMessage(context.Background(), sess.ID, msg); err != nil {
+		t.Fatal(err)
+	}
+	_, items, err := store.GetTranscriptIndex(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Flags&TranscriptFlagEmptyBody != 0 {
+		t.Fatalf("ask_user result index = %#v, want materialized body", items)
+	}
+}
+
 func TestSQLiteStoreTranscriptSnapshotIsCoherentDuringConcurrentWrites(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()

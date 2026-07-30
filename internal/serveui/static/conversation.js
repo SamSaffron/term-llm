@@ -1,5 +1,4 @@
 'use strict';
-
 (function conversationModule(root, factory) {
   const api = factory(
     typeof module === 'object' && module.exports ? require('./active-response.js') : root.TermLLMActiveResponse,
@@ -11,16 +10,13 @@
 })(typeof window !== 'undefined' ? window : globalThis, function conversationFactory(activeResponse, TranscriptWindow, root) {
   if (!activeResponse) throw new Error('active-response.js must load before conversation.js');
   if (!TranscriptWindow) throw new Error('transcript-window.js must load before conversation.js');
-
   const clone = (value) => {
     if (typeof structuredClone === 'function') return structuredClone(value);
     return JSON.parse(JSON.stringify(value));
   };
-
   const clientMessageID = (message) => String(
     message?.clientMessageId || message?.client_message_id || ''
   ).trim();
-
   const responseID = (message) => String(message?.responseId || message?.response_id || '').trim();
   const assistantSegmentKey = (messageOrResponseID, ordinal = null) => {
     const owner = typeof messageOrResponseID === 'object' ? responseID(messageOrResponseID) : String(messageOrResponseID || '').trim();
@@ -39,7 +35,6 @@
     if (!(root?.__TERM_LLM_DIAGNOSTICS__ || root?.__WEBRTC_DIAGNOSTICS__) || typeof console === 'undefined') return;
     console.warn('[transcript]', { kind: String(kind || ''), responseId: String(fields.responseId || ''), transcriptRev: Number(fields.transcriptRev) || 0 });
   };
-
   const durableMessages = (durable) => {
     if (!durable) return [];
     if (Array.isArray(durable.publishedMessages)) return durable.publishedMessages;
@@ -47,30 +42,44 @@
     if (Array.isArray(durable.messages)) return durable.messages;
     return [];
   };
-
   const createConversation = ({ sessionId = '', durable = null } = {}) => ({
     sessionId: String(sessionId || ''),
     durable,
     intents: new Map(),
+    acknowledgedIntentIDs: new Set(),
+    acknowledgedAskUserCallIDs: new Set(),
     active: null,
     publishedRevision: 0,
     protocolError: '',
   });
-
   const addIntent = (conversation, intent) => {
     const id = clientMessageID(intent);
     if (!id) throw new Error('user intent requires client_message_id');
+    const callID = String(intent?.askUserCallId || intent?.ask_user_call_id || '').trim();
+    if (callID && conversation.acknowledgedAskUserCallIDs.has(callID)) return null;
     conversation.intents.set(id, { ...intent, id: intent.id || id, clientMessageId: id, role: 'user' });
     return conversation.intents.get(id);
   };
-
   const acknowledgeDurableIntents = (conversation) => {
+    const durableClientIDs = new Set();
+    const durableAskUserCallIDs = new Set();
     for (const message of durableMessages(conversation.durable)) {
       const id = clientMessageID(message);
-      if (id) conversation.intents.delete(id);
+      if (id) durableClientIDs.add(id);
+      const callID = String(message?.askUserCallId || message?.ask_user_call_id || '').trim();
+      if (callID) {
+        durableAskUserCallIDs.add(callID);
+        conversation.acknowledgedAskUserCallIDs.add(callID);
+      }
+    }
+    for (const [id, intent] of conversation.intents) {
+      const callID = String(intent?.askUserCallId || intent?.ask_user_call_id || '').trim();
+      if (durableClientIDs.has(id) || (callID && (durableAskUserCallIDs.has(callID) || conversation.acknowledgedAskUserCallIDs.has(callID)))) {
+        conversation.intents.delete(id);
+        conversation.acknowledgedIntentIDs.add(id);
+      }
     }
   };
-
   const startActiveRun = (conversation, descriptor) => {
     const responseId = String(descriptor?.responseId || '').trim();
     const incomingEpoch = Math.max(0, Number(descriptor?.runEpoch) || 0);
@@ -85,7 +94,6 @@
     conversation.protocolError = '';
     return true;
   };
-
   const applyRunEvent = (conversation, event, payload) => {
     const responseId = String(payload?.response_id || payload?.response?.id || '').trim();
     if (!conversation.active) startActiveRun(conversation, { responseId, runEpoch: payload?.run_epoch });
@@ -100,7 +108,6 @@
     }
     return result;
   };
-
   const replaceActiveFromSnapshot = (conversation, snapshot, options = {}) => {
     const candidate = activeResponse.activeRunFromSnapshot(snapshot, options);
     if (conversation.active && conversation.active.responseID !== candidate.responseID) {
@@ -111,7 +118,6 @@
     conversation.protocolError = candidate.terminal?.durableHandoff === false ? candidate.terminal.error : '';
     return true;
   };
-
   const durableRegionReady = (durable, ordinals) => {
     if (!durable || !Array.isArray(ordinals) || ordinals.length === 0) return false;
     return ordinals.every((ordinal) => {
@@ -120,7 +126,6 @@
       return state === 'materialized' || state === 'empty';
     });
   };
-
   const compactedReplacementReady = (durable, terminal) => {
     const compactionChanged = Number(durable?.compactionSeq ?? -1) !== Number(terminal?.compactionSeq ?? -1)
       || Number(durable?.compactionCount ?? 0) !== Number(terminal?.compactionCount ?? 0);
@@ -128,7 +133,6 @@
     const tailOrdinal = durable.ids.length - 1;
     return durableRegionReady(durable, [tailOrdinal]);
   };
-
   const responseRowsReady = (conversation) => {
     const active = conversation.active;
     if (!active?.terminal?.durableHandoff) return false;
@@ -146,7 +150,6 @@
     }
     return durableMessages(durable).some((message) => responseID(message) === active.responseID);
   };
-
   const commitDurableHandoff = (conversation) => {
     if (!conversation.active?.terminal) return false;
     if (conversation.active.terminal.durableHandoff !== true) return false;
@@ -156,7 +159,6 @@
     acknowledgeDurableIntents(conversation);
     return true;
   };
-
   const visibleMessages = (conversation) => {
     const active = conversation.active;
     const activeResponseID = active?.responseID || '';
@@ -165,14 +167,28 @@
         ?.filter((entry) => entry.role === 'intent-ref')
         .map((entry) => entry.clientMessageId) || []
     );
+    const activeAskUserCallIDs = new Set();
+    for (const entry of active?.projection || []) {
+      if (entry.role !== 'tool-group') continue;
+      for (const tool of entry.tools || []) {
+        const callID = String(tool.callId || tool.id || '').trim();
+        if (callID && tool.name === 'ask_user') activeAskUserCallIDs.add(callID);
+      }
+    }
     const durable = durableMessages(conversation.durable);
     const durableIntentByID = new Map();
+    const durableAskUserByCallID = new Map();
     const base = [];
     const emittedIntents = new Set();
-
+    const emittedAskUserCallIDs = new Set();
     for (const message of durable) {
       const owner = responseID(message);
       const role = String(message?.role || '');
+      const askUserCallID = String(message?.askUserCallId || message?.ask_user_call_id || '').trim();
+      if (askUserCallID && activeAskUserCallIDs.has(askUserCallID)) {
+        durableAskUserByCallID.set(askUserCallID, message);
+        continue;
+      }
       if (activeResponseID && owner === activeResponseID && ['assistant', 'tool', 'tool-group', 'event', 'error', 'model-swap'].includes(role)) continue;
       const intentID = role === 'user' ? clientMessageID(message) : '';
       if (intentID) durableIntentByID.set(intentID, message);
@@ -180,16 +196,17 @@
       if (intentID) emittedIntents.add(intentID);
       base.push(message);
     }
-
     const pending = [...conversation.intents.entries()]
-      .filter(([id]) => !intentRefs.has(id) && !emittedIntents.has(id))
+      .filter(([id, intent]) => {
+        const callID = String(intent?.askUserCallId || intent?.ask_user_call_id || '').trim();
+        return !intentRefs.has(id) && !emittedIntents.has(id) && !(callID && activeAskUserCallIDs.has(callID));
+      })
       .sort(([, left], [, right]) => Number(left.created || 0) - Number(right.created || 0));
     for (const [id, intent] of pending) {
       base.push(intent);
       emittedIntents.add(id);
     }
     if (!active) return base;
-
     const activeProjection = [];
     for (const entry of active.projection) {
       if (entry.role === 'intent-ref') {
@@ -203,8 +220,27 @@
       }
       if (entry.terminalPolicy === 'transient' && active.terminal) continue;
       activeProjection.push(entry);
+      if (entry.role === 'tool-group') {
+        for (const tool of entry.tools || []) {
+          const callID = String(tool.callId || tool.id || '').trim();
+          if (!callID || tool.name !== 'ask_user') continue;
+          const durableAnswer = durableAskUserByCallID.get(callID);
+          if (durableAnswer && !emittedAskUserCallIDs.has(callID)) {
+            activeProjection.push(durableAnswer);
+            emittedAskUserCallIDs.add(callID);
+            continue;
+          }
+          for (const [id, intent] of conversation.intents) {
+            const intentCallID = String(intent?.askUserCallId || intent?.ask_user_call_id || '').trim();
+            if (intentCallID === callID && !emittedIntents.has(id) && !emittedAskUserCallIDs.has(callID)) {
+              activeProjection.push(intent);
+              emittedIntents.add(id);
+              emittedAskUserCallIDs.add(callID);
+            }
+          }
+        }
+      }
     }
-
     const anchorClientID = String(active.anchor?.clientMessageId || '').trim();
     const anchorRowID = active.anchor?.durableRowId;
     let anchorIndex = -1;
@@ -225,11 +261,9 @@
     base.splice(anchorIndex + 1, 0, ...activeProjection);
     return base;
   };
-
   const sessionMessages = (session) => (
     session?.transcript?.conversation ? visibleMessages(session.transcript.conversation) : []
   );
-
   const applyDurable = (conversation, durable) => {
     conversation.durable = durable;
     acknowledgeDurableIntents(conversation);
@@ -237,12 +271,10 @@
     conversation.publishedRevision++;
     return visibleMessages(conversation);
   };
-
   class SessionCommandQueue {
     constructor() {
       this.tail = Promise.resolve();
     }
-
     enqueue(command) {
       const execute = async () => command();
       const queued = this.tail.then(execute, execute);
@@ -250,7 +282,6 @@
       return queued;
     }
   }
-
   class ConversationController extends TranscriptWindow {
     constructor(sessionId, budgets = {}) {
       super(sessionId, budgets);
@@ -259,12 +290,10 @@
       this.startedRev = 0;
       this.commands = new SessionCommandQueue();
     }
-
     get activeRun() {
       const active = this.conversation.active;
       return active ? { id: active.responseID, epoch: active.runEpoch, startedRev: this.startedRev, terminal: active.terminal } : null;
     }
-
     setActiveRun(responseId, startedRev = 0, runEpoch = 0, options = {}) {
       const id = String(responseId || '').trim();
       const epoch = Math.max(0, Number(runEpoch) || 0);
@@ -288,7 +317,6 @@
         anchor,
       });
     }
-
     transitionAuthoritativeRun(responseId, startedRev = 0, runEpoch = 0, options = {}) {
       const id = String(responseId || '').trim();
       const epoch = Math.max(0, Number(runEpoch) || 0);
@@ -317,7 +345,6 @@
       this.latestRunEpoch = Math.max(this.latestRunEpoch, epoch);
       return true;
     }
-
     replaceActiveSnapshot(snapshot, options = {}) {
       const owner = String(snapshot?.id || snapshot?.response_id || options.responseId || '').trim();
       if (!owner) return false;
@@ -338,7 +365,6 @@
       }
       return true;
     }
-
     applyResponseEvent(event, payload = {}) {
       const active = this.conversation.active;
       if (active) {
@@ -363,14 +389,12 @@
       this.latestRunEpoch = Math.max(this.latestRunEpoch, Number(this.conversation.active?.runEpoch) || 0);
       return result;
     }
-
     applyDetachedReplay(events = []) {
       if (!this.conversation.active) throw new Error('active response is required for replay');
       this.conversation.active = activeResponse.reduceDetachedReplay(this.conversation.active, events);
       this.latestRunEpoch = Math.max(this.latestRunEpoch, Number(this.conversation.active.runEpoch) || 0);
       return this.conversation.active;
     }
-
     addPendingIntent(entry, revAtSend = this.rev) {
       if (!entry || typeof entry !== 'object' || entry.durable === true || entry.role !== 'user') return null;
       const intent = {
@@ -382,7 +406,6 @@
       };
       return addIntent(this.conversation, intent);
     }
-
     removePendingIntent(entryOrKey) {
       const key = String(entryOrKey && typeof entryOrKey === 'object' ? (entryOrKey.clientMessageId || entryOrKey.clientKey || entryOrKey.id || '') : (entryOrKey || ''));
       if (!key) return [];
@@ -395,14 +418,12 @@
       }
       return removed;
     }
-
     rekey(sessionId) {
       super.rekey(sessionId);
       this.conversation.sessionId = this.sessionId;
       return this;
     }
   }
-
   const runDescriptor = (payload = {}) => ({
     responseId: String(payload.response_id || payload.active_response_id || payload.id || payload.response?.id || '').trim(),
     startedRev: payload.started_rev ?? payload.response?.started_rev ?? 0,
@@ -437,7 +458,6 @@
     return complete;
   };
   const destroyConversationController = (controller) => controller?.destroy();
-
   // EFFECTS_SECTION_START: only this injected browser adapter may access app effects.
   let conversationEffectsInitialized = false;
   const initEffects = () => {
@@ -461,12 +481,10 @@
       trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit, refreshPendingInterjectionBanner,
       restoreDraftMessageForSession, stageDraftMessage, clearDraftMessageForSession
     } = app;
-    
     const TRANSCRIPT_RECENT_SKELETONS = [];
     const PENDING_INTENT_LIMIT = 256;
     const TRANSCRIPT_EMPTY_BODY_FLAG = Number(window.TRANSCRIPT_FLAG_EMPTY_BODY || 2);
     const findSessionById = (sessionId) => state.sessions.find((item) => item?.id === sessionId) || null;
-    
     // Version 2 restricts local persistence to client-owned intent. Version 1 (and
     // the unversioned legacy shape) also stored assistant/tool recovery shadows,
     // which could shadow durable rows after a reload. Migration keeps pending user
@@ -489,7 +507,6 @@
       }
       return session.transcript;
     };
-    
     const trackPendingIntent = (session, message) => {
       if (!session || !message || message.durable || message.role !== 'user') return null;
       const transcript = ensureSessionTranscript(session);
@@ -498,7 +515,6 @@
       app.persistPendingIntents(session);
       return tracked;
     };
-    
     const retirePendingIntent = (session, messageOrKey) => {
       const transcript = session?.transcript;
       if (!transcript?.removePendingIntent) return [];
@@ -509,14 +525,12 @@
       if (removed.length > 0) app.persistPendingIntents(session);
       return removed;
     };
-    
     const noteTranscriptRunCreated = (session, responseId, startedRev, runEpoch = 0, options = {}) => {
       const transcript = ensureSessionTranscript(session);
       if (!transcript) return Promise.resolve(false);
       const epoch = Math.max(0, Number(runEpoch) || 0);
       return transcript.commands.enqueue(() => transcript.setActiveRun(responseId, startedRev, epoch, options));
     };
-    
     const noteTranscriptTerminal = (session, responseId, finalRev, runEpoch = 0, durableHandoff = true, handoffError = '') => {
       const transcript = ensureSessionTranscript(session);
       if (!transcript) return Promise.resolve(false);
@@ -535,7 +549,6 @@
         force: true
       });
     };
-    
     const transcriptViewportAdapter = (session, forceScroll = false) => {
       if (!session || session.id !== state.activeSessionId || !elements.messages || !elements.chatScroll) return null;
       const scrollRect = () => elements.chatScroll.getBoundingClientRect?.() || { top: 0, bottom: Number(elements.chatScroll.clientHeight) || 0 };
@@ -583,7 +596,6 @@
         }
       };
     };
-    
     const refreshSessionMessagesFromTranscript = (session) => {
       const transcript = session?.transcript;
       if (!transcript) return false;
@@ -641,7 +653,6 @@
       delete session._serverOnly;
       return true;
     };
-    
     const touchTranscriptSkeleton = (session) => {
       const id = String(session?.id || '');
       const existing = TRANSCRIPT_RECENT_SKELETONS.indexOf(id);
@@ -660,9 +671,7 @@
         }
       }
     };
-    
     const TRANSCRIPT_MATERIALIZE_BATCH_TURNS = Math.max(1, Number(window.TRANSCRIPT_MATERIALIZE_BATCH_TURNS) || 32);
-    
     const boundedTranscriptSegmentIndexes = (transcript, request) => {
       if (!transcript) return [];
       if (!Array.isArray(request)) {
@@ -685,14 +694,12 @@
       }
       return selected.sort((a, b) => a - b);
     };
-    
     const transcriptSyncSegmentIndexes = (transcript) => {
       if (!transcript) return [];
       const wanted = new Set(transcript.pinnedSegments);
       if (transcript.segments.length > 0) wanted.add(transcript.segments.length - 1);
       return [...wanted];
     };
-    
     const fetchTranscriptSegments = async (session, segmentIndexes, options = {}) => {
       const transcript = ensureSessionTranscript(session);
       if (!transcript) return false;
@@ -717,14 +724,12 @@
       // guarantees callers never render a partial conversational turn.
       return boundedIndexes.every((index) => ['materialized', 'empty'].includes(transcript.segments[index]?.state));
     };
-    
     const materializeTranscriptSegmentsOnce = async (session, request) => {
       if (!session || session.id !== state.activeSessionId) return false;
       const transcript = ensureSessionTranscript(session);
       if (!transcript) return false;
       const indexes = boundedTranscriptSegmentIndexes(transcript, request);
       if (indexes.length === 0) return true;
-    
       const adapter = transcriptViewportAdapter(session);
       const anchor = adapter?.capture?.() || null;
       const previousViewport = { ...transcript.viewport };
@@ -733,13 +738,11 @@
       transcript.setViewport(first.startOrdinal, last.endOrdinal, { deferBudget: true });
       const anchorSegment = anchor ? transcript.segmentForID(anchor.id) : -1;
       if (anchorSegment >= 0) transcript.pinnedSegments.add(anchorSegment);
-    
       const loaded = await fetchTranscriptSegments(session, indexes, { deferBudget: true });
       if (!loaded) {
         transcript.setViewport(previousViewport.firstOrdinal, previousViewport.lastOrdinal);
         return syncTranscript(session, { reason: 'stale-bodies', force: true });
       }
-    
       transcript.enforceBudget();
       if (adapter) {
         // Publish the bounded store projection through the adapter once.
@@ -756,13 +759,11 @@
       transcript.refreshPinnedSegments();
       return true;
     };
-    
     const materializeTranscriptSegments = (session, request) => {
       const transcript = ensureSessionTranscript(session);
       if (!transcript?.commands) return Promise.resolve(false);
       return transcript.commands.enqueue(() => materializeTranscriptSegmentsOnce(session, request));
     };
-    
     const syncTranscriptOnce = async (session, options = {}) => {
       const transcript = ensureSessionTranscript(session);
       if (!transcript) return false;
@@ -771,7 +772,6 @@
       const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
       transcript.noteIndexFetch(resp.status === 304, resp.headers?.get?.('ETag') || '');
       if (resp.status !== 304 && !resp.ok) return false;
-    
       let data = null;
       if (resp.status !== 304) {
         data = await resp.json().catch(() => null);

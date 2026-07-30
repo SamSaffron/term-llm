@@ -30,6 +30,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
@@ -866,6 +867,7 @@ type sessionMessagePartEntry struct {
 	ToolName        string                         `json:"tool_name,omitempty"`
 	ToolArgs        string                         `json:"tool_arguments,omitempty"`
 	ToolCallID      string                         `json:"tool_call_id,omitempty"`
+	AskUserSummary  string                         `json:"ask_user_summary,omitempty"`
 	ImageURL        string                         `json:"image_url,omitempty"`
 	Images          []string                       `json:"images,omitempty"`
 	ToolError       bool                           `json:"tool_error,omitempty"`
@@ -1367,6 +1369,14 @@ func (s *serveServer) getSessionMessagesPageDescending(ctx context.Context, sess
 	return page, nil
 }
 
+func askUserResultSummary(content string) string {
+	var result tools.AskUserResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil || len(result.Answers) == 0 {
+		return ""
+	}
+	return tools.AskUserAnswerSummary(result.Answers)
+}
+
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
 	failedToolCalls := make(map[string]bool)
 	planToolCalls := make(map[string]bool)
@@ -1465,7 +1475,8 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			case llm.PartToolResult:
 				if p.ToolResult != nil {
 					isPlanResult := p.ToolResult.ID != "" && (p.ToolResult.Name == "update_plan" || planToolCalls[p.ToolResult.ID])
-					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || isPlanResult
+					isAskUserResult := p.ToolResult.Name == tools.AskUserToolName
+					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || isPlanResult || isAskUserResult
 					if !includeResult {
 						continue
 					}
@@ -1474,6 +1485,9 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 						ToolName:   p.ToolResult.Name,
 						ToolCallID: p.ToolResult.ID,
 						ToolError:  p.ToolResult.IsError,
+					}
+					if isAskUserResult {
+						pe.AskUserSummary = askUserResultSummary(p.ToolResult.Content)
 					}
 					if len(p.ToolResult.Images) > 0 {
 						pe.Images = s.toolImageURLs(p.ToolResult.Images)

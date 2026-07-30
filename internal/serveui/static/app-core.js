@@ -1,9 +1,7 @@
 (() => {
 'use strict';
-
 const app = window.TermLLMApp || (window.TermLLMApp = {});
 app.markdownStreaming = window.TermLLMMarkdownStreaming || null;
-
 // ===== Constants & state =====
 // UI_PREFIX is the base path for all routes (UI + API). Injected by the server
 // into index.html as window.TERM_LLM_UI_PREFIX, defaults to '/ui'.
@@ -2072,6 +2070,8 @@ const sanitizeMessage = (msg) => {
       }
       if (msg.askUser) {
         base.askUser = true;
+        const askUserCallId = String(msg.askUserCallId || msg.ask_user_call_id || '').trim();
+        if (askUserCallId) base.askUserCallId = askUserCallId;
       }
       if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
         base.attachments = msg.attachments.map(a => ({

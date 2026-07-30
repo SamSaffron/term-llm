@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestSessionMessageEntriesExposeErrorOnlyToolResults(t *testing.T) {
@@ -31,6 +32,24 @@ func TestSessionMessageEntriesExposeErrorOnlyToolResults(t *testing.T) {
 	part := entries[0].Parts[0]
 	if part.Type != "tool_result" || part.ToolCallID != "call-plan" || part.ToolName != "update_plan" || !part.ToolError {
 		t.Fatalf("tool result = %#v", part)
+	}
+}
+
+func TestSessionMessageEntriesExposeAskUserResultContent(t *testing.T) {
+	const content = `{"answers":[{"header":"Diplomacy","selected":"Bribe it"}]}`
+	srv := &serveServer{}
+	entries := srv.sessionMessageEntries([]session.Message{{
+		ID: 1, Sequence: 1, Role: llm.RoleTool, CreatedAt: time.Now(),
+		Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+			ID: "call-ask", Name: tools.AskUserToolName, Content: content,
+		}}},
+	}})
+	if len(entries) != 1 || len(entries[0].Parts) != 1 {
+		t.Fatalf("entries = %#v", entries)
+	}
+	part := entries[0].Parts[0]
+	if part.Type != "tool_result" || part.ToolCallID != "call-ask" || part.ToolName != tools.AskUserToolName || part.AskUserSummary != "Diplomacy: Bribe it" || part.Text != "" {
+		t.Fatalf("ask_user result = %#v", part)
 	}
 }
 

@@ -129,6 +129,60 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
 })();
 
 (() => {
+  const conversation = conversationAPI.createConversation({ sessionId: 'ask-user-position', durable: envelope([], 0) });
+  conversationAPI.startActiveRun(conversation, { responseId: 'resp-ask-position', runEpoch: 1 });
+  conversationAPI.applyRunEvent(conversation, 'response.output_item.added', {
+    response_id: 'resp-ask-position', run_epoch: 1, sequence_number: 1,
+    item: { type: 'function_call', call_id: 'call-ask-position', name: 'ask_user' }
+  });
+  conversationAPI.applyRunEvent(conversation, 'response.tool_exec.end', {
+    response_id: 'resp-ask-position', run_epoch: 1, sequence_number: 2,
+    call_id: 'call-ask-position', tool_name: 'ask_user', success: true
+  });
+  conversationAPI.addIntent(conversation, {
+    id: 'ask-answer', clientMessageId: 'ask-answer', role: 'user', content: 'Diplomacy: Bribe it',
+    askUser: true, askUserCallId: 'call-ask-position'
+  });
+  conversationAPI.applyRunEvent(conversation, 'response.output_text.delta', {
+    response_id: 'resp-ask-position', run_epoch: 1, sequence_number: 3, delta: 'Correct.'
+  });
+  assert.deepEqual(
+    conversationAPI.visibleMessages(conversation).map((message) => message.role),
+    ['tool-group', 'user', 'assistant'],
+    'ask_user answer must remain immediately after its tool group'
+  );
+  conversationAPI.applyDurable(conversation, envelope([
+    {
+      id: 'ask-position-durable', role: 'user', durable: true, responseId: 'resp-ask-position',
+      content: 'Diplomacy: Bribe it', askUser: true, askUserCallId: 'call-ask-position'
+    }
+  ], 1));
+  assert.deepEqual(
+    conversationAPI.visibleMessages(conversation).map((message) => message.role),
+    ['tool-group', 'user', 'assistant'],
+    'durable ask_user answer moved below active assistant output'
+  );
+  assert.equal(conversation.intents.size, 0, 'durable active answer did not retire its optimistic intent');
+
+  const reloaded = conversationAPI.createConversation({ sessionId: 'ask-user-reload', durable: envelope([], 0) });
+  conversationAPI.addIntent(reloaded, {
+    id: 'ask-local', clientMessageId: 'ask-local', role: 'user', content: 'Diplomacy: Bribe it',
+    askUser: true, askUserCallId: 'call-ask-reload'
+  });
+  conversationAPI.applyDurable(reloaded, envelope([
+    { id: 'ask-durable', role: 'user', content: 'Diplomacy: Bribe it', durable: true, askUser: true, askUserCallId: 'call-ask-reload' }
+  ], 1));
+  assert.equal(reloaded.intents.size, 0, 'durable ask_user result did not acknowledge its local answer');
+  assert.deepEqual(conversationAPI.visibleMessages(reloaded).map((message) => message.id), ['ask-durable']);
+  conversationAPI.applyDurable(reloaded, envelope([], 2));
+  const stale = conversationAPI.addIntent(reloaded, {
+    id: 'ask-stale', clientMessageId: 'ask-stale', role: 'user', content: 'Diplomacy: Bribe it',
+    askUser: true, askUserCallId: 'call-ask-reload'
+  });
+  assert.equal(stale, null, 'window eviction allowed an acknowledged ask_user answer to reappear');
+})();
+
+(() => {
   const conversation = conversationAPI.createConversation({ sessionId: 'interjection', durable: envelope([], 0) });
   conversationAPI.addIntent(conversation, { id: 'interject-local', clientMessageId: 'client-interject', role: 'user', content: 'change direction' });
   conversationAPI.startActiveRun(conversation, { responseId: 'resp-interject', runEpoch: 3 });

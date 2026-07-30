@@ -1,5 +1,4 @@
 'use strict';
-
 (function initAppModals() {
 const app = window.TermLLMApp;
 const {
@@ -9,7 +8,7 @@ const {
   shouldAutoSubscribeToPush, getActiveSession, requestHeaders, normalizeError,
   fetchProviders, fetchModels, setStreaming, normalizeSelectedProvider,
   canonicalizeSelectedModelEffort, renderProviderOptions, renderModelOptions,
-  isSessionVisible, appendStreamMessageNode, scrollVisibleStreamToBottom,
+  isSessionVisible, scrollVisibleStreamToBottom,
   modelMetadataFor, renderEffortOptions, persistRuntimeSelection,
   markRuntimeSelectionIntent, runtimeHasPendingAskUser, runtimeHasPendingApproval,
   refreshSessionFromServerTruth
@@ -381,14 +380,15 @@ const submitAskUserModal = async (cancelled = false) => {
             role: 'user',
             content: summary,
             created: Date.now(),
-            askUser: true, transient: true
+            askUser: true,
+            askUserCallId: prompt.callId
           };
           app.trackPendingIntent?.(session, Object.assign(message, { clientMessageId: message.id }));
           if (isSessionVisible(session)) {
             const empty = elements.messages.querySelector('.empty-state');
             if (empty) empty.remove();
+            app.renderMessages?.();
           }
-          appendStreamMessageNode(session, message);
           saveSessions();
           scrollVisibleStreamToBottom(session, true);
         }

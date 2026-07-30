@@ -1,7 +1,5 @@
 'use strict';
-
 (function initMessageConvert() {
-
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
@@ -20,13 +18,11 @@ const {
   restoreDraftMessageForSession, stageDraftMessage, clearDraftMessageForSession
 } = app;
 const rebaseMessageAssetURL = (url) => typeof app.rebaseHubAssetURL === 'function' ? app.rebaseHubAssetURL(url) : String(url || '').trim();
-
 // ===== Server session helpers =====
 const safeServerIdToken = (value) => {
   const token = String(value ?? '').trim();
   return token ? token.replace(/[^A-Za-z0-9_-]/g, '_') : '';
 };
-
 const serverMessageRawKey = (msg) => {
   if (!msg || typeof msg !== 'object') return '';
   if (msg.sequence !== undefined && msg.sequence !== null && Number.isFinite(Number(msg.sequence))) {
@@ -37,7 +33,6 @@ const serverMessageRawKey = (msg) => {
   }
   return '';
 };
-
 const serverMessageBaseId = (msg) => {
   if (!msg || typeof msg !== 'object') return generateId('msg');
   if (msg.sequence !== undefined && msg.sequence !== null && Number.isFinite(Number(msg.sequence))) {
@@ -49,21 +44,17 @@ const serverMessageBaseId = (msg) => {
   }
   return generateId('msg');
 };
-
 const serverMessageSequence = (msg) => {
   const seq = Number(msg?.sequence);
   return Number.isFinite(seq) ? seq : null;
 };
-
 const serverMessageCreatedAt = (msg) => {
   const created = Number(msg?.created_at);
   return Number.isFinite(created) && created > 0 ? created : Date.now();
 };
-
 const isInternalCompactionSummaryText = (text) => (
   String(text || '').trimStart().startsWith('[Context Compaction]')
 );
-
 const compactionSummaryDisplayText = (text) => {
   let value = String(text || '').replace(/\r\n?/g, '\n');
   const summaryMatch = value.match(/<SUMMARY_AND_NEXT_ACTIONS>\n?([\s\S]*?)\n?<\/SUMMARY_AND_NEXT_ACTIONS>/);
@@ -72,12 +63,10 @@ const compactionSummaryDisplayText = (text) => {
   value = value.replace(/<PREVIOUS_TURNS>\n?[\s\S]*?\n?<\/PREVIOUS_TURNS>/g, '');
   return value.trim();
 };
-
 const lineCount = (text) => {
   const value = String(text || '').trim();
   return value ? value.split('\n').length : 0;
 };
-
 const responseCompactionMetadata = (data = {}) => {
   const seq = Number(data.compaction_seq ?? data.compactionSeq);
   const count = Number(data.compaction_count ?? data.compactionCount);
@@ -86,7 +75,6 @@ const responseCompactionMetadata = (data = {}) => {
     compactionCount: Number.isFinite(count) ? count : 0
   };
 };
-
 const messageDedupeKey = (message) => {
   if (!message || typeof message !== 'object') return '';
   if (message.role === 'skill-run') {
@@ -119,16 +107,13 @@ const messageDedupeKey = (message) => {
       : []
   });
 };
-
 const messageFingerprints = (messages, metrics = null) => (Array.isArray(messages) ? messages : []).map((message) => {
   if (metrics) metrics.fingerprints = Number(metrics.fingerprints || 0) + 1;
   return messageDedupeKey(message);
 });
-
 const longestCompactionTailOverlap = (fingerprints, markerIndex, start, metrics = null) => {
   const maxLength = Math.min(markerIndex, fingerprints.length - start);
   if (maxLength <= 0) return 0;
-
   const pattern = fingerprints.slice(start, start + maxLength);
   const sequence = pattern.concat([null], fingerprints.slice(0, markerIndex));
   const prefix = new Array(sequence.length).fill(0);
@@ -136,7 +121,6 @@ const longestCompactionTailOverlap = (fingerprints, markerIndex, start, metrics 
     if (metrics) metrics.operations = Number(metrics.operations || 0) + 1;
     return sequence[left] === sequence[right];
   };
-
   for (let index = 1; index < sequence.length; index += 1) {
     let matched = prefix[index - 1];
     while (matched > 0 && !equalAt(index, matched)) {
@@ -145,14 +129,11 @@ const longestCompactionTailOverlap = (fingerprints, markerIndex, start, metrics 
     if (equalAt(index, matched)) matched += 1;
     prefix[index] = matched;
   }
-
   return Math.min(maxLength, prefix[prefix.length - 1]);
 };
-
 const isSyntheticCompactionAckMessage = (message) => (
   message?.role === 'assistant' && String(message.content || '').trim() === "I've reviewed the context summary. I'll continue from where we left off."
 );
-
 const compactionDuplicateTailRange = (messages, markerIndex, fingerprints = null, metrics = null) => {
   if (markerIndex <= 0 || markerIndex + 1 >= messages.length) return { start: -1, length: 0 };
   const keys = Array.isArray(fingerprints) && fingerprints.length === messages.length
@@ -172,7 +153,6 @@ const compactionDuplicateTailRange = (messages, markerIndex, fingerprints = null
   });
   return { start: bestStart, length: bestLength };
 };
-
 const suppressCompactionTailMessages = (messages) => {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
   const out = messages.slice();
@@ -192,7 +172,6 @@ const suppressCompactionTailMessages = (messages) => {
   }
   return out;
 };
-
 const annotateCompactionBoundary = (messages, options = {}) => {
   const seq = Number(options.compactionSeq);
   if (!Number.isFinite(seq) || seq < 0 || !Array.isArray(messages) || messages.length === 0) {
@@ -203,7 +182,6 @@ const annotateCompactionBoundary = (messages, options = {}) => {
     return Number.isFinite(messageSeq) && messageSeq >= seq;
   });
   if (boundaryIndex < 0) return messages;
-
   const count = Number(options.compactionCount);
   const boundary = messages[boundaryIndex];
   if (boundary?.role === 'compaction') {
@@ -212,7 +190,6 @@ const annotateCompactionBoundary = (messages, options = {}) => {
     if (Number.isFinite(count) && count > 0) boundary.compactionCount = count;
     return messages;
   }
-
   const marker = {
     id: `compaction_boundary_${seq}`,
     role: 'compaction-boundary',
@@ -229,6 +206,7 @@ const annotateCompactionBoundary = (messages, options = {}) => {
 const convertServerMessages = (serverMessages, options = {}) => {
   const result = [];
   let currentGroup = null;
+  const askUserAnswersByGroup = new Map();
   let pendingCompactionMarkerIndex = -1;
 
   const normalizeImages = (images) => (
@@ -274,8 +252,11 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
   const flushGroup = () => {
     if (currentGroup) {
-      result.push(currentGroup);
+      const group = currentGroup;
       currentGroup = null;
+      result.push(group);
+      for (const answer of askUserAnswersByGroup.get(group) || []) result.push(answer);
+      askUserAnswersByGroup.delete(group);
     }
   };
 
@@ -307,19 +288,28 @@ const convertServerMessages = (serverMessages, options = {}) => {
     return currentGroup;
   };
 
+  const askUserAnswerEntry = (summary, callId, created, msg, partIndex) => addDurableSource({
+    id: `${serverMessageBaseId(msg)}_ask_user_${partIndex}`,
+    role: 'user', content: summary, askUser: true, askUserCallId: callId, created,
+    ...(serverMessageSequence(msg) !== null ? { serverSeq: serverMessageSequence(msg) } : {})
+  }, msg);
+
   const attachToolResultState = (part, created, msg, partIndex) => {
     const images = normalizeImages(part.images);
     const callId = part.tool_call_id || '';
+    const failed = Boolean(part.tool_error || part.is_error);
+    const askUserSummary = !failed && String(part.tool_name || '') === 'ask_user'
+      ? String(part.ask_user_summary || '').trim()
+      : '';
     let group = currentGroup;
     if (group) addDurableSource(group, msg);
     let tool = group && callId ? group.tools.find((entry) => entry.id === callId) : null;
-    if (!tool && group && part.tool_name) {
-      tool = group.tools.find((entry) => entry.name === part.tool_name);
+    if (!tool && group && part.tool_name) tool = group.tools.find((entry) => entry.name === part.tool_name);
+    // A page can contain the durable answer before the matching tool-call body.
+    if (!tool && images.length === 0) {
+      if (askUserSummary) result.push(askUserAnswerEntry(askUserSummary, callId, created, msg, partIndex));
+      return;
     }
-    // Result-only rows can be separated from their call by a page boundary.
-    // Do not invent a generic row; conversion will correlate them once the page
-    // containing the call is loaded. Image results still need a fallback card.
-    if (!tool && images.length === 0) return;
     if (!group) group = ensureToolGroup(created, msg, partIndex);
     if (!tool) {
       tool = {
@@ -331,10 +321,14 @@ const convertServerMessages = (serverMessages, options = {}) => {
       };
       group.tools.push(tool);
     }
-    const failed = Boolean(part.tool_error || part.is_error);
     tool.status = failed ? 'error' : 'done';
     tool.resultStatus = failed ? 'error' : 'success';
     appendUniqueImages(tool, images);
+    if (askUserSummary) {
+      const answers = askUserAnswersByGroup.get(group) || [];
+      answers.push(askUserAnswerEntry(askUserSummary, callId, created, msg, partIndex));
+      askUserAnswersByGroup.set(group, answers);
+    }
   };
 
   for (const msg of serverMessages) {

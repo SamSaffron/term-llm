@@ -1462,9 +1462,19 @@ async function testAskUserAnswerHasStableClientIdentity() {
     },
   });
   const { app, state, elements, cleanup } = harness;
-  const session = { id: 'session_ask_identity', title: 'Ask identity', messages: [] };
+  const session = { id: 'session_ask_identity', title: 'Ask identity', messages: [], activeResponseId: 'resp_ask_identity', latestRunEpoch: 1 };
+  session.transcript = new ConversationController(session.id);
+  session.transcript.setActiveRun(session.activeResponseId, 0, 1);
   state.sessions.push(session);
   state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    sequence_number: 1, output_index: 0,
+    item: { type: 'function_call', call_id: 'call_choice', name: 'ask_user', arguments: '{}' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.tool_exec.end', {
+    sequence_number: 2, call_id: 'call_choice', tool_name: 'ask_user', success: true,
+  });
   state.askUser = {
     sessionId: session.id,
     callId: 'call_choice',
@@ -1476,15 +1486,21 @@ async function testAskUserAnswerHasStableClientIdentity() {
   );
 
   await app.submitAskUserModal(false);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_text.delta', {
+    sequence_number: 3, assistant_segment_ordinal: 1, delta: 'Correct.',
+  });
 
-  const userMessages = projectedMessages(session).filter((message) => message.role === 'user');
+  const messages = projectedMessages(session);
+  const userMessages = messages.filter((message) => message.role === 'user');
   if (elements.askUserError.textContent) {
     fail(name, 'successful answer surfaced an error', elements.askUserError.textContent);
     await cleanup();
     return;
   }
-  if (userMessages.length !== 1 || !userMessages[0].clientMessageId || userMessages[0].clientMessageId !== userMessages[0].id || userMessages[0].transient !== true) {
-    fail(name, 'answer was not tracked as a transient intent with matching stable identity', JSON.stringify(userMessages));
+  if (userMessages.length !== 1 || !userMessages[0].clientMessageId || userMessages[0].clientMessageId !== userMessages[0].id
+      || userMessages[0].transient === true || userMessages[0].askUserCallId !== 'call_choice'
+      || messages.map((message) => message.role).join(',') !== 'tool-group,user,assistant') {
+    fail(name, 'answer identity or position after ask_user was incorrect', JSON.stringify(messages));
     await cleanup();
     return;
   }

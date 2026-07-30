@@ -3428,7 +3428,7 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 				return true
 			}
 		case llm.PartToolResult:
-			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || part.ToolResult.Name == "update_plan" || planToolCalls[part.ToolResult.ID]) {
+			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || part.ToolResult.Name == "update_plan" || part.ToolResult.Name == "ask_user" || planToolCalls[part.ToolResult.ID]) {
 				return true
 			}
 		}

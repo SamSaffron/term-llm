@@ -2784,6 +2784,50 @@ async function testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded() {
   pass(name);
 }
 
+async function testConvertServerMessagesRestoresAskUserAnswerAfterTool() {
+  const name = 'server ask_user result restores its answer immediately after the tool group';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([
+    {
+      id: 1, sequence: 1, role: 'assistant', created_at: 1000,
+      parts: [
+        { type: 'tool_call', tool_name: 'ask_user', tool_call_id: 'call-ask', tool_arguments: '{}' },
+        { type: 'tool_call', tool_name: 'shell', tool_call_id: 'call-shell', tool_arguments: '{}' },
+      ],
+    },
+    {
+      id: 2, sequence: 2, role: 'tool', created_at: 1100,
+      parts: [
+        { type: 'tool_result', tool_name: 'ask_user', tool_call_id: 'call-ask', ask_user_summary: 'Diplomacy: Bribe it' },
+        { type: 'tool_result', tool_name: 'shell', tool_call_id: 'call-shell', tool_error: true },
+      ],
+    },
+    { id: 3, sequence: 3, role: 'assistant', created_at: 1200, parts: [{ type: 'text', text: 'Correct.' }] },
+  ]);
+
+  if (converted.length !== 3 || converted[0]?.role !== 'tool-group' || converted[0]?.tools?.length !== 2
+      || converted[0]?.tools?.find((tool) => tool.id === 'call-shell')?.status !== 'error'
+      || converted[1]?.role !== 'user' || converted[1]?.content !== 'Diplomacy: Bribe it' || converted[1]?.askUserCallId !== 'call-ask'
+      || converted[2]?.role !== 'assistant') {
+    fail(name, 'ask_user answer was missing or out of order after reload', JSON.stringify(converted));
+    return;
+  }
+  const orphaned = app.convertServerMessages([{
+    id: 4, sequence: 4, role: 'tool', created_at: 1300,
+    parts: [{ type: 'tool_result', tool_name: 'ask_user', tool_call_id: 'call-orphan', ask_user_summary: 'Choice: B' }],
+  }]);
+  const cancelled = app.convertServerMessages([{
+    id: 5, sequence: 5, role: 'tool', created_at: 1400,
+    parts: [{ type: 'tool_result', tool_name: 'ask_user', tool_call_id: 'call-cancelled' }],
+  }]);
+  if (orphaned.length !== 1 || orphaned[0]?.content !== 'Choice: B' || cancelled.length !== 0) {
+    fail(name, 'orphan or cancelled ask_user result conversion was incorrect', JSON.stringify({ orphaned, cancelled }));
+    return;
+  }
+  pass(name);
+}
+
 async function testConvertServerMessagesAttachesToolResultImages() {
   const name = 'server tool_result image parts attach to tool group artifacts';
   const { app } = await createSessionsHarness();
@@ -5031,6 +5075,20 @@ function testSanitizeMessagePreservesSkillRunState() {
   });
 }
 
+function testSanitizeMessagePreservesAskUserCallIdentity() {
+  const name = 'sanitizeMessage preserves ask_user call identity';
+  return createSessionsHarness().then(({ app }) => {
+    const sanitized = app.sanitizeMessage({
+      id: 'ask-answer', role: 'user', content: 'Choice: A', askUser: true, askUserCallId: 'call-ask', created: 1,
+    });
+    if (!sanitized?.askUser || sanitized.askUserCallId !== 'call-ask') {
+      fail(name, 'ask_user identity was dropped', JSON.stringify(sanitized));
+      return;
+    }
+    pass(name);
+  });
+}
+
 function testSanitizeMessagePreservesPlanExecutionEvidence() {
   const name = 'sanitizeMessage preserves failed and successful plan execution evidence';
   return createSessionsHarness().then(({ app }) => {
@@ -5375,6 +5433,33 @@ async function testPendingIntentStorageMergesConcurrentWriters() {
   const remaining = persistedIntentEntries(storage, firstTab.id).map((entry) => entry.clientMessageId);
   if (JSON.stringify(remaining) !== JSON.stringify(['intent-b'])) {
     fail(name, 'exact retirement removed another writer intent', JSON.stringify([...storage]));
+    return;
+  }
+  pass(name);
+}
+
+async function testAskUserDurableAcknowledgementClearsIntentStorage() {
+  const name = 'durable ask_user answer clears exact pending storage and blocks stale rehydration';
+  const { app, storage } = await createSessionsHarness();
+  const session = { id: 'ask-user-storage', messages: [] };
+  app.trackPendingIntent(session, {
+    id: 'ask-local', clientMessageId: 'ask-local', role: 'user', content: 'Choice: A',
+    askUser: true, askUserCallId: 'call-ask-storage',
+  });
+  if (persistedIntentEntries(storage, session.id).length !== 1) {
+    fail(name, 'ask_user intent was not persisted before durable acknowledgement', JSON.stringify([...storage]));
+    return;
+  }
+  conversationAPI.applyDurable(session.transcript.conversation, {
+    publishedMessages: [{ id: 'ask-durable', role: 'user', durable: true, content: 'Choice: A', askUser: true, askUserCallId: 'call-ask-storage' }],
+  });
+  app.persistPendingIntents(session);
+  const stale = app.trackPendingIntent(session, {
+    id: 'ask-stale', clientMessageId: 'ask-stale', role: 'user', content: 'Choice: A',
+    askUser: true, askUserCallId: 'call-ask-storage',
+  });
+  if (persistedIntentEntries(storage, session.id).length !== 0 || stale !== null) {
+    fail(name, 'durable call identity left or reaccepted stale ask_user storage', JSON.stringify([...storage]));
     return;
   }
   pass(name);
@@ -6678,6 +6763,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
 
 (async () => {
   await testSanitizeMessagePreservesSkillRunState();
+  await testSanitizeMessagePreservesAskUserCallIdentity();
   await testSanitizeMessagePreservesPlanExecutionEvidence();
   await testSkillProvenanceEventConvertsToLinkedRunBlock();
   await testSessionSwitchRefreshesSkillsAndDraftClearsThem();
@@ -6724,6 +6810,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testConvertServerMessagesSuppressesAuthoritativeCompactionTailFlag();
   await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
+  await testConvertServerMessagesRestoresAskUserAnswerAfterTool();
   await testConvertServerMessagesAttachesToolResultImages();
   await testConvertServerMessagesAttachesToolErrorsWithoutPhantoms();
   await testConvertServerMessagesCorrelatesSuccessfulPlanResults();
@@ -6731,6 +6818,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionPruningDestroysConversationControllers();
   await testPendingIntentStorageMergesConcurrentWriters();
+  await testAskUserDurableAcknowledgementClearsIntentStorage();
   await testOptimisticTranscriptStorageIsPerSession();
   await testLegacyUnversionedStorageMigratesOnlyIntent();
   await testReloadMigratesLegacyProjectionShadowsAtEqualRevision();
