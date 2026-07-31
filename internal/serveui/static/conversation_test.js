@@ -497,6 +497,96 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
 })();
 
 (() => {
+  const transcript = new conversationAPI.ConversationController('active-compaction-order');
+  transcript.applyIndex({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [1], seqs: [1], roles: 'u', flags: [0], client_message_ids: { 0: 'prompt' }, response_ids: [''], assistant_segment_ordinals: [-1] }
+  });
+  transcript.publishedMessages = [
+    { id: 1, durableRowId: 1, role: 'user', clientMessageId: 'prompt', content: 'question', durable: true }
+  ];
+  conversationAPI.applyDurable(transcript.conversation, transcript);
+  transcript.setActiveRun('long-run', 1, 1, { anchorRowId: 1 });
+  transcript.applyResponseEvent('response.output_text.delta', {
+    response_id: 'long-run', run_epoch: 1, sequence_number: 1,
+    assistant_segment_ordinal: 0, delta: 'before compaction'
+  });
+
+  transcript.publishedMessages = [
+    { id: 1, durableRowId: 1, role: 'user', clientMessageId: 'prompt', content: 'question', durable: true },
+    { id: 2, durableRowId: 2, role: 'compaction', content: 'Context compacted', durable: true, activeBoundary: true },
+    { id: 3, durableRowId: 3, role: 'assistant', content: 'external output', durable: true }
+  ];
+  conversationAPI.applyDurable(transcript.conversation, transcript);
+  conversationAPI.dispatchRunEvent(transcript, 'response.output_text.new_segment', {
+    response_id: 'long-run', run_epoch: 1, sequence_number: 2, assistant_segment_ordinal: 1
+  });
+  conversationAPI.dispatchRunEvent(transcript, 'response.output_text.delta', {
+    response_id: 'long-run', run_epoch: 1, sequence_number: 3,
+    assistant_segment_ordinal: 1, delta: 'after compaction'
+  });
+
+  assert.deepEqual(conversationAPI.sessionMessages({ transcript }).map((message) => message.content), [
+    'question', 'before compaction', 'Context compacted', 'after compaction', 'external output'
+  ], 'a compaction observed during an active response must not trail newer live output');
+
+  transcript.replaceActiveSnapshot({
+    id: 'long-run', run_epoch: 1, status: 'in_progress', last_sequence_number: 3,
+    recovery: { messages: [
+      { role: 'assistant', assistant_segment_ordinal: 0, content: 'before compaction' },
+      { role: 'assistant', assistant_segment_ordinal: 1, content: 'after compaction' }
+    ] }
+  });
+  assert.deepEqual(conversationAPI.sessionMessages({ transcript }).map((message) => message.content), [
+    'question', 'before compaction', 'Context compacted', 'after compaction', 'external output'
+  ], 'snapshot replacement must preserve an observed compaction position');
+})();
+
+(() => {
+  const conversation = conversationAPI.createConversation({
+    sessionId: 'recovered-compaction-order',
+    durable: envelope([
+      { id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true, created: 100 },
+      { id: 2, durableRowId: 2, role: 'compaction', content: 'Context compacted', durable: true, created: 300 }
+    ], 2)
+  });
+  conversationAPI.replaceActiveFromSnapshot(conversation, {
+    id: 'recovered-run', run_epoch: 1, status: 'in_progress', last_sequence_number: 2,
+    recovery: { messages: [
+      { role: 'assistant', assistant_segment_ordinal: 0, content: 'before compaction', created: 200 },
+      { role: 'assistant', assistant_segment_ordinal: 1, content: 'after compaction', created: 400 }
+    ] }
+  }, { anchor: { durableRowId: 1 } });
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map((message) => message.content), [
+    'question', 'before compaction', 'Context compacted', 'after compaction'
+  ], 'fresh recovery should place compaction by durable and recovered creation times');
+})();
+
+(() => {
+  const conversation = conversationAPI.createConversation({
+    sessionId: 'active-compaction-tools',
+    durable: envelope([{ id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true }], 1)
+  });
+  conversationAPI.startActiveRun(conversation, { responseId: 'tool-run', runEpoch: 1, anchor: { durableRowId: 1 } });
+  conversationAPI.applyRunEvent(conversation, 'response.output_item.added', {
+    response_id: 'tool-run', run_epoch: 1, sequence_number: 1,
+    item: { type: 'function_call', call_id: 'before', name: 'shell' }
+  });
+  conversationAPI.applyDurable(conversation, envelope([
+    { id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true },
+    { id: 2, durableRowId: 2, role: 'compaction-boundary', content: 'Context compacted', durable: true }
+  ], 2));
+  conversationAPI.applyDurable(conversation, conversation.durable);
+  conversationAPI.applyRunEvent(conversation, 'response.output_item.added', {
+    response_id: 'tool-run', run_epoch: 1, sequence_number: 2,
+    item: { type: 'function_call', call_id: 'after', name: 'shell' }
+  });
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map((message) => (
+    message.role === 'tool-group' ? message.tools.map((tool) => tool.id).join(',') : message.content
+  )), ['question', 'before', 'Context compacted', 'after'], 'compaction must split adjacent live tool groups');
+})();
+
+(() => {
   const transcript = new conversationAPI.ConversationController('authoritative-transition');
   transcript.setActiveRun('resp-old', 4, 10);
   assert.throws(() => transcript.setActiveRun('resp-new', 5, 11), /active response/);

@@ -10,13 +10,8 @@
 })(typeof window !== 'undefined' ? window : globalThis, function conversationFactory(activeResponse, TranscriptWindow, root) {
   if (!activeResponse) throw new Error('active-response.js must load before conversation.js');
   if (!TranscriptWindow) throw new Error('transcript-window.js must load before conversation.js');
-  const clone = (value) => {
-    if (typeof structuredClone === 'function') return structuredClone(value);
-    return JSON.parse(JSON.stringify(value));
-  };
-  const clientMessageID = (message) => String(
-    message?.clientMessageId || message?.client_message_id || ''
-  ).trim();
+  const clone = (value) => (typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value)));
+  const clientMessageID = (message) => String(message?.clientMessageId || message?.client_message_id || '').trim();
   const responseID = (message) => String(message?.responseId || message?.response_id || '').trim();
   const assistantSegmentKey = (messageOrResponseID, ordinal = null) => {
     const owner = typeof messageOrResponseID === 'object' ? responseID(messageOrResponseID) : String(messageOrResponseID || '').trim();
@@ -91,6 +86,7 @@
       return true;
     }
     conversation.active = activeResponse.createActiveRun({ ...descriptor, responseId, runEpoch: incomingEpoch });
+    activeResponse.recordCompactionRefs(conversation.active, durableMessages(conversation.durable));
     conversation.protocolError = '';
     return true;
   };
@@ -114,7 +110,9 @@
       throw new Error('cannot replace an active response with another snapshot owner');
     }
     if (conversation.active?.runEpoch && candidate.runEpoch !== conversation.active.runEpoch) return false;
+    activeResponse.restoreCompactionRefs(conversation.active, candidate);
     conversation.active = candidate;
+    activeResponse.recordCompactionRefs(conversation.active, durableMessages(conversation.durable));
     conversation.protocolError = candidate.terminal?.durableHandoff === false ? candidate.terminal.error : '';
     return true;
   };
@@ -176,6 +174,8 @@
       }
     }
     const durable = durableMessages(conversation.durable);
+    const compactionRefs = new Set(active?.projection.filter((entry) => entry.role === 'compaction-ref').map((entry) => entry.compactionId) || []);
+    const compactionsByID = new Map();
     const durableIntentByID = new Map();
     const durableAskUserByCallID = new Map();
     const base = [];
@@ -184,6 +184,11 @@
     for (const message of durable) {
       const owner = responseID(message);
       const role = String(message?.role || '');
+      const durableID = String(message?.id || '').trim();
+      if ((role === 'compaction' || role === 'compaction-boundary') && compactionRefs.has(durableID)) {
+        compactionsByID.set(durableID, message);
+        continue;
+      }
       const askUserCallID = String(message?.askUserCallId || message?.ask_user_call_id || '').trim();
       if (askUserCallID && activeAskUserCallIDs.has(askUserCallID)) {
         durableAskUserByCallID.set(askUserCallID, message);
@@ -209,6 +214,11 @@
     if (!active) return base;
     const activeProjection = [];
     for (const entry of active.projection) {
+      if (entry.role === 'compaction-ref') {
+        const marker = compactionsByID.get(entry.compactionId);
+        if (marker) activeProjection.push(marker);
+        continue;
+      }
       if (entry.role === 'intent-ref') {
         const id = entry.clientMessageId;
         const intent = durableIntentByID.get(id) || conversation.intents.get(id);
@@ -243,20 +253,7 @@
     }
     const anchorClientID = String(active.anchor?.clientMessageId || '').trim();
     const anchorRowID = active.anchor?.durableRowId;
-    let anchorIndex = -1;
-    for (let index = base.length - 1; index >= 0; index--) {
-      const durableIdentity = base[index]?.durableRowId ?? base[index]?.id ?? '';
-      const rangeStart = Number(base[index]?.durableRowStartId);
-      const rangeEnd = Number(base[index]?.durableRowEndId);
-      const rowAnchor = Number(anchorRowID);
-      const anchorInRange = anchorRowID != null && Number.isFinite(rowAnchor) && Number.isFinite(rangeStart) && Number.isFinite(rangeEnd)
-        && rowAnchor >= Math.min(rangeStart, rangeEnd) && rowAnchor <= Math.max(rangeStart, rangeEnd);
-      if ((anchorClientID && clientMessageID(base[index]) === anchorClientID)
-          || (anchorRowID != null && String(durableIdentity) === String(anchorRowID)) || anchorInRange) {
-        anchorIndex = index;
-        break;
-      }
-    }
+    let anchorIndex = activeResponse.anchorIndexForMessages(base, active);
     if (anchorIndex < 0 && (anchorClientID || anchorRowID != null)) anchorIndex = base.length - 1;
     base.splice(anchorIndex + 1, 0, ...activeProjection);
     return base;
@@ -266,6 +263,7 @@
   );
   const applyDurable = (conversation, durable) => {
     conversation.durable = durable;
+    activeResponse.recordCompactionRefs(conversation.active, durableMessages(conversation.durable));
     acknowledgeDurableIntents(conversation);
     commitDurableHandoff(conversation);
     conversation.publishedRevision++;
@@ -310,7 +308,7 @@
         ? { clientMessageId: explicitClientMessageId }
         : (explicitRowID != null && String(explicitRowID) !== ''
           ? { durableRowId: explicitRowID }
-          : (durableTailID != null ? { durableRowId: durableTailID } : null)));
+          : (this.conversation.active?.anchor || (durableTailID != null ? { durableRowId: durableTailID } : null))));
       return startActiveRun(this.conversation, {
         responseId: id,
         runEpoch: epoch,
@@ -340,6 +338,7 @@
         runEpoch: epoch,
         anchor,
       });
+      activeResponse.recordCompactionRefs(this.conversation.active, durableMessages(this.conversation.durable));
       this.conversation.protocolError = '';
       this.startedRev = revision;
       this.latestRunEpoch = Math.max(this.latestRunEpoch, epoch);

@@ -1,5 +1,4 @@
 'use strict';
-
 (function activeResponseModule(root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
@@ -10,35 +9,22 @@
     return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
   };
 
-  const responseID = (payload, fallback = '') => String(
-    payload?.response_id || payload?.response?.id || payload?.id || fallback || ''
-  ).trim();
+  const responseID = (payload, fallback = '') => String(payload?.response_id || payload?.response?.id || payload?.id || fallback || '').trim();
 
-  const clone = (value) => {
-    if (typeof structuredClone === 'function') return structuredClone(value);
-    return JSON.parse(JSON.stringify(value));
-  };
+  const clone = (value) => (typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value)));
 
   const createActiveRun = ({ responseId, runEpoch = 0, anchor = null } = {}) => ({
-    responseID: String(responseId || '').trim(),
-    runEpoch: Math.max(0, int(runEpoch)),
-    terminal: null,
-    lastSequence: 0,
-    anchor: anchor == null ? null : clone(anchor),
-    projection: [],
-    assistantByOrdinal: new Map(),
-    toolByCallID: new Map(),
+    responseID: String(responseId || '').trim(), runEpoch: Math.max(0, int(runEpoch)),
+    terminal: null, lastSequence: 0, anchor: anchor == null ? null : clone(anchor), projection: [],
+    assistantByOrdinal: new Map(), toolByCallID: new Map(),
     // Internal semantic cursor: null or the exact current tool-group object in projection.
     currentToolGroup: null,
   });
 
   const publicActiveRun = (run) => ({
-    responseID: run.responseID,
-    runEpoch: run.runEpoch,
-    terminal: run.terminal ? { ...run.terminal } : null,
-    lastSequence: run.lastSequence,
-    anchor: run.anchor == null ? null : clone(run.anchor),
-    projection: run.projection.map((entry) => clone(entry)),
+    responseID: run.responseID, runEpoch: run.runEpoch,
+    terminal: run.terminal ? { ...run.terminal } : null, lastSequence: run.lastSequence,
+    anchor: run.anchor == null ? null : clone(run.anchor), projection: run.projection.map((entry) => clone(entry)),
   });
 
   const assistantEntry = (run, ordinal) => {
@@ -46,13 +32,9 @@
     let entry = run.assistantByOrdinal.get(normalized);
     if (entry) return entry;
     entry = {
-      id: `${run.responseID}:assistant:${normalized}`,
-      key: `${run.responseID}:assistant:${normalized}`,
-      role: 'assistant',
-      responseId: run.responseID,
-      assistantSegmentOrdinal: normalized,
-      content: '',
-      terminalPolicy: 'durable',
+      id: `${run.responseID}:assistant:${normalized}`, key: `${run.responseID}:assistant:${normalized}`,
+      role: 'assistant', responseId: run.responseID, assistantSegmentOrdinal: normalized,
+      content: '', terminalPolicy: 'durable',
     };
     run.assistantByOrdinal.set(normalized, entry);
     run.projection.push(entry);
@@ -68,13 +50,8 @@
     if (!group) {
       const key = `${run.responseID}:tools:${id}`;
       group = {
-        id: key,
-        key,
-        role: 'tool-group',
-        responseId: run.responseID,
-        tools: [],
-        status: 'running',
-        terminalPolicy: 'durable',
+        id: key, key, role: 'tool-group', responseId: run.responseID,
+        tools: [], status: 'running', terminalPolicy: 'durable',
       };
       run.projection.push(group);
     } else {
@@ -82,12 +59,8 @@
     }
     run.currentToolGroup = group;
     entry = {
-      id,
-      callId: id,
-      name: String(item.name || ''),
-      arguments: String(item.arguments || ''),
-      argumentsFinalized: Boolean(String(item.arguments || '').trim()),
-      status: 'running',
+      id, callId: id, name: String(item.name || ''), arguments: String(item.arguments || ''),
+      argumentsFinalized: Boolean(String(item.arguments || '').trim()), status: 'running',
     };
     group.tools.push(entry);
     run.toolByCallID.set(id, entry);
@@ -317,15 +290,13 @@
       if (message.role === 'assistant') {
         closeToolGroupsAtBoundary(run);
         const entry = assistantEntry(run, message.assistant_segment_ordinal ?? 0);
-        entry.content = String(message.content || message.text || '');
-        entry.segmentStartSequence = int(message.segment_start_sequence);
-        entry.segmentEndSequence = int(message.segment_end_sequence);
+        entry.content = String(message.content || message.text || ''); entry.created = Number(message.created || message.created_at) || 0;
+        entry.segmentStartSequence = int(message.segment_start_sequence); entry.segmentEndSequence = int(message.segment_end_sequence);
       } else if (message.role === 'tool-group') {
-        // Recovery uses the same semantic rule as live folding: adjacent tool
-        // rows continue one group unless an assistant or user row intervenes.
         const before = run.projection.length;
         for (const item of message.tools || []) Object.assign(toolEntry(run, item.id, item), clone(item));
         const group = run.projection.slice(before).find((entry) => entry.role === 'tool-group') || run.projection.findLast((entry) => entry.role === 'tool-group');
+        if (group) group.created = Number(message.created || message.created_at) || 0;
         if (group && message.status) group.status = String(message.status);
       } else if (message.role === 'user') {
         closeToolGroupsAtBoundary(run);
@@ -354,11 +325,42 @@
     return run;
   };
 
+  const anchorIndexForMessages = (messages, run) => {
+    const clientAnchor = String(run?.anchor?.clientMessageId || '').trim(), rowAnchor = run?.anchor?.durableRowId;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index], identity = message?.durableRowId ?? message?.id ?? '';
+      const start = Number(message?.durableRowStartId), end = Number(message?.durableRowEndId), row = Number(rowAnchor);
+      const inRange = rowAnchor != null && Number.isFinite(row) && Number.isFinite(start) && Number.isFinite(end)
+        && row >= Math.min(start, end) && row <= Math.max(start, end);
+      const clientID = String(message?.clientMessageId || message?.client_message_id || '').trim();
+      if ((clientAnchor && clientID === clientAnchor) || (rowAnchor != null && String(identity) === String(rowAnchor)) || inRange) return index;
+    }
+    return -1;
+  };
+  const recordCompactionRefs = (run, durable) => {
+    const anchor = run?.anchor ? anchorIndexForMessages(durable, run) : -1;
+    if (anchor < 0) return;
+    const recorded = new Set(run.projection.filter((entry) => entry.role === 'compaction-ref').map((entry) => entry.compactionId));
+    for (const message of durable.slice(anchor + 1)) {
+      const id = String(message?.id || '').trim();
+      if (!id || recorded.has(id) || (message.role !== 'compaction' && message.role !== 'compaction-boundary')) continue;
+      const ref = { key: `${run.responseID}:compaction:${id}`, role: 'compaction-ref', compactionId: id, terminalPolicy: 'durable' };
+      const created = Number(message.created || message.created_at), later = Number.isFinite(created) && created > 0 ? run.projection.findIndex((entry) => Number(entry.created) > created) : -1;
+      run.projection.splice(later < 0 ? run.projection.length : later, 0, ref);
+      run.currentToolGroup = null; recorded.add(id);
+    }
+  };
+  const restoreCompactionRefs = (source, target) => {
+    if (!source || !target) return;
+    for (let index = 0; index < source.projection.length; index++) {
+      const ref = source.projection[index]; if (ref.role !== 'compaction-ref') continue;
+      const precedingKey = [...source.projection.slice(0, index)].reverse().find((entry) => entry.role !== 'compaction-ref')?.key;
+      const targetIndex = precedingKey ? target.projection.findIndex((entry) => entry.key === precedingKey) : -1;
+      target.projection.splice(targetIndex < 0 ? target.projection.length : targetIndex + 1, 0, clone(ref));
+    }
+  };
   return Object.freeze({
-    createActiveRun,
-    publicActiveRun,
-    reduceResponseEvent,
-    reduceDetachedReplay,
-    activeRunFromSnapshot,
+    createActiveRun, publicActiveRun, reduceResponseEvent, reduceDetachedReplay, activeRunFromSnapshot,
+    anchorIndexForMessages, recordCompactionRefs, restoreCompactionRefs,
   });
 });
