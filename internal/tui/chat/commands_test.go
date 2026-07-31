@@ -191,6 +191,7 @@ type mockStore struct {
 	getErr           error
 	messages         map[string][]session.Message
 	summaries        []session.SessionSummary
+	searchOptions    []session.SearchOptions
 	msgErr           error
 	updated          *session.Session
 	updateErr        error
@@ -269,6 +270,11 @@ func (s *mockStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq
 
 func (s *mockStore) List(_ context.Context, _ session.ListOptions) ([]session.SessionSummary, error) {
 	return s.summaries, nil
+}
+
+func (s *mockStore) Search(_ context.Context, opts session.SearchOptions) ([]session.SearchResult, error) {
+	s.searchOptions = append(s.searchOptions, opts)
+	return nil, nil
 }
 
 func (s *mockStore) Update(_ context.Context, sess *session.Session) error {
@@ -1676,6 +1682,30 @@ func TestCmdResume_NoArgs_OpensEmbeddedSessionsBrowser(t *testing.T) {
 	}
 	if got := rm.textarea.Value(); got != "draft note" {
 		t.Fatalf("expected draft input to be preserved, got %q", got)
+	}
+}
+
+func TestCmdResume_SearchUsesMessageFullTextSearch(t *testing.T) {
+	store := &mockStore{summaries: []session.SessionSummary{{
+		ID:        "sess-recent",
+		Name:      "unrelated title",
+		UpdatedAt: time.Now(),
+	}}}
+	m := newCmdTestModel(store)
+
+	result, _ := m.cmdResume(nil)
+	m = result.(*Model)
+	result, _ = m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	m = result.(*Model)
+	result, _ = m.Update(tea.PasteMsg{Content: "agy"})
+	m = result.(*Model)
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if len(store.searchOptions) != 1 {
+		t.Fatalf("Search called %d times, want 1", len(store.searchOptions))
+	}
+	if got := store.searchOptions[0].Query; got != "agy" {
+		t.Fatalf("Search query = %q, want %q", got, "agy")
 	}
 }
 

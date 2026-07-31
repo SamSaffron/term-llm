@@ -101,10 +101,11 @@ type Model struct {
 	cursor int
 
 	// Search/filter state
-	searchInput textinput.Model
-	searching   bool
-	ftsEnabled  bool
-	searchQuery string
+	searchInput    textinput.Model
+	searching      bool
+	ftsEnabled     bool
+	searchQuery    string
+	searchSnippets map[string]string
 
 	// Sort/filter
 	sortOrder    SortOrder
@@ -167,6 +168,11 @@ func (m *Model) ChatSessionID() string {
 // SetEmbedded enables parent-managed close behavior for embedded browsers.
 func (m *Model) SetEmbedded(embedded bool) {
 	m.embedded = embedded
+}
+
+// SetFullTextSearch controls whether queries search persisted message content.
+func (m *Model) SetFullTextSearch(enabled bool) {
+	m.ftsEnabled = enabled
 }
 
 // SetPreferredSessionID selects a session after the next refresh, if present.
@@ -393,6 +399,7 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 		// Convert search results to summaries using session metadata already returned by search.
 		var summaries []session.SessionSummary
 		seen := make(map[string]bool)
+		snippets := make(map[string]string)
 		for _, r := range results {
 			if seen[r.SessionID] {
 				continue
@@ -402,21 +409,28 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 			if status != "" && r.Status != status {
 				continue
 			}
+			if snippet := strings.Join(strings.Fields(strings.ReplaceAll(r.Snippet, "**", "")), " "); snippet != "" {
+				snippets[r.SessionID] = snippet
+			}
 			summaries = append(summaries, session.SessionSummary{
-				ID:           r.SessionID,
-				Number:       r.SessionNumber,
-				Name:         r.SessionName,
-				Summary:      r.Summary,
-				Provider:     r.Provider,
-				Model:        r.Model,
-				Mode:         r.Mode,
-				MessageCount: r.MessageCount,
-				Status:       r.Status,
-				CreatedAt:    r.SessionCreatedAt,
-				UpdatedAt:    r.UpdatedAt,
+				ID:                  r.SessionID,
+				Number:              r.SessionNumber,
+				Name:                r.SessionName,
+				Summary:             r.Summary,
+				GeneratedShortTitle: r.GeneratedShortTitle,
+				GeneratedLongTitle:  r.GeneratedLongTitle,
+				TitleSource:         r.TitleSource,
+				Provider:            r.Provider,
+				Model:               r.Model,
+				Mode:                r.Mode,
+				MessageCount:        r.MessageCount,
+				Status:              r.Status,
+				CreatedAt:           r.SessionCreatedAt,
+				UpdatedAt:           r.UpdatedAt,
 			})
 		}
 		m.sessions = summaries
+		m.searchSnippets = snippets
 	} else {
 		// Use List with filtering
 		summaries, err := m.store.List(ctx, session.ListOptions{
@@ -440,6 +454,7 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 			summaries = filtered
 		}
 		m.sessions = summaries
+		m.searchSnippets = nil
 	}
 
 	// Apply sort order
@@ -571,7 +586,7 @@ func (m *Model) View() tea.View {
 	filterParts = append(filterParts, fmt.Sprintf("[Sort: %s]", m.sortOrder))
 	filterParts = append(filterParts, fmt.Sprintf("[Status: %s]", m.statusFilter))
 	if m.ftsEnabled {
-		filterParts = append(filterParts, "[FTS: on]")
+		filterParts = append(filterParts, "[Search: messages]")
 	}
 
 	b.WriteString(filterStyle.Render(fitToDisplayWidth(strings.Join(filterParts, " "), renderWidth)))
@@ -613,12 +628,23 @@ func (m *Model) View() tea.View {
 		errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
 		b.WriteString(errorStyle.Render(fitToDisplayWidth(fmt.Sprintf("Error: %v", m.err), renderWidth)))
 	} else {
-		// Help
-		help := "[enter] chat  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
-		if m.embedded {
-			help = "[enter] resume  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] back"
+		footer := ""
+		if m.ftsEnabled && m.searchQuery != "" {
+			if len(m.sessions) == 0 {
+				footer = fmt.Sprintf("No sessions match %q", m.searchQuery)
+			} else if m.cursor >= 0 && m.cursor < len(m.sessions) {
+				if snippet := m.searchSnippets[m.sessions[m.cursor].ID]; snippet != "" {
+					footer = "Match: " + snippet
+				}
+			}
 		}
-		b.WriteString(mutedStyle.Render(fitToDisplayWidth(help, renderWidth)))
+		if footer == "" {
+			footer = "[enter] chat  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
+			if m.embedded {
+				footer = "[enter] resume  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] back"
+			}
+		}
+		b.WriteString(mutedStyle.Render(fitToDisplayWidth(footer, renderWidth)))
 	}
 
 	return ui.NewAltScreenView(b.String())

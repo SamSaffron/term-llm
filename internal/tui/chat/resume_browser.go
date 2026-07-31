@@ -11,6 +11,7 @@ import (
 func (m *Model) openResumeBrowser() (tea.Model, tea.Cmd) {
 	browser := sessionsui.New(m.store, m.width, m.height, m.styles)
 	browser.SetEmbedded(true)
+	browser.SetFullTextSearch(true)
 	if m.sess != nil {
 		browser.SetPreferredSessionID(m.sess.ID)
 	}
