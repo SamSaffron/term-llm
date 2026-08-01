@@ -3,12 +3,17 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
@@ -441,5 +446,212 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	}
 	if usageEvent.Use.ReasoningTokens != 1 {
 		t.Fatalf("reasoning tokens = %d, want 1", usageEvent.Use.ReasoningTokens)
+	}
+}
+
+func chatGPTTestCredentials() *credentials.ChatGPTCredentials {
+	return &credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}
+}
+
+func chatGPTCompletedSSE(responseID string) string {
+	return fmt.Sprintf("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\ndata: [DONE]\n\n", responseID)
+}
+
+func TestChatGPTHTTPSecondTurnMatchesReconstructedGatewayProvider(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var captured []map[string]any
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		captured = append(captured, payload)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(chatGPTCompletedSSE(fmt.Sprintf("resp_%d", len(captured))))),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	first := Request{Model: "gpt-5.6-sol", SessionID: "session-equivalence", Messages: []Message{UserText("first")}}
+	second := Request{Model: "gpt-5.6-sol", SessionID: "session-equivalence", Messages: []Message{UserText("first"), AssistantText("answer"), UserText("second")}}
+
+	// Direct HTTP/SSE keeps one provider/client alive across turns.
+	direct := NewChatGPTProviderWithCreds(chatGPTTestCredentials(), "gpt-5.6-sol")
+	stream, err := direct.Stream(t.Context(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+	stream, err = direct.Stream(t.Context(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+
+	// The gateway creates a fresh central provider for this second request.
+	reconstructed := NewChatGPTProviderWithCreds(chatGPTTestCredentials(), "gpt-5.6-sol")
+	stream, err = reconstructed.Stream(t.Context(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+
+	if len(captured) != 3 {
+		t.Fatalf("captured payloads = %d, want 3", len(captured))
+	}
+	if !reflect.DeepEqual(captured[1], captured[2]) {
+		directJSON, _ := json.Marshal(captured[1])
+		gatewayJSON, _ := json.Marshal(captured[2])
+		t.Fatalf("direct/gateway HTTP second-turn payloads differ\ndirect: %s\ngateway: %s", directJSON, gatewayJSON)
+	}
+	for index, payload := range captured[1:] {
+		if _, ok := payload["previous_response_id"]; ok {
+			t.Fatalf("second-turn HTTP payload %d used previous_response_id: %#v", index, payload)
+		}
+		input, ok := payload["input"].([]any)
+		if !ok || len(input) != 3 {
+			t.Fatalf("second-turn HTTP payload %d input = %#v, want full transcript", index, payload["input"])
+		}
+	}
+}
+
+func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallback(t *testing.T) {
+	var mu sync.Mutex
+	connections := 0
+	var captured []map[string]any
+	capture := func(data []byte) map[string]any {
+		var payload map[string]any
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Errorf("decode WebSocket request: %v", err)
+		}
+		mu.Lock()
+		captured = append(captured, payload)
+		mu.Unlock()
+		return payload
+	}
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		mu.Lock()
+		connections++
+		connection := connections
+		mu.Unlock()
+
+		if connection == 1 {
+			// Direct mode: first full turn, optimized second turn, then semantic
+			// full-history retry after the connection-local parent is rejected.
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read direct first request: %v", err)
+				return
+			}
+			capture(data)
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_direct_1"}})
+
+			_, data, err = conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read direct continuation: %v", err)
+				return
+			}
+			capture(data)
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.failed", "status": 400,
+				"response": map[string]any{"error": map[string]any{"code": "previous_response_not_found", "message": "Previous response not found", "param": "previous_response_id"}},
+			})
+
+			_, data, err = conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read direct full-history retry: %v", err)
+				return
+			}
+			capture(data)
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_direct_2"}})
+			return
+		}
+
+		// Gateway-equivalent reconstruction has no connection-local response ID,
+		// so its second-turn transcript is complete on its first frame.
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read reconstructed request: %v", err)
+			return
+		}
+		capture(data)
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_gateway"}})
+	}))
+	defer server.Close()
+
+	newWSProvider := func() *ChatGPTProvider {
+		provider := NewChatGPTProviderWithCredsAndOptions(chatGPTTestCredentials(), "gpt-5.6-sol", ChatGPTProviderOptions{UseWebSocket: true})
+		provider.responsesClient = &ResponsesClient{
+			BaseURL: server.URL, HTTPClient: server.Client(), UseWebSocket: true,
+			WebSocketServerState: true, DisableServerState: true,
+		}
+		return provider
+	}
+	first := Request{Model: "gpt-5.6-sol", SessionID: "session-ws", Messages: []Message{UserText("first")}}
+	second := Request{Model: "gpt-5.6-sol", SessionID: "session-ws", Messages: []Message{UserText("first"), AssistantText("answer"), UserText("second")}}
+
+	direct := newWSProvider()
+	stream, err := direct.Stream(t.Context(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+	stream, err = direct.Stream(t.Context(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+
+	reconstructed := newWSProvider()
+	stream, err = reconstructed.Stream(t.Context(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+
+	mu.Lock()
+	requests := append([]map[string]any(nil), captured...)
+	mu.Unlock()
+	if len(requests) != 4 {
+		t.Fatalf("captured WebSocket requests = %d, want 4", len(requests))
+	}
+	directContinuation := requests[1]
+	if directContinuation["previous_response_id"] != "resp_direct_1" {
+		t.Fatalf("direct continuation previous_response_id = %#v", directContinuation["previous_response_id"])
+	}
+	if input, ok := directContinuation["input"].([]any); !ok || len(input) != 1 {
+		t.Fatalf("direct continuation input = %#v, want only new suffix", directContinuation["input"])
+	}
+	for name, request := range map[string]map[string]any{"direct fallback": requests[2], "gateway reconstruction": requests[3]} {
+		if _, ok := request["previous_response_id"]; ok {
+			t.Fatalf("%s retained previous_response_id: %#v", name, request)
+		}
+		if input, ok := request["input"].([]any); !ok || len(input) != 3 {
+			t.Fatalf("%s input = %#v, want full transcript", name, request["input"])
+		}
+	}
+	if !reflect.DeepEqual(requests[2], requests[3]) {
+		t.Fatalf("full-history WS fallback and gateway reconstruction differ\nfallback: %#v\ngateway: %#v", requests[2], requests[3])
 	}
 }

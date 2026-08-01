@@ -248,16 +248,16 @@ func TestGatewayRunTempRootScavengesOnlyOwnedPrefixDirectories(t *testing.T) {
 	}
 }
 
-func TestStateSealerRoundTripTamperAndCrossClient(t *testing.T) {
+func TestStateSealerRoundTripTamperAndBinding(t *testing.T) {
 	sealer, err := OpenStateSealer(filepath.Join(t.TempDir(), "state.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	blob, err := sealer.Seal("client-a", "claude-bin", []byte("gateway-local-state"))
+	blob, err := sealer.Seal("client-a", "claude-bin", "session-a", []byte("gateway-local-state"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := sealer.Open(blob, "client-a", "claude-bin")
+	plain, err := sealer.Open(blob, "client-a", "claude-bin", "session-a")
 	if err != nil || string(plain) != "gateway-local-state" {
 		t.Fatalf("round trip = %q, %v", plain, err)
 	}
@@ -267,14 +267,21 @@ func TestStateSealerRoundTripTamperAndCrossClient(t *testing.T) {
 	} else {
 		tampered[len(tampered)/2] = 'A'
 	}
-	for _, tc := range []struct{ blob, client, provider string }{
-		{string(tampered), "client-a", "claude-bin"},
-		{blob, "client-b", "claude-bin"},
-		{blob, "client-a", "grok-bin"},
+	for _, tc := range []struct{ blob, client, provider, session string }{
+		{string(tampered), "client-a", "claude-bin", "session-a"},
+		{blob, "client-b", "claude-bin", "session-a"},
+		{blob, "client-a", "grok-bin", "session-a"},
+		{blob, "client-a", "claude-bin", "session-b"},
 	} {
-		if _, err := sealer.Open(tc.blob, tc.client, tc.provider); err == nil {
+		if _, err := sealer.Open(tc.blob, tc.client, tc.provider, tc.session); err == nil {
 			t.Fatalf("accepted tampered/foreign state: %+v", tc)
 		}
+	}
+	if _, err := sealer.Seal("client-a", "claude-bin", "", []byte("state")); err == nil {
+		t.Fatal("sealed state for an empty stateless session")
+	}
+	if _, err := sealer.Open(blob, "client-a", "claude-bin", ""); err == nil {
+		t.Fatal("opened state for an empty stateless session")
 	}
 }
 

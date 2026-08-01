@@ -176,6 +176,13 @@ func (p *GatewayProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	p.mu.RLock()
 	state := p.state
 	p.mu.RUnlock()
+	stateSessionID := req.SessionID
+	if strings.TrimSpace(stateSessionID) == "" {
+		// Empty SessionID requests are deliberately stateless: never attach opaque
+		// continuation state from another one-shot call.
+		state = ""
+		stateSessionID = ""
+	}
 	payload, err := json.Marshal(protocol.InferenceRequest{
 		Version: protocol.Version, RequestID: requestID, Provider: p.name,
 		State: state, Request: wireRequest,
@@ -203,7 +210,7 @@ func (p *GatewayProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		return nil, decodeGatewayHTTPError(resp)
 	}
 	stream := &gatewayProviderStream{
-		provider: p, body: resp.Body, ctx: streamCtx, cancel: cancel,
+		provider: p, body: resp.Body, ctx: streamCtx, cancel: cancel, sessionID: stateSessionID,
 		decoder:      newSSEDecoder(resp.Body, sseDecoderOptions{Transport: "gateway SSE"}),
 		closedSignal: make(chan struct{}), results: make(chan nextGatewaySSE, 1),
 	}
@@ -235,6 +242,7 @@ type gatewayProviderStream struct {
 	decoder      *sseDecoder
 	ctx          context.Context
 	cancel       context.CancelFunc
+	sessionID    string
 	results      chan nextGatewaySSE
 	recvMu       sync.Mutex
 	mu           sync.Mutex
@@ -346,6 +354,10 @@ func (s *gatewayProviderStream) Recv() (Event, error) {
 			go s.postToolResult(record.CallbackPath, response)
 			return event, nil
 		case "state":
+			if s.sessionID == "" {
+				s.terminate()
+				return Event{}, fmt.Errorf("gateway returned provider state for a stateless request")
+			}
 			s.provider.mu.Lock()
 			s.provider.state = record.State
 			s.provider.mu.Unlock()

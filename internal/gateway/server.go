@@ -473,11 +473,13 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, client 
 	if errorCode == "" && errors.Is(ctx.Err(), context.Canceled) {
 		errorCode = "canceled"
 	}
-	if exporter, ok := provider.(llm.ProviderStateExporter); ok {
-		if plain, valid := exporter.ExportProviderState(); valid {
-			if sealed, sealErr := s.cfg.Sealer.Seal(client.ID, envelope.Provider, plain); sealErr == nil {
-				_ = writeSSE(w, protocol.StreamRecord{Version: protocol.Version, Type: "state", RequestID: envelope.RequestID, RunID: runID, State: sealed})
-				flusher.Flush()
+	if strings.TrimSpace(providerReq.SessionID) != "" {
+		if exporter, ok := provider.(llm.ProviderStateExporter); ok {
+			if plain, valid := exporter.ExportProviderState(); valid {
+				if sealed, sealErr := s.cfg.Sealer.Seal(client.ID, envelope.Provider, providerReq.SessionID, plain); sealErr == nil {
+					_ = writeSSE(w, protocol.StreamRecord{Version: protocol.Version, Type: "state", RequestID: envelope.RequestID, RunID: runID, State: sealed})
+					flusher.Flush()
+				}
 			}
 		}
 	}

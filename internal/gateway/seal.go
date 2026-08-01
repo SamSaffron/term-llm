@@ -10,15 +10,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/gateway/protocol"
 )
 
 type sealedProviderState struct {
-	Version  int    `json:"version"`
-	ClientID string `json:"client_id"`
-	Provider string `json:"provider"`
-	State    []byte `json:"state"`
+	Version   int    `json:"version"`
+	ClientID  string `json:"client_id"`
+	Provider  string `json:"provider"`
+	SessionID string `json:"session_id"`
+	State     []byte `json:"state"`
 }
 
 type StateSealer struct{ aead cipher.AEAD }
@@ -54,8 +56,14 @@ func OpenStateSealer(path string) (*StateSealer, error) {
 	return &StateSealer{aead: aead}, nil
 }
 
-func (s *StateSealer) Seal(clientID, provider string, state []byte) (string, error) {
-	plain, err := json.Marshal(sealedProviderState{Version: protocol.Version, ClientID: clientID, Provider: provider, State: state})
+func (s *StateSealer) Seal(clientID, provider, sessionID string, state []byte) (string, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return "", fmt.Errorf("cannot seal provider state without a session ID")
+	}
+	plain, err := json.Marshal(sealedProviderState{
+		Version: protocol.Version, ClientID: clientID, Provider: provider,
+		SessionID: sessionID, State: state,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -67,7 +75,10 @@ func (s *StateSealer) Seal(clientID, provider string, state []byte) (string, err
 	return base64.RawURLEncoding.EncodeToString(append(nonce, ciphertext...)), nil
 }
 
-func (s *StateSealer) Open(blob, clientID, provider string) ([]byte, error) {
+func (s *StateSealer) Open(blob, clientID, provider, sessionID string) ([]byte, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("cannot open provider state without a session ID")
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(blob)
 	if err != nil || len(raw) < s.aead.NonceSize() {
 		return nil, fmt.Errorf("invalid sealed provider state")
@@ -78,8 +89,10 @@ func (s *StateSealer) Open(blob, clientID, provider string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid sealed provider state")
 	}
 	var state sealedProviderState
-	if err := json.Unmarshal(plain, &state); err != nil || state.Version != protocol.Version || state.ClientID != clientID || state.Provider != provider {
-		return nil, fmt.Errorf("sealed provider state does not belong to this client/provider")
+	if err := json.Unmarshal(plain, &state); err != nil ||
+		state.Version != protocol.Version || state.ClientID != clientID ||
+		state.Provider != provider || state.SessionID != sessionID {
+		return nil, fmt.Errorf("sealed provider state does not belong to this client/provider/session")
 	}
 	return append([]byte(nil), state.State...), nil
 }

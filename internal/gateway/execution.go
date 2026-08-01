@@ -83,9 +83,9 @@ func (s *Server) startInference(parent context.Context, client Client, envelope 
 		MaxBackoff:     5 * time.Second,
 	})
 	if envelope.State != "" {
-		plain, openErr := s.cfg.Sealer.Open(envelope.State, client.ID, envelope.Provider)
+		plain, openErr := s.cfg.Sealer.Open(envelope.State, client.ID, envelope.Provider, providerReq.SessionID)
 		if openErr != nil {
-			return failStarted(http.StatusBadRequest, "invalid_state", "provider state is invalid or does not belong to this client/provider")
+			return failStarted(http.StatusBadRequest, "invalid_state", "provider state is invalid or does not belong to this client/provider/session")
 		}
 		importer, ok := provider.(llm.ProviderStateImporter)
 		if !ok {

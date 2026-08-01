@@ -9,8 +9,9 @@ import (
 )
 
 // gatewayRequest is deliberately distinct from Request. In particular it has
-// no WorkingDir, approval transcript, execution filters, or debug fields. This
-// makes local filesystem/process state structurally impossible on the wire.
+// no WorkingDir, approval transcript/metadata, execution filters/budgets/maps,
+// debug fields, local paths, or display-only tool metadata. This makes local
+// filesystem/process state structurally impossible on the wire.
 type gatewayRequest struct {
 	Model                          string            `json:"model"`
 	SessionID                      string            `json:"session_id,omitempty"`
@@ -33,14 +34,20 @@ type gatewayRequest struct {
 	TopPSet                        bool              `json:"top_p_set,omitempty"`
 	ServiceTier                    string            `json:"service_tier,omitempty"`
 	ServiceTierSet                 bool              `json:"service_tier_set,omitempty"`
-	MaxTurns                       int               `json:"max_turns,omitempty"`
-	ToolMap                        map[string]string `json:"tool_map,omitempty"`
 }
 
 func sanitizeGatewayMessages(messages []Message) []Message {
 	out := make([]Message, len(messages))
 	for i, message := range messages {
 		out[i] = message
+		// Approval and persisted/UI projection metadata are satellite-local. CacheAnchor
+		// remains because it changes provider prompt-cache semantics.
+		out[i].ApprovalRole = ""
+		out[i].ClientMessageID = ""
+		out[i].ResponseID = ""
+		out[i].AssistantSegmentOrdinal = 0
+		out[i].SegmentStartSequence = 0
+		out[i].SegmentEndSequence = 0
 		out[i].Parts = make([]Part, 0, len(message.Parts))
 		for _, part := range message.Parts {
 			if part.Type == PartSkillActivation || part.Type == PartToolActivity {
@@ -48,8 +55,14 @@ func sanitizeGatewayMessages(messages []Message) []Message {
 			}
 			part.ImagePath = ""
 			part.FilePath = ""
+			if part.ToolCall != nil {
+				call := *part.ToolCall
+				call.ToolInfo = ""
+				part.ToolCall = &call
+			}
 			if part.ToolResult != nil {
 				result := *part.ToolResult
+				result.Display = ""
 				result.Diffs = nil
 				result.Images = nil
 				part.ToolResult = &result
@@ -74,7 +87,6 @@ func EncodeGatewayRequest(req Request) (json.RawMessage, error) {
 		MaxOutputTokens: req.MaxOutputTokens, Temperature: req.Temperature,
 		TemperatureSet: req.TemperatureSet, TopP: req.TopP, TopPSet: req.TopPSet,
 		ServiceTier: req.ServiceTier, ServiceTierSet: req.ServiceTierSet,
-		MaxTurns: req.MaxTurns, ToolMap: req.ToolMap,
 	}
 	data, err := json.Marshal(wire)
 	return data, err
@@ -100,7 +112,7 @@ func DecodeGatewayRequest(data []byte) (Request, error) {
 		Responses: wire.Responses, MaxOutputTokens: wire.MaxOutputTokens,
 		Temperature: wire.Temperature, TemperatureSet: wire.TemperatureSet,
 		TopP: wire.TopP, TopPSet: wire.TopPSet, ServiceTier: wire.ServiceTier,
-		ServiceTierSet: wire.ServiceTierSet, MaxTurns: wire.MaxTurns, ToolMap: wire.ToolMap,
+		ServiceTierSet: wire.ServiceTierSet,
 	}, nil
 }
 

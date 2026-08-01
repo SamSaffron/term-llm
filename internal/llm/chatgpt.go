@@ -231,6 +231,17 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		}
 	}
 
+	responsesReq, err := p.buildResponsesRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
+}
+
+// buildResponsesRequest constructs the provider-facing request independently of
+// transport state. ResponsesClient decides whether HTTP/SSE sends full history or
+// a reused WebSocket sends previous_response_id plus a continuation suffix.
+func (p *ChatGPTProvider) buildResponsesRequest(req Request) (ResponsesRequest, error) {
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	reqModel, reqEffort := parseModelEffortForProvider("chatgpt", req.Model)
 	model := chooseModel(reqModel, p.model)
@@ -244,7 +255,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 
 	responsesOptions := mergeResponsesOptions(p.responsesOptions, req.Responses, req.Ephemeral)
 	if _, err := validateResponsesOptions("chatgpt", model, &responsesOptions, req.Tools); err != nil {
-		return nil, err
+		return ResponsesRequest{}, err
 	}
 
 	// Build tools. Public-API Pro and advanced Responses controls are not
@@ -296,7 +307,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		responsesReq.Reasoning.Effort = effort
 	}
 
-	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
+	return responsesReq, nil
 }
 
 // ResetConversation clears server state for the Responses API client.

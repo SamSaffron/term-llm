@@ -134,6 +134,7 @@ func (p *setupFailureProvider) attemptCount() int {
 type gatewayFixture struct {
 	server   *httptest.Server
 	gateway  *Server
+	stateDir string
 	central  *config.Config
 	clients  *ClientStore
 	client   Client
@@ -178,7 +179,7 @@ func newGatewayFixture(t *testing.T, providerType config.ProviderType, provider 
 	}
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
-	return &gatewayFixture{server: ts, gateway: server, central: central, clients: clients, client: client, token: token, usage: usage, provider: provider}
+	return &gatewayFixture{server: ts, gateway: server, stateDir: dir, central: central, clients: clients, client: client, token: token, usage: usage, provider: provider}
 }
 
 func (f *gatewayFixture) satelliteConfig() *config.Config {
@@ -467,7 +468,7 @@ func TestGatewayCrossClientStateAndRunAccessDenied(t *testing.T) {
 	if err := provider.ImportProviderState([]byte("forged-state")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Stream(context.Background(), llm.Request{Model: "model-a", Messages: []llm.Message{llm.UserText("x")}}); err == nil || !strings.Contains(err.Error(), "invalid_state") {
+	if _, err := provider.Stream(context.Background(), llm.Request{Model: "model-a", SessionID: "forged-session", Messages: []llm.Message{llm.UserText("x")}}); err == nil || !strings.Contains(err.Error(), "invalid_state") {
 		t.Fatalf("tampered state error = %v", err)
 	}
 	other, otherToken, err := fixture.clients.Add("satellite-b", Policy{AllowSearch: true, AllowFetch: true})
@@ -498,7 +499,7 @@ func TestGatewayProviderStateRoundTripsSealed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		stream, err := provider.Stream(context.Background(), llm.Request{Model: "model-a", Messages: []llm.Message{llm.UserText("turn")}})
+		stream, err := provider.Stream(context.Background(), llm.Request{Model: "model-a", SessionID: "session-state", Messages: []llm.Message{llm.UserText("turn")}})
 		if err != nil {
 			t.Fatal(err)
 		}
