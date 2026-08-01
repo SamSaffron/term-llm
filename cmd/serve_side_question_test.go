@@ -689,6 +689,89 @@ func TestServeSideQuestionDisconnectCancelsProvider(t *testing.T) {
 	}
 }
 
+type deadlineBlockingSideResponseWriter struct {
+	failingSideResponseWriter
+	deadlineSet chan struct{}
+	release     chan struct{}
+	deadlines   []time.Time
+}
+
+func (w *deadlineBlockingSideResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadlines = append(w.deadlines, deadline)
+	if !deadline.IsZero() {
+		close(w.deadlineSet)
+	}
+	return nil
+}
+
+func (w *deadlineBlockingSideResponseWriter) Write([]byte) (int, error) {
+	select {
+	case <-w.deadlineSet:
+		return 0, errors.New("write deadline exceeded")
+	case <-w.release:
+		return 0, errors.New("test released blocked write")
+	}
+}
+
+func TestServeSideQuestionSlowClientWriteCancelsProvider(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{providerKey: "disconnect", defaultModel: "m"}
+		rt.configureSideQuestionContext()
+		rt.sideProviderFactory = func(_, _ string) (llm.Provider, error) { return disconnectSideProvider{}, nil }
+		return rt, nil
+	})
+	defer manager.Close()
+	rt, err := manager.GetOrCreate(context.Background(), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &deadlineBlockingSideResponseWriter{
+		deadlineSet: make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/sessions/main/side-question",
+		bytes.NewBufferString(`{"question":"question"}`),
+	)
+	handlerDone := make(chan struct{})
+	go func() {
+		(&serveServer{sessionMgr: manager}).handleSideQuestion(writer, request)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		close(writer.release)
+		<-handlerDone
+		t.Fatal("side-question handler remained blocked on a slow client write")
+	}
+
+	deadlines := writer.deadlines
+	if len(deadlines) == 0 || deadlines[0].IsZero() {
+		t.Fatal("side-question stream did not set a write deadline")
+	}
+	remaining := time.Until(deadlines[0])
+	if remaining <= 0 || remaining > serveStreamWriteTimeout {
+		t.Fatalf("write deadline remaining = %v, want within %v", remaining, serveStreamWriteTimeout)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for rt.hasActiveSideQuestion() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if rt.hasActiveSideQuestion() {
+		t.Fatal("side provider remained active after slow-client write timed out")
+	}
+	rt.sideQuestion.mu.Lock()
+	providerDone := rt.sideQuestion.done
+	rt.sideQuestion.mu.Unlock()
+	if !waitForSideQuestion(providerDone, time.Second) {
+		t.Fatal("side provider did not finish after slow-client cancellation")
+	}
+}
+
 type stubbornSideProvider struct {
 	release chan struct{}
 	mu      sync.Mutex
