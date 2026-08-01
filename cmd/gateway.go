@@ -21,42 +21,43 @@ import (
 )
 
 var (
-	gatewayStateDir        string
-	gatewayListen          string
-	gatewayTLSCert         string
-	gatewayTLSKey          string
-	gatewayAllowProviders  []string
-	gatewayDenyProviders   []string
-	gatewayAllowModels     []string
-	gatewayDenyModels      []string
-	gatewayAllowCLI        bool
-	gatewayNoSearch        bool
-	gatewayNoFetch         bool
-	gatewayIdleTimeout     time.Duration
-	gatewayToolTimeout     time.Duration
-	gatewayCatalogTTL      time.Duration
-	gatewayRetryAttempts   int
-	gatewayRetryElapsed    time.Duration
-	gatewayClientAllowCLI  bool
-	gatewayClientAllow     []string
-	gatewayClientDeny      []string
-	gatewayClientModels    []string
-	gatewayClientDenyModel []string
-	gatewayClientSearch    bool
-	gatewayClientFetch     bool
-	gatewayClientInference int
-	gatewayClientSearchRPM int
-	gatewayClientSearchMax int
-	gatewayClientFetchRPM  int
-	gatewayClientFetchMax  int
-	gatewayClientEnroll    bool
-	gatewayEnrollmentTTL   time.Duration
-	gatewayEnrollName      string
-	gatewayEnrollWrite     bool
-	gatewayEnrollTokenFile string
-	gatewayEnrollPrintOnly bool
-	gatewayUsageClient     string
-	gatewayUsageJSON       bool
+	gatewayStateDir               string
+	gatewayListen                 string
+	gatewayTLSCert                string
+	gatewayTLSKey                 string
+	gatewayAllowProviders         []string
+	gatewayDenyProviders          []string
+	gatewayAllowModels            []string
+	gatewayDenyModels             []string
+	gatewayAllowCLI               bool
+	gatewayNoSearch               bool
+	gatewayNoFetch                bool
+	gatewayIdleTimeout            time.Duration
+	gatewayToolTimeout            time.Duration
+	gatewayCatalogTTL             time.Duration
+	gatewayRetryAttempts          int
+	gatewayRetryElapsed           time.Duration
+	gatewayProviderSessionTimeout time.Duration
+	gatewayClientAllowCLI         bool
+	gatewayClientAllow            []string
+	gatewayClientDeny             []string
+	gatewayClientModels           []string
+	gatewayClientDenyModel        []string
+	gatewayClientSearch           bool
+	gatewayClientFetch            bool
+	gatewayClientInference        int
+	gatewayClientSearchRPM        int
+	gatewayClientSearchMax        int
+	gatewayClientFetchRPM         int
+	gatewayClientFetchMax         int
+	gatewayClientEnroll           bool
+	gatewayEnrollmentTTL          time.Duration
+	gatewayEnrollName             string
+	gatewayEnrollWrite            bool
+	gatewayEnrollTokenFile        string
+	gatewayEnrollPrintOnly        bool
+	gatewayUsageClient            string
+	gatewayUsageJSON              bool
 )
 
 var gatewayCmd = &cobra.Command{Use: "gateway", Short: "Serve and manage the private inference gateway"}
@@ -96,6 +97,7 @@ func init() {
 	gatewayServeCmd.Flags().DurationVar(&gatewayCatalogTTL, "catalog-ttl", 5*time.Minute, "Refresh provider config and live model catalogs after this interval")
 	gatewayServeCmd.Flags().IntVar(&gatewayRetryAttempts, "upstream-retry-attempts", gateway.DefaultUpstreamRetryAttempts, "Maximum upstream attempts per gateway inference request")
 	gatewayServeCmd.Flags().DurationVar(&gatewayRetryElapsed, "upstream-retry-elapsed", gateway.DefaultUpstreamRetryElapsed, "Maximum elapsed time across upstream attempts")
+	gatewayServeCmd.Flags().DurationVar(&gatewayProviderSessionTimeout, "provider-session-idle-timeout", gateway.DefaultProviderSessionIdleTimeout, "Keep successful satellite WebSocket provider sessions warm for this idle duration (0 disables)")
 
 	gatewayClientAddCmd.Flags().BoolVar(&gatewayClientAllowCLI, "allow-cli", false, "Allow this client to use CLI providers")
 	gatewayClientAddCmd.Flags().StringSliceVar(&gatewayClientAllow, "allow-provider", nil, "Allowed provider key/prefix")
@@ -132,6 +134,9 @@ func runGatewayServe(cmd *cobra.Command, _ []string) error {
 	}
 	if gatewayRetryElapsed <= 0 {
 		return fmt.Errorf("--upstream-retry-elapsed must be positive")
+	}
+	if gatewayProviderSessionTimeout < 0 {
+		return fmt.Errorf("--provider-session-idle-timeout cannot be negative; use 0 to disable session reuse")
 	}
 	stateDir, err := resolveGatewayStateDir()
 	if err != nil {
@@ -173,7 +178,9 @@ func runGatewayServe(cmd *cobra.Command, _ []string) error {
 		Searcher: searcher, FetchTool: fetchTool,
 		IdleTimeout: gatewayIdleTimeout, ToolTimeout: gatewayToolTimeout, CatalogTTL: gatewayCatalogTTL,
 		UpstreamRetryAttempts: gatewayRetryAttempts, UpstreamRetryMaxElapsed: gatewayRetryElapsed,
-		RunTempRoot: filepath.Join(stateDir, "runs"),
+		ProviderSessionIdleTimeout:  gatewayProviderSessionTimeout,
+		DisableProviderSessionReuse: gatewayProviderSessionTimeout == 0,
+		RunTempRoot:                 filepath.Join(stateDir, "runs"),
 		Policy: gateway.Policy{
 			AllowProviders: gatewayAllowProviders, DenyProviders: gatewayDenyProviders,
 			AllowModels: gatewayAllowModels, DenyModels: gatewayDenyModels,
@@ -183,6 +190,7 @@ func runGatewayServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	defer server.Close()
 	httpServer := &http.Server{Addr: gatewayListen, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	go func() {
 		<-cmd.Context().Done()

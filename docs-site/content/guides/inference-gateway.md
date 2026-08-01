@@ -36,17 +36,21 @@ Important invariants:
 
 ### Session continuity and direct-provider equivalence
 
-For an ordinary satellite session, the satellite remains the source of truth for `SessionID` and the complete transcript. It stores provider state under that session plus provider key, includes the same `SessionID` and provider-facing history on later turns, and can export/import the `GatewayProvider`'s opaque sealed blob when reconstructing a runtime. The gateway creates a fresh central provider for each request. Providers that implement provider-state export/import round-trip that state through the session-bound sealed blob; providers that do not are reconstructed from the complete transcript.
+For an ordinary satellite session, the satellite remains the source of truth for `SessionID` and the complete transcript. It stores provider state under that session plus provider key, includes the same `SessionID` and provider-facing history on later turns, and can export/import the `GatewayProvider`'s opaque sealed blob when reconstructing a runtime. Providers that implement provider-state export/import continue to round-trip that state through the session-bound sealed blob; providers that do not can always reconstruct from the complete transcript.
+
+For sessionful satellite `/g1` inference, the gateway keeps a successfully completed central provider warm for **30 seconds** only when the request has a non-empty `SessionID`, is not ephemeral, and that explicit central OpenAI/ChatGPT provider has `use_websocket: true`. A lease is isolated by authenticated gateway client ID, provider key, and satellite `SessionID`, and turns for one lease are serialized. Other clients, providers, and sessions remain independent and concurrent. The model is deliberately not part of the lease key: this matches a direct provider instance and permits model changes, while `ResponsesClient` rejects an incompatible `previous_response_id` continuation and starts a full-history chain on the same connection when model or other non-input controls change.
+
+A warm follow-up uses the same provider and WebSocket, so ChatGPT sends the same `previous_response_id` plus continuation-only suffix as direct term-llm. The public `/v1/responses` edge does not opt into these private session semantics and remains stateless; unrelated Discourse requests are never attached to a retained satellite provider. WebSocket providers currently export no sealed provider state, so a warm provider is used directly rather than importing the satellite's prior blob a second time. Exportable-state providers and ordinary non-WebSocket providers retain the sealed per-request behavior above and are not added to this cache.
+
+Idle expiry is refreshed only after a fully successful turn. Cancellation, provider/stream failure, invalid continuation state, an incompatible config/policy decision, credential/config generation change, or gateway shutdown evicts the lease and calls provider conversation reset/cleanup through the retry wrapper. Idle eviction and shutdown close the WebSocket. The cache uses one bounded reaper rather than one timer or goroutine per session.
+
+After idle expiry or gateway restart, the next request creates a provider and sends the satellite's complete transcript without `previous_response_id`. This cold form is semantically correct and matches the direct provider's full-history fallback, but incurs a new WebSocket handshake and may have different first-request cache/latency characteristics. While the lease is warm, direct and gateway ChatGPT WebSocket upstream payloads are transport-equivalent.
 
 After intentional boundary normalization, the central provider receives the same model-semantic `llm.Request` as a direct provider: model and session identity; system/developer/user/assistant/tool history; tool definitions and choices; tool-call and tool-result continuation data; cache anchors; reasoning summaries, encrypted reasoning, and opaque provider replay; search controls; Responses options; sampling, output-token, service-tier, and ephemeral/continuation controls. This equivalence has deliberately narrow exceptions:
 
 - `WorkingDir` is replaced with a fresh empty gateway-owned run directory.
 - Satellite image/file paths are removed while inline image/file data is retained. Tool-result diff/image paths, legacy display strings, formatted `ToolInfo`, provider tool-activity display records, skill-activation provenance, and persisted UI identity/segment fields are omitted. Expanded developer instructions, actual tool arguments/results, multimodal result data, caller provenance, thought signatures, reasoning, and provider replay remain.
 - Approval-only transcripts/roles, request-scoped execution filters (`AllowedTools`), satellite engine controls (`MaxTurns` and `ToolMap`), and debug flags are local and do not cross the provider boundary. The satellite engine consumes these before or around provider execution; omitting them cannot change the upstream model payload.
-
-ChatGPT transport behavior needs one qualification. ChatGPT's HTTP/SSE path sends full history on every turn in both direct and gateway modes, so second-turn upstream request payloads are equivalent. A long-lived **direct WebSocket** provider may instead reuse its connection-local `previous_response_id` and send only the new continuation suffix. The gateway recreates the central provider (and therefore its WebSocket connection) per request, so it sends the full transcript without `previous_response_id`. Both forms are semantically equivalent, and rejection of a direct WebSocket parent falls back to the same full-history request. They are not strictly transport-, cache-, or latency-equivalent.
-
-Gateway restart and satellite session restoration remain correct when the client database and `state.key` are retained: the satellite replays its full transcript and restores any exportable provider state from the sealed blob. A restart does **not** retain ChatGPT's connection-local WebSocket optimization, so the next request uses full history and may have different cache/latency characteristics even though conversation semantics are preserved.
 
 Run the gateway only on a trusted private network. For traffic that is not already protected by a private overlay, service mesh, or TLS reverse proxy, configure the built-in TLS listener with both `--tls-cert` and `--tls-key`. Bearer credentials authenticate access but plaintext HTTP does not encrypt them.
 
@@ -71,6 +75,8 @@ term-llm gateway serve \
   --listen 0.0.0.0:8787 \
   --state-dir /var/lib/term-llm-gateway
 ```
+
+Successful sessionful satellite WebSocket providers are retained for 30 seconds by default. Tune this with `--provider-session-idle-timeout DURATION`; `0` disables reuse, while negative durations are rejected. This setting does not make `/v1/responses` stateful.
 
 Gateway state contains:
 

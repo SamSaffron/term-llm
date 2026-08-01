@@ -525,7 +525,7 @@ func TestChatGPTHTTPSecondTurnMatchesReconstructedGatewayProvider(t *testing.T) 
 	}
 }
 
-func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallback(t *testing.T) {
+func TestChatGPTWebSocketWarmGatewayEquivalenceAndColdFullHistoryFallback(t *testing.T) {
 	var mu sync.Mutex
 	connections := 0
 	var captured []map[string]any
@@ -585,8 +585,28 @@ func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallba
 			return
 		}
 
-		// Gateway-equivalent reconstruction has no connection-local response ID,
-		// so its second-turn transcript is complete on its first frame.
+		if connection == 2 {
+			// A warm gateway lease retains the same provider instance, so its first
+			// and continuation frames are transport-equivalent to direct mode.
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read warm gateway first request: %v", err)
+				return
+			}
+			capture(data)
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_direct_1"}})
+			_, data, err = conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read warm gateway continuation: %v", err)
+				return
+			}
+			capture(data)
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_warm_2"}})
+			return
+		}
+
+		// A cold gateway reconstruction has no connection-local response ID, so
+		// its second-turn transcript is complete on its first frame.
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			t.Errorf("read reconstructed request: %v", err)
@@ -622,8 +642,22 @@ func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallba
 	drainStreamToDone(t, stream)
 	_ = stream.Close()
 
-	reconstructed := newWSProvider()
-	stream, err = reconstructed.Stream(t.Context(), second)
+	warmGateway := newWSProvider()
+	stream, err = warmGateway.Stream(t.Context(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+	stream, err = warmGateway.Stream(t.Context(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+	_ = stream.Close()
+
+	coldGateway := newWSProvider()
+	stream, err = coldGateway.Stream(t.Context(), second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,8 +667,8 @@ func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallba
 	mu.Lock()
 	requests := append([]map[string]any(nil), captured...)
 	mu.Unlock()
-	if len(requests) != 4 {
-		t.Fatalf("captured WebSocket requests = %d, want 4", len(requests))
+	if len(requests) != 6 {
+		t.Fatalf("captured WebSocket requests = %d, want 6", len(requests))
 	}
 	directContinuation := requests[1]
 	if directContinuation["previous_response_id"] != "resp_direct_1" {
@@ -643,7 +677,10 @@ func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallba
 	if input, ok := directContinuation["input"].([]any); !ok || len(input) != 1 {
 		t.Fatalf("direct continuation input = %#v, want only new suffix", directContinuation["input"])
 	}
-	for name, request := range map[string]map[string]any{"direct fallback": requests[2], "gateway reconstruction": requests[3]} {
+	if !reflect.DeepEqual(requests[0], requests[3]) || !reflect.DeepEqual(requests[1], requests[4]) {
+		t.Fatalf("direct and warm-gateway ChatGPT payloads differ\ndirect first: %#v\nwarm first: %#v\ndirect continuation: %#v\nwarm continuation: %#v", requests[0], requests[3], requests[1], requests[4])
+	}
+	for name, request := range map[string]map[string]any{"direct fallback": requests[2], "cold gateway reconstruction": requests[5]} {
 		if _, ok := request["previous_response_id"]; ok {
 			t.Fatalf("%s retained previous_response_id: %#v", name, request)
 		}
@@ -651,7 +688,7 @@ func TestChatGPTWebSocketDirectContinuationGatewayDifferenceAndFullHistoryFallba
 			t.Fatalf("%s input = %#v, want full transcript", name, request["input"])
 		}
 	}
-	if !reflect.DeepEqual(requests[2], requests[3]) {
-		t.Fatalf("full-history WS fallback and gateway reconstruction differ\nfallback: %#v\ngateway: %#v", requests[2], requests[3])
+	if !reflect.DeepEqual(requests[2], requests[5]) {
+		t.Fatalf("full-history WS fallback and cold gateway reconstruction differ\nfallback: %#v\ngateway: %#v", requests[2], requests[5])
 	}
 }

@@ -468,13 +468,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, client 
 		return
 	}
 	envelope := protocol.InferenceRequest{Version: protocol.Version, RequestID: requestID, Provider: provider}
-	execution, requestErr := s.startInference(r.Context(), client, envelope, providerReq, true)
+	execution, requestErr := s.startInference(r.Context(), client, envelope, providerReq, true, false)
 	if requestErr != nil {
 		s.writeResponsesError(w, requestErr.Status, requestErr.Code, requestErr.Message, responsesErrorParam(requestErr.Code))
 		return
 	}
 	errorCode := ""
-	defer func() { execution.close(errorCode) }()
+	successful := false
+	defer func() { execution.close(errorCode, successful) }()
 
 	responseID, err := randomSecret("resp", 16)
 	if err != nil {
@@ -583,6 +584,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, client 
 	if !request.Stream {
 		s.writeResponsesJSON(w, http.StatusOK, &accumulator.document)
 	}
+	successful = true
 }
 
 func responsesErrorParam(code string) string {

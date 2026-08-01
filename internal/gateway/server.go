@@ -32,32 +32,37 @@ import (
 )
 
 const (
-	defaultMaxBodyBytes          = 64 << 20
-	DefaultUpstreamRetryAttempts = 3
-	DefaultUpstreamRetryElapsed  = 20 * time.Second
+	defaultMaxBodyBytes               = 64 << 20
+	DefaultUpstreamRetryAttempts      = 3
+	DefaultUpstreamRetryElapsed       = 20 * time.Second
+	DefaultProviderSessionIdleTimeout = 30 * time.Second
 )
 
 type ProviderFactory func(*config.Config, string, string) (llm.Provider, error)
 type ConfigLoader func() (*config.Config, error)
 
 type ServerConfig struct {
-	Config                  *config.Config
-	ConfigLoader            ConfigLoader
-	Clients                 *ClientStore
-	Sealer                  *StateSealer
-	Usage                   UsageRecorder
-	ProviderFactory         ProviderFactory
-	Searcher                search.Searcher
-	FetchTool               *llm.ReadURLTool
-	Policy                  Policy
-	MaxBodyBytes            int64
-	IdleTimeout             time.Duration
-	ToolTimeout             time.Duration
-	CatalogTTL              time.Duration
-	ModelListTimeout        time.Duration
-	UpstreamRetryAttempts   int
-	UpstreamRetryMaxElapsed time.Duration
-	RunTempRoot             string
+	Config                     *config.Config
+	ConfigLoader               ConfigLoader
+	Clients                    *ClientStore
+	Sealer                     *StateSealer
+	Usage                      UsageRecorder
+	ProviderFactory            ProviderFactory
+	Searcher                   search.Searcher
+	FetchTool                  *llm.ReadURLTool
+	Policy                     Policy
+	MaxBodyBytes               int64
+	IdleTimeout                time.Duration
+	ToolTimeout                time.Duration
+	CatalogTTL                 time.Duration
+	ModelListTimeout           time.Duration
+	UpstreamRetryAttempts      int
+	UpstreamRetryMaxElapsed    time.Duration
+	ProviderSessionIdleTimeout time.Duration
+	// DisableProviderSessionReuse explicitly disables reuse. A zero idle timeout
+	// otherwise selects DefaultProviderSessionIdleTimeout.
+	DisableProviderSessionReuse bool
+	RunTempRoot                 string
 }
 
 type runState struct {
@@ -76,20 +81,23 @@ type clientLimits struct {
 }
 
 type inferenceExecution struct {
-	server   *Server
-	client   Client
-	envelope protocol.InferenceRequest
-	request  llm.Request
-	entry    protocol.CatalogEntry
-	provider llm.Provider
-	stream   llm.Stream
-	ctx      context.Context
-	cancel   context.CancelFunc
-	release  func()
-	tempDir  string
-	started  time.Time
-	total    llm.Usage
-	finish   sync.Once
+	server          *Server
+	client          Client
+	envelope        protocol.InferenceRequest
+	request         llm.Request
+	entry           protocol.CatalogEntry
+	provider        llm.Provider
+	stream          llm.Stream
+	ctx             context.Context
+	cancel          context.CancelFunc
+	release         func()
+	contextStop     func() bool
+	providerSession *providerSessionLease
+	cleanupProvider bool
+	tempDir         string
+	started         time.Time
+	total           llm.Usage
+	finish          sync.Once
 }
 
 type inferenceRequestError struct {
@@ -100,7 +108,7 @@ type inferenceRequestError struct {
 
 func (e *inferenceExecution) addUsage(use llm.Usage) { e.total.Add(use) }
 
-func (e *inferenceExecution) close(errorCode string) {
+func (e *inferenceExecution) close(errorCode string, successful bool) {
 	if e == nil {
 		return
 	}
@@ -108,10 +116,19 @@ func (e *inferenceExecution) close(errorCode string) {
 		if errorCode == "" && errors.Is(e.ctx.Err(), context.Canceled) {
 			errorCode = "canceled"
 		}
+		successful = successful && errorCode == "" && e.ctx.Err() == nil
 		_ = e.stream.Close()
 		e.cancel()
+		if e.contextStop != nil {
+			e.contextStop()
+		}
 		if e.tempDir != "" {
 			_ = os.RemoveAll(e.tempDir)
+		}
+		if e.providerSession != nil {
+			e.providerSession.release(successful)
+		} else if e.cleanupProvider {
+			cleanupProviderSession(e.provider)
 		}
 		if e.release != nil {
 			e.release()
@@ -123,8 +140,14 @@ func (e *inferenceExecution) close(errorCode string) {
 type Server struct {
 	cfg ServerConfig
 
-	configMu sync.RWMutex
-	config   *config.Config
+	configMu         sync.RWMutex
+	config           *config.Config
+	configGeneration uint64
+
+	providerSessions *providerSessionCache
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	closeOnce        sync.Once
 
 	catalogMu              sync.RWMutex
 	catalog                protocol.Catalog
@@ -169,17 +192,44 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.UpstreamRetryMaxElapsed <= 0 {
 		cfg.UpstreamRetryMaxElapsed = DefaultUpstreamRetryElapsed
 	}
+	providerSessionIdleTimeout := cfg.ProviderSessionIdleTimeout
+	if providerSessionIdleTimeout < 0 {
+		return nil, fmt.Errorf("gateway provider session idle timeout cannot be negative")
+	}
+	if providerSessionIdleTimeout == 0 {
+		providerSessionIdleTimeout = DefaultProviderSessionIdleTimeout
+	}
 	if strings.TrimSpace(cfg.RunTempRoot) != "" {
 		cfg.RunTempRoot = filepath.Clean(cfg.RunTempRoot)
 		if err := prepareRunTempRoot(cfg.RunTempRoot); err != nil {
 			return nil, err
 		}
 	}
-	return &Server{
-		cfg: cfg, config: cfg.Config, configFetchedAt: time.Now().UTC(),
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	server := &Server{
+		cfg: cfg, config: cfg.Config, configGeneration: 1, configFetchedAt: time.Now().UTC(),
 		catalog: protocol.Catalog{Version: protocol.Version}, catalogProviderFetched: make(map[string]time.Time),
 		runs: make(map[string]*runState), limits: make(map[string]*clientLimits),
-	}, nil
+		lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel,
+	}
+	if !cfg.DisableProviderSessionReuse {
+		server.providerSessions = newProviderSessionCache(providerSessionIdleTimeout)
+	}
+	return server, nil
+}
+
+// Close cancels active gateway inference and closes all retained provider
+// sessions, including their WebSocket and provider-specific resources.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.closeOnce.Do(func() {
+		s.lifecycleCancel()
+		if s.providerSessions != nil {
+			s.providerSessions.Close()
+		}
+	})
 }
 
 func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
@@ -339,13 +389,14 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, client 
 		s.writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), envelope.RequestID)
 		return
 	}
-	execution, requestErr := s.startInference(r.Context(), client, envelope, providerReq, false)
+	execution, requestErr := s.startInference(r.Context(), client, envelope, providerReq, false, true)
 	if requestErr != nil {
 		s.writeError(w, requestErr.Status, requestErr.Code, requestErr.Message, envelope.RequestID)
 		return
 	}
 	errorCode := ""
-	defer func() { execution.close(errorCode) }()
+	successful := false
+	defer func() { execution.close(errorCode, successful) }()
 	providerReq = execution.request
 	provider := execution.provider
 	stream := execution.stream
@@ -484,8 +535,12 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request, client 
 		}
 	}
 	if errorCode == "" {
-		_ = writeSSE(w, protocol.StreamRecord{Version: protocol.Version, Type: "done", RequestID: envelope.RequestID, RunID: runID})
-		flusher.Flush()
+		if writeSSE(w, protocol.StreamRecord{Version: protocol.Version, Type: "done", RequestID: envelope.RequestID, RunID: runID}) {
+			flusher.Flush()
+			successful = true
+		} else {
+			errorCode = "canceled"
+		}
 	}
 }
 
@@ -656,15 +711,32 @@ func (s *Server) newRunTempDir() (string, error) {
 }
 
 func (s *Server) centralConfig() *config.Config {
-	clone := *s.currentConfig()
+	current := s.currentConfig()
+	clone := *current
 	clone.Gateway = config.GatewayConfig{}
+	clone.Providers = make(map[string]config.ProviderConfig, len(current.Providers))
+	for key, providerConfig := range current.Providers {
+		if providerConfig.Env != nil {
+			env := make(map[string]string, len(providerConfig.Env))
+			for name, value := range providerConfig.Env {
+				env[name] = value
+			}
+			providerConfig.Env = env
+		}
+		clone.Providers[key] = providerConfig
+	}
 	return &clone
 }
 
 func (s *Server) currentConfig() *config.Config {
+	cfg, _ := s.currentConfigAndGeneration()
+	return cfg
+}
+
+func (s *Server) currentConfigAndGeneration() (*config.Config, uint64) {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
-	return s.config
+	return s.config, s.configGeneration
 }
 
 func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
@@ -776,6 +848,7 @@ func (s *Server) refreshConfigIfStale() error {
 		clone.Gateway = config.GatewayConfig{}
 		s.configMu.Lock()
 		s.config = &clone
+		s.configGeneration++
 		s.configFetchedAt = time.Now().UTC()
 		s.configMu.Unlock()
 	}
