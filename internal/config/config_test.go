@@ -1258,6 +1258,28 @@ func TestSave_QuotesSpecialYAMLValues(t *testing.T) {
 	}
 }
 
+func TestResolveSearchCredentialsParallel(t *testing.T) {
+	t.Setenv("PARALLEL_API_KEY", "env-key")
+
+	fallback := SearchConfig{}
+	resolveSearchCredentials(&fallback)
+	if fallback.Parallel.APIKey != "env-key" {
+		t.Fatalf("Parallel API key = %q, want env fallback", fallback.Parallel.APIKey)
+	}
+
+	explicitEnv := SearchConfig{Parallel: SearchParallelConfig{APIKey: "${PARALLEL_API_KEY}"}}
+	resolveSearchCredentials(&explicitEnv)
+	if explicitEnv.Parallel.APIKey != "env-key" {
+		t.Fatalf("expanded Parallel API key = %q, want env-key", explicitEnv.Parallel.APIKey)
+	}
+
+	explicit := SearchConfig{Parallel: SearchParallelConfig{APIKey: "config-key"}}
+	resolveSearchCredentials(&explicit)
+	if explicit.Parallel.APIKey != "config-key" {
+		t.Fatalf("explicit Parallel API key = %q, want config-key", explicit.Parallel.APIKey)
+	}
+}
+
 func TestResolveSearchCredentialsExaMCPEnvFallbackOnlyForOfficialURL(t *testing.T) {
 	t.Setenv("EXA_API_KEY", "env-key")
 

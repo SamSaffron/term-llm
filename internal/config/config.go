@@ -894,12 +894,13 @@ type EmbedOllamaConfig struct {
 
 // SearchConfig configures web search providers
 type SearchConfig struct {
-	Provider      string                 `mapstructure:"provider"`       // exa_mcp (default), exa, perplexity, tavily, brave, google, duckduckgo
+	Provider      string                 `mapstructure:"provider"`       // exa_mcp (default), exa, perplexity, parallel, tavily, brave, google, duckduckgo
 	FetchProvider string                 `mapstructure:"fetch_provider"` // jina (default), exa_mcp, none
 	ForceExternal bool                   `mapstructure:"force_external"` // force external search for all providers
 	Exa           SearchExaConfig        `mapstructure:"exa"`
 	ExaMCP        SearchExaMCPConfig     `mapstructure:"exa_mcp"`
 	Perplexity    SearchPerplexityConfig `mapstructure:"perplexity"`
+	Parallel      SearchParallelConfig   `mapstructure:"parallel"`
 	Tavily        SearchTavilyConfig     `mapstructure:"tavily"`
 	Brave         SearchBraveConfig      `mapstructure:"brave"`
 	Google        SearchGoogleConfig     `mapstructure:"google"`
@@ -918,6 +919,11 @@ type SearchExaMCPConfig struct {
 
 // SearchPerplexityConfig configures Perplexity search
 type SearchPerplexityConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// SearchParallelConfig configures Parallel search
+type SearchParallelConfig struct {
 	APIKey string `mapstructure:"api_key"`
 }
 
@@ -2156,6 +2162,12 @@ func resolveSearchCredentials(cfg *SearchConfig) {
 	cfg.Perplexity.APIKey = expandEnv(cfg.Perplexity.APIKey)
 	if cfg.Perplexity.APIKey == "" {
 		cfg.Perplexity.APIKey = os.Getenv("PERPLEXITY_API_KEY")
+	}
+
+	// Parallel credentials
+	cfg.Parallel.APIKey = expandEnv(cfg.Parallel.APIKey)
+	if cfg.Parallel.APIKey == "" {
+		cfg.Parallel.APIKey = os.Getenv("PARALLEL_API_KEY")
 	}
 
 	// Tavily credentials

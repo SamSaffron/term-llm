@@ -2,6 +2,7 @@ package procutil
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -65,6 +66,17 @@ func ConfigureCommandProcessGroup(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return nil
 		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err == nil {
+			return nil
+		}
+
+		// The process group can disappear between context cancellation and the
+		// signal on fast-exiting commands. Fall back to the direct child so
+		// os/exec sees os.ErrProcessDone instead of surfacing a cancellation race.
+		err := cmd.Process.Kill()
+		if errors.Is(err, os.ErrProcessDone) {
+			return os.ErrProcessDone
+		}
+		return err
 	}
 }

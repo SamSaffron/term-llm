@@ -103,6 +103,13 @@ func TestApprovalConfigValueCompletionsExcludeYolo(t *testing.T) {
 	}
 }
 
+func TestSearchProviderConfigValueCompletionsIncludeParallel(t *testing.T) {
+	got := configValueCompletions("search.provider", "par")
+	if !reflect.DeepEqual(got, []string{"parallel"}) {
+		t.Fatalf("configValueCompletions(search.provider, par) = %v, want [parallel]", got)
+	}
+}
+
 func TestDefaultConfigContentContainsEveryDefault(t *testing.T) {
 	content := defaultConfigContent()
 	var root yaml.Node

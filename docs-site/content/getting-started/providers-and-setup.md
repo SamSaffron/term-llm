@@ -64,6 +64,9 @@ export EXA_API_KEY=your-key
 
 # For Perplexity search (used by search.provider: perplexity)
 export PERPLEXITY_API_KEY=your-key
+
+# For Parallel search (used by search.provider: parallel)
+export PARALLEL_API_KEY=your-key
 ```
 
 OpenAI API-key installs default to `gpt-5.6-sol`, with `gpt-5.6-luna` as the lightweight control-plane model:

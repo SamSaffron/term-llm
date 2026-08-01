@@ -431,8 +431,18 @@ search:
   exa:
     api_key: ${EXA_API_KEY}
 
+  parallel:
+    api_key: ${PARALLEL_API_KEY}
+
+  tavily:
+    api_key: ${TAVILY_API_KEY}
+
   brave:
     api_key: ${BRAVE_API_KEY}
+
+  google:
+    api_key: ${GOOGLE_SEARCH_API_KEY}
+    cx: ${GOOGLE_SEARCH_CX}
 ```
 
 Defaults are `provider: exa_mcp` and `fetch_provider: jina`: external search uses Exa's remote MCP server, while `read_url` uses Jina Reader. Set `fetch_provider: exa_mcp` to fetch pages through Exa MCP as well, or `fetch_provider: none` to omit the external `read_url` tool.

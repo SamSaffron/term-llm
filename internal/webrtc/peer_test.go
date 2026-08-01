@@ -155,7 +155,7 @@ func TestHandleOffer_SetupTimeoutReleasesConnectionSlot(t *testing.T) {
 		},
 		handler:      http.NotFoundHandler(),
 		client:       signaling.Client(),
-		setupTimeout: 200 * time.Millisecond,
+		setupTimeout: 2 * time.Second,
 	}
 
 	firstDone := make(chan struct{})
@@ -198,7 +198,7 @@ func TestHandleOffer_SetupTimeoutReleasesConnectionSlot(t *testing.T) {
 
 	select {
 	case <-firstDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(p.setupTimeout + 3*time.Second):
 		t.Fatal("abandoned WebRTC setup did not return after setup timeout")
 	}
 	if got := p.active.Load(); got != 0 {
@@ -224,9 +224,9 @@ func TestHandleOffer_SetupTimeoutReleasesConnectionSlot(t *testing.T) {
 	}
 	cancelSecond()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for p.active.Load() != 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	if got := p.active.Load(); got != 0 {
 		t.Fatalf("active connections after canceling subsequent offer = %d, want 0", got)

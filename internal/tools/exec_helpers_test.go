@@ -2,7 +2,7 @@ package tools
 
 import (
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 )
 
@@ -15,12 +15,16 @@ func TestResolveToolPath_TildeExpanded(t *testing.T) {
 	if err != nil {
 		t.Skip("cannot determine home dir")
 	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Skip("cannot canonicalize home dir")
+	}
 	got, err := resolveToolPath("~", false)
 	if err != nil {
 		t.Fatalf("resolveToolPath(~) returned error: %v", err)
 	}
-	if !strings.HasPrefix(got, home) {
-		t.Errorf("resolveToolPath(~) = %q, expected prefix %q", got, home)
+	if got != home {
+		t.Errorf("resolveToolPath(~) = %q, want canonical home %q", got, home)
 	}
 }
 
@@ -32,12 +36,16 @@ func TestResolveToolPath_TildeSlashExpanded(t *testing.T) {
 	if err != nil {
 		t.Skip("cannot determine home dir")
 	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Skip("cannot canonicalize home dir")
+	}
 	// Use a subpath that is guaranteed to exist so canonicalizePath doesn't fail.
 	got, err := resolveToolPath("~/", false)
 	if err != nil {
 		t.Fatalf("resolveToolPath(~/) returned error: %v", err)
 	}
-	if !strings.HasPrefix(got, home) {
-		t.Errorf("resolveToolPath(~/) = %q, expected prefix %q", got, home)
+	if got != home {
+		t.Errorf("resolveToolPath(~/) = %q, want canonical home %q", got, home)
 	}
 }

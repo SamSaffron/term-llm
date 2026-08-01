@@ -250,6 +250,7 @@ var keySpecs = []KeySpec{
 	def("search.exa_mcp.url", DefaultSearchExaMCPURL),
 	optional("search.exa_mcp.api_key", sensitive()),
 	optional("search.perplexity.api_key", sensitive()),
+	optional("search.parallel.api_key", sensitive()),
 	optional("search.tavily.api_key", sensitive()),
 	optional("search.brave.api_key", sensitive()),
 	optional("search.google.api_key", sensitive()),

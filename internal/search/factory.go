@@ -30,6 +30,12 @@ func NewSearcher(cfg *config.Config) (Searcher, error) {
 		}
 		return NewPerplexitySearcher(cfg.Search.Perplexity.APIKey, nil), nil
 
+	case "parallel":
+		if cfg.Search.Parallel.APIKey == "" {
+			return nil, fmt.Errorf("parallel search requires PARALLEL_API_KEY")
+		}
+		return NewParallelSearcher(cfg.Search.Parallel.APIKey, nil), nil
+
 	case "tavily":
 		if cfg.Search.Tavily.APIKey == "" {
 			return nil, fmt.Errorf("tavily search requires TAVILY_API_KEY")
@@ -55,6 +61,6 @@ func NewSearcher(cfg *config.Config) (Searcher, error) {
 		return NewDuckDuckGoLite(nil), nil
 
 	default:
-		return nil, fmt.Errorf("unknown search provider: %s (valid: exa, exa_mcp, perplexity, tavily, brave, google, duckduckgo)", provider)
+		return nil, fmt.Errorf("unknown search provider: %s (valid: exa, exa_mcp, perplexity, parallel, tavily, brave, google, duckduckgo)", provider)
 	}
 }

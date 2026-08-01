@@ -1273,7 +1273,7 @@ func configValueCompletions(key, toComplete string) []string {
 		return completions
 
 	case "search.provider":
-		providers := []string{"duckduckgo", "exa", "exa_mcp", "perplexity", "tavily", "brave", "google"}
+		providers := []string{"duckduckgo", "exa", "exa_mcp", "perplexity", "parallel", "tavily", "brave", "google"}
 		var completions []string
 		for _, p := range providers {
 			if strings.HasPrefix(p, toComplete) {

@@ -90,6 +90,9 @@ search:
     # api_key is optional; set it to raise Exa MCP free-tier limits
     api_key: ${EXA_API_KEY}
 
+  parallel:
+    api_key: ${PARALLEL_API_KEY}
+
   brave:
     api_key: ${BRAVE_API_KEY}
 
@@ -106,6 +109,7 @@ Available external providers:
 | Exa | `EXA_API_KEY` | semantic search |
 | Exa MCP | optional `EXA_API_KEY` | default, free remote MCP-backed search (`provider: exa_mcp`); can also back page fetch with `fetch_provider: exa_mcp` |
 | Perplexity | `PERPLEXITY_API_KEY` | search API with concise answer-oriented results |
+| Parallel | `PARALLEL_API_KEY` | ranked search with multi-paragraph source excerpts (`provider: parallel`) |
 | Tavily | `TAVILY_API_KEY` | agent-oriented search |
 | Brave | `BRAVE_API_KEY` | independent index |
 | Google | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | Custom Search |
