@@ -1,0 +1,66 @@
+# Private-network inference gateway example.
+# Supply or build a `term-llm:latest` image, copy the adjacent example configs,
+# and place provider/client secrets in ./secrets before starting.
+services:
+  gateway:
+    image: term-llm:latest
+    command:
+      - gateway
+      - serve
+      - --listen
+      - 0.0.0.0:8787
+      - --state-dir
+      - /var/lib/term-llm-gateway
+    volumes:
+      - gateway-state:/var/lib/term-llm-gateway
+      - ./gateway-config.yaml:/home/agent/.config/term-llm/config.yaml:ro
+    secrets:
+      - anthropic_api_key
+    networks: [provider-plane]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "term-llm", "gateway", "health", "http://127.0.0.1:8787/g1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    # Deliberately no ports: the gateway is reachable only on provider-plane.
+
+  satellite:
+    image: term-llm:latest
+    command: [serve, web, --host, 0.0.0.0, --port, "8080"]
+    volumes:
+      - satellite-state:/home/agent
+      - ./satellite-config.yaml:/home/agent/.config/term-llm/config.yaml:ro
+    secrets:
+      - gateway_client_token
+    networks:
+      - provider-plane
+      - ui-plane
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "term-llm", "gateway", "health", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  provider-plane:
+    internal: true
+  ui-plane: {}
+
+volumes:
+  gateway-state: {}
+  satellite-state: {}
+
+secrets:
+  anthropic_api_key:
+    file: ./secrets/anthropic_api_key
+  gateway_client_token:
+    file: ./secrets/gateway_client_token

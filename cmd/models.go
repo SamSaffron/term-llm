@@ -76,6 +76,20 @@ func runModels(cmd *cobra.Command, args []string) error {
 	if providerName == "" {
 		providerName = cfg.DefaultProvider
 	}
+	if cfg.Gateway.Enabled() && !cfg.IsLocalProvider(providerName) {
+		provider, routeErr := llm.NewProviderByName(cfg, providerName, "")
+		if routeErr != nil {
+			return routeErr
+		} else if remote, ok := provider.(*llm.GatewayProvider); ok {
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+			defer cancel()
+			models, listErr := remote.ListModels(ctx)
+			if listErr != nil {
+				return fmt.Errorf("failed to list gateway models: %w", listErr)
+			}
+			return outputListedModels(providerName, models, true)
+		}
+	}
 
 	// Get provider config - handle built-in providers that may not be explicitly configured
 	providerCfg, ok := cfg.Providers[providerName]
@@ -225,6 +239,12 @@ func runModels(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list models: %w", err)
 	}
 
+	// Only these providers return or have known pricing info.
+	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen || providerType == config.ProviderTypeNearAI || providerType == config.ProviderTypeSambaNova
+	return outputListedModels(providerName, models, providerHasPricing)
+}
+
+func outputListedModels(providerName string, models []llm.ModelInfo, providerHasPricing bool) error {
 	if len(models) == 0 {
 		fmt.Println("No models found.")
 		return nil
@@ -236,12 +256,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 		return enc.Encode(models)
 	}
 
-	// Pretty print
 	fmt.Printf("Available models from %s:\n\n", providerName)
-
-	// Only these providers return or have known pricing info
-	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen || providerType == config.ProviderTypeNearAI || providerType == config.ProviderTypeSambaNova
-
 	for _, m := range models {
 		if m.DisplayName != "" {
 			fmt.Printf("  %s (%s)", m.ID, m.DisplayName)
@@ -255,10 +270,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 		}
 
 		// Show pricing info only if provider returns it
-		if providerHasPricing {
-			if m.InputPrice < 0 || m.OutputPrice < 0 {
-				fmt.Printf(" [pricing unknown]")
-			} else if m.InputPrice == 0 && m.OutputPrice == 0 {
+		if providerHasPricing && m.InputPrice >= 0 && m.OutputPrice >= 0 {
+			if m.InputPrice == 0 && m.OutputPrice == 0 {
 				fmt.Printf(" [FREE]")
 			} else {
 				fmt.Printf(" [$%.2f/$%.2f per 1M tokens]", m.InputPrice, m.OutputPrice)

@@ -3,11 +3,13 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/samsaffron/term-llm/internal/credentials"
@@ -38,6 +40,11 @@ const (
 	ProviderTypeSambaNova    ProviderType = "sambanova"
 	ProviderTypeBedrock      ProviderType = "bedrock"
 	ProviderTypeOllama       ProviderType = "ollama"
+	// ProviderTypeDebug is intentionally omitted from builtInProviderTypes so the
+	// development provider remains hidden from normal provider discovery. It is
+	// still a real type for gateway catalogs and must never inherit custom
+	// OpenAI-compatible model policy.
+	ProviderTypeDebug ProviderType = "debug"
 )
 
 // builtInProviderTypes maps known provider names to their types
@@ -67,6 +74,9 @@ var builtInProviderTypes = map[string]ProviderType{
 func InferProviderType(name string, explicit ProviderType) ProviderType {
 	if explicit != "" {
 		return explicit
+	}
+	if name == "debug" {
+		return ProviderTypeDebug
 	}
 	if t, ok := builtInProviderTypes[name]; ok {
 		return t
@@ -159,8 +169,9 @@ type ProviderConfig struct {
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
 
 	// Model token limits (for custom/self-hosted models not in hardcoded tables)
-	ContextWindow   int `mapstructure:"context_window"`
-	MaxOutputTokens int `mapstructure:"max_output_tokens"`
+	ContextWindow       int   `mapstructure:"context_window"`
+	MaxOutputTokens     int   `mapstructure:"max_output_tokens"`
+	AllowUnlistedModels *bool `mapstructure:"allow_unlisted_models"` // Gateway policy override for dynamic provider catalogs
 
 	// OpenAI-compatible specific
 	BaseURL           string `mapstructure:"base_url"`            // Base URL - /chat/completions is appended
@@ -442,34 +453,185 @@ func parseEnvBool(value string) bool {
 	}
 }
 
+const (
+	DefaultGatewayCatalogTTL       = "15m"
+	DefaultGatewayConnectTimeout   = "2s"
+	DefaultGatewayResponseTimeout  = "5s"
+	DefaultGatewayIdleTimeout      = "5m"
+	DefaultGatewayToolTimeout      = "10m"
+	DefaultGatewayTokenEnv         = "TERM_LLM_GATEWAY_TOKEN"
+	DefaultGatewayMaxResponseBytes = int64(64 << 20)
+)
+
+// GatewayConfig configures the optional inference gateway used by satellites.
+// When URL is empty provider/search/fetch behavior is unchanged. Nil Search and
+// Fetch values intentionally default to remote routing; pointers preserve an
+// explicit false in both YAML and programmatic configurations.
+type GatewayConfig struct {
+	URL             string   `mapstructure:"url" yaml:"url,omitempty"`
+	Token           string   `mapstructure:"token" yaml:"token,omitempty"`
+	TokenFile       string   `mapstructure:"token_file" yaml:"token_file,omitempty"`
+	TokenEnv        string   `mapstructure:"token_env" yaml:"token_env,omitempty"`
+	LocalProviders  []string `mapstructure:"local_providers" yaml:"local_providers,omitempty"`
+	Search          *bool    `mapstructure:"search" yaml:"search,omitempty"`
+	Fetch           *bool    `mapstructure:"fetch" yaml:"fetch,omitempty"`
+	Required        bool     `mapstructure:"required" yaml:"required,omitempty"`
+	CatalogTTL      string   `mapstructure:"catalog_ttl" yaml:"catalog_ttl,omitempty"`
+	ConnectTimeout  string   `mapstructure:"connect_timeout" yaml:"connect_timeout,omitempty"`
+	ResponseTimeout string   `mapstructure:"response_timeout" yaml:"response_timeout,omitempty"`
+	IdleTimeout     string   `mapstructure:"idle_timeout" yaml:"idle_timeout,omitempty"`
+	ToolTimeout     string   `mapstructure:"tool_timeout" yaml:"tool_timeout,omitempty"`
+}
+
+// Enabled reports whether a remote gateway is configured.
+func (g GatewayConfig) Enabled() bool { return strings.TrimSpace(g.URL) != "" }
+
+// RouteSearch and RouteFetch default to true for a minimal gateway block while
+// honoring an explicit false. Local search/fetch configuration is used when the
+// corresponding method returns false.
+func (g GatewayConfig) RouteSearch() bool { return g.Search == nil || *g.Search }
+func (g GatewayConfig) RouteFetch() bool  { return g.Fetch == nil || *g.Fetch }
+
+// ResolveToken resolves the satellite credential without mutating config. The
+// explicit token wins, followed by token_file, then token_env.
+func (g GatewayConfig) ResolveToken() (string, error) {
+	if token := strings.TrimSpace(g.Token); token != "" {
+		return token, nil
+	}
+	if path := strings.TrimSpace(g.TokenFile); path != "" {
+		if strings.HasPrefix(path, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("resolve gateway token file: %w", err)
+			}
+			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read gateway token file: %w", err)
+		}
+		if token := strings.TrimSpace(string(data)); token != "" {
+			return token, nil
+		}
+		return "", fmt.Errorf("gateway token file %q is empty", path)
+	}
+	envName := strings.TrimSpace(g.TokenEnv)
+	if envName == "" {
+		envName = DefaultGatewayTokenEnv
+	}
+	if token := strings.TrimSpace(os.Getenv(envName)); token != "" {
+		return token, nil
+	}
+	return "", fmt.Errorf("gateway token is not configured (set gateway.token, gateway.token_file, or %s)", envName)
+}
+
+// Validate checks gateway-only settings. It deliberately does nothing when no
+// gateway URL is configured, preserving historical local behavior.
+func (g GatewayConfig) Validate() error {
+	if !g.Enabled() {
+		if g.Required {
+			return fmt.Errorf("gateway.required requires gateway.url")
+		}
+		return nil
+	}
+	u, err := url.Parse(strings.TrimSpace(g.URL))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("gateway.url must be an absolute http or https URL")
+	}
+	for name, value := range map[string]string{
+		"catalog_ttl": g.CatalogTTL, "connect_timeout": g.ConnectTimeout,
+		"response_timeout": g.ResponseTimeout, "idle_timeout": g.IdleTimeout,
+		"tool_timeout": g.ToolTimeout,
+	} {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		d, parseErr := time.ParseDuration(value)
+		if parseErr != nil || d <= 0 {
+			return fmt.Errorf("gateway.%s must be a positive duration", name)
+		}
+	}
+	return nil
+}
+
+// IsExplicitProvider reports whether a provider block came from user config.
+// Programmatic Config values have no Viper presence map, so their Providers map
+// is treated as explicit by construction.
+func (c *Config) IsExplicitProvider(name string) bool {
+	if c == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if c.explicitProviders != nil {
+		return c.explicitProviders[name]
+	}
+	_, ok := c.Providers[name]
+	return ok
+}
+
+// ExplicitProviderNames returns only provider blocks that can be intentionally
+// served. It excludes Viper-populated built-in defaults.
+func (c *Config) ExplicitProviderNames() []string {
+	if c == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
+		if c.IsExplicitProvider(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// IsLocalProvider reports whether a provider is explicitly pinned to the
+// satellite. Explicit provider config and local_providers both take precedence
+// over the remote catalog.
+func (c *Config) IsLocalProvider(name string) bool {
+	if c == nil {
+		return false
+	}
+	for _, local := range c.Gateway.LocalProviders {
+		if strings.EqualFold(strings.TrimSpace(local), strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return c.IsExplicitProvider(name)
+}
+
 type Config struct {
 	DefaultProvider string                    `mapstructure:"default_provider"`
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
-	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
-	DebugLogs       DebugLogsConfig           `mapstructure:"debug_logs"`
-	Sessions        SessionsConfig            `mapstructure:"sessions"`
-	Approval        ApprovalConfig            `mapstructure:"approval"`
-	Guardian        GuardianConfig            `mapstructure:"guardian"`
-	Exec            ExecConfig                `mapstructure:"exec"`
-	Ask             AskConfig                 `mapstructure:"ask"`
-	Chat            ChatConfig                `mapstructure:"chat"`
-	Edit            EditConfig                `mapstructure:"edit"`
-	Loop            LoopConfig                `mapstructure:"loop"`
-	Image           ImageConfig               `mapstructure:"image"`
-	Audio           AudioConfig               `mapstructure:"audio"`
-	Music           MusicConfig               `mapstructure:"music"`
-	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
-	Embed           EmbedConfig               `mapstructure:"embed"`
-	Search          SearchConfig              `mapstructure:"search"`
-	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
-	Theme           ThemeConfig               `mapstructure:"theme"`
-	Tools           ToolsConfig               `mapstructure:"tools"`
-	Agents          AgentsConfig              `mapstructure:"agents"`
-	Skills          SkillsConfig              `mapstructure:"skills"`
-	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
-	AutoCompact     bool                      `mapstructure:"auto_compact"`
-	Serve           ServeConfig               `mapstructure:"serve"`
-	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
+	Gateway         GatewayConfig             `mapstructure:"gateway"`
+	// explicitProviders records provider blocks from the user's config file. It
+	// distinguishes them from Viper-populated built-in defaults for routing.
+	explicitProviders map[string]bool     `mapstructure:"-"`
+	Diagnostics       DiagnosticsConfig   `mapstructure:"diagnostics"`
+	DebugLogs         DebugLogsConfig     `mapstructure:"debug_logs"`
+	Sessions          SessionsConfig      `mapstructure:"sessions"`
+	Approval          ApprovalConfig      `mapstructure:"approval"`
+	Guardian          GuardianConfig      `mapstructure:"guardian"`
+	Exec              ExecConfig          `mapstructure:"exec"`
+	Ask               AskConfig           `mapstructure:"ask"`
+	Chat              ChatConfig          `mapstructure:"chat"`
+	Edit              EditConfig          `mapstructure:"edit"`
+	Loop              LoopConfig          `mapstructure:"loop"`
+	Image             ImageConfig         `mapstructure:"image"`
+	Audio             AudioConfig         `mapstructure:"audio"`
+	Music             MusicConfig         `mapstructure:"music"`
+	Transcription     TranscriptionConfig `mapstructure:"transcription"`
+	Embed             EmbedConfig         `mapstructure:"embed"`
+	Search            SearchConfig        `mapstructure:"search"`
+	Reasoning         ReasoningConfig     `mapstructure:"reasoning"`
+	Theme             ThemeConfig         `mapstructure:"theme"`
+	Tools             ToolsConfig         `mapstructure:"tools"`
+	Agents            AgentsConfig        `mapstructure:"agents"`
+	Skills            SkillsConfig        `mapstructure:"skills"`
+	AgentsMd          AgentsMdConfig      `mapstructure:"agents_md"`
+	AutoCompact       bool                `mapstructure:"auto_compact"`
+	Serve             ServeConfig         `mapstructure:"serve"`
+	FileTracking      FileTrackingConfig  `mapstructure:"file_tracking"`
 }
 
 // ApprovalConfig configures default approval behavior.
@@ -974,6 +1136,15 @@ func Load() (*Config, error) {
 	}
 	applyProviderModelConfigs(&cfg, providerModelConfigsFromViper(viper.GetViper()))
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
+	cfg.explicitProviders = make(map[string]bool)
+	for name := range cfg.Providers {
+		if viper.InConfig("providers." + name) {
+			cfg.explicitProviders[name] = true
+		}
+	}
+	if err := cfg.Gateway.Validate(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateApprovalModes(); err != nil {
 		return nil, err
 	}

@@ -188,8 +188,18 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		return nil, err
 	}
 	if model := strings.TrimSpace(req.Model); model != "" {
-		if err := applyAgentModelOverride(cfg, model); err != nil {
-			return nil, fmt.Errorf("apply model override %q: %w", model, err)
+		// A provider:model CLI selection is already concrete. In particular,
+		// debug:fast means the literal gateway catalog model "fast", not the
+		// special agent-level fast-model alias.
+		parts := strings.SplitN(providerFlag, ":", 2)
+		explicitModel := ""
+		if len(parts) == 2 {
+			explicitModel = strings.TrimSpace(parts[1])
+		}
+		if strings.TrimSpace(providerFlag) == "" || explicitModel == "" || explicitModel != model {
+			if err := applyAgentModelOverride(cfg, model); err != nil {
+				return nil, fmt.Errorf("apply model override %q: %w", model, err)
+			}
 		}
 	}
 

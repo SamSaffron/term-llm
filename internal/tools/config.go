@@ -389,13 +389,17 @@ func optionalToolConfig(configs []*ToolConfig) *ToolConfig {
 }
 
 // ParseToolsFlag parses a comma-separated list of tool names.
-// Special values: "all" or "*" expand to all available tools.
+// Special values: "all" or "*" expand to all available tools; "none" disables
+// every tool, including tools enabled in configuration.
 func ParseToolsFlag(value string) []string {
 	if value == "" {
 		return nil
 	}
-	// Handle "all" or "*" to enable all tools
 	trimmed := strings.TrimSpace(value)
+	if strings.EqualFold(trimmed, "none") {
+		return []string{}
+	}
+	// Handle "all" or "*" to enable all tools
 	if trimmed == "all" || trimmed == "*" {
 		return StandardToolNames()
 	}

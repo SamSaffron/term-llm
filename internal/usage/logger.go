@@ -53,6 +53,7 @@ func NewLogger() *Logger {
 func (l *Logger) Log(entry LogEntry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	entry.Timestamp = entry.Timestamp.UTC()
 
 	// Ensure directory exists
 	if err := os.MkdirAll(l.baseDir, 0755); err != nil {

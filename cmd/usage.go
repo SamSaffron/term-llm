@@ -67,7 +67,7 @@ func init() {
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
 	usageCmd.Flags().BoolVar(&usageBreakdown, "breakdown", false, "Show per-model breakdown")
-	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin, codex, gemini-cli calls)")
+	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (CLI-provider and gateway calls) in any provider view")
 	usageCmd.Flags().StringVar(&usageCopilotScope, "copilot-scope", "user", "Copilot billing scope (user, org, enterprise)")
 	usageCmd.Flags().StringVar(&usageCopilotEntity, "copilot-entity", "", "Copilot billing entity (username, organization, or enterprise slug; defaults to authenticated user for user scope)")
 	usageCmd.Flags().IntVar(&usageCopilotYear, "year", 0, "Copilot usage year (YYYY; defaults to GitHub API current year)")
