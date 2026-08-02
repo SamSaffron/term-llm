@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -30,7 +31,7 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 
 	// Check if provider is configured or is a built-in type
 	if cfg != nil {
-		if _, ok := cfg.Providers[provider]; ok {
+		if _, ok := cfg.Providers[provider]; ok && (!cfg.Gateway.Enabled() || cfg.IsLocalProvider(provider)) {
 			return provider, model, nil
 		}
 		if len(parts) == 1 {
@@ -45,6 +46,22 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 				}
 			}
 		}
+	}
+
+	// A gateway catalog extends ordinary provider:model syntax without adding a
+	// second addressing scheme. Explicit local routing still won above.
+	if cfg != nil && cfg.Gateway.Enabled() && !cfg.IsLocalProvider(provider) {
+		timeout := gatewayDuration(cfg.Gateway.ConnectTimeout, config.DefaultGatewayConnectTimeout) + gatewayDuration(cfg.Gateway.ResponseTimeout, config.DefaultGatewayResponseTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		found, err := GatewayCatalogHasProvider(ctx, cfg, provider)
+		if err != nil {
+			return "", "", fmt.Errorf("gateway unavailable while resolving provider %q; check gateway URL/network/token: %w", provider, err)
+		}
+		if found {
+			return provider, model, nil
+		}
+		return "", "", fmt.Errorf("provider %q is not available through the configured gateway; add it on the gateway or list it in gateway.local_providers", provider)
 	}
 
 	// Also accept built-in provider type names
@@ -64,6 +81,9 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, ok := provider.(interface{ GatewayHandlesRetries() bool }); ok {
+		return provider, nil
+	}
 	// Wrap with retry logic (enabled by default)
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
 }
@@ -73,6 +93,9 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 // If the provider is a built-in type but not explicitly configured,
 // it will be created with default settings.
 func NewProviderByName(cfg *config.Config, name string, model string) (Provider, error) {
+	if provider, routed, err := newGatewayProviderIfRouted(cfg, name, model); routed || err != nil {
+		return provider, err
+	}
 	// Handle hidden debug provider first
 	if name == "debug" {
 		provider := NewDebugProvider(model)
@@ -211,7 +234,27 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
 }
 
-// NewFastProvider creates a lightweight provider instance for the specified provider key.
+func newGatewayProviderIfRouted(cfg *config.Config, name, model string) (Provider, bool, error) {
+	if cfg == nil || !cfg.Gateway.Enabled() || cfg.IsLocalProvider(name) {
+		return nil, false, nil
+	}
+	timeout := gatewayDuration(cfg.Gateway.ConnectTimeout, config.DefaultGatewayConnectTimeout) + gatewayDuration(cfg.Gateway.ResponseTimeout, config.DefaultGatewayResponseTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	found, err := GatewayCatalogHasProvider(ctx, cfg, name)
+	if err != nil {
+		return nil, true, fmt.Errorf("gateway unavailable for provider %q; check gateway URL/network/token: %w", name, err)
+	}
+	if !found {
+		return nil, true, fmt.Errorf("provider %q is not available through the configured gateway; add it on the gateway or list it in gateway.local_providers", name)
+	}
+	provider, err := NewGatewayProvider(cfg, name, model)
+	if err != nil {
+		return nil, true, fmt.Errorf("connect to gateway provider %q: %w", name, err)
+	}
+	return provider, true, nil
+}
+
 // Resolution order:
 // 1. providers.<name>.fast_provider + fast_model
 // 2. providers.<name>.fast_model on the same provider key
@@ -246,9 +289,19 @@ func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
 
 // newProviderInternal creates the underlying provider without retry wrapper.
 func newProviderInternal(cfg *config.Config) (Provider, error) {
-	// Handle hidden debug provider first
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	if provider, routed, err := newGatewayProviderIfRouted(cfg, cfg.DefaultProvider, ""); routed || err != nil {
+		return provider, err
+	}
+	// Handle hidden debug provider first.
 	if cfg.DefaultProvider == "debug" {
-		return NewDebugProvider(""), nil
+		model := ""
+		if pc := cfg.GetProviderConfig("debug"); pc != nil {
+			model = pc.Model
+		}
+		return NewDebugProvider(model), nil
 	}
 
 	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]

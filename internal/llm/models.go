@@ -806,12 +806,30 @@ func GetImageProviderNames() []string {
 func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config) []string {
 	var providerNames []string
 	var getModelIDs func(string) []string
+	remoteModels := make(map[string][]string)
+	if !isImage && cfg != nil && cfg.Gateway.Enabled() {
+		if catalog, err := LoadGatewayCatalogCacheOnly(cfg); err == nil {
+			for _, entry := range catalog.Providers {
+				providerNames = append(providerNames, entry.Key)
+				for _, model := range entry.Models {
+					remoteModels[entry.Key] = append(remoteModels[entry.Key], model.ID)
+				}
+			}
+		}
+	}
 
 	if isImage {
 		providerNames = GetImageProviderNames()
 		getModelIDs = func(p string) []string { return ImageProviderModels[p] }
 	} else {
-		providerNames = GetProviderNames(cfg)
+		if cfg != nil && cfg.Gateway.Enabled() {
+			providerNames = append(providerNames, "debug")
+			providerNames = append(providerNames, cfg.ExplicitProviderNames()...)
+			providerNames = append(providerNames, cfg.Gateway.LocalProviders...)
+		} else {
+			providerNames = append(providerNames, GetProviderNames(cfg)...)
+		}
+		providerNames = dedupeCompletionStrings(providerNames)
 		getModelIDs = ProviderModelIDs
 	}
 
@@ -823,6 +841,12 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 
 		// Get models for completion
 		var models []string
+		if cfg != nil && !cfg.IsLocalProvider(provider) {
+			models = append(models, remoteModels[provider]...)
+			if cfg.Gateway.Enabled() && len(models) == 0 {
+				return nil
+			}
+		}
 
 		// Check if config has a models list for this provider
 		var configModels []string
@@ -834,7 +858,7 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			}
 		}
 
-		if len(configModels) > 0 {
+		if len(models) == 0 && len(configModels) > 0 {
 			// Use config-defined models list, plus configured model (deduped)
 			seen := make(map[string]bool)
 			if configModel != "" {
@@ -847,7 +871,8 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 					seen[m] = true
 				}
 			}
-		} else {
+		}
+		if len(models) == 0 {
 			// Resolve provider type, including custom aliases (e.g., "acme" → "venice")
 			providerType := resolveProviderType(provider)
 
@@ -901,4 +926,18 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		}
 	}
 	return completions
+}
+
+func dedupeCompletionStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }

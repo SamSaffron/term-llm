@@ -1,0 +1,10 @@
+# Central gateway provider configuration. Provider credentials stay here.
+default_provider: anthropic
+providers:
+  anthropic:
+    model: claude-sonnet-4-6
+    # Lazy resolution happens only on the gateway.
+    api_key: "$(cat /run/secrets/anthropic_api_key)"
+search:
+  provider: exa_mcp
+  fetch_provider: jina

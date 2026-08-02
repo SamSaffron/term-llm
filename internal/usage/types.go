@@ -7,6 +7,7 @@ const (
 	ProviderClaudeCode = "claude-code"
 	ProviderGeminiCLI  = "gemini-cli"
 	ProviderTermLLM    = "term-llm"
+	ProviderGateway    = "gateway"
 )
 
 // UsageEntry represents a single usage event from any provider
@@ -95,17 +96,11 @@ func (r LoadResult) Filter(opts FilterOptions) []UsageEntry {
 		if !opts.Until.IsZero() && e.Timestamp.After(opts.Until) {
 			continue
 		}
-		// Handle term-llm externally-tracked entries
-		if e.Provider == ProviderTermLLM && e.TrackedExternallyBy != "" {
-			// When showing all providers (no filter), exclude externally-tracked term-llm entries
-			// to avoid double-counting with the external provider's data
-			if opts.Provider == "" {
-				continue
-			}
-			// When filtering to term-llm specifically, only include if IncludeExternal is set
-			if opts.Provider == ProviderTermLLM && !opts.IncludeExternal {
-				continue
-			}
+		// Externally tracked term-llm entries are hidden by default to avoid
+		// aggregate double-counting. --include-external means include them in both
+		// the all-provider view and an explicit term-llm view.
+		if e.Provider == ProviderTermLLM && e.TrackedExternallyBy != "" && !opts.IncludeExternal {
+			continue
 		}
 		result = append(result, e)
 	}

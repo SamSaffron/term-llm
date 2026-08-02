@@ -43,8 +43,12 @@ type RetryProvider struct {
 	config RetryConfig
 }
 
-// WrapWithRetry wraps a provider with retry logic.
+// WrapWithRetry wraps a provider with retry logic. Reconfiguring an existing
+// RetryProvider replaces its policy instead of nesting retry loops.
 func WrapWithRetry(p Provider, config RetryConfig) Provider {
+	if existing, ok := p.(*RetryProvider); ok {
+		return &RetryProvider{inner: existing.inner, config: normalizeRetryConfig(config)}
+	}
 	return &RetryProvider{inner: p, config: normalizeRetryConfig(config)}
 }
 
@@ -200,12 +204,18 @@ func (r *RetryProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	config := normalizeRetryConfig(r.config)
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		_, err := retryCall(ctx, config, func() (struct{}, error) {
-			stream, err := r.inner.Stream(ctx, req)
+		retryCtx := ctx
+		cancel := func() {}
+		if config.MaxElapsedTime > 0 {
+			retryCtx, cancel = context.WithTimeout(ctx, config.MaxElapsedTime)
+		}
+		defer cancel()
+		_, err := retryCall(retryCtx, config, func() (struct{}, error) {
+			stream, err := r.inner.Stream(retryCtx, req)
 			if err != nil {
 				return struct{}{}, err
 			}
-			return struct{}{}, r.forwardAttempt(ctx, stream, send)
+			return struct{}{}, r.forwardAttempt(retryCtx, stream, send)
 		}, func(info retryInfo) error {
 			// Emit retry event so UI can show progress. RetryMaxAttempts==0 means
 			// time-budgeted retry with no fixed attempt ceiling.

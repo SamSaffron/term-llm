@@ -254,6 +254,11 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	return e
 }
 
+func (e *Engine) providerHandlesRetries() bool {
+	handler, ok := e.provider.(interface{ GatewayHandlesRetries() bool })
+	return ok && handler.GatewayHandlesRetries()
+}
+
 // TriggerChaosFailure arms a one-shot synthetic replayable stream failure. It is
 // intentionally tiny and transport-shaped so UI/debug flows exercise the same
 // recovery paths as a prematurely closed SSE/WebSocket stream.
@@ -1581,7 +1586,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 			return e.runLoop(ctx, req, send)
 		})
-		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
+		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model, providerUsageTrackedExternallyBy(e.provider))
 		stream = e.wrapDebugLoggingStream(stream)
 
 		// Wrap with per-turn cleanup for providers that materialize temporary
@@ -1604,7 +1609,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		return e.runSimpleScratchpad(ctx, req, send)
 	})
-	stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
+	stream = wrapLoggingStream(stream, e.provider.Name(), req.Model, providerUsageTrackedExternallyBy(e.provider))
 	stream = e.wrapDebugLoggingStream(stream)
 	return stream, nil
 }
@@ -1945,7 +1950,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 				return err
 			}
 			priorErr = failed
-			if retry >= defaultUncommittedStreamMaxRetries || !isUncommittedReplayableStreamError(failed) {
+			if retry >= defaultUncommittedStreamMaxRetries || e.providerHandlesRetries() || !isUncommittedReplayableStreamError(failed) {
 				return failed
 			}
 			attempt := retry + 1
@@ -2701,7 +2706,7 @@ turnLoop:
 			return true, nil
 		}
 		retryUncommittedAttempt := func(cause error) (bool, error) {
-			if cause == nil || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) || !isUncommittedReplayableStreamError(cause) {
+			if cause == nil || e.providerHandlesRetries() || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) || !isUncommittedReplayableStreamError(cause) {
 				return false, nil
 			}
 			if recoveredToolWork || len(toolCalls) > 0 || syncToolsExecuted || scratchpadCommitted {
@@ -4181,7 +4186,7 @@ func (s *loggingStream) flushLocked() {
 	}
 	s.logged = true
 	_ = s.logger.Log(usage.LogEntry{
-		Timestamp:           time.Now(),
+		Timestamp:           time.Now().UTC(),
 		Model:               s.model,
 		Provider:            s.providerName,
 		InputTokens:         s.totalInput,
@@ -4192,8 +4197,15 @@ func (s *loggingStream) flushLocked() {
 	})
 }
 
-// wrapLoggingStream wraps a stream with usage logging
-func wrapLoggingStream(inner Stream, providerName, model string) Stream {
+func providerUsageTrackedExternallyBy(provider Provider) string {
+	if tracking, ok := provider.(interface{ UsageTrackedExternallyBy() string }); ok {
+		return tracking.UsageTrackedExternallyBy()
+	}
+	return usage.GetTrackedExternallyBy(provider.Name())
+}
+
+// wrapLoggingStream wraps a stream with usage logging.
+func wrapLoggingStream(inner Stream, providerName, model, trackedExternal string) Stream {
 	// If model is empty, use providerName as the model identifier
 	// This helps identify what was used when providers auto-select models
 	if model == "" {
@@ -4204,7 +4216,7 @@ func wrapLoggingStream(inner Stream, providerName, model string) Stream {
 		logger:          usage.DefaultLogger(),
 		providerName:    providerName,
 		model:           model,
-		trackedExternal: usage.GetTrackedExternallyBy(providerName),
+		trackedExternal: trackedExternal,
 	}
 }
 

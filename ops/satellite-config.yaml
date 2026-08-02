@@ -1,0 +1,11 @@
+# Satellite configuration: no provider or search credentials.
+default_provider: anthropic
+gateway:
+  url: http://gateway:8787
+  token_file: /run/secrets/gateway_client_token
+  required: true
+  search: true
+  fetch: true
+  catalog_ttl: 15m
+  connect_timeout: 2s
+  response_timeout: 5s

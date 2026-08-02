@@ -9,6 +9,9 @@ import (
 // NewSearcher creates a Searcher based on the config.
 // Returns Exa MCP as the default if no provider is specified.
 func NewSearcher(cfg *config.Config) (Searcher, error) {
+	if cfg != nil && cfg.Gateway.Enabled() && cfg.Gateway.RouteSearch() {
+		return NewGatewayClient(cfg.Gateway)
+	}
 	provider := cfg.Search.Provider
 	if provider == "" {
 		provider = config.DefaultSearchProvider

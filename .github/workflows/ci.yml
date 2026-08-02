@@ -37,6 +37,9 @@ jobs:
             exit 1
           fi
 
+      - name: Validate gateway Compose example
+        run: go test ./ops -run '^TestGatewayComposeExampleParsesAndHasHealthGating$'
+
       - name: Build
         run: go build ./...
 

@@ -25,6 +25,22 @@ The main config file lives at:
 ~/.config/term-llm/config.yaml
 ```
 
+## Inference gateway
+
+Satellites can route catalog providers and web access through a central private gateway without moving their agent, session, tools, approvals, or filesystem:
+
+```yaml
+gateway:
+  url: http://gateway:8787
+  token_file: /run/secrets/term_llm_gateway_token
+  required: true
+  local_providers: [ollama]
+  search: true
+  fetch: true
+```
+
+`token`, `token_file`, and `token_env` are supported in that precedence order and are resolved only when a gateway operation runs. With no `gateway.url`, local provider behavior is unchanged. Once a URL is set, providers are remote by default and gateway outages fail closed unless the provider has an explicit local block or is listed in `local_providers`. `search` and `fetch` default to true; explicitly setting either to false preserves local routing. Default catalog/connect/response bounds are `15m`, `2s`, and `5s`. See [Inference Gateway](/guides/inference-gateway/) for live catalogs, one-use enrollment, per-client limits, policy, TLS, CLI-provider risks, and deployment.
+
 ## Configuration shape
 
 A typical config has a few major parts:
@@ -32,7 +48,7 @@ A typical config has a few major parts:
 - `default_provider` for the global LLM default
 - `providers` for model-specific credentials and routing
 - per-command blocks such as `exec`, `ask`, and `edit`
-- feature-specific blocks such as `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
+- feature-specific blocks such as `gateway`, `image`, `audio`, `music`, `embed`, `search`, `sessions`, `file_tracking`, `tools`, and `skills`
 
 ## Example
 
