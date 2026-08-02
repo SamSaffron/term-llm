@@ -1688,6 +1688,59 @@ async function testParseSSEStreamUpdatesHeartbeatOnCommentFrame() {
   pass(name);
 }
 
+async function testSupersededReaderCannotRefreshHeartbeatOrProjectLateData() {
+  const name = 'superseded reader ignores late bytes before heartbeat and projection';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const controller = new AbortController();
+  const encoder = new TextEncoder();
+  let resolveRead;
+  let eventCount = 0;
+  const stream = {
+    getReader() {
+      return {
+        read() {
+          return new Promise((resolve) => {
+            resolveRead = resolve;
+          });
+        },
+        cancel() { return Promise.resolve(); },
+      };
+    },
+  };
+  state.lastEventTime = 1234;
+
+  const parsePromise = app.parseSSEStream(stream, () => {
+    eventCount += 1;
+    return true;
+  }, { abortController: controller });
+  const waiting = await waitFor(() => typeof resolveRead === 'function', 1000);
+  if (!waiting) {
+    fail(name, 'parser did not begin its pending read');
+    await cleanup();
+    return;
+  }
+
+  controller._streamSuperseded = true;
+  resolveRead({
+    done: false,
+    value: encoder.encode('event: response.output_text.delta\ndata: {"delta":"late","sequence_number":9}\n\n'),
+  });
+  await parsePromise;
+  await cleanup();
+
+  if (eventCount !== 0) {
+    fail(name, `late superseded event was projected ${eventCount} times`);
+    return;
+  }
+  if (state.lastEventTime !== 1234) {
+    fail(name, `late superseded bytes refreshed heartbeat to ${state.lastEventTime}`);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSendMessageHeartbeatCancelsPostStreamWithoutAbortingFetch() {
   const name = 'heartbeat timeout cancels an attached POST body without aborting fetch';
   const intervalCallbacks = [];
@@ -1756,6 +1809,116 @@ async function testSendMessageHeartbeatCancelsPostStreamWithoutAbortingFetch() {
 
   if (!resumed) {
     fail(name, 'heartbeat abort did not resume via /events');
+    return;
+  }
+
+  pass(name);
+}
+
+async function testHeartbeatTakeoverEscapesWedgedReaderCancellation() {
+  const name = 'heartbeat takeover resumes when reader cancellation never settles';
+  const intervalCallbacks = [];
+  let postReaderCanceled = false;
+  let eventsCount = 0;
+  const never = new Promise(() => {});
+  const harness = createHarness({
+    setTimeout(callback, ms) {
+      if (Number(ms) === 1000) return setTimeout(callback, 0);
+      return setTimeout(callback, ms);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, requestOptions, { Response, Headers, TextEncoder }) => {
+      if (url === '/ui/v1/responses' && (requestOptions.method || 'GET') === 'POST') {
+        const encoder = new TextEncoder();
+        const initialBody = [
+          'event: response.created\n',
+          'data: {"response":{"id":"resp_wedged","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+          'event: response.output_text.delta\n',
+          'data: {"response_id":"resp_wedged","delta":"partial","sequence_number":2}\n\n',
+        ].join('');
+        let readCount = 0;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'x-response-id': 'resp_wedged' }),
+          body: {
+            getReader() {
+              return {
+                read() {
+                  if (readCount++ === 0) {
+                    return Promise.resolve({ value: encoder.encode(initialBody), done: false });
+                  }
+                  return never;
+                },
+                cancel() {
+                  postReaderCanceled = true;
+                  return never;
+                },
+              };
+            },
+          },
+        };
+      }
+      if (url.startsWith('/ui/v1/responses/resp_wedged/events?after=')) {
+        eventsCount += 1;
+        const body = [
+          'event: response.completed\n',
+          'data: {"response":{"id":"resp_wedged","model":"test-model","status":"completed"},"response_id":"resp_wedged","sequence_number":3}\n\n',
+          'data: [DONE]\n\n',
+        ].join('');
+        return new Response(body, {
+          status: 200,
+          headers: { 'X-Term-LLM-Replay-Through': '2' },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  const sendPromise = app.sendMessage();
+  const attached = await waitFor(() => (
+    state.currentStreamResponseId === 'resp_wedged'
+    && typeof state.abortController?._heartbeatCancelStream === 'function'
+    && intervalCallbacks.length > 0
+  ), 1000);
+  if (!attached) {
+    fail(name, 'POST stream did not reach the wedged reader');
+    await cleanup();
+    return;
+  }
+
+  const controller = state.abortController;
+  state.lastEventTime = Date.now() - app.HEARTBEAT_STALE_THRESHOLD - 1;
+  intervalCallbacks[intervalCallbacks.length - 1]();
+
+  const resumed = await waitFor(() => eventsCount > 0, 1000);
+  const settled = await Promise.race([
+    sendPromise.then(() => true, () => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1000)),
+  ]);
+  await cleanup();
+
+  if (!postReaderCanceled) {
+    fail(name, 'heartbeat did not attempt normal reader cancellation first');
+    return;
+  }
+  if (!controller._streamSuperseded || controller.signal.aborted) {
+    fail(name, 'wedged reader was not superseded safely');
+    return;
+  }
+  if (!resumed || eventsCount !== 1) {
+    fail(name, `expected one independent replay request, got ${eventsCount}`);
+    return;
+  }
+  if (!settled) {
+    fail(name, 'send remained blocked behind the wedged reader');
     return;
   }
 
@@ -3659,6 +3822,119 @@ async function testResumeActiveResponseHeartbeatCancelSlowsAndRecovers() {
   pass(name);
 }
 
+async function testResumeHeartbeatTakeoverEscapesWedgedReplayReader() {
+  const name = 'resume heartbeat takeover replaces a wedged replay reader';
+  const responseId = 'resp_wedged_replay';
+  const intervalCallbacks = [];
+  const never = new Promise(() => {});
+  let eventsCount = 0;
+  let firstReaderCanceled = false;
+  const harness = createHarness({
+    responseId,
+    setTimeout(callback, ms) {
+      if (Number(ms) === 1000) return setTimeout(callback, 0);
+      return setTimeout(callback, ms);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
+    setInterval(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearInterval() {},
+    fetchImpl: async (url, _requestOptions, { Response, Headers, TextEncoder }) => {
+      if (!url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      eventsCount += 1;
+      const encoder = new TextEncoder();
+      if (eventsCount === 1) {
+        const initialBody = [
+          'event: response.created\n',
+          `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+        ].join('');
+        let readCount = 0;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'X-Term-LLM-Replay-Through': '0' }),
+          body: {
+            getReader() {
+              return {
+                read() {
+                  if (readCount++ === 0) {
+                    return Promise.resolve({ value: encoder.encode(initialBody), done: false });
+                  }
+                  return never;
+                },
+                cancel() {
+                  firstReaderCanceled = true;
+                  return never;
+                },
+              };
+            },
+          },
+        };
+      }
+      const terminalBody = [
+        'event: response.completed\n',
+        `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"response_id":"${responseId}","sequence_number":2}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      return new Response(terminalBody, {
+        status: 200,
+        headers: { 'X-Term-LLM-Replay-Through': '1' },
+      });
+    },
+  });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_wedged_replay',
+    title: 'Wedged replay',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const resumePromise = app.resumeActiveResponse(session, { responseId });
+  const attached = await waitFor(() => (
+    eventsCount === 1
+    && app.responseEventSequence(session, responseId) === 1
+    && typeof state.abortController?._heartbeatCancelStream === 'function'
+    && intervalCallbacks.length > 0
+  ), 1000);
+  if (!attached) {
+    fail(name, 'first replay reader did not wedge after applying its cursor');
+    await cleanup();
+    return;
+  }
+
+  const firstController = state.abortController;
+  state.lastEventTime = Date.now() - app.HEARTBEAT_STALE_THRESHOLD - 1;
+  intervalCallbacks[intervalCallbacks.length - 1]();
+
+  const recovered = await waitFor(() => eventsCount === 2 && !session.activeResponseId, 1000);
+  const settled = await Promise.race([
+    resumePromise.then(() => true, () => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1000)),
+  ]);
+  await cleanup();
+
+  if (!firstReaderCanceled || !firstController._streamSuperseded || firstController.signal.aborted) {
+    fail(name, 'wedged replay reader was not superseded safely');
+    return;
+  }
+  if (!recovered || !settled) {
+    fail(name, `replay did not recover independently; events=${eventsCount}, settled=${settled}`);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
   const name = 'established response survives a 20-second outage and wakes with exact replay';
   const responseId = 'resp_wakeable_retry';
@@ -5356,6 +5632,77 @@ async function testHistoricalReplayCommitsExactInterjectionBeforeFreshEvents() {
   }
 
   await cleanup();
+  pass(name);
+}
+
+async function testHeartbeatTakeoverRetiresQueuedHistoricalReplay() {
+  const name = 'heartbeat takeover retires historical replay queued behind transcript work';
+  const responseId = 'resp_queued_replay_takeover';
+  const harness = createHarness({ responseId });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_queued_replay_takeover',
+    title: 'Queued replay takeover',
+    messages: [],
+    activeResponseId: responseId,
+    latestRunEpoch: 1,
+    lastSequenceNumber: 0,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  session.transcript = new ConversationController(session.id);
+  session.transcript.setActiveRun(responseId, 0, 1);
+
+  let releaseBlocker;
+  let blockerStarted = false;
+  void session.transcript.commands.enqueue(() => new Promise((resolve) => {
+    blockerStarted = true;
+    releaseBlocker = resolve;
+  }));
+  const controller = new AbortController();
+  app.attachResponseStream(session, responseId, controller);
+  const body = strictResponseBytes([
+    'event: response.output_text.delta\n',
+    `data: {"response_id":"${responseId}","run_epoch":1,"sequence_number":1,"assistant_segment_ordinal":0,"delta":"stale"}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''), responseId, 1);
+  const stream = new ReadableStream({
+    start(streamController) {
+      streamController.enqueue(body);
+      streamController.close();
+    },
+  });
+
+  const consumePromise = app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+    responseId,
+    runEpoch: 1,
+    replayAfterSequence: 0,
+    replayThroughSequence: 1,
+    abortController: controller,
+  });
+  const queued = await waitFor(() => blockerStarted && typeof controller._heartbeatTakeover === 'function', 1000);
+  if (!queued) {
+    fail(name, 'historical replay did not queue behind the transcript blocker');
+    releaseBlocker?.();
+    await cleanup();
+    return;
+  }
+
+  controller._heartbeatTakeover();
+  const result = await consumePromise;
+  releaseBlocker();
+  await session.transcript.commands.enqueue(() => true);
+  await cleanup();
+
+  if (!result.forcedHeartbeatRecovery || !controller._streamSuperseded) {
+    fail(name, 'heartbeat did not supersede the queued replay consumer');
+    return;
+  }
+  if (app.responseEventSequence(session, responseId) !== 0 || projectedMessages(session).length !== 0) {
+    fail(name, 'superseded queued replay mutated transcript state', JSON.stringify(projectedMessages(session)));
+    return;
+  }
+
   pass(name);
 }
 
@@ -7596,7 +7943,9 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testParseSSEStreamUpdatesHeartbeatOnCommentFrame();
+  await testSupersededReaderCannotRefreshHeartbeatOrProjectLateData();
   await testSendMessageHeartbeatCancelsPostStreamWithoutAbortingFetch();
+  await testHeartbeatTakeoverEscapesWedgedReaderCancellation();
   await testSendMessageHeartbeatCancellationWithoutResponseIDRetriesPost();
   await testSendMessageHeartbeatAbortRetriesBeforeResponseId();
   await testSendMessageLargeUploadUsesLongerPreResponseHeartbeatGrace();
@@ -7649,6 +7998,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testToolExecImagesAttachToToolArtifactNotAssistantMarkdown();
   await testToolExecImagesUseHubAssetRebase();
   await testResumeActiveResponseHeartbeatCancelSlowsAndRecovers();
+  await testResumeHeartbeatTakeoverEscapesWedgedReplayReader();
   await testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop();
   await testDetachDuringSlowReconnectTransfersResumeOwnership();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
@@ -7685,6 +8035,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testPendingInterjectionsRenderAsCancellableStack();
   await testInterjectionClassificationPreservesStackOrder();
   await testHistoricalReplayCommitsExactInterjectionBeforeFreshEvents();
+  await testHeartbeatTakeoverRetiresQueuedHistoricalReplay();
   await testPendingInterjectionCanCancelWhileClassifying();
   await testClassificationCancelDeletesAcceptedInterjection();
   await testInterruptRecoveryDoesNotResurrectClassificationCancel();
