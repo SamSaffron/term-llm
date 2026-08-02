@@ -197,6 +197,9 @@ const parseSSEStream = async (stream, onEvent, options = {}) => {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      // Ignore late bytes from a WebKit reader retired by heartbeat takeover
+      // before they refresh global liveness or project stale events.
+      if (abortController?._streamSuperseded) return;
 
       const decoded = decoder.decode(value, { stream: true });
       buffer += decoded.includes('\r') ? decoded.replace(/\r/g, '') : decoded;
@@ -284,9 +287,20 @@ const heartbeatUploadGraceThreshold = (bodyText = '') => {
     Math.max(HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_STALE_THRESHOLD + Math.ceil((bytes / HEARTBEAT_UPLOAD_GRACE_BYTES_PER_SECOND) * 1000))
   );
 };
-// Deliberately not passed to AbortController.abort(): custom abort reasons can
-// make fetch reject with a raw string instead of an AbortError in some browsers.
+// Avoid custom abort reasons: some browsers reject fetch with the raw string.
 const HEARTBEAT_ABORT_REASON = 'heartbeat';
+const HEARTBEAT_TAKEOVER_GRACE = 1000;
+const scheduleHeartbeatTakeover = (controller) => {
+  if (!controller || controller._heartbeatTakeoverScheduled) return;
+  controller._heartbeatTakeoverScheduled = true;
+  const activityBaseline = Number(state.lastEventTime || 0);
+  window.setTimeout(() => {
+    controller._heartbeatTakeoverScheduled = false;
+    if (state.abortController !== controller || !controller._heartbeatAbort
+        || Number(state.lastEventTime || 0) > activityBaseline) return;
+    controller._heartbeatTakeover?.();
+  }, HEARTBEAT_TAKEOVER_GRACE);
+};
 
 const startHeartbeatMonitor = () => {
   stopHeartbeatMonitor();
@@ -310,6 +324,9 @@ const startHeartbeatMonitor = () => {
             Promise.resolve(controller._heartbeatCancelStream()).catch((err) => {
               console.warn('[stream] heartbeat body cancellation failed', err);
             });
+            // WebKit can leave reader.read() and reader.cancel() pending forever.
+            // After a brief grace, release the caller to resume over HTTP.
+            scheduleHeartbeatTakeover(controller);
           } else if (!controller._responseBodyAttached) {
             // Before response headers arrive there is no body reader to cancel.
             controller.abort();
@@ -621,10 +638,11 @@ const reduceHistoricalReplayEvent = (stage, event, payload) => {
   return true;
 };
 
-const mergeHistoricalReplayStage = async (session, _streamState, stage) => {
+const mergeHistoricalReplayStage = async (session, _streamState, stage, isCurrent) => {
   const transcript = session?.transcript;
   if (!transcript) throw new Error('historical replay requires a transcript');
-  await window.TermLLMConversation.enqueueDetachedReplay(transcript, stage.events);
+  const merged = await window.TermLLMConversation.enqueueDetachedReplay(transcript, stage.events, isCurrent);
+  if (!merged || !isCurrent()) return false;
   for (const item of stage.events) {
     if (item?.event !== 'response.interjection') continue;
     const payload = item.payload || {};
@@ -641,10 +659,10 @@ const mergeHistoricalReplayStage = async (session, _streamState, stage) => {
   app.persistPendingIntents?.(session);
   if (isSessionVisible(session)) renderMessages(false);
   else persistAndRefreshShell();
-  return stage.terminal;
+  return true;
 };
 
-const consumeResponseStream = async (stream, session, streamState, options = {}) => {
+const consumeResponseStreamInner = async (stream, session, streamState, options = {}) => {
   let sawTerminal = false;
   let sawDone = false;
   let sawRecoverableStreamError = false;
@@ -659,12 +677,21 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   const replayStage = replayBoundaryPending
     ? createHistoricalReplayStage(expectedResponseId, replayAfterSequence, replayThroughSequence, options.runEpoch)
     : null;
+  const streamIsCurrent = () => {
+    if (options.abortController?._streamSuperseded || generation !== state.streamGeneration) return false;
+    const currentSessionId = state.currentStreamSessionId;
+    if (currentSessionId && sessionId && currentSessionId !== sessionId) return false;
+    const currentResponseId = state.currentStreamResponseId;
+    return !(expectedResponseId && currentResponseId && currentResponseId !== expectedResponseId);
+  };
 
   const completeReplayBoundary = async () => {
-    if (!replayBoundaryPending || stale || !replayStage || replayStage.appliedSequence < replayThroughSequence) return false;
+    if (!replayBoundaryPending || stale || !replayStage || replayStage.appliedSequence < replayThroughSequence || !streamIsCurrent()) return false;
     replayBoundaryPending = false;
     streamState.historicalReplayEvent = false;
-    const stagedTerminal = await mergeHistoricalReplayStage(session, streamState, replayStage);
+    const merged = await mergeHistoricalReplayStage(session, streamState, replayStage, streamIsCurrent);
+    if (!merged || !streamIsCurrent()) { stale = true; return false; }
+    const stagedTerminal = replayStage.terminal;
     if (stagedTerminal) {
       streamState.historicalReplayEvent = true;
       const result = app.applyResponseStreamEvent(session, streamState, stagedTerminal.event, stagedTerminal.payload);
@@ -684,15 +711,6 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   const eventSequenceNumber = (payload) => {
     const seq = Number(payload?.sequence_number);
     return Number.isFinite(seq) && seq > 0 ? seq : 0;
-  };
-
-  const streamIsCurrent = () => {
-    if (generation !== state.streamGeneration) return false;
-    const currentSessionId = state.currentStreamSessionId;
-    if (currentSessionId && sessionId && currentSessionId !== sessionId) return false;
-    const currentResponseId = state.currentStreamResponseId;
-    if (expectedResponseId && currentResponseId && currentResponseId !== expectedResponseId) return false;
-    return true;
   };
 
   await parseSSEStream(stream, async (event, data) => {
@@ -794,6 +812,29 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   }, { abortController: options.abortController });
 
   return { terminal: sawTerminal || sawDone || !session.activeResponseId, stale, error: stale ? null : terminalError };
+};
+
+const consumeResponseStream = async (stream, session, streamState, options = {}) => {
+  const controller = options.abortController || null;
+  if (!controller) return consumeResponseStreamInner(stream, session, streamState, options);
+
+  let takeoverResolve;
+  const takeoverPromise = new Promise((resolve) => { takeoverResolve = resolve; });
+  const heartbeatTakeover = () => {
+    if (controller._streamSuperseded) return;
+    controller._streamSuperseded = true;
+    takeoverResolve({ terminal: false, stale: false, error: null, forcedHeartbeatRecovery: true });
+  };
+  controller._heartbeatTakeover = heartbeatTakeover;
+
+  try {
+    return await Promise.race([
+      consumeResponseStreamInner(stream, session, streamState, options),
+      takeoverPromise,
+    ]);
+  } finally {
+    if (controller._heartbeatTakeover === heartbeatTakeover) delete controller._heartbeatTakeover;
+  }
 };
 
 const fetchResponseSnapshot = async (session, responseId) => {
@@ -1429,6 +1470,7 @@ Object.assign(app, {
   flushStreamPersistence,
   scheduleStreamScroll,
   HEARTBEAT_STALE_THRESHOLD,
+  HEARTBEAT_TAKEOVER_GRACE,
   HEARTBEAT_ABORT_REASON,
   wakeResponseReconnect,
   resumeActiveResponse,

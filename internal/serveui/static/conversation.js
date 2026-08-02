@@ -440,7 +440,9 @@
     return controller?.applyResponseEvent(event, payload) || null;
   };
   const replaceRunSnapshot = (controller, payload) => controller?.replaceActiveSnapshot(payload);
-  const enqueueDetachedReplay = (controller, events) => controller?.commands.enqueue(() => controller.applyDetachedReplay(events));
+  const enqueueDetachedReplay = (controller, events, shouldApply) => controller?.commands.enqueue(() => (
+    !shouldApply || shouldApply() ? controller.applyDetachedReplay(events) : null
+  ));
   const addPendingIntentToConversation = (controller, intent, rev) => controller?.addPendingIntent(intent, rev);
   const applyTranscriptIndex = (controller, index, etag = '', tail = false) => {
     controller.applyIndex(index, etag);
