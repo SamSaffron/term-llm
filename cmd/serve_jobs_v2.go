@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/providerhttp"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -541,6 +542,8 @@ type jobsV2Manager struct {
 	workerWake    chan struct{}
 	wg            sync.WaitGroup
 	cancels       map[string]context.CancelFunc
+	notifyCtx     context.Context
+	notifyCancel  context.CancelFunc
 }
 
 const jobsV2Schema = `
@@ -679,6 +682,7 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 	}
 	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_job_runs_v2_job_id`)
 
+	notifyCtx, notifyCancel := context.WithCancel(context.Background())
 	mgr := &jobsV2Manager{
 		db:                 db,
 		workers:            workers,
@@ -699,13 +703,17 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		schedulerWake: make(chan struct{}, 1),
 		workerWake:    make(chan struct{}, max(1, workers)),
 		cancels:       make(map[string]context.CancelFunc),
+		notifyCtx:     notifyCtx,
+		notifyCancel:  notifyCancel,
 	}
 
 	if err := mgr.recoverRuns(); err != nil {
+		notifyCancel()
 		_ = db.Close()
 		return nil, err
 	}
 	if err := mgr.reconcileMisfiredSchedules(time.Now().UTC()); err != nil {
+		notifyCancel()
 		_ = db.Close()
 		return nil, err
 	}
@@ -905,6 +913,9 @@ func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
 	m.closed = true
 	if m.done != nil {
 		close(m.done)
+	}
+	if m.notifyCancel != nil {
+		m.notifyCancel()
 	}
 	cancels := make([]context.CancelFunc, 0, len(m.cancels))
 	for _, cancel := range m.cancels {
@@ -1607,19 +1618,87 @@ func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2R
 	}()
 }
 
+const (
+	jobsV2NotifyMaxAttempts       = 3
+	jobsV2NotifyAttemptTimeout    = 10 * time.Second
+	jobsV2NotifyTotalTimeout      = 30 * time.Second
+	jobsV2NotifyInitialRetryDelay = time.Second
+)
+
 func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
 	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
 		return
 	}
-	job, err := m.GetJob(run.JobID)
-	if err != nil {
+	baseCtx := m.notifyCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	notifyCtx, cancelNotify := context.WithTimeout(baseCtx, jobsV2NotifyTotalTimeout)
+	defer cancelNotify()
+	if err := notifyCtx.Err(); err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := m.notifyDone(ctx, run, job, status, result, exitReason, truncated, errText); err != nil {
-		_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
+
+	job, err := m.GetJob(run.JobID)
+	if err != nil {
+		if notifyCtx.Err() == nil {
+			_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": fmt.Sprintf("load job: %v", err)})
+		}
+		return
 	}
+
+	var notifyErr error
+	for attempt := 1; attempt <= jobsV2NotifyMaxAttempts; attempt++ {
+		attemptCtx, cancelAttempt := context.WithTimeout(notifyCtx, jobsV2NotifyAttemptTimeout)
+		notifyErr = m.notifyDone(attemptCtx, run, job, status, result, exitReason, truncated, errText)
+		cancelAttempt()
+		if notifyErr == nil {
+			return
+		}
+		if notifyCtx.Err() != nil {
+			return
+		}
+		if attempt == jobsV2NotifyMaxAttempts || !jobsV2NotifyErrorRetryable(notifyErr) {
+			break
+		}
+
+		timer := time.NewTimer(jobsV2NotifyRetryDelay(notifyErr, attempt))
+		select {
+		case <-timer.C:
+		case <-notifyCtx.Done():
+			stopTimer(timer)
+			return
+		}
+	}
+	_ = m.addRunEvent(run.ID, "notify_failed", "completion notification failed", map[string]any{"error": notifyErr.Error()})
+}
+
+func jobsV2NotifyErrorRetryable(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) {
+		return providerhttp.RetryableStatus(statusErr.HTTPStatusCode())
+	}
+	// Persistence and network errors do not generally expose a status code.
+	// Treat them as transient; retries remain bounded by attempts and total time.
+	return true
+}
+
+func jobsV2NotifyRetryDelay(err error, failedAttempt int) time.Duration {
+	var retryAfterErr interface {
+		RetryAfterDelay() (time.Duration, bool)
+	}
+	if errors.As(err, &retryAfterErr) {
+		if delay, ok := retryAfterErr.RetryAfterDelay(); ok && delay >= 0 {
+			return delay
+		}
+	}
+	if failedAttempt < 1 {
+		failedAttempt = 1
+	}
+	return jobsV2NotifyInitialRetryDelay * time.Duration(1<<(failedAttempt-1))
 }
 
 func (m *jobsV2Manager) addRunEvent(runID, eventType, message string, payload any) error {

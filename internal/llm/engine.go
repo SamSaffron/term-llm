@@ -3633,7 +3633,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 		return cancelledToolCallMessages(calls, err), nil
 	}
 
-	// Fast path: single call, no concurrency overhead
+	// Fast path: single call
 	if len(calls) == 1 {
 		return e.executeSingleToolCallSafe(ContextWithApprovalTranscript(ctx, transcript), calls[0], send, debug, debugRaw)
 	}
@@ -3758,6 +3758,40 @@ func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, s
 	return e.executeSingleToolCall(ctx, call, send, debug, debugRaw)
 }
 
+type toolExecutionResult struct {
+	output     ToolOutput
+	err        error
+	panicValue any
+}
+
+// executeToolWithCancellation isolates Tool.Execute so a tool that ignores its
+// context cannot keep the engine blocked after the caller cancels. The buffered
+// result channel lets an abandoned invocation finish without blocking later.
+func executeToolWithCancellation(ctx context.Context, tool Tool, args json.RawMessage) (ToolOutput, error, any) {
+	if err := ctx.Err(); err != nil {
+		return ToolOutput{}, err, nil
+	}
+
+	results := make(chan toolExecutionResult, 1)
+	go func() {
+		result := toolExecutionResult{}
+		defer func() {
+			if r := recover(); r != nil {
+				result.panicValue = r
+			}
+			results <- result
+		}()
+		result.output, result.err = tool.Execute(ctx, args)
+	}()
+
+	select {
+	case result := <-results:
+		return result.output, result.err, result.panicValue
+	case <-ctx.Done():
+		return ToolOutput{}, ctx.Err(), nil
+	}
+}
+
 // startToolHeartbeat emits heartbeat events only if a tool is still running
 // after toolHeartbeatInterval. Most tools complete quickly, so using AfterFunc
 // avoids starting a goroutine and ticker on every tool invocation.
@@ -3815,7 +3849,10 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	stopHeartbeat := startToolHeartbeat(ctx, call.ID, call.Name, send)
 	defer stopHeartbeat()
 
-	output, err := tool.Execute(toolCtx, call.Arguments)
+	output, err, panicValue := executeToolWithCancellation(toolCtx, tool, call.Arguments)
+	if panicValue != nil {
+		panic(panicValue)
+	}
 	info := e.getToolPreview(call)
 
 	// Truncate large tool outputs (global limit, then compaction limit).
@@ -3890,14 +3927,11 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
 	} else {
 		toolCtx := ContextWithCallID(ctx, callID)
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("Error: tool panicked: %v", r)
-				}
-			}()
-			result, err = tool.Execute(toolCtx, call.Arguments)
-		}()
+		var panicValue any
+		result, err, panicValue = executeToolWithCancellation(toolCtx, tool, call.Arguments)
+		if panicValue != nil {
+			err = fmt.Errorf("Error: tool panicked: %v", panicValue)
+		}
 	}
 
 	// Truncate large tool outputs (global limit, then compaction limit).

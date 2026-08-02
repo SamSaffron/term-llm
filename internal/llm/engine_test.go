@@ -1131,6 +1131,33 @@ func (t *delayingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+// contextIgnoringTool deliberately ignores cancellation until released.
+type contextIgnoringTool struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func newContextIgnoringTool(startBuffer int) *contextIgnoringTool {
+	return &contextIgnoringTool{
+		started: make(chan struct{}, startBuffer),
+		release: make(chan struct{}),
+	}
+}
+
+func (t *contextIgnoringTool) Spec() ToolSpec {
+	return ToolSpec{Name: "context_ignoring_tool", Schema: map[string]any{"type": "object"}}
+}
+
+func (t *contextIgnoringTool) Execute(context.Context, json.RawMessage) (ToolOutput, error) {
+	t.started <- struct{}{}
+	<-t.release
+	return TextOutput("done"), nil
+}
+
+func (t *contextIgnoringTool) Preview(json.RawMessage) string {
+	return ""
+}
+
 // blockingTool simulates a tool that blocks until released so tests can
 // deterministically observe peak concurrency.
 type blockingTool struct {
@@ -1395,50 +1422,132 @@ func TestEngineParallelToolExecutionRespectsDefaultLimit(t *testing.T) {
 	}
 }
 
-func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {
+func TestExecuteToolCallsReturnsOnContextCancel(t *testing.T) {
 	t.Parallel()
 
-	tool := &delayingTool{delay: 300 * time.Millisecond}
+	tests := []struct {
+		name     string
+		parallel bool
+		calls    int
+	}{
+		{name: "parallel multiple", parallel: true, calls: 3},
+		{name: "parallel single", parallel: true, calls: 1},
+		{name: "serial", parallel: false, calls: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := newContextIgnoringTool(tt.calls)
+			defer close(tool.release)
+			registry := NewToolRegistry()
+			registry.Register(tool)
+			engine := NewEngine(&fakeProvider{}, registry)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			calls := make([]ToolCall, tt.calls)
+			for i := range calls {
+				calls[i] = ToolCall{
+					ID:        fmt.Sprintf("call-%d", i+1),
+					Name:      "context_ignoring_tool",
+					Arguments: json.RawMessage(`{}`),
+				}
+			}
+
+			type executionResult struct {
+				messages []Message
+				err      error
+			}
+			resultCh := make(chan executionResult, 1)
+			go func() {
+				messages, err := engine.executeToolCalls(ctx, calls, tt.parallel, eventSender{}, false, false)
+				resultCh <- executionResult{messages: messages, err: err}
+			}()
+
+			select {
+			case <-tool.started:
+			case <-time.After(time.Second):
+				t.Fatal("tool did not start")
+			}
+
+			cancelledAt := time.Now()
+			cancel()
+
+			var result executionResult
+			select {
+			case result = <-resultCh:
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("executeToolCalls did not return promptly after cancellation")
+			}
+			t.Logf("tool execution returned %v after cancellation", time.Since(cancelledAt))
+
+			if result.err != nil {
+				t.Fatalf("executeToolCalls error = %v, want synthesized results on cancellation", result.err)
+			}
+			if len(result.messages) != len(calls) {
+				t.Fatalf("results = %d, want one per announced call (%d)", len(result.messages), len(calls))
+			}
+			for i, msg := range result.messages {
+				if len(msg.Parts) == 0 || msg.Parts[0].ToolResult == nil {
+					t.Fatalf("result %d has no tool result part: %#v", i, msg)
+				}
+				toolResult := msg.Parts[0].ToolResult
+				if toolResult.ID != calls[i].ID {
+					t.Fatalf("result %d ID = %q, want %q", i, toolResult.ID, calls[i].ID)
+				}
+				if !toolResult.IsError || !strings.Contains(toolResult.Content, context.Canceled.Error()) {
+					t.Fatalf("result %d = %+v, want cancellation error result", i, toolResult)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleSyncToolExecutionReturnsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	tool := newContextIgnoringTool(1)
+	defer close(tool.release)
 	registry := NewToolRegistry()
 	registry.Register(tool)
 	engine := NewEngine(&fakeProvider{}, registry)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cancelTimer := time.AfterFunc(25*time.Millisecond, cancel)
-	defer cancelTimer.Stop()
-
-	calls := []ToolCall{
-		{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)},
-		{ID: "call-2", Name: "delay_tool", Arguments: json.RawMessage(`{}`)},
-		{ID: "call-3", Name: "delay_tool", Arguments: json.RawMessage(`{}`)},
+	event := Event{
+		ToolCallID:   "sync-call-1",
+		Tool:         &ToolCall{ID: "sync-call-1", Name: "context_ignoring_tool", Arguments: json.RawMessage(`{}`)},
+		ToolResponse: make(chan ToolExecutionResponse, 1),
 	}
 
-	start := time.Now()
-	results, err := engine.executeToolCalls(ctx, calls, true, eventSender{}, false, false)
-	elapsed := time.Since(start)
-	t.Logf("parallel tool execution returned after cancellation in %v", elapsed)
+	type syncExecutionResult struct {
+		call ToolCall
+		err  error
+	}
+	resultCh := make(chan syncExecutionResult, 1)
+	go func() {
+		call, _, err := engine.handleSyncToolExecution(ctx, event, eventSender{}, false, false)
+		resultCh <- syncExecutionResult{call: call, err: err}
+	}()
 
-	if err != nil {
-		t.Fatalf("executeToolCalls error = %v, want synthesized results on cancellation", err)
+	select {
+	case <-tool.started:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
 	}
-	if elapsed >= 200*time.Millisecond {
-		t.Fatalf("executeToolCalls returned after %v; want prompt return on cancellation", elapsed)
-	}
-	if len(results) != len(calls) {
-		t.Fatalf("results = %d, want one per announced call (%d)", len(results), len(calls))
-	}
-	for i, msg := range results {
-		if len(msg.Parts) == 0 || msg.Parts[0].ToolResult == nil {
-			t.Fatalf("result %d has no tool result part: %#v", i, msg)
+
+	cancel()
+	select {
+	case result := <-resultCh:
+		if result.call.ID != event.ToolCallID {
+			t.Fatalf("call ID = %q, want %q", result.call.ID, event.ToolCallID)
 		}
-		tr := msg.Parts[0].ToolResult
-		if tr.ID != calls[i].ID {
-			t.Fatalf("result %d ID = %q, want %q", i, tr.ID, calls[i].ID)
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("error = %v, want context cancellation", result.err)
 		}
-		if !tr.IsError || !strings.Contains(tr.Content, context.Canceled.Error()) {
-			t.Fatalf("result %d = %+v, want cancellation error result", i, tr)
-		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleSyncToolExecution did not return promptly after cancellation")
 	}
 }
 

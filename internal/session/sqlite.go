@@ -1868,12 +1868,15 @@ func (s *SQLiteStore) UpdateGeneratedTitle(ctx context.Context, id, shortTitle, 
 		UPDATE sessions SET
 		       generated_short_title = ?,
 		       generated_long_title = ?,
-		       title_source = ?,
+		       title_source = CASE
+		           WHEN title_source = ? OR TRIM(COALESCE(name, '')) <> '' THEN ?
+		           ELSE ?
+		       END,
 		       title_generated_at = ?,
 		       title_basis_msg_seq = ?,
 		       updated_at = ?
 		WHERE id = ?`,
-		nullString(shortTitle), nullString(longTitle), nullString(string(TitleSourceGenerated)), nullTime(generatedAt), basisMsgSeq, time.Now(), id)
+		nullString(shortTitle), nullString(longTitle), string(TitleSourceUser), nullString(string(TitleSourceUser)), nullString(string(TitleSourceGenerated)), nullTime(generatedAt), basisMsgSeq, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("update generated title: %w", err)
 	}

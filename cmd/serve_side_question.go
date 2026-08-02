@@ -588,11 +588,12 @@ func (s *serveServer) handleSideQuestion(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "question is required")
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming unsupported")
 		return
 	}
+	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
+	flusher := w.(http.Flusher)
 	rt, err := s.runtimeForSideQuestion(r.Context(), sessionID)
 	if err != nil {
 		status := http.StatusNotFound

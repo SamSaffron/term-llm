@@ -197,14 +197,12 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "  short:   %s\n  long:    %s\n", cand.ShortTitle, cand.LongTitle)
 
 		if !sessionsAutotitleDryRun {
-			sess.GeneratedShortTitle = cand.ShortTitle
-			sess.GeneratedLongTitle = cand.LongTitle
-			sess.TitleSource = session.TitleSourceGenerated
-			sess.TitleGeneratedAt = time.Now().UTC()
+			generatedAt := time.Now().UTC()
+			basisMsgSeq := 0
 			if len(messages) > 0 {
-				sess.TitleBasisMsgSeq = messages[len(messages)-1].Sequence
+				basisMsgSeq = messages[len(messages)-1].Sequence
 			}
-			if err := store.Update(ctx, sess); err != nil {
+			if err := updateAutotitle(ctx, store, sess, cand.ShortTitle, cand.LongTitle, generatedAt, basisMsgSeq); err != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "  save:    failed (%v)\n\n", err)
 				continue
 			}
@@ -220,5 +218,19 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Generated titles for %d sessions (dry run).\n", generated)
 	}
+	return nil
+}
+
+func updateAutotitle(ctx context.Context, store session.Store, sess *session.Session, shortTitle, longTitle string, generatedAt time.Time, basisMsgSeq int) error {
+	if err := session.UpdateGeneratedTitle(ctx, store, sess, shortTitle, longTitle, generatedAt, basisMsgSeq); err != nil {
+		return err
+	}
+	sess.GeneratedShortTitle = shortTitle
+	sess.GeneratedLongTitle = longTitle
+	if sess.TitleSource != session.TitleSourceUser && strings.TrimSpace(sess.Name) == "" {
+		sess.TitleSource = session.TitleSourceGenerated
+	}
+	sess.TitleGeneratedAt = generatedAt
+	sess.TitleBasisMsgSeq = basisMsgSeq
 	return nil
 }

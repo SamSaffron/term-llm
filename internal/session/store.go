@@ -185,12 +185,15 @@ func UpdateGeneratedTitle(ctx context.Context, store Store, sess *Session, short
 	if updater, ok := store.(GeneratedTitleUpdater); ok {
 		return updater.UpdateGeneratedTitle(ctx, sess.ID, shortTitle, longTitle, generatedAt, basisMsgSeq)
 	}
-	sess.GeneratedShortTitle = shortTitle
-	sess.GeneratedLongTitle = longTitle
-	sess.TitleSource = TitleSourceGenerated
-	sess.TitleGeneratedAt = generatedAt
-	sess.TitleBasisMsgSeq = basisMsgSeq
-	return store.Update(ctx, sess)
+	updated := *sess
+	updated.GeneratedShortTitle = shortTitle
+	updated.GeneratedLongTitle = longTitle
+	if updated.TitleSource != TitleSourceUser && strings.TrimSpace(updated.Name) == "" {
+		updated.TitleSource = TitleSourceGenerated
+	}
+	updated.TitleGeneratedAt = generatedAt
+	updated.TitleBasisMsgSeq = basisMsgSeq
+	return store.Update(ctx, &updated)
 }
 
 // GoalUpdater is an optional Store capability for updating only the persisted
