@@ -96,9 +96,10 @@ func (s *Server) Start() (proxyURL, caPath string, err error) {
 	s.listener = ln
 	s.connections = make(map[net.Conn]struct{})
 	s.transport = &http.Transport{Proxy: nil}
-	s.server = &http.Server{Handler: http.HandlerFunc(s.serveHTTP), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: http.HandlerFunc(s.serveHTTP), ReadHeaderTimeout: 10 * time.Second}
+	s.server = server
 	s.running = true
-	go func() { _ = s.server.Serve(ln) }()
+	go func() { _ = server.Serve(ln) }()
 	proxy := &url.URL{Scheme: "http", Host: ln.Addr().String(), User: url.UserPassword("term-llm", proxyToken)}
 	return proxy.String(), path, nil
 }

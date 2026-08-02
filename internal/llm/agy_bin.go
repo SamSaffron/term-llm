@@ -494,18 +494,26 @@ func (p *AgyBinProvider) copyCredentials() error {
 		return errors.New("locate agy credentials: user home unavailable")
 	}
 	src := filepath.Join(p.realHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
-	data, err := os.ReadFile(src)
+	data, fileErr := os.ReadFile(src)
+	if fileErr == nil && len(data) == 0 {
+		fileErr = errors.New("agy OAuth token file is empty")
+	}
+	if fileErr == nil {
+		dst := filepath.Join(p.agyHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			return fmt.Errorf("copy agy credentials: %w", err)
+		}
+		return os.Chmod(dst, 0o600)
+	}
+
+	prepared, err := prepareAgyPlatformCredentials(p.realHome, p.agyHome)
 	if err != nil {
-		return &UserFacingProviderError{Summary: "agy is not logged in", Detail: "Run `agy` and complete Antigravity authentication.", Cause: err}
+		return err
 	}
-	if len(data) == 0 {
-		return errors.New("agy OAuth token file is empty")
+	if prepared {
+		return nil
 	}
-	dst := filepath.Join(p.agyHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
-		return fmt.Errorf("copy agy credentials: %w", err)
-	}
-	return os.Chmod(dst, 0o600)
+	return &UserFacingProviderError{Summary: "agy is not logged in", Detail: "Run `agy` and complete Antigravity authentication.", Cause: fileErr}
 }
 
 func (p *AgyBinProvider) writeMCPConfigs(enabled bool) error {
@@ -608,8 +616,11 @@ func AgyBinHasCredentials() bool {
 	if err != nil {
 		return false
 	}
-	info, err := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"))
-	return err == nil && info.Size() > 0
+	info, fileErr := os.Stat(filepath.Join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"))
+	if fileErr == nil && info.Size() > 0 {
+		return true
+	}
+	return agyPlatformHasCredentials(home)
 }
 
 func (p *AgyBinProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
