@@ -1,0 +1,57 @@
+# Example systemd unit for the term-llm Hub.
+#
+# Install:
+#   sudo cp term-llm-hub.service /etc/systemd/system/
+#   sudo install -m 600 /dev/null /etc/term-llm-hub.env   # then add tokens, see below
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now term-llm-hub
+#
+# /etc/term-llm-hub.env holds the secrets so they never appear in this file,
+# `systemctl show`, or process listings. The Hub reads both variables:
+#   TERM_LLM_HUB_TOKEN=...               # dashboard bearer token
+#   TERM_LLM_HUB_REGISTRATION_TOKEN=...  # optional: allows reverse nodes to self-register
+
+[Unit]
+Description=term-llm Hub
+Documentation=https://term-llm.com/guides/hub/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# Adjust the binary path and flags to taste. --host 0.0.0.0 serves publicly;
+# that requires bearer auth (the default), so set TERM_LLM_HUB_TOKEN first.
+ExecStart=/usr/local/bin/term-llm serve hub --host 0.0.0.0
+EnvironmentFile=-/etc/term-llm-hub.env
+Restart=on-failure
+RestartSec=2
+
+# --- Sandboxed default --------------------------------------------------
+# Runs as a transient unprivileged user. Nodes are added via the dashboard,
+# a static --config file, or reverse self-registration. Local `term-llm
+# contain` workspaces are NOT auto-discovered in this mode — that needs the
+# root variant below.
+DynamicUser=yes
+StateDirectory=term-llm-hub
+# The Hub persists nodes.json/delegations.json under $XDG_DATA_HOME.
+Environment=XDG_DATA_HOME=%S/term-llm-hub
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+# --- Root variant: auto-discover `term-llm contain` workspaces ----------
+# Contain discovery reads ~/.config/term-llm/containers/*/.env (0600) and
+# probes each workspace on 127.0.0.1, which the sandbox above blocks.
+# Comment out the sandboxed block and uncomment these instead. User= is
+# required even for root: systemd only sets $HOME when User= is present,
+# and the Hub needs it to resolve its config and data directories.
+# (To avoid root entirely while keeping contain discovery, run this as a
+# systemd user unit under the account that owns the workspaces, with
+# `loginctl enable-linger <user>` so it survives logout.)
+#User=root
+#NoNewPrivileges=true
+#PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

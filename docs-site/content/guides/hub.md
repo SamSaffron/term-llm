@@ -22,6 +22,36 @@ bearer as an operator/admin credential: anyone holding it can add nodes and make
 the Hub connect to addresses reachable from the Hub host. Use `--auth none` only
 for loopback-only local development.
 
+## Run as a systemd service
+
+An example unit lives at
+[`ops/systemd/term-llm-hub.service`](https://github.com/samsaffron/term-llm/blob/main/ops/systemd/term-llm-hub.service)
+so the Hub survives reboots and restarts on crashes. Copy it, adjust the
+`ExecStart` flags, give it the tokens, and enable it:
+
+```bash
+sudo cp ops/systemd/term-llm-hub.service /etc/systemd/system/
+sudo install -m 600 /dev/null /etc/term-llm-hub.env
+echo "TERM_LLM_HUB_TOKEN=$(openssl rand -base64 32 | tr -d '=+/')" | sudo tee -a /etc/term-llm-hub.env >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now term-llm-hub
+journalctl -u term-llm-hub -f
+```
+
+Tokens live in `/etc/term-llm-hub.env` (mode 0600) rather than the unit, so
+they never appear in `systemctl show` or process listings; the Hub reads them
+via `TERM_LLM_HUB_TOKEN` and `TERM_LLM_HUB_REGISTRATION_TOKEN`.
+
+The example defaults to a sandboxed service (`DynamicUser=`, no home access):
+nodes are added via the dashboard, a `--config` file, or reverse
+self-registration. Auto-discovery of local `term-llm contain` workspaces needs
+access to their `.env` files and loopback ports, so the unit includes a
+commented root variant for that setup — or run the unit as a [systemd user
+service](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+under the account that owns the workspaces (`loginctl enable-linger <user>`)
+to keep discovery without root. To stop and remove the service, run
+`sudo systemctl disable --now term-llm-hub`.
+
 ## Nodes
 
 The core object is a **node**: a reachable term-llm serve (web/API endpoint) with an identity, a URL + base path, an optional web bearer token, and a source. Nodes are discovered from three resolvers, re-resolved on every request so changes are picked up without a restart:
