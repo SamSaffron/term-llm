@@ -175,12 +175,12 @@ test('hidden tab catches up durable revision before attaching newer run', async 
       session.activeResponseId = 'new-run';
       window.__pwCatchupOrder.push(`durable:${controller.rev}`);
     });
-    app.wakeResponseReconnect = ({ responseId }) => {
+    app.resumeAndDrain = (activeSession, { responseId }) => {
       controller.commands.enqueue(() => {
         api.attachActiveRun(controller, { active_response_id: responseId, run_epoch: 2, started_rev: 0, client_message_id: 'tab-b' }, true);
         window.__pwCatchupOrder.push(`active:${controller.activeRun.id}`);
       });
-      return true;
+      return Promise.resolve(activeSession);
     };
     window.__pwSetVisibility('hidden');
   });
