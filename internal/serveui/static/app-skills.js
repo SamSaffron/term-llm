@@ -12,7 +12,7 @@ const {
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
   renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
 } = app;
-const { requestHeaders, normalizeError, parseSSEStream, sleep, streamReconnectDelay, setActiveResponseTracking, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, scrollVisibleStreamToBottom, resumeActiveResponse, setStreaming, drainInterruptQueueIfIdle, addErrorMessage } = app;
+const { requestHeaders, normalizeError, parseSSEStream, sleep, streamReconnectDelay, setActiveResponseTracking, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, scrollVisibleStreamToBottom, resumeActiveResponse, setStreaming, drainInterruptQueueIfIdle, addErrorMessage, createResumableStreamRecovery } = app;
 const skillRunStore = () => {
   if (!state.skillRunsById || typeof state.skillRunsById !== 'object') {
     state.skillRunsById = {};
@@ -111,20 +111,44 @@ const applySkillRunEvent = (run, envelope) => {
 const followSkillRun = async (run) => {
   if (!run || !run.id || skillRunIsTerminal(run.status) || run.following) return;
   run.following = true;
-  let retryAttempt = 0;
+  const recovery = createResumableStreamRecovery({
+    key: `skill:${run.sessionId}:${run.id}`,
+    getCursor: () => run.lastSequence || 0,
+    isTerminal: () => skillRunIsTerminal(run.status),
+    heartbeat: false,
+    reconcileEvery: 5,
+    reconcile: async () => {
+      const url = `${UI_PREFIX}/v1/sessions/${encodeURIComponent(run.sessionId)}/skill-runs/${encodeURIComponent(run.id)}`;
+      const response = await app.apiFetch(url, { headers: requestHeaders(run.sessionId) }, {
+        policy: app.API_FETCH_POLICY.safeRead,
+        retries: 0,
+      });
+      if (!response.ok) throw await normalizeError(response);
+      upsertSkillRunSnapshot(run.sessionId, await response.json().catch(() => ({})), run.eventsURL);
+    },
+    onStatus: ({ phase, reason }) => {
+      if (phase === 'connected') run.progress = '';
+      else if (phase === 'offline') run.progress = 'Offline — run is safe; reconnecting when online';
+      else if (phase === 'reconciling') run.progress = 'Catching up…';
+      else if (phase === 'waiting') run.progress = reason ? `Reconnecting: ${reason}` : 'Reconnecting…';
+      renderSkillRun(run);
+    },
+  });
   try {
     while (!skillRunIsTerminal(run.status)) {
       const controller = new AbortController();
       run.controller = controller;
+      let sawEvent = false;
+      let reconnectReason = 'stream-ended';
       try {
         const separator = run.eventsURL.includes('?') ? '&' : '?';
-        const response = await fetch(`${run.eventsURL}${separator}after=${encodeURIComponent(run.lastSequence || 0)}`, {
+        const response = await app.apiFetch(`${run.eventsURL}${separator}after=${encodeURIComponent(run.lastSequence || 0)}`, {
           headers: { ...requestHeaders(run.sessionId), Accept: 'text/event-stream' },
           signal: controller.signal,
-        });
+        }, { policy: app.API_FETCH_POLICY.stream, timeoutMs: 0, retries: 0 });
         if (!response.ok) throw await normalizeError(response);
         if (!response.body) throw { status: 0, message: 'No skill run event stream from server.' };
-        let sawEvent = false;
+        recovery.noteConnected();
         await parseSSEStream(response.body, (_eventName, data) => {
           if (!data) return true;
           let envelope;
@@ -134,22 +158,22 @@ const followSkillRun = async (run) => {
             return true;
           }
           sawEvent = applySkillRunEvent(run, envelope) || sawEvent;
+          if (sawEvent) recovery.noteActivity();
           return !skillRunIsTerminal(run.status);
-        }, { trackHeartbeat: false });
-        if (sawEvent) retryAttempt = 0;
+        }, { trackHeartbeat: false, abortController: controller });
       } catch (error) {
         if (controller.signal.aborted) return;
-        run.progress = error?.message ? `Reconnecting: ${error.message}` : 'Reconnecting…';
-        renderSkillRun(run);
+        reconnectReason = error?.message || (error?.status ? `http-${error.status}` : 'network-error');
       } finally {
         if (run.controller === controller) run.controller = null;
       }
       if (!skillRunIsTerminal(run.status)) {
-        await sleep(streamReconnectDelay(retryAttempt));
-        retryAttempt += 1;
+        const wakeReason = await recovery.wait(reconnectReason);
+        if (wakeReason === 'detached' || wakeReason === 'terminal') return;
       }
     }
   } finally {
+    recovery.stop();
     run.following = false;
     run.controller = null;
   }
@@ -184,10 +208,10 @@ const cancelSkillRun = async (sessionId, runId) => {
     run.status = 'cancelling';
     renderSkillRun(run);
   }
-  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/skill-runs/${encodeURIComponent(runId)}`, {
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/skill-runs/${encodeURIComponent(runId)}`, {
     method: 'DELETE',
     headers: requestHeaders(sessionId),
-  });
+  }, { policy: app.API_FETCH_POLICY.idempotentMutation });
   if (!response.ok) {
     const error = await normalizeError(response);
     if (run) {
@@ -235,11 +259,11 @@ const invokeSkill = async (session, invocation, options = {}) => {
   }
 
   try {
-    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/skills/invoke`, {
+    const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/skills/invoke`, {
       method: 'POST',
       headers: { ...requestHeaders(session.id), 'Idempotency-Key': `skill_${message.clientMessageId || message.id}` },
       body: JSON.stringify({ name: invocation.name, arguments: invocation.arguments || '', client_message_id: message.clientMessageId || message.id }),
-    });
+    }, { policy: app.API_FETCH_POLICY.idempotentMutation });
     if (!response.ok) throw await normalizeError(response);
     const payload = await response.json();
     execution = payload.execution || execution;

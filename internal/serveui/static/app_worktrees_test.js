@@ -158,6 +158,7 @@ function makeHarness(options = {}) {
     console,
   };
   context.globalThis = context;
+  windowObj.TermLLMApp.apiFetch = (...args) => fetch(...args);
   vm.runInNewContext(source, context, { filename: 'app-worktrees.js' });
   return {
     app: windowObj.TermLLMApp,

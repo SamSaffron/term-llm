@@ -48,7 +48,8 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	productionLines := 0
+	legacyProductionLines := 0
+	transportLines := map[string]int{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
@@ -58,10 +59,21 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		productionLines += len(strings.Split(strings.TrimSuffix(string(body), "\n"), "\n"))
+		lineCount := len(strings.Split(strings.TrimSuffix(string(body), "\n"), "\n"))
+		if name == "app-network.js" || name == "app-webrtc.js" {
+			transportLines[name] = lineCount
+		} else {
+			legacyProductionLines += lineCount
+		}
 	}
-	if productionLines >= 21015 {
-		t.Fatalf("first-party production JS=%d lines, must decrease from 21015", productionLines)
+	// Keep the new transport boundary from weakening the pre-existing ratchet:
+	// legacy production code must still decrease, while each transport module
+	// gets a narrow independent ceiling tied to its audited responsibility.
+	if legacyProductionLines >= 20467 {
+		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20467", legacyProductionLines)
+	}
+	if transportLines["app-network.js"] > 600 || transportLines["app-webrtc.js"] > 725 {
+		t.Fatalf("transport modules grew beyond focused budgets: %v", transportLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -238,6 +250,30 @@ func cssRuleBlocks(cssSrc, selector string) []string {
 		}
 		blocks = append(blocks, cssSrc[bodyStart:bodyStart+end])
 		cssSrc = cssSrc[bodyStart+end+1:]
+	}
+}
+
+func TestApplicationFetchesUseSharedNetworkLayer(t *testing.T) {
+	allowedRawFetch := map[string]bool{
+		"static/app-network.js": true, // owns the application transport boundary
+		"static/app-webrtc.js":  true, // transport shim must retain original fetch
+		"static/sw.js":          true, // service-worker bootstrap/cache transport
+	}
+	err := fs.WalkDir(staticFiles, "static", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".js") || strings.Contains(path, "/vendor/") || allowedRawFetch[path] {
+			return err
+		}
+		body, readErr := fs.ReadFile(staticFiles, path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(body), "fetch(") {
+			t.Errorf("%s bypasses app.apiFetch", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -620,6 +656,23 @@ func TestWorktreePopoverUsesResponsiveChipUI(t *testing.T) {
 	}
 	if want := `.header-controls-row .model-chip[data-chip="worktree"] .chip-trigger:not(.header-action)`; !strings.Contains(string(appCSS), want) {
 		t.Fatalf("app.css missing mobile worktree trigger padding selector %q", want)
+	}
+}
+
+func TestAppNetworkJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-network tests")
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_network_test.js")
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_network_test.js failed: %v", err)
 	}
 }
 

@@ -7,6 +7,7 @@ const vm = require('vm');
 
 const dir = __dirname;
 const source = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
+const networkSource = fs.readFileSync(path.join(dir, 'app-network.js'), 'utf8');
 
 let failures = 0;
 const pendingAsyncTests = [];
@@ -161,11 +162,17 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], document
     Date: DateShim,
     TextEncoder,
     TextDecoder,
+    Headers,
+    Request,
+    Response,
+    AbortController,
+    ReadableStream,
     ...contextOverrides,
   };
   context.globalThis = context;
 
   vm.runInNewContext(source, context, { filename: 'app-core.js' });
+  vm.runInNewContext(networkSource, context, { filename: 'app-network.js' });
   context.window.TermLLMApp.__testCookieWrites = cookieWrites;
   context.window.TermLLMApp.__testDocument = document;
   return context.window.TermLLMApp;
@@ -780,7 +787,7 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
     fail(name, 'offline warning should be visible');
     return;
   }
-  if (connectionNode.textContent !== 'Network offline') {
+  if (connectionNode.textContent !== 'Offline — reconnect to continue') {
     fail(name, `got ${JSON.stringify(connectionNode.textContent)}`);
     return;
   }
@@ -794,8 +801,64 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
   testApp.state.draftSessionActive = false;
   testApp.setProviderRetryStatus(session.id, 'resp_offline', 'Retrying provider…');
   testApp.clearProviderRetryStatus(session.id, 'resp_offline');
-  if (connectionNode.hidden || connectionNode.textContent !== 'Network offline' || !classes.has('bad')) {
+  if (connectionNode.hidden || connectionNode.textContent !== 'Offline — reconnect to continue' || !classes.has('bad')) {
     fail(name, 'provider retry set/clear changed the offline warning', connectionNode.textContent);
+    return;
+  }
+  pass(name);
+})();
+
+(function testConnectivityStateIsSeparateAndActionable() {
+  const name = 'connectivity state separates authentication from actionable network phases';
+  const classes = new Set();
+  const connectionNode = Object.assign(makeNode(), {
+    hidden: true,
+    classList: {
+      add(...names) { names.forEach((n) => classes.add(n)); },
+      remove(...names) { names.forEach((n) => classes.delete(n)); },
+      contains(value) { return classes.has(value); },
+    },
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { connectionState: connectionNode },
+    navigatorOverrides: { onLine: true },
+  });
+
+  testApp.setApplicationConnected(true, true);
+  testApp.setConnectivityState({ network: 'offline', phase: 'offline', pendingSafe: 1 });
+  if (!testApp.state.connected || !testApp.state.connectivity.authenticated || !testApp.state.connectivity.startupConnected) {
+    fail(name, 'network outage incorrectly cleared startup/authentication state');
+    return;
+  }
+  if (connectionNode.textContent !== 'Offline — message pending safely; reconnect to continue' || !classes.has('bad')) {
+    fail(name, 'pending-safe offline status was not actionable', connectionNode.textContent);
+    return;
+  }
+
+  testApp.setConnectivityState({ network: 'recovering', phase: 'recovering', pendingSafe: 0 });
+  if (connectionNode.textContent !== 'Network restored — recovering…' || !classes.has('retry')) {
+    fail(name, 'recovering status was not visible', connectionNode.textContent);
+    return;
+  }
+  testApp.setConnectivityState({ network: 'recovering', phase: 'catching-up' });
+  if (connectionNode.textContent !== 'Catching up with the server…') {
+    fail(name, 'catching-up status was not visible', connectionNode.textContent);
+    return;
+  }
+  testApp.setConnectivityState({ network: 'unstable', phase: 'unstable' });
+  if (connectionNode.textContent !== 'Connection unstable' || !classes.has('bad')) {
+    fail(name, 'unstable status falsely promised an automatic retry', connectionNode.textContent);
+    return;
+  }
+  testApp.setConnectionState('Response reconnect paused — retry from the composer', 'bad');
+  if (connectionNode.textContent !== 'Response reconnect paused — retry from the composer') {
+    fail(name, 'generic connectivity status obscured an actionable legacy warning', connectionNode.textContent);
+    return;
+  }
+  testApp.setConnectionState('', '');
+  testApp.setConnectivityState({ network: 'healthy', phase: '' });
+  if (!connectionNode.hidden || connectionNode.textContent) {
+    fail(name, 'healthy network should leave the header quiet', connectionNode.textContent);
     return;
   }
   pass(name);

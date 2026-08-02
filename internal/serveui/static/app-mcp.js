@@ -161,7 +161,7 @@ const ensureActiveSessionForMCP = () => {
 const mcpHeaders = () => requestHeaders ? requestHeaders('') : { 'Content-Type': 'application/json' };
 
 const fetchSessionMCP = async (sessionId) => {
-  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/mcp`, {
+  const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/mcp`, {
     headers: mcpHeaders(),
   });
   if (!resp.ok) throw await normalizeError(resp);
@@ -332,7 +332,7 @@ const applySessionMCP = async (sessionId, enabledNames) => {
   mcpModalErrorMessage = '';
   renderMCPModal(session);
   try {
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/mcp`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/mcp`, {
       method: 'PATCH',
       headers: mcpHeaders(),
       body: JSON.stringify({ enabled: requestedEnabled }),

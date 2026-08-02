@@ -460,8 +460,24 @@ async function createSessionsHarness(options = {}) {
   vm.runInContext(planSource, context, { filename: 'app-plan.js' });
 
   const app = windowObj.TermLLMApp;
+  app.apiFetch = (...args) => context.fetch(...args);
+  app.API_FETCH_POLICY = { safeRead: 'safe-read', idempotentMutation: 'idempotent-mutation', mutation: 'non-retryable-mutation', stream: 'stream' };
   vm.runInContext(sidebarSource, context, { filename: 'app-sidebar.js' });
   Object.assign(app, defaultAppStubs(app, options.appOverrides || {}));
+  const networkRecoveryHooks = [];
+  app.addNetworkRecoveryHook = (hook) => {
+    networkRecoveryHooks.push(hook);
+    return () => {};
+  };
+  app.runCoordinatedNetworkRecovery = async (reason) => {
+    const active = app.getActiveSession?.();
+    const wakeOwner = active?.activeResponseId ? { sessionId: active.id, responseId: active.activeResponseId } : null;
+    for (const hook of networkRecoveryHooks) await hook(reason);
+    if (wakeOwner) {
+      app.wakeResponseReconnect?.({ reason, ...wakeOwner });
+    }
+    return true;
+  };
 
   vm.runInContext(mcpSource, context, { filename: 'app-mcp.js' });
   vm.runInContext(goalsLocationSource, context, { filename: 'app-goals-location.js' });
@@ -4046,6 +4062,48 @@ async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
   pass(name);
 }
 
+async function testHealthyVisibilityDoesNotAbortActiveStream() {
+  const name = 'healthy active stream survives visibility recovery without an abort';
+  const { app, windowObj } = await createSessionsHarness();
+  app.stopSidebarStatusPoll();
+  app.startSidebarStatusPoll = async () => true;
+  const session = {
+    id: 'session_visible_stream', number: 17, title: 'Visible stream', mode: 'chat', origin: 'web',
+    created: Date.now(), lastMessageAt: Date.now(), activeResponseId: 'resp_visible_stream', messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.connected = true;
+  app.state.currentStreamSessionId = session.id;
+  app.state.currentStreamResponseId = session.activeResponseId;
+  app.state.lastEventTime = Date.now();
+  const controller = new AbortController();
+  controller._heartbeatAbort = false;
+  app.state.abortController = controller;
+
+  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  windowObj.document.visibilityState = 'visible';
+  await visibilityHandler({ type: 'visibilitychange' });
+  if (controller.signal.aborted || controller._heartbeatAbort) {
+    fail(name, 'visibility recovery aborted a stream with recent activity');
+    return;
+  }
+
+  const staleController = new AbortController();
+  staleController._heartbeatAbort = false;
+  app.state.abortController = staleController;
+  app.state.lastEventTime = Date.now() - 60000;
+  await visibilityHandler({ type: 'visibilitychange' });
+  if (!staleController.signal.aborted || !staleController._heartbeatAbort) {
+    fail(name, 'visibility recovery did not retire a genuinely stale stream');
+    return;
+  }
+  app.state.abortController = null;
+  app.stopSidebarStatusPoll();
+  pass(name);
+}
+
 async function testVisibilityResumeRestoresPreBackgroundTailOwnership() {
   const name = 'visibility resume restores pre-background tail ownership before catch-up';
   let appRef = null;
@@ -4365,8 +4423,17 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   let onlineWakeAfterStatus = false;
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async (url) => {
-      if (String(url).startsWith('/ui/v1/sessions/status')) onlineStatusCompleted = true;
-      return new Response(JSON.stringify({ sessions: [] }), {
+      const isStatus = String(url).startsWith('/ui/v1/sessions/status');
+      if (isStatus) onlineStatusCompleted = true;
+      return new Response(JSON.stringify({
+        sessions: isStatus ? [{
+          id: 'sess_wake_signals',
+          active_response_id: 'resp_wake_signals',
+          active_run: true,
+          run_epoch: 1,
+          started_rev: 0,
+        }] : []
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -4408,7 +4475,7 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   await app.stopSidebarStatusPoll();
   onlineStatusCompleted = false;
   await onlineHandler({ type: 'online' });
-  pageshowHandler({ type: 'pageshow', persisted: false });
+  await pageshowHandler({ type: 'pageshow', persisted: false });
 
   const want = [
     'visibility:sess_wake_signals:resp_wake_signals',
@@ -6886,6 +6953,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
   await testPreConnectedVisibilityDoesNotStartSidebarStatusPoll();
+  await testHealthyVisibilityDoesNotAbortActiveStream();
   await testVisibilityResumeRestoresPreBackgroundTailOwnership();
   await testPageshowWaitsForInitialConnectionBeforeStatusPoll();
   await testSidebarStatusPollRecoversIdempotentlyAfterPageShow();

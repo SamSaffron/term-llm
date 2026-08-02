@@ -835,7 +835,7 @@ const mergeServerSessions = async (options = {}) => {
       params.set('include_widget_status', '1');
     }
     const query = params.toString();
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions${query ? `?${query}` : ''}`, {
       headers: requestHeaders('')
     });
     if (!resp.ok) return result;
@@ -1101,7 +1101,8 @@ const initialize = async () => {
     setStartupStatus('Syncing sessions…');
 
     [state.models] = await Promise.all([modelsPromise, sessionsPromise]);
-    state.connected = true;
+    app.setApplicationConnected?.(true, true);
+    if (!app.setApplicationConnected) state.connected = true;
     renderModelOptions();
     app.updateHeader?.();
     setConnectionState('', '');

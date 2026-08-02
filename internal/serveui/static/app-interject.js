@@ -286,10 +286,10 @@ const cancelPendingInterjection = async (entry) => {
   }
   try {
     if (entry.action === 'interject') {
-      const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(entry.sessionId)}/interjections/${encodeURIComponent(entry.messageId)}`, {
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(entry.sessionId)}/interjections/${encodeURIComponent(entry.messageId)}`, {
         method: 'DELETE',
         headers: requestHeaders(entry.sessionId)
-      });
+      }, { policy: app.API_FETCH_POLICY.idempotentMutation });
       if (!response.ok) throw await normalizeError(response);
     }
     removePendingInterjectionById(entry.messageId);
@@ -327,11 +327,11 @@ const interruptActiveRunNow = async (session, prompt, messageId, contentParts = 
     : { message: prompt, interjection_id: messageId, client_message_id: messageId };
   const headers = requestHeaders(session.id);
   headers['Idempotency-Key'] = `interrupt_${messageId}`;
-  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
-  });
+  }, { policy: app.API_FETCH_POLICY.idempotentMutation });
   if (!response.ok) {
     throw await normalizeError(response);
   }
@@ -345,10 +345,10 @@ const interruptActiveRunNow = async (session, prompt, messageId, contentParts = 
   const pendingEntry = state.pendingInterjections.find((entry) => entry.messageId === messageId);
   if (pendingEntry?.cancelRequested) {
     if (action === 'interject') {
-      const cancelResponse = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interjections/${encodeURIComponent(messageId)}`, {
+      const cancelResponse = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interjections/${encodeURIComponent(messageId)}`, {
         method: 'DELETE',
         headers: requestHeaders(session.id)
-      });
+      }, { policy: app.API_FETCH_POLICY.idempotentMutation });
       if (!cancelResponse.ok) throw await normalizeError(cancelResponse);
     }
     removePendingInterjectionById(messageId);

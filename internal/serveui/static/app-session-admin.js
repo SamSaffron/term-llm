@@ -21,7 +21,7 @@ const {
 } = app;
 
 const updateSessionMetadata = async (session, patch) => {
-  const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}`, {
+  const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}`, {
     method: 'PATCH',
     headers: requestHeaders(session.id),
     body: JSON.stringify(patch)
@@ -37,7 +37,7 @@ const refineSessionTitle = async (session, options = {}) => {
   session._refiningTitle = true;
   renderSidebar();
   try {
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/title/refine`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/title/refine`, {
       method: 'POST',
       headers: requestHeaders(session.id),
       body: JSON.stringify({ preview: Boolean(options.preview) })
