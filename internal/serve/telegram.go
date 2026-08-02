@@ -507,10 +507,11 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 				bot.StopReceivingUpdates()
 				return nil
 			}
-			go func(msg *tgbotapi.Message) {
+			admission := mgr.admitMessage(update.Message)
+			go func(msg *tgbotapi.Message, admission *telegramMessageAdmission) {
 				defer mgr.releaseMessageSlot()
-				mgr.handleMessage(ctx, bot, msg)
-			}(update.Message)
+				mgr.handleMessageWithAdmission(ctx, bot, msg, admission)
+			}(update.Message, admission)
 		}
 	}
 }
@@ -547,6 +548,61 @@ func (m *telegramSessionMgr) acquireMessageSlot(ctx context.Context) bool {
 
 func (m *telegramSessionMgr) releaseMessageSlot() {
 	<-m.messageSlots
+}
+
+type telegramMessageAdmission struct {
+	mgr    *telegramSessionMgr
+	chatID int64
+	ready  <-chan struct{}
+	done   chan struct{}
+	once   sync.Once
+}
+
+func (m *telegramSessionMgr) admitMessage(msg *tgbotapi.Message) *telegramMessageAdmission {
+	if msg == nil || msg.Chat == nil {
+		return nil
+	}
+
+	m.admissionMu.Lock()
+	defer m.admissionMu.Unlock()
+	if m.messageAdmissions == nil {
+		m.messageAdmissions = make(map[int64]chan struct{})
+	}
+	chatID := msg.Chat.ID
+	admission := &telegramMessageAdmission{
+		mgr:    m,
+		chatID: chatID,
+		ready:  m.messageAdmissions[chatID],
+		done:   make(chan struct{}),
+	}
+	m.messageAdmissions[chatID] = admission.done
+	return admission
+}
+
+func (a *telegramMessageAdmission) wait(ctx context.Context) bool {
+	if a == nil || a.ready == nil {
+		return true
+	}
+	select {
+	case <-a.ready:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (a *telegramMessageAdmission) release() {
+	if a == nil {
+		return
+	}
+	a.once.Do(func() {
+		close(a.done)
+		a.mgr.admissionMu.Lock()
+		if a.mgr.messageAdmissions[a.chatID] == a.done {
+			delete(a.mgr.messageAdmissions, a.chatID)
+		}
+		a.mgr.admissionMu.Unlock()
+	})
 }
 
 // telegramSession holds per-chat conversation state.
@@ -590,8 +646,12 @@ type telegramSessionMgr struct {
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
 	messageSlots     chan struct{}
-	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
-	editInterval     time.Duration // 0 means use minEditInterval; overridden in tests
+
+	admissionMu       sync.Mutex
+	messageAdmissions map[int64]chan struct{}
+
+	tickerInterval time.Duration // 0 means use default (500ms); overridden in tests
+	editInterval   time.Duration // 0 means use minEditInterval; overridden in tests
 
 	// streamEventTimeout bounds how long the stream watchdog waits between events
 	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
@@ -1237,6 +1297,11 @@ func (m *telegramSessionMgr) persistedAssistantTextMatches(ctx context.Context, 
 }
 
 func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot telegramBot, msg *tgbotapi.Message) {
+	m.handleMessageWithAdmission(ctx, bot, msg, m.admitMessage(msg))
+}
+
+func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot telegramBot, msg *tgbotapi.Message, admission *telegramMessageAdmission) {
+	defer admission.release()
 	if msg.From == nil {
 		log.Printf("[telegram] ignoring message with no sender")
 		return
@@ -1247,6 +1312,9 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot telegramBot,
 	}
 
 	chatID := msg.Chat.ID
+	if !admission.wait(ctx) {
+		return
+	}
 
 	if msg.IsCommand() {
 		switch msg.Command() {
@@ -1474,7 +1542,7 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot telegramBot,
 	sess.streamToolName.Store("")
 	sess.cancelMu.Unlock()
 
-	if err := m.streamReply(ctx, bot, sess, chatID, userMsg); err != nil {
+	if err := m.streamReplyWithAdmission(ctx, bot, sess, chatID, userMsg, admission.release); err != nil {
 		log.Printf("[telegram] error streaming reply for chat %d: %v", chatID, err)
 		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, an error occurred: "+err.Error()))
 	}
@@ -1496,6 +1564,10 @@ func sendStreamDone(done chan<- error, once *sync.Once, err error) {
 
 // streamReply streams an LLM response back to the chat via live message editing.
 func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message) error {
+	return m.streamReplyWithAdmission(ctx, bot, sess, chatID, userMsg, nil)
+}
+
+func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot botSender, sess *telegramSession, chatID int64, userMsg llm.Message, releaseAdmission func()) error {
 	// We acquire the session lock for the entire streaming call so that
 	// concurrent messages from the same chat are serialised.
 	sess.mu.Lock()
@@ -1611,6 +1683,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		m.runStoreOp(ctx, sess.meta.ID, "UpdateStatus(active)", func(storeCtx context.Context) error {
 			return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusActive)
 		})
+	}
+
+	// The turn is now durably ordered and its cancellation state is visible.
+	// Let the next same-chat message inspect or interrupt it before provider output completes.
+	if releaseAdmission != nil {
+		releaseAdmission()
 	}
 
 	// Collect assistant and tool-result messages via callbacks.
