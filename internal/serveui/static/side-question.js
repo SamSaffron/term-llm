@@ -81,7 +81,7 @@ const applyView = (view) => {
 
 const recover = async (sessionId) => {
   if (!isResolvedSessionIdentity(sessionId)) return false;
-  const response = await fetch(endpoint(sessionId), { headers: requestHeaders(sessionId) });
+  const response = await app.apiFetch(endpoint(sessionId), { headers: requestHeaders(sessionId) });
   if (!response.ok) throw new Error(`Unable to load side questions (${response.status})`);
   applyView(await response.json());
   return true;
@@ -173,7 +173,7 @@ const openSideQuestion = async (question = '') => {
   elements.sideQuestionInput.value = '';
   render();
   try {
-    const response = await fetch(endpoint(session.id), {
+    const response = await app.apiFetch(endpoint(session.id), {
       method: 'POST',
       headers: requestHeaders(session.id),
       body: JSON.stringify({ question: trimmed })
@@ -192,7 +192,7 @@ const openSideQuestion = async (question = '') => {
     focusComposer();
   } catch (err) {
     if (operation !== openOperation) return;
-    await fetch(endpoint(session.id, '/active'), { method: 'DELETE', headers: requestHeaders(session.id) }).catch(() => {});
+    await app.apiFetch(endpoint(session.id, '/active'), { method: 'DELETE', headers: requestHeaders(session.id) }).catch(() => {});
     side.running = false;
     side.pending = false;
     side.error = err?.message || String(err);
@@ -214,7 +214,7 @@ const cancel = async (focus = true) => {
   render();
   if (focus) focusComposer();
   if (isResolvedSessionIdentity(session)) {
-    await fetch(endpoint(session.id, '/active'), { method: 'DELETE', headers: requestHeaders(session.id) }).catch(() => {});
+    await app.apiFetch(endpoint(session.id, '/active'), { method: 'DELETE', headers: requestHeaders(session.id) }).catch(() => {});
   }
 };
 
@@ -257,7 +257,7 @@ setInterval(() => {
   const previousId = observedSessionId;
   observedSessionId = currentId;
   if (previousId && side.running && isResolvedSessionIdentity(previousId)) {
-    fetch(endpoint(previousId, '/active'), { method: 'DELETE', headers: requestHeaders(previousId) }).catch(() => {});
+    app.apiFetch(endpoint(previousId, '/active'), { method: 'DELETE', headers: requestHeaders(previousId) }).catch(() => {});
   }
   side.generation += 1;
   side.visible = false;

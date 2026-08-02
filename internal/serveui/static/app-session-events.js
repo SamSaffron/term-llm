@@ -300,6 +300,32 @@ window.addEventListener('popstate', async () => {
   await app.switchToSession(stub.id, { closeSidebar: false });
 });
 
+app.addNetworkRecoveryHook?.(async (_reason) => {
+  if (!state.connected || document.visibilityState === 'hidden') return;
+  await app.startSidebarStatusPoll();
+  const session = getActiveSession();
+  if (!session) return;
+
+  // The sidebar status pass reconciles durable transcript/session truth once
+  // before retry waiters are released. This recovers a POST accepted before
+  // x-response-id arrived and avoids independent stream/poll stampedes.
+  const streamIsStale = Date.now() - Number(state.lastEventTime || 0) > HEARTBEAT_STALE_THRESHOLD;
+  if (state.abortController && streamIsStale) {
+    state.abortController._heartbeatAbort = true;
+    if (typeof state.abortController._heartbeatCancelStream === 'function') {
+      await state.abortController._heartbeatCancelStream().catch(() => {});
+    } else if (!state.abortController._responseBodyAttached) {
+      state.abortController.abort();
+    }
+  } else if (!state.abortController && session.activeResponseId) {
+    setStreaming(true);
+    void app.resumeAndDrain?.(session, {
+      responseId: session.activeResponseId,
+      recoverFromSnapshot: false
+    });
+  }
+});
+
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') {
     rememberPageTailOwnership();
@@ -308,41 +334,7 @@ document.addEventListener('visibilitychange', async () => {
     return;
   }
   restorePageTailOwnership();
-  if (!state.connected) return;
-  // Reconcile the authoritative transcript before looking for an active
-  // response. Another tab may have completed several turns and started a new
-  // one while this page was hidden; attaching first would only replay the new
-  // response and leave the earlier turns missing.
-  await app.startSidebarStatusPoll();
-  if (document.visibilityState !== 'visible') return;
-  const session = getActiveSession();
-  if (!session) return;
-
-  if (session.activeResponseId && app.wakeResponseReconnect?.({
-    reason: 'visibility',
-    sessionId: session.id,
-    responseId: session.activeResponseId
-  })) {
-    setConnectionState('Page visible, reconnecting\u2026', 'bad');
-    setStreaming(true);
-    return;
-  }
-  if (session.activeResponseId && !state.abortController) {
-    setStreaming(true);
-    app.resumeAndDrain(session, {
-      responseId: session.activeResponseId,
-      recoverFromSnapshot: false
-    });
-    return;
-  }
-  if (state.abortController && state.lastEventTime > 0 && Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
-    state.abortController._heartbeatAbort = true;
-    state.abortController.abort(); // triggers retry in resumeActiveResponse
-    return;
-  }
-  if (!state.streaming && !state.abortController) {
-    await app.syncActiveSessionFromServer(session, true);
-  }
+  if (state.connected) await app.runCoordinatedNetworkRecovery?.('visibility');
 });
 
 window.addEventListener('pagehide', () => {
@@ -352,66 +344,15 @@ window.addEventListener('pagehide', () => {
 });
 
 window.addEventListener('online', async () => {
-  setConnectionState('', '');
-  // As with visibility recovery, reconcile durable history before waking the
-  // response stream. Replaying only the current response cannot recover turns
-  // that completed while this client was offline.
-  await app.startSidebarStatusPoll();
-  const session = getActiveSession();
-  if (!session) return;
-  if (session.activeResponseId && app.wakeResponseReconnect?.({
-    reason: 'online',
-    sessionId: session.id,
-    responseId: session.activeResponseId
-  })) {
-    setConnectionState('Network restored, reconnecting\u2026', 'bad');
-    setStreaming(true);
-    return;
-  }
-  if (session.activeResponseId && state.abortController) {
-    // Abort the stale fetch so the existing resume loop reconnects immediately
-    // instead of waiting for the heartbeat timeout.
-    state.abortController._heartbeatAbort = true;
-    state.abortController.abort();
-  } else if (session.activeResponseId && !state.abortController) {
-    setConnectionState('Network restored, reconnecting\u2026', 'bad');
-    setStreaming(true);
-    app.resumeAndDrain(session, {
-      responseId: session.activeResponseId,
-      recoverFromSnapshot: false
-    });
-  } else if (!state.streaming) {
-    await app.syncActiveSessionFromServer(session, true);
-  }
+  if (state.connected) await app.runCoordinatedNetworkRecovery?.('online');
 });
 
 window.addEventListener('offline', () => {
-  setConnectionState('Network offline', 'bad');
+  app.setConnectivityState?.({ network: 'offline', phase: 'offline' });
 });
 
-window.addEventListener('pageshow', (event) => {
+window.addEventListener('pageshow', async () => {
   restorePageTailOwnership();
-  if (state.connected) void app.ensureSidebarStatusPoll();
-  const session = getActiveSession();
-  if (!session) return;
-  if (session.activeResponseId && app.wakeResponseReconnect?.({
-    reason: 'pageshow',
-    sessionId: session.id,
-    responseId: session.activeResponseId
-  })) {
-    setConnectionState('Page restored, reconnecting\u2026', 'bad');
-    setStreaming(true);
-    return;
-  }
-  if (!event.persisted) return;
-  if (session.activeResponseId) {
-    setStreaming(true);
-    app.resumeAndDrain(session, {
-      responseId: session.activeResponseId,
-      recoverFromSnapshot: false
-    });
-  } else {
-    void app.syncActiveSessionFromServer(session, true);
-  }
+  if (state.connected) await app.runCoordinatedNetworkRecovery?.('pageshow');
 });
 })();

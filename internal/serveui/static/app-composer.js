@@ -128,7 +128,7 @@ const transcribeVoiceBlob = async (blob, mimeType) => {
     headers.Authorization = `Bearer ${state.token}`;
   }
 
-  const response = await fetch(`${UI_PREFIX}/v1/transcribe`, {
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/transcribe`, {
     method: 'POST',
     headers,
     body: form

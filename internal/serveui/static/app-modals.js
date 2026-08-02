@@ -358,7 +358,7 @@ const submitAskUserModal = async (cancelled = false) => {
   elements.askUserCancelBtn.textContent = cancelled ? 'Dismissing…' : 'Dismiss';
 
   try {
-    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/ask_user`, {
+    const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/ask_user`, {
       method: 'POST',
       headers: requestHeaders(prompt.sessionId),
       body: JSON.stringify(cancelled
@@ -505,7 +505,7 @@ const submitApprovalModal = async (denied = false) => {
   const body = { approval_id: prompt.approvalId, choice: choiceIndex };
 
   try {
-    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/approval`, {
+    const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/approval`, {
       method: 'POST',
       headers: requestHeaders(prompt.sessionId),
       body: JSON.stringify(body)
@@ -603,6 +603,7 @@ const handleAuthFailure = () => {
   app.stopSessionStatePoll();
   closeAskUserModal();
   state.token = '';
+  app.setApplicationConnected?.(false, false);
   localStorage.removeItem(STORAGE_KEYS.token);
   syncTokenCookie('');
   setConnectionState('Not connected', 'bad');
@@ -683,7 +684,8 @@ const connectToken = async () => {
     }
     state.token = token;
     state.models = models;
-    state.connected = true;
+    app.setApplicationConnected?.(true, true);
+    if (!app.setApplicationConnected) state.connected = true;
     localStorage.setItem(STORAGE_KEYS.token, token);
     syncTokenCookie(token);
 
@@ -713,6 +715,8 @@ const connectToken = async () => {
     elements.authError.textContent = message;
     if (err?.status === 401) {
       state.token = '';
+      app.setApplicationConnected?.(false, false);
+      if (!app.setApplicationConnected) state.connected = false;
       localStorage.removeItem(STORAGE_KEYS.token);
       syncTokenCookie('');
     }

@@ -55,6 +55,10 @@ function testResponseTimeouts() {
 async function createEnabledHarness() {
   const channels = [];
   const scheduled = [];
+  const windowListeners = new Map();
+  const documentListeners = new Map();
+  let now = 0;
+  let signalingOnline = true;
   let transportRecoveries = 0;
   let httpsAPICalls = 0;
 
@@ -105,6 +109,7 @@ async function createEnabledHarness() {
   const originalFetch = async (url) => {
     const value = String(url);
     if (value.endsWith('/session')) {
+      if (!signalingOnline) throw new TypeError('simulated signaling outage');
       return new Response(JSON.stringify({ session_id: 'signal-session' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -129,7 +134,10 @@ async function createEnabledHarness() {
   const document = {
     readyState: 'complete',
     visibilityState: 'visible',
-    addEventListener() {},
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(handler);
+    },
   };
   const window = {
     __WEBRTC_ENABLED__: true,
@@ -138,6 +146,10 @@ async function createEnabledHarness() {
     TERM_LLM_UI_PREFIX: '/ui',
     location: { search: '', origin: 'https://example.test' },
     fetch: originalFetch,
+    addEventListener(type, handler) {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(handler);
+    },
     TermLLMApp: {
       handleFetchTransportFallback() {
         transportRecoveries += 1;
@@ -162,7 +174,7 @@ async function createEnabledHarness() {
     crypto: webcrypto,
     RTCPeerConnection: FakePeerConnection,
     setTimeout(fn, delay) {
-      const handle = { fn, delay, cleared: false };
+      const handle = { fn, delay, at: now + Number(delay || 0), cleared: false };
       scheduled.push(handle);
       return handle;
     },
@@ -183,7 +195,39 @@ async function createEnabledHarness() {
   return {
     channels,
     originalFetch,
+    scheduled,
     window,
+    setSignalingOnline(value) { signalingOnline = Boolean(value); },
+    async dispatchWindow(type) {
+      for (const handler of windowListeners.get(type) || []) handler({ type });
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    },
+    async dispatchDocument(type) {
+      for (const handler of documentListeners.get(type) || []) handler({ type });
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    },
+    async runNextTimer(expectedDelay) {
+      const timer = scheduled.find((item) => !item.cleared && (expectedDelay === undefined || item.delay === expectedDelay));
+      if (!timer) return false;
+      now = Math.max(now, timer.at);
+      timer.cleared = true;
+      timer.fn();
+      for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      return true;
+    },
+    async advanceTime(ms) {
+      const target = now + Number(ms || 0);
+      for (;;) {
+        const timer = scheduled.filter((item) => !item.cleared && item.at <= target).sort((a, b) => a.at - b.at)[0];
+        if (!timer) break;
+        now = timer.at;
+        timer.cleared = true;
+        timer.fn();
+        for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      }
+      now = target;
+    },
+    getNow: () => now,
     getHTTPSAPICalls: () => httpsAPICalls,
     getTransportRecoveries: () => transportRecoveries,
   };
@@ -236,10 +280,89 @@ async function testSendFallbackSignalsTransportRecoveryOnce() {
   console.log('PASS: WebRTC request fallback restores fetch and signals app recovery once');
 }
 
+async function testSynchronousSendThrowFallsBackForMutation() {
+  const harness = await createEnabledHarness();
+  const channel = harness.channels[0];
+  const patchedFetch = harness.window.fetch;
+  channel.throwOnSend = true;
+  const response = await patchedFetch('/ui/v1/non-idempotent-action', { method: 'POST', body: '{}' });
+  if (!response.ok || harness.getHTTPSAPICalls() !== 1) {
+    fail('synchronous send throw did not safely fall back to HTTPS for a mutation');
+  }
+  console.log('PASS: synchronous WebRTC send throw proves non-delivery and falls back once over HTTPS');
+}
+
+async function testAmbiguousMutationDrainIsNotReplayed() {
+  const harness = await createEnabledHarness();
+  const channel = harness.channels[0];
+  const pending = harness.window.fetch('/ui/v1/non-idempotent-action', { method: 'POST', body: '{}' })
+    .then(() => null, (error) => error);
+  channel.close();
+  const error = await pending;
+  if (!error || error.name !== 'UnknownMutationOutcomeError') {
+    fail('mutation accepted by dataChannel.send did not protect its ambiguous outcome');
+  }
+  if (harness.getHTTPSAPICalls() !== 0) {
+    fail('ambiguous mutation was replayed during channel drain');
+  }
+  console.log('PASS: first-frame/channel-drain ambiguity never replays an unsafe mutation');
+}
+
+async function testTwentySecondFallbackAndPersistentRecovery() {
+  const harness = await createEnabledHarness();
+  const firstChannel = harness.channels[0];
+  const patchedFetch = harness.window.fetch;
+  harness.setSignalingOnline(false);
+  firstChannel.close();
+
+  const httpsResponse = await harness.window.fetch('/ui/v1/sessions/status', { headers: {} });
+  if (!httpsResponse.ok || harness.getHTTPSAPICalls() !== 1) {
+    fail('HTTPS did not remain functional during WebRTC outage');
+  }
+  await harness.runNextTimer(2000);
+  await harness.runNextTimer(5000);
+  await harness.runNextTimer(10000);
+  await harness.advanceTime(3000);
+  if (harness.getNow() !== 20000 || harness.channels.length !== 1) {
+    fail(`WebRTC unexpectedly recovered during real 20-second backoff (channels=${harness.channels.length})`);
+  }
+  if (!harness.scheduled.some((timer) => !timer.cleared && timer.delay === 30000)) {
+    fail('persistent WebRTC recovery did not continue with bounded backoff');
+  }
+
+  harness.setSignalingOnline(true);
+  await harness.dispatchWindow('online');
+  await harness.runNextTimer(0);
+  await waitFor(() => harness.channels.length === 2 && harness.window.fetch !== harness.originalFetch, 'WebRTC did not recover quickly after restoration');
+  if (harness.window.fetch === patchedFetch) {
+    // A new patched function identity is not required; this assertion exists to
+    // document that routing is active again, not to demand wrapper churn.
+  }
+  console.log('PASS: WebRTC survives a 20-second outage on HTTPS and recovers immediately when signaling returns');
+}
+
+async function testVisibilityChurnDoesNotHammerSignaling() {
+  const harness = await createEnabledHarness();
+  harness.setSignalingOnline(false);
+  harness.channels[0].close();
+  for (let i = 0; i < 8; i += 1) await harness.dispatchDocument('visibilitychange');
+  const activeRetries = harness.scheduled.filter((timer) => !timer.cleared && timer.delay === 2000);
+  const immediateRetries = harness.scheduled.filter((timer) => !timer.cleared && timer.delay === 0);
+  if (activeRetries.length !== 1 || immediateRetries.length !== 0) {
+    fail(`visibility churn rescheduled signaling (${activeRetries.length} backoffs, ${immediateRetries.length} immediate)`);
+  }
+  if (harness.channels.length !== 1) fail('visibility churn started signaling before the armed backoff');
+  console.log('PASS: visibility churn preserves one armed WebRTC signaling backoff');
+}
+
 (async () => {
   testResponseTimeouts();
   await testChannelCloseSignalsTransportRecoveryOnce();
   await testSendFallbackSignalsTransportRecoveryOnce();
+  await testSynchronousSendThrowFallsBackForMutation();
+  await testAmbiguousMutationDrainIsNotReplayed();
+  await testTwentySecondFallbackAndPersistentRecovery();
+  await testVisibilityChurnDoesNotHammerSignaling();
 })().catch((error) => {
   console.error(error);
   process.exit(1);

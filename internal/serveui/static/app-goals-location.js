@@ -44,7 +44,7 @@ const closeGoalModal = () => {
 const postSessionGoal = async (action, extra = {}) => {
   const session = ensureActiveSession?.();
   if (!session) return null;
-  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/goal`, {
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/goal`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, ...extra })

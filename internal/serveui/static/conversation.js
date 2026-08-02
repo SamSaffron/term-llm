@@ -712,7 +712,7 @@
         if (id != null) requested.push(id);
       }
       if (requested.length === 0) return true;
-      const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript/bodies?ids=${requested.join(',')}`, {
+      const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript/bodies?ids=${requested.join(',')}`, {
         headers: requestHeaders(session.id)
       });
       if (!resp.ok) return false;
@@ -768,7 +768,7 @@
       if (!transcript) return false;
       const headers = requestHeaders(session.id);
       if (transcript.etag && !options.force) headers['If-None-Match'] = transcript.etag;
-      const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
+      const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/transcript`, { headers });
       transcript.noteIndexFetch(resp.status === 304, resp.headers?.get?.('ETag') || '');
       if (resp.status !== 304 && !resp.ok) return false;
       let data = null;
@@ -887,7 +887,7 @@
       try {
         const headers = {};
         if (state.token) headers.Authorization = `Bearer ${state.token}`;
-        const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
+        const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
         if (!resp.ok) {
           if (resp.status === 404) {
             return sessionStateOKResult({ active_run: false, active_response_id: '' });

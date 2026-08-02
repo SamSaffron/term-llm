@@ -147,6 +147,7 @@ function createHarness(options = {}) {
     AbortController,
   };
   context.globalThis = context;
+  app.apiFetch = (...args) => context.fetch(...args);
   vm.runInNewContext(source, context, { filename: 'app-sidebar.js' });
   return { app, elements, state, document, get renderSidebarCount() { return renderSidebarCount; } };
 }

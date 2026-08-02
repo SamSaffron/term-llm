@@ -294,6 +294,7 @@ function createHarness(options = {}) {
     }
   };
   context.globalThis = context;
+  app.apiFetch = (...args) => context.fetch(...args);
   vm.runInNewContext(source, context, { filename: 'app-diffs.js' });
 
   const flushTimers = async () => {

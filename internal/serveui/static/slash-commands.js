@@ -102,7 +102,7 @@ const refreshSkillCommands = async (sessionId) => {
     ? app.requestHeaders(id)
     : { 'Content-Type': 'application/json', session_id: id };
   try {
-    const response = await fetch(`${prefix}/v1/sessions/${encodeURIComponent(id)}/skills`, { headers });
+    const response = await app.apiFetch(`${prefix}/v1/sessions/${encodeURIComponent(id)}/skills`, { headers });
     if (!response.ok) {
       if (generation === skillRefreshGeneration) setSkillCommands([]);
       return [];

@@ -366,7 +366,6 @@ const scheduleStreamScroll = () => {
 };
 
 const activeResumeKeys = new Map();
-const responseReconnectWaiters = new Map();
 
 const streamDiagnosticsEnabled = () => Boolean(
   window.__TERM_LLM_DIAGNOSTICS__ || window.__WEBRTC_DIAGNOSTICS__
@@ -381,33 +380,12 @@ const setReconnectDiagnostic = (reconnectState, reason = '', delay = 0) => {
   dataset.reconnectDelayMs = String(Math.max(0, Number(delay) || 0));
 };
 
-const waitForResponseReconnect = (delay, resumeKey, reason) => new Promise((resolve) => {
-  let settled = false;
-  let timerId = 0;
-  const finish = (wakeReason) => {
-    if (settled) return;
-    settled = true;
-    if (timerId) window.clearTimeout(timerId);
-    if (responseReconnectWaiters.get(resumeKey)?.finish === finish) {
-      responseReconnectWaiters.delete(resumeKey);
-    }
-    resolve(String(wakeReason || 'timer'));
-  };
-  timerId = window.setTimeout(() => finish('timer'), delay);
-  responseReconnectWaiters.set(resumeKey, { finish, timerId });
-  setReconnectDiagnostic('waiting', reason, delay);
-});
-
 const wakeResponseReconnect = ({ reason = '', sessionId = '', responseId = '' } = {}) => {
   const normalizedSessionId = String(sessionId || '').trim();
   const normalizedResponseId = String(responseId || '').trim();
   if (!normalizedSessionId || !normalizedResponseId) return false;
-  const key = `${normalizedSessionId}:${normalizedResponseId}`;
-  const waiter = responseReconnectWaiters.get(key);
-  if (!waiter) return false;
   setReconnectDiagnostic('waking', reason, 0);
-  waiter.finish(reason);
-  return true;
+  return app.wakeNetworkRetry(`${normalizedSessionId}:${normalizedResponseId}`, reason);
 };
 
 const attachResponseStream = (session, responseId = '', controller = null) => {
@@ -421,11 +399,9 @@ const attachResponseStream = (session, responseId = '', controller = null) => {
 
 const clearResumeKeysForSession = (sessionId) => {
   const prefix = sessionId + ':';
+  app.cancelNetworkRetries?.(prefix, 'detached');
   for (const key of activeResumeKeys.keys()) {
     if (key.startsWith(prefix)) activeResumeKeys.delete(key);
-  }
-  for (const [key, waiter] of responseReconnectWaiters) {
-    if (key.startsWith(prefix)) waiter.finish('detached');
   }
 };
 
@@ -821,7 +797,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
 };
 
 const fetchResponseSnapshot = async (session, responseId) => {
-  const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}`, {
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}`, {
     headers: requestHeaders(session?.id || '')
   });
   if (!response.ok) {
@@ -1036,8 +1012,22 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
     : (options.streamState || createResponseStreamState(session));
   let consecutiveHttpFailures = 0;
   let consecutiveHeartbeatAborts = 0;
-  let retryAttempt = 0;
   let reconnectReason = 'stream-ended';
+  const recovery = app.createResumableStreamRecovery({
+    key: resumeKey,
+    getCursor: () => responseEventSequence(session, responseId),
+    isTerminal: () => !ownsResumeKey() || session.activeResponseId !== responseId,
+    heartbeat: true,
+    onStatus: ({ phase, reason, delay, attempt }) => {
+      setReconnectDiagnostic(phase, reason, delay);
+      if (phase === 'waiting' || phase === 'offline') {
+        setConnectionState(
+          phase === 'offline' ? 'Offline — response is safe; reconnecting when online' : streamReconnectLabel(attempt),
+          'bad'
+        );
+      }
+    },
+  });
 
   for (;;) {
     if (!ownsResumeKey()) {
@@ -1087,12 +1077,13 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
     setStreaming(true);
     let streamActivityBaseline = Number(state.lastEventTime || 0);
 
+    recovery.noteAttempt();
     try {
       const replayAfterSequence = responseEventSequence(session, responseId);
-      const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(replayAfterSequence)}`, {
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(replayAfterSequence)}`, {
         headers: requestHeaders(session.id),
         signal: controller.signal
-      });
+      }, { policy: app.API_FETCH_POLICY.stream, timeoutMs: 0, retries: 0 });
       if (!ownsResumeKey()) {
         if (state.abortController === controller) state.abortController = null;
         try { await response.body?.cancel(); } catch (_) { /* response may already be closed */ }
@@ -1107,6 +1098,7 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
       }
 
       consecutiveHttpFailures = 0;
+      recovery.noteConnected();
       setConnectionState('', '');
       setReconnectDiagnostic('connected', '', 0);
       const streamGeneration = state.streamGeneration;
@@ -1123,7 +1115,7 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
         replayThroughSequence
       });
       if (streamHadActivitySince(streamActivityBaseline)) {
-        retryAttempt = 0;
+        recovery.noteActivity();
         consecutiveHeartbeatAborts = 0;
       }
       if (controller._heartbeatAbort) {
@@ -1174,7 +1166,7 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
 
       const sawStreamActivity = streamHadActivitySince(streamActivityBaseline);
       if (sawStreamActivity) {
-        retryAttempt = 0;
+        recovery.noteActivity();
         consecutiveHttpFailures = 0;
         consecutiveHeartbeatAborts = 0;
       }
@@ -1237,14 +1229,11 @@ const resumeActiveResponseInner = async (session, responseId, options, resumeOwn
       }
     }
 
-    setConnectionState(streamReconnectLabel(retryAttempt), 'bad');
     if (session.activeResponseId !== responseId) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return true;
     }
-    const retryDelay = streamReconnectDelay(retryAttempt);
-    retryAttempt += 1;
-    const wakeReason = await waitForResponseReconnect(retryDelay, resumeKey, reconnectReason);
+    const wakeReason = await recovery.wait(reconnectReason);
     if (wakeReason === 'detached' || !ownsResumeKey()) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return false;
@@ -1275,7 +1264,7 @@ const cancelActiveResponse = async (session) => {
 
   let response;
   try {
-    response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/cancel`, {
+    response = await app.apiFetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/cancel`, {
       method: 'POST',
       headers: requestHeaders(session?.id || '')
     });

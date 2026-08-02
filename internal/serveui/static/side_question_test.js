@@ -98,6 +98,7 @@ const window = {
 };
 const context = { window, document, fetch, Response, TextDecoder, console, setInterval: () => 1 };
 context.globalThis = context;
+app.apiFetch = (...args) => fetch(...args);
 vm.runInNewContext(source, context, { filename: 'side-question.js' });
 
 const assert = (condition, message) => { if (!condition) throw new Error(message); };

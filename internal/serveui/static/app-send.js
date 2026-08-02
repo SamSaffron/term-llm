@@ -99,7 +99,7 @@ const restoreLatestDraftMessage = () => {
   return restoreDraftMessageForSession(state.activeSessionId);
 };
 
-const { requestHeaders, normalizeError, hasSessionContinuationContext, effectiveEffortForCompare, clearRuntimeSelectionIntent, classifyRecoverableContinuationFailure, sleep, streamReconnectDelay, streamReconnectLabel, isTransientPreResponsePostError, setActiveResponseTracking, HEARTBEAT_STALE_THRESHOLD, heartbeatUploadGraceThreshold, attachResponseStream, detachResponseStream, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, createResponseStreamState, consumeResponseStream, resumeActiveResponse, setStreaming, recoverInterruptFailure, addErrorMessage } = app;
+const { requestHeaders, normalizeError, hasSessionContinuationContext, effectiveEffortForCompare, clearRuntimeSelectionIntent, classifyRecoverableContinuationFailure, sleep, streamReconnectDelay, streamReconnectLabel, isTransientPreResponsePostError, setActiveResponseTracking, HEARTBEAT_STALE_THRESHOLD, heartbeatUploadGraceThreshold, attachResponseStream, detachResponseStream, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, createResponseStreamState, consumeResponseStream, resumeActiveResponse, setStreaming, recoverInterruptFailure, addErrorMessage, waitForNetworkRetry } = app;
 
 const restoreQueuedFollowUps = (entries, sessionId) => {
   for (const entry of entries) {
@@ -163,7 +163,7 @@ const sendMessage = async (options = {}) => {
     elements.sendBtn.disabled = true;
     elements.sendBtn.title = 'Compressing conversation';
     try {
-      const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/compact`, {
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/compact`, {
         method: 'POST',
         headers: requestHeaders(session.id),
         body: '{}'
@@ -490,12 +490,12 @@ const sendMessage = async (options = {}) => {
     headers['X-Term-LLM-Request-ID'] = userMessage.responseRequestId;
     const requestBody = JSON.stringify(body);
     controller._heartbeatStaleThreshold = heartbeatUploadGraceThreshold(requestBody);
-    let response = await fetch(`${UI_PREFIX}/v1/responses`, {
+    let response = await app.apiFetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
       headers,
       body: requestBody,
       signal: controller.signal
-    });
+    }, { policy: app.API_FETCH_POLICY.idempotentMutation, retries: 0, timeoutMs: 0 });
     controller._heartbeatStaleThreshold = HEARTBEAT_STALE_THRESHOLD;
     const headerResponseId = String(response.headers.get('x-response-id') || '').trim();
     const headerSessionNumber = Number(response.headers.get('x-session-number') || 0);
@@ -602,10 +602,19 @@ const sendMessage = async (options = {}) => {
       attachResponseStream(session, '', null);
       setSessionOptimisticBusy(session, true);
       setStreaming(true);
-      setConnectionState(streamReconnectLabel(retryCount));
+      setConnectionState(
+        typeof navigator !== 'undefined' && navigator.onLine === false
+          ? 'Offline — message pending safely; reconnect to continue'
+          : streamReconnectLabel(retryCount),
+        'bad'
+      );
       const retryGeneration = state.streamGeneration;
-      await sleep(streamReconnectDelay(retryCount));
-      if (state.streamGeneration !== retryGeneration || state.activeSessionId !== session.id) {
+      const wakeReason = await waitForNetworkRetry(streamReconnectDelay(retryCount), {
+        key: `${session.id}:initial:${userMessage.responseRequestId}`,
+        reason: controller._heartbeatAbort ? 'heartbeat-stale' : 'pre-response-post',
+        pendingSafe: true
+      });
+      if (wakeReason === 'detached' || state.streamGeneration !== retryGeneration || state.activeSessionId !== session.id) {
         restoreFollowUpBatch();
         persistAndRefreshShell();
         return { followUpBatchRestored };

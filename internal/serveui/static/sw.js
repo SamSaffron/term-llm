@@ -12,6 +12,7 @@ const SHELL_ASSETS = [
   './active-response.js',
   './conversation.js',
   './app-core.js',
+  './app-network.js',
   './app-plan.js',
   './slash-commands.js',
   './app-render.js',

@@ -21,7 +21,7 @@ const fetchProviders = async (tokenOverride = '') => {
   const token = tokenOverride || state.token;
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(`${UI_PREFIX}/v1/providers`, { headers });
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/providers`, { headers });
   if (!response.ok) {
     throw await normalizeError(response);
   }
@@ -62,7 +62,7 @@ const fetchModels = async (tokenOverride = '', provider = '') => {
   let url = `${UI_PREFIX}/v1/models`;
   if (provider) url += `?provider=${encodeURIComponent(provider)}`;
 
-  const response = await fetch(url, { headers });
+  const response = await app.apiFetch(url, { headers });
   if (!response.ok) {
     throw await normalizeError(response);
   }
@@ -261,7 +261,7 @@ const queueActiveRunEffortChange = async (session, effort) => {
   const model = String(session?.activeModel || state.selectedModel || '').trim();
   if (!session || !session.id || !model) return false;
 
-  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/effort`, {
+  const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/effort`, {
     method: 'POST',
     headers: requestHeaders(session.id),
     body: JSON.stringify({

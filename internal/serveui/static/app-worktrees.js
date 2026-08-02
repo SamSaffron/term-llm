@@ -54,7 +54,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   const loadWorktrees = async () => {
     if (!worktreesEnabled) return [];
     try {
-      const res = await fetch(`${UI_PREFIX}/v1/worktrees`, { headers: authHeaders() });
+      const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees`, { headers: authHeaders() });
       if (!res.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
       const data = await res.json();
       state.worktrees = Array.isArray(data.worktrees) ? data.worktrees : [];
@@ -85,7 +85,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     loading = true;
     renderWorktreeChip();
     try {
-      const res = await fetch(`${UI_PREFIX}/v1/worktrees`, {
+      const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees`, {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ name })
@@ -109,12 +109,12 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
     const value = action.trim().toLowerCase();
     try {
       if (value === 'diff') {
-        const res = await fetch(`${UI_PREFIX}/v1/worktrees/diff?dir=${encodeURIComponent(dir)}`, { headers: authHeaders() });
+        const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees/diff?dir=${encodeURIComponent(dir)}`, { headers: authHeaders() });
         if (!res.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const data = await res.json();
         window.alert(data.diff || 'Worktree is clean.');
       } else if (value === 'merge') {
-        const res = await fetch(`${UI_PREFIX}/v1/worktrees/merge`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir }) });
+        const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees/merge`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir }) });
         if (!res.ok && res.status !== 409) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const data = await res.json().catch(() => ({}));
         const result = data.result || {};
@@ -134,7 +134,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
           } else if (Array.isArray(cleanup.in_use) && cleanup.in_use.length > 0) {
             const remove = window.confirm(`Merge succeeded, but the worktree is used by ${cleanup.in_use.length} session(s). Remove it anyway?`);
             if (remove) {
-              const deleteRes = await fetch(`${UI_PREFIX}/v1/worktrees?dir=${encodeURIComponent(dir)}&force=1`, { method: 'DELETE', headers: authHeaders() });
+              const deleteRes = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees?dir=${encodeURIComponent(dir)}&force=1`, { method: 'DELETE', headers: authHeaders() });
               if (!deleteRes.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(deleteRes) : deleteRes.text());
               const session = activeSession();
               if (session && session.worktreeDir === dir) session.worktreeRemoved = true;
@@ -151,7 +151,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
       } else if (value === 'promote') {
         const branch = window.prompt('Branch name:', '');
         if (!branch) return;
-        const res = await fetch(`${UI_PREFIX}/v1/worktrees/promote`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir, branch }) });
+        const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees/promote`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir, branch }) });
         if (!res.ok && res.status !== 409) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const data = await res.json().catch(() => ({}));
         if (res.status === 409) {
@@ -163,7 +163,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
         }
       } else if (value === 'remove' || value === 'rm') {
         if (!window.confirm('Remove this worktree?')) return;
-        const res = await fetch(`${UI_PREFIX}/v1/worktrees?dir=${encodeURIComponent(dir)}`, { method: 'DELETE', headers: authHeaders() });
+        const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees?dir=${encodeURIComponent(dir)}`, { method: 'DELETE', headers: authHeaders() });
         if (!res.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const session = activeSession();
         if (session && session.worktreeDir === dir) session.worktreeRemoved = true;

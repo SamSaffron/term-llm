@@ -164,6 +164,12 @@ const state = {
   autoScroll: true,
   authRequired: false,
   connected: false,
+  connectivity: {
+    authenticated: false, startupConnected: false,
+    network: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'unknown',
+    phase: '', pendingSafe: 0, consecutiveFailures: 0,
+    lastSuccessAt: 0, lastFailureAt: 0, lastRecoveryAt: 0,
+    diagnostics: [] },
   attachments: [],
   widgets: [],
   widgetsLoaded: false,
@@ -1703,20 +1709,38 @@ const renderHeaderStatus = () => {
   const el = elements.connectionState;
   if (!el) return;
 
-  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
-  const warningText = offline ? 'Network offline' : legacyConnectionWarning;
+  const connectivityStatus = app.connectivityHeaderStatus?.() || null;
+  const urgentNetwork = Number(connectivityStatus?.priority || 0) > 0 ? connectivityStatus : null;
+  const warningText = urgentNetwork?.text || legacyConnectionWarning;
   const retryText = !warningText && providerRetryOwnerIsVisible()
     ? String(providerRetryStatus.text || '').trim()
     : '';
-  if (!warningText && !retryText) {
+  const fallbackNetwork = !warningText && !retryText ? connectivityStatus : null;
+  const text = warningText || retryText || fallbackNetwork?.text || '';
+  if (!text) {
     hideConnectionState();
     return;
   }
 
-  el.textContent = warningText || retryText;
+  el.textContent = text;
   el.classList.remove('ok', 'bad', 'retry');
-  el.classList.add(warningText ? 'bad' : 'retry');
+  el.classList.add(urgentNetwork?.mode || (warningText ? 'bad' : (fallbackNetwork?.mode || 'retry')));
   el.hidden = false;
+  const connectivity = state.connectivity || {};
+  el.dataset.network = String(connectivity.network || '');
+  el.dataset.phase = String(connectivity.phase || '');
+  el.dataset.pendingSafe = String(Math.max(0, Number(connectivity.pendingSafe || 0)));
+};
+
+const setConnectivityState = (patch = {}) => {
+  state.connectivity = { ...(state.connectivity || {}), ...(patch || {}) };
+  renderHeaderStatus();
+  return state.connectivity;
+};
+
+const setApplicationConnected = (connected, startupConnected = connected) => {
+  state.connected = Boolean(connected);
+  return setConnectivityState({ authenticated: Boolean(connected), startupConnected: Boolean(startupConnected) });
 };
 
 const setConnectionState = (text, mode = '') => {
@@ -1929,14 +1953,14 @@ const subscribeToPush = async () => {
       keys: subJSON.keys
     };
 
-    const resp = await fetch(`${UI_PREFIX}/v1/push/subscribe`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/push/subscribe`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': state.token ? `Bearer ${state.token}` : ''
       },
       body: JSON.stringify(body)
-    });
+    }, { auth: app.API_FETCH_AUTH?.ignore || 'ignore' });
     if (!resp.ok) {
       console.warn('Push subscribe failed:', resp.status, await resp.text().catch(() => ''));
     }
@@ -2576,6 +2600,8 @@ Object.assign(app, {
   scrollToBottom,
   setConnectionState,
   clearConnectionStateOwner,
+  setConnectivityState,
+  setApplicationConnected,
   setProviderRetryStatus,
   clearProviderRetryStatus,
   setStartupStatus,

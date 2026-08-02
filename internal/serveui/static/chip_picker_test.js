@@ -226,17 +226,21 @@ function loadCore(options = {}) {
   const { ctx, elementMap, windowObj } = makeContext(options);
   vm.runInNewContext(coreSource, ctx, { filename: 'app-core.js' });
   const app = ctx.window.TermLLMApp;
+  app.apiFetch = (...args) => ctx.window.fetch(...args);
+  app.API_FETCH_POLICY = { safeRead: 'safe-read', idempotentMutation: 'idempotent-mutation', mutation: 'non-retryable-mutation', stream: 'stream' };
   return { ctx, app, elementMap, windowObj };
 }
 
 function loadCoreAndStream(options = {}) {
   const { ctx, elementMap, windowObj } = makeContext(options);
   vm.runInNewContext(coreSource, ctx, { filename: 'app-core.js' });
+  const app = ctx.window.TermLLMApp;
+  app.apiFetch = (...args) => ctx.window.fetch(...args);
+  app.API_FETCH_POLICY = { safeRead: 'safe-read', idempotentMutation: 'idempotent-mutation', mutation: 'non-retryable-mutation', stream: 'stream' };
   vm.runInNewContext(attachmentsSource, ctx, { filename: 'app-attachments.js' });
   vm.runInNewContext(streamSource, ctx, { filename: 'app-stream.js' });
   vm.runInNewContext(runtimeSource, ctx, { filename: 'app-runtime.js' });
   vm.runInNewContext(modalsSource, ctx, { filename: 'app-modals.js' });
-  const app = ctx.window.TermLLMApp;
   return { ctx, app, elementMap, windowObj };
 }
 

@@ -18,9 +18,9 @@
 // way a normal fetch abort would, letting app-layer recovery take over.
 //
 // If ICE negotiation does not complete within 8 seconds the browser silently
-// falls back to the normal HTTPS path; no user-visible error is shown.
-// When the data channel later disconnects or errors the same silent fallback
-// applies — all pending requests are rescued via HTTPS.
+// falls back to HTTPS and keeps renegotiating in the background with bounded
+// backoff. Online, visibility, and pageshow wake that retry immediately. Data
+// channel disconnects follow the same path while HTTPS remains available.
 //
 // Diagnostics mode: set window.__WEBRTC_DIAGNOSTICS__ = true (or pass
 // ?webrtc_diag=1 in the URL) to enable console.log timeline output:
@@ -71,6 +71,9 @@
 
   let dataChannel = null;
   let renegotiating = false;
+  let renegotiationTimer = null;
+  let renegotiationAttempt = 0;
+  const RENEGOTIATION_BACKOFF_MS = [2000, 5000, 10000, 30000, 60000];
 
   // ---------------------------------------------------------------------------
   // Diagnostics
@@ -94,6 +97,17 @@
   function diagQueue(state, fallback) {
     diag('queue state=' + state + ' pending=' + pendingRequests.size +
       ' fallback=' + (fallback || 'none'));
+  }
+
+  function noteTransportState(transportState, detail) {
+    const app = termApp();
+    if (app && typeof app.noteNetworkDiagnostic === 'function') {
+      app.noteNetworkDiagnostic('webrtc', {
+        state: transportState,
+        detail: String(detail || ''),
+        attempt: renegotiationAttempt,
+      });
+    }
   }
 
   function termApp() {
@@ -130,6 +144,7 @@
   async function initWebRTC() {
     diagT0 = performance.now();
     diag('init signaling=' + SIGNALING_URL);
+    let pc = null;
     try {
       // 1. Request a signaling session (no auth — session_id gates routing).
       const sessStart = performance.now();
@@ -139,7 +154,7 @@
       });
       if (!sessResp.ok) {
         diag('session request failed status=' + sessResp.status);
-        return;
+        return false;
       }
       const sess = await sessResp.json();
       diag('session created id=' + sess.session_id +
@@ -163,7 +178,7 @@
         pcConfig.iceTransportPolicy = 'relay';
         diag('FORCED TURN — iceTransportPolicy=relay');
       }
-      const pc = new RTCPeerConnection(pcConfig);
+      pc = new RTCPeerConnection(pcConfig);
 
       pc.oniceconnectionstatechange = () => {
         diag('ICE state=' + pc.iceConnectionState);
@@ -219,7 +234,8 @@
       });
       if (!sendResp.ok) {
         diag('offer post failed status=' + sendResp.status);
-        return;
+        try { pc.close(); } catch (_e) { /* ignore */ }
+        return false;
       }
       diag('offer sent (' + ((performance.now() - offerStart) | 0) + 'ms)');
 
@@ -227,7 +243,8 @@
       const answer = await pollForAnswer(sess.session_id, ICE_TIMEOUT_MS);
       if (!answer) {
         diag('answer timeout — falling back to HTTPS');
-        return; // timed out — fall back to HTTPS silently
+        try { pc.close(); } catch (_e) { /* ignore */ }
+        return false; // timed out — HTTPS remains available while retrying
       }
       diag('answer received');
 
@@ -248,11 +265,18 @@
       dc.onerror = () => onChannelClose(dc);
 
       window.fetch = patchedFetch;
+      renegotiationAttempt = 0;
+      noteTransportState('connected', 'data-channel-open');
 
       diag('data channel open — fetch patched');
+      return true;
     } catch (_e) {
       diag('init error: ' + (_e && _e.message ? _e.message : String(_e)));
-      // Silent fallback — HTTPS continues to work for all requests.
+      if (pc) {
+        try { pc.close(); } catch (_closeError) { /* ignore */ }
+      }
+      noteTransportState('https', _e && _e.message ? _e.message : 'negotiation-failed');
+      return false;
     }
   }
 
@@ -310,10 +334,10 @@
   // Drain all pending requests to HTTPS
   // ---------------------------------------------------------------------------
 
-  // Called when the channel dies (close/error/timeout).  Every in-flight
-  // request that hasn't received its first response frame yet gets retried
-  // via HTTPS.  Requests that already started streaming are closed — the
-  // consumer will see a truncated stream and can retry at the app layer.
+  // Called when the channel dies (close/error/timeout). Retry-safe requests
+  // that have not received a response frame are rescued via HTTPS; unsafe
+  // mutations report an unknown outcome instead of being replayed. Requests
+  // already streaming are closed for app-layer cursor resume.
   function drainPendingToHTTPS(reason) {
     if (pendingRequests.size === 0) return;
     diagQueue('draining', reason + ':https-before-response-or-stream-close');
@@ -334,16 +358,52 @@
     dataChannel = null;
     restoreHTTPSFetch('data channel closed');
     drainPendingToHTTPS('channel closed');
+    scheduleRenegotiation('channel-closed');
   }
 
   // ---------------------------------------------------------------------------
   // Background renegotiation
   // ---------------------------------------------------------------------------
 
-  function triggerRenegotiation() {
+  function scheduleRenegotiation(reason, immediate) {
+    if (dataChannel && dataChannel.readyState === 'open') return;
     if (renegotiating) return;
-    renegotiating = true;
+    if (renegotiationTimer) {
+      if (!immediate) return;
+      clearTimeout(renegotiationTimer);
+      renegotiationTimer = null;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      noteTransportState('waiting-online', reason);
+      return;
+    }
+    const index = Math.min(renegotiationAttempt, RENEGOTIATION_BACKOFF_MS.length - 1);
+    const delay = immediate ? 0 : RENEGOTIATION_BACKOFF_MS[index];
+    noteTransportState('retrying', reason + ':' + delay + 'ms');
+    diag('renegotiation scheduled reason=' + reason + ' delay=' + delay + 'ms attempt=' + (renegotiationAttempt + 1));
+    renegotiationTimer = setTimeout(async () => {
+      renegotiationTimer = null;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        noteTransportState('waiting-online', reason);
+        return;
+      }
+      renegotiating = true;
+      let connected = false;
+      try {
+        connected = await initWebRTC();
+      } finally {
+        renegotiating = false;
+      }
+      if (connected) {
+        renegotiationAttempt = 0;
+        return;
+      }
+      renegotiationAttempt += 1;
+      scheduleRenegotiation('background-retry', false);
+    }, delay);
+  }
 
+  function triggerRenegotiation() {
     // Tear down the current channel so new requests route to HTTPS immediately.
     const previousChannel = dataChannel;
     dataChannel = null;
@@ -354,21 +414,8 @@
 
     // Rescue any other in-flight requests stuck on the dead channel.
     drainPendingToHTTPS('renegotiation');
-
     diag('renegotiating — new requests use HTTPS');
-
-    // Small delay before renegotiating to avoid tight loops if the network
-    // is genuinely down.  2 s is enough to not spam but short enough that
-    // if the issue was transient, WebRTC comes back quickly.
-    setTimeout(async () => {
-      try {
-        await initWebRTC();
-      } catch (_e) {
-        diag('renegotiation failed: ' + (_e && _e.message ? _e.message : String(_e)));
-      } finally {
-        renegotiating = false;
-      }
-    }, 2000);
+    scheduleRenegotiation('transport-degraded', false);
   }
 
   // ---------------------------------------------------------------------------
@@ -396,7 +443,7 @@
   }
 
   function webrtcFetch(urlStr, options) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const reqId = crypto.randomUUID();
       let streamController;
       let resolved = false;
@@ -406,6 +453,7 @@
 
       const urlObj = new URL(urlStr, window.location.origin);
       const method = (options.method || 'GET').toUpperCase();
+      const transportRetrySafe = responseTimeoutForMethod(method) === READ_RESPONSE_TIMEOUT_MS || options.__termLLMRetrySafe === true;
       const responseTimeoutMs = responseTimeoutForMethod(method);
       const path = urlObj.pathname + (urlObj.search || '');
       const bodySize = options.body ? new Blob([options.body]).size : 0;
@@ -422,6 +470,10 @@
 
       function resolveOnce(response) {
         if (!resolved) { resolved = true; resolve(response); }
+      }
+
+      function rejectOnce(error) {
+        if (!resolved) { resolved = true; reject(error); }
       }
 
       // Central cleanup — idempotent, called from every exit path.
@@ -473,9 +525,13 @@
         cleanup('first-frame-timeout');
         closeStream();
 
-        // Fall back to HTTPS for this request. Mutation endpoints that can be
-        // replayed must enforce idempotency server-side.
-        resolveOnce(originalFetch(urlStr, options));
+        if (transportRetrySafe) {
+          resolveOnce(originalFetch(urlStr, options));
+        } else {
+          const error = new Error('WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.');
+          error.name = 'UnknownMutationOutcomeError';
+          rejectOnce(error);
+        }
 
         // Mark the channel as degraded and renegotiate in the background.
         // This also drains any other stuck pending requests.
@@ -529,11 +585,15 @@
         diagQueue('fallback', fallbackState);
         cleanup('drain-fallback');
         if (!gotResponse) {
-          // Haven't received anything yet — retry via HTTPS. Mutation endpoints
-          // are responsible for making transport retries idempotent.
           closeStream();
-          diag('↩ fallback ' + method + ' ' + path);
-          resolveOnce(originalFetch(urlStr, options));
+          if (transportRetrySafe) {
+            diag('↩ fallback ' + method + ' ' + path);
+            resolveOnce(originalFetch(urlStr, options));
+          } else {
+            const error = new Error('WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.');
+            error.name = 'UnknownMutationOutcomeError';
+            rejectOnce(error);
+          }
         } else {
           // Already streaming — close the stream; consumer sees truncation.
           // App-layer resume logic will reconnect via HTTPS.
@@ -599,6 +659,8 @@
         diag('send error: ' + (_e && _e.message ? _e.message : String(_e)));
         cleanup('send-error');
         closeStream();
+        // A synchronous send failure proves that no frame left this browser,
+        // so even a non-idempotent mutation is safe to send once over HTTPS.
         resolveOnce(originalFetch(urlStr, options));
         triggerRenegotiation();
       }
@@ -619,9 +681,32 @@
   // Kick off
   // ---------------------------------------------------------------------------
 
+  const startPersistentWebRTC = async () => {
+    if (renegotiating || (dataChannel && dataChannel.readyState === 'open')) return;
+    renegotiating = true;
+    let connected = false;
+    try {
+      connected = await initWebRTC();
+    } finally {
+      renegotiating = false;
+    }
+    if (!connected) {
+      renegotiationAttempt += 1;
+      scheduleRenegotiation('startup-retry', false);
+    }
+  };
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('online', () => scheduleRenegotiation('online', true));
+    window.addEventListener('pageshow', () => scheduleRenegotiation('pageshow', true));
+  }
+  if (typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') scheduleRenegotiation('visibility', false);
+    });
+  }
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initWebRTC);
+    document.addEventListener('DOMContentLoaded', startPersistentWebRTC);
   } else {
-    initWebRTC();
+    startPersistentWebRTC();
   }
 }());

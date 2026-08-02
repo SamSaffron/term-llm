@@ -10,6 +10,7 @@ const { webcrypto } = require('crypto');
 
 const dir = __dirname;
 const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
+const networkSource = fs.readFileSync(path.join(dir, 'app-network.js'), 'utf8');
 const source = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
 const responseEffectsSource = fs.readFileSync(path.join(dir, 'app-response-effects.js'), 'utf8');
 const sendSource = fs.readFileSync(path.join(dir, 'app-send.js'), 'utf8');
@@ -627,6 +628,8 @@ function createHarness(options = {}) {
       : () => null,
   };
 
+  const windowEventListeners = new Map();
+  const navigatorObj = options.navigator || { mediaDevices: null, onLine: true };
   const windowObj = {
     TermLLMApp: app,
     ConversationController,
@@ -646,8 +649,15 @@ function createHarness(options = {}) {
     cancelAnimationFrame(handle) {
       clearTimeout(handle);
     },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, handler) {
+      if (!windowEventListeners.has(type)) windowEventListeners.set(type, []);
+      windowEventListeners.get(type).push(handler);
+    },
+    removeEventListener(type, handler) {
+      const listeners = windowEventListeners.get(type) || [];
+      const index = listeners.indexOf(handler);
+      if (index >= 0) listeners.splice(index, 1);
+    },
     innerWidth: 1280,
     innerHeight: 800,
     location: { search: '', origin: 'https://example.test' },
@@ -677,7 +687,7 @@ function createHarness(options = {}) {
     Blob,
     CSS: options.CSS,
     performance: { now: () => Date.now() },
-    navigator: { mediaDevices: null },
+    navigator: navigatorObj,
     MediaRecorder: undefined,
     FileReader: fileReaderClass,
     alert(message) { if (typeof options.onAlert === 'function') options.onAlert(message); },
@@ -685,6 +695,7 @@ function createHarness(options = {}) {
   };
   context.globalThis = context;
   windowObj.document = document;
+  windowObj.navigator = navigatorObj;
   windowObj.localStorage = localStorage;
   windowObj.URL = urlAPI;
   windowObj.CSS = options.CSS;
@@ -816,6 +827,9 @@ function createHarness(options = {}) {
   };
   context.fetch = windowObj.fetch;
 
+  // The shared API/recovery layer is loaded immediately after app-core in the
+  // browser and before every feature module.
+  vm.runInNewContext(networkSource, context, { filename: 'app-network.js' });
   // app-attachments.js is a dependency leaf that app-stream.js destructures from
   // the shared app bag at load time, so it must run first (mirrors index.html).
   vm.runInNewContext(attachmentsSource, context, { filename: 'app-attachments.js' });
@@ -865,6 +879,11 @@ function createHarness(options = {}) {
     getEventsStarted: () => getEventsStarted,
     postStreamCanceled: () => postStreamCanceled,
     connectionStates,
+    navigator: navigatorObj,
+    dispatchWindowEvent: async (type) => {
+      for (const handler of windowEventListeners.get(type) || []) handler({ type });
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    },
     getProviderRetryStatus: () => providerRetryStatus ? { ...providerRetryStatus } : null,
     getModelSwapUpdateCount: () => modelSwapUpdateCount,
     getCancelRequested: () => cancelRequested,
@@ -2093,6 +2112,97 @@ async function testSendMessageTransientPreResponseFailureRetries() {
     return;
   }
 
+  pass(name);
+}
+
+async function testInitialPostOfflineWake() {
+  const name = 'offline initial response POST wakes without duplicating the turn';
+  const navigator = { mediaDevices: null, onLine: true };
+  let postCount = 0;
+  const idempotencyKeys = [];
+  const postBodies = [];
+  const harness = createHarness({
+    navigator,
+    fetchImpl: async (url, requestOptions, { Response, ReadableStream, TextEncoder }) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      idempotencyKeys.push(requestOptions.headers?.['Idempotency-Key'] || '');
+      postBodies.push(String(requestOptions.body || ''));
+      if (postCount === 1) {
+        navigator.onLine = false;
+        throw new TypeError('Failed to fetch');
+      }
+      const body = [
+        'event: response.created\n',
+        'data: {"response":{"id":"resp_test","status":"in_progress"},"sequence_number":1}\n\n',
+        'event: response.completed\n',
+        'data: {"response":{"id":"resp_test","status":"completed"},"sequence_number":2}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(body));
+          controller.close();
+        },
+      }), { status: 200, headers: { 'x-response-id': 'resp_test' } });
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'survive outage';
+  const sendPromise = app.sendMessage();
+  const pending = await waitFor(() => postCount === 1 && state.connectivity?.pendingSafe === 1, 1000);
+  if (!pending) {
+    fail(name, 'initial POST did not enter pending-safe offline state');
+    await cleanup();
+    return;
+  }
+
+  navigator.onLine = true;
+  app.wakeAllNetworkRetries('online');
+  await sendPromise;
+  await cleanup();
+
+  const users = projectedMessages(state.sessions[0]).filter((message) => message.role === 'user');
+  if (postCount !== 2 || users.length !== 1 || idempotencyKeys[0] !== idempotencyKeys[1] || postBodies[0] !== postBodies[1]) {
+    fail(name, 'recovery was not idempotent', JSON.stringify({ postCount, users: users.length, idempotencyKeys }));
+    return;
+  }
+  pass(name);
+}
+
+async function testInitialPostWaiterDetachesOnSessionSwitch() {
+  const name = 'initial response POST retry waiter detaches on session switch';
+  const navigator = { mediaDevices: null, onLine: true };
+  let postCount = 0;
+  const harness = createHarness({
+    navigator,
+    fetchImpl: async (url, requestOptions) => {
+      if (url !== '/ui/v1/responses' || (requestOptions.method || 'GET') !== 'POST') {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      postCount += 1;
+      navigator.onLine = false;
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  const { app, elements, state, cleanup } = harness;
+  elements.promptInput.value = 'detach me';
+  const sendPromise = app.sendMessage();
+  const pending = await waitFor(() => postCount === 1 && state.connectivity?.pendingSafe === 1, 1000);
+  if (!pending) {
+    fail(name, 'initial POST did not enter its retry wait');
+    await cleanup();
+    return;
+  }
+  app.detachResponseStream();
+  await sendPromise;
+  await cleanup();
+  if (postCount !== 1 || state.connectivity?.pendingSafe !== 0) {
+    fail(name, 'detached initial POST waiter retried or leaked pending state', JSON.stringify({ postCount, pendingSafe: state.connectivity?.pendingSafe }));
+    return;
+  }
   pass(name);
 }
 
@@ -3550,16 +3660,18 @@ async function testResumeActiveResponseHeartbeatCancelSlowsAndRecovers() {
 }
 
 async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
-  const name = 'slow response reconnect backoff is wakeable without a duplicate resume loop';
+  const name = 'established response survives a 20-second outage and wakes with exact replay';
   const responseId = 'resp_wakeable_retry';
   const timers = [];
+  let now = 0;
   let nextTimerID = 0;
   let eventsCount = 0;
   const harness = createHarness({
     responseId,
     diagnostics: true,
     setTimeout(callback, ms) {
-      const timer = { id: ++nextTimerID, callback, ms: Number(ms || 0), cleared: false };
+      const delay = Number(ms || 0);
+      const timer = { id: ++nextTimerID, callback, ms: delay, at: now + delay, cleared: false };
       timers.push(timer);
       return timer.id;
     },
@@ -3578,8 +3690,10 @@ async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
       const body = [
         'event: response.created\n',
         `data: {"response":{"id":"${responseId}","status":"in_progress"},"sequence_number":1}\n\n`,
+        'event: response.output_text.delta\n',
+        `data: {"response_id":"${responseId}","delta":"exact replay","sequence_number":2}\n\n`,
         'event: response.completed\n',
-        `data: {"response":{"id":"${responseId}","status":"completed"},"sequence_number":2}\n\n`,
+        `data: {"response":{"id":"${responseId}","status":"completed"},"sequence_number":3}\n\n`,
         'data: [DONE]\n\n',
       ].join('');
       const encoder = new TextEncoder();
@@ -3612,6 +3726,7 @@ async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
       return;
     }
     const timer = timers.find((item) => !item.cleared);
+    now = timer.at;
     timer.cleared = true;
     timer.callback();
   }
@@ -3619,6 +3734,19 @@ async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
   const slowReady = await waitFor(() => eventsCount === 6 && timers.some((timer) => !timer.cleared && timer.ms === 60000), 1000);
   if (!slowReady) {
     fail(name, 'slow one-minute retry was not scheduled', JSON.stringify(timers));
+    await cleanup();
+    return;
+  }
+  const outageTarget = now + 20000;
+  for (const timer of timers.filter((item) => !item.cleared && item.at <= outageTarget).sort((a, b) => a.at - b.at)) {
+    now = timer.at;
+    timer.cleared = true;
+    timer.callback();
+    await Promise.resolve();
+  }
+  now = outageTarget;
+  if (eventsCount !== 6 || !timers.some((timer) => !timer.cleared && timer.ms === 60000 && timer.at > now)) {
+    fail(name, `armed slow retry fired during real 20-second advance: events=${eventsCount}`);
     await cleanup();
     return;
   }
@@ -3657,6 +3785,11 @@ async function testResumeReconnectBackoffCanBeWokenWithoutDuplicateLoop() {
   await cleanup();
   if (eventsCount !== 7) {
     fail(name, `expected one resumed fetch after wake, got ${eventsCount} total fetches`);
+    return;
+  }
+  const replayedAssistants = projectedMessages(session).filter((message) => message.role === 'assistant');
+  if (replayedAssistants.length !== 1 || replayedAssistants[0].content !== 'exact replay') {
+    fail(name, 'terminal replay was missing or duplicated', JSON.stringify(projectedMessages(session)));
     return;
   }
   if (!connectionStates.some((status) => status.source === 'legacy' && status.text.includes('within one minute'))) {
@@ -7468,6 +7601,8 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testSendMessageHeartbeatAbortRetriesBeforeResponseId();
   await testSendMessageLargeUploadUsesLongerPreResponseHeartbeatGrace();
   await testSendMessageTransientPreResponseFailureRetries();
+  await testInitialPostOfflineWake();
+  await testInitialPostWaiterDetachesOnSessionSwitch();
   await testSendMessageHeartbeatAbortKeepsRetryingWithSlowBackoff();
   await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageUsesLocalContinuationIdWithoutPreflightSync();

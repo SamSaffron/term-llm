@@ -109,7 +109,7 @@ const runSidebarSearch = async (query, seq) => {
 
   try {
     const headers = app.requestHeaders ? app.requestHeaders('') : {};
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/search?${params.toString()}`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/search?${params.toString()}`, {
       headers,
       signal: searchAbort.signal
     });
@@ -237,9 +237,9 @@ const applyWidgetStatus = (data) => {
 const refreshWidgetsSidebar = async () => {
   if (!app.renderWidgetSidebar) return;
   try {
-    const resp = await fetch(`${UI_PREFIX}/admin/widgets/status`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/admin/widgets/status`, {
       headers: app.requestHeaders('')
-    });
+    }, { auth: app.API_FETCH_AUTH?.ignore || 'ignore' });
     if (resp.status === 404) {
       state.widgets = [];
       state.widgetsLoaded = false;
@@ -324,7 +324,7 @@ const pollSidebarStatus = (isRecovery = false) => {
       const headers = app.requestHeaders('');
       if (sidebarStatusEtag) headers['If-None-Match'] = sidebarStatusEtag;
 
-      const resp = await fetch(`${UI_PREFIX}/v1/sessions/status${query ? `?${query}` : ''}`, {
+      const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/status${query ? `?${query}` : ''}`, {
         headers,
         signal: controller.signal,
       });

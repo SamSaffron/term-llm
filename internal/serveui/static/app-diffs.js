@@ -357,7 +357,7 @@ const fetchSessionFileChanges = async (sessionId) => {
   const seqAtStart = new Map();
   ds.files.forEach((entry, path) => seqAtStart.set(path, entry.lastSeq || 0));
   try {
-    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes`, {
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes`, {
       headers: authHeaders()
     });
     if (!resp.ok) return; // 404 = tracking disabled; treat as no changes
@@ -426,7 +426,7 @@ const fetchFileDiff = (sessionId, path) => {
   const request = (async () => {
     try {
       const url = `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/diff?path=${encodeURIComponent(path)}`;
-      const resp = await fetch(url, { headers: authHeaders() });
+      const resp = await app.apiFetch(url, { headers: authHeaders() });
       if (!resp.ok) {
         markDiffFetchError(sessionId, path);
         return null;
