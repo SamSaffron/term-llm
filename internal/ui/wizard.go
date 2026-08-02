@@ -53,6 +53,12 @@ func detectAvailableProviders() []providerOption {
 			hint:      "install Cursor Agent and run 'cursor-agent login'",
 		},
 		{
+			name:      "Antigravity agy CLI - Google subscription",
+			value:     "agy-bin",
+			available: isAgyBinaryAvailable(),
+			hint:      "install agy and complete its Antigravity login",
+		},
+		{
 			name:      "OpenAI - OPENAI_API_KEY",
 			value:     "openai",
 			available: os.Getenv("OPENAI_API_KEY") != "",
@@ -129,6 +135,11 @@ func isGrokBinaryAvailable() bool {
 
 func isCursorBinaryAvailable() bool {
 	_, err := exec.LookPath("cursor-agent")
+	return err == nil
+}
+
+func isAgyBinaryAvailable() bool {
+	_, err := exec.LookPath("agy")
 	return err == nil
 }
 
@@ -263,6 +274,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 			"claude-bin": {Model: config.DefaultProviderModel("claude-bin")},
 			"grok-bin":   {Model: config.DefaultProviderModel("grok-bin")},
 			"cursor-bin": {Model: config.DefaultProviderModel("cursor-bin")},
+			"agy-bin":    {Model: config.DefaultProviderModel("agy-bin")},
 			"openrouter": {Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
 			"gemini":     {Model: config.DefaultProviderModel("gemini")},
 			"codeassist": {Model: "gemini-3.1-pro"},
@@ -445,6 +457,9 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"cursor-bin": {
 				Model: config.DefaultProviderModel("cursor-bin"),
+			},
+			"agy-bin": {
+				Model: config.DefaultProviderModel("agy-bin"),
 			},
 			"openrouter": {
 				Model:    config.DefaultProviderModel("openrouter"),

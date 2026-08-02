@@ -477,6 +477,10 @@ var providerSpecs = []ProviderSpec{
 		Defaults: []DefaultField{{"model", "auto-smart"}, {"fast_model", "composer-2.5"}},
 	},
 	{
+		Name: "agy-bin", Type: ProviderTypeAgyBin,
+		Defaults: []DefaultField{{"model", "gemini-3.6-flash-high"}, {"fast_model", "gemini-3.6-flash-low"}},
+	},
+	{
 		Name: "ollama", Type: ProviderTypeOllama,
 		Defaults: []DefaultField{{"model", "qwen2.5-coder:7b"}, {"fast_model", "qwen2.5-coder:7b"}, {"base_url", DefaultOllamaBaseURL}},
 	},

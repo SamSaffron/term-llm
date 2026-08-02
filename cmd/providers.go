@@ -40,6 +40,8 @@ func builtinHasOAuthCredentials(name string) bool {
 		return err == nil
 	case "cursor-bin":
 		return llm.CursorBinHasCredentials()
+	case "agy-bin":
+		return llm.AgyBinHasCredentials()
 	}
 	return false
 }
@@ -154,6 +156,13 @@ var builtinProviderMeta = map[string]struct {
 		requiresKey:        false,
 		supportsListModels: true,
 		description:        "Cursor Agent via local Cursor login or CURSOR_API_KEY",
+	},
+	"agy-bin": {
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
+		supportsListModels: true,
+		description:        "Antigravity subscription through the local agy CLI",
 	},
 	"vllm": {
 		credential:         "api_key",

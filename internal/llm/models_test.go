@@ -191,6 +191,9 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		"grok-composer-2.5-fast": true,
 		// cursor-bin models are account-dependent and Cursor manages context itself.
 		"auto-smart": true, "composer-2.5": true, "claude-sonnet-5": true,
+		// agy-bin models and limits are subscription/catalog dependent.
+		"gemini-3.6-flash-high": true, "gemini-3.6-flash-medium": true, "gemini-3.6-flash-low": true,
+		"gemini-3.5-flash-high": true, "gemini-3.1-pro-high": true,
 		// OpenRouter (slash in name, resolved via API cache)
 		"x-ai/grok-code-fast-1": true,
 		// Copilot models with no known limits

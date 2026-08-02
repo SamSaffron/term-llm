@@ -144,6 +144,15 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "claude-sonnet-5"},
 		{ID: "gpt-5.6-sol"},
 	},
+	"agy-bin": {
+		{ID: "gemini-3.6-flash-high"},
+		{ID: "gemini-3.6-flash-medium"},
+		{ID: "gemini-3.6-flash-low"},
+		{ID: "gemini-3.5-flash-high"},
+		{ID: "gemini-3.1-pro-high"},
+		{ID: "claude-sonnet-4-6"},
+		{ID: "claude-opus-4-6-thinking"},
+	},
 	"xai": {
 		// Grok 4.1 (latest, 2M context)
 		{ID: "grok-4-1-fast", InputLimit: 1_970_000, OutputLimit: 32_000},
@@ -757,7 +766,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "grok-bin", "cursor-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.
