@@ -423,7 +423,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     && requestGeneration >= Number(state.lastAppliedSessionStateRequestGeneration || 0);
 
   const busyBefore = sessionHasInProgressState(session);
-  const sampledRunEpoch = Math.max(0, Number(session.transcript?.latestRunEpoch) || 0);
+  const sampledActiveProjection = {
+    responseId: String(session.transcript?.activeRun?.id || '').trim(), runEpoch: Math.max(0, Number(session.transcript?.activeRun?.epoch) || 0),
+    startedRev: Math.max(0, Number(session.transcript?.activeRun?.startedRev) || 0), terminal: Boolean(session.transcript?.activeRun?.terminal),
+  };
+  const sampledSessionResponseId = String(session.activeResponseId || '').trim();
   const sampledTransport = {
     controller: state.abortController,
     generation: Number(state.streamGeneration || 0),
@@ -608,49 +612,86 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   }
 
   if (!activeRun) {
-    if (sampledRunEpoch < Math.max(0, Number(transcript?.latestRunEpoch) || 0)) {
-      window.TermLLMConversation?.transcriptDiagnostic?.('stale_status_rejection', {
-        responseId: session.activeResponseId || transcript?.activeRun?.id || '',
-        transcriptRev: transcript?.rev,
-      });
-      return loadResult;
-    }
-    const transportUnchanged = state.abortController === sampledTransport.controller
+    const transportMatchesSample = () => state.abortController === sampledTransport.controller
       && Number(state.streamGeneration || 0) === sampledTransport.generation
       && String(state.currentStreamSessionId || '').trim() === sampledTransport.sessionId
       && String(state.currentStreamResponseId || '').trim() === sampledTransport.responseId;
-    const sampledOwnedResponse = sampledTransport.sessionId === session.id && Boolean(sampledTransport.responseId);
-    const currentOwnsTransport = state.currentStreamSessionId === session.id && Boolean(state.currentStreamResponseId);
-    // An idle response sampled before a new send must not cancel that send. A
-    // transport may only be retired when this request observed its stable,
-    // server-issued response ID both before and after the state round trip.
-    if ((state.abortController || currentOwnsTransport) && !(sampledOwnedResponse && transportUnchanged)) {
+    const idleOwnershipStable = () => {
+      const currentOwnsTransport = state.currentStreamSessionId === session.id && Boolean(state.currentStreamResponseId);
+      const sampledOwnedResponse = sampledTransport.sessionId === session.id && Boolean(sampledTransport.responseId);
+      return String(session.activeResponseId || '').trim() === sampledSessionResponseId
+        && !((state.abortController || currentOwnsTransport) && !(sampledOwnedResponse && transportMatchesSample()));
+    };
+    const finishIdleSessionSync = (refreshProjection = false) => {
+      if (refreshProjection) {
+        refreshSessionMessagesFromTranscript(session);
+        if (isStillActive()) renderMessages(true);
+      }
+      if (isStillActive()) stopSessionStatePoll();
+      const inactiveResponseId = session.activeResponseId || (
+        state.currentStreamSessionId === session.id ? state.currentStreamResponseId : ''
+      );
+      if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) {
+        detachResponseStream();
+      }
+      if (inactiveResponseId) {
+        clearActiveResponseTracking(session, inactiveResponseId);
+        saveSessions();
+      }
+      setSessionOptimisticBusy(session, false);
+      setSessionServerActiveRun(session, false);
+      updateBusySidebar();
+      if (isStillActive()) {
+        setStreaming(false); setConnectionState('', '');
+      }
+    };
+
+    let idleDecision = 'stable';
+    if (transcript) {
+      idleDecision = await transcript.commands.enqueue(() => {
+        if (!selectedResponseApplies() || !idleOwnershipStable()) return 'stale';
+        const current = transcript.activeRun;
+        if (!sampledActiveProjection.responseId || sampledActiveProjection.terminal) {
+          if (String(current?.id || '').trim() !== sampledActiveProjection.responseId
+              || Math.max(0, Number(current?.epoch) || 0) !== sampledActiveProjection.runEpoch
+              || Boolean(current?.terminal) !== sampledActiveProjection.terminal) return 'stale';
+          return 'stable';
+        }
+        const retired = transcript.retireOrphanedActiveProjection({
+          responseId: sampledActiveProjection.responseId,
+          runEpoch: sampledActiveProjection.runEpoch,
+          startedRev: sampledActiveProjection.startedRev,
+          transcriptRev: runtimeTranscriptRev,
+        });
+        if (!retired) {
+          if (String(current?.id || '').trim() !== sampledActiveProjection.responseId
+              || Math.max(0, Number(current?.epoch) || 0) !== sampledActiveProjection.runEpoch
+              || Boolean(current?.terminal) !== sampledActiveProjection.terminal) return 'stale';
+          return 'refused';
+        }
+        // The authority decision, projection mutation, render publication,
+        // transport detach, and tracking cleanup are one non-awaiting queued
+        // transaction. Late stream work observes the retired epoch barrier.
+        finishIdleSessionSync(true);
+        return 'retired';
+      });
+    } else if (!idleOwnershipStable()) {
+      idleDecision = 'stale';
+    }
+    if (idleDecision === 'stale') return loadResult;
+    if (idleDecision === 'retired') {
+      app.retireUnownedInterjectionIntents?.(session);
+      requeuePendingInterjections(session);
+      drainInterruptQueueIfIdle(session);
       return loadResult;
     }
-    if (isStillActive()) stopSessionStatePoll();
-    const inactiveResponseId = session.activeResponseId || (
-      state.currentStreamSessionId === session.id ? state.currentStreamResponseId : ''
-    );
-    if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) {
-      detachResponseStream();
-    }
-    if (inactiveResponseId) {
-      clearActiveResponseTracking(session, inactiveResponseId);
-      saveSessions();
-    }
-    setSessionOptimisticBusy(session, false);
-    setSessionServerActiveRun(session, false);
-    updateBusySidebar();
-    if (isStillActive()) setStreaming(false);
+
+    finishIdleSessionSync(false);
     if (isStillActive() && !skipMessagesFetch) {
       await refreshActiveSessionMessagesFromServer(session, {
         targetRev: runtimeTranscriptRev,
         forceScroll: true
       });
-    }
-    if (isStillActive()) {
-      setConnectionState('', '');
-      setStreaming(false);
     }
     app.retireUnownedInterjectionIntents?.(session);
     requeuePendingInterjections(session);

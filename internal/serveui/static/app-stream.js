@@ -902,12 +902,12 @@ const applyResponseRecoverySnapshot = (session, payload) => {
 
     const transcript = session.transcript;
     if (transcript) {
-      window.TermLLMConversation.replaceRunSnapshot(transcript, {
+      if (window.TermLLMConversation.replaceRunSnapshot(transcript, {
         ...payload,
         id: responseId,
         last_sequence_number: recovery.sequence_number ?? payload.last_sequence_number,
         recovery: { ...recovery, messages: recoveredMessages },
-      });
+      }) !== true) return false;
       for (const fact of Array.isArray(recovery.events) ? recovery.events : []) {
         app.applyRecoveredInteractiveFact?.(session, String(fact?.event || ''), fact?.payload || {});
       }
@@ -967,9 +967,9 @@ const applyResponseRecoverySnapshot = (session, payload) => {
         startRev: payload.started_rev,
       });
     } else {
+      if (window.TermLLMConversation.attachActiveRun(session.transcript, payload) !== true) return false;
       setActiveResponseTracking(session, responseId);
       setSessionOptimisticBusy(session, true);
-      window.TermLLMConversation.attachActiveRun(session.transcript, payload);
     }
   }
 
