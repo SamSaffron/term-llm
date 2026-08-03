@@ -2577,10 +2577,25 @@ func TestResponsesClientStream_EmitsImageGeneratedEvent(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(imageBytes)
 	revised := "a red square on a white background"
 
+	addedItem := map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"type":   "image_generation_call",
+			"action": "generate",
+		},
+	}
+	addedJSON, err := json.Marshal(addedItem)
+	if err != nil {
+		t.Fatalf("marshal added item: %v", err)
+	}
+
 	doneItem := map[string]any{
-		"type": "response.output_item.done",
+		"type":         "response.output_item.done",
+		"output_index": 0,
 		"item": map[string]any{
 			"type":           "image_generation_call",
+			"action":         "generate",
 			"result":         encoded,
 			"revised_prompt": revised,
 		},
@@ -2591,7 +2606,8 @@ func TestResponsesClientStream_EmitsImageGeneratedEvent(t *testing.T) {
 	}
 
 	sse := fmt.Sprintf(
-		"event: response.output_item.done\ndata: %s\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_1\"}}\n\n",
+		"event: response.output_item.added\ndata: %s\n\nevent: response.output_item.done\ndata: %s\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_1\"}}\n\n",
+		string(addedJSON),
 		string(doneJSON),
 	)
 

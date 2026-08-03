@@ -264,9 +264,13 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			h.toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
 			h.toolState.SetCaller(doneEvent.OutputIndex, doneEvent.Item.Caller)
 		} else if doneEvent.Item.Type == "web_search_call" {
+			action, err := decodeResponsesWebSearchAction(doneEvent.Item.Action)
+			if err != nil {
+				return false, fmt.Errorf("decode web_search_call action: %w", err)
+			}
 			callID := responsesWebSearchCallID(doneEvent.Item.ID, doneEvent.OutputIndex)
-			toolInfo := responsesWebSearchToolInfo(doneEvent.Item.Action)
-			toolArgs := responsesWebSearchToolArguments(doneEvent.Item.Action)
+			toolInfo := responsesWebSearchToolInfo(action)
+			toolArgs := responsesWebSearchToolArguments(action)
 			toolSucceeded := strings.EqualFold(doneEvent.Item.Status, "completed")
 			status := ToolActivityFailed
 			if toolSucceeded {
@@ -494,6 +498,17 @@ func responsesWebSearchCallID(itemID string, outputIndex int) string {
 		return itemID
 	}
 	return fmt.Sprintf("web_search:%d", outputIndex)
+}
+
+func decodeResponsesWebSearchAction(raw json.RawMessage) (responsesWebSearchAction, error) {
+	var action responsesWebSearchAction
+	if len(raw) == 0 {
+		return action, nil
+	}
+	if err := json.Unmarshal(raw, &action); err != nil {
+		return action, err
+	}
+	return action, nil
 }
 
 func responsesWebSearchToolArguments(action responsesWebSearchAction) json.RawMessage {

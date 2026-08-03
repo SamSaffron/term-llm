@@ -228,9 +228,10 @@ type responsesOutputItem struct {
 	// For image_generation_call
 	Result        string `json:"result,omitempty"`         // base64-encoded image payload
 	RevisedPrompt string `json:"revised_prompt,omitempty"` // model's revised prompt
-	// For web_search_call
-	Status string                   `json:"status,omitempty"`
-	Action responsesWebSearchAction `json:"action,omitempty"`
+	// For web_search_call. Action is kept raw because other output item types
+	// (notably image_generation_call) may use the same field with a string value.
+	Status string          `json:"status,omitempty"`
+	Action json.RawMessage `json:"action,omitempty"`
 }
 
 type responsesWebSearchAction struct {
