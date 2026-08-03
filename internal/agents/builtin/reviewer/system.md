@@ -99,7 +99,7 @@ If you feel you're missing context, note it as a limitation in your review rathe
 
 **Smart strategies:**
 - The diff already shows you the changed code - you often don't need the full file
-- Read specific line ranges (`sed -n '50,150p'`) when you only need a function
+- Read specific line ranges with `read_file` using `start_line` and `end_line` when you only need a function
 - Batch all reads in parallel - never read files one at a time across turns
 
 ### Anti-Patterns (NEVER do these)

@@ -10,6 +10,18 @@ next:
 ---
 Use `--debug` to print provider-level diagnostics (requests, model info, etc.). Use `--debug-raw` for a timestamped, raw view of tool calls, tool results, and reconstructed requests. Raw debug is most useful for troubleshooting tool calling and search.
 
+### Trace agy-bin generation requests
+
+To inspect the exact generation payload that `agy` sends through term-llm's compatibility proxy, set `TERM_LLM_AGY_PROXY_TRACE_FILE` to a JSONL file in a private directory:
+
+```bash
+mkdir -m 700 /tmp/term-llm-agy-trace
+TERM_LLM_AGY_PROXY_TRACE_FILE=/tmp/term-llm-agy-trace/requests.jsonl term-llm chat
+rg 'output\.txt|brain/' /tmp/term-llm-agy-trace/requests.jsonl
+```
+
+Each record contains both `original_request` from agy and `forwarded_request` after term-llm rehydrates agy's private spill artifacts and removes native tools. The trace writer rejects symlink targets and creates the file with mode `0600`. It contains complete prompts and conversation content, so enable it only while diagnosing a problem and delete it afterward.
+
 ### Debug Logging
 
 term-llm maintains debug logs for troubleshooting. Use the `debug-log` command to view and manage them:

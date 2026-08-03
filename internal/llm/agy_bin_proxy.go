@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agyproxy"
@@ -12,7 +13,7 @@ import (
 // newAgyToolIsolation with a direct CLI implementation and delete
 // internal/agyproxy plus this proxy-backed implementation.
 type agyToolIsolation interface {
-	EnsureStarted() error
+	EnsureStarted(string) error
 	BeginTurn(bool)
 	FilteredGenerations() int64
 	Environment() map[string]string
@@ -27,11 +28,14 @@ type agyProxyToolIsolation struct {
 
 func newAgyToolIsolation() agyToolIsolation { return &agyProxyToolIsolation{} }
 
-func (i *agyProxyToolIsolation) EnsureStarted() error {
+func (i *agyProxyToolIsolation) EnsureStarted(agyHome string) error {
+	artifactRoot := filepath.Join(agyHome, ".gemini", "antigravity-cli", "brain")
 	if i.server != nil {
+		i.server.SetArtifactRoot(artifactRoot)
 		return nil
 	}
 	server := &agyproxy.Server{}
+	server.SetArtifactRoot(artifactRoot)
 	proxyURL, caPath, err := server.Start()
 	if err != nil {
 		return err

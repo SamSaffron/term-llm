@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,24 +38,36 @@ const (
 	CloudCodeHost  = "daily-cloudcode-pa.googleapis.com"
 	generationPath = "/v1internal:streamGenerateContent"
 	maxRequestBody = 128 << 20
+
+	// GenerationTraceFileEnv enables an opt-in JSONL trace containing the exact
+	// generation request received from agy and the artifact-rehydrated, tool-
+	// filtered request sent upstream. These requests contain full conversation
+	// content and must be treated as sensitive.
+	GenerationTraceFileEnv = "TERM_LLM_AGY_PROXY_TRACE_FILE"
+
+	agyArtifactMarker     = "The output was large and was saved to: file://"
+	agyArtifactDelimiters = ".,;:)]}\"'`>"
+	maxAgyArtifactSize    = 1 << 20
 )
 
 // Server is a loopback-only HTTPS forward proxy. It intercepts only the Cloud
 // Code host; CONNECT requests for every other host are tunneled without TLS
 // termination.
 type Server struct {
-	mu          sync.Mutex
-	server      *http.Server
-	listener    net.Listener
-	transport   *http.Transport
-	caCert      *x509.Certificate
-	caKey       *ecdsa.PrivateKey
-	caPath      string
-	proxyToken  string
-	requireMCP  bool
-	filtered    atomic.Int64
-	connections map[net.Conn]struct{}
-	running     bool
+	mu           sync.Mutex
+	traceMu      sync.Mutex
+	server       *http.Server
+	listener     net.Listener
+	transport    *http.Transport
+	caCert       *x509.Certificate
+	caKey        *ecdsa.PrivateKey
+	caPath       string
+	proxyToken   string
+	requireMCP   bool
+	artifactRoot string
+	filtered     atomic.Int64
+	connections  map[net.Conn]struct{}
+	running      bool
 }
 
 // Start starts the proxy and writes its public CA certificate to a private
@@ -113,6 +126,21 @@ func (s *Server) SetRequireMCP(required bool) {
 }
 
 func (s *Server) requireMCPTool() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.requireMCP }
+
+// SetArtifactRoot restricts agy spill-file rehydration to the provider's
+// private antigravity-cli/brain directory. The directory may not exist yet when
+// configured; every candidate is resolved and containment-checked at read time.
+func (s *Server) SetArtifactRoot(root string) {
+	s.mu.Lock()
+	s.artifactRoot = strings.TrimSpace(root)
+	s.mu.Unlock()
+}
+
+func (s *Server) artifactRootPath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.artifactRoot
+}
 
 // BeginTurn resets interception evidence and configures dispatcher enforcement.
 func (s *Server) BeginTurn(requireMCP bool) {
@@ -264,9 +292,22 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy rejected oversized request", http.StatusBadGateway)
 			return
 		}
-		filtered, err := FilterGenerationRequest(body, s.requireMCPTool())
+		expanded, err := ExpandGenerationArtifacts(body, s.artifactRootPath())
+		if err != nil {
+			http.Error(w, "agy tool-filter proxy rejected artifact expansion: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if len(expanded) > maxRequestBody {
+			http.Error(w, "agy tool-filter proxy rejected oversized expanded request", http.StatusBadGateway)
+			return
+		}
+		filtered, err := FilterGenerationRequest(expanded, s.requireMCPTool())
 		if err != nil {
 			http.Error(w, "agy tool-filter proxy rejected request: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := s.traceGenerationRequest(req.URL.RequestURI(), body, filtered); err != nil {
+			http.Error(w, "agy tool-filter proxy could not write request trace: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		req.Body = io.NopCloser(strings.NewReader(string(filtered)))
@@ -306,6 +347,70 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+type generationTraceRecord struct {
+	Timestamp        string          `json:"timestamp"`
+	PID              int             `json:"pid"`
+	Path             string          `json:"path"`
+	OriginalRequest  json.RawMessage `json:"original_request"`
+	ForwardedRequest json.RawMessage `json:"forwarded_request"`
+}
+
+func (s *Server) traceGenerationRequest(requestPath string, original, forwarded []byte) error {
+	tracePath := strings.TrimSpace(os.Getenv(GenerationTraceFileEnv))
+	if tracePath == "" {
+		return nil
+	}
+	record, err := json.Marshal(generationTraceRecord{
+		Timestamp:        time.Now().UTC().Format(time.RFC3339Nano),
+		PID:              os.Getpid(),
+		Path:             requestPath,
+		OriginalRequest:  json.RawMessage(original),
+		ForwardedRequest: json.RawMessage(forwarded),
+	})
+	if err != nil {
+		return fmt.Errorf("encode trace record: %w", err)
+	}
+	record = append(record, '\n')
+
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o700); err != nil {
+		return fmt.Errorf("create trace directory: %w", err)
+	}
+	if info, err := os.Lstat(tracePath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("trace path is not a safe regular file")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect trace path: %w", err)
+	}
+	file, err := os.OpenFile(tracePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open trace file: %w", err)
+	}
+	closeWithError := func(err error) error {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			return fmt.Errorf("close trace file: %w", closeErr)
+		}
+		return err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() {
+		return closeWithError(errors.New("opened trace path is not a regular file"))
+	}
+	pathInfo, err := os.Lstat(tracePath)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
+		return closeWithError(errors.New("trace path changed while opening"))
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return closeWithError(fmt.Errorf("secure trace file: %w", err))
+	}
+	if _, err := file.Write(record); err != nil {
+		return closeWithError(fmt.Errorf("append trace record: %w", err))
+	}
+	return closeWithError(nil)
+}
+
 // Stop shuts down the proxy and removes its temporary CA material.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
@@ -326,6 +431,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.caKey = nil
 	s.caPath = ""
 	s.proxyToken = ""
+	s.artifactRoot = ""
 	s.connections = nil
 	s.mu.Unlock()
 	for _, conn := range connections {
@@ -421,6 +527,154 @@ func (s *Server) leafCertificate(host string) (tls.Certificate, error) {
 
 func isGenerationPath(path string) bool {
 	return path == generationPath || strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")
+}
+
+// ExpandGenerationArtifacts replaces agy's private spill-file notices in the
+// model request with their original contents. Only regular output.txt files in
+// <artifactRoot>/<conversation>/.system_generated/steps/<number>/ are eligible;
+// missing, malformed, oversized, symlinked, or external paths are left intact.
+func ExpandGenerationArtifacts(body []byte, artifactRoot string) ([]byte, error) {
+	artifactRoot = strings.TrimSpace(artifactRoot)
+	if artifactRoot == "" || !strings.Contains(string(body), agyArtifactMarker) {
+		return body, nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, fmt.Errorf("decode generation request for artifact expansion: %w", err)
+	}
+	request, ok := root["request"].(map[string]any)
+	if !ok {
+		return body, nil
+	}
+	if !expandAgyArtifactValue(request, artifactRoot) {
+		return body, nil
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, fmt.Errorf("encode generation request after artifact expansion: %w", err)
+	}
+	return out, nil
+}
+
+func expandAgyArtifactValue(value any, artifactRoot string) bool {
+	changed := false
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if text, ok := child.(string); ok {
+				expanded, replaced := expandAgyArtifactNotices(text, artifactRoot)
+				if replaced {
+					value[key] = expanded
+					changed = true
+				}
+				continue
+			}
+			if expandAgyArtifactValue(child, artifactRoot) {
+				changed = true
+			}
+		}
+	case []any:
+		for index, child := range value {
+			if text, ok := child.(string); ok {
+				expanded, replaced := expandAgyArtifactNotices(text, artifactRoot)
+				if replaced {
+					value[index] = expanded
+					changed = true
+				}
+				continue
+			}
+			if expandAgyArtifactValue(child, artifactRoot) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func expandAgyArtifactNotices(text, artifactRoot string) (string, bool) {
+	var out strings.Builder
+	changed := false
+	for {
+		marker := strings.Index(text, agyArtifactMarker)
+		if marker < 0 {
+			out.WriteString(text)
+			return out.String(), changed
+		}
+		pathStart := marker + len(agyArtifactMarker)
+		tokenEnd := pathStart
+		for tokenEnd < len(text) && text[tokenEnd] > ' ' {
+			tokenEnd++
+		}
+		pathEnd := tokenEnd
+		for pathEnd > pathStart && strings.ContainsRune(agyArtifactDelimiters, rune(text[pathEnd-1])) {
+			pathEnd--
+		}
+		out.WriteString(text[:marker])
+		if content, ok := readAgyArtifact("file://"+text[pathStart:pathEnd], artifactRoot); ok {
+			out.WriteString(content)
+			out.WriteString(text[pathEnd:tokenEnd])
+			changed = true
+		} else {
+			out.WriteString(text[marker:tokenEnd])
+		}
+		text = text[tokenEnd:]
+	}
+}
+
+func readAgyArtifact(rawURL, artifactRoot string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "file" || (parsed.Host != "" && parsed.Host != "localhost") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	root, err := filepath.EvalSymlinks(artifactRoot)
+	if err != nil {
+		return "", false
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	candidate, err := filepath.Abs(filepath.Clean(parsed.Path))
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", false
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) != 5 || parts[0] == "" || parts[1] != ".system_generated" || parts[2] != "steps" || parts[4] != "output.txt" {
+		return "", false
+	}
+	if step, err := strconv.Atoi(parts[3]); err != nil || step < 0 {
+		return "", false
+	}
+	linkInfo, err := os.Lstat(candidate)
+	if err != nil || linkInfo.Mode()&os.ModeSymlink != 0 {
+		return "", false
+	}
+	file, err := os.Open(candidate)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxAgyArtifactSize {
+		return "", false
+	}
+	resolvedInfo, err := os.Stat(resolved)
+	if err != nil || !os.SameFile(info, resolvedInfo) {
+		return "", false
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxAgyArtifactSize+1))
+	if err != nil || len(content) > maxAgyArtifactSize {
+		return "", false
+	}
+	return string(content), true
 }
 
 // FilterGenerationRequest removes every function declaration except the real

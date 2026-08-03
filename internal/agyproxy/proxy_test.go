@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,6 +20,106 @@ func generationBody(names ...string) []byte {
 	}
 	body, _ := json.Marshal(map[string]any{"model": "test", "request": map[string]any{"tools": []any{map[string]any{"functionDeclarations": decls}}, "contents": []any{"preserved"}}})
 	return body
+}
+
+func generationBodyWithText(text string) []byte {
+	body, _ := json.Marshal(map[string]any{
+		"model": "test",
+		"request": map[string]any{
+			"tools": []any{},
+			"contents": []any{map[string]any{
+				"parts": []any{map[string]any{"text": text}},
+			}},
+		},
+	})
+	return body
+}
+
+func agyArtifactNotice(path string) string {
+	return "The output was large and was saved to: " + (&url.URL{Scheme: "file", Path: path}).String()
+}
+
+func TestExpandGenerationArtifactsRehydratesPrivateSpill(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "brain")
+	artifact := filepath.Join(root, "conversation-1", ".system_generated", "steps", "3", "output.txt")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "full tool result\nwith details"
+	if err := os.WriteFile(artifact, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := generationBodyWithText("metadata\n(" + agyArtifactNotice(artifact) + ").\nafter")
+
+	expanded, err := ExpandGenerationArtifacts(body, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(expanded), "output.txt") || !strings.Contains(string(expanded), "full tool result") {
+		t.Fatalf("expanded request = %s", expanded)
+	}
+	var request struct {
+		Request struct {
+			Contents []struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"contents"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(expanded, &request); err != nil {
+		t.Fatal(err)
+	}
+	want := "metadata\n(" + content + ").\nafter"
+	if got := request.Request.Contents[0].Parts[0].Text; got != want {
+		t.Fatalf("expanded text = %q, want %q", got, want)
+	}
+}
+
+func TestExpandGenerationArtifactsRejectsUnsafeSpills(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "brain")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "output.txt")
+	if err := os.WriteFile(external, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "conversation-1", ".system_generated", "steps", "4", "output.txt")
+	wrongShape := filepath.Join(root, "conversation-1", "output.txt")
+	oversized := filepath.Join(root, "conversation-1", ".system_generated", "steps", "6", "output.txt")
+	if err := os.MkdirAll(filepath.Dir(oversized), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oversized, make([]byte, maxAgyArtifactSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{external, missing, wrongShape, oversized} {
+		body := generationBodyWithText(agyArtifactNotice(path))
+		expanded, err := ExpandGenerationArtifacts(body, root)
+		if err != nil {
+			t.Fatalf("path %q: %v", path, err)
+		}
+		if string(expanded) != string(body) {
+			t.Fatalf("unsafe path %q was expanded: %s", path, expanded)
+		}
+	}
+
+	symlink := filepath.Join(root, "conversation-1", ".system_generated", "steps", "5", "output.txt")
+	if err := os.MkdirAll(filepath.Dir(symlink), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, symlink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	body := generationBodyWithText(agyArtifactNotice(symlink))
+	expanded, err := ExpandGenerationArtifacts(body, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(expanded) != string(body) {
+		t.Fatalf("symlinked artifact was expanded: %s", expanded)
+	}
 }
 
 func TestFilterGenerationRequestKeepsOnlyMCPDispatcher(t *testing.T) {
@@ -96,6 +198,65 @@ func TestFilterGenerationRequestAllowsMissingToolsWhenNotRequired(t *testing.T) 
 	}
 	if len(root.Request.Tools) != 0 || len(root.Request.Contents) != 1 {
 		t.Fatalf("request = %#v", root.Request)
+	}
+}
+
+func TestGenerationTraceWritesOriginalAndForwardedRequests(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "nested", "agy-requests.jsonl")
+	t.Setenv(GenerationTraceFileEnv, tracePath)
+	original := generationBody("run_command", "call_mcp_tool")
+	forwarded, err := FilterGenerationRequest(original, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var server Server
+	if err := server.traceGenerationRequest(generationPath, original, forwarded); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record generationTraceRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode trace %q: %v", data, err)
+	}
+	if record.Path != generationPath || record.PID != os.Getpid() || record.Timestamp == "" {
+		t.Fatalf("trace metadata = %+v", record)
+	}
+	if string(record.OriginalRequest) != string(original) || string(record.ForwardedRequest) != string(forwarded) {
+		t.Fatalf("trace requests differ: original=%s forwarded=%s", record.OriginalRequest, record.ForwardedRequest)
+	}
+	info, err := os.Stat(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("trace mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestGenerationTraceRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(dir, "trace.jsonl")
+	if err := os.Symlink(target, tracePath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv(GenerationTraceFileEnv, tracePath)
+	if err := new(Server).traceGenerationRequest(generationPath, generationBody(), generationBody()); err == nil {
+		t.Fatal("trace writer accepted symlink")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "unchanged" {
+		t.Fatalf("trace target was modified: %q", data)
 	}
 }
 
