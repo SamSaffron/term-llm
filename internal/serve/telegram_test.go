@@ -3082,6 +3082,201 @@ func (s *oneShotTextStream) Recv() (llm.Event, error) {
 }
 func (s *oneShotTextStream) Close() error { return nil }
 
+type admissionOrderProvider struct {
+	requests              chan llm.Request
+	firstChunkSent        chan struct{}
+	firstContextCancelled chan struct{}
+	streamCount           atomic.Int32
+}
+
+func newAdmissionOrderProvider() *admissionOrderProvider {
+	return &admissionOrderProvider{
+		requests:              make(chan llm.Request, 2),
+		firstChunkSent:        make(chan struct{}),
+		firstContextCancelled: make(chan struct{}),
+	}
+}
+
+func (p *admissionOrderProvider) Name() string                   { return "admission-order" }
+func (p *admissionOrderProvider) Credential() string             { return "mock" }
+func (p *admissionOrderProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *admissionOrderProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.requests <- req
+	if p.streamCount.Add(1) == 1 {
+		return &cancelAwareBlockingStream{
+			ctx:                   ctx,
+			text:                  "photo answer",
+			firstChunkSent:        p.firstChunkSent,
+			firstContextCancelled: p.firstContextCancelled,
+			closed:                make(chan struct{}),
+		}, nil
+	}
+	return &oneShotTextStream{text: "clarified answer"}, nil
+}
+
+func testMessageHasImage(msg llm.Message) bool {
+	for _, part := range msg.Parts {
+		if part.Type == llm.PartImage {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram-admission-order.db")})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	provider := newAdmissionOrderProvider()
+	mgr := &telegramSessionMgr{
+		sessions:         make(map[int64]*telegramSession),
+		store:            store,
+		allowedUserIDs:   map[int64]struct{}{7: {}},
+		idleTimeout:      time.Hour,
+		interruptTimeout: time.Second,
+		tickerInterval:   5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+
+	downloadStarted := make(chan struct{})
+	releaseDownload := make(chan struct{})
+	var releaseOnce sync.Once
+	releasePhoto := func() { releaseOnce.Do(func() { close(releaseDownload) }) }
+	defer releasePhoto()
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-downloadStarted:
+		default:
+			close(downloadStarted)
+		}
+		select {
+		case <-releaseDownload:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08})
+	}))
+	defer imageServer.Close()
+	bot := &fakeBotSender{fileURL: imageServer.URL}
+
+	photoMessage := &tgbotapi.Message{
+		MessageID: 1,
+		From:      &tgbotapi.User{ID: 7, UserName: "sam"},
+		Chat:      &tgbotapi.Chat{ID: 42},
+		Caption:   "first photo",
+		Photo:     []tgbotapi.PhotoSize{{FileID: "photo-1", Width: 800, Height: 600}},
+	}
+	textMessage := &tgbotapi.Message{
+		MessageID: 2,
+		From:      &tgbotapi.User{ID: 7, UserName: "sam"},
+		Chat:      &tgbotapi.Chat{ID: 42},
+		Text:      "stop and use this clarification",
+	}
+	photoAdmission := mgr.admitMessage(photoMessage)
+	textAdmission := mgr.admitMessage(textMessage)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	photoDone := make(chan struct{})
+	go func() {
+		mgr.handleMessageWithAdmission(ctx, bot, photoMessage, photoAdmission)
+		close(photoDone)
+	}()
+	select {
+	case <-downloadStarted:
+	case <-ctx.Done():
+		t.Fatal("photo download did not start")
+	}
+
+	textDone := make(chan struct{})
+	go func() {
+		mgr.handleMessageWithAdmission(ctx, bot, textMessage, textAdmission)
+		close(textDone)
+	}()
+	select {
+	case req := <-provider.requests:
+		t.Fatalf("later text reached provider while earlier photo was downloading: %+v", req.Messages)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releasePhoto()
+	var firstRequest llm.Request
+	select {
+	case firstRequest = <-provider.requests:
+	case <-ctx.Done():
+		t.Fatal("photo did not reach provider after download completed")
+	}
+	if got := collectUserText(firstRequest.Messages[len(firstRequest.Messages)-1]); got != "first photo" {
+		t.Fatalf("first provider request user message = %q, want photo caption", got)
+	}
+	if !testMessageHasImage(firstRequest.Messages[len(firstRequest.Messages)-1]) {
+		t.Fatal("first provider request did not contain the photo")
+	}
+	select {
+	case <-provider.firstChunkSent:
+	case <-ctx.Done():
+		t.Fatal("photo stream did not start")
+	}
+
+	var secondRequest llm.Request
+	select {
+	case secondRequest = <-provider.requests:
+	case <-ctx.Done():
+		t.Fatal("clarification did not reach provider")
+	}
+	if got := collectUserText(secondRequest.Messages[len(secondRequest.Messages)-1]); got != textMessage.Text {
+		t.Fatalf("second provider request user message = %q, want %q", got, textMessage.Text)
+	}
+	select {
+	case <-photoDone:
+	case <-ctx.Done():
+		t.Fatal("photo handler did not finish after interruption")
+	}
+	select {
+	case <-textDone:
+	case <-ctx.Done():
+		t.Fatal("text handler did not finish")
+	}
+
+	mgr.mu.Lock()
+	sess := mgr.sessions[42]
+	mgr.mu.Unlock()
+	if sess == nil || sess.meta == nil {
+		t.Fatal("telegram session was not created")
+	}
+	persisted, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("get persisted messages: %v", err)
+	}
+	var userMessages []session.Message
+	for _, msg := range persisted {
+		if msg.Role == llm.RoleUser {
+			userMessages = append(userMessages, msg)
+		}
+	}
+	if len(userMessages) != 2 {
+		t.Fatalf("persisted user messages = %+v, want two", userMessages)
+	}
+	if userMessages[0].TextContent != "first photo" || userMessages[1].TextContent != textMessage.Text {
+		t.Fatalf("persisted user message order = [%q, %q]", userMessages[0].TextContent, userMessages[1].TextContent)
+	}
+	if userMessages[0].Sequence >= userMessages[1].Sequence {
+		t.Fatalf("persisted user sequences = [%d, %d], want arrival order", userMessages[0].Sequence, userMessages[1].Sequence)
+	}
+}
+
 func TestHandleMessage_CancelInterruptIsNotBlockedBySessionMutex(t *testing.T) {
 	provider := newInterruptSequenceProvider()
 	mgr := &telegramSessionMgr{
