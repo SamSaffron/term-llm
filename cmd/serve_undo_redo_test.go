@@ -127,6 +127,57 @@ func TestServeUndoRedoShrinksRestoresAndResetsRuntime(t *testing.T) {
 	}
 }
 
+func TestServeUndoRedoSequentialCommandsRestoreTurnsInLIFOOrder(t *testing.T) {
+	srv, store, rt, provider, sessionID := newServeUndoRedoTest(t)
+	turnB := addServeUndoRedoMessage(t, store, sessionID, llm.UserText("turn B"))
+	answerB := addServeUndoRedoMessage(t, store, sessionID, llm.AssistantText("answer B"))
+	turnA := addServeUndoRedoMessage(t, store, sessionID, llm.UserText("turn A"))
+	answerA := addServeUndoRedoMessage(t, store, sessionID, llm.AssistantText("answer A"))
+	rt.history = []llm.Message{turnB.ToLLMMessage(), answerB.ToLLMMessage(), turnA.ToLLMMessage(), answerA.ToLLMMessage()}
+	state, err := store.TranscriptMutationState(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type mutationPayload struct {
+		Rev      int64  `json:"rev"`
+		HeadID   int64  `json:"head_id"`
+		UserText string `json:"user_text"`
+	}
+	mutate := func(operation string) mutationPayload {
+		t.Helper()
+		rr := requestServeUndoRedo(t, srv, sessionID, operation, state)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status/body = %d %s", operation, rr.Code, rr.Body.String())
+		}
+		var payload mutationPayload
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		state = session.TranscriptMutationState{Rev: payload.Rev, HeadID: payload.HeadID}
+		return payload
+	}
+
+	if payload := mutate("undo"); payload.UserText != "turn A" || len(rt.history) != 2 {
+		t.Fatalf("first undo payload=%+v history=%d", payload, len(rt.history))
+	}
+	if payload := mutate("undo"); payload.UserText != "turn B" || len(rt.history) != 0 {
+		t.Fatalf("second undo payload=%+v history=%d", payload, len(rt.history))
+	}
+	mutate("redo")
+	messages, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil || len(messages) != 2 || messages[0].ID != turnB.ID || messages[1].ID != answerB.ID || len(rt.history) != 2 {
+		t.Fatalf("first redo messages=%#v history=%d err=%v", messages, len(rt.history), err)
+	}
+	mutate("redo")
+	messages, err = store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil || len(messages) != 4 || messages[2].ID != turnA.ID || messages[3].ID != answerA.ID || len(rt.history) != 4 {
+		t.Fatalf("second redo messages=%#v history=%d err=%v", messages, len(rt.history), err)
+	}
+	if provider.resets != 4 {
+		t.Fatalf("provider resets=%d, want one per sequential mutation", provider.resets)
+	}
+}
+
 func TestServeUndoRejectsActiveWorkAndStaleClient(t *testing.T) {
 	srv, store, _, _, sessionID := newServeUndoRedoTest(t)
 	addServeUndoRedoMessage(t, store, sessionID, llm.UserText("prompt"))

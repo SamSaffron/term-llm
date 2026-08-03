@@ -378,8 +378,8 @@ type TranscriptMutationResult struct {
 	AttachmentsOmitted bool   `json:"attachments_omitted,omitempty"`
 }
 
-// TranscriptUndoRedoStore owns the durable, single-level redo suffix. Ordinary
-// transcript writes invalidate redo in the same storage transaction.
+// TranscriptUndoRedoStore owns a durable per-session redo stack. Ordinary
+// transcript writes invalidate the entire stack in the same storage transaction.
 type TranscriptUndoRedoStore interface {
 	TranscriptMutationState(ctx context.Context, sessionID string) (TranscriptMutationState, error)
 	UndoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error)

@@ -146,12 +146,12 @@ CREATE TABLE IF NOT EXISTS session_plans (
 );
 
 CREATE TABLE IF NOT EXISTS session_redo (
-    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    stack_pos INTEGER NOT NULL,
     suffix TEXT NOT NULL,
     metadata TEXT NOT NULL,
-    undo_rev INTEGER NOT NULL,
-    head_id INTEGER NOT NULL DEFAULT 0,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, stack_pos)
 );
 
 -- Metadata table for current session tracking
@@ -1228,15 +1228,15 @@ var migrations = []migration{
 	},
 	{
 		version:     44,
-		description: "create durable transcript redo table",
+		description: "create durable transcript redo stack",
 		up: func(db schemaExecutor) error {
 			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_redo (
-				session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				stack_pos INTEGER NOT NULL,
 				suffix TEXT NOT NULL,
 				metadata TEXT NOT NULL,
-				undo_rev INTEGER NOT NULL,
-				head_id INTEGER NOT NULL DEFAULT 0,
-				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (session_id, stack_pos)
 			)`)
 			return err
 		},
@@ -3774,13 +3774,16 @@ func (s *SQLiteStore) UndoLastUserTurn(ctx context.Context, sessionID string, ex
 	if post.Rev != rev {
 		return TranscriptMutationResult{}, fmt.Errorf("undo revision mismatch")
 	}
+	// Successive undo entries contain disjoint removed suffixes, so the durable
+	// stack is naturally bounded by the removed transcript rather than an
+	// arbitrary entry limit. Preserve every recovery point until redo consumes it
+	// or an ordinary transcript mutation invalidates the whole stack.
 	if _, err := conn.ExecContext(ctx, `
-		INSERT INTO session_redo (session_id, suffix, metadata, undo_rev, head_id, updated_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(session_id) DO UPDATE SET suffix = excluded.suffix, metadata = excluded.metadata,
-			undo_rev = excluded.undo_rev, head_id = excluded.head_id, updated_at = CURRENT_TIMESTAMP`,
-		sessionID, string(suffixJSON), string(metadataJSON), post.Rev, post.HeadID); err != nil {
-		return TranscriptMutationResult{}, fmt.Errorf("save redo suffix: %w", err)
+		INSERT INTO session_redo (session_id, stack_pos, suffix, metadata, created_at)
+		SELECT ?, COALESCE(MAX(stack_pos), 0) + 1, ?, ?, CURRENT_TIMESTAMP
+		FROM session_redo WHERE session_id = ?`,
+		sessionID, string(suffixJSON), string(metadataJSON), sessionID); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("push redo suffix: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("commit undo: %w", err)
@@ -3807,17 +3810,16 @@ func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, ex
 	if err := requireTranscriptMutationState(actual, expected); err != nil {
 		return TranscriptMutationResult{}, err
 	}
+	var stackPos int64
 	var suffixRaw, metadataRaw string
-	var undoRev, headID int64
-	err = conn.QueryRowContext(ctx, `SELECT suffix, metadata, undo_rev, head_id FROM session_redo WHERE session_id = ?`, sessionID).Scan(&suffixRaw, &metadataRaw, &undoRev, &headID)
+	err = conn.QueryRowContext(ctx, `
+		SELECT stack_pos, suffix, metadata FROM session_redo
+		WHERE session_id = ? ORDER BY stack_pos DESC LIMIT 1`, sessionID).Scan(&stackPos, &suffixRaw, &metadataRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TranscriptMutationResult{}, ErrNothingToRedo
 	}
 	if err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("load redo suffix: %w", err)
-	}
-	if undoRev != actual.Rev || headID != actual.HeadID {
-		return TranscriptMutationResult{}, ErrTranscriptConflict
 	}
 	var suffix []Message
 	if err := json.Unmarshal([]byte(suffixRaw), &suffix); err != nil {
@@ -3853,7 +3855,7 @@ func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, ex
 	if err := s.reconcilePlanProjection(ctx, conn, sessionID); err != nil {
 		return TranscriptMutationResult{}, err
 	}
-	if _, err := conn.ExecContext(ctx, `DELETE FROM session_redo WHERE session_id = ?`, sessionID); err != nil {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM session_redo WHERE session_id = ? AND stack_pos = ?`, sessionID, stackPos); err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("consume redo suffix: %w", err)
 	}
 	if _, err := s.bumpTranscriptRevPreservingRedo(ctx, conn, sessionID); err != nil {

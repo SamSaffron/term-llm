@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -32,6 +33,47 @@ func addUndoRedoMessage(t *testing.T, store *SQLiteStore, sessionID string, msg 
 		t.Fatalf("AddMessage: %v", err)
 	}
 	return *stored
+}
+
+func applyUndoRedo(t *testing.T, store *SQLiteStore, sessionID string, redo bool) TranscriptMutationResult {
+	t.Helper()
+	ctx := context.Background()
+	state, err := store.TranscriptMutationState(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("TranscriptMutationState: %v", err)
+	}
+	var result TranscriptMutationResult
+	if redo {
+		result, err = store.RedoLastUserTurn(ctx, sessionID, state)
+	} else {
+		result, err = store.UndoLastUserTurn(ctx, sessionID, state)
+	}
+	if err != nil {
+		t.Fatalf("%s: %v", map[bool]string{false: "UndoLastUserTurn", true: "RedoLastUserTurn"}[redo], err)
+	}
+	return result
+}
+
+func redoStackCount(t *testing.T, store *SQLiteStore, sessionID string) int {
+	t.Helper()
+	var count int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM session_redo WHERE session_id = ?`, sessionID).Scan(&count); err != nil {
+		t.Fatalf("count redo stack: %v", err)
+	}
+	return count
+}
+
+func transcriptText(t *testing.T, store *SQLiteStore, sessionID string) []string {
+	t.Helper()
+	messages, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	texts := make([]string, len(messages))
+	for i := range messages {
+		texts[i] = messages[i].TextContent
+	}
+	return texts
 }
 
 func TestSQLiteUndoRedoShrinksAndExactlyRestoresTranscriptAcrossRestart(t *testing.T) {
@@ -126,6 +168,125 @@ func TestSQLiteUndoRedoShrinksAndExactlyRestoresTranscriptAcrossRestart(t *testi
 	}
 	if refreshed.UserTurns != 2 || refreshed.Summary != "first" || refreshed.GeneratedShortTitle != "Generated" || refreshed.TitleSource != TitleSourceGenerated {
 		t.Fatalf("redo metadata was not restored: %+v", refreshed)
+	}
+}
+
+func TestSQLiteUndoRedoMultipleTurnsRoundTripInLIFOOrderAcrossRestart(t *testing.T) {
+	store, path := newUndoRedoSQLiteStore(t)
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn B"), base)
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer B"), base.Add(time.Second))
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn A"), base.Add(2*time.Second))
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer A"), base.Add(3*time.Second))
+	before, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstUndo := applyUndoRedo(t, store, sess.ID, false)
+	if firstUndo.UserText != "turn A" || !reflect.DeepEqual(transcriptText(t, store, sess.ID), []string{"turn B", "answer B"}) {
+		t.Fatalf("first undo result=%+v transcript=%q", firstUndo, transcriptText(t, store, sess.ID))
+	}
+	secondUndo := applyUndoRedo(t, store, sess.ID, false)
+	if secondUndo.UserText != "turn B" || len(transcriptText(t, store, sess.ID)) != 0 || redoStackCount(t, store, sess.ID) != 2 {
+		t.Fatalf("second undo result=%+v transcript=%q stack=%d", secondUndo, transcriptText(t, store, sess.ID), redoStackCount(t, store, sess.ID))
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+	if redoStackCount(t, store, sess.ID) != 2 {
+		t.Fatalf("redo stack did not survive reopen")
+	}
+	applyUndoRedo(t, store, sess.ID, true)
+	if !reflect.DeepEqual(transcriptText(t, store, sess.ID), []string{"turn B", "answer B"}) || redoStackCount(t, store, sess.ID) != 1 {
+		t.Fatalf("first redo restored wrong turn: transcript=%q stack=%d", transcriptText(t, store, sess.ID), redoStackCount(t, store, sess.ID))
+	}
+	applyUndoRedo(t, store, sess.ID, true)
+	after, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("multi-level round trip differs\n got: %#v\nwant: %#v", after, before)
+	}
+	if redoStackCount(t, store, sess.ID) != 0 {
+		t.Fatalf("redo stack count after full replay = %d, want 0", redoStackCount(t, store, sess.ID))
+	}
+}
+
+func TestSQLiteAddMessageClearsEntireRedoStackAfterOneOrMultipleUndos(t *testing.T) {
+	for _, undoCount := range []int{1, 2} {
+		t.Run(fmt.Sprintf("undos_%d", undoCount), func(t *testing.T) {
+			store, _ := newUndoRedoSQLiteStore(t)
+			defer store.Close()
+			ctx := context.Background()
+			sess := &Session{ID: NewID(), Provider: "test", Model: "test", Mode: ModeChat}
+			if err := store.Create(ctx, sess); err != nil {
+				t.Fatal(err)
+			}
+			base := time.Now()
+			addUndoRedoMessage(t, store, sess.ID, llm.UserText("first"), base)
+			addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("first answer"), base.Add(time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, llm.UserText("second"), base.Add(2*time.Millisecond))
+			addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("second answer"), base.Add(3*time.Millisecond))
+			for range undoCount {
+				applyUndoRedo(t, store, sess.ID, false)
+			}
+			if got := redoStackCount(t, store, sess.ID); got != undoCount {
+				t.Fatalf("redo stack count before continuation = %d, want %d", got, undoCount)
+			}
+			addUndoRedoMessage(t, store, sess.ID, llm.UserText("ordinary continuation"), base.Add(time.Second))
+			if got := redoStackCount(t, store, sess.ID); got != 0 {
+				t.Fatalf("redo stack count after continuation = %d, want 0", got)
+			}
+			state, err := store.TranscriptMutationState(ctx, sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.RedoLastUserTurn(ctx, sess.ID, state); !errors.Is(err, ErrNothingToRedo) {
+				t.Fatalf("redo after ordinary continuation error = %v, want ErrNothingToRedo", err)
+			}
+		})
+	}
+}
+
+func TestSQLiteUndoRedoInterleavingPreservesStackOrder(t *testing.T) {
+	store, _ := newUndoRedoSQLiteStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now()
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn B"), base)
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer B"), base.Add(time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn A"), base.Add(2*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer A"), base.Add(3*time.Millisecond))
+	want := []string{"turn B", "answer B", "turn A", "answer A"}
+
+	applyUndoRedo(t, store, sess.ID, false) // undo A
+	applyUndoRedo(t, store, sess.ID, false) // undo B
+	applyUndoRedo(t, store, sess.ID, true)  // redo B
+	if got := transcriptText(t, store, sess.ID); !reflect.DeepEqual(got, want[:2]) {
+		t.Fatalf("after undo/undo/redo transcript=%q, want %q", got, want[:2])
+	}
+	applyUndoRedo(t, store, sess.ID, false) // undo B again
+	applyUndoRedo(t, store, sess.ID, true)  // redo B
+	applyUndoRedo(t, store, sess.ID, true)  // redo A
+	if got := transcriptText(t, store, sess.ID); !reflect.DeepEqual(got, want) {
+		t.Fatalf("interleaved round trip transcript=%q, want %q", got, want)
 	}
 }
 
@@ -481,7 +642,7 @@ func TestSQLiteUndoConcurrentRequestsAllowOneWinner(t *testing.T) {
 	}
 }
 
-func TestSQLiteRedoRowCascadesWhenSessionDeleted(t *testing.T) {
+func TestSQLiteRedoConcurrentRequestsConsumeOnlyOneStackEntry(t *testing.T) {
 	store, _ := newUndoRedoSQLiteStore(t)
 	defer store.Close()
 	ctx := context.Background()
@@ -489,23 +650,128 @@ func TestSQLiteRedoRowCascadesWhenSessionDeleted(t *testing.T) {
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
 	}
-	addUndoRedoMessage(t, store, sess.ID, llm.UserText("delete me"), time.Now())
+	base := time.Now()
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn B"), base)
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer B"), base.Add(time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("turn A"), base.Add(2*time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("answer A"), base.Add(3*time.Millisecond))
+	applyUndoRedo(t, store, sess.ID, false)
+	applyUndoRedo(t, store, sess.ID, false)
 	state, err := store.TranscriptMutationState(ctx, sess.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UndoLastUserTurn(ctx, sess.ID, state); err != nil {
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.RedoLastUserTurn(ctx, sess.ID, state)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	var succeeded, conflicted int
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrTranscriptConflict):
+			conflicted++
+		default:
+			t.Fatalf("concurrent redo error = %v", err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("concurrent redo results: succeeded=%d conflicted=%d", succeeded, conflicted)
+	}
+	if got := transcriptText(t, store, sess.ID); !reflect.DeepEqual(got, []string{"turn B", "answer B"}) {
+		t.Fatalf("concurrent redo restored transcript=%q", got)
+	}
+	if got := redoStackCount(t, store, sess.ID); got != 1 {
+		t.Fatalf("concurrent redo stack count=%d, want 1", got)
+	}
+	applyUndoRedo(t, store, sess.ID, true)
+	if got := transcriptText(t, store, sess.ID); !reflect.DeepEqual(got, []string{"turn B", "answer B", "turn A", "answer A"}) {
+		t.Fatalf("remaining redo transcript=%q", got)
+	}
+}
+
+func TestSQLiteMigration44CreatesOrderedRedoStack(t *testing.T) {
+	store, path := newUndoRedoSQLiteStore(t)
+	if _, err := store.db.Exec(`DROP TABLE session_redo; UPDATE schema_version SET version = 43`); err != nil {
+		t.Fatalf("seed version 43 schema: %v", err)
+	}
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	var count int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_redo WHERE session_id = ?`, sess.ID).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("redo row before delete count=%d err=%v", count, err)
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatalf("migrate version 43 store: %v", err)
+	}
+	defer store.Close()
+
+	var version int
+	if err := store.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("schema version=%d err=%v, want %d", version, err, schemaVersion)
+	}
+	rows, err := store.db.Query(`PRAGMA table_info(session_redo)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns := map[string]int{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = primaryKey
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if columns["session_id"] != 1 || columns["stack_pos"] != 2 {
+		t.Fatalf("redo stack primary key columns=%v", columns)
+	}
+	if _, ok := columns["undo_rev"]; ok {
+		t.Fatalf("obsolete per-entry undo revision survived migration: %v", columns)
+	}
+	if _, ok := columns["head_id"]; ok {
+		t.Fatalf("obsolete per-entry head id survived migration: %v", columns)
+	}
+}
+
+func TestSQLiteRedoStackCascadesWhenSessionDeleted(t *testing.T) {
+	store, _ := newUndoRedoSQLiteStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now()
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("delete first"), base)
+	addUndoRedoMessage(t, store, sess.ID, llm.AssistantText("first answer"), base.Add(time.Millisecond))
+	addUndoRedoMessage(t, store, sess.ID, llm.UserText("delete second"), base.Add(2*time.Millisecond))
+	applyUndoRedo(t, store, sess.ID, false)
+	applyUndoRedo(t, store, sess.ID, false)
+	if count := redoStackCount(t, store, sess.ID); count != 2 {
+		t.Fatalf("redo entries before delete count=%d, want 2", count)
 	}
 	if err := store.Delete(ctx, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_redo WHERE session_id = ?`, sess.ID).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("redo row after cascade count=%d err=%v", count, err)
+	if count := redoStackCount(t, store, sess.ID); count != 0 {
+		t.Fatalf("redo entries after cascade count=%d, want 0", count)
 	}
 }
 

@@ -115,6 +115,61 @@ func TestCmdUndoRedoShrinksRestoresAndManagesComposer(t *testing.T) {
 	}
 }
 
+func TestCmdUndoRedoSequentialCommandsRestoreTurnsInLIFOOrder(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	persist := func(msg llm.Message) session.Message {
+		stored := session.NewMessage(sess.ID, msg, -1)
+		if err := store.AddMessage(ctx, sess.ID, stored); err != nil {
+			t.Fatal(err)
+		}
+		return *stored
+	}
+	turnB := persist(llm.UserText("turn B"))
+	answerB := persist(llm.AssistantText("answer B"))
+	turnA := persist(llm.UserText("turn A"))
+	answerA := persist(llm.AssistantText("answer A"))
+	m := newCmdTestModel(store)
+	m.sess = sess
+	m.messages = []session.Message{turnB, answerB, turnA, answerA}
+	run := func(command string) {
+		t.Helper()
+		m.setTextareaValue(command)
+		result, cmd := m.ExecuteCommand(command)
+		m = result.(*Model)
+		if cmd == nil {
+			t.Fatalf("%s returned no async command", command)
+		}
+		result, _ = m.Update(cmd())
+		m = result.(*Model)
+	}
+
+	run("/undo")
+	if len(m.messages) != 2 || m.textarea.Value() != "turn A" {
+		t.Fatalf("first undo messages=%d composer=%q", len(m.messages), m.textarea.Value())
+	}
+	run("/undo")
+	if len(m.messages) != 0 || m.textarea.Value() != "turn B" {
+		t.Fatalf("second undo messages=%d composer=%q", len(m.messages), m.textarea.Value())
+	}
+	run("/redo")
+	if len(m.messages) != 2 || m.messages[0].ID != turnB.ID || m.messages[1].ID != answerB.ID {
+		t.Fatalf("first redo restored wrong turn: %#v", m.messages)
+	}
+	run("/redo")
+	if len(m.messages) != 4 || m.messages[2].ID != turnA.ID || m.messages[3].ID != answerA.ID || m.textarea.Value() != "" {
+		t.Fatalf("second redo failed exact LIFO restore: messages=%#v composer=%q", m.messages, m.textarea.Value())
+	}
+}
+
 func TestCmdUndoRejectsArgumentsAndActiveWork(t *testing.T) {
 	store := &mockStore{}
 	m := newCmdTestModel(store)
