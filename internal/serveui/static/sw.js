@@ -79,15 +79,20 @@ self.addEventListener('fetch', (event) => {
   if (!isAppRequest) return;
 
   if (request.mode === 'navigate') {
+    const cachePromise = caches.open(SHELL_CACHE);
+    const networkFetch = cachePromise
+      .then((cache) => fetch(request)
+        .then((response) => putIfCacheable(cache, './index.html', response)))
+      .catch(() => null);
+    // Keep the cached shell's TTFB local while refreshing it for the next
+    // navigation. The versioned service worker precache makes the cached HTML
+    // and its asset URLs an atomic shell release.
+    event.waitUntil(networkFetch);
     event.respondWith((async () => {
-      const cache = await caches.open(SHELL_CACHE);
-      try {
-        const response = await fetch(request);
-        await putIfCacheable(cache, './index.html', response.clone());
-        return response;
-      } catch {
-        return (await cache.match('./index.html')) || (await cache.match('./'));
-      }
+      const cache = await cachePromise;
+      const cached = (await cache.match('./index.html')) || (await cache.match('./'));
+      if (cached) return cached;
+      return (await networkFetch) || Response.error();
     })());
     return;
   }

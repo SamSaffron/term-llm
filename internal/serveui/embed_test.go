@@ -676,6 +676,23 @@ func TestAppNetworkJS(t *testing.T) {
 	}
 }
 
+func TestServiceWorkerJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping service-worker tests")
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "sw_test.js")
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("sw_test.js failed: %v", err)
+	}
+}
+
 func TestAppWebRTCJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

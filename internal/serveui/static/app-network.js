@@ -524,7 +524,11 @@ if (typeof window.addEventListener === 'function') {
     noteDiagnostic('offline', { waiters: waiters.size });
   });
   window.addEventListener('online', () => { void runCoordinatedNetworkRecovery('online'); });
-  window.addEventListener('pageshow', () => { if (online()) void runCoordinatedNetworkRecovery('pageshow'); });
+  // A normal pageshow fires during every initial load, when startup requests are
+  // already proving connectivity. Only BFCache restoration needs a recovery pass.
+  window.addEventListener('pageshow', (event) => {
+    if (event?.persisted && online()) void runCoordinatedNetworkRecovery('pageshow');
+  });
 }
 if (typeof document?.addEventListener === 'function') {
   document.addEventListener('visibilitychange', () => {

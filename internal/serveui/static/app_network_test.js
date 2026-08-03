@@ -81,8 +81,8 @@ function createHarness(fetchImpl, online = true) {
       await flush();
     }
   };
-  const dispatch = async (type) => {
-    for (const handler of listeners.get(type) || []) handler({ type });
+  const dispatch = async (type, detail = {}) => {
+    for (const handler of listeners.get(type) || []) handler({ type, ...detail });
     await flush();
   };
   return {
@@ -332,6 +332,21 @@ async function testRecoveryHooksAreIsolatedAndBounded() {
   console.log('PASS: recovery hooks run independently, time out, and cannot strand waiters');
 }
 
+async function testNormalPageShowSkipsRecoveryProbe() {
+  const calls = [];
+  const harness = createHarness(async (url) => {
+    calls.push(String(url));
+    return new Response('{}', { status: 200 });
+  });
+
+  await harness.dispatch('pageshow', { persisted: false });
+  assert(calls.length === 0, 'normal initial pageshow performed a redundant health probe');
+
+  await harness.dispatch('pageshow', { persisted: true });
+  assert(calls.length === 1 && calls[0] === '/ui/v1/providers', 'BFCache pageshow did not perform one recovery probe');
+  console.log('PASS: normal pageshow skips recovery while BFCache restoration still probes');
+}
+
 async function testStreamRecoveryHasNoPostWakeHotSpin() {
   const harness = createHarness(async () => new Response('{}', { status: 200 }));
   const raced = harness.app.createResumableStreamRecovery({ key: 'stream:race' });
@@ -361,6 +376,7 @@ async function testStreamRecoveryHasNoPostWakeHotSpin() {
   await testFailedProbeDoesNotReleaseRetries();
   await testDoubleFlapDoesNotDeadlockHookWaiter();
   await testRecoveryHooksAreIsolatedAndBounded();
+  await testNormalPageShowSkipsRecoveryProbe();
   await testStreamRecoveryHasNoPostWakeHotSpin();
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
