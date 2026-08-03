@@ -38,6 +38,37 @@ type carryoverPagingStore struct {
 	rowsLoaded int
 }
 
+type failFirstAssistantAddStore struct {
+	session.Store
+	mu           sync.Mutex
+	addFailures  int
+	replaceCalls int
+}
+
+func (s *failFirstAssistantAddStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	s.mu.Lock()
+	if msg != nil && msg.Role == llm.RoleAssistant && s.addFailures == 0 {
+		s.addFailures++
+		s.mu.Unlock()
+		return errors.New("injected callback AddMessage failure")
+	}
+	s.mu.Unlock()
+	return s.Store.AddMessage(ctx, sessionID, msg)
+}
+
+func (s *failFirstAssistantAddStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	s.mu.Lock()
+	s.replaceCalls++
+	s.mu.Unlock()
+	return s.Store.ReplaceMessages(ctx, sessionID, messages)
+}
+
+func (s *failFirstAssistantAddStore) counts() (addFailures, replaceCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.addFailures, s.replaceCalls
+}
+
 func (s *carryoverPagingStore) List(ctx context.Context, opts session.ListOptions) ([]session.SessionSummary, error) {
 	return append([]session.SessionSummary(nil), s.summaries...), nil
 }
@@ -637,6 +668,74 @@ func TestStreamReply_ToolThenText(t *testing.T) {
 	last := bot.lastText()
 	if last != "Result" {
 		t.Errorf("lastText = %q; want %q", last, "Result")
+	}
+}
+
+func TestStreamReply_ReconcilesFailedCallbackPersistence(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telegram-callback-reconcile.db")
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer baseStore.Close()
+	store := &failFirstAssistantAddStore{Store: baseStore}
+
+	h := testutil.NewEngineHarness()
+	h.AddMockTool("my_tool", "tool output")
+	h.Provider.AddToolCall("id-1", "my_tool", map[string]any{})
+	h.Provider.AddTextResponse("Result")
+
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 10 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			Store:    store,
+			NewSession: func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       h.Engine,
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+
+	if err := mgr.streamReply(context.Background(), &fakeBotSender{}, sess, 42, llm.UserText("run tool")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	addFailures, replaceCalls := store.counts()
+	if addFailures != 1 {
+		t.Fatalf("callback AddMessage failures = %d, want 1", addFailures)
+	}
+	if replaceCalls != 1 {
+		t.Fatalf("ReplaceMessages calls = %d, want 1", replaceCalls)
+	}
+
+	messages, err := baseStore.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	wantRoles := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleAssistant}
+	if len(messages) != len(wantRoles) {
+		t.Fatalf("persisted message count = %d, want %d; messages=%#v", len(messages), len(wantRoles), messages)
+	}
+	for i, wantRole := range wantRoles {
+		if messages[i].Role != wantRole {
+			t.Fatalf("message %d role = %s, want %s; messages=%#v", i, messages[i].Role, wantRole, messages)
+		}
+	}
+	if messages[0].TextContent != "run tool" {
+		t.Fatalf("persisted user text = %q, want run tool", messages[0].TextContent)
+	}
+	if messages[3].TextContent != "Result" {
+		t.Fatalf("persisted final assistant text = %q, want Result", messages[3].TextContent)
 	}
 }
 

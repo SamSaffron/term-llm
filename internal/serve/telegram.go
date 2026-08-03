@@ -1103,9 +1103,9 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 	}
 }
 
-func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
+func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessionID, op string, fn func(context.Context) error) error {
 	if m.store == nil || fn == nil {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1114,7 +1114,9 @@ func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessio
 	defer cancel()
 	if err := fn(storeCtx); err != nil {
 		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+		return err
 	}
+	return nil
 }
 
 type telegramStoreOp struct {
@@ -1155,7 +1157,9 @@ func (q *telegramStoreOpQueue) run() {
 		if q.isDegraded() {
 			continue
 		}
-		q.mgr.runStoreOpWithoutCancel(op.ctx, q.sessionID, op.op, op.fn)
+		if err := q.mgr.runStoreOpWithoutCancel(op.ctx, q.sessionID, op.op, op.fn); err != nil {
+			q.markDegraded(fmt.Sprintf("%s failed: %v", op.op, err))
+		}
 	}
 }
 
