@@ -405,6 +405,23 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
   }, delay);
 };
 
+const retireOrphanedActiveProjection = (transcript, sampled, authoritativeRev) => {
+  const responseId = String(sampled?.responseId || '').trim();
+  const runEpoch = Math.max(0, Number(sampled?.runEpoch) || 0);
+  const revision = Math.max(0, Number(authoritativeRev) || 0);
+  const active = transcript?.conversation?.active;
+  if (!responseId || !runEpoch || !revision || !active || active.terminal || active.responseID !== responseId
+      || active.runEpoch !== runEpoch || Number(transcript.latestRunEpoch) !== runEpoch || Number(transcript.rev) < revision) return false;
+  const ordinals = transcript.responseIDs
+    .map((owner, ordinal) => String(owner || '') === responseId ? ordinal : -1).filter((ordinal) => ordinal >= 0);
+  if (!ordinals.length || !ordinals.every((ordinal) => ['materialized', 'empty'].includes(
+    transcript.segments[transcript.segmentForOrdinal(ordinal)]?.state
+  ))) return false;
+  transcript.conversation.active = null;
+  transcript.conversation.protocolError = '';
+  return true;
+};
+
 const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false, expectedSwitchGeneration = null } = {}) => {
   if (!session || !isSessionIdentityResolved(session)) return SESSION_STATE_RETRY_RESULT;
 
@@ -424,6 +441,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   const busyBefore = sessionHasInProgressState(session);
   const sampledRunEpoch = Math.max(0, Number(session.transcript?.latestRunEpoch) || 0);
+  const sampledActiveProjection = {
+    responseId: String(session.transcript?.activeRun?.id || '').trim(),
+    runEpoch: Math.max(0, Number(session.transcript?.activeRun?.epoch) || 0),
+    terminal: Boolean(session.transcript?.activeRun?.terminal),
+  };
   const sampledTransport = {
     controller: state.abortController,
     generation: Number(state.streamGeneration || 0),
@@ -626,6 +648,26 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     // server-issued response ID both before and after the state round trip.
     if ((state.abortController || currentOwnsTransport) && !(sampledOwnedResponse && transportUnchanged)) {
       return loadResult;
+    }
+    // Require sampled run/transport stability plus current materialized durable ownership before dropping the overlay.
+    if (transcript && sampledActiveProjection.responseId && !sampledActiveProjection.terminal) {
+      const retiredOrphanedProjection = await transcript.commands.enqueue(() => (
+        retireOrphanedActiveProjection(transcript, sampledActiveProjection, runtimeTranscriptRev)
+      ));
+      const runEpochUnchanged = sampledRunEpoch === Math.max(0, Number(transcript.latestRunEpoch) || 0);
+      const transportStillUnchanged = state.abortController === sampledTransport.controller
+        && Number(state.streamGeneration || 0) === sampledTransport.generation
+        && String(state.currentStreamSessionId || '').trim() === sampledTransport.sessionId
+        && String(state.currentStreamResponseId || '').trim() === sampledTransport.responseId;
+      const nowOwnsTransport = state.currentStreamSessionId === session.id && Boolean(state.currentStreamResponseId);
+      if (!runEpochUnchanged
+          || ((state.abortController || nowOwnsTransport) && !(sampledOwnedResponse && transportStillUnchanged))) {
+        return loadResult;
+      }
+      if (retiredOrphanedProjection) {
+        refreshSessionMessagesFromTranscript(session);
+        if (isStillActive()) renderMessages(true);
+      }
     }
     if (isStillActive()) stopSessionStatePoll();
     const inactiveResponseId = session.activeResponseId || (

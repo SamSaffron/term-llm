@@ -3485,6 +3485,195 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
   pass(name);
 }
 
+async function testIdleStateRetiresLostTerminalProjectionFromCurrentDurableTranscript() {
+  const name = 'idle authoritative state retires a lost-terminal projection only after durable ownership is current';
+  const sessionId = 'sess_lost_terminal';
+  const responseId = 'resp_lost_terminal';
+  const rowCount = 233;
+  const toolCount = 46;
+  const ids = Array.from({ length: rowCount }, (_, index) => index + 1);
+  const responseIDs = ids.map((id) => id === rowCount ? responseId : '');
+  const rawBodies = ids.map((id) => ({
+    id,
+    sequence: id - 1,
+    role: id === 1 ? 'user' : 'assistant',
+    created_at: id * 1000,
+    parts: [{ type: 'text', text: id === 1 ? 'question' : `historical-${id}` }],
+  }));
+  rawBodies[rowCount - 1] = {
+    id: rowCount,
+    sequence: rowCount - 1,
+    role: 'assistant',
+    created_at: rowCount * 1000,
+    parts: [
+      ...Array.from({ length: toolCount }, (_, index) => ({
+        type: 'tool_activity',
+        tool_name: 'shell',
+        tool_call_id: `durable-call-${index + 1}`,
+        tool_status: 'completed',
+      })),
+      { type: 'text', text: 'complete durable final answer' },
+    ],
+  };
+  const transcriptRequests = [];
+  let renderCount = 0;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === `/ui/v1/sessions/${sessionId}/state`) {
+        return new Response(JSON.stringify({ active_run: false, active_response_id: '', transcript_rev: 351 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (isTranscriptIndexURL(url, sessionId) || isTranscriptBodiesURL(url, sessionId)) transcriptRequests.push(String(url));
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      renderMessages() { renderCount += 1; },
+    },
+  });
+  app.stopSidebarStatusPoll();
+  const session = { id: sessionId, title: 'Lost terminal', messages: [], activeResponseId: null };
+  session.transcript = new windowObj.ConversationController(session.id, { maxMaterializedTurns: 300 });
+  session.transcript.applyIndex({
+    rev: 351,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: {
+      ids,
+      seqs: ids.map((id) => id - 1),
+      roles: `u${'a'.repeat(rowCount - 1)}`,
+      flags: ids.map(() => 0),
+      response_ids: responseIDs,
+      assistant_segment_ordinals: ids.map((id) => id === rowCount ? 0 : -1),
+    },
+  });
+  session.transcript.materialize(rawBodies, { countFetch: false });
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.refreshSessionMessagesFromTranscript(session);
+  session.transcript.replaceActiveSnapshot({
+    id: responseId,
+    run_epoch: 7,
+    status: 'in_progress',
+    last_sequence_number: 168,
+    recovery: {
+      messages: [{
+        role: 'tool-group',
+        responseId,
+        status: 'running',
+        tools: Array.from({ length: 20 }, (_, index) => ({ id: `stale-call-${index + 1}`, name: 'shell', status: 'done' })),
+      }],
+    },
+  });
+
+  const visibleToolCount = () => projectedMessages(session)
+    .filter((message) => message.role === 'tool-group')
+    .reduce((count, group) => count + group.tools.length, 0);
+  if (visibleToolCount() !== 20 || projectedMessages(session).some((message) => message.content === 'complete durable final answer')) {
+    fail(name, 'fixture did not reproduce the stale 20-tool active projection over durable output');
+    return;
+  }
+
+  const durableResponseIDs = [...session.transcript.responseIDs];
+  session.transcript.responseIDs = session.transcript.responseIDs.map(() => '');
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+  if (!session.transcript.conversation.active || visibleToolCount() !== 20) {
+    fail(name, 'idle state retired an active projection without durable response ownership');
+    return;
+  }
+  session.transcript.responseIDs = durableResponseIDs;
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  if (session.transcript.conversation.active !== null
+      || visibleToolCount() !== toolCount
+      || projectedMessages(session).at(-1)?.content !== 'complete durable final answer') {
+    fail(name, 'idle reconciliation did not reveal the complete durable 46-tool transcript', JSON.stringify({
+      active: session.transcript.activeRun,
+      tools: visibleToolCount(),
+      final: projectedMessages(session).at(-1)?.content,
+    }));
+    return;
+  }
+  if (session.transcript.rev !== 351 || session.transcript.ids.length !== rowCount
+      || session.transcript.bodies.size !== rowCount || transcriptRequests.length !== 0 || renderCount === 0) {
+    fail(name, 'recovery refetched or failed to render already-authoritative durable truth', JSON.stringify({
+      rev: session.transcript.rev,
+      rows: session.transcript.ids.length,
+      bodies: session.transcript.bodies.size,
+      transcriptRequests,
+      renderCount,
+    }));
+    return;
+  }
+  pass(name);
+}
+
+async function testStaleIdleStateCannotRetireNewerActiveProjection() {
+  const name = 'stale idle state cannot retire a newer run projection created during the request';
+  const sessionId = 'sess_orphan_epoch_race';
+  const oldResponseId = 'resp_old_projection';
+  const newResponseId = 'resp_new_projection';
+  let session;
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (parsedTestURL(url)?.pathname === `/ui/v1/sessions/${sessionId}/state`) {
+        session.transcript.transitionAuthoritativeRun(newResponseId, 351, 8);
+        session.activeResponseId = newResponseId;
+        return new Response(JSON.stringify({ active_run: false, active_response_id: '', transcript_rev: 351 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  app.stopSidebarStatusPoll();
+  session = { id: sessionId, title: 'Epoch race', messages: [], activeResponseId: oldResponseId };
+  session.transcript = new windowObj.ConversationController(session.id);
+  session.transcript.applyIndex({
+    rev: 351,
+    compaction_seq: -1,
+    compaction_count: 0,
+    rows: {
+      ids: [1, 2], seqs: [0, 1], roles: 'ua', flags: [0, 0],
+      response_ids: ['', oldResponseId], assistant_segment_ordinals: [-1, 0],
+    },
+  });
+  session.transcript.materialize([
+    { id: 1, role: 'user', content: 'old question' },
+    { id: 2, role: 'assistant', responseId: oldResponseId, content: 'old durable answer' },
+  ], { countFetch: false });
+  session.transcript.replaceActiveSnapshot({
+    id: oldResponseId, run_epoch: 7, status: 'in_progress', last_sequence_number: 168,
+    recovery: { messages: [{ role: 'assistant', assistant_segment_ordinal: 0, content: 'old stale prefix' }] },
+  });
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  if (session.transcript.activeRun?.id !== newResponseId
+      || session.transcript.activeRun?.epoch !== 8
+      || session.activeResponseId !== newResponseId) {
+    fail(name, 'stale idle response cleared or replaced the newer run owner', JSON.stringify({
+      activeRun: session.transcript.activeRun,
+      activeResponseId: session.activeResponseId,
+    }));
+    return;
+  }
+  pass(name);
+}
+
 async function testIdleStateRetiresOnlySampledTransportOwnership() {
   const name = 'idle state retires a stable response transport without killing a newer local run';
 
@@ -6944,6 +7133,8 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testActiveStatusSyncsInRunTranscriptRevisionsWithoutDuplicatingActiveOutput();
   await testHugeTranscriptGapTraversalStaysBoundedAndAnchored();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
+  await testIdleStateRetiresLostTerminalProjectionFromCurrentDurableTranscript();
+  await testStaleIdleStateCannotRetireNewerActiveProjection();
   await testIdleStateRetiresOnlySampledTransportOwnership();
   await testIdleSidebarStatusPreservesUnacknowledgedPost();
   await testSessionProgressStatePrefersLocalAndServerSignals();
