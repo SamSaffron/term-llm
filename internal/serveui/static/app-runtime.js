@@ -4,15 +4,8 @@
 
 const app = window.TermLLMApp;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
-  updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
-  conversationDOMFor, isConversationMounted,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
-  renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
+  UI_PREFIX, STORAGE_KEYS, state, elements, getActiveSession, updateSessionUsageDisplay, splitHeaderModelEffort,
+  compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider
 } = app;
 const { requestHeaders, normalizeError, effectiveEffortForCompare, sessionHasQueueableActiveRun, setSessionPendingEffort, clearSessionPendingEffort, markRuntimeSelectionIntent, addErrorMessage } = app;
 

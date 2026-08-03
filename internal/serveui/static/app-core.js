@@ -1237,12 +1237,6 @@ const fmtTokens = (n) => {
   return m < 10 ? `${m.toFixed(1)}M` : `${Math.round(m)}M`;
 };
 
-const escapeHTML = (str) => {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-};
-
 const KNOWN_EFFORT_SUFFIXES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const HEADER_EFFORT_LEVELS = new Set([...KNOWN_EFFORT_SUFFIXES, 'auto']);
 

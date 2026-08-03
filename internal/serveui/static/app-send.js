@@ -4,15 +4,10 @@
 
 const app = window.TermLLMApp;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
-  updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
-  conversationDOMFor, isConversationMounted,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
-  renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
+  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, saveSessions, getActiveSession, createSession,
+  setConnectionState, sessionSlug, updateURL, persistAndRefreshShell, refreshRelativeTimes, renderMessages,
+  syncTurnActionPanels, setSessionOptimisticBusy, renderAttachments, buildAttachmentInputParts,
+  cloneAttachmentForMessage
 } = app;
 const DRAFT_MESSAGE_LIMIT = 10;
 const draftMessagesStorageKey = () => STORAGE_KEYS.draftMessages || 'term_llm_draft_messages';
@@ -99,7 +94,15 @@ const restoreLatestDraftMessage = () => {
   return restoreDraftMessageForSession(state.activeSessionId);
 };
 
-const { requestHeaders, normalizeError, hasSessionContinuationContext, effectiveEffortForCompare, clearRuntimeSelectionIntent, classifyRecoverableContinuationFailure, sleep, streamReconnectDelay, streamReconnectLabel, isTransientPreResponsePostError, setActiveResponseTracking, HEARTBEAT_STALE_THRESHOLD, heartbeatUploadGraceThreshold, attachResponseStream, detachResponseStream, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, createResponseStreamState, consumeResponseStream, resumeActiveResponse, setStreaming, recoverInterruptFailure, addErrorMessage, waitForNetworkRetry } = app;
+const {
+  requestHeaders, normalizeError, hasSessionContinuationContext, effectiveEffortForCompare,
+  clearRuntimeSelectionIntent, classifyRecoverableContinuationFailure, streamReconnectDelay, streamReconnectLabel,
+  isTransientPreResponsePostError, setActiveResponseTracking, HEARTBEAT_STALE_THRESHOLD,
+  heartbeatUploadGraceThreshold, attachResponseStream, detachResponseStream, isSessionVisible,
+  appendStreamMessageNode, updateVisibleUserNode, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom,
+  createResponseStreamState, consumeResponseStream, resumeActiveResponse, setStreaming, recoverInterruptFailure,
+  addErrorMessage, waitForNetworkRetry
+} = app;
 
 const restoreQueuedFollowUps = (entries, sessionId) => {
   for (const entry of entries) {

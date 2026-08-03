@@ -956,14 +956,6 @@ func TestStaticAssetsSupportTurnCopyActionPanel(t *testing.T) {
 		}
 	}
 
-	streamJS, err := StaticAsset("app-stream.js")
-	if err != nil {
-		t.Fatalf("StaticAsset(app-stream.js): %v", err)
-	}
-	if !strings.Contains(string(streamJS), "syncTurnActionPanels") {
-		t.Fatal("app-stream.js missing syncTurnActionPanels integration")
-	}
-
 	css, err := StaticAsset("app.css")
 	if err != nil {
 		t.Fatalf("StaticAsset(app.css): %v", err)

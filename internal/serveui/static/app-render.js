@@ -3,9 +3,9 @@
 
 const app = window.TermLLMApp;
 const {
-  STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, asTimestamp, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
-  saveSessions, findMessageElement, mountedConversationSessionId, isConversationMounted, conversationDOMFor,
-  scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
+  STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, asTimestamp, relativeTime, fullDate,
+  sessionBucket, toolIcon, formatUsage, saveSessions, findMessageElement, mountedConversationSessionId,
+  conversationDOMFor, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
   updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun,
   setAnimatedPanelOpen, initPanelSwipeToClose
 } = app;

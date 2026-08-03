@@ -4,29 +4,21 @@
 const app = window.TermLLMApp;
 const ConversationController = window.TermLLMConversation?.ConversationController;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, isSessionIdentityResolved, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus, persistAndRefreshShell, refreshRelativeTimes,
-  splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
-  openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
-  clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
-  autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
-  connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, noteUserScrollIntent, noteScrollPositionChanged, shouldDisableAutoScrollForKey,
-  openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
-  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD,
-  applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, discardPendingAttachments,
-  updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
-  moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle, requeuePendingInterjections,
-  trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit, refreshPendingInterjectionBanner,
-  restoreDraftMessageForSession, stageDraftMessage, clearDraftMessageForSession
+  UI_PREFIX, STORAGE_KEYS, state, elements, asTimestamp, loadSessions, saveSessions, getActiveSession,
+  ensureActiveSession, sessionIdFromURL, isSessionIdentityResolved, sessionSlug, findSessionBySlug, updateURL,
+  updateDocumentTitle, setConnectionState, setStartupStatus, hideStartupSplash, clearProviderRetryStatus,
+  persistAndRefreshShell, refreshRelativeTimes, splitHeaderModelEffort, handleAuthFailure, closeAskUserModal,
+  openAskUserModal, setActiveResponseTracking, clearActiveResponseTracking, setStreaming, resumeActiveResponse,
+  renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
+  autoGrowPrompt, updateVoiceUI, fetchProviders, fetchModels, closeSidebar, closeSidebarIfMobile, openApprovalModal,
+  closeApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI, shouldAutoSubscribeToPush,
+  detachResponseStream, requestHeaders, discardPendingAttachments, sessionHasInProgressState,
+  setSessionServerActiveRun, setSessionOptimisticBusy, moveSessionProgressState, drainInterruptQueueIfIdle,
+  requeuePendingInterjections, trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit,
+  refreshPendingInterjectionBanner, restoreDraftMessageForSession, stageDraftMessage, clearDraftMessageForSession
 } = app;
 let sessionStatePollTimer = null;
 const SESSION_STATE_POLL_RETRY = 5000;
-
-const rebaseSessionAssetURL = (url) => (
-  typeof app.rebaseHubAssetURL === 'function'
-    ? app.rebaseHubAssetURL(url)
-    : String(url || '').trim()
-);
 
 const resumeAndDrain = (session, options) => {
   void resumeActiveResponse(session, options).catch(async () => {
@@ -355,24 +347,9 @@ const switchToSession = async (sessionId, options = {}) => {
 
 
 const {
-  findSessionById,
-  ensureSessionTranscript,
-  trackPendingIntent,
-  retirePendingIntent,
-  noteTranscriptRunCreated,
-  noteTranscriptTerminal,
-  refreshSessionMessagesFromTranscript,
-  touchTranscriptSkeleton,
-  transcriptSyncSegmentIndexes,
-  materializeTranscriptSegments,
-  syncTranscript,
-  loadServerSessionMessages,
-  refreshActiveSessionMessagesFromServer,
-  loadOlderSessionMessages,
-  maybeLoadOlderSessionMessages,
-  SESSION_STATE_RETRY_RESULT,
-  loadServerSessionState,
-  reconcileTranscriptFromStatus
+  findSessionById, ensureSessionTranscript, refreshSessionMessagesFromTranscript, touchTranscriptSkeleton,
+  transcriptSyncSegmentIndexes, syncTranscript, loadServerSessionMessages, refreshActiveSessionMessagesFromServer,
+  SESSION_STATE_RETRY_RESULT, loadServerSessionState
 } = app;
 
 const stopSessionStatePoll = () => {
