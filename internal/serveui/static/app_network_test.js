@@ -81,8 +81,8 @@ function createHarness(fetchImpl, online = true) {
       await flush();
     }
   };
-  const dispatch = async (type) => {
-    for (const handler of listeners.get(type) || []) handler({ type });
+  const dispatch = async (type, detail = {}) => {
+    for (const handler of listeners.get(type) || []) handler({ type, ...detail });
     await flush();
   };
   return {
@@ -332,6 +332,40 @@ async function testRecoveryHooksAreIsolatedAndBounded() {
   console.log('PASS: recovery hooks run independently, time out, and cannot strand waiters');
 }
 
+async function testNormalPageShowDefersRecoveryProbe() {
+  const calls = [];
+  const harness = createHarness(async (url) => {
+    calls.push(String(url));
+    return new Response('{}', { status: 200 });
+  });
+
+  await harness.dispatch('pageshow', { persisted: false });
+  assert(calls.length === 0, 'normal initial pageshow performed an immediate redundant health probe');
+  await harness.app.apiFetch('/ui/v1/models');
+  await harness.advance(2000);
+  assert(calls.length === 1 && calls[0] === '/ui/v1/models', 'successful startup did not suppress the deferred health probe');
+
+  const failedStartupCalls = [];
+  const failedStartup = createHarness(async (url) => {
+    failedStartupCalls.push(String(url));
+    return new Response('{}', { status: 200 });
+  });
+  await failedStartup.dispatch('pageshow', { persisted: false });
+  await failedStartup.advance(1999);
+  assert(failedStartupCalls.length === 0, 'startup recovery probe fired before its grace period');
+  await failedStartup.advance(1);
+  assert(failedStartupCalls.length === 1 && failedStartupCalls[0] === '/ui/v1/providers', 'failed startup did not bootstrap recovery after its grace period');
+
+  const restoredCalls = [];
+  const restored = createHarness(async (url) => {
+    restoredCalls.push(String(url));
+    return new Response('{}', { status: 200 });
+  });
+  await restored.dispatch('pageshow', { persisted: true });
+  assert(restoredCalls.length === 1 && restoredCalls[0] === '/ui/v1/providers', 'BFCache pageshow did not perform one immediate recovery probe');
+  console.log('PASS: normal pageshow defers recovery, successful startup suppresses it, and failed startup/BFCache still probe');
+}
+
 async function testStreamRecoveryHasNoPostWakeHotSpin() {
   const harness = createHarness(async () => new Response('{}', { status: 200 }));
   const raced = harness.app.createResumableStreamRecovery({ key: 'stream:race' });
@@ -361,6 +395,7 @@ async function testStreamRecoveryHasNoPostWakeHotSpin() {
   await testFailedProbeDoesNotReleaseRetries();
   await testDoubleFlapDoesNotDeadlockHookWaiter();
   await testRecoveryHooksAreIsolatedAndBounded();
+  await testNormalPageShowDefersRecoveryProbe();
   await testStreamRecoveryHasNoPostWakeHotSpin();
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);

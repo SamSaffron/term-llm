@@ -524,7 +524,19 @@ if (typeof window.addEventListener === 'function') {
     noteDiagnostic('offline', { waiters: waiters.size });
   });
   window.addEventListener('online', () => { void runCoordinatedNetworkRecovery('online'); });
-  window.addEventListener('pageshow', () => { if (online()) void runCoordinatedNetworkRecovery('pageshow'); });
+  window.addEventListener('pageshow', (event) => {
+    if (!online()) return;
+    if (event?.persisted) {
+      void runCoordinatedNetworkRecovery('pageshow');
+      return;
+    }
+    // Initial startup requests already prove connectivity. Give them a bounded
+    // head start, then bootstrap recovery only if none has succeeded.
+    window.setTimeout(() => {
+      if (state?.connected || state?.connectivity?.lastSuccessAt || !online()) return;
+      void runCoordinatedNetworkRecovery('startup-pageshow');
+    }, 2000);
+  });
 }
 if (typeof document?.addEventListener === 'function') {
   document.addEventListener('visibilitychange', () => {

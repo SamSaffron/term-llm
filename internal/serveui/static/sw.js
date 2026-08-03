@@ -1,4 +1,7 @@
 const SHELL_CACHE = 'term-llm-shell-v3';
+const SHELL_VERSION = SHELL_CACHE.slice('term-llm-shell-'.length);
+const NAVIGATION_NETWORK_BUDGET_MS = 100;
+let shellRefreshPending = false;
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -51,6 +54,19 @@ const putIfCacheable = async (cache, request, response) => {
   return response;
 };
 
+const refreshShellIfCompatible = async (cachePromise, responsePromise) => {
+  const [cache, response] = await Promise.all([cachePromise, responsePromise]);
+  if (!cache || !response?.ok) return response;
+  try {
+    const html = await response.clone().text();
+    if (!html.includes(`window.TERM_LLM_UI_VERSION="${SHELL_VERSION}"`)) return response;
+    await putIfCacheable(cache, './index.html', response);
+  } catch {
+    // A refresh is opportunistic; the install-time shell remains authoritative.
+  }
+  return response;
+};
+
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(SHELL_CACHE);
@@ -79,15 +95,37 @@ self.addEventListener('fetch', (event) => {
   if (!isAppRequest) return;
 
   if (request.mode === 'navigate') {
+    // Only the scope root and explicit index are the chat shell. Widgets, admin,
+    // files, and other in-scope documents must retain their server semantics.
+    const isShellNavigation = url.pathname === scopePath || url.pathname === `${scopePath}index.html`;
+    if (!isShellNavigation) return;
+
+    const cachePromise = caches.open(SHELL_CACHE).catch(() => null);
+    const cachedPromise = cachePromise.then(async (cache) => {
+      if (!cache) return null;
+      return (await cache.match('./index.html')) || (await cache.match('./')) || null;
+    });
+    const networkFetch = fetch(request).catch(() => null);
+    const refresh = refreshShellIfCompatible(cachePromise, networkFetch);
+    event.waitUntil(refresh);
     event.respondWith((async () => {
-      const cache = await caches.open(SHELL_CACHE);
-      try {
-        const response = await fetch(request);
-        await putIfCacheable(cache, './index.html', response.clone());
-        return response;
-      } catch {
-        return (await cache.match('./index.html')) || (await cache.match('./'));
+      // Preserve fresh-first behavior on fast/local servers, but do not make a
+      // warm reload inherit a slow remote document round trip.
+      // After one cache fallback, keep the outstanding refresh authoritative for
+      // immediate follow-up reloads (including version-mismatch auto-reloads).
+      // This prevents a stale shell from winning a rapid reload loop.
+      const fresh = shellRefreshPending ? await networkFetch : await Promise.race([
+        networkFetch,
+        new Promise((resolve) => setTimeout(() => resolve(null), NAVIGATION_NETWORK_BUDGET_MS)),
+      ]);
+      if (fresh) return fresh;
+      const cached = await cachedPromise;
+      if (cached) {
+        shellRefreshPending = true;
+        void networkFetch.finally(() => { shellRefreshPending = false; });
+        return cached;
       }
+      return (await networkFetch) || Response.error();
     })());
     return;
   }
