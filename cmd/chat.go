@@ -1108,6 +1108,12 @@ func getModelName(cfg *config.Config) string {
 
 // extractModelFromProviderName parses "<Provider> (<model>[, ...])" Name() strings shared by all providers.
 func extractModelFromProviderName(name string) string {
+	if strings.EqualFold(strings.TrimSpace(name), "agy CLI") {
+		// Unlike the other CLI providers, agy intentionally leaves its model empty
+		// so the CLI can select its own default. Do not treat the display label as
+		// a model name and pass `--model "agy CLI"` back to agy.
+		return ""
+	}
 	open := strings.Index(name, "(")
 	if open < 0 {
 		return name

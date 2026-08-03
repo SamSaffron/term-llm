@@ -295,6 +295,8 @@ func TestExtractModelFromProviderName(t *testing.T) {
 		{"Bedrock (claude-sonnet-4, adaptive, us-west-2)", "claude-sonnet-4"},
 		{"Gemini (gemini-2.5-pro, thinking=high)", "gemini-2.5-pro"},
 		{"xAI (grok-4-1-fast)", "grok-4-1-fast"},
+		{"agy CLI", ""},
+		{"agy CLI (gemini-3.6-flash-high)", "gemini-3.6-flash-high"},
 		{"debug", "debug"},
 		{"debug:slow", "debug:slow"},
 		{"", ""},
