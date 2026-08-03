@@ -59,6 +59,39 @@ func (s *carryoverPagingStore) GetMessagesPageDescending(ctx context.Context, se
 	return page, nil
 }
 
+type failingTelegramTurnStore struct {
+	session.Store
+
+	mu           sync.Mutex
+	failRole     llm.Role
+	failed       bool
+	replaceCalls int
+}
+
+func (s *failingTelegramTurnStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	s.mu.Lock()
+	if !s.failed && msg.Role == s.failRole {
+		s.failed = true
+		s.mu.Unlock()
+		return errors.New("injected AddMessage failure")
+	}
+	s.mu.Unlock()
+	return s.Store.AddMessage(ctx, sessionID, msg)
+}
+
+func (s *failingTelegramTurnStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	s.mu.Lock()
+	s.replaceCalls++
+	s.mu.Unlock()
+	return s.Store.ReplaceMessages(ctx, sessionID, messages)
+}
+
+func (s *failingTelegramTurnStore) stats() (failed bool, replaceCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed, s.replaceCalls
+}
+
 // fakeBotSender is a botSender that records all Send calls for test assertions.
 type fakeBotSender struct {
 	mu             sync.Mutex
@@ -567,6 +600,82 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	last := bot.lastText()
 	if last != "Hello" {
 		t.Errorf("lastText = %q; want %q", last, "Hello")
+	}
+}
+
+func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failRole llm.Role
+	}{
+		{name: "direct user write", failRole: llm.RoleUser},
+		{name: "queued callback write", failRole: llm.RoleAssistant},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := testutil.NewEngineHarness()
+			h.AddMockTool("my_tool", "tool output")
+			h.Provider.AddToolCall("id-1", "my_tool", map[string]any{})
+			h.Provider.AddTextResponse("Result")
+
+			baseStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+			if err != nil {
+				t.Fatalf("create store: %v", err)
+			}
+			store := &failingTelegramTurnStore{Store: baseStore, failRole: tc.failRole}
+			defer store.Close()
+
+			mgr := &telegramSessionMgr{
+				sessions:       make(map[int64]*telegramSession),
+				store:          store,
+				tickerInterval: 10 * time.Millisecond,
+				settings: Settings{
+					MaxTurns:     5,
+					Store:        store,
+					SystemPrompt: "be helpful",
+					NewSession: func(context.Context) (*SessionRuntime, error) {
+						return &SessionRuntime{
+							Engine:       h.Engine,
+							ProviderName: "mock",
+							ModelName:    "test",
+						}, nil
+					},
+				},
+			}
+			ctx := context.Background()
+			sess, err := mgr.getOrCreate(ctx, 42)
+			if err != nil {
+				t.Fatalf("getOrCreate failed: %v", err)
+			}
+
+			if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("run tool")); err != nil {
+				t.Fatalf("streamReply returned error: %v", err)
+			}
+
+			failed, replaceCalls := store.stats()
+			if !failed {
+				t.Fatalf("expected injected %s AddMessage failure", tc.failRole)
+			}
+			if replaceCalls != 1 {
+				t.Fatalf("ReplaceMessages calls = %d, want 1", replaceCalls)
+			}
+
+			msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+			if err != nil {
+				t.Fatalf("GetMessages failed: %v", err)
+			}
+			wantRoles := []llm.Role{llm.RoleSystem, llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleAssistant}
+			if len(msgs) != len(wantRoles) {
+				t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
+			}
+			for i, wantRole := range wantRoles {
+				if msgs[i].Role != wantRole {
+					t.Fatalf("message %d role = %s, want %s: %#v", i, msgs[i].Role, wantRole, msgs)
+				}
+			}
+			if msgs[0].TextContent != "be helpful" || msgs[1].TextContent != "run tool" || msgs[4].TextContent != "Result" {
+				t.Fatalf("reconciled transcript text mismatch: %#v", msgs)
+			}
+		})
 	}
 }
 

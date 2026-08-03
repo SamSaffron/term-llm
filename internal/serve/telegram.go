@@ -1080,16 +1080,18 @@ func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) 
 	cleanup()
 }
 
-func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
+func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) bool {
 	if m.store == nil || fn == nil {
-		return
+		return false
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := fn(ctx); err != nil {
 		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+		return false
 	}
+	return true
 }
 
 func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func(context.Context) error) {
@@ -1103,9 +1105,9 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 	}
 }
 
-func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
+func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessionID, op string, fn func(context.Context) error) bool {
 	if m.store == nil || fn == nil {
-		return
+		return false
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1114,7 +1116,9 @@ func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessio
 	defer cancel()
 	if err := fn(storeCtx); err != nil {
 		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+		return false
 	}
+	return true
 }
 
 type telegramStoreOp struct {
@@ -1155,7 +1159,9 @@ func (q *telegramStoreOpQueue) run() {
 		if q.isDegraded() {
 			continue
 		}
-		q.mgr.runStoreOpWithoutCancel(op.ctx, q.sessionID, op.op, op.fn)
+		if !q.mgr.runStoreOpWithoutCancel(op.ctx, q.sessionID, op.op, op.fn) {
+			q.markDegraded(op.op + " failed")
+		}
 	}
 }
 
@@ -1642,8 +1648,11 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 	}
 
 	// Persist incoming messages before streaming.
+	turnPersistenceDegraded := false
+	includeSystemPromptOnReconcile := sess.systemPromptPersisted
 	if m.store != nil && sess.meta != nil {
 		if m.settings.SystemPrompt != "" && !sess.systemPromptPersisted {
+			includeSystemPromptOnReconcile = true
 			sysMsg := &session.Message{
 				SessionID:   sess.meta.ID,
 				Role:        llm.RoleSystem,
@@ -1652,10 +1661,13 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 				CreatedAt:   time.Now(),
 				Sequence:    -1,
 			}
-			m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
+			if m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
 				return m.store.AddMessage(storeCtx, sess.meta.ID, sysMsg)
-			})
-			sess.systemPromptPersisted = true
+			}) {
+				sess.systemPromptPersisted = true
+			} else {
+				turnPersistenceDegraded = true
+			}
 		}
 		storeUserMsg := &session.Message{
 			SessionID:   sess.meta.ID,
@@ -1665,9 +1677,11 @@ func (m *telegramSessionMgr) streamReplyWithAdmission(ctx context.Context, bot b
 			CreatedAt:   time.Now(),
 			Sequence:    -1,
 		}
-		m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
+		if !m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
 			return m.store.AddMessage(storeCtx, sess.meta.ID, storeUserMsg)
-		})
+		}) {
+			turnPersistenceDegraded = true
+		}
 		m.runStoreOp(ctx, sess.meta.ID, "IncrementUserTurns", func(storeCtx context.Context) error {
 			return m.store.IncrementUserTurns(storeCtx, sess.meta.ID)
 		})
@@ -2494,9 +2508,11 @@ loop:
 	if len(produced) == 0 && full != "" {
 		if m.store != nil && sess.meta != nil {
 			assistantMsg := session.NewMessage(sess.meta.ID, llm.AssistantText(full), -1)
-			m.runStoreOp(ctx, sess.meta.ID, "AddMessage(assistant_fallback)", func(storeCtx context.Context) error {
+			if !m.runStoreOp(ctx, sess.meta.ID, "AddMessage(assistant_fallback)", func(storeCtx context.Context) error {
 				return m.store.AddMessage(storeCtx, sess.meta.ID, assistantMsg)
-			})
+			}) {
+				turnPersistenceDegraded = true
+			}
 		}
 		newHistory = append(newHistory, llm.AssistantText(full))
 	}
@@ -2508,9 +2524,9 @@ loop:
 		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		callbackStoreQueue.closeAndWait(drainCtx)
 		cancel()
-		if callbackStoreQueue.isDegraded() && m.store != nil && sess.meta != nil {
+		if (turnPersistenceDegraded || callbackStoreQueue.isDegraded()) && m.store != nil && sess.meta != nil {
 			replacementHistory := make([]llm.Message, 0, len(newHistory)+1)
-			if m.settings.SystemPrompt != "" && sess.systemPromptPersisted && !containsSystemMsg(newHistory) {
+			if m.settings.SystemPrompt != "" && includeSystemPromptOnReconcile && !containsSystemMsg(newHistory) {
 				replacementHistory = append(replacementHistory, llm.SystemText(m.settings.SystemPrompt))
 			}
 			start := sess.carryoverMessageCount
@@ -2522,9 +2538,11 @@ loop:
 			for i, msg := range replacementHistory {
 				snapshot = append(snapshot, *session.NewMessage(sess.meta.ID, msg, i))
 			}
-			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "ReplaceMessages(callback_reconcile)", func(storeCtx context.Context) error {
+			if m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "ReplaceMessages(callback_reconcile)", func(storeCtx context.Context) error {
 				return m.store.ReplaceMessages(storeCtx, sess.meta.ID, snapshot)
-			})
+			}) && includeSystemPromptOnReconcile {
+				sess.systemPromptPersisted = true
+			}
 		}
 	}
 	if m.store != nil && sess.meta != nil {
