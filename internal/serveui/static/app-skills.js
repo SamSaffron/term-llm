@@ -2,17 +2,14 @@
 (function initAppSkills() {
 const app = window.TermLLMApp;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
-  updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
-  conversationDOMFor, isConversationMounted,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
-  renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
+  UI_PREFIX, state, elements, generateId, truncate, saveSessions, persistAndRefreshShell, renderMessages,
+  setSessionOptimisticBusy
 } = app;
-const { requestHeaders, normalizeError, parseSSEStream, sleep, streamReconnectDelay, setActiveResponseTracking, isSessionVisible, appendStreamMessageNode, updateVisibleUserNode, scrollVisibleStreamToBottom, resumeActiveResponse, setStreaming, drainInterruptQueueIfIdle, addErrorMessage, createResumableStreamRecovery } = app;
+const {
+  requestHeaders, normalizeError, parseSSEStream, setActiveResponseTracking, isSessionVisible,
+  appendStreamMessageNode, updateVisibleUserNode, scrollVisibleStreamToBottom, resumeActiveResponse, setStreaming,
+  drainInterruptQueueIfIdle, addErrorMessage, createResumableStreamRecovery
+} = app;
 const skillRunStore = () => {
   if (!state.skillRunsById || typeof state.skillRunsById !== 'object') {
     state.skillRunsById = {};

@@ -5,15 +5,8 @@
 const app = window.TermLLMApp;
 const ConversationController = window.TermLLMConversation?.ConversationController;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
-  updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
-  conversationDOMFor, isConversationMounted,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
-  renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
+  state, saveSessions, setProviderRetryStatus, updateSessionUsageDisplay, renderSidebar, renderMessages,
+  maybeNotifyResponseComplete, setSessionOptimisticBusy, setSessionServerActiveRun
 } = app;
 const { rebaseStreamAssetURL, forceSidebarStatusRefreshSoon, normalizeEffortForCompare, clearSessionPendingEffort, clearTerminalPendingEffort, classifyRecoverableContinuationFailure, setActiveResponseTracking, scheduleStreamPersistence, flushStreamPersistence, clearActiveResponseTracking, isSessionVisible, updateVisibleToolGroupNode, enqueueVisibleAssistantStreamUpdate, finalizeVisibleAssistantStreamRender, scrollVisibleStreamToBottom, scheduleVisibleStreamScroll, responseStreamOwnerId, clearProviderRetryForEvent, applyResponseRecoverySnapshot, addErrorMessage } = app;
 

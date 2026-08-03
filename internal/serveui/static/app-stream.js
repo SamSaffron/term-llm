@@ -4,15 +4,13 @@
 const app = window.TermLLMApp;
 const ConversationController = window.TermLLMConversation?.ConversationController;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, scrollToBottom, setConnectionState, setProviderRetryStatus, clearProviderRetryStatus, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
-  updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
-  conversationDOMFor, isConversationMounted,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
-  renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
+  UI_PREFIX, state, elements, generateId, sanitizeMessage, saveSessions, getActiveSession, scrollToBottom,
+  setConnectionState, clearProviderRetryStatus, persistAndRefreshShell, updateSessionUsageDisplay, updateUserNode,
+  updateToolGroupNode, createMessageNode, updateModelSwapNode, renderSidebar, renderMessages,
+  insertMountedMessageNode, enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, updateMountedToolGroupNode,
+  updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate,
+  finalizeMountedAssistantStreamRender, conversationDOMFor, isConversationMounted, shouldSuppressPromptAutoFocus,
+  setSessionOptimisticBusy, setSessionServerActiveRun
 } = app;
 
 const rebaseStreamAssetURL = (url) => (
@@ -521,14 +519,6 @@ const updateVisibleToolGroupNode = (session, message) => {
     updateMountedToolGroupNode(session, message);
   } else if (isSessionVisible(session)) {
     updateToolGroupNode(message);
-  }
-};
-
-const updateVisibleModelSwapNode = (session, message) => {
-  if (typeof updateMountedModelSwapNode === 'function') {
-    updateMountedModelSwapNode(session, message);
-  } else if (isSessionVisible(session)) {
-    updateModelSwapNode(message);
   }
 };
 
