@@ -187,8 +187,16 @@ const composeAbortSignal = (parentSignal, timeoutMs) => {
   return { signal: controller.signal, timedOut: () => timeout, cleanup };
 };
 
+// Per the Fetch spec, a response carrying a null body status must never be
+// rebuilt with a body: `new Response(body, { status: 304 })` throws a
+// TypeError. Chromium reports `response.body === null` for these, so the body
+// check alone happens to work there, but Firefox exposes a non-null empty
+// stream. The UI polls an ETagged endpoint that legitimately answers 304, so on
+// Firefox every poll threw and drove connectivity to 'unstable' forever.
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+
 const responseWithAbortLifetime = (response, cleanup) => {
-  if (!response.body) {
+  if (!response.body || NULL_BODY_STATUSES.has(response.status)) {
     cleanup();
     return response;
   }
