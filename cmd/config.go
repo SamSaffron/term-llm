@@ -26,7 +26,7 @@ Examples:
   term-llm config                     # show current config
   term-llm config edit                # edit in $EDITOR
   term-llm config reset               # reset to defaults
-  term-llm config completion zsh      # generate shell completions`,
+  term-llm config completion fish     # generate Fish shell completions`,
 	RunE: configShow, // Default to show
 }
 
@@ -50,7 +50,8 @@ var configCompletionCmd = &cobra.Command{
 Examples:
   term-llm config completion bash
   term-llm config completion zsh
-  term-llm config completion fish`,
+  term-llm config completion fish
+  term-llm config completion powershell`,
 	ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
 	Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 	RunE:      configCompletion,
@@ -852,18 +853,47 @@ func configCompletion(cmd *cobra.Command, args []string) error {
 		return installShellCompletion(shell)
 	}
 
-	// Just output to stdout
+	return generateShellCompletion(shell, os.Stdout)
+}
+
+func generateShellCompletion(shell string, out io.Writer) error {
 	switch shell {
 	case "bash":
-		return rootCmd.GenBashCompletion(os.Stdout)
+		return rootCmd.GenBashCompletion(out)
 	case "zsh":
-		return rootCmd.GenZshCompletion(os.Stdout)
+		return rootCmd.GenZshCompletion(out)
 	case "fish":
-		return rootCmd.GenFishCompletion(os.Stdout, true)
+		return rootCmd.GenFishCompletion(out, true)
 	case "powershell":
-		return rootCmd.GenPowerShellCompletionWithDesc(os.Stdout)
+		return rootCmd.GenPowerShellCompletionWithDesc(out)
+	default:
+		return fmt.Errorf("unknown shell: %s", shell)
 	}
-	return nil
+}
+
+func shellCompletionPath(shell, home string) (string, error) {
+	switch shell {
+	case "bash":
+		return filepath.Join(home, ".bash_completion.d", "term-llm"), nil
+	case "zsh":
+		dataDir := xdgBaseDir("XDG_DATA_HOME", home, ".local", "share")
+		return filepath.Join(dataDir, "zsh", "site-functions", "_term-llm"), nil
+	case "fish":
+		configDir := xdgBaseDir("XDG_CONFIG_HOME", home, ".config")
+		return filepath.Join(configDir, "fish", "completions", "term-llm.fish"), nil
+	case "powershell":
+		configDir := xdgBaseDir("XDG_CONFIG_HOME", home, ".config")
+		return filepath.Join(configDir, "powershell", "completions", "term-llm.ps1"), nil
+	default:
+		return "", fmt.Errorf("unknown shell: %s", shell)
+	}
+}
+
+func xdgBaseDir(envVar, home string, fallback ...string) string {
+	if dir := os.Getenv(envVar); filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(append([]string{home}, fallback...)...)
 }
 
 func installShellCompletion(shell string) error {
@@ -872,44 +902,16 @@ func installShellCompletion(shell string) error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	var path string
-	var content []byte
-	var buf = new(bytes.Buffer)
-
-	switch shell {
-	case "bash":
-		path = filepath.Join(home, ".bash_completion.d", "term-llm")
-		if err := rootCmd.GenBashCompletion(buf); err != nil {
-			return err
-		}
-		content = buf.Bytes()
-
-	case "zsh":
-		// Use ~/.local/share/zsh/site-functions which is the XDG standard
-		path = filepath.Join(home, ".local", "share", "zsh", "site-functions", "_term-llm")
-		if err := rootCmd.GenZshCompletion(buf); err != nil {
-			return err
-		}
-		content = buf.Bytes()
-
-	case "fish":
-		path = filepath.Join(home, ".config", "fish", "completions", "term-llm.fish")
-		if err := rootCmd.GenFishCompletion(buf, true); err != nil {
-			return err
-		}
-		content = buf.Bytes()
-
-	case "powershell":
-		// PowerShell completions go in the profile directory
-		path = filepath.Join(home, ".config", "powershell", "completions", "term-llm.ps1")
-		if err := rootCmd.GenPowerShellCompletionWithDesc(buf); err != nil {
-			return err
-		}
-		content = buf.Bytes()
-
-	default:
-		return fmt.Errorf("unknown shell: %s", shell)
+	path, err := shellCompletionPath(shell, home)
+	if err != nil {
+		return err
 	}
+
+	var buf bytes.Buffer
+	if err := generateShellCompletion(shell, &buf); err != nil {
+		return err
+	}
+	content := buf.Bytes()
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
@@ -917,8 +919,8 @@ func installShellCompletion(shell string) error {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	// Write completion file
-	if err := os.WriteFile(path, content, 0644); err != nil {
+	// Write completion file atomically so an interrupted update cannot truncate it.
+	if err := config.WriteFileAtomically(path, content, 0o644); err != nil {
 		return fmt.Errorf("failed to write completion file: %w", err)
 	}
 

@@ -17,6 +17,7 @@ term-llm config path
 term-llm config get default_provider
 term-llm config set default_provider zen
 term-llm config reset
+term-llm config completion fish
 ```
 
 The main config file lives at:

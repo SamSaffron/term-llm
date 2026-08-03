@@ -50,7 +50,7 @@ const rootExamples = `  term-llm chat @developer                    # agentic co
   term-llm contain new jarvis                 # create a self-hosted personal AI agent (a Claw)
 
   term-llm config                             # view configuration
-  term-llm config completion zsh              # shell completions`
+  term-llm config completion fish             # Fish shell completions`
 
 var rootCmd = &cobra.Command{
 	Use:   "term-llm",

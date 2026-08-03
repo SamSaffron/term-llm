@@ -43,6 +43,14 @@ go install .
 
 `go install github.com/samsaffron/term-llm@latest` cannot build this repository: the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules, and dependency-local replacements are not available to an external `go install ...@version` build. Use the installer/release archive or build from a complete checkout.
 
+Shell completions are available for Bash, Zsh, Fish, and PowerShell. Fish users can install an auto-loaded completion file with:
+
+```fish
+term-llm config completion fish --install
+```
+
+See the [installation guide](https://term-llm.com/getting-started/installation/#shell-completions) for every shell and manual setup.
+
 ## 30-second quickstart
 
 No API key needed if you use Zen:
