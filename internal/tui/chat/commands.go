@@ -1049,6 +1049,10 @@ func (m *Model) handleTranscriptMutationDone(msg transcriptMutationDoneMsg) (tea
 	m.olderScrollbackLoaded = true
 	m.scrollOffset = 0
 	m.scrollToBottom = true
+	// A completed response may still be held separately from persisted history for
+	// the streaming fast path. Transcript replacement makes that snapshot stale.
+	m.viewCache.completedStream = ""
+	m.invalidateAltScreenStreamingViewportCache()
 	m.invalidateHistoryCache()
 	m.resetContextEstimateBaseline(m.rootContext())
 	m.resetTitleGenerationStateForSession()

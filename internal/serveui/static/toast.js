@@ -18,9 +18,18 @@ const dismissToast = (toast) => {
 const showToast = (message, options = {}) => {
   const text = String(message || '').trim();
   if (!text || !region || typeof document.createElement !== 'function') return null;
+  const toastID = String(options.id || '').trim();
+  if (toastID) {
+    const previous = Array.from(region.children || []).find((item) => item?.attributes?.['data-toast-id'] === toastID || item?.getAttribute?.('data-toast-id') === toastID);
+    if (previous) {
+      if (previous._dismissTimer) window.clearTimeout(previous._dismissTimer);
+      previous.remove?.();
+    }
+  }
   const tone = ['success', 'error', 'warning'].includes(options.tone) ? options.tone : 'info';
   const toast = document.createElement('div');
   toast.className = `toast toast-${tone}`;
+  if (toastID) toast.setAttribute('data-toast-id', toastID);
   toast.setAttribute('role', tone === 'error' ? 'alert' : 'status');
   toast.setAttribute('aria-atomic', 'true');
 

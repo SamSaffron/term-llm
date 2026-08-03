@@ -43,6 +43,13 @@ if (toast.children[1]?.attributes?.['aria-label'] !== 'Dismiss notification') th
 toast.children[1].onclick();
 if (!toast._dismissed) throw new Error('dismiss button did not dismiss toast');
 
+const firstMutation = window.TermLLMApp.showToast('Undo complete', { id: 'transcript-mutation', duration: 0 });
+const secondMutation = window.TermLLMApp.showToast('Redo complete', { id: 'transcript-mutation', duration: 0 });
+const mutationToasts = region.children.filter((item) => item.attributes?.['data-toast-id'] === 'transcript-mutation');
+if (mutationToasts.length !== 1 || mutationToasts[0] !== secondMutation || region.children.includes(firstMutation)) {
+  throw new Error('toast IDs do not replace earlier notifications');
+}
+
 for (let i = 0; i < 6; i += 1) window.TermLLMApp.showToast(`message ${i}`, { duration: 0 });
 if (region.children.length !== 4) throw new Error(`toast stack is not bounded: ${region.children.length}`);
 

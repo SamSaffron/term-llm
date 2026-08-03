@@ -70,6 +70,9 @@ func TestCmdUndoRedoShrinksRestoresAndManagesComposer(t *testing.T) {
 	m := newCmdTestModel(store)
 	m.sess = sess
 	m.messages = []session.Message{first, second, third, fourth}
+	// Completed responses are cached separately from persisted history for the
+	// streaming fast path. Undo must not leave the removed response on screen.
+	m.viewCache.completedStream = "remove this answer"
 	m.setTextareaValue("/undo")
 
 	result, cmd := m.ExecuteCommand("/undo")
@@ -81,6 +84,9 @@ func TestCmdUndoRedoShrinksRestoresAndManagesComposer(t *testing.T) {
 	m = result.(*Model)
 	if len(m.messages) != 2 {
 		t.Fatalf("messages after undo = %d, want 2", len(m.messages))
+	}
+	if m.viewCache.completedStream != "" {
+		t.Fatalf("completed stream survived undo: %q", m.viewCache.completedStream)
 	}
 	if got := m.textarea.Value(); got != "edit this prompt" {
 		t.Fatalf("composer after undo = %q", got)

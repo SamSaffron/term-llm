@@ -155,18 +155,18 @@ const sendMessage = async (options = {}) => {
     app.hideSlashCommands?.();
     app.autoGrowPrompt();
     if (!match) {
-      app.showToast?.('Usage: /undo or /redo', { tone: 'warning' });
+      app.showToast?.('Usage: /undo or /redo', { id: 'transcript-mutation', tone: 'warning' });
       return;
     }
     const operation = match[1].toLowerCase();
     const session = getActiveSession();
     if (!session || state.draftSessionActive) {
-      app.showToast?.(`Start the conversation before using /${operation}.`, { tone: 'warning' });
+      app.showToast?.(`Start the conversation before using /${operation}.`, { id: 'transcript-mutation', tone: 'warning' });
       return;
     }
     if (state.transcriptMutating) return;
     if (state.streaming || state.compressing || state.sideQuestion?.running || sessionHasInProgressState?.(session)) {
-      app.showToast?.(`Cannot ${operation} while work is active.`, { tone: 'warning' });
+      app.showToast?.(`Cannot ${operation} while work is active.`, { id: 'transcript-mutation', tone: 'warning' });
       return;
     }
     const transcript = session.transcript;
@@ -206,17 +206,17 @@ const sendMessage = async (options = {}) => {
           : (attachmentsOmitted
             ? 'Removed the latest turn. Attachments were not restored.'
             : 'Removed the latest turn.');
-        app.showToast?.(message, { tone: attachmentsOmitted ? 'warning' : 'success' });
+        app.showToast?.(message, { id: 'transcript-mutation', tone: attachmentsOmitted ? 'warning' : 'success' });
       } else {
         if (sameActiveSession) {
           elements.promptInput.value = '';
           app.autoGrowPrompt();
         }
-        app.showToast?.('Restored the undone turn.', { tone: 'success' });
+        app.showToast?.('Restored the undone turn.', { id: 'transcript-mutation', tone: 'success' });
       }
     } catch (err) {
       if (err?.status === 409) await app.refreshActiveSessionMessagesFromServer?.(session, { force: true, useEtag: false, reason: `${operation}-conflict` });
-      app.showToast?.(err?.message || `${operation} failed.`, { tone: 'error', duration: 6500 });
+      app.showToast?.(err?.message || `${operation} failed.`, { id: 'transcript-mutation', tone: 'error', duration: 6500 });
     } finally {
       state.transcriptMutating = false;
     }
