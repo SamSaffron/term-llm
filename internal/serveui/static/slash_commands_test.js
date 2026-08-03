@@ -68,10 +68,10 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 promptInput.value = '/';
 promptInput.dispatch('input');
 assert(!slashCommandMenu.hidden, 'typing / did not show slash commands');
-assert(slashCommandMenu.children.length === 7, 'expected all matching slash commands');
+assert(slashCommandMenu.children.length === 9, 'expected all matching slash commands');
 const commandNames = slashCommandMenu.children.map((option) => option.children[0].textContent);
-assert(JSON.stringify(commandNames) === JSON.stringify(['/compact', '/compress', '/goal', '/mcp', '/model', '/new', '/side']), `commands were not alphabetized: ${JSON.stringify(commandNames)}`);
-assert(slashCommandMenu.children[6].children[1].textContent.includes('without interrupting'), '/side description was not useful');
+assert(JSON.stringify(commandNames) === JSON.stringify(['/compact', '/compress', '/goal', '/mcp', '/model', '/new', '/redo', '/side', '/undo']), `commands were not alphabetized: ${JSON.stringify(commandNames)}`);
+assert(slashCommandMenu.children[7].children[1].textContent.includes('without interrupting'), '/side description was not useful');
 assert(promptInput.attributes['aria-expanded'] === 'true', 'composer did not expose expanded autocomplete state');
 
 promptInput.value = '/si';

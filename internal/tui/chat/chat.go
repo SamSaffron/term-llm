@@ -94,12 +94,13 @@ type Model struct {
 	compactionIdx            int // Prefix length to skip for LLM context; 0 means no prefix is skipped.
 	// olderScrollbackLoaded is false when a compacted resume initially loaded only
 	// the active tail; scrolling upward can hydrate the older display prefix once.
-	olderScrollbackLoaded bool
-	messagesMu            sync.Mutex // Protects messages from concurrent compaction callback
-	streaming             bool
-	shareInFlight         bool
-	pendingShare          *shareRequest
-	phase                 string // "Thinking", "Searching", "Reading", "Responding"
+	olderScrollbackLoaded      bool
+	messagesMu                 sync.Mutex // Protects messages from concurrent compaction callback
+	streaming                  bool
+	transcriptMutationInFlight bool
+	shareInFlight              bool
+	pendingShare               *shareRequest
+	phase                      string // "Thinking", "Searching", "Reading", "Responding"
 
 	// Reasoning display/status state. Provider replay metadata is persisted in
 	// assistant parts by the LLM engine; these fields only affect live UI policy.
@@ -1780,6 +1781,7 @@ func isParentChatMessage(msg tea.Msg) bool {
 		mcpStatusUpdateMsg,
 		GuardianReviewMsg,
 		chatGPTModelsLoadedMsg,
+		transcriptMutationDoneMsg,
 		FlushBeforeAskUserMsg,
 		FlushBeforeApprovalMsg,
 		ResumeFromExternalUIMsg,
@@ -2053,6 +2055,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case chatGPTModelsLoadedMsg:
 		return m.applyChatGPTModelsLoaded(msg)
+
+	case transcriptMutationDoneMsg:
+		return m.handleTranscriptMutationDone(msg)
 
 	case promptHistoryLookupMsg:
 		return m.handlePromptHistoryLookupMsg(msg)

@@ -15,7 +15,7 @@ import (
 
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
-//go:embed static/app-core.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-sidebar.js
+//go:embed static/app-core.js static/toast.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-sidebar.js
 //go:embed static/app-attachments.js static/app-stream.js static/app-response-effects.js static/app-send.js static/app-runtime.js static/app-interject.js static/app-modals.js static/app-composer.js static/app-skills.js static/side-question.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js static/transcript-window.js static/active-response.js static/conversation.js
 //go:embed static/vendor
@@ -91,6 +91,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="manifest.webmanifest"`, `href="` + versioned("manifest.webmanifest") + `"`},
 		{`href="app.css"`, `href="` + versioned("app.css") + `"`},
 		{`href="app-core.js"`, `href="` + versioned("app-core.js") + `"`},
+		{`href="toast.js"`, `href="` + versioned("toast.js") + `"`},
 		{`href="app-network.js"`, `href="` + versioned("app-network.js") + `"`},
 		{`href="transcript-window.js"`, `href="` + versioned("transcript-window.js") + `"`},
 		{`href="active-response.js"`, `href="` + versioned("active-response.js") + `"`},
@@ -125,6 +126,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="active-response.js"`, `src="` + versioned("active-response.js") + `"`},
 		{`src="conversation.js"`, `src="` + versioned("conversation.js") + `"`},
 		{`src="app-core.js"`, `src="` + versioned("app-core.js") + `"`},
+		{`src="toast.js"`, `src="` + versioned("toast.js") + `"`},
 		{`src="app-network.js"`, `src="` + versioned("app-network.js") + `"`},
 		{`src="app-plan.js"`, `src="` + versioned("app-plan.js") + `"`},
 		{`src="slash-commands.js"`, `src="` + versioned("slash-commands.js") + `"`},
@@ -212,6 +214,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./active-response.js'", "'./" + versioned("active-response.js") + "'"},
 		{"'./conversation.js'", "'./" + versioned("conversation.js") + "'"},
 		{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
+		{"'./toast.js'", "'./" + versioned("toast.js") + "'"},
 		{"'./app-network.js'", "'./" + versioned("app-network.js") + "'"},
 		{"'./app-plan.js'", "'./" + versioned("app-plan.js") + "'"},
 		{"'./slash-commands.js'", "'./" + versioned("slash-commands.js") + "'"},

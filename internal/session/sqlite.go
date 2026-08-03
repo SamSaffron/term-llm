@@ -145,6 +145,15 @@ CREATE TABLE IF NOT EXISTS session_plans (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS session_redo (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    suffix TEXT NOT NULL,
+    metadata TEXT NOT NULL,
+    undo_rev INTEGER NOT NULL,
+    head_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -334,7 +343,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 43
+const schemaVersion = 44
 
 // migration represents a schema migration.
 type migration struct {
@@ -1217,23 +1226,52 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		version:     44,
+		description: "create durable transcript redo table",
+		up: func(db schemaExecutor) error {
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_redo (
+				session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+				suffix TEXT NOT NULL,
+				metadata TEXT NOT NULL,
+				undo_rev INTEGER NOT NULL,
+				head_id INTEGER NOT NULL DEFAULT 0,
+				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
 // triggers need a SQL form of the same prefix check.
 const internalCompactionSummarySQLPrefix = "[Context Compaction]"
 
-func countableConversationMessageSQL(alias string, includeCompactionTail bool) string {
-	roleCol := qualifiedMessageColumn(alias, "role")
+func trimmedMessageTextSQL(alias string) string {
 	// SQLite's one-argument TRIM only removes spaces. Include common ASCII
 	// whitespace; persisted model/tool text that is only whitespace is expected to
 	// use these characters.
 	textCol := qualifiedMessageColumn(alias, "text_content")
 	trimChars := "char(9) || char(10) || char(11) || char(12) || char(13) || char(32)"
-	textExpr := "TRIM(COALESCE(" + textCol + ", ''), " + trimChars + ")"
+	return "TRIM(COALESCE(" + textCol + ", ''), " + trimChars + ")"
+}
 
-	userPredicate := fmt.Sprintf("(%s = 'user' AND substr(%s, 1, %d) <> '%s')",
+func realUserMessageSQL(alias string, excludeCompactionTail bool) string {
+	roleCol := qualifiedMessageColumn(alias, "role")
+	textExpr := trimmedMessageTextSQL(alias)
+	predicate := fmt.Sprintf("(%s = 'user' AND substr(%s, 1, %d) <> '%s')",
 		roleCol, textExpr, len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix)
+	if excludeCompactionTail {
+		predicate = "(COALESCE(" + qualifiedMessageColumn(alias, "compaction_tail") + ", FALSE) = FALSE AND " + predicate + ")"
+	}
+	return predicate
+}
+
+func countableConversationMessageSQL(alias string, includeCompactionTail bool) string {
+	roleCol := qualifiedMessageColumn(alias, "role")
+	textExpr := trimmedMessageTextSQL(alias)
+
+	userPredicate := realUserMessageSQL(alias, false)
 	assistantPredicate := fmt.Sprintf("(%s = 'assistant' AND %s <> '')", roleCol, textExpr)
 	predicate := "(" + userPredicate + " OR " + assistantPredicate + ")"
 	if includeCompactionTail {
@@ -2650,6 +2688,19 @@ func (s *SQLiteStore) bumpTranscriptRev(ctx context.Context, execer sqliteQueryE
 	if !s.hasTranscriptRev {
 		return 0, nil
 	}
+	// session_redo was introduced after transcript revisions. Keep invalidation
+	// below the compatibility guard so old read-only schemas never query a table
+	// they cannot have.
+	if _, err := execer.ExecContext(ctx, `DELETE FROM session_redo WHERE session_id = ?`, sessionID); err != nil {
+		return 0, fmt.Errorf("invalidate transcript redo: %w", err)
+	}
+	return s.bumpTranscriptRevPreservingRedo(ctx, execer, sessionID)
+}
+
+func (s *SQLiteStore) bumpTranscriptRevPreservingRedo(ctx context.Context, execer sqliteQueryExecer, sessionID string) (int64, error) {
+	if !s.hasTranscriptRev {
+		return 0, nil
+	}
 	var rev int64
 	err := execer.QueryRowContext(ctx, `
 		UPDATE sessions
@@ -3402,6 +3453,420 @@ func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int6
 		return 0, fmt.Errorf("get transcript revision: %w", err)
 	}
 	return rev, nil
+}
+
+type undoRedoMetadata struct {
+	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
+	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
+	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
+	TitleGeneratedAt    time.Time          `json:"title_generated_at,omitempty"`
+	TitleBasisMsgSeq    int                `json:"title_basis_msg_seq,omitempty"`
+	TitleSkippedAt      time.Time          `json:"title_skipped_at,omitempty"`
+}
+
+type sqliteQueryRowsExecer interface {
+	sqliteQueryExecer
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func transcriptMutationState(ctx context.Context, q sqliteQueryExecer, sessionID string) (TranscriptMutationState, error) {
+	var state TranscriptMutationState
+	err := q.QueryRowContext(ctx, `
+		SELECT transcript_rev, COALESCE((
+			SELECT id FROM messages
+			WHERE session_id = sessions.id AND role NOT IN ('system', 'developer')
+			ORDER BY sequence DESC, id DESC LIMIT 1
+		), 0)
+		FROM sessions WHERE id = ?`, sessionID).Scan(&state.Rev, &state.HeadID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TranscriptMutationState{}, ErrNotFound
+	}
+	if err != nil {
+		return TranscriptMutationState{}, fmt.Errorf("read transcript mutation state: %w", err)
+	}
+	return state, nil
+}
+
+// TranscriptMutationState returns the durable revision and visible transcript
+// head used for optimistic undo/redo requests.
+func (s *SQLiteStore) TranscriptMutationState(ctx context.Context, sessionID string) (TranscriptMutationState, error) {
+	if !s.hasTranscriptRev {
+		return TranscriptMutationState{}, ErrTranscriptRevisionUnsupported
+	}
+	return transcriptMutationState(ctx, s.db, sessionID)
+}
+
+func requireTranscriptMutationState(actual, expected TranscriptMutationState) error {
+	if actual != expected {
+		return ErrTranscriptConflict
+	}
+	return nil
+}
+
+func (s *SQLiteStore) beginImmediate(ctx context.Context) (*sql.Conn, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get connection: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("begin immediate transaction: %w", err)
+	}
+	return conn, nil
+}
+
+func rollbackImmediate(conn *sql.Conn) {
+	if conn != nil {
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		_ = conn.Close()
+	}
+}
+
+func (s *SQLiteStore) loadUndoRedoMetadata(ctx context.Context, q sqliteQueryExecer, sessionID string) (undoRedoMetadata, error) {
+	var metadata undoRedoMetadata
+	var titleSource sql.NullString
+	var titleGeneratedAt, titleSkippedAt sql.NullTime
+	err := q.QueryRowContext(ctx, `
+		SELECT COALESCE(generated_short_title, ''), COALESCE(generated_long_title, ''), title_source,
+		       title_generated_at, COALESCE(title_basis_msg_seq, 0), title_skipped_at
+		FROM sessions WHERE id = ?`, sessionID).Scan(
+		&metadata.GeneratedShortTitle, &metadata.GeneratedLongTitle, &titleSource,
+		&titleGeneratedAt, &metadata.TitleBasisMsgSeq, &titleSkippedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return undoRedoMetadata{}, ErrNotFound
+	}
+	if err != nil {
+		return undoRedoMetadata{}, fmt.Errorf("load undo metadata: %w", err)
+	}
+	metadata.TitleSource = SessionTitleSource(titleSource.String)
+	if titleGeneratedAt.Valid {
+		metadata.TitleGeneratedAt = titleGeneratedAt.Time
+	}
+	if titleSkippedAt.Valid {
+		metadata.TitleSkippedAt = titleSkippedAt.Time
+	}
+	return metadata, nil
+}
+
+func (s *SQLiteStore) recomputeTranscriptMetadata(ctx context.Context, q sqliteQueryExecer, sessionID string, clearGeneratedTitle bool) error {
+	tailClause := ""
+	if s.hasMessageCompactionTail {
+		tailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
+	}
+	realUser := realUserMessageSQL("", s.hasMessageCompactionTail)
+	var firstUserText sql.NullString
+	err := q.QueryRowContext(ctx, "SELECT text_content FROM messages WHERE session_id = ? AND "+realUser+" ORDER BY sequence, id LIMIT 1", sessionID).Scan(&firstUserText)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load transcript summary source: %w", err)
+	}
+	summary := ""
+	if firstUserText.Valid {
+		summary = TruncateSummary(firstUserText.String)
+	}
+	set := []string{
+		"updated_at = ?",
+		"summary = ?",
+		"last_total_tokens = 0",
+		"last_message_count = 0",
+	}
+	args := []any{time.Now(), summary}
+	// user_turns is an increment-only activity metric. Undo/redo changes the
+	// visible transcript, but must not collapse turns represented by compacted
+	// history or make the metric decrease when a prompt is temporarily undone.
+	if s.hasLastUserMessageAt {
+		// Preserve the documented activity semantics: every persisted user row
+		// counts, including compaction summaries and retained compaction tails.
+		set = append(set, "last_user_message_at = (SELECT MAX(created_at) FROM messages WHERE session_id = ? AND role = 'user')")
+		args = append(args, sessionID)
+	}
+	if s.hasLastMessageAt {
+		set = append(set, "last_message_at = (SELECT MAX(created_at) FROM messages WHERE session_id = ? AND role IN ('user', 'assistant')"+tailClause+")")
+		args = append(args, sessionID)
+	}
+	if clearGeneratedTitle && s.hasGeneratedTitles {
+		set = append(set,
+			"generated_short_title = ''", "generated_long_title = ''",
+			"title_source = CASE WHEN title_source = 'user' THEN title_source ELSE '' END",
+			"title_generated_at = NULL", "title_basis_msg_seq = 0", "title_skipped_at = NULL")
+	}
+	args = append(args, sessionID)
+	result, err := q.ExecContext(ctx, "UPDATE sessions SET "+strings.Join(set, ", ")+" WHERE id = ?", args...)
+	if err != nil {
+		return fmt.Errorf("recompute transcript metadata: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count transcript metadata update: %w", err)
+	}
+	if changed == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLiteStore) restoreRedoTitleMetadata(ctx context.Context, q sqliteQueryExecer, sessionID string, metadata undoRedoMetadata) error {
+	if !s.hasGeneratedTitles {
+		return nil
+	}
+	var currentSource sql.NullString
+	if err := q.QueryRowContext(ctx, `SELECT title_source FROM sessions WHERE id = ?`, sessionID).Scan(&currentSource); err != nil {
+		return err
+	}
+	if SessionTitleSource(currentSource.String) == TitleSourceUser {
+		return nil
+	}
+	_, err := q.ExecContext(ctx, `
+		UPDATE sessions SET generated_short_title = ?, generated_long_title = ?, title_source = ?,
+		       title_generated_at = ?, title_basis_msg_seq = ?, title_skipped_at = ?
+		WHERE id = ?`, metadata.GeneratedShortTitle, metadata.GeneratedLongTitle, metadata.TitleSource,
+		nullableTime(metadata.TitleGeneratedAt), metadata.TitleBasisMsgSeq, nullableTime(metadata.TitleSkippedAt), sessionID)
+	return err
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
+func (s *SQLiteStore) reconcilePlanProjection(ctx context.Context, q sqliteQueryRowsExecer, sessionID string) error {
+	rows, err := q.QueryContext(ctx, `SELECT `+s.messageSelectCols()+` FROM messages WHERE session_id = ? ORDER BY sequence, id`, sessionID)
+	if err != nil {
+		return fmt.Errorf("load transcript for plan reconciliation: %w", err)
+	}
+	messages, err := scanMessageRows(rows)
+	closeErr := rows.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	llmMessages := make([]llm.Message, 0, len(messages))
+	for i := range messages {
+		llmMessages = append(llmMessages, messages[i].ToLLMMessage())
+	}
+	snapshot, represented := planpkg.LatestSuccessfulSnapshot(llmMessages)
+	if !represented || len(snapshot.Plan) == 0 {
+		if _, err := q.ExecContext(ctx, `DELETE FROM session_plans WHERE session_id = ?`, sessionID); err != nil {
+			return fmt.Errorf("clear reconciled plan projection: %w", err)
+		}
+		return nil
+	}
+	raw, err := snapshot.CanonicalJSON()
+	if err != nil {
+		return fmt.Errorf("encode reconciled plan projection: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `
+		INSERT INTO session_plans (session_id, snapshot, version, updated_at)
+		VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+		ON CONFLICT(session_id) DO UPDATE SET
+			snapshot = excluded.snapshot,
+			version = session_plans.version + 1,
+			updated_at = CURRENT_TIMESTAMP`, sessionID, string(raw)); err != nil {
+		return fmt.Errorf("save reconciled plan projection: %w", err)
+	}
+	return nil
+}
+
+// UndoLastUserTurn removes the latest real user row at or after the compaction
+// boundary and every transcript row after it. The suffix is durably owned by
+// SQLite so another client or a restarted process can redo it.
+func (s *SQLiteStore) UndoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error) {
+	if !s.hasTranscriptRev {
+		return TranscriptMutationResult{}, ErrTranscriptRevisionUnsupported
+	}
+	conn, err := s.beginImmediate(ctx)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	defer rollbackImmediate(conn)
+
+	actual, err := transcriptMutationState(ctx, conn, sessionID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if err := requireTranscriptMutationState(actual, expected); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	metadata, err := s.loadUndoRedoMetadata(ctx, conn, sessionID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	compactionSeq := -1
+	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(compaction_seq, -1) FROM sessions WHERE id = ?`, sessionID).Scan(&compactionSeq); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if compactionSeq < 0 {
+		compactionSeq = 0
+	}
+	var targetID int64
+	var targetSeq int
+	var userText string
+	realUserPredicate := realUserMessageSQL("", s.hasMessageCompactionTail)
+	err = conn.QueryRowContext(ctx, `
+		SELECT id, sequence FROM messages
+		WHERE session_id = ? AND sequence >= ? AND `+realUserPredicate+`
+		ORDER BY sequence DESC, id DESC LIMIT 1`, sessionID, compactionSeq).Scan(&targetID, &targetSeq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TranscriptMutationResult{}, ErrNothingToUndo
+	}
+	if err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("find undo user turn: %w", err)
+	}
+	rows, err := conn.QueryContext(ctx, `SELECT `+s.messageSelectCols()+` FROM messages
+		WHERE session_id = ? AND (sequence > ? OR (sequence = ? AND id >= ?))
+		ORDER BY sequence, id`, sessionID, targetSeq, targetSeq, targetID)
+	if err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("load undo suffix: %w", err)
+	}
+	suffix, err := scanMessageRows(rows)
+	closeErr := rows.Close()
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if closeErr != nil {
+		return TranscriptMutationResult{}, closeErr
+	}
+	if len(suffix) == 0 || suffix[0].ID != targetID {
+		return TranscriptMutationResult{}, fmt.Errorf("undo suffix lost target row")
+	}
+	attachmentsOmitted := false
+	var composerText strings.Builder
+	for _, part := range suffix[0].Parts {
+		switch part.Type {
+		case llm.PartText:
+			composerText.WriteString(part.Text)
+		case llm.PartImage, llm.PartFile:
+			attachmentsOmitted = true
+		}
+	}
+	userText = composerText.String()
+	suffixJSON, err := json.Marshal(suffix)
+	if err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("encode undo suffix: %w", err)
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("encode undo metadata: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ? AND (sequence > ? OR (sequence = ? AND id >= ?))`, sessionID, targetSeq, targetSeq, targetID); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("delete undo suffix: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM session_provider_state WHERE session_id = ?`, sessionID); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("reset provider state for undo: %w", err)
+	}
+	if err := s.recomputeTranscriptMetadata(ctx, conn, sessionID, true); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if err := s.reconcilePlanProjection(ctx, conn, sessionID); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	rev, err := s.bumpTranscriptRevPreservingRedo(ctx, conn, sessionID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	post, err := transcriptMutationState(ctx, conn, sessionID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if post.Rev != rev {
+		return TranscriptMutationResult{}, fmt.Errorf("undo revision mismatch")
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO session_redo (session_id, suffix, metadata, undo_rev, head_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(session_id) DO UPDATE SET suffix = excluded.suffix, metadata = excluded.metadata,
+			undo_rev = excluded.undo_rev, head_id = excluded.head_id, updated_at = CURRENT_TIMESTAMP`,
+		sessionID, string(suffixJSON), string(metadataJSON), post.Rev, post.HeadID); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("save redo suffix: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("commit undo: %w", err)
+	}
+	return TranscriptMutationResult{TranscriptMutationState: post, UserText: userText, AttachmentsOmitted: attachmentsOmitted}, nil
+}
+
+// RedoLastUserTurn restores the exact durable suffix captured by the latest
+// undo, including stable message IDs, sequences, timestamps, and structured
+// parts. It does not replay tool or external side effects.
+func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error) {
+	if !s.hasTranscriptRev {
+		return TranscriptMutationResult{}, ErrTranscriptRevisionUnsupported
+	}
+	conn, err := s.beginImmediate(ctx)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	defer rollbackImmediate(conn)
+	actual, err := transcriptMutationState(ctx, conn, sessionID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if err := requireTranscriptMutationState(actual, expected); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	var suffixRaw, metadataRaw string
+	var undoRev, headID int64
+	err = conn.QueryRowContext(ctx, `SELECT suffix, metadata, undo_rev, head_id FROM session_redo WHERE session_id = ?`, sessionID).Scan(&suffixRaw, &metadataRaw, &undoRev, &headID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TranscriptMutationResult{}, ErrNothingToRedo
+	}
+	if err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("load redo suffix: %w", err)
+	}
+	if undoRev != actual.Rev || headID != actual.HeadID {
+		return TranscriptMutationResult{}, ErrTranscriptConflict
+	}
+	var suffix []Message
+	if err := json.Unmarshal([]byte(suffixRaw), &suffix); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("decode redo suffix: %w", err)
+	}
+	var metadata undoRedoMetadata
+	if err := json.Unmarshal([]byte(metadataRaw), &metadata); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("decode redo metadata: %w", err)
+	}
+	for i := range suffix {
+		msg := &suffix[i]
+		partsJSON, err := msg.PartsJSONForStorage(s.cfg.StripImageBase64)
+		if err != nil {
+			return TranscriptMutationResult{}, fmt.Errorf("serialize redo message %d: %w", i, err)
+		}
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			msg.ID, sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence,
+			msg.CompactionTail, msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence); err != nil {
+			return TranscriptMutationResult{}, fmt.Errorf("restore redo message %d: %w", i, err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM session_provider_state WHERE session_id = ?`, sessionID); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("reset provider state for redo: %w", err)
+	}
+	if err := s.recomputeTranscriptMetadata(ctx, conn, sessionID, false); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if err := s.restoreRedoTitleMetadata(ctx, conn, sessionID, metadata); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("restore redo title metadata: %w", err)
+	}
+	if err := s.reconcilePlanProjection(ctx, conn, sessionID); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM session_redo WHERE session_id = ?`, sessionID); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("consume redo suffix: %w", err)
+	}
+	if _, err := s.bumpTranscriptRevPreservingRedo(ctx, conn, sessionID); err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	post, err := transcriptMutationState(ctx, conn, sessionID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return TranscriptMutationResult{}, fmt.Errorf("commit redo: %w", err)
+	}
+	return TranscriptMutationResult{TranscriptMutationState: post}, nil
 }
 
 func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls map[string]bool) bool {

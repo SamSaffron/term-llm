@@ -357,6 +357,24 @@ func (e *Engine) ResetConversation() {
 	resetProviderConversation(e.provider)
 }
 
+// ResetSessionState resets provider continuation and any tool-owned cached
+// projection for a durable session. The durable store remains authoritative.
+func (e *Engine) ResetSessionState(sessionID string) {
+	if e == nil {
+		return
+	}
+	e.ResetConversation()
+	for _, spec := range e.tools.AllSpecs() {
+		tool, ok := e.tools.Get(spec.Name)
+		if !ok {
+			continue
+		}
+		if resetter, ok := tool.(SessionStateResetter); ok {
+			resetter.ResetSessionState(sessionID)
+		}
+	}
+}
+
 // SetDebugLogger sets the debug logger for this engine.
 func (e *Engine) SetDebugLogger(logger *DebugLogger) {
 	e.debugLogger = logger

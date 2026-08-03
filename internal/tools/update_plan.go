@@ -388,6 +388,13 @@ func (t *UpdatePlanTool) Spec() llm.ToolSpec {
 	}
 }
 
+func (t *UpdatePlanTool) ResetSessionState(sessionID string) {
+	if t == nil || t.controller == nil {
+		return
+	}
+	t.controller.clearTransientState(sessionID)
+}
+
 func (t *UpdatePlanTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	snapshot, err := planpkg.Parse(args)
 	if err != nil {
