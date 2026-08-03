@@ -351,8 +351,8 @@ window.addEventListener('offline', () => {
   app.setConnectivityState?.({ network: 'offline', phase: 'offline' });
 });
 
-window.addEventListener('pageshow', async () => {
+window.addEventListener('pageshow', async (event) => {
   restorePageTailOwnership();
-  if (state.connected) await app.runCoordinatedNetworkRecovery?.('pageshow');
+  if (event?.persisted && state.connected) await app.runCoordinatedNetworkRecovery?.('pageshow');
 });
 })();

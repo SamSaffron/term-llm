@@ -4475,7 +4475,7 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   await app.stopSidebarStatusPoll();
   onlineStatusCompleted = false;
   await onlineHandler({ type: 'online' });
-  await pageshowHandler({ type: 'pageshow', persisted: false });
+  await pageshowHandler({ type: 'pageshow', persisted: true });
 
   const want = [
     'visibility:sess_wake_signals:resp_wake_signals',
