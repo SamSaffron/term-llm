@@ -74,6 +74,75 @@ type currentPlanResponse struct {
 	Explanation string         `json:"explanation,omitempty"`
 }
 
+type stateRevisionRaceStore struct {
+	session.NoopStore
+	rev     int64
+	onRead  func()
+	readRev bool
+}
+
+func (s *stateRevisionRaceStore) GetTranscriptIndex(context.Context, string) (int64, []session.TranscriptIndexItem, error) {
+	return s.rev, nil, nil
+}
+
+func (s *stateRevisionRaceStore) GetTranscriptSnapshot(context.Context, string) (session.TranscriptSnapshot, error) {
+	return session.TranscriptSnapshot{Rev: s.rev}, nil
+}
+
+func (s *stateRevisionRaceStore) GetMessagesByTranscriptRanges(context.Context, string, []session.TranscriptRange) (int64, []session.Message, error) {
+	return s.rev, nil, nil
+}
+
+func (s *stateRevisionRaceStore) TranscriptRev(context.Context, string) (int64, error) {
+	if !s.readRev {
+		s.readRev = true
+		if s.onRead != nil {
+			s.onRead()
+		}
+	}
+	return s.rev, nil
+}
+
+func (s *stateRevisionRaceStore) TranscriptVersioned() bool { return true }
+
+func TestHandleSessionStateSamplesTranscriptRevisionAfterActiveRun(t *testing.T) {
+	const (
+		sessionID  = "session-state-revision-race"
+		responseID = "resp-state-revision-race"
+		finalRev   = int64(46)
+	)
+	manager := newServeResponseRunManager()
+	defer manager.Close()
+	manager.setActiveRun(sessionID, responseID)
+	store := &stateRevisionRaceStore{rev: finalRev}
+	store.onRead = func() {
+		// Model finalization between the two state samples: durable revision is
+		// already final when active ownership is cleared.
+		manager.clearActiveRun(sessionID, responseID)
+	}
+	srv := &serveServer{store: store, responseRuns: manager}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		ActiveRun        bool   `json:"active_run"`
+		ActiveResponseID string `json:"active_response_id"`
+		TranscriptRev    int64  `json:"transcript_rev"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.ActiveRun || response.ActiveResponseID != responseID || response.TranscriptRev != finalRev {
+		t.Fatalf("state sample = %+v, want active ownership paired with final transcript_rev %d", response, finalRev)
+	}
+	if got := manager.activeRunID(sessionID); got != "" {
+		t.Fatalf("race fixture left active run %q after revision read", got)
+	}
+}
+
 func TestHandleSessionStateReturnsLatestAuthoritativePlan(t *testing.T) {
 	store := newSessionStatePlanStore()
 	first := planpkg.Snapshot{Plan: []planpkg.Step{

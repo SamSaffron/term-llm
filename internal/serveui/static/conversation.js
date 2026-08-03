@@ -44,6 +44,7 @@
     acknowledgedIntentIDs: new Set(),
     acknowledgedAskUserCallIDs: new Set(),
     active: null,
+    retiredRunEpoch: 0,
     publishedRevision: 0,
     protocolError: '',
   });
@@ -75,17 +76,23 @@
       }
     }
   };
+  const initializeDurableBaseline = (run, durable) => {
+    if (!run || Object.prototype.hasOwnProperty.call(run, 'durableStartCompactionSeq')) return run;
+    run.durableStartCompactionSeq = Number(durable?.compactionSeq ?? -1); run.durableStartCompactionCount = Math.max(0, Number(durable?.compactionCount) || 0);
+    return run;
+  };
   const startActiveRun = (conversation, descriptor) => {
     const responseId = String(descriptor?.responseId || '').trim();
     const incomingEpoch = Math.max(0, Number(descriptor?.runEpoch) || 0);
     if (!responseId || !incomingEpoch) throw new Error('active response requires response_id and run_epoch');
+    if (incomingEpoch <= Math.max(0, Number(conversation.retiredRunEpoch) || 0)) return false;
     if (conversation.active) {
       if (conversation.active.responseID !== responseId) throw new Error('cannot replace an active response before durable handoff');
       if (conversation.active.runEpoch !== incomingEpoch) throw new Error('cannot change the active response run_epoch');
       if (descriptor?.anchor != null) conversation.active.anchor = clone(descriptor.anchor);
       return true;
     }
-    conversation.active = activeResponse.createActiveRun({ ...descriptor, responseId, runEpoch: incomingEpoch });
+    conversation.active = initializeDurableBaseline(activeResponse.createActiveRun({ ...descriptor, responseId, runEpoch: incomingEpoch }), conversation.durable);
     activeResponse.recordCompactionRefs(conversation.active, durableMessages(conversation.durable));
     conversation.protocolError = '';
     return true;
@@ -106,12 +113,14 @@
   };
   const replaceActiveFromSnapshot = (conversation, snapshot, options = {}) => {
     const candidate = activeResponse.activeRunFromSnapshot(snapshot, options);
-    if (conversation.active && conversation.active.responseID !== candidate.responseID) {
-      throw new Error('cannot replace an active response with another snapshot owner');
-    }
+    if (candidate.runEpoch <= Math.max(0, Number(conversation.retiredRunEpoch) || 0)) return false;
+    if (conversation.active && conversation.active.responseID !== candidate.responseID) throw new Error('cannot replace an active response with another snapshot owner');
     if (conversation.active?.runEpoch && candidate.runEpoch !== conversation.active.runEpoch) return false;
     activeResponse.restoreCompactionRefs(conversation.active, candidate);
-    conversation.active = candidate;
+    if (conversation.active && Object.prototype.hasOwnProperty.call(conversation.active, 'durableStartCompactionSeq')) {
+      candidate.durableStartCompactionSeq = conversation.active.durableStartCompactionSeq; candidate.durableStartCompactionCount = conversation.active.durableStartCompactionCount;
+    }
+    conversation.active = initializeDurableBaseline(candidate, conversation.durable);
     activeResponse.recordCompactionRefs(conversation.active, durableMessages(conversation.durable));
     conversation.protocolError = candidate.terminal?.durableHandoff === false ? candidate.terminal.error : '';
     return true;
@@ -119,43 +128,52 @@
   const durableRegionReady = (durable, ordinals) => {
     if (!durable || !Array.isArray(ordinals) || ordinals.length === 0) return false;
     return ordinals.every((ordinal) => {
-      const segmentIndex = typeof durable.segmentForOrdinal === 'function' ? durable.segmentForOrdinal(ordinal) : -1;
-      const state = segmentIndex >= 0 ? durable.segments?.[segmentIndex]?.state : '';
-      return state === 'materialized' || state === 'empty';
+      const index = typeof durable.segmentForOrdinal === 'function' ? durable.segmentForOrdinal(ordinal) : -1;
+      return ['materialized', 'empty'].includes(index >= 0 ? durable.segments?.[index]?.state : '');
     });
   };
   const compactedReplacementReady = (durable, terminal) => {
-    const compactionChanged = Number(durable?.compactionSeq ?? -1) !== Number(terminal?.compactionSeq ?? -1)
+    const changed = Number(durable?.compactionSeq ?? -1) !== Number(terminal?.compactionSeq ?? -1)
       || Number(durable?.compactionCount ?? 0) !== Number(terminal?.compactionCount ?? 0);
-    if (!compactionChanged || !Array.isArray(durable?.ids) || durable.ids.length === 0) return false;
-    const tailOrdinal = durable.ids.length - 1;
-    return durableRegionReady(durable, [tailOrdinal]);
+    return changed && Array.isArray(durable?.ids) && durable.ids.length > 0
+      && durableRegionReady(durable, [durable.ids.length - 1]);
   };
   const responseRowsReady = (conversation) => {
-    const active = conversation.active;
-    if (!active?.terminal?.durableHandoff) return false;
-    const durable = conversation.durable;
-    const rev = Math.max(0, Number(durable?.rev) || 0);
-    if (rev < active.terminal.finalRev) return false;
+    const active = conversation.active, durable = conversation.durable;
+    if (!active?.terminal?.durableHandoff || Math.max(0, Number(durable?.rev) || 0) < active.terminal.finalRev) return false;
     if (active.terminal.durableOutputCount === 0) return true;
-    if (Array.isArray(durable?.responseIDs)) {
-      const ordinals = [];
-      for (let ordinal = 0; ordinal < durable.responseIDs.length; ordinal++) {
-        if (String(durable.responseIDs[ordinal] || '') === active.responseID) ordinals.push(ordinal);
-      }
-      if (ordinals.length > 0) return durableRegionReady(durable, ordinals);
-      return compactedReplacementReady(durable, active.terminal);
-    }
-    return durableMessages(durable).some((message) => responseID(message) === active.responseID);
+    if (!Array.isArray(durable?.responseIDs)) return durableMessages(durable).some((message) => responseID(message) === active.responseID);
+    const ordinals = durable.responseIDs.map((owner, ordinal) => String(owner || '') === active.responseID ? ordinal : -1).filter((ordinal) => ordinal >= 0);
+    return ordinals.length > 0 ? durableRegionReady(durable, ordinals) : compactedReplacementReady(durable, active.terminal);
   };
-  const commitDurableHandoff = (conversation) => {
-    if (!conversation.active?.terminal) return false;
-    if (conversation.active.terminal.durableHandoff !== true) return false;
-    if (!responseRowsReady(conversation)) return false;
-    conversation.active = null;
-    conversation.protocolError = '';
-    acknowledgeDurableIntents(conversation);
-    return true;
+  const finishDurableHandoff = (conversation) => {
+    const retiredEpoch = Math.max(0, Number(conversation.active?.runEpoch) || 0);
+    conversation.active = null; conversation.protocolError = '';
+    conversation.retiredRunEpoch = Math.max(Math.max(0, Number(conversation.retiredRunEpoch) || 0), retiredEpoch);
+    acknowledgeDurableIntents(conversation); return true;
+  };
+  const commitDurableHandoff = (conversation) => conversation.active?.terminal?.durableHandoff === true
+    && responseRowsReady(conversation) && finishDurableHandoff(conversation);
+  const orphanedResponseRowsReady = (conversation, active) => {
+    const durable = conversation.durable, ordinals = [];
+    for (let ordinal = 0; ordinal < (durable?.responseIDs?.length || 0); ordinal++) {
+      if (String(durable.responseIDs[ordinal] || '') === active.responseID) ordinals.push(ordinal);
+    }
+    if (ordinals.length > 0) return durableRegionReady(durable, ordinals);
+    // Zero-output projections are safe to drop. Observed output without exact
+    // ownership requires a materialized compaction that advanced after attach.
+    // Pre-attachment compaction remains frozen: this path has no final_rev.
+    if (!active.projection.some((entry) => entry?.terminalPolicy === 'durable' && entry.role !== 'compaction-ref')) return true;
+    return compactedReplacementReady(durable, { compactionSeq: active.durableStartCompactionSeq, compactionCount: active.durableStartCompactionCount });
+  };
+  const retireOrphanedActiveProjection = (conversation, authority = {}) => {
+    const active = conversation?.active, responseId = String(authority.responseId || authority.response_id || '').trim();
+    const runEpoch = Math.max(0, Number(authority.runEpoch ?? authority.run_epoch) || 0);
+    const revision = Number(authority.transcriptRev ?? authority.transcript_rev);
+    const startedRev = Math.max(0, Number(authority.startedRev ?? authority.started_rev) || 0);
+    if (!active || active.terminal || !responseId || !runEpoch || !Number.isFinite(revision) || revision < startedRev || revision < 0) return false;
+    if (active.responseID !== responseId || active.runEpoch !== runEpoch || Math.max(0, Number(conversation.durable?.rev) || 0) < revision) return false;
+    return orphanedResponseRowsReady(conversation, active) && finishDurableHandoff(conversation);
   };
   const visibleMessages = (conversation) => {
     const active = conversation.active;
@@ -315,11 +333,12 @@
         anchor,
       });
     }
+    retireOrphanedActiveProjection(authority = {}) { return retireOrphanedActiveProjection(this.conversation, authority); }
     transitionAuthoritativeRun(responseId, startedRev = 0, runEpoch = 0, options = {}) {
       const id = String(responseId || '').trim();
       const epoch = Math.max(0, Number(runEpoch) || 0);
       const revision = Math.max(0, Number(startedRev) || 0);
-      if (!id || !epoch) return false;
+      if (!id || !epoch || epoch <= Math.max(0, Number(this.conversation.retiredRunEpoch) || 0)) return false;
       const active = this.conversation.active;
       if (!active || active.responseID === id) {
         return this.setActiveRun(id, revision, epoch, options);
@@ -333,11 +352,7 @@
         : (explicitRowID != null && String(explicitRowID) !== ''
           ? { durableRowId: explicitRowID }
           : (durableTailID != null ? { durableRowId: durableTailID } : null)));
-      this.conversation.active = activeResponse.createActiveRun({
-        responseId: id,
-        runEpoch: epoch,
-        anchor,
-      });
+      this.conversation.active = initializeDurableBaseline(activeResponse.createActiveRun({ responseId: id, runEpoch: epoch, anchor }), this.conversation.durable);
       activeResponse.recordCompactionRefs(this.conversation.active, durableMessages(this.conversation.durable));
       this.conversation.protocolError = '';
       this.startedRev = revision;
@@ -436,7 +451,7 @@
       : controller?.setActiveRun(run.responseId, run.startedRev, run.runEpoch, run.options);
   };
   const dispatchRunEvent = (controller, event, payload = {}) => {
-    attachActiveRun(controller, payload);
+    if (attachActiveRun(controller, payload) !== true) return null;
     return controller?.applyResponseEvent(event, payload) || null;
   };
   const replaceRunSnapshot = (controller, payload) => controller?.replaceActiveSnapshot(payload);
@@ -973,27 +988,12 @@
       reconcileTranscriptFromStatus
     });
   };
-
   return Object.freeze({
-    createConversation,
-    addIntent,
-    acknowledgeDurableIntents,
-    startActiveRun,
-    applyRunEvent,
-    replaceActiveFromSnapshot,
-    responseRowsReady,
-    commitDurableHandoff,
-    visibleMessages,
-    sessionMessages,
-    applyDurable,
-    SessionCommandQueue,
-    ConversationController,
-    assistantSegmentKey,
-    transcriptToolIdentityKey,
-    transcriptIsClientOwnedIntent,
-    transcriptDiagnostic,
+    createConversation, addIntent, acknowledgeDurableIntents, startActiveRun, applyRunEvent, replaceActiveFromSnapshot,
+    responseRowsReady, durableRegionReady, compactedReplacementReady, commitDurableHandoff, retireOrphanedActiveProjection,
+    visibleMessages, sessionMessages, applyDurable, SessionCommandQueue, ConversationController,
+    assistantSegmentKey, transcriptToolIdentityKey, transcriptIsClientOwnedIntent, transcriptDiagnostic,
     attachActiveRun, dispatchRunEvent, replaceRunSnapshot, enqueueDetachedReplay, addPendingIntentToConversation,
-    applyTranscriptIndex, materializeTranscriptBodies, destroyConversationController,
-    initEffects,
+    applyTranscriptIndex, materializeTranscriptBodies, destroyConversationController, initEffects,
   });
 });

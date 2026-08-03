@@ -3588,6 +3588,18 @@ async function testIdleStateRetiresLostTerminalProjectionFromCurrentDurableTrans
     return;
   }
   session.transcript.responseIDs = durableResponseIDs;
+  try {
+    session.transcript.setActiveRun('resp_blocked_newer', 351, 8);
+    fail(name, 'fixture unexpectedly replaced the orphan with a newer run');
+    return;
+  } catch (_err) {
+    // setActiveRun publishes the newer epoch before refusing to replace the old
+    // owner. Retirement must key off the unchanged owner, not this watermark.
+  }
+  if (session.transcript.latestRunEpoch !== 8 || session.transcript.activeRun?.id !== responseId) {
+    fail(name, 'fixture did not preserve old owner plus newer latestRunEpoch');
+    return;
+  }
   await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
 
   if (session.transcript.conversation.active !== null
@@ -3611,6 +3623,25 @@ async function testIdleStateRetiresLostTerminalProjectionFromCurrentDurableTrans
     }));
     return;
   }
+  const lateEvent = windowObj.TermLLMConversation.dispatchRunEvent(session.transcript, 'response.output_text.delta', {
+    response_id: responseId, run_epoch: 7, sequence_number: 169, delta: 'late stale overlay'
+  });
+  const lateSnapshot = windowObj.TermLLMConversation.replaceRunSnapshot(session.transcript, {
+    id: responseId, run_epoch: 7, status: 'in_progress', last_sequence_number: 169,
+    recovery: { messages: [{ role: 'assistant', content: 'late replay after zero' }] },
+  });
+  if (lateEvent !== null || lateSnapshot !== false || session.transcript.conversation.active !== null
+      || visibleToolCount() !== toolCount || projectedMessages(session).at(-1)?.content !== 'complete durable final answer') {
+    fail(name, 'late event or after=0 recovery replay resurrected the retired overlay', JSON.stringify({
+      lateEvent, lateSnapshot, active: session.transcript.activeRun, tools: visibleToolCount(),
+      final: projectedMessages(session).at(-1)?.content,
+    }));
+    return;
+  }
+  if (!session.transcript.transitionAuthoritativeRun('resp_after_orphan', 351, 8)) {
+    fail(name, 'retired orphan epoch blocked a genuinely newer authoritative run');
+    return;
+  }
   pass(name);
 }
 
@@ -3623,8 +3654,9 @@ async function testStaleIdleStateCannotRetireNewerActiveProjection() {
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async (url) => {
       if (parsedTestURL(url)?.pathname === `/ui/v1/sessions/${sessionId}/state`) {
-        session.transcript.transitionAuthoritativeRun(newResponseId, 351, 8);
-        session.activeResponseId = newResponseId;
+        await session.transcript.commands.enqueue(() => {
+          session.transcript.transitionAuthoritativeRun(newResponseId, 351, 8);
+        });
         return new Response(JSON.stringify({ active_run: false, active_response_id: '', transcript_rev: 351 }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -3656,16 +3688,24 @@ async function testStaleIdleStateCannotRetireNewerActiveProjection() {
     id: oldResponseId, run_epoch: 7, status: 'in_progress', last_sequence_number: 168,
     recovery: { messages: [{ role: 'assistant', assistant_segment_ordinal: 0, content: 'old stale prefix' }] },
   });
+  let retirementDecisions = 0;
+  const decideRetirement = session.transcript.retireOrphanedActiveProjection.bind(session.transcript);
+  session.transcript.retireOrphanedActiveProjection = (authority) => {
+    retirementDecisions += 1;
+    return decideRetirement(authority);
+  };
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
 
   await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
 
-  if (session.transcript.activeRun?.id !== newResponseId
+  if (retirementDecisions !== 1
+      || session.transcript.activeRun?.id !== newResponseId
       || session.transcript.activeRun?.epoch !== 8
-      || session.activeResponseId !== newResponseId) {
-    fail(name, 'stale idle response cleared or replaced the newer run owner', JSON.stringify({
+      || session.activeResponseId !== oldResponseId) {
+    fail(name, 'retirement decision did not refuse the changed active owner atomically', JSON.stringify({
+      retirementDecisions,
       activeRun: session.transcript.activeRun,
       activeResponseId: session.activeResponseId,
     }));

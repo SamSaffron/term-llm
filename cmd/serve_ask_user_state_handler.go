@@ -232,11 +232,6 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		resp["lastResponseId"] = lastResponseID
 	}
 
-	if indexer, ok := s.transcriptIndexerForWeb(); ok {
-		if rev, err := indexer.TranscriptRev(r.Context(), sessionID); err == nil {
-			resp["transcript_rev"] = rev
-		}
-	}
 	if s.responseRuns != nil {
 		if activeResponseID := s.responseRuns.activeRunID(sessionID); activeResponseID != "" {
 			resp["active_run"] = true
@@ -253,6 +248,15 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				}
 				run.mu.Unlock()
 			}
+		}
+	}
+	// Sample the transcript revision after active-run state. Run finalization
+	// commits transcript rows before clearing active ownership, so an idle sample
+	// is paired with a revision that can include that final commit. Sampling in
+	// the opposite order could publish idle plus a stale pre-final revision.
+	if indexer, ok := s.transcriptIndexerForWeb(); ok {
+		if rev, err := indexer.TranscriptRev(r.Context(), sessionID); err == nil {
+			resp["transcript_rev"] = rev
 		}
 	}
 

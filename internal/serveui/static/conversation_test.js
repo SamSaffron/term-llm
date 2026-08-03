@@ -629,7 +629,132 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
   assert.equal(transcript.activeRun.id, 'web-run');
 })();
 
+(() => {
+  const transcript = new conversationAPI.ConversationController('orphan-newer-epoch');
+  transcript.applyIndex({
+    rev: 2, compaction_seq: -1, compaction_count: 0,
+    rows: {
+      ids: [1, 2], seqs: [0, 1], roles: 'ua', flags: [0, 0],
+      client_message_ids: { 0: 'client-orphan' }, response_ids: ['', 'resp-orphan'], assistant_segment_ordinals: [-1, 0]
+    }
+  });
+  transcript.materialize([
+    { id: 1, sequence: 0, role: 'user', client_message_id: 'client-orphan', parts: [{ type: 'text', text: 'question' }] },
+    { id: 2, sequence: 1, role: 'assistant', response_id: 'resp-orphan', parts: [{ type: 'text', text: 'durable answer' }] },
+  ]);
+  transcript.publishedMessages = [
+    { id: 1, role: 'user', durable: true, clientMessageId: 'client-orphan', content: 'question' },
+    { id: 2, role: 'assistant', durable: true, responseId: 'resp-orphan', content: 'durable answer' },
+  ];
+  transcript.setActiveRun('resp-orphan', 1, 7);
+  transcript.applyResponseEvent('response.output_text.delta', {
+    response_id: 'resp-orphan', run_epoch: 7, sequence_number: 1, delta: 'stale overlay'
+  });
+  transcript.addPendingIntent({ id: 'client-orphan', clientMessageId: 'client-orphan', role: 'user', content: 'question' });
+  transcript.conversation.protocolError = 'stale diagnostic';
+  assert.throws(() => transcript.setActiveRun('resp-newer-blocked', 2, 8), /active response/);
+  assert.equal(transcript.latestRunEpoch, 8, 'fixture must preserve the failed newer epoch bump');
+  assert.equal(transcript.activeRun.id, 'resp-orphan', 'failed newer start replaced the orphan owner');
+
+  assert.equal(transcript.retireOrphanedActiveProjection({
+    responseId: 'resp-orphan', runEpoch: 7, startedRev: 1, transcriptRev: 2
+  }), true, 'newer latestRunEpoch must not block retirement of the still-owned orphan');
+  assert.equal(transcript.conversation.active, null);
+  assert.equal(transcript.conversation.protocolError, '');
+  assert.equal(transcript.conversation.intents.size, 0, 'orphan handoff bypassed durable intent acknowledgement');
+  assert(transcript.conversation.acknowledgedIntentIDs.has('client-orphan'));
+  assert.equal(conversationAPI.dispatchRunEvent(transcript, 'response.output_text.delta', {
+    response_id: 'resp-orphan', run_epoch: 7, sequence_number: 2, delta: 'late'
+  }), null, 'late event resurrected a retired orphan epoch');
+  assert.equal(transcript.replaceActiveSnapshot({
+    id: 'resp-orphan', run_epoch: 7, status: 'in_progress', last_sequence_number: 2,
+    recovery: { messages: [{ role: 'assistant', content: 'late replay' }] }
+  }), false, 'late recovery snapshot resurrected a retired orphan epoch');
+  assert.equal(transcript.conversation.active, null);
+  assert.equal(transcript.transitionAuthoritativeRun('resp-after-orphan', 2, 8), true, 'retired epoch blocked a genuinely newer run');
+})();
+
+(() => {
+  const unmaterialized = new conversationAPI.ConversationController('orphan-unmaterialized');
+  unmaterialized.applyIndex({
+    rev: 2, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [1], seqs: [0], roles: 'a', flags: [0], response_ids: ['resp-unmaterialized'], assistant_segment_ordinals: [0] }
+  });
+  unmaterialized.setActiveRun('resp-unmaterialized', 1, 1);
+  unmaterialized.applyResponseEvent('response.output_text.delta', {
+    response_id: 'resp-unmaterialized', run_epoch: 1, sequence_number: 1, delta: 'must remain'
+  });
+  assert.equal(unmaterialized.retireOrphanedActiveProjection({
+    responseId: 'resp-unmaterialized', runEpoch: 1, startedRev: 1, transcriptRev: 2
+  }), false, 'unmaterialized owning segment incorrectly proved durable handoff');
+
+  const behind = new conversationAPI.ConversationController('orphan-behind-authority');
+  behind.applyIndex({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [1], seqs: [0], roles: 'a', flags: [0], response_ids: ['resp-behind'], assistant_segment_ordinals: [0] }
+  });
+  behind.materialize([{ id: 1, sequence: 0, role: 'assistant', parts: [{ type: 'text', text: 'partial durable' }] }]);
+  behind.setActiveRun('resp-behind', 0, 1);
+  assert.equal(behind.retireOrphanedActiveProjection({
+    responseId: 'resp-behind', runEpoch: 1, startedRev: 0, transcriptRev: 2
+  }), false, 'transcript below runtime transcript_rev incorrectly proved authority');
+
+  const terminal = new conversationAPI.ConversationController('orphan-terminal-not-ready');
+  terminal.setActiveRun('resp-terminal-wait', 0, 1);
+  terminal.applyResponseEvent('response.output_text.delta', {
+    response_id: 'resp-terminal-wait', run_epoch: 1, sequence_number: 1, delta: 'frozen terminal'
+  });
+  terminal.applyResponseEvent('response.completed', {
+    response_id: 'resp-terminal-wait', run_epoch: 1, sequence_number: 2,
+    final_rev: 3, durable_handoff: true, durable_output_count: 1
+  });
+  assert.equal(terminal.retireOrphanedActiveProjection({
+    responseId: 'resp-terminal-wait', runEpoch: 1, startedRev: 0, transcriptRev: 0
+  }), false, 'orphan primitive bypassed a terminal handoff that was not durable-ready');
+  assert.equal(conversationAPI.commitDurableHandoff(terminal.conversation), false);
+  assert(terminal.conversation.active, 'terminal-not-ready projection was dropped');
+})();
+
+(() => {
+  const zeroOutput = new conversationAPI.ConversationController('orphan-zero-output');
+  zeroOutput.setActiveRun('resp-zero-output', 0, 1);
+  assert.equal(zeroOutput.retireOrphanedActiveProjection({
+    responseId: 'resp-zero-output', runEpoch: 1, startedRev: 0, transcriptRev: 0
+  }), true, 'authoritative zero-output orphan did not retire');
+
+  const compacted = new conversationAPI.ConversationController('orphan-compacted-output');
+  compacted.applyIndex({
+    rev: 1, compaction_seq: -1, compaction_count: 0,
+    rows: { ids: [1], seqs: [0], roles: 'u', flags: [0], response_ids: [''], assistant_segment_ordinals: [-1] }
+  });
+  compacted.materialize([{ id: 1, sequence: 0, role: 'user', parts: [{ type: 'text', text: 'question' }] }]);
+  compacted.setActiveRun('resp-compacted-orphan', 1, 1);
+  compacted.applyResponseEvent('response.output_text.delta', {
+    response_id: 'resp-compacted-orphan', run_epoch: 1, sequence_number: 1, delta: 'original output'
+  });
+  compacted.applyIndex({
+    rev: 3, compaction_seq: 0, compaction_count: 1,
+    rows: { ids: [9], seqs: [0], roles: 'a', flags: [0], response_ids: [''], assistant_segment_ordinals: [-1] }
+  });
+  compacted.materialize([{ id: 9, sequence: 0, role: 'assistant', parts: [{ type: 'text', text: 'compacted replacement' }] }]);
+  assert.equal(compacted.retireOrphanedActiveProjection({
+    responseId: 'resp-compacted-orphan', runEpoch: 1, startedRev: 1, transcriptRev: 3
+  }), true, 'materialized post-start compaction did not prove orphan replacement');
+})();
+
 (async () => {
+  const replay = new conversationAPI.ConversationController('orphan-late-detached-replay');
+  replay.setActiveRun('resp-late-replay', 0, 3);
+  assert.equal(replay.retireOrphanedActiveProjection({
+    responseId: 'resp-late-replay', runEpoch: 3, startedRev: 0, transcriptRev: 0
+  }), true);
+  assert.equal(conversationAPI.attachActiveRun(replay, { response_id: 'resp-late-replay', run_epoch: 3 }), false);
+  await assert.rejects(conversationAPI.enqueueDetachedReplay(replay, [{
+    event: 'response.output_text.delta',
+    payload: { response_id: 'resp-late-replay', run_epoch: 3, sequence_number: 1, delta: 'late after=0 replay' }
+  }], () => true), /active response is required/);
+  assert.equal(replay.conversation.active, null, 'late detached replay resurrected retired overlay');
+
   const queue = new conversationAPI.SessionCommandQueue();
   const order = [];
   const first = queue.enqueue(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); order.push(1); });

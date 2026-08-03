@@ -265,6 +265,7 @@
 
   const reduceDetachedReplay = (run, events) => {
     const candidate = createActiveRun({ responseId: run.responseID, runEpoch: run.runEpoch, anchor: run.anchor });
+    if (Object.prototype.hasOwnProperty.call(run, 'durableStartCompactionSeq')) Object.assign(candidate, { durableStartCompactionSeq: run.durableStartCompactionSeq, durableStartCompactionCount: run.durableStartCompactionCount });
     candidate.lastSequence = run.lastSequence;
     const currentToolGroupIndex = run.currentToolGroup ? run.projection.indexOf(run.currentToolGroup) : -1;
     candidate.projection = run.projection.map((entry) => clone(entry));

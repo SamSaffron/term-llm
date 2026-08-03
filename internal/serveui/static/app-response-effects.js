@@ -85,13 +85,13 @@ const applyOwnedResponseProjectionEvent = (session, event, payload) => {
 const applyResponseStreamEvent = (session, streamState, event, payload) => {
   const projectionResult = applyOwnedResponseProjectionEvent(session, event, payload);
   if (projectionResult) return projectionResult;
-
   let lifecycleResult = null;
   if (String(event || '').startsWith('response.') && event !== 'response.file_change') {
     if (!session.transcript && typeof ConversationController === 'function') session.transcript = new ConversationController(session.id || 'stream');
     const responseId = responseStreamOwnerId(session, payload);
     try {
       lifecycleResult = window.TermLLMConversation.dispatchRunEvent(session.transcript, event, payload);
+      if (!lifecycleResult) return { terminal: false, stale: true };
     } catch (error) {
       if (error?.code === 'stale_run_epoch' || error?.code === 'inactive_response_event') return { terminal: false, stale: true };
       throw error;
