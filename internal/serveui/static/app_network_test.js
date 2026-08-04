@@ -386,7 +386,45 @@ async function testStreamRecoveryHasNoPostWakeHotSpin() {
   console.log('PASS: stream wake race is direct and later retries retain their real backoff');
 }
 
+async function testNullBodyStatusIsNotRewrapped() {
+  // Firefox exposes a non-null empty body stream for null body statuses, unlike
+  // Chromium which reports null. Rewrapping such a response throws
+  // "Response body is given with a null body status", which used to surface as
+  // a permanent 'unstable' badge because the UI polls an ETagged endpoint that
+  // legitimately answers 304 every few seconds.
+  for (const status of [204, 205, 304]) {
+    const harness = createHarness(async () => ({
+      status,
+      statusText: '',
+      headers: new Headers(),
+      body: new ReadableStream({ start(controller) { controller.close(); } }),
+      url: '/ui/v1/sessions/status',
+      redirected: false,
+      type: 'basic',
+    }));
+
+    // retries: 0 keeps this deterministic. With retries the rewrap failure parks
+    // on the harness' fake timer, the promise never settles and node exits 0
+    // silently — a green test on broken code.
+    let thrown = null;
+    let response = null;
+    try {
+      response = await harness.app.apiFetch('/ui/v1/sessions/status', {}, { retries: 0 });
+    } catch (error) {
+      thrown = error;
+    }
+    assert(!thrown, `status ${status} threw instead of passing through: ${thrown && thrown.message}`);
+    assert(response.status === status, `status ${status} was not passed through untouched`);
+    assert(harness.state.connectivity.phase !== 'unstable', `status ${status} drove connectivity to unstable`);
+    assert(Number(harness.state.connectivity.consecutiveFailures || 0) === 0, `status ${status} recorded a spurious failure`);
+    const errors = harness.app.networkDiagnostics.filter((entry) => entry.kind === 'network-error');
+    assert(errors.length === 0, `status ${status} logged a network error: ${JSON.stringify(errors[0] || {})}`);
+  }
+  console.log('PASS: null body statuses (204/205/304) pass through without rewrapping or false connectivity failures');
+}
+
 (async () => {
+  await testNullBodyStatusIsNotRewrapped();
   await testClassificationAndRetryAfter();
   await testRetryPolicies();
   await testTimeoutAuthAbortAndDiagnostics();
