@@ -41,6 +41,12 @@ type RequestContextTool interface {
 	PrepareCompactionContext(ctx context.Context, sessionID string, result *CompactionResult) error
 }
 
+// SessionStateResetter clears a tool's cached projection for one durable
+// session after an out-of-band transcript mutation such as undo/redo.
+type SessionStateResetter interface {
+	ResetSessionState(sessionID string)
+}
+
 // FinishingTool is an optional interface for tools that signal agent completion.
 // When a finishing tool is executed, the agentic loop should stop after this turn.
 // Example: output capture tools like set_commit_message.

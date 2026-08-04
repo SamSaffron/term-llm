@@ -7578,6 +7578,154 @@ async function testWebSlashCommandsInvokeExistingControls() {
   pass(name);
 }
 
+async function testUndoRedoCommandsUseOptimisticTranscriptAndRestoreComposer() {
+  const name = '/undo and /redo mutate the authoritative transcript without sending messages';
+  let operation = '';
+  const harness = createHarness({
+    fetchImpl: async (url, requestOptions, { Response }) => {
+      if (url === '/ui/v1/sessions/session_undo_redo/runtime/undo') {
+        operation = 'undo';
+        return new Response(JSON.stringify({ ok: true, rev: 8, head_id: 12, user_text: 'edit this prompt' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === '/ui/v1/sessions/session_undo_redo/runtime/redo') {
+        operation = 'redo';
+        return new Response(JSON.stringify({ ok: true, rev: 9, head_id: 14 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('unexpected request', { status: 500 });
+    },
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = { id: 'session_undo_redo', title: 'Undo', messages: [], activeResponseId: null, lastResponseId: null, number: 1 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  session.transcript = new ConversationController(session.id);
+  session.transcript.rev = 7;
+  session.transcript.ids = [11, 12, 13, 14];
+  session.transcript.publishedMessages = [
+    { id: 11, role: 'user', text: 'first', durable: true },
+    { id: 12, role: 'assistant', text: 'answer', durable: true },
+    { id: 13, role: 'user', text: 'edit this prompt', durable: true },
+    { id: 14, role: 'assistant', text: 'latest answer', durable: true },
+  ];
+  const toasts = [];
+  app.showToast = (message, options) => toasts.push({ message, tone: options?.tone });
+  app.refreshActiveSessionMessagesFromServer = async () => {
+    if (operation === 'undo') {
+      session.transcript.rev = 8;
+      session.transcript.ids = [11, 12];
+      session.transcript.publishedMessages = session.transcript.publishedMessages.slice(0, 2);
+    } else {
+      session.transcript.rev = 9;
+      session.transcript.ids = [11, 12, 13, 14];
+      session.transcript.publishedMessages.push(
+        { id: 13, role: 'user', text: 'edit this prompt', durable: true },
+        { id: 14, role: 'assistant', text: 'latest answer', durable: true },
+      );
+    }
+    return true;
+  };
+
+  elements.promptInput.value = '/undo';
+  await app.sendMessage();
+  const undoCall = fetchCalls.find((call) => call.url.endsWith('/runtime/undo'));
+  const undoBody = JSON.parse(undoCall?.body || '{}');
+  if (!undoCall || undoBody.expected_rev !== 7 || undoBody.expected_head_id !== 14) {
+    fail(name, 'undo did not send the current revision/head', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  if (session.transcript.ids.length !== 2 || elements.promptInput.value !== 'edit this prompt') {
+    fail(name, 'undo did not shrink transcript and restore composer', JSON.stringify({ ids: session.transcript.ids, prompt: elements.promptInput.value }));
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = '/redo';
+  await app.sendMessage();
+  const redoCall = fetchCalls.find((call) => call.url.endsWith('/runtime/redo'));
+  const redoBody = JSON.parse(redoCall?.body || '{}');
+  await cleanup();
+  if (!redoCall || redoBody.expected_rev !== 8 || redoBody.expected_head_id !== 12) {
+    fail(name, 'redo did not use the post-undo revision/head', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.transcript.ids.length !== 4 || elements.promptInput.value !== '') {
+    fail(name, 'redo did not restore transcript and clear composer', JSON.stringify({ ids: session.transcript.ids, prompt: elements.promptInput.value }));
+    return;
+  }
+  if (fetchCalls.some((call) => call.url === '/ui/v1/responses') || toasts.filter((toast) => toast.tone === 'success').length !== 2) {
+    fail(name, 'undo/redo sent a normal message or skipped success toasts', JSON.stringify({ fetchCalls, toasts }));
+    return;
+  }
+  pass(name);
+}
+
+async function testUndoDoesNotRestoreComposerAfterSessionSwitch() {
+  const name = '/undo does not overwrite the composer after an active-session switch';
+  const harness = createHarness({
+    fetchImpl: async (url, requestOptions, { Response }) => new Response(JSON.stringify({
+      ok: true, rev: 2, head_id: 0, user_text: 'old session prompt',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  });
+  const { app, elements, state, cleanup } = harness;
+  const original = { id: 'session_undo_switch_original', title: 'Original', messages: [], number: 1 };
+  const next = { id: 'session_undo_switch_next', title: 'Next', messages: [], number: 2 };
+  state.sessions.push(original, next);
+  state.activeSessionId = original.id;
+  original.transcript = new ConversationController(original.id);
+  original.transcript.rev = 1;
+  original.transcript.ids = [10];
+  app.refreshActiveSessionMessagesFromServer = async () => {
+    state.activeSessionId = next.id;
+    elements.promptInput.value = 'new session draft';
+    return true;
+  };
+
+  elements.promptInput.value = '/undo';
+  await app.sendMessage();
+  await cleanup();
+  if (state.activeSessionId !== next.id || elements.promptInput.value !== 'new session draft') {
+    fail(name, 'stale undo completion overwrote the new active composer', JSON.stringify({
+      activeSessionId: state.activeSessionId, prompt: elements.promptInput.value,
+    }));
+    return;
+  }
+  pass(name);
+}
+
+async function testUndoWarnsWhenAttachmentsWereNotRestored() {
+  const name = '/undo warns when removed prompt attachments cannot be restored';
+  const harness = createHarness({
+    fetchImpl: async (url, requestOptions, { Response }) => new Response(JSON.stringify({
+      ok: true, rev: 2, head_id: 0, user_text: 'describe this', attachments_omitted: true,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  });
+  const { app, elements, state, cleanup } = harness;
+  const session = { id: 'session_undo_attachment', title: 'Attachment', messages: [], number: 1 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  session.transcript = new ConversationController(session.id);
+  session.transcript.rev = 1;
+  session.transcript.ids = [10];
+  const toasts = [];
+  app.showToast = (message, options) => toasts.push({ message, tone: options?.tone });
+  app.refreshActiveSessionMessagesFromServer = async () => true;
+
+  elements.promptInput.value = '/undo';
+  await app.sendMessage();
+  await cleanup();
+  const warning = toasts.find((toast) => toast.tone === 'warning');
+  if (elements.promptInput.value !== 'describe this' || !warning || !warning.message.includes('Attachments were not restored')) {
+    fail(name, 'attachment omission was not explained to the user', JSON.stringify({ prompt: elements.promptInput.value, toasts }));
+    return;
+  }
+  pass(name);
+}
+
 async function testCompressCommandCompactsWithoutSendingMessage() {
   const name = '/compress compacts active context without sending a chat message';
   const harness = createHarness({
@@ -7962,6 +8110,9 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
   await testWebSlashCommandsInvokeExistingControls();
+  await testUndoRedoCommandsUseOptimisticTranscriptAndRestoreComposer();
+  await testUndoDoesNotRestoreComposerAfterSessionSwitch();
+  await testUndoWarnsWhenAttachmentsWereNotRestored();
   await testCompressCommandCompactsWithoutSendingMessage();
   await testStaleInterrupt404RefreshesAndSendsMessage();
   await testStaleInterruptRecoveryFailedPostKeepsDraft();

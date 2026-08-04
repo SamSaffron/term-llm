@@ -502,6 +502,39 @@ func (s *LoggingStore) UpdateContextEstimate(ctx context.Context, id string, las
 	return err
 }
 
+// TranscriptMutationState delegates optimistic transcript mutation state.
+func (s *LoggingStore) TranscriptMutationState(ctx context.Context, sessionID string) (TranscriptMutationState, error) {
+	store, ok := s.Store.(TranscriptUndoRedoStore)
+	if !ok {
+		return TranscriptMutationState{}, ErrTranscriptRevisionUnsupported
+	}
+	state, err := store.TranscriptMutationState(ctx, sessionID)
+	s.logOnce("TranscriptMutationState", err)
+	return state, err
+}
+
+// UndoLastUserTurn delegates storage-owned undo.
+func (s *LoggingStore) UndoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error) {
+	store, ok := s.Store.(TranscriptUndoRedoStore)
+	if !ok {
+		return TranscriptMutationResult{}, ErrTranscriptRevisionUnsupported
+	}
+	result, err := store.UndoLastUserTurn(ctx, sessionID, expected)
+	s.logOnce("UndoLastUserTurn", err)
+	return result, err
+}
+
+// RedoLastUserTurn delegates storage-owned redo.
+func (s *LoggingStore) RedoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error) {
+	store, ok := s.Store.(TranscriptUndoRedoStore)
+	if !ok {
+		return TranscriptMutationResult{}, ErrTranscriptRevisionUnsupported
+	}
+	result, err := store.RedoLastUserTurn(ctx, sessionID, expected)
+	s.logOnce("RedoLastUserTurn", err)
+	return result, err
+}
+
 // ClearCompactionBoundary wraps optional Store.ClearCompactionBoundary with error logging.
 func (s *LoggingStore) ClearCompactionBoundary(ctx context.Context, id string) error {
 	clearer, ok := s.Store.(interface {

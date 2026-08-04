@@ -29,6 +29,223 @@ import (
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
+func TestAllCommandsIncludesUndoRedo(t *testing.T) {
+	commands := AllCommands()
+	found := map[string]bool{}
+	for _, cmd := range commands {
+		if cmd.Name == "undo" || cmd.Name == "redo" {
+			found[cmd.Name] = true
+			if cmd.Usage != "/"+cmd.Name {
+				t.Fatalf("%s usage = %q", cmd.Name, cmd.Usage)
+			}
+		}
+	}
+	if !found["undo"] || !found["redo"] {
+		t.Fatalf("undo/redo commands missing: %#v", found)
+	}
+}
+
+func TestCmdUndoRedoShrinksRestoresAndManagesComposer(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	persist := func(msg llm.Message) session.Message {
+		stored := session.NewMessage(sess.ID, msg, -1)
+		if err := store.AddMessage(ctx, sess.ID, stored); err != nil {
+			t.Fatal(err)
+		}
+		return *stored
+	}
+	first := persist(llm.UserText("first"))
+	second := persist(llm.AssistantText("answer"))
+	third := persist(llm.UserText("edit this prompt"))
+	fourth := persist(llm.AssistantText("remove this answer"))
+	m := newCmdTestModel(store)
+	m.sess = sess
+	m.messages = []session.Message{first, second, third, fourth}
+	// Completed responses are cached separately from persisted history for the
+	// streaming fast path. Undo must not leave the removed response on screen.
+	m.viewCache.completedStream = "remove this answer"
+	m.setTextareaValue("/undo")
+
+	result, cmd := m.ExecuteCommand("/undo")
+	m = result.(*Model)
+	if cmd == nil || !m.transcriptMutationInFlight || len(m.messages) != 4 {
+		t.Fatalf("undo must start asynchronously without mutating UI state: cmd=%v inFlight=%v messages=%d", cmd != nil, m.transcriptMutationInFlight, len(m.messages))
+	}
+	result, _ = m.Update(cmd())
+	m = result.(*Model)
+	if len(m.messages) != 2 {
+		t.Fatalf("messages after undo = %d, want 2", len(m.messages))
+	}
+	if m.viewCache.completedStream != "" {
+		t.Fatalf("completed stream survived undo: %q", m.viewCache.completedStream)
+	}
+	if got := m.textarea.Value(); got != "edit this prompt" {
+		t.Fatalf("composer after undo = %q", got)
+	}
+	stored, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil || len(stored) != 2 {
+		t.Fatalf("stored transcript after undo len=%d err=%v", len(stored), err)
+	}
+
+	m.setTextareaValue("/redo")
+	result, cmd = m.ExecuteCommand("/redo")
+	m = result.(*Model)
+	if cmd == nil || !m.transcriptMutationInFlight || len(m.messages) != 2 {
+		t.Fatalf("redo must start asynchronously without mutating UI state: cmd=%v inFlight=%v messages=%d", cmd != nil, m.transcriptMutationInFlight, len(m.messages))
+	}
+	result, _ = m.Update(cmd())
+	m = result.(*Model)
+	if len(m.messages) != 4 {
+		t.Fatalf("messages after redo = %d, want 4", len(m.messages))
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("composer after redo = %q, want empty", got)
+	}
+	if m.messages[2].ID != third.ID || m.messages[3].ID != fourth.ID {
+		t.Fatalf("redo did not restore stable IDs: %#v", m.messages)
+	}
+}
+
+func TestCmdUndoRedoSequentialCommandsRestoreTurnsInLIFOOrder(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &session.Session{ID: session.NewID(), Provider: "mock", Model: "mock", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	persist := func(msg llm.Message) session.Message {
+		stored := session.NewMessage(sess.ID, msg, -1)
+		if err := store.AddMessage(ctx, sess.ID, stored); err != nil {
+			t.Fatal(err)
+		}
+		return *stored
+	}
+	turnB := persist(llm.UserText("turn B"))
+	answerB := persist(llm.AssistantText("answer B"))
+	turnA := persist(llm.UserText("turn A"))
+	answerA := persist(llm.AssistantText("answer A"))
+	m := newCmdTestModel(store)
+	m.sess = sess
+	m.messages = []session.Message{turnB, answerB, turnA, answerA}
+	run := func(command string) {
+		t.Helper()
+		m.setTextareaValue(command)
+		result, cmd := m.ExecuteCommand(command)
+		m = result.(*Model)
+		if cmd == nil {
+			t.Fatalf("%s returned no async command", command)
+		}
+		result, _ = m.Update(cmd())
+		m = result.(*Model)
+	}
+
+	run("/undo")
+	if len(m.messages) != 2 || m.textarea.Value() != "turn A" {
+		t.Fatalf("first undo messages=%d composer=%q", len(m.messages), m.textarea.Value())
+	}
+	run("/undo")
+	if len(m.messages) != 0 || m.textarea.Value() != "turn B" {
+		t.Fatalf("second undo messages=%d composer=%q", len(m.messages), m.textarea.Value())
+	}
+	run("/redo")
+	if len(m.messages) != 2 || m.messages[0].ID != turnB.ID || m.messages[1].ID != answerB.ID {
+		t.Fatalf("first redo restored wrong turn: %#v", m.messages)
+	}
+	run("/redo")
+	if len(m.messages) != 4 || m.messages[2].ID != turnA.ID || m.messages[3].ID != answerA.ID || m.textarea.Value() != "" {
+		t.Fatalf("second redo failed exact LIFO restore: messages=%#v composer=%q", m.messages, m.textarea.Value())
+	}
+}
+
+func TestCmdUndoRejectsArgumentsAndActiveWork(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "undo-busy"}
+	m.setTextareaValue("/undo 2")
+	result, _ := m.ExecuteCommand("/undo 2")
+	m = result.(*Model)
+	if m.footerMessage != "Usage: /undo" {
+		t.Fatalf("argument footer = %q", m.footerMessage)
+	}
+
+	m.streaming = true
+	m.setTextareaValue("/undo")
+	result, _ = m.ExecuteCommand("/undo")
+	m = result.(*Model)
+	if !strings.Contains(m.footerMessage, "work is active") {
+		t.Fatalf("busy footer = %q", m.footerMessage)
+	}
+}
+
+type cancellationUndoRedoStore struct {
+	*mockStore
+	started chan struct{}
+}
+
+func (s *cancellationUndoRedoStore) TranscriptMutationState(ctx context.Context, _ string) (session.TranscriptMutationState, error) {
+	close(s.started)
+	<-ctx.Done()
+	return session.TranscriptMutationState{}, ctx.Err()
+}
+
+func (s *cancellationUndoRedoStore) UndoLastUserTurn(context.Context, string, session.TranscriptMutationState) (session.TranscriptMutationResult, error) {
+	panic("unexpected undo after cancelled state lookup")
+}
+
+func (s *cancellationUndoRedoStore) RedoLastUserTurn(context.Context, string, session.TranscriptMutationState) (session.TranscriptMutationResult, error) {
+	panic("unexpected redo after cancelled state lookup")
+}
+
+func TestCmdUndoRunsOffUpdateLoopAndUsesRootCancellation(t *testing.T) {
+	store := &cancellationUndoRedoStore{mockStore: &mockStore{}, started: make(chan struct{})}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "async-undo"}
+	rootCtx, cancel := context.WithCancel(context.Background())
+	m.SetRootContext(rootCtx)
+	result, cmd := m.ExecuteCommand("/undo")
+	m = result.(*Model)
+	if cmd == nil || !m.transcriptMutationInFlight {
+		t.Fatal("undo did not return an asynchronous command")
+	}
+	select {
+	case <-store.started:
+		t.Fatal("storage was touched on the Bubble Tea update loop")
+	default:
+	}
+	resultCh := make(chan tea.Msg, 1)
+	go func() { resultCh <- cmd() }()
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("background undo command did not reach storage")
+	}
+	cancel()
+	var msg tea.Msg
+	select {
+	case msg = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("root cancellation did not stop background undo")
+	}
+	result, _ = m.Update(msg)
+	m = result.(*Model)
+	if m.transcriptMutationInFlight || m.footerMessage != "Undo cancelled." {
+		t.Fatalf("cancelled undo state: inFlight=%v footer=%q", m.transcriptMutationInFlight, m.footerMessage)
+	}
+}
+
 func TestAllCommandsIncludesCompact(t *testing.T) {
 	commands := AllCommands()
 	found := false

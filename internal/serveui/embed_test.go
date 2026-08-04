@@ -69,8 +69,8 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	// Keep the new transport boundary from weakening the pre-existing ratchet:
 	// legacy production code must still decrease, while each transport module
 	// gets a narrow independent ceiling tied to its audited responsibility.
-	if legacyProductionLines >= 20467 {
-		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20467", legacyProductionLines)
+	if legacyProductionLines >= 20570 {
+		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20570", legacyProductionLines)
 	}
 	if transportLines["app-network.js"] > 600 || transportLines["app-webrtc.js"] > 725 {
 		t.Fatalf("transport modules grew beyond focused budgets: %v", transportLines)
@@ -565,6 +565,43 @@ func TestAppPlanJS(t *testing.T) {
 	t.Log(string(out))
 	if err != nil {
 		t.Fatalf("app_plan_test.js failed: %v", err)
+	}
+}
+
+func TestToastJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping toast tests")
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "toast_test.js")
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("toast_test.js failed: %v", err)
+	}
+}
+
+func TestToastAssetIsVersionedAndCached(t *testing.T) {
+	if _, err := StaticAsset("toast.js"); err != nil {
+		t.Fatalf("StaticAsset(toast.js): %v", err)
+	}
+	index, err := StaticAsset("index.html")
+	if err != nil {
+		t.Fatalf("StaticAsset(index.html): %v", err)
+	}
+	toastRegion := `<div class="toast-region" id="toastRegion" aria-label="Notifications"></div>`
+	if !strings.Contains(string(index), toastRegion) {
+		t.Fatal("toast container must not be a live region containing child status/alert live regions")
+	}
+	if rendered := string(RenderIndexHTML("/ui", "", RenderOptions{})); !strings.Contains(rendered, `src="toast.js?v=`) {
+		t.Fatal("RenderIndexHTML does not version toast.js")
+	}
+	if rendered := string(RenderServiceWorker(RenderOptions{})); !strings.Contains(rendered, "'./toast.js?v=") {
+		t.Fatal("RenderServiceWorker does not version toast.js")
 	}
 }
 

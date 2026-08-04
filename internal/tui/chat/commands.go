@@ -104,6 +104,16 @@ func AllCommands() []Command {
 			Usage:       "/clear",
 		},
 		{
+			Name:        "undo",
+			Description: "Remove the latest user turn and everything after it",
+			Usage:       "/undo",
+		},
+		{
+			Name:        "redo",
+			Description: "Restore the turn removed by /undo",
+			Usage:       "/redo",
+		},
+		{
 			Name:        "quit",
 			Aliases:     []string{"q", "exit"},
 			Description: "Exit chat",
@@ -518,6 +528,10 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdGoal(args, rawArgs)
 	case "clear":
 		return m.cmdClear()
+	case "undo":
+		return m.cmdUndoRedo(false, args)
+	case "redo":
+		return m.cmdUndoRedo(true, args)
 	case "quit":
 		return m.cmdQuit()
 	case "model":
@@ -955,6 +969,142 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 
 	m.dialog.ShowContent("Help", b.String())
 	return m, nil
+}
+
+type transcriptMutationDoneMsg struct {
+	sessionID     string
+	redo          bool
+	result        session.TranscriptMutationResult
+	sess          *session.Session
+	messages      []session.Message
+	compactionIdx int
+	mutationErr   error
+	refreshErr    error
+}
+
+func (m *Model) transcriptMutationBusy() bool {
+	return m.transcriptMutationInFlight || m.streaming || m.activeSkillRunCount() > 0 || m.sideQuestion.Running || m.titleGenerationInFlight ||
+		m.worktreeOperationBusy() || m.shareInFlight || m.externalProcessActive || m.pausedForExternalUI
+}
+
+func transcriptMutationCmd(ctx context.Context, store session.Store, mutationStore session.TranscriptUndoRedoStore, sessionID string, redo bool) tea.Cmd {
+	return func() tea.Msg {
+		expected, err := mutationStore.TranscriptMutationState(ctx, sessionID)
+		if err != nil {
+			return transcriptMutationDoneMsg{sessionID: sessionID, redo: redo, mutationErr: err}
+		}
+		var result session.TranscriptMutationResult
+		if redo {
+			result, err = mutationStore.RedoLastUserTurn(ctx, sessionID, expected)
+		} else {
+			result, err = mutationStore.UndoLastUserTurn(ctx, sessionID, expected)
+		}
+		if err != nil {
+			return transcriptMutationDoneMsg{sessionID: sessionID, redo: redo, mutationErr: err}
+		}
+		refreshed, err := store.Get(ctx, sessionID)
+		if err != nil {
+			return transcriptMutationDoneMsg{sessionID: sessionID, redo: redo, result: result, refreshErr: err}
+		}
+		messages, compactionIdx, err := loadSessionMessagesForScrollback(ctx, store, refreshed)
+		return transcriptMutationDoneMsg{
+			sessionID: sessionID, redo: redo, result: result, sess: refreshed,
+			messages: messages, compactionIdx: compactionIdx, refreshErr: err,
+		}
+	}
+}
+
+func (m *Model) handleTranscriptMutationDone(msg transcriptMutationDoneMsg) (tea.Model, tea.Cmd) {
+	m.transcriptMutationInFlight = false
+	command := "undo"
+	if msg.redo {
+		command = "redo"
+	}
+	label := strings.ToUpper(command[:1]) + command[1:]
+	if msg.mutationErr != nil {
+		switch {
+		case errors.Is(msg.mutationErr, context.Canceled), errors.Is(msg.mutationErr, context.DeadlineExceeded):
+			return m.showFooterMuted(label + " cancelled.")
+		case errors.Is(msg.mutationErr, session.ErrNothingToUndo):
+			return m.showFooterMuted("Nothing to undo.")
+		case errors.Is(msg.mutationErr, session.ErrNothingToRedo):
+			return m.showFooterMuted("Nothing to redo.")
+		case errors.Is(msg.mutationErr, session.ErrTranscriptConflict):
+			return m.showFooterWarning("Conversation changed in another client; try again.")
+		default:
+			return m.showFooterError(fmt.Sprintf("%s failed: %v", label, msg.mutationErr))
+		}
+	}
+	if m.sess == nil || m.sess.ID != msg.sessionID {
+		return m.showFooterWarning(label + " completed for a session that is no longer active.")
+	}
+	if msg.refreshErr != nil || msg.sess == nil {
+		return m.showFooterError(fmt.Sprintf("%s succeeded, but refresh failed: %v", label, msg.refreshErr))
+	}
+	m.sess = msg.sess
+	m.messagesMu.Lock()
+	m.messages = msg.messages
+	m.compactionIdx = msg.compactionIdx
+	m.messagesMu.Unlock()
+	m.olderScrollbackLoaded = true
+	m.scrollOffset = 0
+	m.scrollToBottom = true
+	// A completed response may still be held separately from persisted history for
+	// the streaming fast path. Transcript replacement makes that snapshot stale.
+	m.viewCache.completedStream = ""
+	m.invalidateAltScreenStreamingViewportCache()
+	m.invalidateHistoryCache()
+	m.resetContextEstimateBaseline(m.rootContext())
+	m.resetTitleGenerationStateForSession()
+	if m.engine != nil {
+		m.engine.ResetSessionState(m.sess.ID)
+		m.engine.SetContextEstimateBaseline(0, 0)
+	}
+	m.currentResponse.Reset()
+	m.currentTokens = 0
+	m.retryStatus = ""
+	m.clearPendingStreamModelSwitch()
+	if m.tracker != nil {
+		m.resetTracker()
+	}
+	if msg.redo {
+		m.setTextareaValue("")
+		updated, footer := m.showFooterSuccess("Restored the undone turn.")
+		return updated, tea.Batch(footer, m.terminalTitleCmd())
+	}
+	m.setTextareaValue(msg.result.UserText)
+	if msg.result.AttachmentsOmitted {
+		updated, footer := m.showFooterWarning("Removed the latest turn; attachments were not restored.")
+		return updated, tea.Batch(footer, m.terminalTitleCmd())
+	}
+	updated, footer := m.showFooterSuccess("Removed the latest turn.")
+	return updated, tea.Batch(footer, m.terminalTitleCmd())
+}
+
+func (m *Model) cmdUndoRedo(redo bool, args []string) (tea.Model, tea.Cmd) {
+	command := "undo"
+	if redo {
+		command = "redo"
+	}
+	if len(args) != 0 {
+		m.setTextareaValue("")
+		return m.showFooterError("Usage: /" + command)
+	}
+	if m.transcriptMutationBusy() {
+		return m.showFooterWarning("Cannot " + command + " while work is active.")
+	}
+	if m.store == nil || m.sess == nil || strings.TrimSpace(m.sess.ID) == "" {
+		m.setTextareaValue("")
+		return m.showFooterError("No stored session to " + command + ".")
+	}
+	mutationStore, ok := m.store.(session.TranscriptUndoRedoStore)
+	if !ok {
+		m.setTextareaValue("")
+		return m.showFooterError("Session storage does not support /" + command + ".")
+	}
+	m.setTextareaValue("")
+	m.transcriptMutationInFlight = true
+	return m, transcriptMutationCmd(m.rootContext(), m.store, mutationStore, m.sess.ID, redo)
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {

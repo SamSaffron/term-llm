@@ -125,6 +125,7 @@
   </style>
   <link rel="stylesheet" href="app.css">
   <link rel="preload" as="script" href="app-core.js">
+  <link rel="preload" as="script" href="toast.js">
   <link rel="preload" as="script" href="app-network.js">
   <link rel="preload" as="script" href="transcript-window.js">
   <link rel="preload" as="script" href="active-response.js">
@@ -152,6 +153,7 @@
   <link rel="preload" as="script" href="app-worktrees.js">
 </head>
 <body class="app-loading">
+  <div class="toast-region" id="toastRegion" aria-label="Notifications"></div>
   <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
     <div class="startup-card">
       <div class="startup-mark" aria-hidden="true">⌘</div>
@@ -626,6 +628,7 @@
   <script src="active-response.js"></script>
   <script src="conversation.js"></script>
   <script src="app-core.js"></script>
+  <script src="toast.js"></script>
   <script src="app-network.js"></script>
   <script src="app-plan.js"></script>
   <script src="slash-commands.js"></script>

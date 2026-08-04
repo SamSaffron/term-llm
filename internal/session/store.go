@@ -24,6 +24,16 @@ var ErrNotFound = errors.New("session: not found")
 // mutation method that reports the exact transcript revision it commits.
 var ErrTranscriptRevisionUnsupported = errors.New("session: transcript revision unsupported")
 
+var (
+	// ErrTranscriptConflict means a transcript mutation was based on a stale
+	// revision or head row and must be retried after refreshing the transcript.
+	ErrTranscriptConflict = errors.New("session: transcript changed")
+	// ErrNothingToUndo means there is no real post-compaction user turn to undo.
+	ErrNothingToUndo = errors.New("session: nothing to undo")
+	// ErrNothingToRedo means no durable undo suffix remains for this session.
+	ErrNothingToRedo = errors.New("session: nothing to redo")
+)
+
 // Store is the interface for session persistence.
 type Store interface {
 	// Session CRUD
@@ -349,6 +359,31 @@ type TranscriptIndexer interface {
 // older read-only database where TranscriptIndexer exposes revision zero only.
 type TranscriptVersionReporter interface {
 	TranscriptVersioned() bool
+}
+
+// TranscriptMutationState is the optimistic concurrency token for undo/redo.
+// HeadID is the final non-internal transcript row (the same row stream exposed
+// by TranscriptIndexer); zero represents an empty transcript.
+type TranscriptMutationState struct {
+	Rev    int64 `json:"rev"`
+	HeadID int64 `json:"head_id"`
+}
+
+// TranscriptMutationResult describes the transcript after undo or redo.
+// UserText is populated for undo so clients can restore the removed prompt to
+// their composer.
+type TranscriptMutationResult struct {
+	TranscriptMutationState
+	UserText           string `json:"user_text,omitempty"`
+	AttachmentsOmitted bool   `json:"attachments_omitted,omitempty"`
+}
+
+// TranscriptUndoRedoStore owns a durable per-session redo stack. Ordinary
+// transcript writes invalidate the entire stack in the same storage transaction.
+type TranscriptUndoRedoStore interface {
+	TranscriptMutationState(ctx context.Context, sessionID string) (TranscriptMutationState, error)
+	UndoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error)
+	RedoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error)
 }
 
 // SessionSummaryTranscriptRevisionReporter reports whether Store.List populates

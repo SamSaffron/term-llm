@@ -6,7 +6,7 @@ const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, saveSessions, getActiveSession, createSession,
   setConnectionState, sessionSlug, updateURL, persistAndRefreshShell, refreshRelativeTimes, renderMessages,
-  syncTurnActionPanels, setSessionOptimisticBusy, renderAttachments, buildAttachmentInputParts,
+  syncTurnActionPanels, setSessionOptimisticBusy, sessionHasInProgressState, renderAttachments, buildAttachmentInputParts,
   cloneAttachmentForMessage
 } = app;
 const DRAFT_MESSAGE_LIMIT = 10;
@@ -147,6 +147,80 @@ const sendMessage = async (options = {}) => {
       case '/new':
         await app.createAndSwitchToFreshSession?.();
         break;
+    }
+    return;
+  }
+
+  if (!batchingFollowUps && /^\/(undo|redo)\b/i.test(prompt)) {
+    const match = prompt.match(/^\/(undo|redo)$/i);
+    elements.promptInput.value = '';
+    app.hideSlashCommands?.();
+    app.autoGrowPrompt();
+    if (!match) {
+      app.showToast?.('Usage: /undo or /redo', { id: 'transcript-mutation', tone: 'warning' });
+      return;
+    }
+    const operation = match[1].toLowerCase();
+    const session = getActiveSession();
+    if (!session || state.draftSessionActive) {
+      app.showToast?.(`Start the conversation before using /${operation}.`, { id: 'transcript-mutation', tone: 'warning' });
+      return;
+    }
+    if (state.transcriptMutating) return;
+    if (state.streaming || state.compressing || state.sideQuestion?.running || sessionHasInProgressState?.(session)) {
+      app.showToast?.(`Cannot ${operation} while work is active.`, { id: 'transcript-mutation', tone: 'warning' });
+      return;
+    }
+    const transcript = session.transcript;
+    const expectedRev = Math.max(0, Number(transcript?.rev) || 0);
+    const ids = Array.isArray(transcript?.ids) ? transcript.ids : [];
+    const expectedHeadId = ids.length > 0 ? Number(ids[ids.length - 1]) || 0 : 0;
+    state.transcriptMutating = true;
+    try {
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/${operation}`, {
+        method: 'POST',
+        headers: requestHeaders(session.id),
+        body: JSON.stringify({ expected_rev: expectedRev, expected_head_id: expectedHeadId })
+      }, { policy: app.API_FETCH_POLICY.mutation });
+      if (!response.ok) throw await normalizeError(response);
+      const payload = await response.json();
+      await app.refreshActiveSessionMessagesFromServer?.(session, {
+        force: true,
+        useEtag: false,
+        forceScroll: true,
+        reason: operation
+      });
+      await app.syncActiveSessionFromServer?.(session, false, { skipMessagesFetch: true });
+      const sameActiveSession = !state.draftSessionActive
+        && state.activeSessionId === session.id
+        && getActiveSession() === session;
+      if (operation === 'undo') {
+        if (sameActiveSession) {
+          elements.promptInput.value = String(payload?.user_text || '');
+          app.autoGrowPrompt();
+          elements.promptInput.focus?.();
+        }
+        const attachmentsOmitted = Boolean(payload?.attachments_omitted);
+        const message = sameActiveSession
+          ? (attachmentsOmitted
+            ? 'Removed the latest turn. Your prompt is back in the composer. Attachments were not restored.'
+            : 'Removed the latest turn. Your prompt is back in the composer.')
+          : (attachmentsOmitted
+            ? 'Removed the latest turn. Attachments were not restored.'
+            : 'Removed the latest turn.');
+        app.showToast?.(message, { id: 'transcript-mutation', tone: attachmentsOmitted ? 'warning' : 'success' });
+      } else {
+        if (sameActiveSession) {
+          elements.promptInput.value = '';
+          app.autoGrowPrompt();
+        }
+        app.showToast?.('Restored the undone turn.', { id: 'transcript-mutation', tone: 'success' });
+      }
+    } catch (err) {
+      if (err?.status === 409) await app.refreshActiveSessionMessagesFromServer?.(session, { force: true, useEtag: false, reason: `${operation}-conflict` });
+      app.showToast?.(err?.message || `${operation} failed.`, { id: 'transcript-mutation', tone: 'error', duration: 6500 });
+    } finally {
+      state.transcriptMutating = false;
     }
     return;
   }

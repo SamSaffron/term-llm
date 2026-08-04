@@ -32,8 +32,16 @@ const builtInCommands = [
     description: 'Start a new conversation',
   },
   {
+    name: '/redo',
+    description: 'Restore the turn removed by /undo',
+  },
+  {
     name: '/side',
     description: 'Ask without interrupting the main response',
+  },
+  {
+    name: '/undo',
+    description: 'Remove the latest user turn and everything after it',
   },
 ].sort((a, b) => a.name.localeCompare(b.name));
 
