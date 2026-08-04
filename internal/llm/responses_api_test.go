@@ -1814,6 +1814,114 @@ func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_DropsDanglingOpaqueFunctionCallReplay(t *testing.T) {
+	callID := "call_reused_after_compaction"
+	call := Part{Type: PartToolCall, ToolCall: &ToolCall{
+		ID:        callID,
+		Name:      "read_url",
+		Arguments: json.RawMessage(`{"url":"https://example.com"}`),
+	}}
+	replayMessage := Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: json.RawMessage(
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Checking"}]}`,
+	)}}
+	replayCall := Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: json.RawMessage(
+		`{"type":"function_call","call_id":"` + callID + `","name":"read_url","arguments":"{\"url\":\"https://example.com\"}"}`,
+	)}}
+	messages := []Message{
+		UserText("first request"),
+		{Role: RoleAssistant, Parts: []Part{call, replayMessage, replayCall}},
+		ToolResultMessage(callID, "read_url", "first result", nil),
+		{Role: RoleAssistant, Parts: []Part{call, replayMessage, replayCall}},
+		UserText("continue after compaction"),
+	}
+
+	for _, build := range []struct {
+		name string
+		fn   func([]Message) []ResponsesInputItem
+	}{
+		{name: "input", fn: BuildResponsesInput},
+		{name: "input with instructions", fn: func(messages []Message) []ResponsesInputItem {
+			_, input := BuildResponsesInputWithInstructions(messages)
+			return input
+		}},
+	} {
+		t.Run(build.name, func(t *testing.T) {
+			items := build.fn(messages)
+			calls, outputs := 0, 0
+			for _, item := range items {
+				itemType, gotCallID := responsesToolItemRef(item)
+				if gotCallID != callID {
+					continue
+				}
+				switch itemType {
+				case "function_call":
+					calls++
+				case "function_call_output":
+					outputs++
+				}
+			}
+			if calls != 1 || outputs != 1 {
+				t.Fatalf("tool pairs for %s = %d calls, %d outputs; want one complete pair: %+v", callID, calls, outputs, items)
+			}
+		})
+	}
+}
+
+func TestSanitizeResponsesToolItems(t *testing.T) {
+	t.Run("retains complete pair and normalizes references", func(t *testing.T) {
+		items := []ResponsesInputItem{
+			{Type: " function_call ", CallID: " call_1 ", Name: "shell", Arguments: `{}`},
+			{Type: " function_call_output ", CallID: " call_1 ", Output: "done"},
+		}
+		got := sanitizeResponsesToolItems(items)
+		if len(got) != 2 {
+			t.Fatalf("complete pair length = %d, want 2: %+v", len(got), got)
+		}
+	})
+
+	t.Run("drops dangling opaque call", func(t *testing.T) {
+		items := []ResponsesInputItem{{Raw: json.RawMessage(
+			`{"type":"function_call","call_id":"call_dangling","name":"shell","arguments":"{}"}`,
+		)}}
+		if got := sanitizeResponsesToolItems(items); len(got) != 0 {
+			t.Fatalf("dangling call survived: %+v", got)
+		}
+	})
+
+	t.Run("drops orphaned opaque output", func(t *testing.T) {
+		items := []ResponsesInputItem{{Raw: json.RawMessage(
+			`{"type":"function_call_output","call_id":"call_orphan","output":"done"}`,
+		)}}
+		if got := sanitizeResponsesToolItems(items); len(got) != 0 {
+			t.Fatalf("orphaned output survived: %+v", got)
+		}
+	})
+
+	t.Run("pairs reused IDs chronologically", func(t *testing.T) {
+		firstCall := json.RawMessage(`{"type":"function_call","call_id":"call_reused","name":"first","arguments":"{}"}`)
+		secondCall := json.RawMessage(`{"type":"function_call","call_id":"call_reused","name":"second","arguments":"{}"}`)
+		items := []ResponsesInputItem{
+			{Raw: firstCall},
+			{Type: "function_call_output", CallID: "call_reused", Output: "done"},
+			{Raw: secondCall},
+		}
+		got := sanitizeResponsesToolItems(items)
+		if len(got) != 2 || !bytes.Equal(got[0].Raw, firstCall) || got[1].Type != "function_call_output" {
+			t.Fatalf("reused ID pairing = %+v, want first call and its output", got)
+		}
+	})
+
+	t.Run("preserves non-tool and malformed replay", func(t *testing.T) {
+		nonTool := json.RawMessage(`{"type":"reasoning","id":"rs_1","summary":[]}`)
+		malformed := json.RawMessage(`{"type":"function_call"`)
+		items := []ResponsesInputItem{{Raw: nonTool}, {Raw: malformed}}
+		got := sanitizeResponsesToolItems(items)
+		if len(got) != 2 || !bytes.Equal(got[0].Raw, nonTool) || !bytes.Equal(got[1].Raw, malformed) {
+			t.Fatalf("opaque replay was changed: %+v", got)
+		}
+	})
+}
+
 func TestFilterToNewInput_ToolFollowUpReturnsOnlyNewToolOutputs(t *testing.T) {
 	input := []ResponsesInputItem{
 		{Type: "message", Role: "developer", Content: "Be concise"},

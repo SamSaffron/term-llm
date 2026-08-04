@@ -326,7 +326,67 @@ func BuildResponsesInputWithInstructionsAndFilePolicy(messages []Message, policy
 			input = append(input, buildResponsesInputForRole(msg, policy)...)
 		}
 	}
-	return strings.Join(systemParts, "\n\n"), input
+	return strings.Join(systemParts, "\n\n"), sanitizeResponsesToolItems(input)
+}
+
+// sanitizeResponsesToolItems is a final integrity check for stateless Responses
+// input. Opaque provider replay can contain function calls that the generic
+// message sanitizer repaired or removed, so pair calls and outputs again after
+// replay items have been expanded.
+func sanitizeResponsesToolItems(items []ResponsesInputItem) []ResponsesInputItem {
+	pending := make(map[string][]int)
+	matched := make([]bool, len(items))
+	toolItem := make([]bool, len(items))
+
+	for i, item := range items {
+		itemType, callID := responsesToolItemRef(item)
+		switch itemType {
+		case "function_call":
+			toolItem[i] = true
+			if callID != "" {
+				pending[callID] = append(pending[callID], i)
+			}
+		case "function_call_output":
+			toolItem[i] = true
+			calls := pending[callID]
+			if callID == "" || len(calls) == 0 {
+				continue
+			}
+			callIndex := calls[0]
+			if len(calls) == 1 {
+				delete(pending, callID)
+			} else {
+				pending[callID] = calls[1:]
+			}
+			matched[callIndex] = true
+			matched[i] = true
+		}
+	}
+
+	valid := items[:0]
+	for i, item := range items {
+		if !toolItem[i] || matched[i] {
+			valid = append(valid, item)
+		}
+	}
+	return valid
+}
+
+func responsesToolItemRef(item ResponsesInputItem) (itemType, callID string) {
+	if len(item.Raw) == 0 {
+		return strings.TrimSpace(item.Type), strings.TrimSpace(item.CallID)
+	}
+	if !bytes.Contains(item.Raw, []byte(`"function_call`)) {
+		return "", ""
+	}
+	var ref struct {
+		Type   string `json:"type"`
+		CallID string `json:"call_id"`
+	}
+	if err := json.Unmarshal(item.Raw, &ref); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(ref.Type), strings.TrimSpace(ref.CallID)
 }
 
 func buildResponsesInputItems(messages []Message, policy *FileUploadPolicy) []ResponsesInputItem {
@@ -350,7 +410,7 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 // format and sends PartFile as native input_file only when policy allows its
 // MIME type and decoded size. Passing nil uses OpenAI Responses defaults.
 func BuildResponsesInputWithFilePolicy(messages []Message, policy *FileUploadPolicy) []ResponsesInputItem {
-	return buildResponsesInputItems(sanitizeToolHistory(messages), policy)
+	return sanitizeResponsesToolItems(buildResponsesInputItems(sanitizeToolHistory(messages), policy))
 }
 
 // BuildResponsesContinuationInput converts only the newest turn payload needed for a
