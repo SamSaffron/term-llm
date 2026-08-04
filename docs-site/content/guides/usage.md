@@ -85,7 +85,7 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 
 #### Project and agent `@` mentions
 
-Type `@` in the TUI composer to search two categorized sources: agents that the current session is permitted to spawn and files/directories in the active project or worktree. Web chat currently searches project files and directories only. Press Enter or Tab to insert a selection as ordinary editable text.
+Type `@` in the TUI composer to search two categorized sources: agents that the current session is permitted to spawn and files/directories in the active project or worktree. Web chat currently searches project files and directories only. Press Enter or Tab to insert a selection as ordinary editable text. File results follow worktree switches; project-local agent discovery remains bound to the process startup directory because the session's shared agent registry and runner are constructed there.
 
 File syntax remains `@path/to/file`, `@"path with spaces"`, or `@file.go#L10-20` for a line range. Bare `@name` is always file/text syntax. Selecting or typing an agent uses the explicit `@agent:codebase` form (or `@agent:"name with spaces"` when needed). `@agent:` searches agents only, while path-like queries such as `@internal/` search files only.
 
@@ -93,7 +93,7 @@ Mentioned text files are read when the message is submitted and appear in the co
 
 An explicit `@agent:name` asks the active model to call its already-authorized `spawn_agent` tool once for that agent; selecting a result does not launch anything directly. The agent must still be registered, allowed by the current session/tool filter and whitelist, below the depth limit, and resolvable by the live runner. Invalid or stale explicit agent mentions block that submission and leave the draft and attachments intact. This delegation syntax is separate from `/handover @name`, which switches conversation context, and from `term-llm chat @name`, which chooses the startup agent.
 
-Set `TERM_LLM_AT_MENTIONS=0` to disable `@` autocomplete/indexing. Explicit textual file and agent mention semantics still apply when text is pasted or restored from history.
+Set `TERM_LLM_AT_MENTIONS=0` to disable `@` autocomplete and submit-time textual file/agent mention semantics in the TUI. The serve/web composer and one-shot `ask` surface do not currently provide agent-delegation mentions; use `spawn_agent` through their normal tool flow instead.
 
 ### Chat Slash Commands
 

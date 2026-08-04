@@ -9,7 +9,7 @@ import (
 )
 
 type runtimeAgentMentionCapability struct {
-	engine  *llm.Engine
+	engine  func() *llm.Engine
 	manager *tools.ToolManager
 }
 
@@ -24,11 +24,15 @@ func (c runtimeAgentMentionCapability) spawnTool() (*tools.SpawnAgentTool, error
 	if c.engine == nil {
 		return nil, errors.New("agent mentions are unavailable because spawn_agent is not registered with the active engine")
 	}
-	registered, ok := c.engine.Tools().Get(tools.SpawnAgentToolName)
+	engine := c.engine()
+	if engine == nil {
+		return nil, errors.New("agent mentions are unavailable because spawn_agent is not registered with the active engine")
+	}
+	registered, ok := engine.Tools().Get(tools.SpawnAgentToolName)
 	if !ok || registered != tool {
 		return nil, errors.New("agent mentions are unavailable because spawn_agent is not registered with the active engine")
 	}
-	if !c.engine.IsToolAllowed(tools.SpawnAgentToolName) {
+	if !engine.IsToolAllowed(tools.SpawnAgentToolName) {
 		return nil, errors.New("agent mentions are unavailable because spawn_agent is blocked by the active tool restriction")
 	}
 	return tool, nil

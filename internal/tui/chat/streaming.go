@@ -365,11 +365,15 @@ func (m *Model) ensureContextMessages() {
 }
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	// Delegation intent comes only from text deliberately visible in the composer.
+	// Collapsed paste payloads are expanded for the provider after this check, so
+	// hidden pasted prose cannot synthesize an @agent request.
 	delegationContext, err := m.agentMentionDelegationContext(content)
 	if err != nil {
 		m.hideMentionPopup()
 		return m.showFooterError(err.Error())
 	}
+	content = m.expandedPastePlaceholders(content)
 
 	m.selection = Selection{}
 	m.interruptNotice = ""
@@ -383,12 +387,13 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	}
 	m.recordCurrentModelUse()
 
-	// Build provider-facing content separately from visible/session text. Agent
-	// delegation instructions follow the visible request and precede all file
-	// bodies; neither hidden context is copied into TextContent.
-	fullContent := content + delegationContext
+	// Build provider-facing parts separately from visible/session text. The typed
+	// delegation part is converted to provider text only at the provider boundary;
+	// renderers, exports, FTS, resume UI, and prompt history never infer hidden
+	// content by stripping arbitrary text.
 	displayText := content
 	var fileNames []string
+	var explicitFiles string
 
 	if len(m.files) > 0 {
 		var filesContent strings.Builder
@@ -397,21 +402,29 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 			fileNames = append(fileNames, f.Name)
 			filesContent.WriteString(llm.FormatEmbeddedFileText(f.Name, "text/plain", f.Content))
 		}
-		embeddedFiles := filesContent.String()
-		fullContent += embeddedFiles
-		displayText += embeddedFiles
+		explicitFiles = filesContent.String()
+		displayText += explicitFiles
 	}
 
 	mentionContext, mentionLabels := m.eagerMentionContext(content)
-	fullContent += mentionContext
 	fileNames = append(fileNames, mentionLabels...)
 
 	imageLabels := m.imageAttachmentLabels()
 	parts := m.imagePartList()
-	if fullContent != "" {
-		parts = append(parts, llm.Part{Type: llm.PartText, Text: fullContent})
-	} else if len(parts) == 0 {
-		parts = []llm.Part{{Type: llm.PartText, Text: fullContent}}
+	if content != "" {
+		parts = append(parts, llm.Part{Type: llm.PartText, Text: content})
+	}
+	if delegationContext != "" {
+		parts = append(parts, llm.Part{Type: llm.PartAgentMention, Text: delegationContext})
+	}
+	if explicitFiles != "" {
+		parts = append(parts, llm.Part{Type: llm.PartText, Text: explicitFiles})
+	}
+	if mentionContext != "" {
+		parts = append(parts, llm.Part{Type: llm.PartFile, Text: mentionContext})
+	}
+	if len(parts) == 0 {
+		parts = []llm.Part{{Type: llm.PartText}}
 	}
 
 	if strings.TrimSpace(displayText) == "" && len(imageLabels) > 0 {
@@ -552,7 +565,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// In inline mode, print user message to scrollback first
 	if m.altScreen {
 		cmds := []tea.Cmd{
-			m.startStream(fullContent),
+			m.startStream(content),
 			m.spinner.Tick,
 			m.tickEvery(),
 		}
@@ -562,7 +575,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	}
 	cmds := []tea.Cmd{
 		tea.Println(userDisplay.String()),
-		m.startStream(fullContent),
+		m.startStream(content),
 		m.spinner.Tick,
 		m.tickEvery(),
 	}

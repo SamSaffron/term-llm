@@ -160,7 +160,13 @@ func (m *mockCatalogRunner) ListSpawnAgentNames() ([]string, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
-	return append([]string(nil), m.names...), nil
+	valid := make([]string, 0, len(m.names))
+	for _, name := range m.names {
+		if m.invalid[name] == nil {
+			valid = append(valid, name)
+		}
+	}
+	return valid, nil
 }
 
 func (m *mockCatalogRunner) ResolveSpawnAgent(name string) error {
@@ -603,11 +609,17 @@ func TestSpawnAgentToolCapabilityCatalogIntersectsLivePolicy(t *testing.T) {
 	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
 		t.Fatalf("PermittedAgentNames() = %#v, want %#v", names, want)
 	}
+	if runner.resolveCount != 0 {
+		t.Fatalf("validated catalog listing was redundantly resolved %d times", runner.resolveCount)
+	}
 	if err := tool.CanSpawnAgent("Codebase"); err == nil || !strings.Contains(err.Error(), "allowed list") {
 		t.Fatalf("case-sensitive whitelist error = %v", err)
 	}
 	if err := tool.CanSpawnAgent("missing"); err == nil || !strings.Contains(err.Error(), "unavailable or invalid") {
 		t.Fatalf("invalid definition error = %v", err)
+	}
+	if runner.resolveCount != 1 {
+		t.Fatalf("exact validation resolve count = %d, want 1", runner.resolveCount)
 	}
 	if runner.GetCallCount() != 0 {
 		t.Fatalf("capability checks executed runner %d times", runner.GetCallCount())
@@ -618,6 +630,9 @@ func TestSpawnAgentToolCapabilityEmptyWhitelistDepthAndCatalogFailures(t *testin
 	runner := newMockCatalogRunner("zeta", "alpha")
 	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 1, MaxParallel: 1, DefaultTimeout: 30}, 0)
 	tool.SetRunner(runner)
+	if _, _, err := tool.localSpawnPolicy(""); err == nil || !strings.Contains(err.Error(), "agent name is required") {
+		t.Fatalf("empty exact-name policy did not fail closed: %v", err)
+	}
 	names, err := tool.PermittedAgentNames()
 	if err != nil || len(names) != 2 || names[0] != "alpha" || names[1] != "zeta" {
 		t.Fatalf("unrestricted names = %#v, err=%v", names, err)

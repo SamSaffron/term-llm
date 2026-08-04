@@ -26,7 +26,8 @@ func TestRuntimeAgentMentionCapabilityTracksRegisteredToolAndLiveEngineFilter(t 
 	manager.GetSpawnAgentTool().SetRunner(runner)
 	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
 	manager.SetupEngine(engine)
-	capability := runtimeAgentMentionCapability{engine: engine, manager: manager}
+	currentEngine := engine
+	capability := runtimeAgentMentionCapability{engine: func() *llm.Engine { return currentEngine }, manager: manager}
 
 	names, err := capability.PermittedAgentNames()
 	if err != nil || len(names) != 2 || names[0] != "codebase" || names[1] != "reviewer" {
@@ -45,6 +46,22 @@ func TestRuntimeAgentMentionCapabilityTracksRegisteredToolAndLiveEngineFilter(t 
 	if err := capability.ValidateAgentMention("codebase"); err != nil {
 		t.Fatalf("restored filter validation = %v", err)
 	}
+
+	deniedEngine := llm.NewEngine(llm.NewMockProvider("denied"), nil)
+	manager.SetupEngine(deniedEngine)
+	deniedEngine.SetAllowedToolsFilter([]string{})
+	currentEngine = deniedEngine
+	if err := capability.ValidateAgentMention("codebase"); err == nil || !strings.Contains(err.Error(), "active tool restriction") {
+		t.Fatalf("allow-to-deny replacement used stale engine: %v", err)
+	}
+
+	allowedEngine := llm.NewEngine(llm.NewMockProvider("allowed"), nil)
+	manager.SetupEngine(allowedEngine)
+	currentEngine = allowedEngine
+	if err := capability.ValidateAgentMention("codebase"); err != nil {
+		t.Fatalf("deny-to-allow replacement used stale engine: %v", err)
+	}
+
 	manager.GetSpawnAgentTool().SetDepth(2)
 	if err := capability.ValidateAgentMention("codebase"); err == nil || !strings.Contains(err.Error(), "depth") {
 		t.Fatalf("depth validation = %v", err)
@@ -53,13 +70,15 @@ func TestRuntimeAgentMentionCapabilityTracksRegisteredToolAndLiveEngineFilter(t 
 
 func TestRuntimeAgentMentionCapabilityFailsClosedWithoutActualSpawnTool(t *testing.T) {
 	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
-	capability := runtimeAgentMentionCapability{engine: engine, manager: &tools.ToolManager{}}
+	capability := runtimeAgentMentionCapability{engine: func() *llm.Engine { return engine }, manager: &tools.ToolManager{}}
 	if _, err := capability.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("missing tool error = %v", err)
 	}
 }
 
 func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg := &config.Config{}
 	cfg.Agents.UseBuiltin = true
@@ -97,7 +116,7 @@ func TestRuntimeAgentMentionCapabilityUsesBuiltinAgentSpawnPolicy(t *testing.T) 
 			manager.GetSpawnAgentTool().SetRunner(runner)
 			engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
 			manager.SetupEngine(engine)
-			capability := runtimeAgentMentionCapability{engine: engine, manager: manager}
+			capability := runtimeAgentMentionCapability{engine: func() *llm.Engine { return engine }, manager: manager}
 
 			got, err := capability.PermittedAgentNames()
 			if err != nil {

@@ -1594,7 +1594,10 @@ func TestPendingStreamingEffortAppliesBeforeNextSendIfStillPending(t *testing.T)
 		t.Fatalf("pending switch was not cleared before send: %#v", rm.pendingStreamModelSwitch)
 	}
 	if rm.engine == activeEngine || rm.modelName != "gpt-5.4-medium" || rm.sess.Model != "gpt-5.4-medium" {
-		t.Fatalf("pending switch not applied before send: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+		t.Fatalf("pending switch did not replace active runtime: engineChanged=%v model=%q session=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if rm.CurrentAgentMentionEngine() != rm.engine {
+		t.Fatal("agent mention capability engine did not track pending effort replacement")
 	}
 	if !rm.streaming {
 		t.Fatal("sendMessage should still start the next stream")

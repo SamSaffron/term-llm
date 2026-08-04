@@ -1,35 +1,27 @@
 package mentions
 
 import (
-	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/samsaffron/term-llm/internal/agents"
 )
 
 const agentMentionPrefix = "agent:"
 
 // SubmittedAgentMention is an explicit textual delegation request. Start and
-// End are byte offsets covering the complete visible @agent token.
+// End are byte offsets covering the complete visible @agent token, excluding
+// ordinary punctuation that terminates an unquoted name.
 type SubmittedAgentMention struct {
 	Name       string
 	Start, End int
 }
 
-// AgentMentionSyntaxError describes a malformed explicit @agent token.
-type AgentMentionSyntaxError struct {
-	Offset  int
-	Message string
-}
-
-func (e *AgentMentionSyntaxError) Error() string {
-	return fmt.Sprintf("invalid @agent mention at byte %d: %s", e.Offset, e.Message)
-}
-
-// ParseSubmittedAgents extracts explicit @agent:<lookup-name> and
-// @agent:"name with spaces" tokens in textual order. Bare @name remains file or
-// ordinary text syntax. Duplicates are returned so visible occurrences retain
-// their source offsets; UniqueAgentMentionNames performs canonical deduplication.
+// ParseSubmittedAgents extracts deliberate, well-formed @agent:<lookup-name>
+// and @agent:"lookup name" tokens in textual order. The bounded lookup grammar
+// is shared with the actual agent registry. Unknown valid names are returned so
+// runtime policy can reject them; malformed agent-like prose is ignored.
 func ParseSubmittedAgents(text string) ([]SubmittedAgentMention, error) {
 	var result []SubmittedAgentMention
 	for offset := 0; offset < len(text); {
@@ -51,40 +43,61 @@ func ParseSubmittedAgents(text string) ([]SubmittedAgentMention, error) {
 		}
 		nameStart := payloadStart + len(agentMentionPrefix)
 		if nameStart >= len(text) {
-			return nil, &AgentMentionSyntaxError{Offset: at, Message: "expected an agent lookup name after @agent:"}
-		}
-		if text[nameStart] == '"' {
-			name, end, err := parseQuotedAgentName(text, at, nameStart+1)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, SubmittedAgentMention{Name: name, Start: at, End: end})
-			offset = end
 			continue
 		}
 
-		end := nameStart
-		for end < len(text) {
-			r, size := utf8.DecodeRuneInString(text[end:])
-			if unicode.IsSpace(r) {
-				break
-			}
-			end += size
+		var mention SubmittedAgentMention
+		var ok bool
+		if text[nameStart] == '"' {
+			mention, ok = parseQuotedAgentMention(text, at, nameStart+1)
+		} else {
+			mention, ok = parseUnquotedAgentMention(text, at, nameStart)
 		}
-		name := text[nameStart:end]
-		if name == "" {
-			return nil, &AgentMentionSyntaxError{Offset: at, Message: "expected an agent lookup name after @agent:"}
+		if !ok {
+			continue
 		}
-		if strings.ContainsRune(name, '"') {
-			return nil, &AgentMentionSyntaxError{Offset: at, Message: "quotes must surround the complete agent lookup name"}
-		}
-		result = append(result, SubmittedAgentMention{Name: name, Start: at, End: end})
-		offset = end
+		result = append(result, mention)
+		offset = mention.End
 	}
 	return result, nil
 }
 
-func parseQuotedAgentName(text string, at, start int) (string, int, error) {
+func parseUnquotedAgentMention(text string, at, start int) (SubmittedAgentMention, bool) {
+	scanEnd := start
+	lastAtomEnd := start
+	for scanEnd < len(text) {
+		r, size := utf8.DecodeRuneInString(text[scanEnd:])
+		if agents.IsLookupNameAtomRune(r) {
+			scanEnd += size
+			lastAtomEnd = scanEnd
+			continue
+		}
+		if r == '-' || r == '.' {
+			scanEnd += size
+			continue
+		}
+		break
+	}
+	if lastAtomEnd == start {
+		return SubmittedAgentMention{}, false
+	}
+	name := text[start:lastAtomEnd]
+	if !agents.IsLookupName(name) {
+		return SubmittedAgentMention{}, false
+	}
+	// Separators after the final segment are punctuation, not part of the name.
+	// Any other non-prose suffix (for example /, #, or a stray quote) makes the
+	// token malformed rather than silently delegating to its valid prefix.
+	if scanEnd < len(text) {
+		next, _ := utf8.DecodeRuneInString(text[scanEnd:])
+		if !isAgentMentionTerminator(next) {
+			return SubmittedAgentMention{}, false
+		}
+	}
+	return SubmittedAgentMention{Name: name, Start: at, End: lastAtomEnd}, true
+}
+
+func parseQuotedAgentMention(text string, at, start int) (SubmittedAgentMention, bool) {
 	var name strings.Builder
 	escaped := false
 	for end := start; end < len(text); {
@@ -99,21 +112,30 @@ func parseQuotedAgentName(text string, at, start int) (string, int, error) {
 			escaped = true
 			continue
 		}
-		if r == '"' {
-			if name.Len() == 0 {
-				return "", 0, &AgentMentionSyntaxError{Offset: at, Message: "quoted agent lookup name cannot be empty"}
-			}
-			if end < len(text) {
-				next, _ := utf8.DecodeRuneInString(text[end:])
-				if !isMentionBoundary(next) {
-					return "", 0, &AgentMentionSyntaxError{Offset: at, Message: "unexpected text after quoted agent lookup name"}
-				}
-			}
-			return name.String(), end, nil
+		if r != '"' {
+			name.WriteRune(r)
+			continue
 		}
-		name.WriteRune(r)
+		value := name.String()
+		if !agents.IsLookupName(value) {
+			return SubmittedAgentMention{}, false
+		}
+		if end < len(text) {
+			next, _ := utf8.DecodeRuneInString(text[end:])
+			if !isAgentMentionTerminator(next) {
+				return SubmittedAgentMention{}, false
+			}
+		}
+		return SubmittedAgentMention{Name: value, Start: at, End: end}, true
 	}
-	return "", 0, &AgentMentionSyntaxError{Offset: at, Message: "unterminated quoted agent lookup name"}
+	return SubmittedAgentMention{}, false
+}
+
+func isAgentMentionTerminator(r rune) bool {
+	if unicode.IsSpace(r) {
+		return true
+	}
+	return strings.ContainsRune(",.;:!?)]}。、？！", r)
 }
 
 // UniqueAgentMentionNames deduplicates canonical names in first-occurrence

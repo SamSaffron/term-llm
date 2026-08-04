@@ -3117,8 +3117,8 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 
 	// Update model state
 	m.provider = provider
-	// Preserve existing tool registry when creating new engine
-	m.engine = llm.NewEngine(provider, m.engine.Tools())
+	// Preserve existing tool registry when creating new engine.
+	m.replaceEngine(llm.NewEngine(provider, m.engine.Tools()))
 	m.providerName = provider.Name()
 	m.providerKey = providerName
 	m.modelName = modelName

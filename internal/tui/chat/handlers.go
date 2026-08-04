@@ -968,16 +968,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				// own viewport/append cache has been invalidated.
 				return updated, tea.Sequence(tea.ClearScreen, cmd)
 			}
-			content := m.expandedPastePlaceholders(raw)
-			delegationContext, err := m.agentMentionDelegationContext(content)
+			delegationContext, err := m.agentMentionDelegationContext(raw)
 			if err != nil {
 				m.hideMentionPopup()
 				return m.showFooterError(err.Error())
 			}
+			content := m.expandedPastePlaceholders(raw)
 			parts := m.imagePartList()
 			hasImages := len(parts) > 0
 			if delegationContext != "" {
-				parts = append(parts, llm.Part{Type: llm.PartText, Text: delegationContext})
+				parts = append(parts, llm.Part{Type: llm.PartAgentMention, Text: delegationContext})
 			}
 			if eagerContext, _ := m.eagerMentionContext(content); eagerContext != "" {
 				parts = append(parts, llm.Part{Type: llm.PartFile, Text: eagerContext})
@@ -1156,10 +1156,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.handleSlashCommand(content)
 		}
 
-		// Expand inline paste placeholders back to real content before sending.
-		content = m.expandedPastePlaceholders(content)
-
-		// Send message if not empty, or if there are pasted image attachments.
+		// sendMessage expands collapsed paste placeholders only after deriving
+		// delegation intent from the deliberately visible composer text.
 		if content != "" || len(m.images) > 0 {
 			return m.sendMessage(content)
 		}

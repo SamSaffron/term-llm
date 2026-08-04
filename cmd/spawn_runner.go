@@ -241,7 +241,7 @@ func (r *SpawnAgentRunner) resolveSpawnAgent(name string) (*agents.Agent, error)
 	if r == nil || r.registry == nil {
 		return nil, errors.New("spawn agent registry is not configured")
 	}
-	if strings.TrimSpace(name) != name || name == "" {
+	if !agents.IsLookupName(name) {
 		return nil, fmt.Errorf("invalid agent lookup name %q", name)
 	}
 	agent, err := r.registry.Get(name)

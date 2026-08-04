@@ -339,6 +339,32 @@ func TestIsAgentDir(t *testing.T) {
 	}
 }
 
+func TestRegistry_ListNamesConcurrentWithGetAndPreferenceUpdates(t *testing.T) {
+	r := &Registry{useBuiltin: true, cache: make(map[string]*Agent)}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if worker%3 == 0 {
+					r.SetPreferences(map[string]config.AgentPreference{"codebase": {}})
+					continue
+				}
+				if worker%3 == 1 {
+					_, _ = r.Get("codebase")
+					continue
+				}
+				if names, err := r.ListNames(); err != nil || len(names) == 0 {
+					t.Errorf("ListNames() = %#v, err=%v", names, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
 func TestRegistry_GetConcurrentWithPreferenceUpdates(t *testing.T) {
 	r := &Registry{
 		useBuiltin: true,

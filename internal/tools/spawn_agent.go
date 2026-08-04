@@ -242,42 +242,66 @@ type spawnAgentPolicyError struct {
 
 func (e *spawnAgentPolicyError) Error() string { return e.message }
 
+type localSpawnPolicySnapshot struct {
+	runner        SpawnAgentRunner
+	depth         int
+	maxDepth      int
+	allowedAgents []string
+}
+
+func (t *SpawnAgentTool) snapshotLocalSpawnPolicy() localSpawnPolicySnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return localSpawnPolicySnapshot{
+		runner:        t.runner,
+		depth:         t.depth,
+		maxDepth:      t.config.MaxDepth,
+		allowedAgents: append([]string(nil), t.config.AllowedAgents...),
+	}
+}
+
+func (p localSpawnPolicySnapshot) authorize(agentName string, listing bool) error {
+	if p.depth >= p.maxDepth {
+		return &spawnAgentPolicyError{
+			typeName: ErrPermissionDenied,
+			message:  fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", p.depth, p.maxDepth),
+		}
+	}
+	if !listing {
+		if agentName == "" {
+			return &spawnAgentPolicyError{typeName: ErrInvalidParams, message: "agent name is required"}
+		}
+		if len(p.allowedAgents) > 0 {
+			allowed := false
+			for _, name := range p.allowedAgents {
+				if name == agentName {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return &spawnAgentPolicyError{
+					typeName: ErrPermissionDenied,
+					message:  fmt.Sprintf("agent '%s' is not in the allowed list", agentName),
+				}
+			}
+		}
+	}
+	if p.runner == nil {
+		return &spawnAgentPolicyError{typeName: ErrExecutionFailed, message: "spawn_agent runner not configured"}
+	}
+	return nil
+}
+
 // localSpawnPolicy applies the same depth, exact-whitelist, and runner checks
 // used by Execute. State is copied while locked; callers may perform catalog I/O
 // after this method returns without holding the tool mutex.
 func (t *SpawnAgentTool) localSpawnPolicy(agentName string) (SpawnAgentRunner, int, error) {
-	t.mu.Lock()
-	runner := t.runner
-	depth := t.depth
-	maxDepth := t.config.MaxDepth
-	allowedAgents := append([]string(nil), t.config.AllowedAgents...)
-	t.mu.Unlock()
-
-	if depth >= maxDepth {
-		return nil, depth, &spawnAgentPolicyError{
-			typeName: ErrPermissionDenied,
-			message:  fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", depth, maxDepth),
-		}
+	policy := t.snapshotLocalSpawnPolicy()
+	if err := policy.authorize(agentName, false); err != nil {
+		return nil, policy.depth, err
 	}
-	if agentName != "" && len(allowedAgents) > 0 {
-		allowed := false
-		for _, name := range allowedAgents {
-			if name == agentName {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return nil, depth, &spawnAgentPolicyError{
-				typeName: ErrPermissionDenied,
-				message:  fmt.Sprintf("agent '%s' is not in the allowed list", agentName),
-			}
-		}
-	}
-	if runner == nil {
-		return nil, depth, &spawnAgentPolicyError{typeName: ErrExecutionFailed, message: "spawn_agent runner not configured"}
-	}
-	return runner, depth, nil
+	return policy.runner, policy.depth, nil
 }
 
 // CanSpawnAgent performs a read-only capability check against the current
@@ -304,11 +328,11 @@ func (t *SpawnAgentTool) CanSpawnAgent(name string) error {
 // current tool instance can spawn. Invalid definitions and names denied by the
 // exact whitelist are omitted.
 func (t *SpawnAgentTool) PermittedAgentNames() ([]string, error) {
-	runner, _, err := t.localSpawnPolicy("")
-	if err != nil {
+	policy := t.snapshotLocalSpawnPolicy()
+	if err := policy.authorize("", true); err != nil {
 		return nil, err
 	}
-	catalog, ok := runner.(SpawnAgentCatalog)
+	catalog, ok := policy.runner.(SpawnAgentCatalog)
 	if !ok {
 		return nil, errors.New("spawn_agent runner does not expose an agent catalog")
 	}
@@ -327,12 +351,11 @@ func (t *SpawnAgentTool) PermittedAgentNames() ([]string, error) {
 			continue
 		}
 		seen[name] = struct{}{}
-		if _, _, err := t.localSpawnPolicy(name); err != nil {
+		if err := policy.authorize(name, false); err != nil {
 			continue
 		}
-		if err := catalog.ResolveSpawnAgent(name); err != nil {
-			continue
-		}
+		// ListSpawnAgentNames is the catalog's validated listing contract. Do not
+		// resolve every entry a second time on each completion query.
 		permitted = append(permitted, name)
 	}
 	return permitted, nil

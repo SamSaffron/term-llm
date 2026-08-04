@@ -78,6 +78,8 @@ term-llm agents get reviewer
 term-llm agents clear reviewer model
 ```
 
+Registry lookup names are limited to 64 letters, digits, or underscores, with non-trailing spaces, dots, and hyphens between segments. This is also the grammar used by explicit `@agent:name` delegation mentions, so surrounding sentence punctuation is never part of the lookup key.
+
 ## Customizing built-ins
 
 A filesystem agent with the same name as a built-in shadows the built-in. For example, to customize the default `developer` behavior, create `term-llm-agents/developer/agent.yaml` in a project or `~/.config/term-llm/agents/developer/agent.yaml` for your user account. You can start from the bundled implementation with:

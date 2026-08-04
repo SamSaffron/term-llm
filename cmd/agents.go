@@ -293,9 +293,9 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 func runAgentsNew(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	// Validate name
-	if strings.ContainsAny(name, "/\\:*?\"<>|") {
-		return fmt.Errorf("invalid agent name: %s", name)
+	// Validate the exact registry lookup key used by discovery and delegation.
+	if !agents.IsLookupName(name) {
+		return fmt.Errorf("invalid agent name %q: use at most %d letters, digits, underscores, or non-trailing spaces, dots, and hyphens", name, agents.MaxLookupNameRunes)
 	}
 
 	// Determine base directory
@@ -494,9 +494,9 @@ func runAgentsCopy(cmd *cobra.Command, args []string) error {
 	srcName := args[0]
 	destName := args[1]
 
-	// Validate dest name
-	if strings.ContainsAny(destName, "/\\:*?\"<>|") {
-		return fmt.Errorf("invalid agent name: %s", destName)
+	// Validate the exact registry lookup key used by discovery and delegation.
+	if !agents.IsLookupName(destName) {
+		return fmt.Errorf("invalid agent name %q: use at most %d letters, digits, underscores, or non-trailing spaces, dots, and hyphens", destName, agents.MaxLookupNameRunes)
 	}
 
 	cfg, err := loadConfigWithSetup()
@@ -971,8 +971,8 @@ func runAgentsImportGist(cmd *cobra.Command, args []string) error {
 	if err := yaml.Unmarshal([]byte(agentYAML), &agentConfig); err != nil {
 		return fmt.Errorf("parse agent.yaml: %w", err)
 	}
-	if agentConfig.Name == "" {
-		return fmt.Errorf("invalid agent gist: agent.yaml missing 'name' field")
+	if !agents.IsLookupName(agentConfig.Name) {
+		return fmt.Errorf("invalid agent gist: agent name %q is not a valid registry lookup name", agentConfig.Name)
 	}
 
 	// Determine destination directory

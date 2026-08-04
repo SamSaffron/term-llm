@@ -276,17 +276,21 @@ func (m *Message) ToLLMMessage() llm.Message {
 
 func providerMessageParts(parts []llm.Part) []llm.Part {
 	for i, part := range parts {
-		if part.Type != llm.PartSkillActivation {
+		if part.Type != llm.PartSkillActivation && part.Type != llm.PartAgentMention {
 			continue
 		}
-		filtered := make([]llm.Part, 0, len(parts)-1)
-		filtered = append(filtered, parts[:i]...)
-		for _, candidate := range parts[i+1:] {
-			if candidate.Type != llm.PartSkillActivation {
-				filtered = append(filtered, candidate)
+		converted := make([]llm.Part, 0, len(parts))
+		converted = append(converted, parts[:i]...)
+		for _, candidate := range parts[i:] {
+			switch candidate.Type {
+			case llm.PartSkillActivation:
+				continue
+			case llm.PartAgentMention:
+				candidate.Type = llm.PartText
 			}
+			converted = append(converted, candidate)
 		}
-		return filtered
+		return converted
 	}
 	return parts
 }

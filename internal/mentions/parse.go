@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/samsaffron/term-llm/internal/agents"
 )
 
 var (
@@ -38,7 +40,7 @@ func ActiveTokenAt(text string, cursor int) (ActiveToken, bool) {
 			if !ok {
 				continue
 			}
-			return ActiveToken{Start: start, End: cursor, Query: agentMentionPrefix + query, Quoted: true}, true
+			return ActiveToken{Start: start, End: cursor, Query: query, Quoted: true, Agent: true}, true
 		}
 		if strings.HasPrefix(tail, "\"") {
 			query, ok := parseQuotedTail(tail[1:])
@@ -46,6 +48,15 @@ func ActiveTokenAt(text string, cursor int) (ActiveToken, bool) {
 				continue
 			}
 			return ActiveToken{Start: start, End: cursor, Query: query, Quoted: true}, true
+		}
+		if strings.HasPrefix(tail, agentMentionPrefix) {
+			query := strings.TrimPrefix(tail, agentMentionPrefix)
+			if strings.ContainsFunc(query, func(r rune) bool {
+				return !agents.IsLookupNameAtomRune(r) && r != '-' && r != '.'
+			}) {
+				continue
+			}
+			return ActiveToken{Start: start, End: cursor, Query: query, Agent: true}, true
 		}
 		if strings.ContainsAny(tail, " \t\r\n\"") {
 			continue

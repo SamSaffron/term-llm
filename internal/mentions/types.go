@@ -60,6 +60,7 @@ type ActiveToken struct {
 	End    int
 	Query  string
 	Quoted bool
+	Agent  bool // Explicit @agent: namespace, distinct from a quoted file named agent:...
 }
 
 // SubmittedMention is an ordinary textual path mention discovered when a

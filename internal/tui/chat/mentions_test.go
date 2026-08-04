@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -95,6 +96,7 @@ func TestAgentMentionQueryRouting(t *testing.T) {
 		{text: "@./code", wantMode: mentionQueryFilesOnly, wantFile: "./code"},
 		{text: "@internal/code", wantMode: mentionQueryFilesOnly, wantFile: "internal/code"},
 		{text: `@"design notes`, wantMode: mentionQueryFilesOnly, wantFile: "design notes"},
+		{text: `@"agent:codebase`, wantMode: mentionQueryFilesOnly, wantFile: "agent:codebase"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
@@ -192,15 +194,15 @@ func TestMentionQueryWithoutSpawnCapabilityStillReturnsFiles(t *testing.T) {
 	}
 }
 
-func TestAgentMentionRankingHasIndependentDomainAndFiveRowCap(t *testing.T) {
+func TestAgentMentionRankingUsesFullPopupDomainWithoutFiveAgentCap(t *testing.T) {
 	capability := &fakeAgentMentionCapability{names: []string{
 		"my-code-helper", "coder", "xcode", "code", "c-o-d-e", "codebase", "unrelated",
 	}}
-	matches, err := rankAgentMentionMatches(capability, "code", 5)
+	matches, err := rankAgentMentionMatches(capability, "code", mentionMatchLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"code", "coder", "codebase", "xcode", "my-code-helper"}
+	want := []string{"code", "coder", "codebase", "xcode", "my-code-helper", "c-o-d-e"}
 	if len(matches) != len(want) {
 		t.Fatalf("matches = %#v", matches)
 	}
@@ -215,7 +217,8 @@ func TestAgentMentionSelectionInsertsTextWithoutLaunchingAndRevalidatesStaleRows
 	m := newTestChatModel(false)
 	capability := &fakeAgentMentionCapability{names: []string{"codebase"}, denied: make(map[string]error)}
 	prepareAgentMentionPopup(t, m, t.TempDir(), "ask @agent:cod", capability, "codebase")
-	if !m.acceptMentionSelection() {
+	accepted, _ := m.acceptMentionSelection()
+	if !accepted {
 		t.Fatal("agent selection was rejected")
 	}
 	if got := m.textarea.Value(); got != "ask @agent:codebase " {
@@ -229,8 +232,12 @@ func TestAgentMentionSelectionInsertsTextWithoutLaunchingAndRevalidatesStaleRows
 	capability.denied["codebase"] = errors.New("active tool restriction now blocks spawn_agent")
 	prepareAgentMentionPopup(t, m, t.TempDir(), "ask @code", capability, "codebase")
 	before := m.textarea.Value()
-	if m.acceptMentionSelection() {
+	accepted, cmd := m.acceptMentionSelection()
+	if accepted {
 		t.Fatal("stale denied agent row was accepted")
+	}
+	if cmd == nil {
+		t.Fatal("denied selection dropped footer clear command")
 	}
 	if m.textarea.Value() != before || !strings.Contains(m.footerMessage, "tool restriction") {
 		t.Fatalf("stale selection draft=%q footer=%q", m.textarea.Value(), m.footerMessage)
@@ -259,11 +266,39 @@ func TestMentionPopupRendersCategorizedHeadersAndNavigationSkipsThem(t *testing.
 	}
 }
 
+func TestMentionResultReplacementResetsSelectionAcrossCategories(t *testing.T) {
+	m := newTestChatModel(false)
+	const value = "ask @code"
+	m.setTextareaValue(value)
+	m.textarea.MoveToEnd()
+	token, ok := mentions.ActiveTokenAt(value, len(value))
+	if !ok {
+		t.Fatal("active token not found")
+	}
+	root := t.TempDir()
+	m.mentionRoot = root
+	m.mentionIndexGeneration = 1
+	m.mentionQueryRequest = 7
+	m.mentionPopup = mentionPopupModel{
+		visible: true, token: token, selected: 2,
+		agentMatches: []agentMentionMatch{{name: "codebase"}, {name: "coder"}},
+		matches:      []mentions.Match{{Candidate: 0}},
+	}
+	msg := mentionMatchesMsg{
+		root: root, generation: 1, request: 7, token: token, cursor: len(value), mode: mentionQueryFilesOnly,
+		matches: []mentions.Match{{Candidate: 1}},
+	}
+	handled, _ := m.handleMentionMessage(msg)
+	if !handled || m.mentionPopup.selected != 0 || len(m.mentionPopup.agentMatches) != 0 || len(m.mentionPopup.matches) != 1 {
+		t.Fatalf("replacement retained stale categorized selection: handled=%v popup=%#v", handled, m.mentionPopup)
+	}
+}
+
 func TestMentionSelectionInsertsOnlyOrdinaryText(t *testing.T) {
 	m := newTestChatModel(false)
 	root := t.TempDir()
 	prepareMentionPopup(m, root, "review @notes", mentions.Candidate{Path: "docs/design notes.md", Kind: mentions.KindFile})
-	m.acceptMentionSelection()
+	_, _ = m.acceptMentionSelection()
 	if got := m.textarea.Value(); got != `review @"docs/design notes.md" ` {
 		t.Fatalf("selected text = %q", got)
 	}
@@ -272,7 +307,7 @@ func TestMentionSelectionInsertsOnlyOrdinaryText(t *testing.T) {
 	}
 
 	prepareMentionPopup(m, root, "list @pkg", mentions.Candidate{Path: "internal/pkg", Kind: mentions.KindDirectory})
-	m.acceptMentionSelection()
+	_, _ = m.acceptMentionSelection()
 	if got := m.textarea.Value(); got != "list @internal/pkg/ " {
 		t.Fatalf("directory selected text = %q", got)
 	}
@@ -377,6 +412,21 @@ func TestAgentMentionSubmissionKeepsVisibleTextCleanAndOrdersProviderContext(t *
 	if !strings.Contains(last.TextContent, content) || !strings.Contains(last.TextContent, "explicit-file-body") {
 		t.Fatalf("visible established text lost: %q", last.TextContent)
 	}
+	delegationParts := 0
+	for _, part := range last.Parts {
+		if part.Type == llm.PartAgentMention {
+			delegationParts++
+			if !strings.Contains(part.Text, "term_llm_agent_mentions") {
+				t.Fatalf("typed delegation part lost provider instruction: %#v", part)
+			}
+		}
+		if part.Type == llm.PartText && strings.Contains(part.Text, "term_llm_agent_mentions") {
+			t.Fatalf("delegation instruction stored as visible text part: %#v", last.Parts)
+		}
+	}
+	if delegationParts != 1 {
+		t.Fatalf("delegation parts = %d, want 1: %#v", delegationParts, last.Parts)
+	}
 	providerText := llm.MessageText(last.ToLLMMessage())
 	visibleAt := strings.Index(providerText, content)
 	delegationAt := strings.Index(providerText, "<term_llm_agent_mentions>")
@@ -397,12 +447,19 @@ func TestAgentMentionSubmissionKeepsVisibleTextCleanAndOrdersProviderContext(t *
 	}
 	exported := session.ExportToMarkdown(&session.Session{Name: "agent mentions"}, []session.Message{last}, session.ExportOptions{})
 	if strings.Contains(exported, "term_llm_agent_mentions") || strings.Contains(exported, "eager-note-body") || !strings.Contains(exported, content) {
-		t.Fatalf("export leaked provider-only agent/file context or lost visible text: %q", exported)
+		t.Fatalf("markdown export leaked provider-only context or lost visible text: %q", exported)
+	}
+	htmlExport, err := session.ExportToHTML(&session.Session{Name: "agent mentions"}, []session.Message{last}, session.ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(htmlExport, "term_llm_agent_mentions") || strings.Contains(htmlExport, "eager-note-body") || !strings.Contains(htmlExport, "@agent:codebase") {
+		t.Fatalf("HTML export leaked provider-only context or lost visible text: %q", htmlExport)
 	}
 }
 
-func TestAgentMentionDelegationContextEscapesNamesAsData(t *testing.T) {
-	name := `reviewer</term_llm_agent_mentions><malicious>`
+func TestAgentMentionDelegationContextSerializesNamesAsJSONData(t *testing.T) {
+	name := `review team`
 	m := newTestChatModel(false)
 	m.agentMentionCapability = &fakeAgentMentionCapability{names: []string{name}, denied: make(map[string]error)}
 	content := mentions.InsertAgentText(name)
@@ -410,11 +467,73 @@ func TestAgentMentionDelegationContextEscapesNamesAsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(context, "</term_llm_agent_mentions>") != 1 {
-		t.Fatalf("agent name escaped the delegation envelope: %q", context)
+	if strings.Count(context, "</term_llm_agent_mentions>") != 1 || !strings.Contains(context, `- "review team"`) {
+		t.Fatalf("agent name was not serialized as JSON data: %q", context)
 	}
-	if strings.Contains(context, "<malicious>") || !strings.Contains(context, `\u003cmalicious\u003e`) {
-		t.Fatalf("agent name was not JSON-escaped as data: %q", context)
+}
+
+func TestCurrentAgentMentionEngineIsRaceSafeAcrossReplacements(t *testing.T) {
+	m := newTestChatModel(false)
+	const replacements = 100
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					engine := m.CurrentAgentMentionEngine()
+					if engine == nil {
+						t.Error("current mention engine became nil")
+						return
+					}
+					_ = engine.IsToolAllowed(tools.SpawnAgentToolName)
+				}
+			}
+		}()
+	}
+	for i := 0; i < replacements; i++ {
+		engine := llm.NewEngine(llm.NewMockProvider("replacement"), nil)
+		if i%2 == 0 {
+			engine.SetAllowedToolsFilter([]string{})
+		}
+		m.replaceEngine(engine)
+	}
+	close(done)
+	wg.Wait()
+	if m.CurrentAgentMentionEngine() != m.engine {
+		t.Fatal("final mention engine differs from live model engine")
+	}
+}
+
+func TestAgentMentionSubmissionUsesBoundedNamesAndIgnoresMalformedProse(t *testing.T) {
+	m := newTestChatModel(false)
+	capability := &fakeAgentMentionCapability{names: []string{"codebase"}, denied: make(map[string]error)}
+	m.agentMentionCapability = capability
+	_, _ = m.sendMessage("ask @agent:codebase, then summarize")
+	if !m.streaming || len(capability.validateCalls) != 1 || capability.validateCalls[0] != "codebase" {
+		t.Fatalf("punctuated valid mention = streaming %v calls %#v", m.streaming, capability.validateCalls)
+	}
+
+	m = newTestChatModel(false)
+	capability = &fakeAgentMentionCapability{names: []string{"codebase"}, denied: make(map[string]error)}
+	m.agentMentionCapability = capability
+	malformed := "quote @agent:codebase#L1-L9 and @agent:\"unterminated as prose"
+	_, _ = m.sendMessage(malformed)
+	if !m.streaming || len(m.messages) != 1 || len(capability.validateCalls) != 0 {
+		t.Fatalf("malformed prose created delegation intent: streaming=%v messages=%d calls=%#v", m.streaming, len(m.messages), capability.validateCalls)
+	}
+
+	m = newTestChatModel(false)
+	m.agentMentionCapability = &fakeAgentMentionCapability{names: []string{"codebase"}, denied: make(map[string]error)}
+	m.setTextareaValue("ask @agent:unknown-valid")
+	_, _ = m.sendMessage(m.textarea.Value())
+	if m.streaming || len(m.messages) != 0 || !strings.Contains(m.footerMessage, "unknown") {
+		t.Fatalf("unknown valid explicit name did not block: streaming=%v messages=%d footer=%q", m.streaming, len(m.messages), m.footerMessage)
 	}
 }
 
@@ -690,7 +809,7 @@ func TestStreamingInterjectionGetsAgentDelegationBeforeEagerFileContext(t *testi
 		t.Fatalf("queued interjections = %#v", queued)
 	}
 	parts := queued[0].Message.Parts
-	if len(parts) != 3 || parts[0].Type != llm.PartText || parts[1].Type != llm.PartText || parts[2].Type != llm.PartFile {
+	if len(parts) != 3 || parts[0].Type != llm.PartText || parts[1].Type != llm.PartAgentMention || parts[2].Type != llm.PartFile {
 		t.Fatalf("queued part order = %#v", parts)
 	}
 	if parts[0].Text != content || !strings.Contains(parts[1].Text, "term_llm_agent_mentions") || !strings.Contains(parts[2].Text, "interjection eager body") {
@@ -705,7 +824,7 @@ func TestInterjectionSessionMessageKeepsDelegationProviderOnly(t *testing.T) {
 	visible := "ask @agent:reviewer"
 	message := llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 		{Type: llm.PartText, Text: visible},
-		{Type: llm.PartText, Text: "\n\n<term_llm_agent_mentions>hidden</term_llm_agent_mentions>"},
+		{Type: llm.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden</term_llm_agent_mentions>"},
 		{Type: llm.PartFile, Text: "hidden eager body"},
 	}}
 	persisted := sessionMessageForInterjection("session", visible, message)
@@ -748,23 +867,83 @@ func TestInvalidStreamingAgentMentionPreservesDraftBeforeQueueMutation(t *testin
 	}
 }
 
-func TestInvalidAgentMentionInsideCollapsedPastePreservesPlaceholder(t *testing.T) {
+func TestVisiblePastedAgentMentionPreservesDeliberateDelegation(t *testing.T) {
 	m := newTestChatModel(false)
-	m.agentMentionCapability = &fakeAgentMentionCapability{names: []string{"reviewer"}, denied: map[string]error{"reviewer": errors.New("active tool restriction")}}
+	capability := &fakeAgentMentionCapability{names: []string{"reviewer"}, denied: make(map[string]error)}
+	m.agentMentionCapability = capability
+	updated, _ := m.handlePasteMsg(tea.PasteMsg{Content: "ask @agent:reviewer"})
+	m = updated.(*Model)
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.streaming || len(m.messages) != 1 || len(capability.validateCalls) != 1 {
+		t.Fatalf("visible pasted mention was not delegated: streaming=%v messages=%d calls=%#v", m.streaming, len(m.messages), capability.validateCalls)
+	}
+	found := false
+	for _, part := range m.messages[0].Parts {
+		found = found || part.Type == llm.PartAgentMention
+	}
+	if !found {
+		t.Fatalf("visible pasted mention lacks delegation part: %#v", m.messages[0].Parts)
+	}
+}
+
+func TestAtMentionsEnvironmentDisablesSubmitTimeFileAndAgentSemantics(t *testing.T) {
+	t.Setenv("TERM_LLM_AT_MENTIONS", "0")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hidden-file-sentinel"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestChatModel(false)
+	m.mentionRoot = root
+	capability := &fakeAgentMentionCapability{names: []string{"reviewer"}, denied: map[string]error{"reviewer": errors.New("must not validate")}}
+	m.agentMentionCapability = capability
+	content := "plain @agent:reviewer and @note.txt"
+	_, _ = m.sendMessage(content)
+	if !m.streaming || len(m.messages) != 1 || len(capability.validateCalls) != 0 {
+		t.Fatalf("disabled mentions still validated or blocked: streaming=%v messages=%d calls=%#v", m.streaming, len(m.messages), capability.validateCalls)
+	}
+	if got := llm.MessageText(m.messages[0].ToLLMMessage()); got != content || strings.Contains(got, "hidden-file-sentinel") || strings.Contains(got, "term_llm_agent_mentions") {
+		t.Fatalf("disabled mentions augmented provider text: %q", got)
+	}
+}
+
+func TestAgentMentionInsideCollapsedPasteIsOrdinaryVisiblePayload(t *testing.T) {
+	m := newTestChatModel(false)
+	capability := &fakeAgentMentionCapability{names: []string{"reviewer"}, denied: map[string]error{"reviewer": errors.New("active tool restriction")}}
+	m.agentMentionCapability = capability
 	pasted := "delegate @agent:reviewer using all of this pasted context"
 	placeholder := pastePlaceholder(1, pasted)
 	m.setTextareaValue("please " + placeholder)
 	m.textarea.MoveToEnd()
 	m.pasteChunks = map[int]string{1: pasted}
-	m.files = []FileAttachment{{Name: "draft.txt", Content: "body"}}
-	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
 
 	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.textarea.Value() != "please "+placeholder || m.pasteChunks[1] != pasted || len(m.files) != 1 || len(m.images) != 1 {
-		t.Fatalf("failed pasted mention submit changed draft: text=%q pastes=%#v files=%d images=%d", m.textarea.Value(), m.pasteChunks, len(m.files), len(m.images))
+	if !m.streaming || len(m.messages) != 1 {
+		t.Fatalf("collapsed pasted prose did not send: streaming=%v messages=%d footer=%q", m.streaming, len(m.messages), m.footerMessage)
 	}
-	if m.streaming || len(m.messages) != 0 || !strings.Contains(m.footerMessage, "tool restriction") {
-		t.Fatalf("failed pasted mention submitted: streaming=%v messages=%d footer=%q", m.streaming, len(m.messages), m.footerMessage)
+	last := m.messages[0]
+	if !strings.Contains(last.TextContent, pasted) || strings.Contains(last.TextContent, "term_llm_agent_mentions") {
+		t.Fatalf("visible pasted content = %q", last.TextContent)
+	}
+	for _, part := range last.Parts {
+		if part.Type == llm.PartAgentMention {
+			t.Fatalf("collapsed paste created hidden delegation part: %#v", last.Parts)
+		}
+	}
+	if len(capability.validateCalls) != 0 || len(m.pasteChunks) != 0 {
+		t.Fatalf("hidden paste validated delegation or retained consumed chunk: calls=%#v chunks=%#v", capability.validateCalls, m.pasteChunks)
+	}
+}
+
+func TestAutoSendAgentMentionFailureTerminatesWithoutDroppingQueueHead(t *testing.T) {
+	m := newTestChatModel(false)
+	m.agentMentionCapability = &fakeAgentMentionCapability{names: []string{"codebase"}, denied: make(map[string]error)}
+	const blocked = "ask @agent:unknown-valid"
+	m.autoSendQueue = []string{blocked}
+	m.setTextareaValue(blocked)
+	updated, cmd := m.Update(autoSendMsg{})
+	m = updated.(*Model)
+	if cmd == nil || !m.quitting || m.err == nil || len(m.autoSendQueue) != 1 || m.autoSendQueue[0] != blocked {
+		t.Fatalf("auto-send failure stalled or dropped input: cmd=%v quitting=%v err=%v queue=%#v", cmd != nil, m.quitting, m.err, m.autoSendQueue)
 	}
 }
 
@@ -776,7 +955,7 @@ func TestRestoreQueuedAgentInterjectionDoesNotExposeProviderContext(t *testing.T
 		DisplayText: visible,
 		Message: llm.Message{Role: llm.RoleUser, Parts: []llm.Part{
 			{Type: llm.PartText, Text: visible},
-			{Type: llm.PartText, Text: "\n\n<term_llm_agent_mentions>hidden delegation</term_llm_agent_mentions>"},
+			{Type: llm.PartAgentMention, Text: "\n\n<term_llm_agent_mentions>hidden delegation</term_llm_agent_mentions>"},
 			{Type: llm.PartFile, Text: "hidden eager file body"},
 		}},
 	})

@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func (m *Model) skillSlashEntries() []Command {
@@ -147,9 +148,32 @@ type queuedMainSkillActivation struct {
 
 type queuedMainSkillRetryMsg struct{}
 
+func (m *Model) validateMainSkillAgentMentions(activation *skills.Activation, displayInvocation string) error {
+	context, err := m.agentMentionDelegationContext(displayInvocation)
+	if err != nil || context == "" {
+		return err
+	}
+	if activation == nil || !activation.AllowedToolsPresent {
+		return nil
+	}
+	for _, name := range activation.AllowedTools {
+		if name == tools.SpawnAgentToolName {
+			return nil
+		}
+	}
+	skillName := "active skill"
+	if activation.Skill != nil && activation.Skill.Name != "" {
+		skillName = fmt.Sprintf("skill %q", activation.Skill.Name)
+	}
+	return fmt.Errorf("cannot submit agent mention: %s blocks %s through its allowed-tools restriction", skillName, tools.SpawnAgentToolName)
+}
+
 func (m *Model) executeMainSkillActivation(activation *skills.Activation, displayInvocation string) (tea.Model, tea.Cmd) {
 	if m.worktreeOperationBusy() {
 		return m.showFooterWarning("Wait for the current worktree operation to finish before invoking a skill.")
+	}
+	if err := m.validateMainSkillAgentMentions(activation, displayInvocation); err != nil {
+		return m.showFooterError(err.Error())
 	}
 	if m.skillFilterPending || len(m.skillDynamicToolNames) > 0 {
 		m.restoreSkillAllowedTools()
@@ -179,6 +203,10 @@ func (m *Model) queueMainSkillDuringStream(input string) (tea.Model, tea.Cmd, bo
 		updated, cmd := m.showFooterError(err.Error())
 		return updated, cmd, true
 	}
+	if err := m.validateMainSkillAgentMentions(activation, strings.TrimSpace(input)); err != nil {
+		updated, cmd := m.showFooterError(err.Error())
+		return updated, cmd, true
+	}
 	m.queuedMainSkillActivations = append(m.queuedMainSkillActivations, queuedMainSkillActivation{
 		Activation: activation, DisplayInvocation: strings.TrimSpace(input),
 	})
@@ -198,6 +226,10 @@ func (m *Model) startNextQueuedMainSkill() tea.Cmd {
 		})
 	}
 	queued := m.queuedMainSkillActivations[0]
+	if err := m.validateMainSkillAgentMentions(queued.Activation, queued.DisplayInvocation); err != nil {
+		_, cmd := m.showFooterError(err.Error())
+		return cmd
+	}
 	m.queuedMainSkillActivations = m.queuedMainSkillActivations[1:]
 	_, cmd := m.executeMainSkillActivation(queued.Activation, queued.DisplayInvocation)
 	return cmd

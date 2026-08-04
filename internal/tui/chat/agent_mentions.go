@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
 )
 
@@ -26,7 +27,25 @@ func (m *Model) SetAgentMentionCapability(capability AgentMentionCapability) {
 	}
 }
 
+// CurrentAgentMentionEngine returns the engine that currently owns runtime tool
+// filtering. Completion commands may call this concurrently with a model/effort
+// switch, so it is backed by an atomic pointer rather than m.engine directly.
+func (m *Model) CurrentAgentMentionEngine() *llm.Engine {
+	if m == nil {
+		return nil
+	}
+	return m.agentMentionEngine.Load()
+}
+
+func (m *Model) replaceEngine(engine *llm.Engine) {
+	m.engine = engine
+	m.agentMentionEngine.Store(engine)
+}
+
 func (m *Model) agentMentionDelegationContext(content string) (string, error) {
+	if m == nil || !m.agentMentionEnabled {
+		return "", nil
+	}
 	parsed, err := mentions.ParseSubmittedAgents(content)
 	if err != nil {
 		return "", err

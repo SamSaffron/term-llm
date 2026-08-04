@@ -63,8 +63,8 @@ func (p *mentionPopupModel) selectableCount() int {
 }
 
 func routeMentionQuery(token mentions.ActiveToken) (mentionQueryMode, string, string) {
-	if strings.HasPrefix(token.Query, "agent:") {
-		return mentionQueryAgentsOnly, "", strings.TrimPrefix(token.Query, "agent:")
+	if token.Agent {
+		return mentionQueryAgentsOnly, "", token.Query
 	}
 	if token.Quoted || strings.HasPrefix(token.Query, "./") || strings.HasPrefix(token.Query, "../") || strings.ContainsAny(token.Query, `/\\`) {
 		return mentionQueryFilesOnly, token.Query, ""
@@ -217,7 +217,8 @@ type mentionMatchesMsg struct {
 }
 
 func (m *Model) initializeMentions() {
-	m.mentionEnabled = mentions.EnabledFromEnv()
+	m.agentMentionEnabled = mentions.EnabledFromEnv()
+	m.mentionEnabled = m.agentMentionEnabled
 	if !m.mentionEnabled {
 		return
 	}
@@ -312,7 +313,7 @@ func (m *Model) handleMentionMessage(msg tea.Msg) (bool, tea.Cmd) {
 			var agentMatches []agentMentionMatch
 			var agentErr error
 			if mode != mentionQueryFilesOnly {
-				agentMatches, agentErr = rankAgentMentionMatches(capability, agentQuery, 5)
+				agentMatches, agentErr = rankAgentMentionMatches(capability, agentQuery, mentionMatchLimit)
 			}
 			return mentionMatchesMsg{
 				root: msg.root, generation: msg.generation, request: msg.request,
@@ -338,9 +339,9 @@ func (m *Model) handleMentionMessage(msg tea.Msg) (bool, tea.Cmd) {
 		m.mentionPopup.matchesCursor = msg.cursor
 		m.mentionPopup.matchesGen = msg.generation
 		m.mentionPopup.matchesRequest = msg.request
-		if m.mentionPopup.selected >= m.mentionPopup.selectableCount() {
-			m.mentionPopup.selected = max(0, m.mentionPopup.selectableCount()-1)
-		}
+		// Result replacement can change both row identity and category offsets.
+		// Never carry an index from the old result set into the new one.
+		m.mentionPopup.selected = 0
 		return true, nil
 	default:
 		return false, nil
@@ -442,53 +443,55 @@ func (m *Model) handleMentionPopupKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		if m.mentionPopup.token.Query == "" {
 			return false, nil
 		}
-		if !m.acceptMentionSelection() {
+		accepted, cmd := m.acceptMentionSelection()
+		if !accepted {
 			m.hideMentionPopup()
-			return false, nil
+			return false, cmd
 		}
-		return true, nil
+		return true, cmd
 	case "tab":
-		if !m.acceptMentionSelection() {
+		accepted, cmd := m.acceptMentionSelection()
+		if !accepted {
 			m.hideMentionPopup()
 		}
-		return true, nil
+		return true, cmd
 	}
 	return false, nil
 }
 
-func (m *Model) acceptMentionSelection() bool {
+func (m *Model) acceptMentionSelection() (bool, tea.Cmd) {
 	count := m.mentionPopup.selectableCount()
 	if count == 0 || m.mentionPopup.selected < 0 || m.mentionPopup.selected >= count {
-		return false
+		return false, nil
 	}
 	cursor := textareaCursorByteOffset(m.textarea.Value(), m.textarea.Line(), m.textarea.Column())
 	current, ok := mentions.ActiveTokenAt(m.textarea.Value(), cursor)
 	if !ok || current != m.mentionPopup.token || current != m.mentionPopup.matchesToken ||
 		cursor != m.mentionPopup.matchesCursor || m.mentionPopup.matchesRoot != m.mentionRoot ||
 		m.mentionPopup.matchesGen != m.mentionIndexGeneration || m.mentionPopup.matchesRequest != m.mentionQueryRequest {
-		return false
+		return false, nil
 	}
 
 	inserted := ""
 	if m.mentionPopup.selected < len(m.mentionPopup.agentMatches) {
 		target := m.mentionPopup.agentMatches[m.mentionPopup.selected]
 		if m.agentMentionCapability == nil {
-			_, _ = m.showFooterError("agent mention selection is stale because spawn_agent is no longer available")
-			return false
+			_, cmd := m.showFooterError("agent mention selection is stale because spawn_agent is no longer available")
+			return false, cmd
 		}
 		if err := m.agentMentionCapability.ValidateAgentMention(target.name); err != nil {
-			_, _ = m.showFooterError(fmt.Sprintf("cannot select %s: %v", mentions.InsertAgentText(target.name), err))
-			return false
+			_, cmd := m.showFooterError(fmt.Sprintf("cannot select %s: %v", mentions.InsertAgentText(target.name), err))
+			return false, cmd
 		}
 		inserted = mentions.InsertAgentText(target.name)
 	} else {
 		fileSelection := m.mentionPopup.selected - len(m.mentionPopup.agentMatches)
 		if m.mentionIndex == nil || fileSelection < 0 || fileSelection >= len(m.mentionPopup.matches) {
-			return false
+			return false, nil
 		}
 		match := m.mentionPopup.matches[fileSelection]
 		if match.Candidate < 0 || match.Candidate >= len(m.mentionIndex.Candidates) {
-			return false
+			return false, nil
 		}
 		target := m.mentionIndex.Candidates[match.Candidate]
 		inserted = mentions.InsertText(target.Path, target.Kind == mentions.KindDirectory)
@@ -497,7 +500,7 @@ func (m *Model) acceptMentionSelection() bool {
 	token := current
 	old := m.textarea.Value()
 	if token.Start < 0 || token.End < token.Start || token.End > len(old) || old[token.Start:token.End] == "" {
-		return false
+		return false, nil
 	}
 	suffix := old[token.End:]
 	separator := " "
@@ -511,7 +514,7 @@ func (m *Model) acceptMentionSelection() bool {
 	m.moveTextareaCursorToByteOffset(token.Start + len(inserted) + len(separator))
 	m.updateTextareaHeight()
 	m.hideMentionPopup()
-	return true
+	return true, nil
 }
 
 type mentionDisplayEntry struct {
@@ -722,6 +725,9 @@ func (m *Model) resetMentionsForRoot(dir string) {
 }
 
 func (m *Model) eagerMentionContext(content string) (string, []string) {
+	if m == nil || !m.mentionEnabled {
+		return "", nil
+	}
 	root := m.mentionRoot
 	if root == "" {
 		root = m.effectiveWorkingDir()
