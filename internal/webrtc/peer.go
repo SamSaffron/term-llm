@@ -51,10 +51,50 @@ type signalingMsg struct {
 // requestFrame is a data-channel request from the browser.
 type requestFrame struct {
 	ID      string            `json:"id"`
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
+	Type    string            `json:"type,omitempty"` // empty for requests, "cancel" for request cancellation
+	Method  string            `json:"method,omitempty"`
+	Path    string            `json:"path,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    string            `json:"body,omitempty"` // base64-encoded UTF-8 bytes
+}
+
+type dataChannelRequests struct {
+	mu      sync.Mutex
+	cancels map[string]context.CancelFunc
+}
+
+func newDataChannelRequests() *dataChannelRequests {
+	return &dataChannelRequests{cancels: make(map[string]context.CancelFunc)}
+}
+
+func (r *dataChannelRequests) add(id string, cancel context.CancelFunc) bool {
+	if id == "" || cancel == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.cancels[id]; exists {
+		return false
+	}
+	r.cancels[id] = cancel
+	return true
+}
+
+func (r *dataChannelRequests) remove(id string) {
+	r.mu.Lock()
+	delete(r.cancels, id)
+	r.mu.Unlock()
+}
+
+func (r *dataChannelRequests) cancel(id string) bool {
+	r.mu.Lock()
+	cancel := r.cancels[id]
+	r.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // responseFrame is a data-channel response chunk or completion.
@@ -563,6 +603,7 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 		}
 	}
 	requestSlots := make(chan struct{}, maxDataChannelConcurrentRequests)
+	requests := newDataChannelRequests()
 	stop := make(chan struct{})
 	var stopOnce sync.Once
 	stopDataChannel := func() {
@@ -612,6 +653,20 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			noteActivity()
+
+			var frame requestFrame
+			if err := json.Unmarshal(data, &frame); err != nil || frame.ID == "" {
+				continue
+			}
+			if frame.Type == "cancel" {
+				requests.cancel(frame.ID)
+				continue
+			}
+			if frame.Type != "" {
+				_ = sendDoneFrame(send, frame.ID, http.StatusBadRequest)
+				continue
+			}
+
 			if !tryAcquireDataChannelRequestSlot(dataChannelCtx, stop, requestSlots) {
 				select {
 				case <-dataChannelCtx.Done():
@@ -620,23 +675,33 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 					return
 				default:
 				}
-				if p.isDataChannelCancelRequest(data) {
-					// Cancellation/control requests must not be starved by long-lived
-					// streaming requests occupying every normal slot. Dispatch them
-					// synchronously to keep goroutine usage bounded while still letting
-					// them free a slot held by the stream they cancel.
-					p.dispatchRequest(dataChannelCtx, send, data)
+				if p.isDataChannelResponseCancelRequest(frame) {
+					// Response cancellation/control requests must not be starved by
+					// long-lived streaming requests occupying every normal slot.
+					reqCtx, cancelRequest := context.WithCancel(dataChannelCtx)
+					p.dispatchDecodedRequest(reqCtx, cancelRequest, send, frame)
+					cancelRequest()
 					continue
 				}
-				sendBusyDataChannelRequest(send, data)
+				sendBusyDataChannelRequest(send, frame.ID)
+				continue
+			}
+
+			reqCtx, cancelRequest := context.WithCancel(dataChannelCtx)
+			if !requests.add(frame.ID, cancelRequest) {
+				cancelRequest()
+				<-requestSlots
+				_ = sendDoneFrame(send, frame.ID, http.StatusBadRequest)
 				continue
 			}
 			wg.Add(1)
-			go func(data []byte) {
+			go func(frame requestFrame) {
 				defer wg.Done()
 				defer func() { <-requestSlots }()
-				p.dispatchRequest(dataChannelCtx, send, data)
-			}(data)
+				defer requests.remove(frame.ID)
+				defer cancelRequest()
+				p.dispatchDecodedRequest(reqCtx, cancelRequest, send, frame)
+			}(frame)
 		}
 	}()
 
@@ -697,19 +762,14 @@ func tryAcquireDataChannelRequestSlot(ctx context.Context, stop <-chan struct{},
 	}
 }
 
-func sendBusyDataChannelRequest(send func(string) error, raw []byte) {
-	var frame requestFrame
-	if err := json.Unmarshal(raw, &frame); err != nil || frame.ID == "" {
+func sendBusyDataChannelRequest(send func(string) error, id string) {
+	if id == "" {
 		return
 	}
-	_ = sendDoneFrame(send, frame.ID, http.StatusServiceUnavailable)
+	_ = sendDoneFrame(send, id, http.StatusServiceUnavailable)
 }
 
-func (p *peer) isDataChannelCancelRequest(raw []byte) bool {
-	var frame requestFrame
-	if err := json.Unmarshal(raw, &frame); err != nil {
-		return false
-	}
+func (p *peer) isDataChannelResponseCancelRequest(frame requestFrame) bool {
 	if !strings.EqualFold(frame.Method, http.MethodPost) || !p.validPath(frame.Path) {
 		return false
 	}
@@ -717,11 +777,21 @@ func (p *peer) isDataChannelCancelRequest(raw []byte) bool {
 	return strings.HasPrefix(frame.Path, prefix) && strings.HasSuffix(frame.Path, "/cancel")
 }
 
-// dispatchRequest decodes a requestFrame, validates it, dispatches it to the
-// HTTP handler, and sends response frames via send.
+// dispatchRequest decodes and dispatches a request frame. runDataChannel uses
+// dispatchDecodedRequest directly so it can register cancellation before the
+// handler goroutine starts.
 func (p *peer) dispatchRequest(ctx context.Context, send func(string) error, raw []byte) {
 	var frame requestFrame
 	if err := json.Unmarshal(raw, &frame); err != nil {
+		return
+	}
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	p.dispatchDecodedRequest(reqCtx, cancel, send, frame)
+}
+
+func (p *peer) dispatchDecodedRequest(ctx context.Context, cancel context.CancelFunc, send func(string) error, frame requestFrame) {
+	if frame.ID == "" || frame.Type != "" {
 		return
 	}
 
@@ -747,10 +817,7 @@ func (p *peer) dispatchRequest(ctx context.Context, send func(string) error, raw
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
-	reqCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, frame.Method, "http://localhost"+frame.Path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, frame.Method, "http://localhost"+frame.Path, bodyReader)
 	if err != nil {
 		_ = sendDoneFrame(send, frame.ID, http.StatusBadRequest)
 		return
