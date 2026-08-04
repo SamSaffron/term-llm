@@ -246,6 +246,7 @@ type Model struct {
 	mentionQueryCtx        context.Context
 	mentionQueryCancel     context.CancelFunc
 	mentionPopup           mentionPopupModel
+	agentMentionCapability AgentMentionCapability
 
 	searchEnabled           bool // Web search toggle
 	fastMode                bool // Effective ChatGPT/OpenAI fast service-tier state shown in the footer
@@ -996,6 +997,22 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	model.configureContextManagementForSession()
 	model.initializeMentions()
 	return model
+}
+
+func sessionMessageForInterjection(sessionID, visibleText string, message llm.Message) *session.Message {
+	if len(message.Parts) == 0 {
+		message = llm.UserText(visibleText)
+	}
+	message.Role = llm.RoleUser
+	userMessage := session.NewMessage(sessionID, message, -1)
+	// Interjection parts may include provider-only eager file or delegation
+	// context. Keep visible consumers clean while retaining full Parts.
+	if visibleText != "" {
+		userMessage.TextContent = visibleText
+	} else if userMessage.TextContent == "" {
+		userMessage.TextContent = llm.MessageText(message)
+	}
+	return userMessage
 }
 
 func (m *Model) refreshMCPPickerIfOpen() {
@@ -2791,15 +2808,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.scrollToBottom = true
 			// Persist interjected message to session store, preserving structured parts.
 			if m.store != nil {
-				msg := ev.Message
-				if len(msg.Parts) == 0 {
-					msg = llm.UserText(ev.Text)
-				}
-				msg.Role = llm.RoleUser
-				userMsg := session.NewMessage(m.sess.ID, msg, -1)
-				if userMsg.TextContent == "" {
-					userMsg.TextContent = ev.Text
-				}
+				userMsg := sessionMessageForInterjection(m.sess.ID, ev.Text, ev.Message)
 				_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
 			}
 

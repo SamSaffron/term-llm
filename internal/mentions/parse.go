@@ -33,6 +33,13 @@ func ActiveTokenAt(text string, cursor int) (ActiveToken, bool) {
 			}
 		}
 		tail := text[start+1 : cursor]
+		if strings.HasPrefix(tail, `agent:"`) {
+			query, ok := parseQuotedTail(tail[len(`agent:"`):])
+			if !ok {
+				continue
+			}
+			return ActiveToken{Start: start, End: cursor, Query: agentMentionPrefix + query, Quoted: true}, true
+		}
 		if strings.HasPrefix(tail, "\"") {
 			query, ok := parseQuotedTail(tail[1:])
 			if !ok {
@@ -79,6 +86,11 @@ func isMentionBoundary(r rune) bool {
 // InsertText returns a visible mention token. Paths needing spaces or quoting
 // are escaped using the @"..." form.
 func InsertText(path string, directory bool) string {
+	// The unforced @agent: namespace is reserved for delegation. Prefix a real
+	// colliding project path so submit-time parsing still treats it as a file.
+	if isReservedAgentFilePayload(path) {
+		path = "./" + path
+	}
 	if directory && !strings.HasSuffix(path, "/") {
 		path += "/"
 	}
@@ -147,6 +159,9 @@ func collectSubmittedMatches(text string, quoted bool) []submittedMatch {
 func parseSubmittedAt(text string, at int) (submittedMatch, bool) {
 	start := at + 1
 	if start >= len(text) {
+		return submittedMatch{}, false
+	}
+	if isReservedAgentFilePayload(text[start:]) {
 		return submittedMatch{}, false
 	}
 	if text[start] != '"' {

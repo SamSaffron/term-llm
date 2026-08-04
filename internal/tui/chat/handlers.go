@@ -968,9 +968,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				// own viewport/append cache has been invalidated.
 				return updated, tea.Sequence(tea.ClearScreen, cmd)
 			}
-			content := m.expandPastePlaceholders(raw)
+			content := m.expandedPastePlaceholders(raw)
+			delegationContext, err := m.agentMentionDelegationContext(content)
+			if err != nil {
+				m.hideMentionPopup()
+				return m.showFooterError(err.Error())
+			}
 			parts := m.imagePartList()
 			hasImages := len(parts) > 0
+			if delegationContext != "" {
+				parts = append(parts, llm.Part{Type: llm.PartText, Text: delegationContext})
+			}
 			if eagerContext, _ := m.eagerMentionContext(content); eagerContext != "" {
 				parts = append(parts, llm.Part{Type: llm.PartFile, Text: eagerContext})
 			}
@@ -978,6 +986,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.phase = "Type to interject, attach an image, or press Esc to cancel"
 				return m, nil
 			}
+			m.pasteChunks = nil
 
 			interjectionID := m.nextPendingInterjectionID()
 			if action, ok := llm.ClassifyInterruptImmediate(content); ok && !hasImages {
@@ -1148,7 +1157,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Expand inline paste placeholders back to real content before sending.
-		content = m.expandPastePlaceholders(content)
+		content = m.expandedPastePlaceholders(content)
 
 		// Send message if not empty, or if there are pasted image attachments.
 		if content != "" || len(m.images) > 0 {
@@ -1438,16 +1447,21 @@ func (m *Model) moveTextareaCursorToByteOffset(offset int) {
 	m.textarea.SetCursorColumn(column)
 }
 
-// expandPastePlaceholders replaces all inline paste placeholders with their
-// actual content. Clears the pasteChunks map after expansion.
-func (m *Model) expandPastePlaceholders(content string) string {
-	if len(m.pasteChunks) == 0 {
-		return content
-	}
+// expandedPastePlaceholders replaces inline placeholders without mutating the
+// composer. Submission validation uses this so a rejected @agent mention keeps
+// the draft and its paste chunks intact.
+func (m *Model) expandedPastePlaceholders(content string) string {
 	for id, text := range m.pasteChunks {
 		placeholder := pastePlaceholder(id, text)
 		content = strings.ReplaceAll(content, placeholder, text)
 	}
+	return content
+}
+
+// expandPastePlaceholders replaces all inline paste placeholders with their
+// actual content and consumes the stored chunks.
+func (m *Model) expandPastePlaceholders(content string) string {
+	content = m.expandedPastePlaceholders(content)
 	m.pasteChunks = nil
 	return content
 }
@@ -1653,12 +1667,11 @@ func (m *Model) restorePendingInterjectionDraft() {
 		var textParts []string
 		var images []ImageAttachment
 		for _, entry := range entries {
+			hasTextPart := false
 			for _, part := range entry.Message.Parts {
 				switch part.Type {
 				case llm.PartText:
-					if strings.TrimSpace(part.Text) != "" {
-						textParts = append(textParts, part.Text)
-					}
+					hasTextPart = true
 				case llm.PartImage:
 					if part.ImageData != nil && part.ImageData.Base64 != "" {
 						data, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
@@ -1668,7 +1681,12 @@ func (m *Model) restorePendingInterjectionDraft() {
 					}
 				}
 			}
-			if len(entry.Message.Parts) == 0 && strings.TrimSpace(entry.DisplayText) != "" {
+			// DisplayText is the user-visible interjection text. Full message parts
+			// may also contain provider-only eager-file or agent-delegation context,
+			// which must never be restored into the editable composer.
+			if hasTextPart && strings.TrimSpace(entry.DisplayText) != "" {
+				textParts = append(textParts, entry.DisplayText)
+			} else if len(entry.Message.Parts) == 0 && strings.TrimSpace(entry.DisplayText) != "" {
 				textParts = append(textParts, entry.DisplayText)
 			}
 		}

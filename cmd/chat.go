@@ -602,6 +602,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		chatPlatformMessage = agent.PlatformMessages.For("chat")
 	}
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
+	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: engine, manager: toolMgr})
 	model.ConfigureTerminalTitleEnvironment(chat.TerminalTitleEnvironmentFromEnv())
 	terminalTitleRestored := false
 	restoreTerminalTitle := func() {

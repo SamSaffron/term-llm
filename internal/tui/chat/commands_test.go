@@ -633,7 +633,9 @@ func TestCmdHelpOpensModal(t *testing.T) {
 		"Ctrl+J / Alt+Enter / Shift+Enter",
 		"Pickers and completions",
 		"@query",
-		"Find and attach a project file or directory",
+		"Find permitted agents and project files/directories",
+		"@agent:name",
+		"Request delegation through authorized spawn_agent",
 		"Ctrl+T",
 		"Close picker",
 	} {

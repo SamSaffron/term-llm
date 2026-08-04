@@ -365,6 +365,12 @@ func (m *Model) ensureContextMessages() {
 }
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	delegationContext, err := m.agentMentionDelegationContext(content)
+	if err != nil {
+		m.hideMentionPopup()
+		return m.showFooterError(err.Error())
+	}
+
 	m.selection = Selection{}
 	m.interruptNotice = ""
 	if m.worktreeOperationBusy() {
@@ -377,8 +383,11 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	}
 	m.recordCurrentModelUse()
 
-	// Build the full message content including file attachments
-	fullContent := content
+	// Build provider-facing content separately from visible/session text. Agent
+	// delegation instructions follow the visible request and precede all file
+	// bodies; neither hidden context is copied into TextContent.
+	fullContent := content + delegationContext
+	displayText := content
 	var fileNames []string
 
 	if len(m.files) > 0 {
@@ -388,9 +397,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 			fileNames = append(fileNames, f.Name)
 			filesContent.WriteString(llm.FormatEmbeddedFileText(f.Name, "text/plain", f.Content))
 		}
-		fullContent += filesContent.String()
+		embeddedFiles := filesContent.String()
+		fullContent += embeddedFiles
+		displayText += embeddedFiles
 	}
-	displayText := fullContent
 
 	mentionContext, mentionLabels := m.eagerMentionContext(content)
 	fullContent += mentionContext

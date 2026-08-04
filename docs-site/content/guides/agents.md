@@ -137,7 +137,7 @@ Built-in agents that currently default to `search: true`: `agent-builder`, `web-
 
 ## Handing a conversation to another agent
 
-In chat, use `/handover` to prepare context for a different agent and start it in a new session:
+In chat, use `/handover` to prepare context for a different agent and start it in a new session. This is different from a composer `@agent:reviewer` mention: the mention keeps the current active agent and asks its model to delegate through the current session's authorized `spawn_agent` tool.
 
 ```text
 /handover @developer
