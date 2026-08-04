@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,6 +142,38 @@ func (m *mockRunner) GetCallCount() int {
 
 func (m *mockRunner) GetMaxRunning() int {
 	return int(atomic.LoadInt32(&m.maxRunning))
+}
+
+type mockCatalogRunner struct {
+	*mockRunner
+	names        []string
+	invalid      map[string]error
+	listErr      error
+	resolveCount int
+}
+
+func newMockCatalogRunner(names ...string) *mockCatalogRunner {
+	return &mockCatalogRunner{mockRunner: newMockRunner(), names: names, invalid: make(map[string]error)}
+}
+
+func (m *mockCatalogRunner) ListSpawnAgentNames() ([]string, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return append([]string(nil), m.names...), nil
+}
+
+func (m *mockCatalogRunner) ResolveSpawnAgent(name string) error {
+	m.resolveCount++
+	if err := m.invalid[name]; err != nil {
+		return err
+	}
+	for _, candidate := range m.names {
+		if candidate == name {
+			return nil
+		}
+	}
+	return errors.New("definition not found")
 }
 
 // Helper to create args JSON
@@ -546,6 +579,168 @@ func TestSpawnAgentTool_AllowedAgentsWhitelist(t *testing.T) {
 				if r.Error != "" {
 					t.Errorf("unexpected error: %s", r.Error)
 				}
+			}
+		})
+	}
+}
+
+func TestSpawnAgentToolCapabilityCatalogIntersectsLivePolicy(t *testing.T) {
+	runner := newMockCatalogRunner("reviewer", "codebase", "Codebase", "missing", "reviewer")
+	runner.invalid["missing"] = errors.New("invalid yaml")
+	tool := NewSpawnAgentTool(SpawnConfig{
+		MaxDepth:       2,
+		MaxParallel:    1,
+		DefaultTimeout: 30,
+		AllowedAgents:  []string{"codebase", "reviewer", "missing"},
+	}, 0)
+	tool.SetRunner(runner)
+
+	names, err := tool.PermittedAgentNames()
+	if err != nil {
+		t.Fatalf("PermittedAgentNames() error = %v", err)
+	}
+	want := []string{"codebase", "reviewer"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
+		t.Fatalf("PermittedAgentNames() = %#v, want %#v", names, want)
+	}
+	if err := tool.CanSpawnAgent("Codebase"); err == nil || !strings.Contains(err.Error(), "allowed list") {
+		t.Fatalf("case-sensitive whitelist error = %v", err)
+	}
+	if err := tool.CanSpawnAgent("missing"); err == nil || !strings.Contains(err.Error(), "unavailable or invalid") {
+		t.Fatalf("invalid definition error = %v", err)
+	}
+	if runner.GetCallCount() != 0 {
+		t.Fatalf("capability checks executed runner %d times", runner.GetCallCount())
+	}
+}
+
+func TestSpawnAgentToolCapabilityEmptyWhitelistDepthAndCatalogFailures(t *testing.T) {
+	runner := newMockCatalogRunner("zeta", "alpha")
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 1, MaxParallel: 1, DefaultTimeout: 30}, 0)
+	tool.SetRunner(runner)
+	names, err := tool.PermittedAgentNames()
+	if err != nil || len(names) != 2 || names[0] != "alpha" || names[1] != "zeta" {
+		t.Fatalf("unrestricted names = %#v, err=%v", names, err)
+	}
+
+	tool.SetDepth(1)
+	if _, err := tool.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("depth-exhausted list error = %v", err)
+	}
+	if err := tool.CanSpawnAgent("alpha"); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("depth-exhausted exact error = %v", err)
+	}
+
+	withoutRunner := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+	if _, err := withoutRunner.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "runner") {
+		t.Fatalf("missing runner list error = %v", err)
+	}
+	if err := withoutRunner.CanSpawnAgent("alpha"); err == nil || !strings.Contains(err.Error(), "runner") {
+		t.Fatalf("missing runner exact error = %v", err)
+	}
+
+	withoutCatalog := NewSpawnAgentTool(DefaultSpawnConfig(), 0)
+	withoutCatalog.SetRunner(newMockRunner())
+	if _, err := withoutCatalog.PermittedAgentNames(); err == nil || !strings.Contains(err.Error(), "catalog") {
+		t.Fatalf("missing catalog list error = %v", err)
+	}
+	if err := withoutCatalog.CanSpawnAgent("alpha"); err == nil || !strings.Contains(err.Error(), "catalog") {
+		t.Fatalf("missing catalog exact error = %v", err)
+	}
+}
+
+func TestSpawnAgentToolCapabilityDoesNotExecuteUntilEngineReceivesModelToolCall(t *testing.T) {
+	runner := newMockCatalogRunner("codebase")
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 2, MaxParallel: 1, DefaultTimeout: 30}, 0)
+	tool.SetRunner(runner)
+	if err := tool.CanSpawnAgent("codebase"); err != nil {
+		t.Fatal(err)
+	}
+	if runner.GetCallCount() != 0 {
+		t.Fatal("read-only capability launched an agent")
+	}
+
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("spawn-1", SpawnAgentToolName, SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect the requested code"}).
+		AddTextResponse("done")
+	engine := llm.NewEngine(provider, nil)
+	engine.RegisterTool(tool)
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("inspect @agent:codebase")},
+		Tools:    []llm.ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := runner.GetCalls()
+	if len(calls) != 1 || calls[0].AgentName != "codebase" || calls[0].Prompt != "inspect the requested code" {
+		t.Fatalf("engine-routed calls = %#v", calls)
+	}
+}
+
+func TestSpawnAgentToolModelCallStillEnforcesPolicyAfterMentionValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*llm.Engine, *SpawnAgentTool)
+	}{
+		{
+			name: "engine filter changed",
+			mutate: func(engine *llm.Engine, _ *SpawnAgentTool) {
+				engine.SetAllowedToolsFilter([]string{})
+			},
+		},
+		{
+			name: "depth exhausted",
+			mutate: func(_ *llm.Engine, tool *SpawnAgentTool) {
+				tool.SetDepth(1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := newMockCatalogRunner("codebase")
+			tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 1, MaxParallel: 1, DefaultTimeout: 30}, 0)
+			tool.SetRunner(runner)
+			if err := tool.CanSpawnAgent("codebase"); err != nil {
+				t.Fatalf("mention-time validation = %v", err)
+			}
+
+			provider := llm.NewMockProvider("mock").
+				AddToolCall("spawn-late", SpawnAgentToolName, SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect"}).
+				AddTextResponse("done")
+			engine := llm.NewEngine(provider, nil)
+			engine.RegisterTool(tool)
+			tt.mutate(engine, tool)
+
+			stream, err := engine.Stream(context.Background(), llm.Request{
+				Messages: []llm.Message{llm.UserText("inspect @agent:codebase")},
+				Tools:    []llm.ToolSpec{tool.Spec()},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			for {
+				_, err := stream.Recv()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if runner.GetCallCount() != 0 {
+				t.Fatalf("late policy change was bypassed; runner calls=%d", runner.GetCallCount())
 			}
 		})
 	}

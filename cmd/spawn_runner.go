@@ -211,6 +211,49 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 	}
 }
 
+// ResolveSpawnAgent validates one exact registry lookup key using the same
+// registry and definition validation path as execution.
+func (r *SpawnAgentRunner) ResolveSpawnAgent(name string) error {
+	_, err := r.resolveSpawnAgent(name)
+	return err
+}
+
+// ListSpawnAgentNames returns only exact registry keys whose definitions can be
+// loaded and validated by this runner. Invalid definitions are omitted.
+func (r *SpawnAgentRunner) ListSpawnAgentNames() ([]string, error) {
+	if r == nil || r.registry == nil {
+		return nil, errors.New("spawn agent registry is not configured")
+	}
+	names, err := r.registry.ListNames()
+	if err != nil {
+		return nil, fmt.Errorf("list agent registry: %w", err)
+	}
+	valid := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, err := r.resolveSpawnAgent(name); err == nil {
+			valid = append(valid, name)
+		}
+	}
+	return valid, nil
+}
+
+func (r *SpawnAgentRunner) resolveSpawnAgent(name string) (*agents.Agent, error) {
+	if r == nil || r.registry == nil {
+		return nil, errors.New("spawn agent registry is not configured")
+	}
+	if strings.TrimSpace(name) != name || name == "" {
+		return nil, fmt.Errorf("invalid agent lookup name %q", name)
+	}
+	agent, err := r.registry.Get(name)
+	if err != nil {
+		return nil, fmt.Errorf("load agent '%s': %w", name, err)
+	}
+	if err := agent.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid agent '%s': %w", name, err)
+	}
+	return agent, nil
+}
+
 // RunChild executes the generic child-runtime contract used by direct isolated
 // skills. spawn_agent is an adapter over the same internal path.
 func (r *SpawnAgentRunner) RunChild(ctx context.Context, request runpkg.ChildRunRequest, callback runpkg.ChildRunEventCallback) (runpkg.ChildRunResult, error) {
@@ -248,17 +291,17 @@ func (r *SpawnAgentRunner) runChildInternal(ctx context.Context, request runpkg.
 	if agentName == "" {
 		agentName = "developer"
 	}
-	agent, err := r.registry.Get(agentName)
+	agent, err := r.resolveSpawnAgent(agentName)
 	if err != nil {
-		return emptyResult, fmt.Errorf("load agent '%s': %w", agentName, err)
+		return emptyResult, err
 	}
 	if strings.TrimSpace(request.ModelOverride) != "" {
 		agentCopy := *agent
 		agentCopy.Model = strings.TrimSpace(request.ModelOverride)
 		agent = &agentCopy
-	}
-	if err := agent.Validate(); err != nil {
-		return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
+		if err := agent.Validate(); err != nil {
+			return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
+		}
 	}
 	request.AgentName = agentName
 

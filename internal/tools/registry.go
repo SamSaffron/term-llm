@@ -455,11 +455,19 @@ func (m *ToolManager) GetSpecs() []llm.ToolSpec {
 
 // GetSpawnAgentTool returns the spawn_agent tool if enabled, for runner configuration.
 func (m *ToolManager) GetSpawnAgentTool() *SpawnAgentTool {
+	if m == nil {
+		return nil
+	}
 	return m.Registry.GetSpawnAgentTool()
 }
 
 // GetSpawnAgentTool returns the spawn_agent tool if enabled.
 func (r *LocalToolRegistry) GetSpawnAgentTool() *SpawnAgentTool {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	tool, ok := r.tools[SpawnAgentToolName]
 	if !ok {
 		return nil

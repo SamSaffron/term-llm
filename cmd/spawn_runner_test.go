@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,20 @@ type capturingSpawnRunner struct {
 	lastPrompt    string
 	lastDepth     int
 	lastOptions   tools.SpawnAgentRunOptions
+	catalogNames  []string
+}
+
+func (r *capturingSpawnRunner) ListSpawnAgentNames() ([]string, error) {
+	return append([]string(nil), r.catalogNames...), nil
+}
+
+func (r *capturingSpawnRunner) ResolveSpawnAgent(name string) error {
+	for _, candidate := range r.catalogNames {
+		if candidate == name {
+			return nil
+		}
+	}
+	return errors.New("definition not found")
 }
 
 func (r *capturingSpawnRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (tools.SpawnAgentRunResult, error) {
@@ -140,6 +155,50 @@ func TestSpawnRunnerWaitContendsWithRunAdmission(t *testing.T) {
 	case <-waitDone:
 	case <-time.After(time.Second):
 		t.Fatal("Wait() did not return after all admitted runs ended")
+	}
+}
+
+func TestSpawnRunnerCatalogReturnsValidatedRegistryLookupKeys(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	writeAgent := func(dir, body string) {
+		t.Helper()
+		path := filepath.Join(root, dir)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "agent.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAgent("lookup-key", "name: Display Name\ndescription: valid\n")
+	writeAgent("name with spaces", "name: Name With Spaces\ndescription: valid\n")
+	writeAgent("invalid", "name: invalid\ntools:\n  enabled: [shell]\n  disabled: [read_file]\n")
+	writeAgent("malformed", "name: [unterminated\n")
+
+	registry, err := agents.NewRegistry(agents.RegistryConfig{UseBuiltin: false, SearchPaths: []string{root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &SpawnAgentRunner{registry: registry}
+	names, err := runner.ListSpawnAgentNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "lookup-key" || names[1] != "name with spaces" {
+		t.Fatalf("catalog names = %#v, want validated registry lookup keys", names)
+	}
+	if err := runner.ResolveSpawnAgent("lookup-key"); err != nil {
+		t.Fatalf("ResolveSpawnAgent(valid) = %v", err)
+	}
+	if err := runner.ResolveSpawnAgent("name with spaces"); err != nil {
+		t.Fatalf("ResolveSpawnAgent(spaced lookup key) = %v", err)
+	}
+	if err := runner.ResolveSpawnAgent("Display Name"); err == nil {
+		t.Fatal("YAML display name unexpectedly acted as a registry alias")
+	}
+	if err := runner.ResolveSpawnAgent("invalid"); err == nil || !strings.Contains(err.Error(), "invalid agent") {
+		t.Fatalf("ResolveSpawnAgent(invalid) = %v", err)
 	}
 }
 
