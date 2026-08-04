@@ -605,6 +605,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}()
 	}
 
+	if isFirstPartyUIResponseRequest(r) {
+		s.augmentMessagesWithMentions(ctx, runtime, sessionID, req.WorktreeDir, inputMessages)
+	}
+
 	// Idempotency is currently backed by response-run event replay, so only
 	// streaming stateful requests register keys. Non-streaming responses are not
 	// cached/replayed here.

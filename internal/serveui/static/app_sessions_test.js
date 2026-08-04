@@ -3017,6 +3017,29 @@ async function testConvertServerMessagesCorrelatesSuccessfulPlanResults() {
   pass(name);
 }
 
+async function testConvertServerMessagesRestoresMentionAttachments() {
+  const name = 'server mention attachments restore without provider-only context';
+  const { app } = await createSessionsHarness();
+  const converted = app.convertServerMessages([{
+    id: 7,
+    sequence: 7,
+    role: 'user',
+    created_at: 1000,
+    parts: [
+      { type: 'text', text: 'inspect @internal/llm/types.go' },
+      { type: 'file', text: 'types.go' },
+    ],
+  }]);
+  const message = converted[0];
+  if (converted.length !== 1 || message?.content !== 'inspect @internal/llm/types.go'
+      || message?.attachments?.length !== 1 || message.attachments[0]?.name !== 'types.go'
+      || message.attachments[0]?.mention !== true) {
+    fail(name, 'mention attachment conversion was incorrect', JSON.stringify(converted));
+    return;
+  }
+  pass(name);
+}
+
 async function testConvertServerMessagesRebasesHubImageURLs() {
   const name = 'server message conversion rebases hub image URLs';
   const { app } = await createSessionsHarness({
@@ -7147,6 +7170,7 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   await testConvertServerMessagesAttachesToolResultImages();
   await testConvertServerMessagesAttachesToolErrorsWithoutPhantoms();
   await testConvertServerMessagesCorrelatesSuccessfulPlanResults();
+  await testConvertServerMessagesRestoresMentionAttachments();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionPruningDestroysConversationControllers();

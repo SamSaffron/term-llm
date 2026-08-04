@@ -406,6 +406,12 @@ const convertServerMessages = (serverMessages, options = {}) => {
             type: part.mime_type || 'image/*',
             dataURL: rebaseMessageAssetURL(part.image_url)
           });
+        } else if (part.type === 'file' && part.text) {
+          attachments.push({
+            name: part.text,
+            type: 'text/plain',
+            mention: true
+          });
         } else if (part.type === 'text' && part.text) {
           textParts.push(part.text);
         }

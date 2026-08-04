@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/mentions"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -228,14 +229,27 @@ type Model struct {
 	handoverToolDoneCh           chan<- bool            // Signal back to initiate_handover tool
 
 	// Pending message context
-	files                   []FileAttachment // Attached files for next message
-	images                  []ImageAttachment
-	selectedImage           int            // -1 means no image chip selected
-	pasteChunks             map[int]string // Collapsed paste placeholders → actual content
-	pasteSeq                int            // Incrementing ID for paste placeholders
-	searchEnabled           bool           // Web search toggle
-	fastMode                bool           // Effective ChatGPT/OpenAI fast service-tier state shown in the footer
-	fastProviderDefault     bool           // Provider config requests fast by default; inherited unless overridden in-session
+	files         []FileAttachment // Attached files for next message
+	images        []ImageAttachment
+	selectedImage int            // -1 means no image chip selected
+	pasteChunks   map[int]string // Collapsed paste placeholders → actual content
+	pasteSeq      int            // Incrementing ID for paste placeholders
+
+	// Project @ autocomplete. The index and queries are background/cancellable;
+	// selections remain ordinary text and are resolved only when submitted.
+	mentionEnabled         bool
+	mentionRoot            string
+	mentionIndex           *mentions.Snapshot
+	mentionIndexGeneration uint64
+	mentionBuildCancel     context.CancelFunc
+	mentionQueryRequest    uint64
+	mentionQueryCtx        context.Context
+	mentionQueryCancel     context.CancelFunc
+	mentionPopup           mentionPopupModel
+
+	searchEnabled           bool // Web search toggle
+	fastMode                bool // Effective ChatGPT/OpenAI fast service-tier state shown in the footer
+	fastProviderDefault     bool // Provider config requests fast by default; inherited unless overridden in-session
 	fastOverride            serviceTierOverride
 	fastMetadataLoaded      bool // ChatGPT model metadata has been loaded
 	fastMetadataStale       bool // Loaded metadata came from stale cache and should refresh in background
@@ -980,6 +994,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	}
 	model.configureImageRenderer()
 	model.configureContextManagementForSession()
+	model.initializeMentions()
 	return model
 }
 
@@ -1596,6 +1611,9 @@ func (m *Model) Init() tea.Cmd {
 	if cmd := terminalWorkingDirectoryCmd(m.effectiveWorkingDir()); cmd != nil {
 		baseCmds = append(baseCmds, cmd)
 	}
+	if cmd := m.startMentionIndex(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
 
 	// Set markdown renderer for chat renderer
 	if m.chatRenderer != nil {
@@ -1788,6 +1806,9 @@ func isParentChatMessage(msg tea.Msg) bool {
 		ApprovalRequestMsg,
 		AskUserRequestMsg,
 		HandoverRequestMsg,
+		mentionIndexReadyMsg,
+		mentionDebounceMsg,
+		mentionMatchesMsg,
 		SubagentProgressMsg:
 		return true
 	default:
@@ -1881,6 +1902,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// session-counter mutations only on Bubble Tea's Update goroutine.
 		m.recordCompactionUsage(context.Background(), usageMsg.sessionID, usageMsg.model, usageMsg.usage)
 		return m, nil
+	}
+	if handled, mentionCmd := m.handleMentionMessage(msg); handled {
+		return m, mentionCmd
 	}
 	if handled, cmd := m.handleTerminalTitleProviderMsg(msg); handled {
 		return m, cmd

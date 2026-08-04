@@ -466,6 +466,7 @@ const sendMessage = async (options = {}) => {
   persistAndRefreshShell();
   if (!batchingFollowUps) {
     elements.promptInput.value = '';
+    app.hideSlashCommands?.();
     if (!Array.isArray(options.attachments)) {
       state.attachments = [];
       renderAttachments();

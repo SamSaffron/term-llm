@@ -227,6 +227,7 @@ type Message struct {
 	CacheAnchor             bool   // provider should apply cache_control to this message (Anthropic-specific)
 	ApprovalRole            string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
 	ClientMessageID         string `json:",omitempty"` // Stable identity for first-party user intent; providers ignore it.
+	DisplayText             string `json:",omitempty"` // Optional persistence/UI text when provider-only context is present.
 	ResponseID              string `json:",omitempty"` // Stable response owner for persisted/UI projection identity; providers ignore it.
 	AssistantSegmentOrdinal int    `json:",omitempty"` // Response-scoped assistant segment identity; -1 when not applicable.
 	SegmentStartSequence    int64  `json:",omitempty"` // First response event sequence for this assistant segment, when known.

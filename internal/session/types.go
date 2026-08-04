@@ -234,6 +234,9 @@ func NewMessage(sessionID string, msg llm.Message, sequence int) *Message {
 		m.AssistantSegmentOrdinal = -1
 	}
 	m.TextContent = m.ExtractTextContent()
+	if msg.DisplayText != "" {
+		m.TextContent = msg.DisplayText
+	}
 	return m
 }
 

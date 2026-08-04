@@ -3325,6 +3325,12 @@
       font-weight: 600;
     }
 
+    .mention-completion-match {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
     .slash-command-description {
       min-width: 0;
       color: var(--text-muted);

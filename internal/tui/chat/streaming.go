@@ -390,6 +390,11 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		}
 		fullContent += filesContent.String()
 	}
+	displayText := fullContent
+
+	mentionContext, mentionLabels := m.eagerMentionContext(content)
+	fullContent += mentionContext
+	fileNames = append(fileNames, mentionLabels...)
 
 	imageLabels := m.imageAttachmentLabels()
 	parts := m.imagePartList()
@@ -399,7 +404,6 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		parts = []llm.Part{{Type: llm.PartText, Text: fullContent}}
 	}
 
-	displayText := fullContent
 	if strings.TrimSpace(displayText) == "" && len(imageLabels) > 0 {
 		displayText = "[" + strings.Join(imageLabels, ", ") + "]"
 	}
@@ -486,6 +490,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// Clear input and attachments
 	m.resetPromptHistory()
 	m.setTextareaValue("")
+	m.hideMentionPopup()
 	m.files = nil
 	m.images = nil
 	m.selectedImage = -1

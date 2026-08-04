@@ -50,6 +50,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	}
 	legacyProductionLines := 0
 	transportLines := map[string]int{}
+	completionLines := 0
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
@@ -62,18 +63,23 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 		lineCount := len(strings.Split(strings.TrimSuffix(string(body), "\n"), "\n"))
 		if name == "app-network.js" || name == "app-webrtc.js" {
 			transportLines[name] = lineCount
+		} else if name == "slash-commands.js" {
+			completionLines = lineCount
 		} else {
 			legacyProductionLines += lineCount
 		}
 	}
-	// Keep the new transport boundary from weakening the pre-existing ratchet:
-	// legacy production code must still decrease, while each transport module
-	// gets a narrow independent ceiling tied to its audited responsibility.
+	// Keep focused transport/completion boundaries from weakening the pre-existing
+	// ratchet: legacy production code must still decrease, while each extracted
+	// module gets a narrow independent ceiling tied to its audited responsibility.
 	if legacyProductionLines >= 20570 {
 		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20570", legacyProductionLines)
 	}
 	if transportLines["app-network.js"] > 600 || transportLines["app-webrtc.js"] > 725 {
 		t.Fatalf("transport modules grew beyond focused budgets: %v", transportLines)
+	}
+	if completionLines > 450 {
+		t.Fatalf("composer completion controller=%d lines, budget=450", completionLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -624,6 +630,28 @@ func TestSlashCommandsJS(t *testing.T) {
 	t.Log(string(out))
 	if err != nil {
 		t.Fatalf("slash_commands_test.js failed: %v", err)
+	}
+}
+
+func TestMentionCompletionsJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS mention-completion tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "mention_completions_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("mention_completions_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("mention_completions_test.js failed: %v", err)
 	}
 }
 

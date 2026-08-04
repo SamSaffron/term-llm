@@ -139,6 +139,7 @@ const switchToDraftSession = async (options = {}) => {
     restoreDraftMessageForSession('', { replace: true });
   }
   app.activateDiffSidebar?.('');
+  app.invalidateMentionCompletions?.();
   void app.refreshSkillCommands?.('');
 
   if (options.focusPrompt) {
@@ -243,6 +244,7 @@ const continueSessionSwitchHydration = (session, switchGeneration, options = {})
   if (isSessionIdentityResolved(session)) {
     void Promise.resolve().then(() => {
       if (!isCurrent()) return null;
+      app.invalidateMentionCompletions?.();
       return app.refreshSkillCommands?.(sessionId);
     }).catch(() => {});
   }

@@ -632,11 +632,17 @@ func TestCmdHelpOpensModal(t *testing.T) {
 		"Jump between user prompts",
 		"Ctrl+J / Alt+Enter / Shift+Enter",
 		"Pickers and completions",
+		"@query",
+		"Find and attach a project file or directory",
 		"Ctrl+T",
+		"Close picker",
 	} {
 		if !strings.Contains(rm.dialog.Content(), want) {
 			t.Fatalf("help content missing %q: %q", want, rm.dialog.Content())
 		}
+	}
+	if strings.Contains(rm.dialog.Content(), "Esc or Ctrl+C") {
+		t.Fatalf("help incorrectly advertises Ctrl+C as picker close: %q", rm.dialog.Content())
 	}
 }
 

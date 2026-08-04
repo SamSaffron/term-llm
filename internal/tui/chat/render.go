@@ -132,6 +132,15 @@ func (m *Model) View() (view tea.View) {
 		renderedLines += 2
 	}
 
+	// Project mention popup (if visible)
+	if m.mentionPopup.IsVisible() {
+		popup := m.renderMentionPopup()
+		b.WriteString(popup)
+		renderedLines += lipgloss.Height(popup)
+		b.WriteString("\n")
+		renderedLines++
+	}
+
 	// Completions popup (if visible)
 	if m.completions.IsVisible() {
 		completions := m.completions.View()
@@ -514,7 +523,7 @@ func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string 
 	// In alt-screen mode Bubble Tea v2 clips anything that extends beyond the
 	// fixed terminal height, so popups must be composited into the existing frame
 	// instead of being appended below it.
-	if !m.completions.IsVisible() && !m.dialog.IsOpen() {
+	if !m.completions.IsVisible() && !m.mentionPopup.IsVisible() && !m.dialog.IsOpen() {
 		return base
 	}
 
@@ -622,6 +631,9 @@ func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string 
 	}
 	if m.completions.IsVisible() {
 		stackPanel(m.completions.View())
+	}
+	if m.mentionPopup.IsVisible() {
+		stackPanel(m.renderMentionPopup())
 	}
 
 	return strings.Join(lines, "\n")

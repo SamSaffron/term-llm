@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mentions"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
 	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
@@ -1168,6 +1169,9 @@ type serveServer struct {
 	skillsConfig            *config.SkillsConfig
 	skillsCacheMu           sync.Mutex
 	skillsByDir             map[string]serveSkillsCacheEntry
+	mentionsCacheMu         sync.Mutex
+	mentionsByRoot          map[string]*serveMentionCacheEntry
+	mentionBuildFn          func(context.Context, string, mentions.BuildOptions) (*mentions.Snapshot, error)
 	skillRunsMu             sync.Mutex
 	skillRuns               map[string]*serveSkillRun
 	skillRunsWG             sync.WaitGroup
@@ -1206,6 +1210,9 @@ func (s *serveServer) Start() error {
 	s.skillsCacheMu.Lock()
 	s.skillsByDir = nil
 	s.skillsCacheMu.Unlock()
+	s.mentionsCacheMu.Lock()
+	s.mentionsByRoot = nil
+	s.mentionsCacheMu.Unlock()
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
 		Handler:           s.httpHandler(),
@@ -1248,6 +1255,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/healthz", s.handleHealth)
 	inner.HandleFunc("/v1/providers", s.auth(s.cors(s.handleProviders)))
 	inner.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
+	inner.HandleFunc("/v1/mentions/search", s.auth(s.cors(s.handleMentionSearch)))
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))

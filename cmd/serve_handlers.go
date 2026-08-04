@@ -1440,13 +1440,25 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			result = append(result, entry)
 			continue
 		}
+		embeddedFiles := make(map[string]bool)
 		for _, p := range msg.Parts {
 			switch p.Type {
 			case llm.PartText:
-				if p.Text != "" {
+				text := p.Text
+				if msg.Role == llm.RoleUser {
+					for _, name := range llm.ExtractEmbeddedFileNames(text) {
+						if embeddedFiles[name] {
+							continue
+						}
+						embeddedFiles[name] = true
+						entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "file", Text: name})
+					}
+					text = llm.StripEmbeddedFileText(text)
+				}
+				if text != "" {
 					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
 						Type: "text",
-						Text: p.Text,
+						Text: text,
 					})
 				}
 			case llm.PartImage:
@@ -1879,6 +1891,9 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
+	mentionMessages := []llm.Message{msg}
+	s.augmentMessagesWithMentions(r.Context(), rt, sessionID, "", mentionMessages)
+	msg = mentionMessages[0]
 
 	fastProvider, fastErr := llm.NewFastProvider(s.cfgRef, rt.providerKey)
 	if fastErr != nil {

@@ -83,6 +83,12 @@ In `term-llm chat`, `Ctrl+F` or `/file <path>` attaches a local text file to the
 
 Pasting an image from the clipboard attaches it as an image when the terminal/clipboard integration exposes image data. Pasted images use the same 20 MB decoded limit as web/API uploads.
 
+#### Project `@` mentions
+
+Type `@` in the TUI or Web chat composer to fuzzy-find a file or directory in the active project or worktree. Press Enter or Tab to select it. You can also type a mention directly, including `@path/to/file`, `@"path with spaces"`, and `@file.go#L10-20` for a line range.
+
+Mentioned text files are read when the message is submitted and appear in the conversation's `[with: ...]` annotation. Directories attach a non-recursive name listing. An explicit mention authorizes that bounded read, which remains confined to the active project or worktree; missing, escaped, binary, oversized, or otherwise unreadable paths do not block sending. Set `TERM_LLM_AT_MENTIONS=0` to disable mentions.
+
 ### Chat Slash Commands
 
 | Command | Description |

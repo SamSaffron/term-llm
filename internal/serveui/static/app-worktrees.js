@@ -76,6 +76,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
   const chooseWorktree = (row) => {
     state.selectedWorktreeDir = row && !row.root ? row.dir : '';
     state.selectedWorktreeName = row && !row.root ? row.name : '';
+    worktreeApp.invalidateMentionCompletions?.();
     renderWorktreeChip();
     closeMenu();
   };

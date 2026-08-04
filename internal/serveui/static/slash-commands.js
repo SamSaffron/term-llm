@@ -71,6 +71,7 @@ const setSkillCommands = (payload) => {
     const markers = [`skill:${source}`];
     if (isolated) markers.push('isolated');
     skillCommands.push({
+      type: 'slash',
       name,
       displayName: hint ? `${name} ${hint}` : name,
       description: `${String(skill?.description || '').trim()} · ${markers.join(' · ')}`,
@@ -129,19 +130,62 @@ const refreshSkillCommands = async (sessionId) => {
 
 let matches = [];
 let selected = 0;
+let mode = '';
+let mentionToken = null;
+let mentionSourceValue = '';
+let mentionSourceCursor = 0;
+let mentionGeneration = 0;
+let mentionTimer = null;
+let mentionAbortController = null;
+let mentionAcceptable = false;
 
-const hide = () => {
+const cancelMentionRequest = () => {
+  mentionGeneration += 1;
+  if (mentionTimer !== null) {
+    clearTimeout(mentionTimer);
+    mentionTimer = null;
+  }
+  mentionAbortController?.abort();
+  mentionAbortController = null;
+  mentionAcceptable = false;
+  mentionToken = null;
+};
+
+const hide = (cancelRequest = true) => {
+  if (cancelRequest) cancelMentionRequest();
   matches = [];
   selected = 0;
+  mode = '';
   menu.hidden = true;
   menu.replaceChildren();
   input.setAttribute('aria-expanded', 'false');
   input.setAttribute('aria-activedescendant', '');
 };
 
-const accept = (command = matches[selected]) => {
-  if (!command) return false;
-  input.value = `${command.name} `;
+const inputCursor = (value) => {
+  const cursor = Number.isInteger(input.selectionStart) ? input.selectionStart : value.length;
+  return Math.max(0, Math.min(cursor, value.length));
+};
+
+const accept = (item = matches[selected]) => {
+  if (!item) return false;
+  if (item.type === 'mention') {
+    if (!mentionAcceptable || !mentionToken) return false;
+    const value = String(input.value || '');
+    const cursor = inputCursor(value);
+    if (value !== mentionSourceValue || cursor !== mentionSourceCursor) return false;
+    const before = value.slice(0, mentionToken.start_utf16);
+    const after = value.slice(mentionToken.end_utf16);
+    const separator = after === '' || !/^\s/u.test(after) ? ' ' : '';
+    input.value = before + item.insertText + separator + after;
+    const nextCursor = before.length + item.insertText.length + separator.length;
+    input.selectionStart = nextCursor;
+    input.selectionEnd = nextCursor;
+  } else {
+    input.value = `${item.name} `;
+    input.selectionStart = input.value.length;
+    input.selectionEnd = input.value.length;
+  }
   hide();
   app.autoGrowPrompt?.();
   input.focus();
@@ -150,10 +194,10 @@ const accept = (command = matches[selected]) => {
 
 const render = () => {
   menu.replaceChildren();
-  matches.forEach((command, index) => {
+  matches.forEach((item, index) => {
     const option = document.createElement('button');
     option.type = 'button';
-    option.id = `slash-command-${index}`;
+    option.id = `composer-completion-${index}`;
     option.className = 'slash-command-option';
     option.setAttribute('role', 'option');
     option.setAttribute('aria-selected', String(index === selected));
@@ -161,14 +205,24 @@ const render = () => {
 
     const name = document.createElement('span');
     name.className = 'slash-command-name';
-    name.textContent = command.displayName || command.name;
+    if (item.type === 'mention' && Array.isArray(item.segments) && item.segments.length > 0) {
+      item.segments.forEach((segment) => {
+        const span = document.createElement('span');
+        span.textContent = String(segment?.text || '');
+        if (segment?.matched) span.className = 'mention-completion-match';
+        name.append(span);
+      });
+      if (item.kind === 'directory') name.append(document.createTextNode('/'));
+    } else {
+      name.textContent = item.displayName || item.name;
+    }
     const description = document.createElement('span');
     description.className = 'slash-command-description';
-    description.textContent = command.description;
+    description.textContent = item.description;
     option.append(name, description);
 
     option.addEventListener('mousedown', (event) => event.preventDefault());
-    option.addEventListener('click', () => accept(command));
+    option.addEventListener('click', () => accept(item));
     option.addEventListener('mousemove', () => {
       if (selected === index) return;
       selected = index;
@@ -178,26 +232,122 @@ const render = () => {
   });
   menu.hidden = matches.length === 0;
   input.setAttribute('aria-expanded', String(matches.length > 0));
-  input.setAttribute('aria-activedescendant', matches.length > 0 ? `slash-command-${selected}` : '');
+  input.setAttribute('aria-activedescendant', matches.length > 0 ? `composer-completion-${selected}` : '');
+};
+
+const plausibleMentionAtCursor = (value, cursor) => {
+  const before = value.slice(0, cursor);
+  const line = before.slice(before.lastIndexOf('\n') + 1);
+  return /(?:^|[\s。 、？！])@(?:"(?:\\.|[^"\\])*|[^\s"]*)$/u.test(line);
+};
+
+const mentionRequestContext = () => {
+  const draft = Boolean(app.state?.draftSessionActive);
+  const session = !draft && typeof app.getActiveSession === 'function' ? app.getActiveSession() : null;
+  return {
+    sessionId: String(session?.id || '').trim(),
+    worktreeDir: String(session?.worktreeDir || (draft ? app.state?.selectedWorktreeDir : '') || '').trim(),
+  };
+};
+
+const scheduleMentionUpdate = (value, cursor) => {
+  const generation = ++mentionGeneration;
+  if (mentionTimer !== null) clearTimeout(mentionTimer);
+  mentionAbortController?.abort();
+  mentionAbortController = null;
+  mentionAcceptable = false;
+  mentionToken = null;
+  if (mode !== 'mention') {
+    matches = [];
+    selected = 0;
+    mode = 'mention';
+    render();
+  }
+  mentionTimer = setTimeout(async () => {
+    mentionTimer = null;
+    if (generation !== mentionGeneration || typeof app.apiFetch !== 'function') return;
+    const context = mentionRequestContext();
+    const headers = typeof app.requestHeaders === 'function'
+      ? app.requestHeaders(context.sessionId)
+      : { 'Content-Type': 'application/json', ...(context.sessionId ? { session_id: context.sessionId } : {}) };
+    mentionAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+    const sourceValue = value;
+    const sourceCursor = cursor;
+    try {
+      const response = await app.apiFetch(`${app.UI_PREFIX || '/ui'}/v1/mentions/search`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          text: sourceValue,
+          cursor_utf16: sourceCursor,
+          limit: 10,
+          worktree_dir: context.worktreeDir,
+        }),
+        ...(mentionAbortController ? { signal: mentionAbortController.signal } : {}),
+      }, app.API_FETCH_POLICY?.safeRead ? { policy: app.API_FETCH_POLICY.safeRead } : undefined);
+      if (!response.ok) throw new Error(`mention search failed (${response.status})`);
+      const payload = await response.json();
+      const currentValue = String(input.value || '');
+      const currentCursor = inputCursor(currentValue);
+      if (generation !== mentionGeneration || currentValue !== sourceValue || currentCursor !== sourceCursor) return;
+      if (!payload?.active || !payload?.token) {
+        hide(false);
+        return;
+      }
+      mode = 'mention';
+      mentionToken = payload.token;
+      mentionSourceValue = sourceValue;
+      mentionSourceCursor = sourceCursor;
+      mentionAcceptable = true;
+      matches = (Array.isArray(payload.items) ? payload.items : []).map((item) => ({
+        type: 'mention',
+        name: String(item?.path || ''),
+        description: item?.kind === 'directory' ? 'directory' : 'file',
+        kind: item?.kind === 'directory' ? 'directory' : 'file',
+        insertText: String(item?.insert_text || ''),
+        segments: Array.isArray(item?.segments) ? item.segments : [],
+      })).filter((item) => item.name && item.insertText);
+      selected = 0;
+      render();
+    } catch (error) {
+      if (generation !== mentionGeneration || error?.name === 'AbortError') return;
+      hide(false);
+      console.warn('Failed to search project mentions', error);
+    } finally {
+      if (generation === mentionGeneration) mentionAbortController = null;
+    }
+  }, 50);
 };
 
 const update = () => {
   const value = String(input.value || '');
-  if (!/^\/[^\s]*$/.test(value)) {
-    hide();
+  const cursor = inputCursor(value);
+  if (/^\/[^\s]*$/.test(value) && cursor === value.length) {
+    cancelMentionRequest();
+    const query = value.toLowerCase();
+    mode = 'slash';
+    matches = commands.filter((command) => (
+      command.name.startsWith(query)
+      && (
+        !app.state?.streaming
+        || command.skill?.execution === 'isolated'
+        || command.name === '/side'
+      )
+    )).map((command) => ({ type: 'slash', ...command }));
+    selected = 0;
+    render();
     return;
   }
-  const query = value.toLowerCase();
-  matches = commands.filter((command) => (
-    command.name.startsWith(query)
-    && (
-      !app.state?.streaming
-      || command.skill?.execution === 'isolated'
-      || command.name === '/side'
-    )
-  ));
-  selected = 0;
-  render();
+  if (plausibleMentionAtCursor(value, cursor)) {
+    scheduleMentionUpdate(value, cursor);
+    return;
+  }
+  hide();
+};
+
+const invalidateMentionCompletions = () => {
+  cancelMentionRequest();
+  if (mode === 'mention') hide(false);
 };
 
 const consume = (event) => {
@@ -206,22 +356,40 @@ const consume = (event) => {
 };
 
 input.addEventListener('input', update);
-input.addEventListener('blur', hide);
+input.addEventListener('click', update);
+input.addEventListener('keyup', (event) => {
+  const key = typeof event.key === 'string' ? event.key : '';
+  if (!menu.hidden && (key === 'ArrowUp' || key === 'ArrowDown')) return;
+  if (key.startsWith('Arrow') || key === 'Home' || key === 'End') update();
+});
+input.addEventListener('blur', () => hide());
 input.addEventListener('keydown', (event) => {
   if (menu.hidden || matches.length === 0 || event.isComposing) return;
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+  const key = typeof event.key === 'string' ? event.key : '';
+  if (key === 'ArrowDown' || key === 'ArrowUp') {
     consume(event);
-    const offset = event.key === 'ArrowDown' ? 1 : -1;
+    const offset = key === 'ArrowDown' ? 1 : -1;
     selected = (selected + offset + matches.length) % matches.length;
     render();
     return;
   }
-  if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+  if (mode === 'mention' && !mentionAcceptable) {
+    if (key === 'Tab') consume(event);
+    if (key === 'Escape') {
+      consume(event);
+      hide();
+    }
+    return;
+  }
+  if (key === 'Enter' && !event.shiftKey && mode === 'mention' && !String(mentionToken?.query || '')) {
+    return;
+  }
+  if (key === 'Tab' || (key === 'Enter' && !event.shiftKey)) {
     consume(event);
     accept();
     return;
   }
-  if (event.key === 'Escape') {
+  if (key === 'Escape') {
     consume(event);
     hide();
   }
@@ -230,6 +398,7 @@ input.addEventListener('keydown', (event) => {
 Object.assign(app, {
   hideSlashCommands: hide,
   updateSlashCommands: update,
+  invalidateMentionCompletions,
   setSkillCommands,
   refreshSkillCommands,
   matchSkillInvocation,
