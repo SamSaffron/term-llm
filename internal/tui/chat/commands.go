@@ -952,11 +952,12 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 		{
 			title: "Pickers and completions",
 			rows: [][2]string{
+				{"@query", "Find a project file or directory"},
 				{"Up/Down or Ctrl+P/Ctrl+N", "Move selection"},
-				{"Enter", "Execute command / choose model / toggle MCP server"},
-				{"Tab", "Fill selected completion or choose selected model"},
+				{"Enter", "Select mention / execute command / choose item"},
+				{"Tab", "Select mention or fill selected completion"},
 				{"Backspace", "Edit filter"},
-				{"Esc or Ctrl+C", "Close picker"},
+				{"Esc", "Close picker"},
 			},
 		},
 	}

@@ -685,6 +685,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if handled, cmd := m.handleMentionPopupKey(msg); handled {
+		return m, cmd
+	}
+
 	// Handle completions if visible
 	if m.completions.IsVisible() {
 		switch {
@@ -919,7 +923,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keyMap.Newline) || key.Matches(msg, m.keyMap.NewlineAlt) {
 		m.textarea.InsertString("\n")
 		m.updateTextareaHeight()
-		return m, nil
+		return m, m.updateMentionQuery()
 	}
 
 	// Streaming-local shortcuts that affect the interjection composer or queue
@@ -966,13 +970,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			content := m.expandPastePlaceholders(raw)
 			parts := m.imagePartList()
+			hasImages := len(parts) > 0
+			if eagerContext, _ := m.eagerMentionContext(content); eagerContext != "" {
+				parts = append(parts, llm.Part{Type: llm.PartFile, Text: eagerContext})
+			}
 			if content == "" && len(parts) == 0 {
 				m.phase = "Type to interject, attach an image, or press Esc to cancel"
 				return m, nil
 			}
 
 			interjectionID := m.nextPendingInterjectionID()
-			if action, ok := llm.ClassifyInterruptImmediate(content); ok && len(parts) == 0 {
+			if action, ok := llm.ClassifyInterruptImmediate(content); ok && !hasImages {
 				m.applyInterruptActionWithParts(interjectionID, content, parts, action)
 				return m, nil
 			}
@@ -985,10 +993,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		// Allow textarea to receive input
 		old := m.textarea.Value()
+		oldCursor := textareaCursorByteOffset(old, m.textarea.Line(), m.textarea.Column())
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		m.updateTextareaHeight()
-		if newVal := m.textarea.Value(); newVal != old {
+		newVal := m.textarea.Value()
+		newCursor := textareaCursorByteOffset(newVal, m.textarea.Line(), m.textarea.Column())
+		if newVal != old {
 			m.resetPromptHistoryIfEdited()
 			if strings.HasPrefix(newVal, "/") {
 				if !m.completions.IsVisible() {
@@ -998,6 +1009,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			} else if m.completions.IsVisible() {
 				m.completions.Hide()
 			}
+		}
+		if newVal != old || newCursor != oldCursor {
+			return m, tea.Batch(cmd, m.updateMentionQuery())
 		}
 		return m, cmd
 	}
@@ -1011,6 +1025,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Handle model picker (Ctrl+L)
 	if key.Matches(msg, m.keyMap.SwitchModel) {
+		m.hideMentionPopup()
 		history, _ := config.LoadModelHistory()
 		m.dialog.ShowModelPicker(m.providerKey+":"+m.modelName, GetAvailableProviders(m.config), config.ModelHistoryOrder(history))
 		return m, nil
@@ -1028,6 +1043,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Handle MCP picker (Ctrl+T)
 	if key.Matches(msg, m.keyMap.MCPPicker) {
+		m.hideMentionPopup()
 		if m.mcpManager == nil {
 			return m.showSystemMessage("MCP not initialized.")
 		}
@@ -1181,20 +1197,26 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Update textarea for other keys (skip during streaming - no text input needed)
 	if !m.streaming {
 		old := m.textarea.Value()
+		oldCursor := textareaCursorByteOffset(old, m.textarea.Line(), m.textarea.Column())
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
+		newVal := m.textarea.Value()
+		newCursor := textareaCursorByteOffset(newVal, m.textarea.Line(), m.textarea.Column())
 		// Clear selection when user starts typing
-		if m.selection.Active && m.textarea.Value() != old {
+		if m.selection.Active && newVal != old {
 			m.selection = Selection{}
 		}
-		if m.textarea.Value() != old {
+		if newVal != old {
 			m.resetPromptHistoryIfEdited()
 		}
 		m.updateTextareaHeight()
 		// Show argument completions for commands that support them
 		// (e.g., /handover @<partial> triggers agent name completions)
-		if newVal := m.textarea.Value(); newVal != old && strings.HasPrefix(newVal, "/") && !m.completions.IsVisible() {
+		if newVal != old && strings.HasPrefix(newVal, "/") && !m.completions.IsVisible() {
 			m.updateCompletions()
+		}
+		if newVal != old || newCursor != oldCursor {
+			return m, tea.Batch(cmd, m.updateMentionQuery())
 		}
 		return m, cmd
 	}
@@ -1280,6 +1302,7 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	}
 	if newVal := m.textarea.Value(); newVal != old {
 		m.reflowTextarea()
+		newVal = m.textarea.Value()
 		if strings.HasPrefix(newVal, "/") {
 			if !m.completions.IsVisible() {
 				m.completions.Show()
@@ -1290,7 +1313,7 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.updateTextareaHeight()
-	return m, nil
+	return m, m.updateMentionQuery()
 }
 
 func shouldCollapsePaste(text string) bool {
@@ -1587,10 +1610,16 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 		}
 	case llm.InterruptInterject:
 		m.setPendingInterjection(interjectionID, summary, "interject")
-		msg := llm.Message{Role: llm.RoleUser, Parts: append([]llm.Part(nil), parts...)}
+		leadingImages := 0
+		for leadingImages < len(parts) && parts[leadingImages].Type == llm.PartImage {
+			leadingImages++
+		}
+		msg := llm.Message{Role: llm.RoleUser, Parts: make([]llm.Part, 0, len(parts)+1)}
+		msg.Parts = append(msg.Parts, parts[:leadingImages]...)
 		if content != "" {
 			msg.Parts = append(msg.Parts, llm.Part{Type: llm.PartText, Text: content})
 		}
+		msg.Parts = append(msg.Parts, parts[leadingImages:]...)
 		if len(msg.Parts) == 0 {
 			msg = llm.UserText(content)
 		}

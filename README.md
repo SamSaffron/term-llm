@@ -61,6 +61,19 @@ term-llm ask --provider zen "explain git rebase"
 term-llm chat
 ```
 
+### Project `@` mentions
+
+In chat, type `@` to fuzzy-find files and directories under the active project/worktree; the picker keeps Git ignore behavior, and Enter or Tab inserts ordinary text (`@path`, `@"path with spaces"`, or `@directory/`). Manually typed valid mentions work identically. Set `TERM_LLM_AT_MENTIONS=0` to disable the picker.
+
+Mentions are parsed only when the prompt is submitted, at the start of text or after whitespace, `。`, `、`, `？`, or `！`; these punctuation characters start mentions but do not terminate an unquoted path. The visible user text is not rewritten, duplicate references remain visible, and identical raw mention payloads attach once. Textually different references to the same path (for example, `@a` and `@./a`) remain distinct, matching Claude Code, and quoted matches attach before unquoted matches. `#L10` and `#L10-20` select lines. Resolution is confined to the active project/CWD, follows existing non-interactive read policy, never opens approval UI, and never grants read or write access. Missing, denied, escaped, binary, oversized, or otherwise failed resources remain textual references and do not block sending.
+
+Submit-time limits closely follow Claude Code 2.1.220:
+
+- Non-PDF text files are eligible only when their **total** size is at most 256 KiB; a line range does not bypass this gate.
+- Attached content is capped at 25,000 estimated tokens. On overflow, term-llm retries 2,000 lines from line 1 or the requested starting line; if that still exceeds the ceiling, nothing is attached. Unlike Claude Code's API-assisted exact count, term-llm deliberately uses its local four-bytes-per-token estimate, avoiding an API round trip.
+- Directories attach a live, non-recursive, names-only listing with at most 1,000 names and an `… and N more entries` marker.
+- Mentioned PDFs and images remain textual references. Term-llm supports images and some provider-native file uploads through its existing explicit attachment paths, but it has no reliable in-process PDF page-count primitive for Claude's ≤10-page inline / >10-page reference split. `/file` and clipboard/image attachment behavior is unchanged.
+
 If you already have a provider key:
 
 ```bash

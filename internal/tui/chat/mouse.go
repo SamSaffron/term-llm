@@ -91,6 +91,9 @@ func (m *Model) handleTextareaMouse(msg tea.MouseMsg) bool {
 	m.textarea.Focus()
 	m.moveCursorToLine(line)
 	m.textarea.SetCursorColumn(col)
+	if m.mentionPopup.IsVisible() {
+		m.hideMentionPopup()
+	}
 
 	return true
 }

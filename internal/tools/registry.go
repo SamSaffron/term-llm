@@ -426,6 +426,23 @@ func (m *ToolManager) BaseDir() string {
 	return m.Registry.BaseDir()
 }
 
+// IsReadPathApproved reports whether path may be read without prompting. It is
+// intentionally read-only: it neither invokes approval UI nor adds permissions.
+func (m *ToolManager) IsReadPathApproved(path string) bool {
+	if m == nil || m.ApprovalMgr == nil {
+		return false
+	}
+	if m.ApprovalMgr.YoloEnabled() {
+		return true
+	}
+	absPath, err := canonicalApprovalPath(path, false)
+	if err != nil {
+		return false
+	}
+	outcome, decided, err := m.ApprovalMgr.checkPathApprovalNoPrompt(ReadFileToolName, absPath, absPath, false)
+	return err == nil && decided && outcome != Cancel
+}
+
 // SetupEngine registers tools with the engine.
 func (m *ToolManager) SetupEngine(engine *llm.Engine) {
 	m.Registry.RegisterWithEngine(engine)
