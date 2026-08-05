@@ -66,14 +66,16 @@ async function createEnabledHarness() {
     constructor() {
       this.readyState = 'open';
       this.throwOnSend = false;
+      this.sent = [];
       this.onopen = null;
       this.onclose = null;
       this.onerror = null;
       this.onmessage = null;
     }
 
-    send() {
+    send(data) {
       if (this.throwOnSend) throw new Error('simulated channel send failure');
+      this.sent.push(JSON.parse(String(data)));
     }
 
     close() {
@@ -355,6 +357,52 @@ async function testVisibilityChurnDoesNotHammerSignaling() {
   console.log('PASS: visibility churn preserves one armed WebRTC signaling backoff');
 }
 
+async function testCanceledStreamPropagatesRequestCancellation() {
+  const harness = await createEnabledHarness();
+  const channel = harness.channels[0];
+  const pending = harness.window.fetch('/ui/v1/responses/resp-1/events', { headers: {} });
+  const request = channel.sent.find((frame) => frame.path === '/ui/v1/responses/resp-1/events');
+  if (!request?.id) fail('WebRTC request frame was not sent');
+
+  channel.onmessage({ data: JSON.stringify({ id: request.id, type: 'headers', status: 200, headers: {} }) });
+  const response = await pending;
+  await response.body.cancel();
+
+  const cancels = channel.sent.filter((frame) => frame.type === 'cancel' && frame.id === request.id);
+  if (cancels.length !== 1) {
+    fail(`stream cancellation emitted ${cancels.length} peer cancel frames, want 1`);
+  }
+
+  const completedPending = harness.window.fetch('/ui/v1/sessions/status', { headers: {} });
+  const completedRequest = channel.sent.find((frame) => frame.path === '/ui/v1/sessions/status');
+  channel.onmessage({ data: JSON.stringify({ id: completedRequest.id, type: 'done', status: 200 }) });
+  await completedPending;
+  const completedCancels = channel.sent.filter((frame) => frame.type === 'cancel' && frame.id === completedRequest.id);
+  if (completedCancels.length !== 0) fail('normally completed request emitted a cancellation frame');
+
+  console.log('PASS: abandoning a WebRTC response cancels the matching peer request exactly once');
+}
+
+async function testUnansweredMutationTimeoutDoesNotCancelServerWork() {
+  const harness = await createEnabledHarness();
+  const channel = harness.channels[0];
+  const pending = harness.window.fetch('/ui/v1/worktrees', { method: 'POST', body: '{}' })
+    .then(() => null, (error) => error);
+  const request = channel.sent.find((frame) => frame.path === '/ui/v1/worktrees');
+  if (!request?.id) fail('WebRTC mutation request frame was not sent');
+
+  await harness.advanceTime(5000);
+  const error = await pending;
+  if (!error || error.name !== 'UnknownMutationOutcomeError') {
+    fail('unanswered mutation did not preserve unknown-outcome semantics');
+  }
+  const cancels = channel.sent.filter((frame) => frame.type === 'cancel' && frame.id === request.id);
+  if (cancels.length !== 0) fail('automatic mutation timeout canceled non-idempotent server work');
+  if (harness.getHTTPSAPICalls() !== 0) fail('unanswered mutation was replayed over HTTPS');
+
+  console.log('PASS: unanswered mutation timeout neither cancels nor replays server work');
+}
+
 (async () => {
   testResponseTimeouts();
   await testChannelCloseSignalsTransportRecoveryOnce();
@@ -363,6 +411,8 @@ async function testVisibilityChurnDoesNotHammerSignaling() {
   await testAmbiguousMutationDrainIsNotReplayed();
   await testTwentySecondFallbackAndPersistentRecovery();
   await testVisibilityChurnDoesNotHammerSignaling();
+  await testCanceledStreamPropagatesRequestCancellation();
+  await testUnansweredMutationTimeoutDoesNotCancelServerWork();
 })().catch((error) => {
   console.error(error);
   process.exit(1);

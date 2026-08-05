@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -290,6 +291,128 @@ func TestRunDataChannel_IdleTimeoutClosesTransportToWakeReader(t *testing.T) {
 	}
 }
 
+type queuedReadDataChannel struct {
+	reads     chan []byte
+	writes    chan responseFrame
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (d *queuedReadDataChannel) ReadDataChannel(buf []byte) (int, bool, error) {
+	select {
+	case data := <-d.reads:
+		copy(buf, data)
+		return len(data), true, nil
+	case <-d.closed:
+		return 0, false, io.EOF
+	}
+}
+
+func (d *queuedReadDataChannel) WriteDataChannel(data []byte, _ bool) (int, error) {
+	var frame responseFrame
+	if err := json.Unmarshal(data, &frame); err == nil {
+		d.writes <- frame
+	}
+	return len(data), nil
+}
+
+func (d *queuedReadDataChannel) Close() error {
+	d.closeOnce.Do(func() { close(d.closed) })
+	return nil
+}
+
+func TestRunDataChannel_CancelFrameReleasesStreamingRequestSlot(t *testing.T) {
+	streamStarted := make(chan struct{}, maxDataChannelConcurrentRequests)
+	streamCanceled := make(chan struct{}, maxDataChannelConcurrentRequests)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ui/v1/stream":
+			streamStarted <- struct{}{}
+			<-r.Context().Done()
+			streamCanceled <- struct{}{}
+		case "/ui/v1/status":
+			_, _ = io.WriteString(w, "ok")
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	p := newTestPeer("/ui", handler)
+	p.cfg.IdleTimeout = time.Minute
+	dc := &queuedReadDataChannel{
+		reads:  make(chan []byte, maxDataChannelConcurrentRequests+4),
+		writes: make(chan responseFrame, 64),
+		closed: make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.runDataChannel(ctx, dc, nil)
+	}()
+
+	for i := 0; i < maxDataChannelConcurrentRequests; i++ {
+		id := fmt.Sprintf("stream-%d", i)
+		dc.reads <- encodeRequest(id, http.MethodGet, "/ui/v1/stream", nil, "")
+	}
+	for i := 0; i < maxDataChannelConcurrentRequests; i++ {
+		select {
+		case <-streamStarted:
+		case <-time.After(time.Second):
+			t.Fatalf("stream request %d did not start", i)
+		}
+	}
+
+	dc.reads <- encodeRequest("status-busy", http.MethodGet, "/ui/v1/status", nil, "")
+	select {
+	case frame := <-dc.writes:
+		if frame.ID != "status-busy" || frame.Type != "done" || frame.Status != http.StatusServiceUnavailable {
+			t.Fatalf("saturated request frame = %#v, want status-busy done/503", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("saturated request did not receive a busy response")
+	}
+
+	cancelFrame, _ := json.Marshal(requestFrame{ID: "stream-0", Type: "cancel"})
+	dc.reads <- cancelFrame
+	select {
+	case <-streamCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("cancel frame did not cancel the stream request context")
+	}
+
+	attempt := 0
+	dc.reads <- encodeRequest("status-after-0", http.MethodGet, "/ui/v1/status", nil, "")
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case frame := <-dc.writes:
+			if !strings.HasPrefix(frame.ID, "status-after-") || frame.Type != "done" {
+				continue
+			}
+			if frame.Status == http.StatusServiceUnavailable && attempt < 10 {
+				// Context cancellation and the handler's deferred slot release are
+				// separate scheduling points. Retry until that release is observable.
+				attempt++
+				time.Sleep(time.Millisecond)
+				id := fmt.Sprintf("status-after-%d", attempt)
+				dc.reads <- encodeRequest(id, http.MethodGet, "/ui/v1/status", nil, "")
+				continue
+			}
+			if frame.Status != http.StatusOK {
+				t.Fatalf("request after cancellation returned %d, want 200", frame.Status)
+			}
+			cancel()
+			<-done
+			return
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatal("request slot was not reusable after cancellation")
+		}
+	}
+}
+
 type streamingReadDataChannel struct {
 	request       []byte
 	requestOnce   sync.Once
@@ -425,7 +548,6 @@ func TestTryAcquireDataChannelRequestSlot_StopsWhenConnectionClosing(t *testing.
 }
 
 func TestSendBusyDataChannelRequest(t *testing.T) {
-	raw := encodeRequest("busy-1", "GET", "/ui/v1/models", nil, "")
 	var frames []responseFrame
 	sendBusyDataChannelRequest(func(text string) error {
 		var f responseFrame
@@ -434,25 +556,24 @@ func TestSendBusyDataChannelRequest(t *testing.T) {
 		}
 		frames = append(frames, f)
 		return nil
-	}, raw)
+	}, "busy-1")
 	if len(frames) != 1 || frames[0].ID != "busy-1" || frames[0].Type != "done" || frames[0].Status != http.StatusServiceUnavailable {
 		t.Fatalf("busy frames = %#v, want single done/503", frames)
 	}
 }
 
-func TestIsDataChannelCancelRequest(t *testing.T) {
+func TestIsDataChannelResponseCancelRequest(t *testing.T) {
 	p := newTestPeer("/ui", nil)
-	if !p.isDataChannelCancelRequest(encodeRequest("cancel", "POST", "/ui/v1/responses/resp-123/cancel", nil, "")) {
+	if !p.isDataChannelResponseCancelRequest(requestFrame{ID: "cancel", Method: "POST", Path: "/ui/v1/responses/resp-123/cancel"}) {
 		t.Fatal("expected response cancel request to be recognized")
 	}
-	for _, raw := range [][]byte{
-		encodeRequest("get", "GET", "/ui/v1/responses/resp-123/cancel", nil, ""),
-		encodeRequest("event", "GET", "/ui/v1/responses/resp-123/events", nil, ""),
-		encodeRequest("outside", "POST", "/v1/responses/resp-123/cancel", nil, ""),
-		[]byte("not json"),
+	for _, frame := range []requestFrame{
+		{ID: "get", Method: "GET", Path: "/ui/v1/responses/resp-123/cancel"},
+		{ID: "event", Method: "GET", Path: "/ui/v1/responses/resp-123/events"},
+		{ID: "outside", Method: "POST", Path: "/v1/responses/resp-123/cancel"},
 	} {
-		if p.isDataChannelCancelRequest(raw) {
-			t.Fatalf("unexpected cancel recognition for %s", string(raw))
+		if p.isDataChannelResponseCancelRequest(frame) {
+			t.Fatalf("unexpected cancel recognition for %#v", frame)
 		}
 	}
 }

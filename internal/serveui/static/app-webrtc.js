@@ -445,9 +445,11 @@
   function webrtcFetch(urlStr, options) {
     return new Promise((resolve, reject) => {
       const reqId = crypto.randomUUID();
+      const requestChannel = dataChannel;
       let streamController;
       let resolved = false;
       let gotResponse = false;
+      let requestSent = false, serverDone = false;
       let cleaned = false;
       const reqStart = performance.now();
 
@@ -476,12 +478,21 @@
         if (!resolved) { resolved = true; reject(error); }
       }
 
-      // Central cleanup — idempotent, called from every exit path.
+      // Central cleanup — idempotent, called from every exit path. If the
+      // browser abandons a request while the data channel remains usable, tell
+      // the peer to cancel the matching HTTP request context and release its
+      // concurrency slot.
       function cleanup(reason) {
         if (cleaned) return;
         cleaned = true;
         clearTimeout(responseTimer);
         clearTimeout(streamWatchdogId);
+        if (requestSent && !serverDone && (gotResponse || transportRetrySafe) && requestChannel?.readyState === 'open') {
+          try {
+            requestChannel.send(JSON.stringify({ id: reqId, type: 'cancel' }));
+            diag('↯ cancel ' + method + ' ' + path + ' reason=' + reason);
+          } catch (_e) { /* channel shutdown will cancel the peer context */ }
+        }
         pendingRequests.delete(reqId);
         if (abortHandler) {
           try { options.signal.removeEventListener('abort', abortHandler); } catch (_e) { /* */ }
@@ -620,6 +631,7 @@
           }
         },
         onDone(status) {
+          serverDone = true;
           markGotResponse();
           const latency = (performance.now() - reqStart) | 0;
           diag('← ' + status + ' ' + method + ' ' + path +
@@ -654,7 +666,8 @@
       };
 
       try {
-        dataChannel.send(JSON.stringify(frame));
+        requestChannel.send(JSON.stringify(frame));
+        requestSent = true;
       } catch (_e) {
         diag('send error: ' + (_e && _e.message ? _e.message : String(_e)));
         cleanup('send-error');
