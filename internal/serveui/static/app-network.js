@@ -28,6 +28,25 @@ let queuedRecoveryReason = '';
 let recoveryRetryTimer = 0;
 let recoveryProbeAttempt = 0;
 let successfulRecoveryEpoch = 0;
+let externalAuthRedirecting = false;
+
+const maybeRedirectForExternalAuth = (response) => {
+  if (!response || response.status !== 401 || externalAuthRedirecting) return false;
+  const rawURL = String(response.headers?.get?.('x-term-llm-login-url') || '').trim();
+  if (!rawURL) return false;
+
+  let loginURL;
+  try {
+    loginURL = new URL(rawURL, window.location.href);
+  } catch {
+    return false;
+  }
+  if (loginURL.protocol !== 'http:' && loginURL.protocol !== 'https:') return false;
+
+  externalAuthRedirecting = true;
+  window.location.assign(loginURL.href);
+  return true;
+};
 
 const online = () => typeof navigator === 'undefined' || navigator.onLine !== false;
 const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
@@ -284,6 +303,7 @@ const apiFetch = async (resource, options = {}, controls = {}) => {
         durationMs: Date.now() - startedAt,
         url: requestURL(resource),
       });
+      maybeRedirectForExternalAuth(response);
       if (response.status === 401 && classification.authOwner === AUTH.session) {
         window.setTimeout(() => app.handleAuthFailure?.(), 0);
       }
