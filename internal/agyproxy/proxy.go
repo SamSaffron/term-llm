@@ -277,6 +277,14 @@ func (a loopbackAddr) Network() string { return "tcp" }
 func (a loopbackAddr) String() string  { return string(a) }
 
 func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
+	s.mu.Lock()
+	transport := s.transport
+	s.mu.Unlock()
+	if transport == nil {
+		http.Error(w, "agy tool-filter proxy is stopping", http.StatusServiceUnavailable)
+		return
+	}
+
 	req.RequestURI = ""
 	req.URL.Scheme = "https"
 	req.URL.Host = CloudCodeHost
@@ -317,7 +325,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 		req.TransferEncoding = nil
 		s.filtered.Add(1)
 	}
-	resp, err := s.transport.RoundTrip(req)
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		http.Error(w, "forward agy request: "+err.Error(), http.StatusBadGateway)
 		return
