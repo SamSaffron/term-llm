@@ -4950,22 +4950,19 @@
   cursor: pointer;
   text-decoration: underline;
 }
-.message-branch-action,
-.turn-branch-btn {
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: .75rem;
-  padding: .2rem .35rem;
-  cursor: pointer;
-  border-radius: .35rem;
+.message-branch-action svg,
+.turn-branch-btn svg { width: 16px; height: 16px; }
+.message.user .message-branch-action {
+  align-self: flex-end;
+  margin-top: .15rem;
+  opacity: 0;
 }
-.message-branch-action:hover,
-.message-branch-action:focus-visible,
-.turn-branch-btn:hover,
-.turn-branch-btn:focus-visible { color: var(--text); background: var(--surface-2); }
-.message.user .message-branch-action { align-self: flex-end; margin-top: .15rem; }
+.message.user:hover .message-branch-action,
+.message.user:focus-within .message-branch-action,
+.message.user .message-branch-action:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .message.user .message-branch-action { opacity: .7; }
+}
 .branch-pending-divider {
   margin: .9rem auto;
   padding: .55rem .8rem;

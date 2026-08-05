@@ -119,6 +119,12 @@ const applyPendingBranchProjection = () => {
   root.appendChild(divider);
 };
 
+const branchActionIcon = (button, label) => {
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2"></circle><circle cx="18" cy="15" r="2"></circle><circle cx="6" cy="19" r="2"></circle><path d="M6 7v10"></path><path d="M8 7h3a7 7 0 0 1 7 7v-1"></path></svg>';
+};
+
 const syncBranchActions = () => {
   const root = elements.messages;
   const session = app.getActiveSession?.();
@@ -130,8 +136,8 @@ const syncBranchActions = () => {
     if (!node || node.querySelector?.('.message-branch-action')) continue;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'message-branch-action';
-    button.textContent = 'Edit from here';
+    button.className = 'turn-action-btn message-branch-action';
+    branchActionIcon(button, 'Edit from here');
     button.addEventListener('click', () => beginPendingBranch(message, 'user'));
     node.appendChild(button);
   }
@@ -144,7 +150,7 @@ const syncBranchActions = () => {
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'turn-action-btn turn-branch-btn';
-      button.textContent = 'Branch from here';
+      branchActionIcon(button, 'Branch from here');
       button.addEventListener('click', (event) => {
         event.preventDefault();
         const current = window.TermLLMConversation.sessionMessages(app.getActiveSession?.())
