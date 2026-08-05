@@ -191,6 +191,7 @@ type Model struct {
 	sideProviderFactory        func(providerKey, model string) (llm.Provider, error)
 	sideQuestion               SideQuestionState
 	engine                     *llm.Engine
+	agentMentionEngine         atomic.Pointer[llm.Engine]
 	runner                     runpkg.Runner
 	childRunner                runpkg.ChildRunner
 	skillRuns                  map[string]*skillRunState
@@ -238,6 +239,7 @@ type Model struct {
 	// Project @ autocomplete. The index and queries are background/cancellable;
 	// selections remain ordinary text and are resolved only when submitted.
 	mentionEnabled         bool
+	agentMentionEnabled    bool
 	mentionRoot            string
 	mentionIndex           *mentions.Snapshot
 	mentionIndexGeneration uint64
@@ -246,6 +248,7 @@ type Model struct {
 	mentionQueryCtx        context.Context
 	mentionQueryCancel     context.CancelFunc
 	mentionPopup           mentionPopupModel
+	agentMentionCapability AgentMentionCapability
 
 	searchEnabled           bool // Web search toggle
 	fastMode                bool // Effective ChatGPT/OpenAI fast service-tier state shown in the footer
@@ -988,6 +991,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		selectedImage:            -1,
 		selectedInterjection:     -1,
 	}
+	model.agentMentionEngine.Store(engine)
 	if internalreasoning.RawDisplayBlocked(reasoningCfg) {
 		model.SetFooterWarning("Raw reasoning display is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
 		model.reasoningRawWarned = true
@@ -996,6 +1000,22 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 	model.configureContextManagementForSession()
 	model.initializeMentions()
 	return model
+}
+
+func sessionMessageForInterjection(sessionID, visibleText string, message llm.Message) *session.Message {
+	if len(message.Parts) == 0 {
+		message = llm.UserText(visibleText)
+	}
+	message.Role = llm.RoleUser
+	userMessage := session.NewMessage(sessionID, message, -1)
+	// Interjection parts may include provider-only eager file or delegation
+	// context. Keep visible consumers clean while retaining full Parts.
+	if visibleText != "" {
+		userMessage.TextContent = visibleText
+	} else if userMessage.TextContent == "" {
+		userMessage.TextContent = llm.MessageText(message)
+	}
+	return userMessage
 }
 
 func (m *Model) refreshMCPPickerIfOpen() {
@@ -2338,7 +2358,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		}
 
 	case autoSendMsg:
-		// In auto-send mode, immediately send the initial message
+		// Auto-send has no editable recovery loop. Fail fast and retain the queued
+		// input instead of silently dropping it and waiting forever for a stream.
+		if _, err := m.agentMentionDelegationContext(m.textarea.Value()); err != nil {
+			m.err = err
+			m.quitting = true
+			_, footerCmd := m.showFooterError(err.Error())
+			return m, tea.Sequence(footerCmd, tea.Quit)
+		}
 		return m.sendMessage(m.textarea.Value())
 
 	case ui.SmoothTickMsg:
@@ -2791,15 +2818,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.scrollToBottom = true
 			// Persist interjected message to session store, preserving structured parts.
 			if m.store != nil {
-				msg := ev.Message
-				if len(msg.Parts) == 0 {
-					msg = llm.UserText(ev.Text)
-				}
-				msg.Role = llm.RoleUser
-				userMsg := session.NewMessage(m.sess.ID, msg, -1)
-				if userMsg.TextContent == "" {
-					userMsg.TextContent = ev.Text
-				}
+				userMsg := sessionMessageForInterjection(m.sess.ID, ev.Text, ev.Message)
 				_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
 			}
 
@@ -2967,11 +2986,24 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 
 				if len(m.autoSendQueue) > 0 {
-					// Pop next message and send it
-					m.textarea.SetValue(m.autoSendQueue[0])
-					m.autoSendQueue = m.autoSendQueue[1:]
+					// Validate before removing the queue head. A blocked delegation
+					// terminates deterministic auto-send instead of losing an entry and
+					// stalling with no stream to trigger the next pop.
+					next := m.autoSendQueue[0]
+					if _, err := m.agentMentionDelegationContext(next); err != nil {
+						m.err = err
+						m.quitting = true
+						_, footerCmd := m.showFooterError(err.Error())
+						failureCmds := []tea.Cmd{footerCmd, tea.Quit}
+						if messageStatsCmd != nil {
+							failureCmds = append([]tea.Cmd{messageStatsCmd}, failureCmds...)
+						}
+						return m, tea.Sequence(failureCmds...)
+					}
+					m.textarea.SetValue(next)
 					m.updateTextareaHeight()
-					model, sendCmd := m.sendMessage(m.textarea.Value())
+					model, sendCmd := m.sendMessage(next)
+					m.autoSendQueue = m.autoSendQueue[1:]
 					if messageStatsCmd != nil {
 						return model, tea.Sequence(messageStatsCmd, sendCmd)
 					}

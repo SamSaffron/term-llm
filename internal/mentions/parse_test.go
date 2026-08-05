@@ -1,6 +1,9 @@
 package mentions
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestActiveTokenAt(t *testing.T) {
 	tests := []struct {
@@ -38,6 +41,22 @@ func TestActiveTokenAt(t *testing.T) {
 	}
 }
 
+func TestActiveTokenDistinguishesQuotedAgentNamespaceFromQuotedFile(t *testing.T) {
+	agent, ok := ActiveTokenAt(`ask @agent:"code`, len(`ask @agent:"code`))
+	if !ok || !agent.Agent || !agent.Quoted || agent.Query != "code" {
+		t.Fatalf("quoted agent token = %#v, %v", agent, ok)
+	}
+	file, ok := ActiveTokenAt(`open @"agent:code`, len(`open @"agent:code`))
+	if !ok || file.Agent || !file.Quoted || file.Query != "agent:code" {
+		t.Fatalf("quoted file token = %#v, %v", file, ok)
+	}
+	files := ParseSubmitted(`@"agent:codebase"`)
+	agents, err := ParseSubmittedAgents(`@"agent:codebase"`)
+	if err != nil || len(files) != 1 || files[0].Path != "agent:codebase" || len(agents) != 0 {
+		t.Fatalf("quoted file submit route: files=%#v agents=%#v err=%v", files, agents, err)
+	}
+}
+
 func TestInsertText(t *testing.T) {
 	if got := InsertText("internal/llm/types.go", false); got != "@internal/llm/types.go" {
 		t.Fatalf("plain insertion = %q", got)
@@ -47,6 +66,122 @@ func TestInsertText(t *testing.T) {
 	}
 	if got := InsertText("internal/llm", true); got != "@internal/llm/" {
 		t.Fatalf("directory insertion = %q", got)
+	}
+}
+
+func TestParseSubmittedAgentsQuotingBoundariesAndDedupe(t *testing.T) {
+	input := `@agent:codebase x@agent:nope see。@agent:"name with spaces" ` +
+		`@agent:codebase @agent:unknown-valid @./agent:file`
+	got, err := ParseSubmittedAgents(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codebase", "name with spaces", "codebase", "unknown-valid"}
+	if len(got) != len(want) {
+		t.Fatalf("ParseSubmittedAgents() = %#v, want names %#v", got, want)
+	}
+	for i, name := range want {
+		if got[i].Name != name || input[got[i].Start:got[i].End] == "" {
+			t.Fatalf("mention %d = %#v, want name %q", i, got[i], name)
+		}
+	}
+	unique := UniqueAgentMentionNames(got)
+	wantUnique := []string{"codebase", "name with spaces", "unknown-valid"}
+	if len(unique) != len(wantUnique) {
+		t.Fatalf("UniqueAgentMentionNames() = %#v", unique)
+	}
+	for i := range wantUnique {
+		if unique[i] != wantUnique[i] {
+			t.Fatalf("unique %d = %q, want %q", i, unique[i], wantUnique[i])
+		}
+	}
+}
+
+func TestParseSubmittedAgentsBoundedGrammarPunctuationAndFileNamespaceCollision(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{`ask @agent:codebase, please`, "codebase"},
+		{`ask @agent:codebase.`, "codebase"},
+		{`ask @agent:team.alpha!`, "team.alpha"},
+		{`ask @agent:unknown-valid?`, "unknown-valid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseSubmittedAgents(tt.input)
+			if err != nil || len(got) != 1 || got[0].Name != tt.want {
+				t.Fatalf("ParseSubmittedAgents(%q) = %#v, err=%v", tt.input, got, err)
+			}
+			if token := tt.input[got[0].Start:got[0].End]; strings.ContainsAny(token[len("@agent:"):], ",!?") {
+				t.Fatalf("mention range consumed trailing punctuation: %q", token)
+			}
+		})
+	}
+
+	for _, input := range []string{
+		`@agent:`,
+		`@agent:"`,
+		`@agent:""`,
+		`@agent:bad"quote`,
+		`@agent:"quoted"suffix`,
+		`@agent:"quoted"#L3-4`,
+		`@agent:reviewer#L3-4`,
+		`@agent:path/name`,
+		`@agent:bad..name`,
+	} {
+		t.Run("malformed_"+input, func(t *testing.T) {
+			got, err := ParseSubmittedAgents(input)
+			if err != nil || len(got) != 0 {
+				t.Fatalf("malformed prose should be ordinary text: got=%#v err=%v", got, err)
+			}
+		})
+	}
+
+	files := ParseSubmitted(`@agent:codebase @agent:"name with spaces" @./agent:codebase`)
+	if len(files) != 1 || files[0].Path != "./agent:codebase" {
+		t.Fatalf("file mentions = %#v", files)
+	}
+	if got := InsertText("agent:codebase", false); got != "@./agent:codebase" {
+		t.Fatalf("reserved file insertion = %q", got)
+	}
+}
+
+func TestInsertAndActiveAgentMentionText(t *testing.T) {
+	if got := InsertAgentText("codebase"); got != "@agent:codebase" {
+		t.Fatalf("plain agent insertion = %q", got)
+	}
+	quoted := InsertAgentText(`name with spaces`)
+	if quoted != `@agent:"name with spaces"` {
+		t.Fatalf("quoted agent insertion = %q", quoted)
+	}
+	parsed, err := ParseSubmittedAgents(quoted)
+	if err != nil || len(parsed) != 1 || parsed[0].Name != `name with spaces` {
+		t.Fatalf("quoted round trip = %#v, err=%v", parsed, err)
+	}
+	legacy := InsertAgentText("code+review")
+	if legacy != `@agent:"code+review"` {
+		t.Fatalf("legacy agent insertion = %q", legacy)
+	}
+	parsed, err = ParseSubmittedAgents(legacy)
+	if err != nil || len(parsed) != 1 || parsed[0].Name != "code+review" {
+		t.Fatalf("legacy quoted round trip = %#v, err=%v", parsed, err)
+	}
+
+	active, ok := ActiveTokenAt(`prefix。@agent:"name with`, len(`prefix。@agent:"name with`))
+	if !ok || active.Query != "name with" || !active.Quoted || !active.Agent {
+		t.Fatalf("active quoted agent token = %#v, %v", active, ok)
+	}
+}
+
+func BenchmarkParseSubmittedAgents(b *testing.B) {
+	input := strings.Repeat(`review @agent:codebase and @agent:"name with spaces" alongside @internal/mentions/parse.go `, 20)
+	b.ReportAllocs()
+	for b.Loop() {
+		mentions, err := ParseSubmittedAgents(input)
+		if err != nil || len(mentions) != 40 {
+			b.Fatalf("mentions=%d err=%v", len(mentions), err)
+		}
 	}
 }
 

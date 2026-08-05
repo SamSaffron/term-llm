@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,14 @@ type SubagentEventCallback func(callID string, event SubagentEvent)
 type SpawnAgentRunResult struct {
 	Output    string // Text output from the agent
 	SessionID string // Child session ID for inspector integration (empty if session tracking disabled)
+}
+
+// SpawnAgentCatalog is the optional read-only catalog exposed by runners that
+// can prove which named agent definitions the current runtime can resolve.
+// Capability checks never execute an agent or mutate tool permissions.
+type SpawnAgentCatalog interface {
+	ListSpawnAgentNames() ([]string, error)
+	ResolveSpawnAgent(name string) error
 }
 
 // SpawnAgentRunner is the interface for running sub-agents.
@@ -226,6 +235,133 @@ func isQualifiedSpawnModel(model string) bool {
 		!strings.ContainsFunc(modelName, unicode.IsSpace)
 }
 
+type spawnAgentPolicyError struct {
+	typeName ToolErrorType
+	message  string
+}
+
+func (e *spawnAgentPolicyError) Error() string { return e.message }
+
+type localSpawnPolicySnapshot struct {
+	runner        SpawnAgentRunner
+	depth         int
+	maxDepth      int
+	allowedAgents []string
+}
+
+func (t *SpawnAgentTool) snapshotLocalSpawnPolicy() localSpawnPolicySnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return localSpawnPolicySnapshot{
+		runner:        t.runner,
+		depth:         t.depth,
+		maxDepth:      t.config.MaxDepth,
+		allowedAgents: append([]string(nil), t.config.AllowedAgents...),
+	}
+}
+
+func (p localSpawnPolicySnapshot) authorize(agentName string, listing bool) error {
+	if p.depth >= p.maxDepth {
+		return &spawnAgentPolicyError{
+			typeName: ErrPermissionDenied,
+			message:  fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", p.depth, p.maxDepth),
+		}
+	}
+	if !listing {
+		if agentName == "" {
+			return &spawnAgentPolicyError{typeName: ErrInvalidParams, message: "agent name is required"}
+		}
+		if len(p.allowedAgents) > 0 {
+			allowed := false
+			for _, name := range p.allowedAgents {
+				if name == agentName {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return &spawnAgentPolicyError{
+					typeName: ErrPermissionDenied,
+					message:  fmt.Sprintf("agent '%s' is not in the allowed list", agentName),
+				}
+			}
+		}
+	}
+	if p.runner == nil {
+		return &spawnAgentPolicyError{typeName: ErrExecutionFailed, message: "spawn_agent runner not configured"}
+	}
+	return nil
+}
+
+// localSpawnPolicy applies the same depth, exact-whitelist, and runner checks
+// used by Execute. State is copied while locked; callers may perform catalog I/O
+// after this method returns without holding the tool mutex.
+func (t *SpawnAgentTool) localSpawnPolicy(agentName string) (SpawnAgentRunner, int, error) {
+	policy := t.snapshotLocalSpawnPolicy()
+	if err := policy.authorize(agentName, false); err != nil {
+		return nil, policy.depth, err
+	}
+	return policy.runner, policy.depth, nil
+}
+
+// CanSpawnAgent performs a read-only capability check against the current
+// tool policy and the same runner catalog used by execution.
+func (t *SpawnAgentTool) CanSpawnAgent(name string) error {
+	if name == "" {
+		return errors.New("agent name is required")
+	}
+	runner, _, err := t.localSpawnPolicy(name)
+	if err != nil {
+		return err
+	}
+	catalog, ok := runner.(SpawnAgentCatalog)
+	if !ok {
+		return errors.New("spawn_agent runner does not expose an agent catalog")
+	}
+	if err := catalog.ResolveSpawnAgent(name); err != nil {
+		return fmt.Errorf("agent %q is unavailable or invalid: %w", name, err)
+	}
+	return nil
+}
+
+// PermittedAgentNames returns deterministic canonical lookup names that the
+// current tool instance can spawn. Invalid definitions and names denied by the
+// exact whitelist are omitted.
+func (t *SpawnAgentTool) PermittedAgentNames() ([]string, error) {
+	policy := t.snapshotLocalSpawnPolicy()
+	if err := policy.authorize("", true); err != nil {
+		return nil, err
+	}
+	catalog, ok := policy.runner.(SpawnAgentCatalog)
+	if !ok {
+		return nil, errors.New("spawn_agent runner does not expose an agent catalog")
+	}
+	names, err := catalog.ListSpawnAgentNames()
+	if err != nil {
+		return nil, fmt.Errorf("list spawnable agents: %w", err)
+	}
+	names = append([]string(nil), names...)
+	sort.Strings(names)
+	permitted := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		if err := policy.authorize(name, false); err != nil {
+			continue
+		}
+		// ListSpawnAgentNames is the catalog's validated listing contract. Do not
+		// resolve every entry a second time on each completion query.
+		permitted = append(permitted, name)
+	}
+	return permitted, nil
+}
+
 // Execute runs the spawn_agent tool.
 func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a SpawnAgentArgs
@@ -245,32 +381,14 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		return llm.TextOutput(t.formatError(ErrInvalidParams, "model must use exact provider:model format; omit it to use the configured/default model")), nil
 	}
 
-	// Check depth limit
-	if t.depth >= t.config.MaxDepth {
-		return llm.TextOutput(t.formatError(ErrPermissionDenied, fmt.Sprintf("max agent depth exceeded (current: %d, max: %d)", t.depth, t.config.MaxDepth))), nil
-	}
-
-	// Check allowed agents whitelist
-	if len(t.config.AllowedAgents) > 0 {
-		allowed := false
-		for _, name := range t.config.AllowedAgents {
-			if name == a.AgentName {
-				allowed = true
-				break
-			}
+	runner, currentDepth, policyErr := t.localSpawnPolicy(a.AgentName)
+	if policyErr != nil {
+		errType := ErrExecutionFailed
+		var typed *spawnAgentPolicyError
+		if errors.As(policyErr, &typed) {
+			errType = typed.typeName
 		}
-		if !allowed {
-			return llm.TextOutput(t.formatError(ErrPermissionDenied, fmt.Sprintf("agent '%s' is not in the allowed list", a.AgentName))), nil
-		}
-	}
-
-	// Get runner under lock
-	t.mu.Lock()
-	runner := t.runner
-	t.mu.Unlock()
-
-	if runner == nil {
-		return llm.TextOutput(t.formatError(ErrExecutionFailed, "spawn_agent runner not configured")), nil
+		return llm.TextOutput(t.formatError(errType, policyErr.Error())), nil
 	}
 
 	// Determine timeout.
@@ -319,19 +437,20 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	opts := SpawnAgentRunOptions{ModelOverride: modelOverride}
 	runnerWithOptions, supportsOptions := runner.(SpawnAgentRunnerWithOptions)
 
+	childDepth := currentDepth + 1
 	if cb != nil && callID != "" {
 		// Use callback version for progress reporting
 		if supportsOptions {
-			runResult, err = runnerWithOptions.RunAgentWithCallbackAndOptions(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb, opts)
+			runResult, err = runnerWithOptions.RunAgentWithCallbackAndOptions(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb, opts)
 		} else {
-			runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb)
+			runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, childDepth, callID, cb)
 		}
 	} else {
 		// Fall back to simple version
 		if supportsOptions {
-			runResult, err = runnerWithOptions.RunAgentWithOptions(childCtx, a.AgentName, a.Prompt, t.depth+1, opts)
+			runResult, err = runnerWithOptions.RunAgentWithOptions(childCtx, a.AgentName, a.Prompt, childDepth, opts)
 		} else {
-			runResult, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
+			runResult, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, childDepth)
 		}
 	}
 	duration := time.Since(start).Milliseconds()

@@ -1223,14 +1223,14 @@ func (e *Engine) prepareProviderRequest(req Request) Request {
 func providerSafeRequestMessages(messages []Message) []Message {
 	var output []Message
 	for index, message := range messages {
-		hasControlPart := false
+		needsRewrite := false
 		for _, part := range message.Parts {
-			if part.Type == PartSkillActivation {
-				hasControlPart = true
+			if part.Type == PartSkillActivation || part.Type == PartAgentMention {
+				needsRewrite = true
 				break
 			}
 		}
-		if !hasControlPart {
+		if !needsRewrite {
 			if output != nil {
 				output = append(output, messages[index:]...)
 				return output
@@ -1241,11 +1241,15 @@ func providerSafeRequestMessages(messages []Message) []Message {
 			output = append([]Message(nil), messages[:index]...)
 		}
 		copyMessage := message
-		copyMessage.Parts = make([]Part, 0, len(message.Parts)-1)
+		copyMessage.Parts = make([]Part, 0, len(message.Parts))
 		for _, part := range message.Parts {
-			if part.Type != PartSkillActivation {
-				copyMessage.Parts = append(copyMessage.Parts, part)
+			switch part.Type {
+			case PartSkillActivation:
+				continue
+			case PartAgentMention:
+				part.Type = PartText
 			}
+			copyMessage.Parts = append(copyMessage.Parts, part)
 		}
 		if len(copyMessage.Parts) > 0 {
 			output = append(output, copyMessage)

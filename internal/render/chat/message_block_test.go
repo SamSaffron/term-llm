@@ -376,3 +376,26 @@ func TestMessageBlockRenderer_NeverRendersUnknownOrEncryptedReasoning(t *testing
 		}
 	}
 }
+
+func TestMessageBlockRenderer_UserAgentMentionContextIsStructurallyHidden(t *testing.T) {
+	const visible = "ask @agent:codebase to inspect this"
+	const hidden = "<term_llm_agent_mentions>hidden-delegation-sentinel</term_llm_agent_mentions>"
+	msg := &session.Message{
+		ID:          1,
+		Role:        llm.RoleUser,
+		TextContent: visible,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: visible},
+			{Type: llm.PartAgentMention, Text: hidden},
+		},
+	}
+	renderer := NewMessageBlockRenderer(100, nil, false)
+	block := renderer.Render(msg)
+	plain := ui.StripANSI(block.Rendered)
+	if !strings.Contains(plain, visible) || strings.Contains(plain, "hidden-delegation-sentinel") {
+		t.Fatalf("rendered user bubble leaked provider context or lost visible text: %q", plain)
+	}
+	if strings.Contains(block.UserPreview, "hidden-delegation-sentinel") || !strings.Contains(block.UserPreview, "@agent:codebase") {
+		t.Fatalf("sticky user preview leaked provider context or lost visible text: %q", block.UserPreview)
+	}
+}

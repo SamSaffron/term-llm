@@ -105,6 +105,9 @@ func (r *Registry) SetPreferences(prefs map[string]config.AgentPreference) {
 // Resolution order: local > user > search paths > builtin
 // Preferences are applied on top of the loaded agent config.
 func (r *Registry) Get(name string) (*Agent, error) {
+	if !IsSafeLookupName(name) {
+		return nil, fmt.Errorf("invalid agent lookup name %q", name)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -154,11 +157,16 @@ func (r *Registry) Get(name string) (*Agent, error) {
 // List returns all available agents.
 // Each agent appears only once, with first-found taking precedence.
 func (r *Registry) List() ([]*Agent, error) {
+	r.mu.RLock()
+	searchPaths := append([]searchPath(nil), r.searchPaths...)
+	useBuiltin := r.useBuiltin
+	r.mu.RUnlock()
+
 	seen := make(map[string]bool)
 	var agents []*Agent
 
 	// Scan filesystem paths
-	for _, sp := range r.searchPaths {
+	for _, sp := range searchPaths {
 		found, err := r.scanDir(sp.path, sp.source)
 		if err != nil {
 			continue // Skip directories that don't exist or can't be read
@@ -172,7 +180,7 @@ func (r *Registry) List() ([]*Agent, error) {
 	}
 
 	// Add built-in agents (not shadowed by user agents)
-	if r.useBuiltin {
+	if useBuiltin {
 		for _, agent := range getBuiltinAgents() {
 			if !seen[agent.Name] {
 				seen[agent.Name] = true
@@ -196,11 +204,16 @@ func (r *Registry) List() ([]*Agent, error) {
 // ListNames returns just the names of available agents without loading full content.
 // This is optimized for completions where only names are needed.
 func (r *Registry) ListNames() ([]string, error) {
+	r.mu.RLock()
+	searchPaths := append([]searchPath(nil), r.searchPaths...)
+	useBuiltin := r.useBuiltin
+	r.mu.RUnlock()
+
 	seen := make(map[string]bool)
 	var names []string
 
 	// Scan filesystem paths (just get directory names)
-	for _, sp := range r.searchPaths {
+	for _, sp := range searchPaths {
 		entries, err := os.ReadDir(sp.path)
 		if err != nil {
 			continue // Skip directories that don't exist
@@ -215,6 +228,9 @@ func (r *Registry) ListNames() ([]string, error) {
 				continue
 			}
 			name := entry.Name()
+			if !IsSafeLookupName(name) {
+				continue
+			}
 			if !seen[name] {
 				seen[name] = true
 				names = append(names, name)
@@ -223,7 +239,7 @@ func (r *Registry) ListNames() ([]string, error) {
 	}
 
 	// Add built-in agent names
-	if r.useBuiltin {
+	if useBuiltin {
 		for _, name := range builtinAgentNames {
 			if !seen[name] {
 				seen[name] = true
@@ -315,6 +331,9 @@ func GetLocalAgentsDir() (string, error) {
 
 // CreateAgentDir creates an agent directory with template files.
 func CreateAgentDir(baseDir, name string) error {
+	if !IsLookupName(name) {
+		return fmt.Errorf("invalid agent lookup name %q", name)
+	}
 	agentDir := filepath.Join(baseDir, name)
 
 	// Create directory

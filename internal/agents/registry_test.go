@@ -215,6 +215,43 @@ func TestRegistry_ListNames(t *testing.T) {
 	}
 }
 
+func TestRegistryPreservesSafeLegacyLookupNames(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"my--agent", "code+review"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("name: "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Registry{
+		cache:       make(map[string]*Agent),
+		searchPaths: []searchPath{{path: root, source: SourceLocal}},
+	}
+
+	names, err := r.ListNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "code+review" || names[1] != "my--agent" {
+		t.Fatalf("ListNames() = %#v", names)
+	}
+	agent, err := r.Get("code+review")
+	if err != nil {
+		t.Fatalf("Get legacy name: %v", err)
+	}
+	if agent.Name != "code+review" {
+		t.Fatalf("agent name = %q", agent.Name)
+	}
+	for _, unsafe := range []string{"..", "path/name", `path\\name`} {
+		if _, err := r.Get(unsafe); err == nil {
+			t.Errorf("Get(%q) accepted unsafe lookup", unsafe)
+		}
+	}
+}
+
 func TestRegistry_Shadowing(t *testing.T) {
 	tmpDir := t.TempDir()
 	localDir := filepath.Join(tmpDir, "local-agents")
@@ -337,6 +374,32 @@ func TestIsAgentDir(t *testing.T) {
 	if isAgentDir(filepath.Join(tmpDir, "nonexistent")) {
 		t.Error("isAgentDir(nonexistent) = true, want false")
 	}
+}
+
+func TestRegistry_ListNamesConcurrentWithGetAndPreferenceUpdates(t *testing.T) {
+	r := &Registry{useBuiltin: true, cache: make(map[string]*Agent)}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if worker%3 == 0 {
+					r.SetPreferences(map[string]config.AgentPreference{"codebase": {}})
+					continue
+				}
+				if worker%3 == 1 {
+					_, _ = r.Get("codebase")
+					continue
+				}
+				if names, err := r.ListNames(); err != nil || len(names) == 0 {
+					t.Errorf("ListNames() = %#v, err=%v", names, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func TestRegistry_GetConcurrentWithPreferenceUpdates(t *testing.T) {

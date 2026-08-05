@@ -218,6 +218,7 @@ const (
 	PartToolActivity    PartType = "tool_activity"    // Persisted display-only provider-managed tool activity; never sent to providers.
 	PartProviderReplay  PartType = "provider_replay"  // Hidden provider protocol state; never rendered/exported.
 	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
+	PartAgentMention    PartType = "agent_mention"    // Provider-visible delegation instruction; excluded from human-visible text surfaces.
 )
 
 // Message holds a role with structured parts.

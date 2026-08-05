@@ -952,7 +952,9 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 		{
 			title: "Pickers and completions",
 			rows: [][2]string{
-				{"@query", "Find and attach a project file or directory"},
+				{"@query", "Find permitted agents and project files/directories"},
+				{"@agent:name", "Request delegation through authorized spawn_agent"},
+				{"@path", "Attach a project file/directory when submitted"},
 				{"Up/Down or Ctrl+P/Ctrl+N", "Move selection"},
 				{"Enter", "Select mention / execute command / choose item"},
 				{"Tab", "Select mention or fill selected completion"},
@@ -3115,8 +3117,8 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 
 	// Update model state
 	m.provider = provider
-	// Preserve existing tool registry when creating new engine
-	m.engine = llm.NewEngine(provider, m.engine.Tools())
+	// Preserve existing tool registry when creating new engine.
+	m.replaceEngine(llm.NewEngine(provider, m.engine.Tools()))
 	m.providerName = provider.Name()
 	m.providerKey = providerName
 	m.modelName = modelName

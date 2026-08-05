@@ -78,6 +78,8 @@ term-llm agents get reviewer
 term-llm agents clear reviewer model
 ```
 
+Registry lookup names are limited to 64 letters, digits, or underscores, with non-trailing spaces, dots, and hyphens between segments. This is also the grammar used by explicit `@agent:name` delegation mentions, so surrounding sentence punctuation is never part of the lookup key.
+
 ## Customizing built-ins
 
 A filesystem agent with the same name as a built-in shadows the built-in. For example, to customize the default `developer` behavior, create `term-llm-agents/developer/agent.yaml` in a project or `~/.config/term-llm/agents/developer/agent.yaml` for your user account. You can start from the bundled implementation with:
@@ -137,7 +139,7 @@ Built-in agents that currently default to `search: true`: `agent-builder`, `web-
 
 ## Handing a conversation to another agent
 
-In chat, use `/handover` to prepare context for a different agent and start it in a new session:
+In chat, use `/handover` to prepare context for a different agent and start it in a new session. This is different from a composer `@agent:reviewer` mention: the mention keeps the current active agent and asks its model to delegate through the current session's authorized `spawn_agent` tool.
 
 ```text
 /handover @developer

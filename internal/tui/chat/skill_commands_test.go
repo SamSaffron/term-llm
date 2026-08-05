@@ -151,6 +151,9 @@ Explain $ARGUMENTS[0]. Raw: $ARGUMENTS
 	if m.engine.IsToolAllowed("anything") {
 		t.Fatal("explicit empty allowlist was not applied for the skill turn")
 	}
+	if current := m.CurrentAgentMentionEngine(); current != m.engine || current.IsToolAllowed(tools.SpawnAgentToolName) {
+		t.Fatal("agent mention engine did not observe the live skill filter")
+	}
 
 	built := m.buildMessagesForStream()
 	for _, message := range built {
@@ -163,6 +166,9 @@ Explain $ARGUMENTS[0]. Raw: $ARGUMENTS
 	m.restoreSkillAllowedTools()
 	if !m.engine.IsToolAllowed("anything") {
 		t.Fatal("prior engine tool policy was not restored")
+	}
+	if !m.CurrentAgentMentionEngine().IsToolAllowed(tools.SpawnAgentToolName) {
+		t.Fatal("agent mention engine did not observe restored skill filter")
 	}
 }
 
@@ -269,6 +275,48 @@ func TestQueuedMainContextSkillWaitsForWorktreeOperation(t *testing.T) {
 	m = updated.(*Model)
 	if !handled || !m.streaming || len(m.queuedMainSkillActivations) != 0 || !m.skillFilterPending {
 		t.Fatalf("retried queued skill state: handled=%v streaming=%v queued=%d filter=%v", handled, m.streaming, len(m.queuedMainSkillActivations), m.skillFilterPending)
+	}
+}
+
+func TestMainSkillValidatesAgentMentionBeforeAnyActivationSideEffect(t *testing.T) {
+	registry := chatTestSkillRegistry(t, map[string]string{
+		"scoped": `---
+name: scoped
+description: Scoped delegation
+allowed-tools: []
+tools:
+  - name: scoped_helper
+    description: Scoped helper
+    script: scripts/helper.sh
+---
+Work with $ARGUMENTS.
+`,
+	})
+	toolConfig := tools.DefaultToolConfig()
+	localRegistry, err := tools.NewLocalToolRegistry(&toolConfig, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestChatModel(false)
+	m.toolMgr = &tools.ToolManager{Registry: localRegistry}
+	m.SetSkillsSetup(&skills.Setup{Registry: registry})
+	m.agentMentionCapability = &fakeAgentMentionCapability{names: []string{"reviewer"}, denied: make(map[string]error)}
+	const invocation = "/scoped @agent:reviewer"
+	m.setTextareaValue(invocation)
+
+	updated, _ := m.ExecuteCommand(invocation)
+	m = updated.(*Model)
+	if m.streaming || len(m.messages) != 0 || m.skillFilterPending || len(m.skillDynamicToolNames) != 0 {
+		t.Fatalf("rejected activation committed state: streaming=%v messages=%d filter=%v dynamic=%#v", m.streaming, len(m.messages), m.skillFilterPending, m.skillDynamicToolNames)
+	}
+	if _, ok := localRegistry.Get("scoped_helper"); ok {
+		t.Fatal("rejected activation registered its custom tool")
+	}
+	if _, ok := m.engine.Tools().Get("scoped_helper"); ok {
+		t.Fatal("rejected activation registered its engine tool")
+	}
+	if m.textarea.Value() != invocation || !strings.Contains(m.footerMessage, "blocks spawn_agent") {
+		t.Fatalf("rejected activation did not preserve actionable draft: text=%q footer=%q", m.textarea.Value(), m.footerMessage)
 	}
 }
 
