@@ -1919,28 +1919,15 @@ func (r *testJobsV2Runner) Run(ctx context.Context, job jobsV2Job, pw progressWr
 	return jobsV2RunResult{}, nil
 }
 
-func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+func TestJobsV2ExecuteRunRequeuesClaimWhenManagerClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	mgr, err := newJobsV2Manager(dbPath, 0, nil)
 	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(1)
-	if err := execJobsV2Schema(db); err != nil {
-		t.Fatalf("execJobsV2Schema failed: %v", err)
+		t.Fatalf("newJobsV2Manager failed: %v", err)
 	}
 
 	runner := &testJobsV2Runner{}
-	mgr := &jobsV2Manager{
-		db:       db,
-		workerID: "worker_test",
-		runners: map[jobsV2RunnerType]jobsV2Runner{
-			jobsV2RunnerProgram: runner,
-		},
-		cancels: make(map[string]context.CancelFunc),
-		closed:  true,
-	}
-
+	mgr.runners[jobsV2RunnerProgram] = runner
 	job, err := mgr.CreateJob(jobsV2Job{
 		Name:           "closed-execute-run",
 		Enabled:        true,
@@ -1953,38 +1940,87 @@ func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJob failed: %v", err)
 	}
-
-	run, err := mgr.TriggerJob(job.ID)
+	queued, err := mgr.TriggerJob(job.ID)
 	if err != nil {
 		t.Fatalf("TriggerJob failed: %v", err)
 	}
-	_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunClaimed, mgr.workerID, run.ID)
+	claimed, ok, err := mgr.claimNextRun()
 	if err != nil {
-		t.Fatalf("mark run claimed failed: %v", err)
+		t.Fatalf("claimNextRun failed: %v", err)
 	}
-	run, err = mgr.GetRun(run.ID)
-	if err != nil {
-		t.Fatalf("GetRun failed: %v", err)
+	if !ok || claimed.ID != queued.ID {
+		t.Fatalf("claimNextRun = (%q, %v), want %q true", claimed.ID, ok, queued.ID)
 	}
 
-	mgr.executeRun(run)
+	// Hold CloseContext at its worker wait so executeRun sees shutdown while the
+	// database is still open, matching a worker between claim and admission.
+	mgr.wg.Add(1)
+	workerDone := false
+	defer func() {
+		if !workerDone {
+			mgr.wg.Done()
+		}
+	}()
+	closeErr := make(chan error, 1)
+	go func() {
+		closeErr <- mgr.CloseContext(context.Background())
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for !mgr.isClosed() {
+		if time.Now().After(deadline) {
+			t.Fatal("manager did not start closing")
+		}
+		time.Sleep(time.Millisecond)
+	}
 
+	mgr.executeRun(claimed)
+	mgr.wg.Done()
+	workerDone = true
+	if err := <-closeErr; err != nil {
+		t.Fatalf("CloseContext failed: %v", err)
+	}
 	if runner.called {
 		t.Fatal("runner was invoked after manager shutdown")
 	}
-	if len(mgr.cancels) != 0 {
-		t.Fatalf("cancels still tracked after early return: %d", len(mgr.cancels))
+
+	reopened, err := newJobsV2Manager(dbPath, 0, nil)
+	if err != nil {
+		t.Fatalf("reopen jobs manager failed: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	recovered, err := reopened.GetRun(claimed.ID)
+	if err != nil {
+		t.Fatalf("GetRun after reopen failed: %v", err)
+	}
+	if recovered.Status != jobsV2RunQueued {
+		t.Fatalf("status after reopen = %s, want %s", recovered.Status, jobsV2RunQueued)
+	}
+	if recovered.WorkerID != "" {
+		t.Fatalf("worker_id after reopen = %q, want empty", recovered.WorkerID)
+	}
+	if recovered.StartedAt != nil {
+		t.Fatal("started_at was set even though closed manager should not start the run")
 	}
 
-	updated, err := mgr.GetRun(run.ID)
+	reopenedRunner := &testJobsV2Runner{}
+	reopened.runners[jobsV2RunnerProgram] = reopenedRunner
+	reclaimed, ok, err := reopened.claimNextRun()
 	if err != nil {
-		t.Fatalf("GetRun after executeRun failed: %v", err)
+		t.Fatalf("claimNextRun after reopen failed: %v", err)
 	}
-	if updated.Status != jobsV2RunClaimed {
-		t.Fatalf("status = %s, want %s", updated.Status, jobsV2RunClaimed)
+	if !ok || reclaimed.ID != claimed.ID {
+		t.Fatalf("claimNextRun after reopen = (%q, %v), want %q true", reclaimed.ID, ok, claimed.ID)
 	}
-	if updated.StartedAt != nil {
-		t.Fatal("started_at was set even though closed manager should not start the run")
+	reopened.executeRun(reclaimed)
+	if !reopenedRunner.called {
+		t.Fatal("requeued run was not executable after reopen")
+	}
+	finished, err := reopened.GetRun(claimed.ID)
+	if err != nil {
+		t.Fatalf("GetRun after execution failed: %v", err)
+	}
+	if finished.Status != jobsV2RunSucceeded {
+		t.Fatalf("finished status = %s, want %s", finished.Status, jobsV2RunSucceeded)
 	}
 }
 

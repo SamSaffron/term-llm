@@ -1418,7 +1418,12 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.mu.Lock()
-	closed := m.closed
+	if m.closed {
+		m.mu.Unlock()
+		cancel()
+		_, _ = m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, run.ID, jobsV2RunClaimed, m.workerID)
+		return
+	}
 	m.cancels[run.ID] = cancel
 	m.mu.Unlock()
 	defer func() {
@@ -1427,9 +1432,6 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		delete(m.cancels, run.ID)
 		m.mu.Unlock()
 	}()
-	if closed {
-		return
-	}
 
 	started := time.Now().UTC()
 	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
