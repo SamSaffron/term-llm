@@ -1379,7 +1379,6 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	run(func() error { return s.stopServeSkillRuns(ctx) })
 	run(func() error { return s.server.Shutdown(ctx) })
 
-	closeFileTrackingStore()
 	s.modelsMu.Lock()
 	for _, p := range s.modelsProviders {
 		if cleaner, ok := p.(interface{ CleanupMCP() }); ok {
@@ -1397,6 +1396,13 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		// Shutdown methods may return as soon as ctx expires even though their
+		// owners are still unwinding. Keep the process-wide file history store
+		// open in that case so late tool recorders can finish safely.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		closeFileTrackingStore()
 		close(errCh)
 		for err := range errCh {
 			if err != nil {
