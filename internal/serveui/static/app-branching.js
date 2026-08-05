@@ -122,7 +122,7 @@ const applyPendingBranchProjection = () => {
 const branchActionIcon = (button, label) => {
   button.title = label;
   button.setAttribute('aria-label', label);
-  button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2"></circle><circle cx="18" cy="15" r="2"></circle><circle cx="6" cy="19" r="2"></circle><path d="M6 7v10"></path><path d="M8 7h3a7 7 0 0 1 7 7v-1"></path></svg>';
+  button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h5"></path><path d="M8 12V9a3 3 0 0 1 3-3h10"></path><path d="M8 12v3a3 3 0 0 0 3 3h10"></path></svg>';
 };
 
 const syncBranchActions = () => {
