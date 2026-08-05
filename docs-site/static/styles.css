@@ -122,11 +122,6 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
   color: var(--soft);
 }
 .copy-button { white-space: nowrap; }
-.install-note {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.7;
-}
 .card-grid { display: grid; gap: 1rem; }
 .card-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .card-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }

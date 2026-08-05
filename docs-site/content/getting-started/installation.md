@@ -48,7 +48,7 @@ term-llm config completion powershell --install
 
 The installer prints the destination and any shell-specific activation steps. Follow the printed instructions for Bash, Zsh, and PowerShell.
 
-For Fish, the script is installed under `$__fish_config_dir/completions/term-llm.fish`: `$XDG_CONFIG_HOME/fish/completions/term-llm.fish` when `XDG_CONFIG_HOME` is an absolute path, or `~/.config/fish/completions/term-llm.fish` otherwise. Fish loads it automatically in new shell sessions. Run the installer from an environment with the same `XDG_CONFIG_HOME` that Fish uses.
+For Fish, the script is installed under `$__fish_config_dir/completions/term-llm.fish`. If `XDG_CONFIG_HOME` is absolute, this is `$XDG_CONFIG_HOME/fish/completions/term-llm.fish`; otherwise it is `~/.config/fish/completions/term-llm.fish`. Fish loads the file automatically in new sessions. Run the installer with the same `XDG_CONFIG_HOME` that Fish uses.
 
 To enable completions only for the current Fish session without installing a file, run:
 

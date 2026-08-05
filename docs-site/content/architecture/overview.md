@@ -60,8 +60,6 @@ That matters because it moves the system beyond interactive use:
 - inspectable run history and events
 - controllable retention and cancellation
 
-Once jobs are in the picture, term-llm starts looking less like a terminal helper and more like an automation substrate.
-
 ## Agents and skills are different things
 
 - **Agents** are named configuration bundles. They can choose provider, model, tools, MCP, search, and instructions.
@@ -71,4 +69,4 @@ That distinction matters because it stops everything from becoming one giant sys
 
 ## Jobs and loops are how it becomes a workflow runtime
 
-Jobs make scheduled or delayed execution possible. Loops let an agent keep iterating until some completion condition is reached. Combined with tools and persistent filesystem state, term-llm starts acting less like a chat wrapper and more like an automation runtime.
+Jobs provide scheduled or delayed execution, while loops let agents iterate until a completion condition is reached. Together with tools and persistent filesystem state, they make term-llm an automation runtime.

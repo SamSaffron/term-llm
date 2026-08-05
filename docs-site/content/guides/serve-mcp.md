@@ -8,7 +8,7 @@ next:
   url: /guides/mcp-servers/
 ---
 
-`term-llm serve mcp` starts an MCP server over HTTP that exposes term-llm's local tools to any MCP client. Use case: a cloud dev box runs the server, and a local term-llm instance (or any MCP-compatible client) connects to use its tools remotely.
+`term-llm serve mcp` exposes term-llm's local tools to MCP clients over HTTP. For example, a cloud development box can run the server while a local term-llm instance—or another MCP client—uses its tools remotely.
 
 ## Quick start
 

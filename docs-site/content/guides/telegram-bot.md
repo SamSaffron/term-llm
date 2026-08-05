@@ -11,7 +11,7 @@ next:
 
 ## What this gives you
 
-A Telegram bot that runs your agent. You send a message from your phone or desktop; the bot replies with a streamed response. Sessions persist per chat: history carries over between messages until you `/reset`. Every conversation is stored in the same sessions DB as web and CLI interactions.
+The bot runs your agent and streams replies to messages sent from your phone or desktop. History persists per chat until you run `/reset`. Conversations use the same session database as web and CLI interactions.
 
 ## Step 1: Create a bot with BotFather
 

@@ -121,7 +121,7 @@ curl -s http://127.0.0.1:8090/api/nodes -H "Authorization: Bearer hubdevtoken" \
 
 ## Troubleshooting
 
-Almost every first-time problem shows up as the same card: **status `disconnected`, "waiting for reverse connection"**, with the error *"Reverse node is waiting for its outbound websocket connection."* That message means exactly one thing: **the Hub has the node registered, but no reverse websocket has connected to *this* Hub.** Work through these in order.
+Most first-time failures appear as `disconnected` with `waiting for reverse connection` and the error *"Reverse node is waiting for its outbound websocket connection."* The Hub has registered the node, but its reverse websocket has not connected. Work through these checks in order.
 
 ### 1. You're running two Hubs (the most common trap)
 

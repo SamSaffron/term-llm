@@ -35,7 +35,7 @@ Sessions are stored in SQLite at:
 ~/.local/share/term-llm/sessions.db
 ```
 
-That store is not just for interactive `chat` and `ask` runs. LLM jobs also use it by default now, so background runs can leave a persisted transcript and tool trail instead of vanishing into process memory.
+LLM jobs use the same store by default, preserving their transcripts and tool history.
 
 Session storage config:
 
@@ -48,7 +48,7 @@ sessions:
   strip_image_base64: false
 ```
 
-By default, image uploads remain portable because session rows keep the image base64 as well as any saved local path. If you prefer a smaller SQLite database and are willing to keep the uploads directory with it, set `sessions.strip_image_base64: true` to store only image path/metadata for image parts that have an `ImagePath`.
+By default, session rows keep base64-encoded image data and any saved local path, so uploads remain portable. To reduce the database size, set `sessions.strip_image_base64: true`; image parts with an `ImagePath` will retain only their path and metadata.
 
 CLI overrides:
 

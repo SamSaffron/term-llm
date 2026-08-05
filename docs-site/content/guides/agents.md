@@ -11,7 +11,7 @@ next:
 ---
 Agents are named workflow bundles. An agent can carry its own system prompt, provider and model preferences, tool permissions, MCP servers, shell allowlists, and turn limits.
 
-That means you can stop restating the same intent over and over. Use `@reviewer` when you want review behavior, `@codebase` when you want repository exploration, `@web-researcher` when you want web-backed investigation, and so on.
+Agents avoid repeated setup. Use `@reviewer` for code review, `@codebase` for repository exploration, or `@web-researcher` for web research.
 
 ## Using agents
 

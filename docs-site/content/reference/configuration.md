@@ -281,7 +281,7 @@ Supported placeholders:
 - `{{activity}}` - model name while idle, streaming activity while streaming, or `attention` while waiting for input.
 - `{{elapsed}}` - streaming elapsed time such as `12s` when available.
 - `{{attention}}` / `{{attention_marker}}` - `‼` when approval/ask-user/handover attention is needed, otherwise empty.
-- `{{env "NAME"}}` or `{{env.NAME}}` - environment variable from the chat process. Use this sparingly: terminal titles can be visible to your terminal, window manager, tmux, screen sharing, and logs, so do not include secrets.
+- `{{env "NAME"}}` or `{{env.NAME}}` - environment variable from the chat process. Use this sparingly: titles may appear in the terminal, window manager, tmux, screen shares, and logs. Do not include secrets.
 
 The format is a Go `text/template`, so pipelines work too. A small `default` helper returns its first argument when the piped value is empty:
 
@@ -292,7 +292,7 @@ chat:
 
 Title text is sanitized before emission: control characters are removed, whitespace is collapsed, and very long results are truncated.
 
-Ghostty note: Ghostty honors `OSC 2` title updates, but Ghostty can also override or ignore program-supplied titles in a few cases. In `smart` mode, term-llm also emits Ghostty's `OSC 9;4` indeterminate progress indicator while a chat turn is running and clears it when the turn settles. When running inside tmux, term-llm wraps this progress sequence in tmux passthrough so Ghostty can still see it; tmux 3.3+ may require `set -g allow-passthrough on` in `~/.tmux.conf` for passthrough sequences to reach Ghostty.
+Ghostty honors `OSC 2` title updates but may override or ignore program-supplied titles. In `smart` mode, term-llm emits Ghostty's `OSC 9;4` indeterminate progress indicator during chat turns and clears it afterward. Inside tmux, term-llm uses passthrough so Ghostty can receive the sequence; tmux 3.3+ may require `set -g allow-passthrough on` in `~/.tmux.conf`.
 
 Ghostty title caveats:
 
@@ -448,7 +448,7 @@ search:
 
 Defaults are `provider: exa_mcp` and `fetch_provider: jina`: external search uses Exa's remote MCP server, while `read_url` uses Jina Reader. Set `fetch_provider: exa_mcp` to fetch pages through Exa MCP as well, or `fetch_provider: none` to omit the external `read_url` tool.
 
-Search is large enough to deserve its own page; see [Search](/guides/search/).
+See the [Search guide](/guides/search/) for detailed search configuration.
 
 ## Image, audio, music, transcription, and embedding config
 
