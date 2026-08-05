@@ -4926,3 +4926,103 @@
   .toast { animation: none; }
   .toast-leaving { transition: none; }
 }
+
+/* Conversation branching */
+.branch-hidden { display: none !important; }
+.pending-branch-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin-bottom: .5rem;
+  padding: .45rem .65rem;
+  border: 1px dashed var(--border);
+  border-radius: .55rem;
+  color: var(--text-muted);
+  font-size: .8rem;
+}
+.pending-branch-banner[hidden] { display: none; }
+.pending-branch-banner button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.message-branch-action,
+.turn-branch-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: .75rem;
+  padding: .2rem .35rem;
+  cursor: pointer;
+  border-radius: .35rem;
+}
+.message-branch-action:hover,
+.message-branch-action:focus-visible,
+.turn-branch-btn:hover,
+.turn-branch-btn:focus-visible { color: var(--text); background: var(--surface-2); }
+.message.user .message-branch-action { align-self: flex-end; margin-top: .15rem; }
+.branch-pending-divider {
+  margin: .9rem auto;
+  padding: .55rem .8rem;
+  max-width: 42rem;
+  border: 1px dashed var(--border);
+  border-radius: .65rem;
+  color: var(--text-muted);
+  font-size: .8rem;
+  text-align: center;
+}
+.branch-pending-divider button { margin-left: .5rem; }
+.branch-tree-trigger { white-space: nowrap; }
+.branch-tree-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0,0,0,.48);
+}
+.branch-tree-modal[hidden] { display: none; }
+.branch-tree-card {
+  width: min(36rem, 100%);
+  max-height: min(42rem, calc(100dvh - 2rem));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .9rem;
+  background: var(--surface);
+  box-shadow: var(--shadow-strong);
+  padding: 1rem;
+}
+.branch-tree-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.branch-tree-header p,
+.branch-tree-note { color: var(--text-muted); font-size: .8rem; margin: .25rem 0 0; }
+.branch-tree-list { display: grid; gap: .35rem; margin: 1rem 0; }
+.branch-tree-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: .6rem;
+  align-items: start;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: .55rem;
+  padding: .55rem .65rem;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.branch-tree-item:hover,
+.branch-tree-item:focus-visible { background: var(--surface-2); border-color: var(--border); }
+.branch-tree-item.active { border-color: var(--border); background: var(--surface-2); }
+.branch-tree-item small { display: block; color: var(--text-muted); margin-top: .15rem; }
+@media (max-width: 640px) {
+  .branch-tree-modal { align-items: end; padding: 0; }
+  .branch-tree-card { width: 100%; max-height: 80dvh; border-radius: 1rem 1rem 0 0; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+  .message-branch-action,
+  .turn-branch-btn { min-height: 2rem; }
+}

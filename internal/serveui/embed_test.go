@@ -51,6 +51,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	legacyProductionLines := 0
 	transportLines := map[string]int{}
 	completionLines := 0
+	branchingLines := 0
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
@@ -65,13 +66,15 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			transportLines[name] = lineCount
 		} else if name == "slash-commands.js" {
 			completionLines = lineCount
+		} else if name == "app-branching.js" {
+			branchingLines = lineCount
 		} else {
 			legacyProductionLines += lineCount
 		}
 	}
-	// Keep focused transport/completion boundaries from weakening the pre-existing
-	// ratchet: legacy production code must still decrease, while each extracted
-	// module gets a narrow independent ceiling tied to its audited responsibility.
+	// Keep focused transport/completion/branching boundaries from weakening the
+	// pre-existing ratchet: legacy production code must still decrease, while each
+	// extracted module gets a narrow independent ceiling.
 	if legacyProductionLines >= 20570 {
 		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20570", legacyProductionLines)
 	}
@@ -80,6 +83,9 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	}
 	if completionLines > 450 {
 		t.Fatalf("composer completion controller=%d lines, budget=450", completionLines)
+	}
+	if branchingLines == 0 || branchingLines > 300 {
+		t.Fatalf("conversation branching controller=%d lines, budget=300", branchingLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -100,6 +106,23 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 				t.Fatalf("pure lifecycle module %s accesses forbidden effect %q", name, forbidden)
 			}
 		}
+	}
+}
+
+func TestBranchingAssetIsVersionedAndCached(t *testing.T) {
+	if _, err := StaticAsset("app-branching.js"); err != nil {
+		t.Fatalf("StaticAsset(app-branching.js): %v", err)
+	}
+	rendered := string(RenderIndexHTML("/chat", "", RenderOptions{}))
+	if !strings.Contains(rendered, `src="app-branching.js?v=`) || !strings.Contains(rendered, `href="app-branching.js?v=`) {
+		t.Fatal("app-branching.js must be versioned in both script and preload tags")
+	}
+	serviceWorker, err := StaticAsset("sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(serviceWorker), "'./app-branching.js'") {
+		t.Fatal("service worker shell cache is missing app-branching.js")
 	}
 }
 

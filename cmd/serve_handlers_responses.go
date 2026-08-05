@@ -39,6 +39,7 @@ type resolvedResponsesRequest struct {
 	previousResponseID string
 	previousDurable    bool
 	freshConversation  bool
+	durableRuntime     bool
 	uiStream           bool
 	idempotencyKey     string
 }
@@ -188,6 +189,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if identifiedUserBatch && req.PreviousResponseID != "" {
 		replaceHistory = false
 	}
+	if req.Branch && strings.TrimSpace(req.PreviousResponseID) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch requires previous_response_id")
+		return
+	}
 
 	// External /v1/responses callers follow OpenAI-style chaining:
 	// previous_response_id continues a conversation; no previous response means a
@@ -195,8 +200,34 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	headerSessionID := strings.TrimSpace(r.Header.Get("session_id"))
 	sessionID := ""
 	previousDurable := false
+	resolvedPreviousResponseID := req.PreviousResponseID
+	branched := false
 	if req.PreviousResponseID != "" {
-		if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages, identifiedUserBatch); status != 0 {
+		if req.Branch {
+			idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+			if idempotencyKey == "" {
+				idempotencyKey = responseIdempotencyKeyFromRequest(r)
+			}
+			durable, status, msg := s.resolveDurableBranch(ctx, req.PreviousResponseID, headerSessionID, inputMessages, identifiedUserBatch, req.ExpectedRev, idempotencyKey)
+			if status != 0 {
+				errType := "invalid_request_error"
+				if status == http.StatusConflict {
+					errType = "conflict_error"
+				} else if status >= http.StatusInternalServerError {
+					errType = "server_error"
+				}
+				writeOpenAIError(w, status, errType, msg)
+				return
+			}
+			sessionID = durable.sessionID
+			resolvedPreviousResponseID = durable.latestID
+			previousDurable = true
+			branched = true
+			w.Header().Set("x-session-id", sessionID)
+			if durable.latestID != durableResponseMessagePrefix+"0" {
+				w.Header().Set("x-branch-anchor-id", durable.latestID)
+			}
+		} else if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages, identifiedUserBatch); status != 0 {
 			errType := "invalid_request_error"
 			if status == http.StatusConflict {
 				errType = "conflict_error"
@@ -237,15 +268,18 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		replaceHistory = true
 	}
 
+	runIdempotencyKey := responseRunIdempotencyKey(r, req)
 	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
 		req:                req,
 		inputMessages:      inputMessages,
 		replaceHistory:     replaceHistory,
 		sessionID:          sessionID,
-		previousResponseID: req.PreviousResponseID,
+		previousResponseID: resolvedPreviousResponseID,
 		previousDurable:    previousDurable,
 		freshConversation:  req.PreviousResponseID == "",
-		idempotencyKey:     responseIdempotencyKeyFromRequest(r),
+		durableRuntime:     branched,
+		uiStream:           branchUsesFirstPartyUIStream(r, branched),
+		idempotencyKey:     runIdempotencyKey,
 	})
 }
 
@@ -489,7 +523,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 	} else {
 		var err error
-		if previousResponseID != "" || rr.uiStream {
+		if previousResponseID != "" || rr.durableRuntime {
 			runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
 		} else {
 			runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
@@ -897,6 +931,20 @@ func responseIdempotencyKeyFromRequest(r *http.Request) string {
 		}
 	}
 	return ""
+}
+
+func responseRunIdempotencyKey(r *http.Request, req responsesCreateRequest) string {
+	key := responseIdempotencyKeyFromRequest(r)
+	if req.Branch && strings.TrimSpace(req.IdempotencyKey) != "" {
+		// The branch body key scopes both child materialization and replay of
+		// that child's first run. Non-branch requests retain header semantics.
+		key = strings.TrimSpace(req.IdempotencyKey)
+	}
+	return key
+}
+
+func branchUsesFirstPartyUIStream(r *http.Request, branched bool) bool {
+	return branched && isFirstPartyUIResponseRequest(r)
 }
 
 func isFirstPartyUIResponseRequest(r *http.Request) bool {

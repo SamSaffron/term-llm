@@ -1752,6 +1752,16 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "tree" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleSessionTree(w, r, sessionID)
+		return
+	}
+
 	if suffix == "transcript" || suffix == "transcript/bodies" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
@@ -2405,7 +2415,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
-			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-term-llm-ui-version")
+			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version")
 		}
 
 		w.Header().Set("X-Term-LLM-UI-Version", serveui.AssetVersion())

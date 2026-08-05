@@ -104,6 +104,11 @@ func AllCommands() []Command {
 			Usage:       "/clear",
 		},
 		{
+			Name:        "tree",
+			Description: "Browse conversation paths or branch from an earlier message",
+			Usage:       "/tree",
+		},
+		{
 			Name:        "undo",
 			Description: "Remove the latest user turn and everything after it",
 			Usage:       "/undo",
@@ -528,6 +533,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdGoal(args, rawArgs)
 	case "clear":
 		return m.cmdClear()
+	case "tree":
+		return m.cmdTree(args)
 	case "undo":
 		return m.cmdUndoRedo(false, args)
 	case "redo":

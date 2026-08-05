@@ -52,6 +52,14 @@ type pendingStreamModelSwitch struct {
 	applied  bool
 }
 
+type pendingConversationBranch struct {
+	sourceSessionID string
+	anchorMessageID int64
+	expected        session.TranscriptMutationState
+	idempotencyKey  string
+	prefill         string
+}
+
 type promptHistoryState struct {
 	active          bool
 	cursorID        int64
@@ -309,12 +317,18 @@ type Model struct {
 
 	// If set, the caller should relaunch chat with this session ID.
 	pendingResumeSessionID string
+	pendingBranch          *pendingConversationBranch
+	pendingBranchPrefill   string
+	branchTreeChoices      map[string]pendingConversationBranch
 
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string
 
 	// If set, auto-send this message on Init (used after handover restart).
 	handoverAutoSend string
+	// branchPrefill restores an edited/follow-up draft after a branch relaunch
+	// without submitting it to the model.
+	branchPrefill string
 
 	// Deferred model switch marker for non-submitting shortcuts such as Ctrl+R.
 	// Coalesces repeated effort changes and is appended when the next user turn is sent.
@@ -1641,6 +1655,14 @@ func (m *Model) Init() tea.Cmd {
 		m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
 	}
 
+	// Branch relaunches restore the user's edited/follow-up draft but deliberately
+	// require a fresh Enter confirmation instead of auto-sending it.
+	if m.branchPrefill != "" {
+		m.textarea.SetValue(m.branchPrefill)
+		m.branchPrefill = ""
+		m.updateTextareaHeight()
+	}
+
 	// Handover auto-send: send the target agent's default prompt after restart
 	if m.handoverAutoSend != "" {
 		m.textarea.SetValue(m.handoverAutoSend)
@@ -1686,6 +1708,11 @@ func (m *Model) RequestedResumeSessionID() string {
 // RequestedHandoverAutoSend returns a message to auto-send after handover restart.
 func (m *Model) RequestedHandoverAutoSend() string {
 	return strings.TrimSpace(m.pendingHandoverAutoSend)
+}
+
+// RequestedBranchPrefill returns a draft to restore without auto-submitting it.
+func (m *Model) RequestedBranchPrefill() string {
+	return m.pendingBranchPrefill
 }
 
 // YoloModeActive returns the current effective yolo state, including approval
@@ -1740,6 +1767,11 @@ func (m *Model) WaitStreamDone() {
 // SetHandoverAutoSend sets a message to auto-send on Init (for handover restart).
 func (m *Model) SetHandoverAutoSend(text string) {
 	m.handoverAutoSend = strings.TrimSpace(text)
+}
+
+// SetBranchPrefill restores a branch draft on Init without scheduling send.
+func (m *Model) SetBranchPrefill(text string) {
+	m.branchPrefill = text
 }
 
 func chatMouseModeFromEnv() bool {

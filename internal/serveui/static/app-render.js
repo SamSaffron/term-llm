@@ -2456,7 +2456,6 @@ const syncTurnActionPanelForAssistant = (assistantId) => {
 const syncTurnActionPanels = () => {
   const root = elements.messages;
   if (!root) return;
-
   root.querySelectorAll('.turn-action-panel').forEach((panel) => panel.remove());
 
   getAssistantTurns(ensureActiveSession()).forEach((turn) => {
@@ -2465,6 +2464,7 @@ const syncTurnActionPanels = () => {
     if (!node || !node.classList?.contains('assistant')) return;
     ensureTurnActionPanel(node, turn);
   });
+  app.syncBranchActions?.();
 };
 
 const updateToolGroupNode = (message) => {

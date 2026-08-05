@@ -48,9 +48,11 @@ type SQLiteStore struct {
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 	hasMessageStreamIdentity bool // true if messages table has response-scoped segment identity columns
 	hasMessageClientID       bool // true if messages table has client_message_id
+	hasSessionBranches       bool // true if session_branches table exists
 }
 
 var _ MessageSequenceStore = (*SQLiteStore)(nil)
+var _ ConversationBranchStore = (*SQLiteStore)(nil)
 
 // Schema for the sessions database.
 const schema = `
@@ -153,6 +155,18 @@ CREATE TABLE IF NOT EXISTS session_redo (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id, stack_pos)
 );
+
+CREATE TABLE IF NOT EXISTS session_branches (
+    child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    parent_session_id TEXT NOT NULL,
+    fork_after_message_id INTEGER,
+    fork_after_sequence INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_branches_idempotency
+    ON session_branches(parent_session_id, idempotency_key)
+    WHERE idempotency_key <> '';
 
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
@@ -295,6 +309,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	if cfg.ReadOnly {
 		store.probeSessionColumns()
 		store.probeMessageColumns()
+		store.probeBranchTable()
 	} else {
 		store.setCurrentColumns()
 	}
@@ -343,7 +358,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 44
+const schemaVersion = 45
 
 // migration represents a schema migration.
 type migration struct {
@@ -1239,6 +1254,30 @@ var migrations = []migration{
 				PRIMARY KEY (session_id, stack_pos)
 			)`)
 			return err
+		},
+	},
+	{
+		version:     45,
+		description: "create conversation branch edges",
+		up: func(db schemaExecutor) error {
+			for _, statement := range []string{
+				`CREATE TABLE IF NOT EXISTS session_branches (
+					child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+					parent_session_id TEXT NOT NULL,
+					fork_after_message_id INTEGER,
+					fork_after_sequence INTEGER NOT NULL,
+					idempotency_key TEXT NOT NULL DEFAULT '',
+					created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+				)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_session_branches_idempotency
+					ON session_branches(parent_session_id, idempotency_key)
+					WHERE idempotency_key <> ''`,
+			} {
+				if _, err := db.Exec(statement); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	},
 }
@@ -4556,6 +4595,14 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasMessageCompactionTail = true
 	s.hasMessageStreamIdentity = true
 	s.hasMessageClientID = true
+	s.hasSessionBranches = true
+}
+
+func (s *SQLiteStore) probeBranchTable() {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_branches'`).Scan(&count); err == nil {
+		s.hasSessionBranches = count > 0
+	}
 }
 
 // probeSessionColumns checks optional session columns in a single PRAGMA scan.

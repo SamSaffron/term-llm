@@ -21,6 +21,7 @@ const sidebarSource = fs.readFileSync(path.join(dir, 'app-sidebar.js'), 'utf8');
 const sessionEventsSource = fs.readFileSync(path.join(dir, 'app-session-events.js'), 'utf8');
 const sessionsSource = fs.readFileSync(path.join(dir, 'app-sessions.js'), 'utf8')
   .replace('initialize();', 'window.__termllmInitializePromise = initialize();');
+const branchingSource = fs.readFileSync(path.join(dir, 'app-branching.js'), 'utf8');
 const mcpSource = fs.readFileSync(path.join(dir, 'app-mcp.js'), 'utf8');
 const goalsLocationSource = fs.readFileSync(path.join(dir, 'app-goals-location.js'), 'utf8');
 const messageConvertSource = fs.readFileSync(path.join(dir, 'app-message-convert.js'), 'utf8');
@@ -485,6 +486,7 @@ async function createSessionsHarness(options = {}) {
   vm.runInContext(intentStorageSource, context, { filename: 'intent-storage.js' });
   vm.runInContext(sessionAdminSource, context, { filename: 'app-session-admin.js' });
   vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
+  vm.runInContext(branchingSource, context, { filename: 'app-branching.js' });
   vm.runInContext(sessionEventsSource, context, { filename: 'app-session-events.js' });
   if (typeof options.onInitializeStarted === 'function') {
     options.onInitializeStarted({ app, windowObj, storage, elementMap });
@@ -497,7 +499,7 @@ async function createSessionsHarness(options = {}) {
 async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
   const name = 'switching sessions stages current composer before restoring target draft';
   const drafts = new Map([['', 'existing blank draft']]);
-  const { app } = await createSessionsHarness({
+  const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
@@ -1937,8 +1939,8 @@ async function testSidebarSwitchSkipsLoadedAndUnresolvedSessionRequests() {
   await app.switchToSession(unresolved.id, { closeSidebar: false });
   await new Promise((resolve) => setImmediate(resolve));
 
-  if (loadedCalls.length !== 0) {
-    fail(name, 'already-loaded live session refetched during selection', JSON.stringify(loadedCalls));
+  if (loadedCalls.length !== 1 || !loadedCalls[0].endsWith(`/sessions/${loaded.id}/tree`)) {
+    fail(name, 'loaded selection made requests other than its required branch-tree refresh', JSON.stringify(loadedCalls));
     return;
   }
   const unresolvedScoped = fetchCalls.filter((url) => String(url).includes('/v1/sessions/1291/'));
@@ -7116,7 +7118,167 @@ async function testInflightSyncAbsorbsQueuedZeroRevisionActivation() {
   pass(name);
 }
 
+async function testConversationBranchTreeOpensAndSwitchesPaths() {
+  const name = 'conversation tree renders path count and switches to an existing branch';
+  const { app, windowObj } = await createSessionsHarness({
+    appOverrides: { renderMessages() {} },
+  });
+  const makeSession = (id, number, title) => {
+    const session = { id, number, title, messages: [], activeResponseId: null, lastResponseId: null };
+    session.transcript = new windowObj.TermLLMConversation.ConversationController(id);
+    session.transcript.publishedMessages = [];
+    return session;
+  };
+  const root = makeSession('branch_tree_root', 10, 'Root path');
+  const child = makeSession('branch_tree_child', 11, 'Alternate path');
+  app.state.sessions = [root, child];
+  app.state.activeSessionId = root.id;
+  app.state.draftSessionActive = false;
+  const treeRequests = [];
+  app.apiFetch = async (url) => {
+    if (String(url).includes('/tree')) treeRequests.push(String(url));
+    if (String(url).endsWith(`/sessions/${root.id}/tree`)) {
+      return new Response(JSON.stringify({
+        root_session_id: root.id,
+        active_session_id: root.id,
+        path_count: 2,
+        nodes: [
+          { session_id: root.id, session_number: 10, title: 'Root path' },
+          { session_id: child.id, session_number: 11, parent_session_id: root.id, title: 'Alternate path', anchor_preview: 'first answer' },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (String(url).endsWith(`/sessions/${child.id}/tree`)) {
+      return new Response(JSON.stringify({
+        root_session_id: child.id,
+        active_session_id: child.id,
+        path_count: 1,
+        nodes: [{ session_id: child.id, session_number: 11, title: 'Alternate path' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  await app.openBranchTree();
+  if (app.elements.branchTreeBtn.textContent !== '2 paths'
+      || app.elements.branchTreeModal.hidden
+      || app.elements.branchTreeList.children.length !== 2) {
+    fail(name, 'tree did not render its count and paths');
+    return;
+  }
+  app.elements.branchTreeList.children[1].click();
+  await waitFor(() => app.state.activeSessionId === child.id, 'branch path did not become active');
+  await waitFor(() => app.elements.branchTreeBtn.hidden, 'single-path child did not hide the path button');
+  if (!app.elements.branchTreeModal.hidden || !windowObj.location.pathname.includes('/11')) {
+    fail(name, 'path switch did not close the tree and update the URL', windowObj.location.pathname);
+    return;
+  }
+  if (!treeRequests.some((url) => url.endsWith(`/sessions/${child.id}/tree`))) {
+    fail(name, 'session switch reused another component cached tree instead of refreshing the child');
+    return;
+  }
+  pass(name);
+}
+
+async function testConversationBranchPendingSelectionUsesDurableBoundaries() {
+  const name = 'conversation branch actions stage durable anchors and user prefill without persistence';
+  const { app, windowObj } = await createSessionsHarness({
+    appOverrides: { renderMessages() {} },
+  });
+  const session = {
+    id: 'branch_pending_source',
+    title: 'Branch pending',
+    messages: [
+      { id: 'u1', role: 'user', content: 'first', durable: true, durableSourceRowIds: [71] },
+      { id: 'a1', role: 'assistant', content: 'answer', durable: true, durableSourceRowIds: [72] },
+      { id: 'tools1', role: 'tool-group', content: '', durable: true, durableSourceRowIds: [73] },
+      { id: 'u2', role: 'user', content: 'edit me', durable: true, durableSourceRowIds: [74] },
+    ],
+    lastResponseId: 'resp_msg_74',
+    activeResponseId: null,
+  };
+  session.transcript = new windowObj.TermLLMConversation.ConversationController(session.id);
+  session.transcript.publishedMessages = session.messages.slice();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.elements.promptInput.value = 'unrelated draft';
+
+  if (!app.beginPendingBranch(session.messages[3], 'user')) {
+    fail(name, 'user branch action was rejected');
+    return;
+  }
+  if (app.state.pendingBranch?.anchorMessageId !== 72
+      || app.state.pendingBranch?.previousResponseId !== 'resp_msg_72'
+      || app.elements.promptInput.value !== 'edit me'
+      || app.elements.pendingBranchBanner.hidden) {
+    fail(name, 'user edit did not target preceding durable boundary or show the mounted-independent banner', JSON.stringify(app.state.pendingBranch));
+    return;
+  }
+  app.cancelPendingBranch({ restoreComposer: true });
+  if (app.state.pendingBranch || app.elements.promptInput.value !== 'unrelated draft') {
+    fail(name, 'cancel did not restore the original composer');
+    return;
+  }
+  if (!app.beginPendingBranch(session.messages[1], 'assistant')
+      || app.state.pendingBranch?.anchorMessageId !== 72
+      || app.elements.promptInput.value !== '') {
+    fail(name, 'assistant branch did not target its durable row', JSON.stringify(app.state.pendingBranch));
+    return;
+  }
+  pass(name);
+}
+
+async function testPendingBranchProjectionHidesVirtualTranscriptGaps() {
+  const name = 'pending branch projection hides suffix gaps and keeps cancel banner visible when selection is unmounted';
+  const { app } = await createSessionsHarness({ appOverrides: { renderMessages() {} } });
+  const session = { id: 'branch_gap_source', messages: [], activeResponseId: null, lastResponseId: 'resp_msg_5' };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const before = makeNode();
+  const selected = makeNode();
+  const gap = makeNode();
+  gap.className = 'transcript-gap';
+  const suffix = makeNode();
+  const root = makeNode();
+  root.children.push(before, selected, gap, suffix);
+  root.querySelectorAll = (selector) => selector === '.branch-hidden'
+    ? root.children.filter((node) => node.classList.contains('branch-hidden'))
+    : [];
+  app.elements.messages = root;
+  app.findMessageElement = (id) => id === 'selected' ? selected : null;
+  app.state.pendingBranch = { sourceSessionId: session.id, selectedMessageId: 'selected', selectedRole: 'assistant' };
+  app.applyPendingBranchProjection();
+  if (before.classList.contains('branch-hidden') || selected.classList.contains('branch-hidden')
+      || !gap.classList.contains('branch-hidden') || !suffix.classList.contains('branch-hidden')) {
+    fail(name, 'assistant projection did not hide the complete suffix including its virtual gap');
+    return;
+  }
+
+  for (const node of root.children) node.classList.remove('branch-hidden');
+  app.state.pendingBranch.selectedRole = 'user';
+  app.applyPendingBranchProjection();
+  if (before.classList.contains('branch-hidden') || !selected.classList.contains('branch-hidden')
+      || !gap.classList.contains('branch-hidden') || !suffix.classList.contains('branch-hidden')) {
+    fail(name, 'user edit projection hid the retained prefix or exposed the selected turn');
+    return;
+  }
+
+  app.findMessageElement = () => null;
+  app.syncBranchActions();
+  if (app.elements.pendingBranchBanner.hidden) {
+    fail(name, 'unmounted branch selection lost its pending banner/cancel affordance');
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
+  await testConversationBranchTreeOpensAndSwitchesPaths();
+  await testConversationBranchPendingSelectionUsesDurableBoundaries();
+  await testPendingBranchProjectionHidesVirtualTranscriptGaps();
   await testSanitizeMessagePreservesSkillRunState();
   await testSanitizeMessagePreservesAskUserCallIdentity();
   await testSanitizeMessagePreservesPlanExecutionEvidence();

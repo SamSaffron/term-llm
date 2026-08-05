@@ -639,6 +639,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				case DialogSessionList:
 					m.dialog.Close()
 					return m.cmdResume([]string{selected.ID})
+				case DialogBranchTree:
+					m.dialog.Close()
+					return m.handleBranchTreeSelection(selected.ID)
 				case DialogShareChoice:
 					req := m.pendingShare
 					m.pendingShare = nil
@@ -816,6 +819,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.textarea.Value() != "" {
 			m.setTextareaValue("")
 			m.pasteChunks = nil
+			return m, nil
+		}
+		if m.pendingBranch != nil {
+			m.pendingBranch = nil
+			return m.showFooterMuted("Pending branch cancelled.")
 		}
 		return m, nil
 	}
@@ -1154,6 +1162,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// paths like /tmp/foo do not trap the composer behind command handling.
 		if strings.HasPrefix(content, "/") && m.isSlashCommandLike(content) {
 			return m.handleSlashCommand(content)
+		}
+		if m.pendingBranch != nil && content != "" {
+			return m.submitPendingBranch(content)
 		}
 
 		// sendMessage expands collapsed paste placeholders only after deriving

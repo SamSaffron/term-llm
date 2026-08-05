@@ -22,6 +22,7 @@ const (
 	DialogNone DialogType = iota
 	DialogModelPicker
 	DialogSessionList
+	DialogBranchTree
 	DialogDirApproval
 	DialogMCPPicker
 	DialogWorktreeRecovery
@@ -161,15 +162,24 @@ func (d *DialogModel) ShowModelPicker(currentProviderModel string, providers []P
 // ShowSessionList opens the session list dialog.
 // items should have ID=full session ID, Label=display name.
 func (d *DialogModel) ShowSessionList(items []DialogItem, currentSessionID string) {
-	d.dialogType = DialogSessionList
-	d.title = "Resume Session"
+	d.showSessionItems(DialogSessionList, "Resume Session", items, currentSessionID)
+}
+
+// ShowBranchTree opens the connected paths and durable branch-point picker.
+func (d *DialogModel) ShowBranchTree(items []DialogItem, currentItemID string) {
+	d.showSessionItems(DialogBranchTree, "Conversation Tree", items, currentItemID)
+}
+
+func (d *DialogModel) showSessionItems(dialogType DialogType, title string, items []DialogItem, currentItemID string) {
+	d.dialogType = dialogType
+	d.title = title
 	d.cursor = 0
 	d.query = ""
 	d.items = nil
 	d.filtered = nil
 
 	for _, item := range items {
-		item.Selected = item.ID == currentSessionID
+		item.Selected = item.ID == currentItemID
 		d.items = append(d.items, item)
 		if item.Selected {
 			d.cursor = len(d.items) - 1

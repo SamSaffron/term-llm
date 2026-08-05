@@ -15,7 +15,7 @@ import (
 
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
-//go:embed static/app-core.js static/toast.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-sidebar.js
+//go:embed static/app-core.js static/toast.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-branching.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-sidebar.js
 //go:embed static/app-attachments.js static/app-stream.js static/app-response-effects.js static/app-send.js static/app-runtime.js static/app-interject.js static/app-modals.js static/app-composer.js static/app-skills.js static/side-question.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js static/transcript-window.js static/active-response.js static/conversation.js
 //go:embed static/vendor
@@ -111,6 +111,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="side-question.js"`, `href="` + versioned("side-question.js") + `"`},
 		{`href="app-sidebar.js"`, `href="` + versioned("app-sidebar.js") + `"`},
 		{`href="app-sessions.js"`, `href="` + versioned("app-sessions.js") + `"`},
+		{`href="app-branching.js"`, `href="` + versioned("app-branching.js") + `"`},
 		{`href="app-session-events.js"`, `href="` + versioned("app-session-events.js") + `"`},
 		{`href="app-mcp.js"`, `href="` + versioned("app-mcp.js") + `"`},
 		{`href="app-goals-location.js"`, `href="` + versioned("app-goals-location.js") + `"`},
@@ -143,6 +144,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="side-question.js"`, `src="` + versioned("side-question.js") + `"`},
 		{`src="app-sidebar.js"`, `src="` + versioned("app-sidebar.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
+		{`src="app-branching.js"`, `src="` + versioned("app-branching.js") + `"`},
 		{`src="app-session-events.js"`, `src="` + versioned("app-session-events.js") + `"`},
 		{`src="app-mcp.js"`, `src="` + versioned("app-mcp.js") + `"`},
 		{`src="app-goals-location.js"`, `src="` + versioned("app-goals-location.js") + `"`},

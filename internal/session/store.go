@@ -28,6 +28,11 @@ var (
 	// ErrTranscriptConflict means a transcript mutation was based on a stale
 	// revision or head row and must be retried after refreshing the transcript.
 	ErrTranscriptConflict = errors.New("session: transcript changed")
+	// Branch errors describe unavailable schema support and stale optimistic state.
+	ErrBranchingUnsupported = errors.New("session: conversation branching unsupported")
+	// ErrBranchConflict is branch-specific while matching the shared transcript
+	// conflict sentinel for callers that handle all optimistic transcript races.
+	ErrBranchConflict = fmt.Errorf("session: branch conflict: %w", ErrTranscriptConflict)
 	// ErrNothingToUndo means there is no real post-compaction user turn to undo.
 	ErrNothingToUndo = errors.New("session: nothing to undo")
 	// ErrNothingToRedo means no durable undo suffix remains for this session.
@@ -384,6 +389,52 @@ type TranscriptUndoRedoStore interface {
 	TranscriptMutationState(ctx context.Context, sessionID string) (TranscriptMutationState, error)
 	UndoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error)
 	RedoLastUserTurn(ctx context.Context, sessionID string, expected TranscriptMutationState) (TranscriptMutationResult, error)
+}
+
+// CreateBranchOptions identifies a durable source prefix and optional optimistic
+// concurrency/idempotency guards. AnchorMessageID zero means an empty prefix.
+type CreateBranchOptions struct {
+	AnchorMessageID int64
+	ExpectedState   *TranscriptMutationState
+	ExpectedRev     *int64
+	IdempotencyKey  string
+}
+
+// BranchResult is the newly materialized (or idempotently reused) linear child.
+type BranchResult struct {
+	Session         *Session `json:"session"`
+	AnchorMessageID int64    `json:"anchor_message_id,omitempty"`
+	Reused          bool     `json:"reused,omitempty"`
+}
+
+// BranchTreeNode is one normal session in a connected conversation tree.
+type BranchTreeNode struct {
+	SessionID          string    `json:"session_id"`
+	SessionNumber      int64     `json:"session_number,omitempty"`
+	ParentSessionID    string    `json:"parent_session_id,omitempty"`
+	ForkAfterMessageID int64     `json:"fork_after_message_id,omitempty"`
+	ForkAfterSequence  int       `json:"fork_after_sequence"`
+	Title              string    `json:"title,omitempty"`
+	AnchorRole         string    `json:"anchor_role,omitempty"`
+	AnchorPreview      string    `json:"anchor_preview,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// BranchTree is a connected component rooted at its oldest surviving ancestor.
+// PathCount counts independently resumable linear sessions in the component;
+// it intentionally equals len(Nodes), including non-leaf ancestor sessions.
+type BranchTree struct {
+	RootSessionID   string           `json:"root_session_id"`
+	ActiveSessionID string           `json:"active_session_id"`
+	PathCount       int              `json:"path_count"`
+	Nodes           []BranchTreeNode `json:"nodes"`
+}
+
+// ConversationBranchStore is an optional capability so old/read-only schemas
+// and custom stores can fail explicitly without expanding the core Store API.
+type ConversationBranchStore interface {
+	CreateBranch(ctx context.Context, sourceSessionID string, opts CreateBranchOptions) (BranchResult, error)
+	GetBranchTree(ctx context.Context, sessionID string) (BranchTree, error)
 }
 
 // SessionSummaryTranscriptRevisionReporter reports whether Store.List populates

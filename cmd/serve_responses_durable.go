@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -34,6 +35,16 @@ func parseDurableResponseMessageID(responseID string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// parseBranchDurableResponseMessageID additionally accepts resp_msg_0 as the
+// branch-only representation of an empty copied transcript. Ordinary response
+// continuation must keep rejecting zero because it has no durable message row.
+func parseBranchDurableResponseMessageID(responseID string) (int64, bool) {
+	if strings.TrimSpace(responseID) == durableResponseMessagePrefix+"0" {
+		return 0, true
+	}
+	return parseDurableResponseMessageID(responseID)
 }
 
 func isVisibleContinuationRole(role llm.Role) bool {
@@ -78,6 +89,96 @@ func latestDurableResponseID(messages []session.Message) string {
 type durablePreviousResponseResolution struct {
 	sessionID string
 	latestID  string
+}
+
+func (s *serveServer) lockBranchSourceRuntime(sessionID string) (func(), bool) {
+	if s == nil {
+		return func() {}, false
+	}
+	if s.responseRuns != nil && s.responseRuns.activeRunID(sessionID) != "" {
+		return nil, true
+	}
+	if s.sessionMgr == nil {
+		return func() {}, false
+	}
+	runtime, ok := s.sessionMgr.Get(sessionID)
+	if !ok || runtime == nil {
+		return func() {}, false
+	}
+	if runtime.hasActiveActivity() || !runtime.mu.TryLock() {
+		return nil, true
+	}
+	if runtime.hasActiveActivity() {
+		runtime.mu.Unlock()
+		return nil, true
+	}
+	return runtime.mu.Unlock, false
+}
+
+func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message, allowIdentifiedUserBatch bool, expectedRev *int64, idempotencyKey string) (durablePreviousResponseResolution, int, string) {
+	msgID, ok := parseBranchDurableResponseMessageID(previousResponseID)
+	if !ok {
+		return durablePreviousResponseResolution{}, http.StatusBadRequest, "branch requires a durable previous_response_id"
+	}
+	if s.store == nil {
+		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation branching is unavailable"
+	}
+	if err := validateDurableContinuationInput(inputMessages, allowIdentifiedUserBatch); err != nil {
+		return durablePreviousResponseResolution{}, http.StatusBadRequest, err.Error()
+	}
+
+	sourceSessionID := strings.TrimSpace(headerSessionID)
+	if msgID > 0 {
+		msg, err := getMessageByID(ctx, s.store, msgID)
+		if err != nil || msg.ID == 0 {
+			return durablePreviousResponseResolution{}, http.StatusBadRequest, fmt.Sprintf("previous_response_id %q not found", previousResponseID)
+		}
+		if !isVisibleContinuationRole(msg.Role) {
+			return durablePreviousResponseResolution{}, http.StatusBadRequest, "previous_response_id must refer to a user or assistant message"
+		}
+		if sourceSessionID != "" && sourceSessionID != msg.SessionID {
+			return durablePreviousResponseResolution{}, http.StatusConflict, fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", sourceSessionID, msg.SessionID)
+		}
+		sourceSessionID = msg.SessionID
+	} else if sourceSessionID == "" {
+		return durablePreviousResponseResolution{}, http.StatusBadRequest, "empty-transcript branch requires session_id"
+	}
+
+	unlockSource, busy := s.lockBranchSourceRuntime(sourceSessionID)
+	if busy {
+		return durablePreviousResponseResolution{}, http.StatusConflict, "cannot branch while source work is active"
+	}
+	defer unlockSource()
+
+	branchStore, ok := s.store.(session.ConversationBranchStore)
+	if !ok {
+		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation branching is unavailable"
+	}
+	result, err := branchStore.CreateBranch(ctx, sourceSessionID, session.CreateBranchOptions{
+		AnchorMessageID: msgID,
+		ExpectedRev:     expectedRev,
+		IdempotencyKey:  strings.TrimSpace(idempotencyKey),
+	})
+	switch {
+	case errors.Is(err, session.ErrBranchConflict):
+		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation changed in another client; refresh and try again"
+	case errors.Is(err, session.ErrBranchingUnsupported):
+		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation branching is unavailable"
+	case errors.Is(err, session.ErrNotFound):
+		return durablePreviousResponseResolution{}, http.StatusBadRequest, "branch source or anchor was not found"
+	case err != nil:
+		return durablePreviousResponseResolution{}, http.StatusInternalServerError, "failed to create conversation branch"
+	case result.Session == nil || strings.TrimSpace(result.Session.ID) == "":
+		return durablePreviousResponseResolution{}, http.StatusInternalServerError, "failed to create conversation branch"
+	}
+	latestID := durableResponseIDForMessageID(result.AnchorMessageID)
+	if result.AnchorMessageID == 0 {
+		latestID = durableResponseMessagePrefix + "0"
+	}
+	return durablePreviousResponseResolution{
+		sessionID: result.Session.ID,
+		latestID:  latestID,
+	}, 0, ""
 }
 
 func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message, allowIdentifiedUserBatch bool) (durablePreviousResponseResolution, int, string) {

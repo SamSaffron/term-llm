@@ -19,6 +19,7 @@ const interjectSource = fs.readFileSync(path.join(dir, 'app-interject.js'), 'utf
 const modalsSource = fs.readFileSync(path.join(dir, 'app-modals.js'), 'utf8');
 const composerSource = fs.readFileSync(path.join(dir, 'app-composer.js'), 'utf8');
 const skillsSource = fs.readFileSync(path.join(dir, 'app-skills.js'), 'utf8');
+const branchingSource = fs.readFileSync(path.join(dir, 'app-branching.js'), 'utf8');
 const conversation = require('./conversation.js');
 const projectedMessages = (session) => session?.transcript?.conversation
   ? conversation.sessionMessages(session)
@@ -767,7 +768,11 @@ function createHarness(options = {}) {
         },
       }), {
         status: 200,
-        headers: { 'x-response-id': responseId },
+        headers: {
+          'x-response-id': responseId,
+          ...(options.postSessionId ? { 'x-session-id': String(options.postSessionId) } : {}),
+          ...(options.postBranchAnchorId ? { 'x-branch-anchor-id': String(options.postBranchAnchorId) } : {}),
+        },
       });
     }
     if (url === `/ui/v1/responses/${responseId}`) {
@@ -841,6 +846,7 @@ function createHarness(options = {}) {
   vm.runInNewContext(interjectSource, context, { filename: 'app-interject.js' });
   vm.runInNewContext(modalsSource, context, { filename: 'app-modals.js' });
   vm.runInNewContext(skillsSource, context, { filename: 'app-skills.js' });
+  vm.runInNewContext(branchingSource, context, { filename: 'app-branching.js' });
 
   const applyResponseRecoverySnapshot = app.applyResponseRecoverySnapshot;
   app.applyResponseRecoverySnapshot = (session, payload = {}) => {
@@ -4318,6 +4324,85 @@ async function testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasN
   }
 
   await cleanup();
+  pass(name);
+}
+
+async function testSendMessageBranchesAndTransfersStreamOwnership() {
+  const name = 'real branch adoption seeds copied anchor and preserves follow-up continuation ownership';
+  const childID = 'session_branch_child';
+  const copiedAnchorID = 'resp_msg_142';
+  const failedBranchBody = [
+    'event: response.created\n',
+    'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+    'event: response.failed\n',
+    'data: {"error":{"message":"branch stream interrupted"},"sequence_number":2}\n\n',
+    'data: [DONE]\n\n',
+  ].join('');
+  const harness = createHarness({ postSessionId: childID, postBranchAnchorId: copiedAnchorID, postBody: failedBranchBody });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const source = {
+    id: 'session_branch_source',
+    title: 'Branch source',
+    provider: 'mock',
+    activeModel: 'test-model',
+    activeEffort: '',
+    messages: [
+      { id: 'u1', role: 'user', content: 'original', created: 1, durable: true, durableSourceRowIds: [41] },
+      { id: 'a1', role: 'assistant', content: 'answer', created: 2, durable: true, durableSourceRowIds: [42] },
+    ],
+    lastResponseId: 'resp_msg_99',
+    activeResponseId: null,
+    number: 1,
+  };
+  state.sessions.push(source);
+  state.activeSessionId = source.id;
+  state.selectedProvider = 'mock';
+  state.selectedModel = 'test-model';
+  state.pendingBranch = {
+    sourceSessionId: source.id,
+    anchorMessageId: 42,
+    previousResponseId: 'resp_msg_42',
+    expectedRev: 8,
+    idempotencyKey: 'branch_idempotency',
+    selectedMessageId: 'a1',
+    selectedRole: 'assistant',
+  };
+  app.refreshActiveSessionMessagesFromServer = async () => true;
+  elements.promptInput.value = 'alternate follow-up';
+
+  await app.sendMessage();
+
+  const child = state.sessions.find((session) => session.id === childID);
+  const firstPost = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const firstBody = firstPost?.body ? JSON.parse(firstPost.body) : null;
+  if (!firstBody || firstBody.branch !== true || firstBody.previous_response_id !== 'resp_msg_42'
+      || firstBody.expected_rev !== 8 || firstBody.idempotency_key !== 'branch_idempotency') {
+    await cleanup();
+    fail(name, 'branch protocol fields missing from response request', firstPost?.body || JSON.stringify(fetchCalls));
+    return;
+  }
+  if (!child || child.lastResponseId !== copiedAnchorID || state.activeSessionId !== childID
+      || state.currentStreamSessionId && state.currentStreamSessionId !== childID) {
+    await cleanup();
+    fail(name, 'real adoption did not transfer ownership and seed the copied durable anchor', JSON.stringify({ active: state.activeSessionId, stream: state.currentStreamSessionId, lastResponseId: child?.lastResponseId }));
+    return;
+  }
+  const sourceUsers = projectedMessages(source).filter((message) => message.role === 'user');
+  if (sourceUsers.some((message) => message.content === 'alternate follow-up')) {
+    await cleanup();
+    fail(name, 'optimistic branch prompt remained in source projection', JSON.stringify(sourceUsers));
+    return;
+  }
+
+  elements.promptInput.value = 'safe follow-up after interruption';
+  await app.sendMessage();
+  const posts = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const followUpBody = posts[1]?.body ? JSON.parse(posts[1].body) : null;
+  await cleanup();
+  if (!followUpBody || followUpBody.branch === true || followUpBody.previous_response_id !== copiedAnchorID) {
+    fail(name, 'follow-up did not preserve copied history through the adopted durable anchor', posts[1]?.body || JSON.stringify(posts));
+    return;
+  }
   pass(name);
 }
 
@@ -8104,6 +8189,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageUsesLocalContinuationIdWithoutPreflightSync();
   await testSendMessageIncludesServerToolsForFirstPartyUI();
+  await testSendMessageBranchesAndTransfersStreamOwnership();
   await testSendMessageRecoversStaleContinuationAfterConflict();
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();

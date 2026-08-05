@@ -143,6 +143,7 @@
   <link rel="preload" as="script" href="app-skills.js">
   <link rel="preload" as="script" href="app-sidebar.js">
   <link rel="preload" as="script" href="app-sessions.js">
+  <link rel="preload" as="script" href="app-branching.js">
   <link rel="preload" as="script" href="app-session-events.js">
   <link rel="preload" as="script" href="app-mcp.js">
   <link rel="preload" as="script" href="app-goals-location.js">
@@ -282,6 +283,7 @@
                 <span class="chip-label" id="chipWorktreeLabel">root</span>
               </button>
             </div>
+            <button class="header-action branch-tree-trigger" id="branchTreeBtn" type="button" hidden aria-haspopup="dialog" aria-label="Open conversation paths">1 path</button>
             <button class="header-action plan-toggle" id="planToggleBtn" type="button" hidden aria-expanded="false" aria-label="Open current plan">
               <span class="plan-toggle-word" id="planToggleWord">Plan</span>
               <span class="plan-toggle-progress" id="planToggleProgress"></span>
@@ -306,6 +308,10 @@
           <div id="voiceStatus" class="voice-status hidden" aria-live="polite"></div>
           <div id="locationStatus" class="voice-status hidden" role="status" aria-live="polite"></div>
           <div id="pendingInterjectionBanner" class="pending-interjection hidden" aria-live="polite"></div>
+          <div id="pendingBranchBanner" class="pending-branch-banner" role="status" hidden>
+            <span id="pendingBranchBannerText">New conversation path pending</span>
+            <button id="pendingBranchCancelBtn" type="button">Cancel</button>
+          </div>
           <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
           <button type="button" id="goalChip" class="goal-chip hidden" aria-label="Manage goal"></button>
           <div class="composer-box">
@@ -407,6 +413,20 @@
     </div>
   </section>
   <div class="visually-hidden" id="planAnnouncement" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="branch-tree-modal" id="branchTreeModal" role="dialog" aria-modal="true" aria-labelledby="branchTreeTitle" hidden>
+    <div class="branch-tree-card">
+      <div class="branch-tree-header">
+        <div>
+          <strong id="branchTreeTitle">Conversation paths</strong>
+          <p>Switch paths without deleting alternatives.</p>
+        </div>
+        <button class="icon-btn" id="branchTreeCloseBtn" type="button" aria-label="Close conversation paths">✕</button>
+      </div>
+      <div class="branch-tree-list" id="branchTreeList"></div>
+      <p class="branch-tree-note">Branches rewind conversation context only. Filesystem and tool side effects are not undone.</p>
+    </div>
+  </div>
 
   <div class="side-question-overlay hidden" id="sideQuestionOverlay" role="dialog" aria-modal="true" aria-labelledby="sideQuestionTitle">
     <div class="side-question-panel">
@@ -650,6 +670,7 @@
   <script src="intent-storage.js"></script>
   <script src="app-session-admin.js"></script>
   <script src="app-sessions.js"></script>
+  <script src="app-branching.js"></script>
   <script src="app-session-events.js"></script>
   <script src="app-diffs.js"></script>
   <script src="app-worktrees.js"></script>
