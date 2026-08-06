@@ -479,3 +479,15 @@ func TestWrapWordDiffLine_WideRunes_WhenWrapping_ValidUTF8(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderDiffSegmentEscapesPathControls(t *testing.T) {
+	result := RenderDiffSegment("evil\x1b[2J\x1b]2;title\x07.go", "old\nline", "new\x1b[31mred\x1b[0m\nline", 120, 1)
+	if strings.ContainsRune(result, '\x1b') && (strings.Contains(result, "\x1b[2J") || strings.Contains(result, "\x1b]2;title")) {
+		t.Fatalf("diff retained path control sequence: %q", result)
+	}
+	for _, want := range []string{`evil\x1b[2J\x1b]2;title\x07.go`, `new\x1b[31mred\x1b[0m`} {
+		if !strings.Contains(stripAnsi(result), want) {
+			t.Fatalf("diff did not render escaped path %q: %q", want, stripAnsi(result))
+		}
+	}
+}
