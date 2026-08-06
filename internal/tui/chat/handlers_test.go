@@ -481,6 +481,69 @@ func TestPromptHistoryWorksDuringStreamingInterjectionComposer(t *testing.T) {
 	}
 }
 
+func TestPromptHistoryUpVisitsPendingImageBeforeRecallingMessage(t *testing.T) {
+	m := newTestChatModel(true)
+	m.store = &session.NoopStore{}
+	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "previous prompt"}}
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.setTextareaValue("first line\nsecond line")
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Line(); got != 0 {
+		t.Fatalf("first up cursor line = %d, want top line", got)
+	}
+	if m.selectedImage != -1 {
+		t.Fatalf("first up selected image %d before reaching top of composer", m.selectedImage)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.selectedImage != 0 {
+		t.Fatalf("second up selected image = %d, want 0", m.selectedImage)
+	}
+	if got := m.textarea.Value(); got != "first line\nsecond line" {
+		t.Fatalf("second up textarea = %q, want draft unchanged", got)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "previous prompt" {
+		t.Fatalf("third up textarea = %q, want previous prompt", got)
+	}
+	if m.selectedImage != -1 || len(m.images) != 0 {
+		t.Fatalf("recalled prompt retained image selection=%d images=%d", m.selectedImage, len(m.images))
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.textarea.Value(); got != "first line\nsecond line" {
+		t.Fatalf("down textarea = %q, want restored draft", got)
+	}
+	if len(m.images) != 1 || m.selectedImage != -1 {
+		t.Fatalf("restored draft images=%d selection=%d, want 1 and -1", len(m.images), m.selectedImage)
+	}
+}
+
+func TestImageHistoryNavigationBypassesStreamingInterjections(t *testing.T) {
+	m := newTestChatModel(true)
+	m.store = &session.NoopStore{}
+	m.streaming = true
+	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "previous prompt"}}
+	m.pendingInterjections = []pendingInterjectionUI{{ID: "queued", Text: "queued prompt"}}
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.setTextareaValue("")
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.selectedImage != 0 || m.selectedInterjection != -1 {
+		t.Fatalf("first up selected image=%d interjection=%d, want 0 and -1", m.selectedImage, m.selectedInterjection)
+	}
+
+	m = pressPromptHistoryKey(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if got := m.textarea.Value(); got != "previous prompt" {
+		t.Fatalf("second up textarea = %q, want previous prompt", got)
+	}
+	if m.selectedInterjection != -1 {
+		t.Fatalf("second up selected interjection %d instead of entering history", m.selectedInterjection)
+	}
+}
+
 func TestPromptHistoryFallsBackToInMemoryMessagesWithoutStore(t *testing.T) {
 	m := newTestChatModel(true)
 	m.store = &session.NoopStore{}

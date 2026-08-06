@@ -64,52 +64,68 @@ func isImagePasteAttempt(msg tea.KeyPressMsg) bool {
 	}
 }
 
-func (m *Model) handleImageAttachmentKeys(msg tea.KeyPressMsg) bool {
-	if len(m.images) == 0 || m.textarea.Value() != "" {
+func (m *Model) selectFirstImageAttachment() bool {
+	if len(m.images) == 0 || m.selectedImage >= 0 {
 		return false
+	}
+	m.selectedImage = 0
+	m.selectedInterjection = -1
+	return true
+}
+
+func (m *Model) handleImageAttachmentKeys(msg tea.KeyPressMsg) (bool, tea.Cmd) {
+	if len(m.images) == 0 {
+		return false, nil
+	}
+	if m.selectedImage < 0 {
+		if m.textarea.Value() == "" && msg.String() == "up" {
+			return m.selectFirstImageAttachment(), nil
+		}
+		return false, nil
 	}
 
 	switch msg.String() {
 	case "up":
-		if m.selectedImage < 0 {
-			m.selectedImage = 0
-		} else if m.selectedImage > 0 {
+		if m.selectedImage > 0 {
 			m.selectedImage--
+			return true, nil
 		}
-		return true
+		// The first chip sits between the composer and prompt history.
+		return m.handlePromptHistoryKey(msg)
 	case "down":
-		if m.selectedImage >= 0 {
-			if m.selectedImage < len(m.images)-1 {
-				m.selectedImage++
-			} else {
-				m.selectedImage = -1
-			}
-			return true
+		if m.selectedImage < len(m.images)-1 {
+			m.selectedImage++
+		} else {
+			m.selectedImage = -1
 		}
+		return true, nil
 	case "left":
 		if m.selectedImage > 0 {
 			m.selectedImage--
-			return true
 		}
+		return true, nil
 	case "right":
-		if m.selectedImage >= 0 && m.selectedImage < len(m.images)-1 {
+		if m.selectedImage < len(m.images)-1 {
 			m.selectedImage++
-			return true
 		}
+		return true, nil
 	case "delete", "backspace":
-		if m.selectedImage >= 0 {
-			idx := m.selectedImage
-			m.images = append(m.images[:idx], m.images[idx+1:]...)
-			if len(m.images) == 0 {
-				m.selectedImage = -1
-			} else if idx >= len(m.images) {
-				m.selectedImage = len(m.images) - 1
-			}
-			return true
+		idx := m.selectedImage
+		m.images = append(m.images[:idx], m.images[idx+1:]...)
+		if len(m.images) == 0 {
+			m.selectedImage = -1
+		} else if idx >= len(m.images) {
+			m.selectedImage = len(m.images) - 1
 		}
+		return true, nil
+	case "esc":
+		m.selectedImage = -1
+		return true, nil
+	default:
+		// Any other key returns focus to the composer before it is handled.
+		m.selectedImage = -1
+		return false, nil
 	}
-
-	return false
 }
 
 func (m *Model) imagePartList() []llm.Part {

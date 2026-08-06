@@ -56,6 +56,9 @@ func (m *Model) handlePromptHistoryKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 			m.updateTextareaHeight()
 			return true, nil
 		}
+		if m.selectFirstImageAttachment() {
+			return true, nil
+		}
 		return m.recallPreviousPrompt()
 	}
 

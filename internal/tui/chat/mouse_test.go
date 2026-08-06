@@ -34,6 +34,24 @@ func TestMouseClickMovesCursorSingleLine(t *testing.T) {
 	}
 }
 
+func TestMouseClickTextareaClearsImageSelection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("hello world")
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.selectedImage = 0
+	_ = m.View()
+
+	_, _ = m.Update(tea.MouseClickMsg{
+		X:      m.textareaLeftX + m.textareaPromptWidth + 5,
+		Y:      m.textareaTopY,
+		Button: tea.MouseLeft,
+	})
+
+	if m.selectedImage != -1 {
+		t.Fatalf("textarea click left image %d selected", m.selectedImage)
+	}
+}
+
 func TestMouseClickMovesCursorWrappedLine(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 12

@@ -100,6 +100,91 @@ func TestHandleKeyMsg_ImageSelectionAndRemoval(t *testing.T) {
 	}
 }
 
+func TestHandleKeyMsg_ImageSelectionAndRemovalWithDraftText(t *testing.T) {
+	m := newTestChatModel(false)
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.setTextareaValue("draft")
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if m.selectedImage != 0 {
+		t.Fatalf("expected selected image index 0 after up at top of draft, got %d", m.selectedImage)
+	}
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if len(m.images) != 0 {
+		t.Fatalf("expected image to be removed, got %d images", len(m.images))
+	}
+	if got := m.textarea.Value(); got != "draft" {
+		t.Fatalf("textarea after image removal = %q, want draft unchanged", got)
+	}
+}
+
+func TestHandleKeyMsg_ImageSelectionReturnsToDraftOnTyping(t *testing.T) {
+	m := newTestChatModel(false)
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.setTextareaValue("draft")
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if m.selectedImage != -1 {
+		t.Fatalf("typing left image %d selected", m.selectedImage)
+	}
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if len(m.images) != 1 {
+		t.Fatalf("backspace after typing removed image; got %d images", len(m.images))
+	}
+	if got := m.textarea.Value(); got != "draft" {
+		t.Fatalf("textarea after typing and backspace = %q, want draft", got)
+	}
+}
+
+func TestHandleKeyMsg_MultipleImageNavigationAndRemoval(t *testing.T) {
+	m := newTestChatModel(false)
+	m.images = []ImageAttachment{
+		{MediaType: "image/png", Data: []byte("a")},
+		{MediaType: "image/png", Data: []byte("b")},
+		{MediaType: "image/png", Data: []byte("c")},
+	}
+	m.setTextareaValue("draft")
+
+	press := func(code rune) {
+		t.Helper()
+		_, _ = m.Update(tea.KeyPressMsg{Code: code})
+	}
+	press(tea.KeyUp)
+	press(tea.KeyRight)
+	press(tea.KeyRight)
+	press(tea.KeyRight) // Stay on the last chip at the boundary.
+	if m.selectedImage != 2 {
+		t.Fatalf("selected image after right traversal = %d, want 2", m.selectedImage)
+	}
+
+	press(tea.KeyBackspace)
+	if len(m.images) != 2 || m.selectedImage != 1 {
+		t.Fatalf("after removing last image: images=%d selected=%d, want 2 and 1", len(m.images), m.selectedImage)
+	}
+	if got := string(m.images[1].Data); got != "b" {
+		t.Fatalf("last remaining image = %q, want b", got)
+	}
+
+	press(tea.KeyLeft)
+	press(tea.KeyDown)
+	if m.selectedImage != 1 {
+		t.Fatalf("selected image after left then down = %d, want 1", m.selectedImage)
+	}
+	press(tea.KeyDown)
+	if m.selectedImage != -1 {
+		t.Fatalf("down from last image selected %d, want composer focus", m.selectedImage)
+	}
+
+	press(tea.KeyUp)
+	press(tea.KeyEsc)
+	if m.selectedImage != -1 {
+		t.Fatalf("escape left image %d selected", m.selectedImage)
+	}
+}
+
 func TestHandleKeyMsg_SendAllowsImageOnlyMessage(t *testing.T) {
 	m := newTestChatModel(false)
 	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("img")}}

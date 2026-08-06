@@ -88,6 +88,7 @@ func (m *Model) handleTextareaMouse(msg tea.MouseMsg) bool {
 	}
 
 	line, col := m.cursorFromVisualPosition(visualRow, targetX)
+	m.selectedImage = -1
 	m.textarea.Focus()
 	m.moveCursorToLine(line)
 	m.textarea.SetCursorColumn(col)

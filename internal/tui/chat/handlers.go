@@ -496,8 +496,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// When image chips are present, allow keyboard selection/removal with arrows + backspace/delete.
-	if m.handleImageAttachmentKeys(msg) {
-		return m, nil
+	if handled, cmd := m.handleImageAttachmentKeys(msg); handled {
+		return m, cmd
 	}
 
 	// While streaming, pending interjections form a cancellable stack. With an
