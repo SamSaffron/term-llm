@@ -237,6 +237,49 @@ func TestWaitForJobsPollsSpecificRunUntilTerminal(t *testing.T) {
 	}
 }
 
+func TestWaitForJobsMultipleRunsCollectsCompletedSibling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/runs/run_stalled":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_stalled", JobID: "job_stalled", Status: "running"})
+		case "/v2/runs/run_done":
+			writeJSON(t, w, jobsV2AgentRunResponse{
+				ID:       "run_done",
+				JobID:    "job_done",
+				Status:   "succeeded",
+				Response: "completed sibling response",
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	tool := NewWaitForJobsToolWithClient(client)
+	tool.pollIntervalOverride = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	out, err := tool.Execute(ctx, json.RawMessage(`{"run_ids":["run_stalled","run_done"]}`))
+	if err != nil {
+		t.Fatalf("wait Execute() error = %v", err)
+	}
+	var results []QueuedJobResult
+	if err := json.Unmarshal([]byte(out.Content), &results); err != nil {
+		t.Fatalf("wait output is not JSON: %v; %s", err, out.Content)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].RunID != "run_stalled" || results[0].Status != "failed" || !strings.Contains(results[0].Error, "context deadline exceeded") {
+		t.Fatalf("stalled result = %+v, want correlated deadline failure", results[0])
+	}
+	if results[1].RunID != "run_done" || results[1].JobID != "job_done" || results[1].Status != "succeeded" || results[1].Response != "completed sibling response" {
+		t.Fatalf("completed result = %+v, want persisted sibling response", results[1])
+	}
+}
+
 func TestQueueAgentSurfacesJobsErrorBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -48,6 +49,7 @@ type WaitForJobsArgs struct {
 
 type QueuedJobResult struct {
 	JobID           string   `json:"job_id"`
+	RunID           string   `json:"run_id,omitempty"`
 	Status          string   `json:"status"`
 	ExitReason      string   `json:"exit_reason,omitempty"`
 	Truncated       bool     `json:"truncated,omitempty"`
@@ -279,33 +281,45 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		pollInterval = t.pollIntervalOverride
 	}
 
-	results := make([]QueuedJobResult, 0, len(a.JobIDs)+len(a.RunIDs))
-	for _, runID := range a.RunIDs {
+	results := make([]QueuedJobResult, len(a.RunIDs)+len(a.JobIDs))
+	var wg sync.WaitGroup
+	for i, runID := range a.RunIDs {
 		runID = strings.TrimSpace(runID)
 		if runID == "" {
-			results = append(results, QueuedJobResult{Status: "not_found", Error: "blank run_id"})
+			results[i] = QueuedJobResult{Status: "not_found", Error: "blank run_id"}
 			continue
 		}
-		run, err := t.client.waitForRun(ctx, runID, pollInterval)
-		if err != nil {
-			results = append(results, QueuedJobResult{Status: "failed", Error: err.Error()})
-			continue
-		}
-		results = append(results, queuedJobResultFromJobsRun("", run))
+		wg.Add(1)
+		go func(i int, runID string) {
+			defer wg.Done()
+			run, err := t.client.waitForRun(ctx, runID, pollInterval)
+			if err != nil {
+				results[i] = QueuedJobResult{RunID: runID, Status: "failed", Error: err.Error()}
+				return
+			}
+			results[i] = queuedJobResultFromJobsRun("", run)
+			results[i].RunID = runID
+		}(i, runID)
 	}
-	for _, jobID := range a.JobIDs {
+	for i, jobID := range a.JobIDs {
+		i += len(a.RunIDs)
 		jobID = strings.TrimSpace(jobID)
 		if jobID == "" {
-			results = append(results, QueuedJobResult{Status: "not_found", Error: "blank job_id"})
+			results[i] = QueuedJobResult{Status: "not_found", Error: "blank job_id"}
 			continue
 		}
-		run, err := t.client.waitForJob(ctx, jobID, pollInterval)
-		if err != nil {
-			results = append(results, QueuedJobResult{JobID: jobID, Status: "failed", Error: err.Error()})
-			continue
-		}
-		results = append(results, queuedJobResultFromJobsRun(jobID, run))
+		wg.Add(1)
+		go func(i int, jobID string) {
+			defer wg.Done()
+			run, err := t.client.waitForJob(ctx, jobID, pollInterval)
+			if err != nil {
+				results[i] = QueuedJobResult{JobID: jobID, Status: "failed", Error: err.Error()}
+				return
+			}
+			results[i] = queuedJobResultFromJobsRun(jobID, run)
+		}(i, jobID)
 	}
+	wg.Wait()
 	data, _ := json.Marshal(results)
 	return llm.TextOutput(string(data)), nil
 }
