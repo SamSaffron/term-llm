@@ -227,17 +227,17 @@ func TestSyncBridgeToolExecutionCarriesApprovalTranscript(t *testing.T) {
 }
 
 // TestSyncBridgeSequentialToolCallsSeePriorResults pins the evidence available
-// to the Nth inline tool call. grok-bin and cursor-bin set InlineToolLoop, so a
-// whole multi-tool agent loop runs inside one Stream call; a later shell command
-// is frequently induced by an earlier tool's output, and guardian cannot judge
-// that without seeing the earlier result.
+// to the Nth inline tool call. grok-bin and cursor-bin set InlineToolLoop (and
+// OrderedInlineToolEvents), so a whole multi-tool agent loop runs inside one
+// Stream call; a later shell command is frequently induced by an earlier tool's
+// output, and guardian cannot judge that without seeing the earlier result.
 func TestSyncBridgeSequentialToolCallsSeePriorResults(t *testing.T) {
 	tests := []struct {
 		name         string
 		capabilities Capabilities
 	}{
 		{name: "claude_bin_style", capabilities: Capabilities{ToolCalls: true}},
-		{name: "grok_bin_style", capabilities: Capabilities{ToolCalls: true, InlineToolLoop: true}},
+		{name: "grok_bin_style", capabilities: Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}},
 		{name: "cursor_bin_style", capabilities: Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}},
 	}
 

@@ -214,6 +214,52 @@ func TestEngineOrchestration_InlineSyncToolLoopPersistsEventOrder(t *testing.T) 
 	}
 }
 
+func TestEngineOrchestration_InlineSyncToolLoopOrderedEventsPreservesToolThenFinalText(t *testing.T) {
+	// Grok-bin shape from session #3751: tools first, then one final assistant segment.
+	// Without OrderedInlineToolEvents the final rebuild puts all text above tool calls.
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineSyncToolProvider{inline: true, ordered: true}
+	engine := NewEngine(provider, registry)
+	var persisted []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+		persisted = append(persisted, messages...)
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if event.Type == EventError {
+			t.Fatalf("unexpected error: %v", event.Err)
+		}
+	}
+
+	if len(persisted) < 1 || persisted[0].Role != RoleAssistant {
+		t.Fatalf("persisted messages = %+v", persisted)
+	}
+	parts := persisted[0].Parts
+	if len(parts) != 2 {
+		t.Fatalf("assistant parts = %+v, want tool/text", parts)
+	}
+	if parts[0].Type != PartToolCall || parts[1].Type != PartText || parts[1].Text != "inline final" {
+		t.Fatalf("assistant parts = %+v, want tool then final text", parts)
+	}
+}
+
 func TestEngineOrchestration_InlineSyncToolLoopWithoutOrderedEventsKeepsLegacyPersistence(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
