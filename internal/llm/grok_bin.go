@@ -180,12 +180,13 @@ func (p *GrokBinProvider) Credential() string { return "grok-bin" }
 
 func (p *GrokBinProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch:    true,
-		NativeWebFetch:     true,
-		ToolCalls:          true,
-		SupportsToolChoice: false,
-		ManagesOwnContext:  true,
-		InlineToolLoop:     true,
+		NativeWebSearch:         true,
+		NativeWebFetch:          true,
+		ToolCalls:               true,
+		SupportsToolChoice:      false,
+		ManagesOwnContext:       true,
+		InlineToolLoop:          true,
+		OrderedInlineToolEvents: true,
 	}
 }
 

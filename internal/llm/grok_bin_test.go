@@ -144,11 +144,8 @@ func TestValidateGrokBinModel(t *testing.T) {
 
 func TestGrokBinProviderCapabilities(t *testing.T) {
 	caps := NewGrokBinProvider("grok-4.5", nil).Capabilities()
-	if !caps.NativeWebSearch || !caps.NativeWebFetch || !caps.ToolCalls || !caps.ManagesOwnContext || !caps.InlineToolLoop {
-		t.Fatalf("capabilities = %+v, want native search/fetch, tool calls, managed context, and inline loop", caps)
-	}
-	if caps.OrderedInlineToolEvents {
-		t.Fatalf("capabilities = %+v, ordered inline tool events must remain Cursor-specific", caps)
+	if !caps.NativeWebSearch || !caps.NativeWebFetch || !caps.ToolCalls || !caps.ManagesOwnContext || !caps.InlineToolLoop || !caps.OrderedInlineToolEvents {
+		t.Fatalf("capabilities = %+v, want native search/fetch, tool calls, managed context, inline loop, and ordered inline tool events", caps)
 	}
 }
 

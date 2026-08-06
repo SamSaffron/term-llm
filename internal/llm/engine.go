@@ -3211,10 +3211,11 @@ turnLoop:
 
 		// If only sync tools were executed (MCP path), decide whether to continue
 		if len(toolCalls) == 0 && syncToolsExecuted {
-			// Preserve the provider's streamed text/tool/text ordering. Cursor's inline
-			// MCP loop can emit a final assistant segment after one or more tools in the
-			// same stream; rebuilding from separate text/tool accumulators moves that
-			// final text above the tools when the persisted message replaces live output.
+			// Preserve the provider's streamed text/tool/text ordering. Inline MCP loops
+			// (Cursor, Grok, agy) can emit a final assistant segment after one or more
+			// tools in the same stream; rebuilding from separate text/tool accumulators
+			// moves that final text above the tools when the persisted message replaces
+			// live output.
 			var assistantMsg Message
 			if preserveInlineToolOrder && len(inlineSyncParts) > 0 {
 				assistantMsg = buildOrderedInlineAssistant(inlineSyncParts)
