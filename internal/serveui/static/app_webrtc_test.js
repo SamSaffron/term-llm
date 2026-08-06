@@ -294,6 +294,39 @@ async function testSynchronousSendThrowFallsBackForMutation() {
   console.log('PASS: synchronous WebRTC send throw proves non-delivery and falls back once over HTTPS');
 }
 
+async function testLargeBodiesBypassWebRTCWithoutDegradingChannel() {
+  const harness = await createEnabledHarness();
+  const channel = harness.channels[0];
+  const limit = 100 * 1024;
+
+  const atLimit = harness.window.fetch('/ui/v1/at-limit', {
+    method: 'POST',
+    body: 'a'.repeat(limit),
+    __termLLMRetrySafe: true,
+  });
+  const routedRequest = channel.sent.find((frame) => frame.path === '/ui/v1/at-limit');
+  if (!routedRequest?.id) fail('body at the cutoff did not use WebRTC');
+  channel.onmessage({ data: JSON.stringify({ id: routedRequest.id, type: 'done', status: 200 }) });
+  await atLimit;
+
+  const oversized = await harness.window.fetch('/ui/v1/oversized', {
+    method: 'POST',
+    body: 'a'.repeat(limit + 1),
+    __termLLMRetrySafe: true,
+  });
+  if (!oversized.ok || harness.getHTTPSAPICalls() !== 1) {
+    fail(`oversized body did not use HTTPS exactly once (calls=${harness.getHTTPSAPICalls()})`);
+  }
+  if (channel.sent.some((frame) => frame.path === '/ui/v1/oversized')) {
+    fail('oversized body was also sent over WebRTC');
+  }
+  if (harness.getTransportRecoveries() !== 0 || channel.readyState !== 'open') {
+    fail('oversized HTTPS request falsely degraded the healthy WebRTC channel');
+  }
+
+  console.log('PASS: request bodies over 100 KiB bypass WebRTC without degrading the channel');
+}
+
 async function testAmbiguousMutationDrainIsNotReplayed() {
   const harness = await createEnabledHarness();
   const channel = harness.channels[0];
@@ -408,6 +441,7 @@ async function testUnansweredMutationTimeoutDoesNotCancelServerWork() {
   await testChannelCloseSignalsTransportRecoveryOnce();
   await testSendFallbackSignalsTransportRecoveryOnce();
   await testSynchronousSendThrowFallsBackForMutation();
+  await testLargeBodiesBypassWebRTCWithoutDegradingChannel();
   await testAmbiguousMutationDrainIsNotReplayed();
   await testTwentySecondFallbackAndPersistentRecovery();
   await testVisibilityChurnDoesNotHammerSignaling();
