@@ -658,18 +658,25 @@ term-llm ask -p cdck_qwen-high  "think hard"   # budget 10000
 
 The suffix is stripped before the model name is sent upstream. For example `cdck_qwen-high` still sends `Qwen/Qwen3.5-122B-A10B` as the model and adds `chat_template_kwargs.enable_thinking=true` plus `thinking_token_budget=10000`. Plain/default Qwen requests send `enable_thinking=false` and omit `thinking_token_budget`; budgeted Qwen efforts require a vLLM server configured to accept `thinking_token_budget` (recent vLLM requires `--reasoning-config`).
 
-DeepSeek served through vLLM uses a different official shape. If the model name contains `deepseek`, term-llm auto-selects DeepSeek controls; for aliased or mistitled deployments, set `vllm_thinking_param: thinking`:
+For vLLM templates that use `chat_template_kwargs.thinking`, declare model capabilities in config and set `vllm_thinking_param: thinking`. term-llm treats that metadata as authoritative: it exposes only the declared effort profiles, uses the configured default for the bare provider/model, and passes enabled efforts through unchanged to vLLM.
 
 ```yaml
 providers:
   cdck_deepseek:
     type: vllm
     base_url: https://gpu-server.example.com:8000/v1
-    model: ds31
+    model: deepseek-ai/DeepSeek-V4-Flash
     vllm_thinking_param: thinking
+    models:
+      - id: deepseek-ai/DeepSeek-V4-Flash
+        alias: deepseek-v4-flash
+        reasoning_efforts: [none, low, high, max]
+        default_reasoning_effort: high
 ```
 
-DeepSeek efforts map to `chat_template_kwargs.thinking` plus top-level `reasoning_effort`: default/off sends `thinking=false`, `low`/`medium`/`high` send `thinking=true, reasoning_effort=high`, and `xhigh`/`max` send `thinking=true, reasoning_effort=max`. DeepSeek requests do not send `thinking_token_budget`.
+With this configuration, the bare `cdck_deepseek` profile uses `high`. Shell completion for `-p cdck_deepseek-<TAB>` offers only `none`, `low`, `high`, and `max`. `none` sends `thinking=false` and omits top-level `reasoning_effort`; every enabled level sends `thinking=true` and the exact configured value as top-level `reasoning_effort`. These requests do not send `thinking_token_budget`.
+
+Model names containing `deepseek` still select the `thinking` request shape automatically for backward compatibility. Explicit `vllm_thinking_param` is preferred for aliased deployments because capability and default selection remain config-driven.
 
 term-llm persists streamed reasoning and replays it as assistant `reasoning` on future vLLM turns so vLLM's chat template and prefix cache can see the same prior reasoning. vLLM may still report `reasoning_tokens: 0` in usage metadata even when reasoning text is present; that is a vLLM accounting limitation.
 

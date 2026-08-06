@@ -17,11 +17,20 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 	cfg, _ := config.Load()
 	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 
-	// If completing provider name (no colon), don't add space so user can type ":"
+	// A bare provider may still be extended with ":model", so suppress the
+	// trailing space. An effort profile is already a complete flag value.
 	if !strings.Contains(toComplete, ":") {
-		return completions, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+		return completions, providerFlagCompletionDirective(cfg, toComplete)
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+func providerFlagCompletionDirective(cfg *config.Config, toComplete string) cobra.ShellCompDirective {
+	directive := cobra.ShellCompDirectiveNoFileComp
+	if !llm.IsConfiguredProviderEffortPrefix(cfg, toComplete) {
+		directive |= cobra.ShellCompDirectiveNoSpace
+	}
+	return directive
 }
 
 // ImageProviderFlagCompletion handles --provider flag completion for image commands

@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -33,7 +34,20 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 		if _, ok := cfg.Providers[provider]; ok {
 			return provider, model, nil
 		}
+		// Exact built-in names win over effort-prefix interpretation. This avoids
+		// a configured provider such as "claude" shadowing "claude-bin".
+		for _, name := range GetBuiltInProviderNames() {
+			if provider == name {
+				return provider, model, nil
+			}
+		}
 		if len(parts) == 1 {
+			if baseProvider, baseModel, effort, configured, supported := parseConfiguredProviderEffort(provider, cfg); configured {
+				if !supported {
+					return "", "", fmt.Errorf("provider %q does not support reasoning effort %q", baseProvider, effort)
+				}
+				return baseProvider, baseModel + "-" + effort, nil
+			}
 			baseProvider, effort := ParseModelEffort(provider)
 			if effort != "" {
 				if providerCfg, ok := cfg.Providers[baseProvider]; ok {
@@ -55,6 +69,68 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 	}
 
 	return "", "", fmt.Errorf("unknown provider: %s", provider)
+}
+
+// parseConfiguredProviderEffort resolves an effort-suffixed configured provider
+// name using the selected model's explicit capability metadata. The configured
+// result distinguishes an unsupported declared suffix from an unrelated name so
+// callers can reject hidden aliases instead of falling back to global defaults.
+func parseConfiguredProviderEffort(value string, cfg *config.Config) (provider, model, effort string, configured, supported bool) {
+	if cfg == nil {
+		return "", "", "", false, false
+	}
+	var providerNames []string
+	for name := range cfg.Providers {
+		if strings.HasPrefix(value, name+"-") {
+			providerNames = append(providerNames, name)
+		}
+	}
+	// Prefer the longest configured provider name when names share a prefix.
+	sort.Slice(providerNames, func(i, j int) bool { return len(providerNames[i]) > len(providerNames[j]) })
+	for _, name := range providerNames {
+		pc := cfg.Providers[name]
+		entry, ok := config.ModelConfigForProviderModel(cfg, name, pc.Model)
+		if !ok || len(entry.ReasoningEfforts) == 0 {
+			continue
+		}
+		candidateEffort := strings.TrimPrefix(value, name+"-")
+		baseModel := strings.TrimSpace(pc.Model)
+		for _, declared := range entry.ReasoningEfforts {
+			declared = strings.ToLower(strings.TrimSpace(declared))
+			if declared == "" {
+				continue
+			}
+			if strings.EqualFold(candidateEffort, declared) {
+				baseModel = trimDeclaredModelEffort(baseModel, entry)
+				if baseModel == "" {
+					return name, "", declared, true, false
+				}
+				return name, baseModel, declared, true, true
+			}
+		}
+		return name, baseModel, candidateEffort, true, false
+	}
+	return "", "", "", false, false
+}
+
+func trimDeclaredModelEffort(model string, entry config.ProviderModelConfig) string {
+	model = strings.TrimSpace(model)
+	for _, name := range []string{entry.ID, entry.Alias} {
+		if strings.EqualFold(model, strings.TrimSpace(name)) {
+			return model
+		}
+	}
+	efforts := append([]string(nil), entry.ReasoningEfforts...)
+	sort.SliceStable(efforts, func(i, j int) bool {
+		return len(strings.TrimSpace(efforts[i])) > len(strings.TrimSpace(efforts[j]))
+	})
+	for _, effort := range efforts {
+		effort = strings.TrimSpace(effort)
+		if effort != "" && strings.HasSuffix(strings.ToLower(model), "-"+strings.ToLower(effort)) {
+			return model[:len(model)-len(effort)-1]
+		}
+	}
+	return model
 }
 
 // NewProvider creates a new LLM provider based on the config.

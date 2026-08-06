@@ -795,6 +795,57 @@ func GetProviderNames(cfg *config.Config) []string {
 	return result
 }
 
+// ConfiguredProviderReasoningEfforts returns the effort profiles advertised for
+// a configured provider's selected model. Explicit models[] metadata wins over
+// the legacy provider-wide reasoning switch.
+func ConfiguredProviderReasoningEfforts(cfg *config.Config, provider string) []string {
+	if cfg == nil {
+		return nil
+	}
+	pc, ok := cfg.Providers[strings.TrimSpace(provider)]
+	if !ok {
+		return nil
+	}
+	if entry, ok := config.ModelConfigForProviderModel(cfg, provider, pc.Model); ok && len(entry.ReasoningEfforts) > 0 {
+		return normalizeReasoningEfforts(entry.ReasoningEfforts)
+	}
+	switch strings.ToLower(strings.TrimSpace(pc.Reasoning)) {
+	case "enabled", "enable", "on", "true", "yes":
+		providerType := string(config.InferProviderType(provider, pc.Type))
+		return normalizeReasoningEfforts(DefaultReasoningEffortsForProviderType(providerType))
+	default:
+		return nil
+	}
+}
+
+// IsConfiguredProviderEffortPrefix reports whether completion is currently
+// filling an effort suffix for a configured provider profile.
+func IsConfiguredProviderEffortPrefix(cfg *config.Config, value string) bool {
+	if cfg == nil {
+		return false
+	}
+	// A complete or still-completable provider name takes precedence over
+	// interpreting a shorter configured provider as an effort prefix.
+	for _, provider := range GetProviderNames(cfg) {
+		if strings.HasPrefix(provider, value) {
+			return false
+		}
+	}
+	for provider := range cfg.Providers {
+		prefix := provider + "-"
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		partialEffort := strings.TrimPrefix(value, prefix)
+		for _, effort := range ConfiguredProviderReasoningEfforts(cfg, provider) {
+			if strings.HasPrefix(effort, strings.ToLower(partialEffort)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // GetImageProviderNames returns valid provider names for image generation
 func GetImageProviderNames() []string {
 	return []string{"debug", "gemini", "openai", "chatgpt", "xai", "venice", "flux", "openrouter"}
@@ -893,12 +944,25 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		return completions
 	}
 
-	// No colon - offer provider names (filtered by what user typed)
+	// No colon - offer provider names and configured effort profiles, filtered
+	// by what the user typed. Profile capabilities come directly from the
+	// selected model's config rather than a provider-wide hardcoded list.
 	var completions []string
 	for _, name := range providerNames {
 		if strings.HasPrefix(name, toComplete) {
 			completions = append(completions, name)
 		}
+	}
+	if !isImage && cfg != nil {
+		for provider := range cfg.Providers {
+			for _, effort := range ConfiguredProviderReasoningEfforts(cfg, provider) {
+				candidate := provider + "-" + effort
+				if strings.HasPrefix(candidate, toComplete) {
+					completions = append(completions, candidate)
+				}
+			}
+		}
+		sort.Strings(completions)
 	}
 	return completions
 }

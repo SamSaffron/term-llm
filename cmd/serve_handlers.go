@@ -2521,6 +2521,14 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		if m.ID == "" {
 			continue
 		}
+		if modelConfig, ok := config.ModelConfigForProviderModel(s.cfgRef, effectiveName, m.ID); ok {
+			if len(m.ReasoningEfforts) == 0 {
+				m.ReasoningEfforts = append([]string(nil), modelConfig.ReasoningEfforts...)
+			}
+			if m.DefaultReasoningEffort == "" {
+				m.DefaultReasoningEffort = strings.TrimSpace(modelConfig.DefaultReasoningEffort)
+			}
+		}
 		if _, ok := byID[m.ID]; ok {
 			continue
 		}

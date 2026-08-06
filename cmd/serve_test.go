@@ -11780,6 +11780,57 @@ func TestHandleModels_DropsEffortSuffixDuplicates(t *testing.T) {
 	}
 }
 
+func TestHandleModels_ReportsConfiguredReasoningDefault(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "cdck_deepseek",
+		Providers: map[string]config.ProviderConfig{
+			"cdck_deepseek": {
+				Model:  "deepseek-ai/DeepSeek-V4-Flash",
+				Models: []string{"deepseek-v4-flash"},
+				ModelConfigs: []config.ProviderModelConfig{{
+					ID:                     "deepseek-ai/DeepSeek-V4-Flash",
+					Alias:                  "deepseek-v4-flash",
+					ReasoningEfforts:       []string{"none", "low", "high", "max"},
+					DefaultReasoningEffort: "high",
+				}},
+			},
+		},
+	}
+	srv := &serveServer{
+		cfgRef:          cfg,
+		modelsProviders: map[string]llm.Provider{"cdck_deepseek": llm.NewMockProvider("cdck_deepseek")},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models?provider=cdck_deepseek", nil)
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	for _, model := range result.Data {
+		if model["id"] != "deepseek-ai/DeepSeek-V4-Flash" {
+			continue
+		}
+		if model["default_reasoning_effort"] != "high" {
+			t.Fatalf("default_reasoning_effort = %#v", model["default_reasoning_effort"])
+		}
+		efforts, _ := model["reasoning_efforts"].([]any)
+		for _, want := range []string{"none", "low", "high", "max"} {
+			if !stringAnySliceContains(efforts, want) {
+				t.Fatalf("reasoning_efforts = %#v, missing %q", efforts, want)
+			}
+		}
+		return
+	}
+	t.Fatalf("configured model missing in %s", rr.Body.String())
+}
+
 func TestHandleModels_ReportsGPT5EffortsWithoutMax(t *testing.T) {
 	cfg := &config.Config{
 		DefaultProvider: "chatgpt",

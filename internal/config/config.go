@@ -117,15 +117,16 @@ type ResponsesPromptCacheConfig struct {
 // metadata here. Alias is the friendly name exposed in pickers/completions;
 // ID is the upstream model string sent to the provider.
 type ProviderModelConfig struct {
-	ID               string   `mapstructure:"id" yaml:"id,omitempty"`
-	Alias            string   `mapstructure:"alias" yaml:"alias,omitempty"`
-	ContextWindow    int      `mapstructure:"context_window" yaml:"context_window,omitempty"`
-	MaxOutputTokens  int      `mapstructure:"max_output_tokens" yaml:"max_output_tokens,omitempty"`
-	ParseReasoning   *bool    `mapstructure:"parse_reasoning" yaml:"parse_reasoning,omitempty"`
-	IncludeReasoning *bool    `mapstructure:"include_reasoning" yaml:"include_reasoning,omitempty"`
-	ThinkingParam    string   `mapstructure:"thinking_param" yaml:"thinking_param,omitempty"`
-	ReasoningEfforts []string `mapstructure:"reasoning_efforts" yaml:"reasoning_efforts,omitempty"`
-	VisionVia        string   `mapstructure:"vision_via" yaml:"vision_via,omitempty"`
+	ID                     string   `mapstructure:"id" yaml:"id,omitempty"`
+	Alias                  string   `mapstructure:"alias" yaml:"alias,omitempty"`
+	ContextWindow          int      `mapstructure:"context_window" yaml:"context_window,omitempty"`
+	MaxOutputTokens        int      `mapstructure:"max_output_tokens" yaml:"max_output_tokens,omitempty"`
+	ParseReasoning         *bool    `mapstructure:"parse_reasoning" yaml:"parse_reasoning,omitempty"`
+	IncludeReasoning       *bool    `mapstructure:"include_reasoning" yaml:"include_reasoning,omitempty"`
+	ThinkingParam          string   `mapstructure:"thinking_param" yaml:"thinking_param,omitempty"`
+	ReasoningEfforts       []string `mapstructure:"reasoning_efforts" yaml:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort string   `mapstructure:"default_reasoning_effort" yaml:"default_reasoning_effort,omitempty"`
+	VisionVia              string   `mapstructure:"vision_via" yaml:"vision_via,omitempty"`
 }
 
 func (m ProviderModelConfig) DisplayName() string {
@@ -975,6 +976,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 	applyProviderModelConfigs(&cfg, providerModelConfigsFromViper(viper.GetViper()))
+	if err := validateProviderModelReasoning(&cfg); err != nil {
+		return nil, err
+	}
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
 	if err := cfg.ValidateApprovalModes(); err != nil {
 		return nil, err
@@ -1108,15 +1112,16 @@ func providerModelConfigsFromAny(raw any) []ProviderModelConfig {
 
 func providerModelConfigFromMap(m map[string]any) ProviderModelConfig {
 	return ProviderModelConfig{
-		ID:               firstNonEmpty(stringFromMap(m, "id"), stringFromMap(m, "model")),
-		Alias:            stringFromMap(m, "alias"),
-		ContextWindow:    intFromMap(m, "context_window"),
-		MaxOutputTokens:  intFromMap(m, "max_output_tokens"),
-		ParseReasoning:   boolPtrFromMap(m, "parse_reasoning"),
-		IncludeReasoning: boolPtrFromMap(m, "include_reasoning"),
-		ThinkingParam:    stringFromMap(m, "thinking_param"),
-		ReasoningEfforts: stringSliceFromMap(m, "reasoning_efforts"),
-		VisionVia:        stringFromMap(m, "vision_via"),
+		ID:                     firstNonEmpty(stringFromMap(m, "id"), stringFromMap(m, "model")),
+		Alias:                  stringFromMap(m, "alias"),
+		ContextWindow:          intFromMap(m, "context_window"),
+		MaxOutputTokens:        intFromMap(m, "max_output_tokens"),
+		ParseReasoning:         boolPtrFromMap(m, "parse_reasoning"),
+		IncludeReasoning:       boolPtrFromMap(m, "include_reasoning"),
+		ThinkingParam:          stringFromMap(m, "thinking_param"),
+		ReasoningEfforts:       stringSliceFromMap(m, "reasoning_efforts"),
+		DefaultReasoningEffort: stringFromMap(m, "default_reasoning_effort"),
+		VisionVia:              stringFromMap(m, "vision_via"),
 	}
 }
 
@@ -1228,6 +1233,31 @@ func providerModelConfigMatchedEffort(entry ProviderModelConfig, modelName strin
 		}
 	}
 	return ""
+}
+
+func validateProviderModelReasoning(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	for provider, pc := range cfg.Providers {
+		for _, entry := range pc.ModelConfigs {
+			defaultEffort := strings.ToLower(strings.TrimSpace(entry.DefaultReasoningEffort))
+			if defaultEffort == "" {
+				continue
+			}
+			supported := false
+			for _, effort := range entry.ReasoningEfforts {
+				if strings.EqualFold(strings.TrimSpace(effort), defaultEffort) {
+					supported = true
+					break
+				}
+			}
+			if !supported {
+				return fmt.Errorf("providers.%s model %q default_reasoning_effort %q is not listed in reasoning_efforts", provider, entry.DisplayName(), entry.DefaultReasoningEffort)
+			}
+		}
+	}
+	return nil
 }
 
 func applyProviderModelConfigs(cfg *Config, modelConfigs map[string][]ProviderModelConfig) {

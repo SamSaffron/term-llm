@@ -147,6 +147,7 @@ func TestRegisterModelLimitsRegistersVLLMReasoningEnabled(t *testing.T) {
 			Type:            config.ProviderTypeVLLM,
 			Model:           "Qwen/Qwen3.5-122B-A10B",
 			Models:          []string{"Qwen/Qwen3.5-122B-A10B-Instruct"},
+			ModelConfigs:    []config.ProviderModelConfig{{ID: "Qwen/Qwen3.5-122B-A10B", Alias: "qwen", ReasoningEfforts: []string{"none", "low", "high"}, DefaultReasoningEffort: "high"}},
 			Reasoning:       "enabled",
 			ContextWindow:   200000,
 			MaxOutputTokens: 50000,
@@ -155,18 +156,22 @@ func TestRegisterModelLimitsRegistersVLLMReasoningEnabled(t *testing.T) {
 
 	registerModelLimits(cfg)
 
-	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
-	for _, model := range []string{"Qwen/Qwen3.5-122B-A10B", "Qwen/Qwen3.5-122B-A10B-Instruct"} {
+	explicitWant := []string{"none", "low", "high"}
+	for _, model := range []string{"Qwen/Qwen3.5-122B-A10B", "qwen", "qwen-high"} {
 		got := llm.ReasoningEffortsForProviderModel("cdck_qwen", model)
-		if !equalStringSlices(got, want) {
-			t.Fatalf("reasoning efforts for %s = %v, want %v", model, got, want)
+		if !equalStringSlices(got, explicitWant) {
+			t.Fatalf("explicit reasoning efforts for %s = %v, want %v", model, got, explicitWant)
 		}
 	}
-	base, effort := llm.BaseModelAndEffortForProvider("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-max")
-	if base != "Qwen/Qwen3.5-122B-A10B" || effort != "max" {
-		t.Fatalf("BaseModelAndEffortForProvider = (%q, %q), want qwen/max", base, effort)
+	genericWant := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	if got := llm.ReasoningEffortsForProviderModel("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-Instruct"); !equalStringSlices(got, genericWant) {
+		t.Fatalf("generic reasoning efforts = %v, want %v", got, genericWant)
 	}
-	if got := llm.InputLimitForProviderModel("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-medium"); got != 150000 {
+	base, effort := llm.BaseModelAndEffortForProvider("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-high")
+	if base != "Qwen/Qwen3.5-122B-A10B" || effort != "high" {
+		t.Fatalf("BaseModelAndEffortForProvider = (%q, %q), want qwen/high", base, effort)
+	}
+	if got := llm.InputLimitForProviderModel("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-high"); got != 150000 {
 		t.Fatalf("InputLimitForProviderModel suffixed = %d, want 150000", got)
 	}
 }

@@ -36,7 +36,7 @@ type OpenAIProviderOptions struct {
 // "gpt-5.2" -> ("gpt-5.2", "")
 func ParseModelEffort(model string) (string, string) {
 	// Check suffixes in order from longest to shortest to avoid "-high" matching "-xhigh"
-	suffixes := []string{"xhigh", "minimal", "medium", "high", "low", "max"}
+	suffixes := []string{"minimal", "medium", "xhigh", "high", "low", "max"}
 	for _, effort := range suffixes {
 		suffix := "-" + effort
 		if strings.HasSuffix(model, suffix) {

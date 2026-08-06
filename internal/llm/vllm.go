@@ -23,10 +23,16 @@ func NewVLLMProvider(baseURL, apiKey, model, name string) *VLLMProvider {
 	return NewVLLMProviderFull(baseURL, "", apiKey, model, name)
 }
 
-func vLLMThinkingSettings(model, effort, paramOverride string) (map[string]interface{}, int, string) {
+func vLLMThinkingSettings(model, effort, paramOverride string, configuredEfforts bool) (map[string]interface{}, int, string) {
 	key := vLLMThinkingParam(model, paramOverride)
 	if key == "thinking" {
-		kwargs, reasoningEffort := vLLMDeepSeekThinkingSettings(effort)
+		var kwargs map[string]interface{}
+		var reasoningEffort string
+		if configuredEfforts {
+			kwargs, reasoningEffort = vLLMThinkingEffortSettings(effort)
+		} else {
+			kwargs, reasoningEffort = vLLMLegacyDeepSeekThinkingSettings(effort)
+		}
 		return kwargs, 0, reasoningEffort
 	}
 	enableThinking, budget := vLLMQwenThinkingSettings(effort)
@@ -46,17 +52,27 @@ func vLLMThinkingParam(model, override string) string {
 	return "enable_thinking"
 }
 
-func vLLMDeepSeekThinkingSettings(effort string) (map[string]interface{}, string) {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "", "default", "minimal", "none", "off", "false":
+func vLLMThinkingEffortSettings(effort string) (map[string]interface{}, string) {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	switch effort {
+	case "", "default", "none", "off", "false":
 		// thinking=false is sufficient to select chat mode. Omit the top-level
 		// reasoning_effort rather than redundantly sending "none" as well.
+		return map[string]interface{}{"thinking": false}, ""
+	default:
+		// Explicit model metadata is the capability boundary. Pass enabled
+		// efforts through unchanged rather than embedding model-specific mappings.
+		return map[string]interface{}{"thinking": true}, effort
+	}
+}
+
+func vLLMLegacyDeepSeekThinkingSettings(effort string) (map[string]interface{}, string) {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "", "default", "minimal", "none", "off", "false":
 		return map[string]interface{}{"thinking": false}, ""
 	case "max", "xhigh":
 		return map[string]interface{}{"thinking": true}, "max"
 	default:
-		// DeepSeek/vLLM exposes only Think High and Think Max. DeepSeek's
-		// official API maps low and medium to high for compatibility.
 		return map[string]interface{}{"thinking": true}, "high"
 	}
 }

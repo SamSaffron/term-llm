@@ -168,26 +168,28 @@ The effort suffix is stripped before sending the model name upstream. For exampl
 | `medium` | `enable_thinking: true`, `thinking_token_budget: 4096` |
 | `high` / `xhigh` / `max` | `enable_thinking: true`, `thinking_token_budget: 10000` |
 
-For DeepSeek models served by vLLM, the official recipes use a different chat-template shape. term-llm auto-detects model names containing `deepseek`; if your provider/model is mistitled, set `vllm_thinking_param: thinking` explicitly:
+For vLLM templates that use `chat_template_kwargs.thinking`, declare the model's exact capabilities and default in config. `vllm_thinking_param: thinking` selects the request shape; term-llm does not embed model-specific effort mappings:
 
 ```yaml
 providers:
   cdck_deepseek:
     type: vllm
     base_url: https://gpu-server.example.com:8000/v1
-    model: ds31                    # served-model alias; actual backend is DeepSeek
-    vllm_thinking_param: thinking  # use DeepSeek/vLLM chat_template_kwargs.thinking
+    model: deepseek-ai/DeepSeek-V4-Flash
+    vllm_thinking_param: thinking
+    models:
+      - id: deepseek-ai/DeepSeek-V4-Flash
+        alias: deepseek-v4-flash
+        reasoning_efforts: [none, low, high, max]
+        default_reasoning_effort: high
 ```
 
-DeepSeek effort mapping follows the official DeepSeek/vLLM behavior: DeepSeek exposes non-think, Think High, and Think Max rather than Qwen-style token budgets.
-
-| term-llm effort | Request fields sent to vLLM for DeepSeek |
+| Configured effort | Request fields sent to vLLM |
 |---|---|
-| default / empty / `minimal` / `none` | `chat_template_kwargs.thinking: false` |
-| `low` / `medium` / `high` | `chat_template_kwargs.thinking: true`, top-level `reasoning_effort: high` |
-| `xhigh` / `max` | `chat_template_kwargs.thinking: true`, top-level `reasoning_effort: max` |
+| `none` | `chat_template_kwargs.thinking: false`; omit top-level `reasoning_effort` |
+| any enabled effort | `chat_template_kwargs.thinking: true`; pass the same value as top-level `reasoning_effort` |
 
-DeepSeek requests do not send `thinking_token_budget`. vLLM's current native DeepSeek V4 renderer reads `thinking` from `chat_template_kwargs` and `reasoning_effort` from the top-level Chat Completions request. `high` is the normal thinking mode; `max` adds the model's maximum-effort prompt prefix.
+The bare provider/model uses `default_reasoning_effort`. `-p cdck_deepseek-<TAB>` completes only the values listed in `reasoning_efforts`. Model-name detection for `deepseek` remains as a backward-compatible fallback when `vllm_thinking_param` is omitted; explicit configuration is preferred for aliases. Requests using the `thinking` shape do not send `thinking_token_budget`.
 
 Notes:
 
@@ -230,7 +232,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
 | `model` | string | Default model name. For configured model objects, this may be either the upstream `id` or the friendly `alias`. |
-| `models` | list | Optional list for model pickers and shell completion. Entries may be strings or objects with `id`, optional `alias`, `context_window`, `max_output_tokens`, `parse_reasoning`, `include_reasoning`, `thinking_param`, and `reasoning_efforts`. |
+| `models` | list | Optional list for model pickers and shell completion. Entries may be strings or objects with `id`, optional `alias`, `context_window`, `max_output_tokens`, `parse_reasoning`, `include_reasoning`, `thinking_param`, `reasoning_efforts`, and `default_reasoning_effort`. |
 | `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation) and the agent `model: fast` alias. This is separate from service-tier fast mode. Usually this is all you need. |
 | `fast_provider` | string | Optional provider key to use when the `fast_model` should run on a different configured provider than this one. |
 | `service_tier` | string | Optional Responses API service tier for built-in `openai` and `chatgpt` providers. Use `fast` or `priority` to request fast/priority service where the selected model supports it. Omit the field to send no service tier. |
@@ -267,7 +269,8 @@ providers:
         parse_reasoning: true
         include_reasoning: true
         thinking_param: enable_thinking
-        reasoning_efforts: [high, max]
+        reasoning_efforts: [none, low, high, max]
+        default_reasoning_effort: high
         # Optional per-model override; if omitted, provider-level vision_via is used.
         vision_via: gemini:gemini-2.5-pro
 ```
@@ -280,11 +283,12 @@ providers:
 | `max_output_tokens` | Per-model output token cap metadata; OpenAI-compatible requests clamp explicit `max_output_tokens` to this value. |
 | `parse_reasoning` | Per-model override for the provider-level `parse_reasoning` flag. |
 | `include_reasoning` | Per-model override for the provider-level `include_reasoning` flag. |
-| `thinking_param` | Per-model override for the provider-level `thinking_param` key. Sent as `chat_template_kwargs.<thinking_param>: true` only when a non-default effort is selected. |
-| `reasoning_efforts` | Exact suffixes to expose for this model, for example `[high, max]`. The bare model/alias remains the default and sends no `reasoning_effort`. |
+| `thinking_param` | Per-model override for the provider-level `thinking_param` key. Sent as `chat_template_kwargs.<thinking_param>: true` when the effective effort is non-empty. |
+| `reasoning_efforts` | Exact suffixes to expose for this model, for example `[none, low, high, max]`. They drive model aliases, effort selectors, provider-profile completion, and configured provider-profile validation. |
+| `default_reasoning_effort` | Effort used by the bare model/provider when no request or model suffix overrides it. Must be listed in `reasoning_efforts`. |
 | `vision_via` | Optional `provider` or `provider:model` route for indirect image understanding. Can be set at provider level (`providers.<name>.vision_via`) as the default for all models on that provider, or on an individual model object to override the provider default. If only `provider` is given, that provider's configured default `model` is used. When set, uploaded image parts are replaced with local path references for the primary model, `view_image` is auto-enabled, and that tool asks the configured vision model to return a text-only analysis. Requires the primary model to support tool calls and the vision provider credentials to be configured. |
 
-For `-p custom:friendly-name-max`, term-llm sends `model: upstream/model-id` plus `reasoning_effort: max`. If `reasoning_efforts` is empty or omitted, no effort-suffixed aliases are generated for that model.
+For `-p custom:friendly-name-max`, term-llm sends `model: upstream/model-id` plus `reasoning_effort: max`. When `default_reasoning_effort` is set, the bare provider/model uses that effort; otherwise it sends no effort. If `reasoning_efforts` is empty or omitted, no configured effort aliases or provider-profile completions are generated for that model.
 
 ### Friendli reasoning
 
@@ -389,38 +393,45 @@ For ChatGPT OAuth, GPT-5.6 Sol, Terra, and Luna expose `low`, `medium`, `high`, 
 
 ### vLLM thinking suffixes
 
-For configured providers with `type: vllm`, the same suffix parser can be applied to the provider name itself. This is useful when the model ID is long and already configured:
-
-```bash
-term-llm ask -p cdck_qwen-high "reason carefully"
-```
-
-With:
+For configured providers with `type: vllm`, effort suffixes can be applied directly to the provider name. Declare them on the selected model to drive parsing and shell completion:
 
 ```yaml
 providers:
-  cdck_qwen:
+  cdck_deepseek:
     type: vllm
     base_url: https://gpu-server.example.com:8000/v1
-    model: Qwen/Qwen3.5-122B-A10B
+    model: deepseek-ai/DeepSeek-V4-Flash
+    vllm_thinking_param: thinking
+    models:
+      - id: deepseek-ai/DeepSeek-V4-Flash
+        alias: deepseek-v4-flash
+        reasoning_efforts: [none, low, high, max]
+        default_reasoning_effort: high
 ```
 
-term-llm sends the base model ID plus vLLM thinking controls. For Qwen-style templates:
+```bash
+term-llm ask -p cdck_deepseek "uses configured high default"
+term-llm ask -p cdck_deepseek-low "override with low"
+term-llm ask -p cdck_deepseek-none "disable thinking"
+```
+
+The suffix is stripped before the model ID is sent upstream. `-p cdck_deepseek-<TAB>` offers exactly the declared efforts, and undeclared provider-profile suffixes are rejected.
+
+For Qwen-style `enable_thinking` templates, term-llm retains its budget mapping:
 
 | Suffix | Qwen/vLLM behavior |
 |---|---|
-| none | disable thinking by default (`enable_thinking: false`), no `thinking_token_budget` |
+| `none` | `enable_thinking: false`, no `thinking_token_budget` |
 | `-low` | enable thinking, budget `1024` |
 | `-medium` | enable thinking, budget `4096` |
 | `-high` / `-xhigh` / `-max` | enable thinking, budget `10000` |
 
-For DeepSeek-style templates, auto-detected from `deepseek` in the model name or forced with `vllm_thinking_param: thinking`:
+For `thinking` templates, configured enabled efforts pass through unchanged:
 
-| Suffix | DeepSeek/vLLM behavior |
+| Effort | vLLM behavior |
 |---|---|
-| none | `thinking: false` |
-| `-low` / `-medium` / `-high` | `thinking: true`, `reasoning_effort: high` |
-| `-xhigh` / `-max` | `thinking: true`, `reasoning_effort: max` |
+| `none` | `thinking: false`; omit top-level `reasoning_effort` |
+| any configured enabled value | `thinking: true`; send that value as top-level `reasoning_effort` |
 
 Reasoning replay uses vLLM's `reasoning` assistant-message field. vLLM may still report `reasoning_tokens: 0` in usage metadata even when reasoning text was streamed; this is a known vLLM-side accounting gap.
 

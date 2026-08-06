@@ -824,6 +824,15 @@ func (m *Model) displayNameForProviderModel(provider, model string) string {
 			continue
 		}
 		seen[candidate] = true
+		if entry, ok := config.ModelConfigForProviderModel(m.config, candidate, model); ok {
+			display := config.DisplayModelForProviderModel(m.config, candidate, model)
+			if _, effort, _, recognized := m.configuredModelEffort(candidate, model); recognized && effort == "" {
+				if defaultEffort := strings.ToLower(strings.TrimSpace(entry.DefaultReasoningEffort)); defaultEffort != "" && !strings.HasSuffix(strings.ToLower(display), "-"+defaultEffort) {
+					display += "-" + defaultEffort
+				}
+			}
+			return display
+		}
 		if display := config.DisplayModelForProviderModel(m.config, candidate, model); display != model {
 			return display
 		}

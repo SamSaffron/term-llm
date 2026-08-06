@@ -1132,7 +1132,8 @@ providers:
         parse_reasoning: true
         include_reasoning: true
         thinking_param: enable_thinking
-        reasoning_efforts: [high, max]
+        reasoning_efforts: [none, low, high, max]
+        default_reasoning_effort: high
         vision_via: gemini:gemini-2.5-pro
       - another-upstream-model
 `
@@ -1145,7 +1146,7 @@ providers:
 		t.Fatalf("Load: %v", err)
 	}
 	pc := cfg.Providers["custom"]
-	if got := pc.Models; len(got) != 4 || got[0] != "friendly-name" || got[1] != "another-upstream-model" || got[2] != "friendly-name-high" || got[3] != "friendly-name-max" {
+	if got := pc.Models; len(got) != 6 || got[0] != "friendly-name" || got[1] != "another-upstream-model" || got[2] != "friendly-name-none" || got[3] != "friendly-name-low" || got[4] != "friendly-name-high" || got[5] != "friendly-name-max" {
 		t.Fatalf("Models = %#v, want aliases/string entries plus configured effort variants", got)
 	}
 	if len(pc.ModelConfigs) != 1 {
@@ -1161,8 +1162,11 @@ providers:
 	if mc.ThinkingParam != "enable_thinking" {
 		t.Fatalf("ThinkingParam = %q, want enable_thinking", mc.ThinkingParam)
 	}
-	if len(mc.ReasoningEfforts) != 2 || mc.ReasoningEfforts[0] != "high" || mc.ReasoningEfforts[1] != "max" {
-		t.Fatalf("ReasoningEfforts = %#v, want [high max]", mc.ReasoningEfforts)
+	if len(mc.ReasoningEfforts) != 4 || mc.ReasoningEfforts[0] != "none" || mc.ReasoningEfforts[1] != "low" || mc.ReasoningEfforts[2] != "high" || mc.ReasoningEfforts[3] != "max" {
+		t.Fatalf("ReasoningEfforts = %#v, want [none low high max]", mc.ReasoningEfforts)
+	}
+	if mc.DefaultReasoningEffort != "high" {
+		t.Fatalf("DefaultReasoningEffort = %q, want high", mc.DefaultReasoningEffort)
 	}
 	if mc.VisionVia != "gemini:gemini-2.5-pro" {
 		t.Fatalf("VisionVia = %q, want gemini:gemini-2.5-pro", mc.VisionVia)
@@ -1187,6 +1191,52 @@ providers:
 	}
 	if got := DisplayModelForProviderModel(cfg, "custom", "another-upstream-model"); got != "another-upstream-model" {
 		t.Fatalf("DisplayModelForProviderModel unaliased model = %q", got)
+	}
+}
+
+func TestValidateProviderModelReasoningRejectsUnsupportedDefault(t *testing.T) {
+	cfg := &Config{Providers: map[string]ProviderConfig{
+		"custom": {ModelConfigs: []ProviderModelConfig{{
+			ID:                     "model",
+			ReasoningEfforts:       []string{"none", "high"},
+			DefaultReasoningEffort: "max",
+		}}},
+	}}
+
+	err := validateProviderModelReasoning(cfg)
+	if err == nil || !strings.Contains(err.Error(), `default_reasoning_effort "max" is not listed`) {
+		t.Fatalf("validateProviderModelReasoning error = %v", err)
+	}
+}
+
+func TestLoadRejectsUnsupportedDefaultReasoningEffort(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configYAML := `default_provider: custom
+providers:
+  custom:
+    type: vllm
+    base_url: https://api.example.com/v1
+    model: model
+    models:
+      - id: model
+        reasoning_efforts: [none, high]
+        default_reasoning_effort: max
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), `default_reasoning_effort "max" is not listed`) {
+		t.Fatalf("Load error = %v", err)
 	}
 }
 

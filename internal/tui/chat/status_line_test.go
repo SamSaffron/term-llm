@@ -76,6 +76,30 @@ func TestRenderStatusLinePrefersConfiguredModelAlias(t *testing.T) {
 	}
 }
 
+func TestRenderStatusLineShowsConfiguredDefaultReasoningEffort(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 120
+	m.providerKey = "cdck_deepseek"
+	m.providerName = "cdck_deepseek"
+	m.modelName = "deepseek-ai/DeepSeek-V4-Flash"
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{
+		"cdck_deepseek": {
+			Model: "deepseek-ai/DeepSeek-V4-Flash",
+			ModelConfigs: []config.ProviderModelConfig{{
+				ID:                     "deepseek-ai/DeepSeek-V4-Flash",
+				Alias:                  "deepseek-v4-flash",
+				ReasoningEfforts:       []string{"none", "low", "high", "max"},
+				DefaultReasoningEffort: "high",
+			}},
+		},
+	}}
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "deepseek-v4-flash-high") {
+		t.Fatalf("status line %q does not show effective configured default effort", line)
+	}
+}
+
 func TestRenderStatusLinePrefersConfiguredModelAliasForAppliedStreamingEffort(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 120

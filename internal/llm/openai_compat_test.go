@@ -108,6 +108,12 @@ func TestOpenAICompatListModelsParsesOpenRouterContextLength(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAICompatProvider(server.URL, "", "", "OpenRouter")
+	provider.SetModelConfigs([]config.ProviderModelConfig{{
+		ID:                     "vendor/model",
+		Alias:                  "friendly-model",
+		ReasoningEfforts:       []string{"none", "low", "high", "max"},
+		DefaultReasoningEffort: "high",
+	}})
 	models, err := provider.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
@@ -120,6 +126,12 @@ func TestOpenAICompatListModelsParsesOpenRouterContextLength(t *testing.T) {
 	}
 	if models[0].InputPrice != 1 || models[0].OutputPrice != 2 {
 		t.Fatalf("prices = %g/%g, want 1/2", models[0].InputPrice, models[0].OutputPrice)
+	}
+	if models[0].DisplayName != "Vendor Model" || models[0].DefaultReasoningEffort != "high" {
+		t.Fatalf("configured metadata = display %q default %q", models[0].DisplayName, models[0].DefaultReasoningEffort)
+	}
+	if !equalSlice(models[0].ReasoningEfforts, []string{"none", "low", "high", "max"}) {
+		t.Fatalf("ReasoningEfforts = %v", models[0].ReasoningEfforts)
 	}
 }
 
@@ -2150,12 +2162,22 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 }
 
 func TestVLLMProviderStreamSendsThinkingControls(t *testing.T) {
+	configuredDeepSeek := []config.ProviderModelConfig{{
+		ID:                     "deepseek-ai/DeepSeek-V4-Flash",
+		ReasoningEfforts:       []string{"none", "low", "high", "max"},
+		DefaultReasoningEffort: "high",
+	}}
+	configuredCustomEffort := []config.ProviderModelConfig{{
+		ID:               "vendor/custom-model",
+		ReasoningEfforts: []string{"ultra"},
+	}}
 	tests := []struct {
 		name                string
 		providerModel       string
 		model               string
 		effort              string
 		paramOverride       string
+		modelConfigs        []config.ProviderModelConfig
 		wantModel           string
 		wantKwargs          map[string]interface{}
 		wantReasoningEffort string
@@ -2167,10 +2189,16 @@ func TestVLLMProviderStreamSendsThinkingControls(t *testing.T) {
 		{name: "medium budget", effort: "medium", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(4096)},
 		{name: "high budget", effort: "high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(10000)},
 		{name: "deepseek default uses thinking kwarg", providerModel: "deepseek-ai/DeepSeek-V3.1", wantModel: "deepseek-ai/DeepSeek-V3.1", wantKwargs: map[string]interface{}{"thinking": false}},
-		{name: "deepseek low maps to top-level high", providerModel: "deepseek-ai/DeepSeek-V3.2-low", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
-		{name: "deepseek effort uses top-level high", providerModel: "deepseek-ai/DeepSeek-V3.2-high", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
-		{name: "deepseek max uses top-level max", providerModel: "deepseek-ai/DeepSeek-V3.2-max", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "max"},
-		{name: "override supports mistitled deepseek", providerModel: "cdck_qwen-high", paramOverride: "thinking", wantModel: "cdck_qwen", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
+		{name: "configured default reasoning effort", providerModel: "deepseek-ai/DeepSeek-V4-Flash", paramOverride: "thinking", modelConfigs: configuredDeepSeek, wantModel: "deepseek-ai/DeepSeek-V4-Flash", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
+		{name: "provider none suffix overrides configured default", providerModel: "deepseek-ai/DeepSeek-V4-Flash-none", paramOverride: "thinking", modelConfigs: configuredDeepSeek, wantModel: "deepseek-ai/DeepSeek-V4-Flash", wantKwargs: map[string]interface{}{"thinking": false}},
+		{name: "configured thinking effort passes low through", providerModel: "deepseek-ai/DeepSeek-V4-Flash-low", modelConfigs: configuredDeepSeek, wantModel: "deepseek-ai/DeepSeek-V4-Flash", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "low"},
+		{name: "configured thinking effort passes high through", providerModel: "deepseek-ai/DeepSeek-V4-Flash-high", modelConfigs: configuredDeepSeek, wantModel: "deepseek-ai/DeepSeek-V4-Flash", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
+		{name: "configured thinking effort passes max through", providerModel: "deepseek-ai/DeepSeek-V4-Flash-max", modelConfigs: configuredDeepSeek, wantModel: "deepseek-ai/DeepSeek-V4-Flash", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "max"},
+		{name: "configured custom effort passes through without global parser support", providerModel: "vendor/custom-model-ultra", paramOverride: "thinking", modelConfigs: configuredCustomEffort, wantModel: "vendor/custom-model", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "ultra"},
+		{name: "legacy deepseek low maps to high", providerModel: "deepseek-ai/DeepSeek-V3.2-low", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
+		{name: "legacy deepseek minimal disables thinking", providerModel: "deepseek-ai/DeepSeek-V3.2-minimal", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": false}},
+		{name: "legacy deepseek xhigh maps to max", providerModel: "deepseek-ai/DeepSeek-V3.2-xhigh", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "max"},
+		{name: "override supports mistitled legacy model", providerModel: "cdck_qwen-high", paramOverride: "thinking", wantModel: "cdck_qwen", wantKwargs: map[string]interface{}{"thinking": true}, wantReasoningEffort: "high"},
 	}
 
 	for _, tt := range tests {
@@ -2191,6 +2219,7 @@ func TestVLLMProviderStreamSendsThinkingControls(t *testing.T) {
 			}
 			provider := NewVLLMProvider(ts.URL, "test-key", providerModel, "Test vLLM")
 			provider.vllmThinkingParam = tt.paramOverride
+			provider.SetModelConfigs(tt.modelConfigs)
 			stream, err := provider.Stream(context.Background(), Request{
 				Model:           tt.model,
 				Messages:        []Message{UserText("hello")},

@@ -1256,6 +1256,32 @@ func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestCycleEffortShortcutUsesConfiguredCycleWithoutDefaultState(t *testing.T) {
+	const model = "deepseek-ai/DeepSeek-V4-Flash"
+	m, _ := newEffortCmdTestModel("cdck_deepseek", model)
+	m.config.Providers["cdck_deepseek"] = config.ProviderConfig{
+		Type:  config.ProviderTypeVLLM,
+		Model: model,
+		ModelConfigs: []config.ProviderModelConfig{{
+			ID:                     model,
+			Alias:                  "deepseek-v4-flash",
+			ReasoningEfforts:       []string{"none", "low", "high", "max"},
+			DefaultReasoningEffort: "high",
+		}},
+	}
+	prepareEffortShortcutTestModel(m)
+
+	rm := m
+	for i, effort := range []string{"max", "none", "low", "high", "max"} {
+		result, _ := rm.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+		rm = result.(*Model)
+		wantModel := model + "-" + effort
+		if rm.modelName != wantModel {
+			t.Fatalf("Ctrl-R %d model = %q, want %q; footer=%q", i+1, rm.modelName, wantModel, rm.footerMessage)
+		}
+	}
+}
+
 func TestCycleEffortShortcutWrapsToDefault(t *testing.T) {
 	m, _ := newEffortCmdTestModel("claude-bin", "sonnet-high")
 	prepareEffortShortcutTestModel(m)

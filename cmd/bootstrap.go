@@ -75,19 +75,42 @@ func registerModelLimits(cfg *config.Config) {
 		case "enabled", "enable", "on", "true", "yes":
 			providerType := string(config.InferProviderType(name, pc.Type))
 			efforts := llm.DefaultReasoningEffortsForProviderType(providerType)
-			if len(efforts) == 0 {
+			if len(efforts) > 0 {
+				for _, model := range providerModels {
+					if modelConfig, ok := config.ModelConfigForProviderModel(cfg, name, model); ok && len(modelConfig.ReasoningEfforts) > 0 {
+						continue
+					}
+					reasoning = append(reasoning, llm.ConfigModelReasoningEfforts{
+						Provider: name,
+						Model:    model,
+						Efforts:  efforts,
+					})
+				}
+			}
+		case "disabled", "disable", "off", "false", "no":
+			// Explicitly no generic reasoning aliases. Model-specific metadata
+			// remains authoritative when models[].reasoning_efforts is set.
+		}
+
+		// Explicit per-model capabilities override the generic provider defaults
+		// above and are registered for both the upstream ID and friendly alias.
+		for _, modelConfig := range pc.ModelConfigs {
+			if len(modelConfig.ReasoningEfforts) == 0 {
 				continue
 			}
-			for _, model := range providerModels {
+			seenNames := make(map[string]bool, 2)
+			for _, model := range []string{modelConfig.ID, modelConfig.Alias} {
+				model = strings.TrimSpace(model)
+				if model == "" || seenNames[model] {
+					continue
+				}
+				seenNames[model] = true
 				reasoning = append(reasoning, llm.ConfigModelReasoningEfforts{
 					Provider: name,
 					Model:    model,
-					Efforts:  efforts,
+					Efforts:  modelConfig.ReasoningEfforts,
 				})
 			}
-		case "disabled", "disable", "off", "false", "no":
-			// Explicitly no config-provided reasoning aliases. Curated built-in
-			// metadata still applies to built-in providers/models.
 		}
 	}
 	// Always register (even if empty) so a config reload clears stale metadata.

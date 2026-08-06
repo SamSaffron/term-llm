@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/samsaffron/term-llm/internal/config"
+)
 
 func TestProviderModelsIncludeGrokBin(t *testing.T) {
 	ids := ProviderModelIDs("grok-bin")
@@ -501,6 +505,33 @@ func TestConfigReasoningEffortsForVLLMCustomProvider(t *testing.T) {
 		if !containsModelID(expanded, wantModel) {
 			t.Fatalf("expanded custom vllm models missing %q: %v", wantModel, expanded)
 		}
+	}
+}
+
+func TestGetProviderCompletionsUsesConfiguredReasoningEfforts(t *testing.T) {
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"cdck_deepseek": {
+			Type:  config.ProviderTypeVLLM,
+			Model: "deepseek-ai/DeepSeek-V4-Flash",
+			ModelConfigs: []config.ProviderModelConfig{{
+				ID:                     "deepseek-ai/DeepSeek-V4-Flash",
+				Alias:                  "deepseek-v4-flash",
+				ReasoningEfforts:       []string{"none", "low", "high", "max"},
+				DefaultReasoningEffort: "high",
+			}},
+		},
+	}}
+
+	got := GetProviderCompletions("cdck_deepseek-", false, cfg)
+	want := []string{"cdck_deepseek-high", "cdck_deepseek-low", "cdck_deepseek-max", "cdck_deepseek-none"}
+	if !equalSlice(got, want) {
+		t.Fatalf("GetProviderCompletions = %v, want %v", got, want)
+	}
+	if !IsConfiguredProviderEffortPrefix(cfg, "cdck_deepseek-") {
+		t.Fatal("expected configured provider effort prefix")
+	}
+	if containsModelID(GetProviderNames(cfg), "cdck_deepseek-high") {
+		t.Fatal("effort profiles must not leak into plain provider-name lists")
 	}
 }
 

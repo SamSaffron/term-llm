@@ -1301,6 +1301,27 @@ func (m *Model) baseModelAndEffort(provider, model string) (string, string) {
 	return llm.BaseModelAndEffortForProvider(provider, model)
 }
 
+func (m *Model) configuredEffortForCycle(provider, model string) (string, bool) {
+	if m == nil || m.config == nil {
+		return "", false
+	}
+	entry, ok := config.ModelConfigForProviderModel(m.config, provider, model)
+	if !ok || len(entry.ReasoningEfforts) == 0 {
+		return "", false
+	}
+	_, effort := m.baseModelAndEffort(provider, model)
+	if effort != "" {
+		return effort, true
+	}
+	defaultEffort := strings.ToLower(strings.TrimSpace(entry.DefaultReasoningEffort))
+	for _, supported := range entry.ReasoningEfforts {
+		if strings.EqualFold(strings.TrimSpace(supported), defaultEffort) {
+			return defaultEffort, true
+		}
+	}
+	return "", true
+}
+
 func (m *Model) reasoningEffortsForModel(provider, model string) []string {
 	if _, _, efforts, ok := m.configuredModelEffort(provider, model); ok {
 		return efforts
@@ -1521,7 +1542,14 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 	}
 
 	next := efforts[0]
-	if currentEffort != "" {
+	if configuredEffort, configuredCycle := m.configuredEffortForCycle(provider, model); configuredCycle {
+		currentEffort = configuredEffort
+		if idx := slices.Index(efforts, currentEffort); idx >= 0 {
+			next = efforts[(idx+1)%len(efforts)]
+		}
+	} else if currentEffort != "" {
+		// Preserve the legacy cycle for curated/provider-wide effort metadata,
+		// where the bare model remains a distinct "default" state.
 		if idx := slices.Index(efforts, currentEffort); idx >= 0 {
 			if idx == len(efforts)-1 {
 				next = "default"
@@ -1584,9 +1612,17 @@ func (m *Model) resolveEffortSwitch(provider, model string, args []string) effor
 	label := requested
 	var targetModel string
 	switch requested {
-	case "default", "auto", "none", "off":
+	case "default", "auto":
 		targetModel = base
 		label = "default"
+	case "none", "off":
+		if slices.Contains(efforts, "none") {
+			targetModel = base + "-none"
+			label = "none"
+		} else {
+			targetModel = base
+			label = "default"
+		}
 	default:
 		if len(efforts) == 0 || !slices.Contains(efforts, requested) {
 			allowed := append(cloneStrings(efforts), "default")

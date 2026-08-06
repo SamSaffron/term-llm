@@ -430,19 +430,41 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 			info.InputPrice = normalizeCompatModelPrice(m.Pricing.Prompt.Float64())
 			info.OutputPrice = normalizeCompatModelPrice(m.Pricing.Completion.Float64())
 		}
+		if entry, ok := p.modelConfigForName(m.ID); ok {
+			if len(entry.ReasoningEfforts) > 0 {
+				info.ReasoningEfforts = append([]string(nil), entry.ReasoningEfforts...)
+			}
+			if defaultEffort := strings.TrimSpace(entry.DefaultReasoningEffort); defaultEffort != "" {
+				info.DefaultReasoningEffort = defaultEffort
+			}
+		}
 		models[i] = info
 	}
 
 	return models, nil
 }
 
+func (p *OpenAICompatProvider) modelConfigForName(model string) (config.ProviderModelConfig, bool) {
+	model = strings.TrimSpace(model)
+	for _, entry := range p.modelConfigs {
+		for _, name := range compatModelNames(entry) {
+			if model == name {
+				return entry, true
+			}
+		}
+	}
+	return config.ProviderModelConfig{}, false
+}
+
 type openAICompatResolvedModel struct {
-	Model            string
-	Effort           string
-	ParseReasoning   *bool
-	IncludeReasoning *bool
-	ThinkingParam    string
-	MaxOutputTokens  int
+	Model                  string
+	Effort                 string
+	ReasoningEfforts       []string
+	DefaultReasoningEffort string
+	ParseReasoning         *bool
+	IncludeReasoning       *bool
+	ThinkingParam          string
+	MaxOutputTokens        int
 }
 
 func (p *OpenAICompatProvider) resolveConfiguredModel(model string) openAICompatResolvedModel {
@@ -511,6 +533,10 @@ func (p *OpenAICompatProvider) hasConfiguredModelName(model string) bool {
 }
 
 func (r *openAICompatResolvedModel) apply(entry config.ProviderModelConfig) {
+	r.ReasoningEfforts = append([]string(nil), entry.ReasoningEfforts...)
+	if effort := strings.TrimSpace(entry.DefaultReasoningEffort); effort != "" {
+		r.DefaultReasoningEffort = effort
+	}
 	if entry.ParseReasoning != nil {
 		r.ParseReasoning = entry.ParseReasoning
 	}
@@ -552,11 +578,15 @@ func compatModelNames(entry config.ProviderModelConfig) []string {
 }
 
 func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	// Effort precedence: explicit request effort wins over model suffix, which wins over provider-level effort.
+	// Effort precedence: explicit request effort wins over a request-model suffix,
+	// which wins over a provider-model suffix and the configured model default.
 	configuredModel := chooseModel(req.Model, p.model)
 	resolvedModel := p.resolveConfiguredModel(configuredModel)
 	model := resolvedModel.Model
-	effort := p.effort
+	effort := resolvedModel.DefaultReasoningEffort
+	if p.effort != "" {
+		effort = p.effort
+	}
 	if resolvedModel.Effort != "" {
 		effort = resolvedModel.Effort
 	}
@@ -586,7 +616,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		ReasoningEffort: effort,
 	}
 	if p.vllmThinking {
-		kwargs, budget, vllmReasoningEffort := vLLMThinkingSettings(model, effort, p.vllmThinkingParam)
+		kwargs, budget, vllmReasoningEffort := vLLMThinkingSettings(model, effort, p.vllmThinkingParam, len(resolvedModel.ReasoningEfforts) > 0)
 		chatReq.ReasoningEffort = vllmReasoningEffort
 		chatReq.ChatTemplateKwargs = kwargs
 		if budget > 0 {
@@ -603,7 +633,12 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		if chatReq.ChatTemplateKwargs == nil {
 			chatReq.ChatTemplateKwargs = map[string]interface{}{}
 		}
-		chatReq.ChatTemplateKwargs[resolvedModel.ThinkingParam] = true
+		enableThinking := true
+		switch strings.ToLower(strings.TrimSpace(effort)) {
+		case "none", "off", "false":
+			enableThinking = false
+		}
+		chatReq.ChatTemplateKwargs[resolvedModel.ThinkingParam] = enableThinking
 	}
 	if !p.noStreamOptions {
 		chatReq.StreamOptions = &oaiStreamOptions{IncludeUsage: true}
