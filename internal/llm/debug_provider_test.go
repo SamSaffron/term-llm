@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestDebugProviderName(t *testing.T) {
@@ -23,6 +25,7 @@ func TestDebugProviderName(t *testing.T) {
 		{"slow", "debug:slow"},
 		{"realtime", "debug:realtime"},
 		{"burst", "debug:burst"},
+		{"compaction", "debug:compaction"},
 		{"unknown", "debug:unknown"}, // Unknown variants still get named
 	}
 
@@ -33,6 +36,22 @@ func TestDebugProviderName(t *testing.T) {
 				t.Errorf("Name() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewProviderPreservesDebugVariantOverride(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "debug",
+		Providers: map[string]config.ProviderConfig{
+			"debug": {Model: "compaction"},
+		},
+	}
+	provider, err := NewProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	if got := provider.Name(); got != "debug:compaction" {
+		t.Fatalf("provider name = %q, want debug:compaction", got)
 	}
 }
 
@@ -120,6 +139,138 @@ func TestDebugProviderStream(t *testing.T) {
 
 	if !gotUsage {
 		t.Error("stream did not emit usage event")
+	}
+}
+
+func TestDebugCompactionModelLimits(t *testing.T) {
+	if got := InputLimitForProviderModel("debug", "compaction"); got != 19_000 {
+		t.Fatalf("input limit = %d, want 19000", got)
+	}
+	if got := OutputLimitForModel("compaction"); got != 1_000 {
+		t.Fatalf("output limit = %d, want 1000", got)
+	}
+}
+
+func TestDebugCompactionScenario(t *testing.T) {
+	p := NewDebugProvider("compaction")
+	p.preset.Delay = 0
+
+	tests := []struct {
+		name      string
+		messages  []Message
+		wantText  string
+		wantInput int
+	}{
+		{name: "seed", messages: []Message{UserText("run probe")}, wantText: "seed response", wantInput: 18_100},
+		{name: "soft brief", messages: []Message{UserText(contextContinuationBriefPrompt)}, wantText: "verify the TUI compaction boundary", wantInput: 800},
+		{name: "hard summary", messages: []Message{UserText("Create a detailed summary of our conversation")}, wantText: "hermetic TUI compaction probe", wantInput: 1_200},
+		{name: "continuation", messages: []Message{UserText("[Context Compaction]\nsummary"), UserText(contextContinuationPrompt)}, wantText: "continuation complete", wantInput: 1_400},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream, err := p.Stream(context.Background(), Request{Messages: tt.messages})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			defer stream.Close()
+			var text strings.Builder
+			var usage *Usage
+			for {
+				event, recvErr := stream.Recv()
+				if recvErr == io.EOF {
+					break
+				}
+				if recvErr != nil {
+					t.Fatalf("Recv() error = %v", recvErr)
+				}
+				if event.Type == EventTextDelta {
+					text.WriteString(event.Text)
+				}
+				if event.Type == EventUsage {
+					usage = event.Use
+				}
+			}
+			if !strings.Contains(text.String(), tt.wantText) {
+				t.Fatalf("text = %q, want substring %q", text.String(), tt.wantText)
+			}
+			if usage == nil || usage.InputTokens != tt.wantInput {
+				t.Fatalf("usage = %+v, want input %d", usage, tt.wantInput)
+			}
+		})
+	}
+}
+
+func TestDebugToolCompactionScenario(t *testing.T) {
+	p := NewDebugProvider("compaction")
+	p.preset.Delay = 0
+	glob := ToolSpec{Name: "glob"}
+	preResults := []Message{
+		UserText("run the tool compaction probe"),
+		ToolResultMessage("debug_compact_pre_1", "glob", "go.mod", nil),
+		ToolResultMessage("debug_compact_pre_2", "glob", "go.mod", nil),
+	}
+
+	stream, err := p.Stream(context.Background(), Request{Messages: preResults, Tools: []ToolSpec{glob}})
+	if err != nil {
+		t.Fatalf("pre Stream() error = %v", err)
+	}
+	preCall, preUsage, _ := collectDebugScenarioStream(t, stream)
+	if preCall == nil || preCall.ID != "debug_compact_pre_3" {
+		t.Fatalf("pre call = %+v, want debug_compact_pre_3", preCall)
+	}
+	if preUsage == nil || preUsage.InputTokens != 18_100 {
+		t.Fatalf("pre usage = %+v, want hard-threshold input", preUsage)
+	}
+
+	postMessages := append([]Message{
+		UserText("[Context Compaction]\nTool compaction probe: continue with post-compaction calls."),
+	}, preResults[1:]...)
+	stream, err = p.Stream(context.Background(), Request{Messages: postMessages, Tools: []ToolSpec{glob}})
+	if err != nil {
+		t.Fatalf("post Stream() error = %v", err)
+	}
+	postCall, _, _ := collectDebugScenarioStream(t, stream)
+	if postCall == nil || postCall.ID != "debug_compact_post_1" {
+		t.Fatalf("post call = %+v, want debug_compact_post_1", postCall)
+	}
+
+	postMessages = append(postMessages,
+		ToolResultMessage("debug_compact_post_1", "glob", "go.mod", nil),
+		ToolResultMessage("debug_compact_post_2", "glob", "go.mod", nil),
+		ToolResultMessage("debug_compact_post_3", "glob", "go.mod", nil),
+	)
+	stream, err = p.Stream(context.Background(), Request{Messages: postMessages, Tools: []ToolSpec{glob}})
+	if err != nil {
+		t.Fatalf("final Stream() error = %v", err)
+	}
+	finalCall, _, finalText := collectDebugScenarioStream(t, stream)
+	if finalCall != nil || !strings.Contains(finalText, "3 tool calls before compaction and 3 after") {
+		t.Fatalf("final call=%+v text=%q", finalCall, finalText)
+	}
+}
+
+func collectDebugScenarioStream(t *testing.T, stream Stream) (*ToolCall, *Usage, string) {
+	t.Helper()
+	defer stream.Close()
+	var call *ToolCall
+	var usage *Usage
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			return call, usage, text.String()
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			call = event.Tool
+		case EventUsage:
+			usage = event.Use
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		}
 	}
 }
 

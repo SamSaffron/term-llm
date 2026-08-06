@@ -20,11 +20,12 @@ type debugPreset struct {
 
 // presets maps variant names to their streaming configurations.
 var presets = map[string]debugPreset{
-	"fast":     {ChunkSize: 50, Delay: 5 * time.Millisecond},
-	"normal":   {ChunkSize: 20, Delay: 20 * time.Millisecond},
-	"slow":     {ChunkSize: 10, Delay: 50 * time.Millisecond},
-	"realtime": {ChunkSize: 5, Delay: 30 * time.Millisecond},
-	"burst":    {ChunkSize: 200, Delay: 100 * time.Millisecond},
+	"fast":       {ChunkSize: 50, Delay: 5 * time.Millisecond},
+	"normal":     {ChunkSize: 20, Delay: 20 * time.Millisecond},
+	"slow":       {ChunkSize: 10, Delay: 50 * time.Millisecond},
+	"realtime":   {ChunkSize: 5, Delay: 30 * time.Millisecond},
+	"burst":      {ChunkSize: 200, Delay: 100 * time.Millisecond},
+	"compaction": {ChunkSize: 12, Delay: 80 * time.Millisecond},
 }
 
 // debugMarkdown contains rich markdown content for performance testing.
@@ -174,7 +175,7 @@ type DebugProvider struct {
 }
 
 // NewDebugProvider creates a debug provider with the specified variant.
-// Valid variants: fast, normal, slow, realtime, burst
+// Valid variants: fast, normal, slow, realtime, burst, compaction.
 // Empty string defaults to "normal".
 func NewDebugProvider(variant string) *DebugProvider {
 	if variant == "" {
@@ -213,6 +214,9 @@ func (d *DebugProvider) Capabilities() Capabilities {
 // If tool results are present, emits completion text.
 // Otherwise, streams the debug markdown content.
 func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	if d.variant == "compaction" {
+		return d.streamCompactionScenario(ctx, req), nil
+	}
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		// If the request is completing a tool round (the conversation ends
 		// with tool results), stream completion text. Earlier turns' tool
@@ -253,6 +257,132 @@ func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error)
 		// Fall back to debug markdown
 		return d.streamDebugMarkdown(ctx, send)
 	}), nil
+}
+
+func (d *DebugProvider) streamCompactionScenario(ctx context.Context, req Request) Stream {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		last := ""
+		if len(req.Messages) > 0 {
+			last = MessageText(req.Messages[len(req.Messages)-1])
+		}
+
+		text := "Compaction probe seed response. term-llm should now compact this 20k-context conversation and continue."
+		usage := Usage{InputTokens: 18_100, OutputTokens: 24}
+		toolScenario := requestContainsText(req.Messages, "tool compaction probe")
+		switch {
+		case strings.TrimSpace(last) == strings.TrimSpace(contextContinuationBriefPrompt):
+			if toolScenario {
+				text = "Tool compaction probe: three pre-compaction glob calls are complete. Next perform three post-compaction glob calls, then confirm completion."
+			} else {
+				text = "Objective: verify the TUI compaction boundary. Next: continue the probe after compaction."
+			}
+			usage = Usage{InputTokens: 800, OutputTokens: 22}
+		case strings.Contains(last, "Create a detailed summary of our conversation"):
+			if toolScenario {
+				text = "Tool compaction probe: three pre-compaction glob calls are complete. Preserve their results. Next perform three post-compaction glob calls, then confirm completion."
+			} else {
+				text = "The user is running the hermetic TUI compaction probe. Preserve the boundary and continue with a short confirmation."
+			}
+			usage = Usage{InputTokens: 1_200, OutputTokens: 28}
+		case toolScenario:
+			return d.streamToolCompactionStep(ctx, send, req)
+		case requestContainsCompactionSummary(req.Messages):
+			text = "Compaction probe continuation complete. The durable boundary marker should appear immediately above this response."
+			usage = Usage{InputTokens: 1_400, OutputTokens: 26}
+		}
+		return d.streamTextWithUsage(ctx, send, text, usage)
+	})
+}
+
+func (d *DebugProvider) streamToolCompactionStep(ctx context.Context, send eventSender, req Request) error {
+	if !hasToolSpec(req.Tools, "glob") {
+		return d.streamTextWithUsage(ctx, send, "Tool compaction probe requires --tools glob.", Usage{InputTokens: 100, OutputTokens: 10})
+	}
+
+	prefix := "debug_compact_pre_"
+	if requestContainsCompactionSummary(req.Messages) {
+		prefix = "debug_compact_post_"
+	}
+	completed := countToolResultsWithPrefix(req.Messages, prefix)
+	if completed >= 3 {
+		return d.streamTextWithUsage(ctx, send, "Tool compaction probe complete: 3 tool calls before compaction and 3 after.", Usage{InputTokens: 1_500, OutputTokens: 20})
+	}
+
+	callNumber := completed + 1
+	arguments, _ := json.Marshal(map[string]string{"pattern": "go.mod"})
+	if err := send.Send(Event{Type: EventToolCall, Tool: &ToolCall{
+		ID:        fmt.Sprintf("%s%d", prefix, callNumber),
+		Name:      "glob",
+		Arguments: arguments,
+	}}); err != nil {
+		return err
+	}
+	inputTokens := 500
+	if prefix == "debug_compact_pre_" && callNumber == 3 {
+		inputTokens = 18_100
+	}
+	return send.Send(Event{Type: EventUsage, Use: &Usage{InputTokens: inputTokens, OutputTokens: 8}})
+}
+
+func hasToolSpec(tools []ToolSpec, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func requestContainsText(messages []Message, needle string) bool {
+	needle = strings.ToLower(needle)
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(MessageText(msg)), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func countToolResultsWithPrefix(messages []Message, prefix string) int {
+	count := 0
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if part.Type == PartToolResult && part.ToolResult != nil && strings.HasPrefix(part.ToolResult.ID, prefix) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func requestContainsCompactionSummary(messages []Message) bool {
+	for _, msg := range messages {
+		if IsInternalCompactionSummaryText(MessageText(msg)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *DebugProvider) streamTextWithUsage(ctx context.Context, send eventSender, text string, usage Usage) error {
+	for len(text) > 0 {
+		end := d.preset.ChunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+		if err := send.Send(Event{Type: EventTextDelta, Text: text[:end]}); err != nil {
+			return err
+		}
+		text = text[end:]
+		if len(text) > 0 && d.preset.Delay > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(d.preset.Delay):
+			}
+		}
+	}
+	return send.Send(Event{Type: EventUsage, Use: &usage})
 }
 
 // streamDebugMarkdown streams the standard debug markdown content.
@@ -557,15 +687,22 @@ func generateSyntheticEdits(filePath string, count int) [][2]string {
 	}
 
 	edits := make([][2]string, 0, count)
-	// Pick evenly spaced lines to avoid overlapping edits
+	// Pick evenly spaced non-empty lines to avoid overlapping edits. Scan forward
+	// from each target so harmless formatting changes do not reduce the requested
+	// number of synthetic calls.
 	step := max(1, len(lines)/count)
+	used := make(map[int]bool, count)
 
-	for i := 0; i < count && i*step < len(lines); i++ {
+	for i := 0; i < count; i++ {
 		lineIdx := i * step
-		line := lines[lineIdx]
-		if strings.TrimSpace(line) == "" {
-			continue // skip blank lines
+		for lineIdx < len(lines) && (used[lineIdx] || strings.TrimSpace(lines[lineIdx]) == "") {
+			lineIdx++
 		}
+		if lineIdx >= len(lines) {
+			break
+		}
+		used[lineIdx] = true
+		line := lines[lineIdx]
 		// Simple edit: append " // edited by debug" to the line
 		edits = append(edits, [2]string{
 			line,

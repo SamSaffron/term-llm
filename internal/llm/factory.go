@@ -324,7 +324,11 @@ func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
 func newProviderInternal(cfg *config.Config) (Provider, error) {
 	// Handle hidden debug provider first
 	if cfg.DefaultProvider == "debug" {
-		return NewDebugProvider(""), nil
+		variant := ""
+		if providerCfg, ok := cfg.Providers["debug"]; ok {
+			variant = providerCfg.Model
+		}
+		return NewDebugProvider(variant), nil
 	}
 
 	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]

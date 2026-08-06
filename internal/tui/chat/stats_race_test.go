@@ -11,26 +11,28 @@ import (
 // while applying every stats mutation serially through Update, matching Bubble
 // Tea's runtime ownership model. Run under -race to guard against reintroducing
 // direct callback-goroutine SessionStats mutation.
-func TestCompactionUsageMessagesMutateStatsOnlyThroughUpdate(t *testing.T) {
+func TestCompactionAppliedMessagesMutateStatsOnlyThroughUpdate(t *testing.T) {
 	m := newTestChatModel(false)
 	m.stats = ui.NewSessionStats()
 	m.stats.SetModel("main-model")
 	m.stats.RequestStart()
 	m.stats.ObserveOutput()
 
-	messages := make(chan compactionUsageMsg)
+	messages := make(chan compactionAppliedMsg)
 	go func() {
 		defer close(messages)
 		for range 100 {
-			messages <- compactionUsageMsg{
-				model: " compact-model ",
-				usage: llm.Usage{InputTokens: 2, OutputTokens: 1},
+			messages <- compactionAppliedMsg{
+				generation: m.streamGeneration,
+				model:      " compact-model ",
+				usage:      llm.Usage{InputTokens: 2, OutputTokens: 1},
 			}
 		}
 	}()
 	for msg := range messages {
-		if _, cmd := m.Update(msg); cmd != nil {
-			t.Fatal("compaction usage message unexpectedly returned a command")
+		m.queueCompactionForUI(msg)
+		if _, cmd := m.Update(streamEventMsg{event: ui.PhaseEvent(llm.PhaseCompactingResumeTask), generation: m.streamGeneration}); cmd == nil {
+			t.Fatal("compaction resume phase did not schedule the stream listener")
 		}
 	}
 

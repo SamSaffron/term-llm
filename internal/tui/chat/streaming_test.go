@@ -59,6 +59,157 @@ func (s *updateMessageFailStore) GetMessages(ctx context.Context, sessionID stri
 	return append([]session.Message(nil), msgs...), nil
 }
 
+func TestCompactionBoundaryAppliesAtResumePhaseBarrier(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = nil
+	m.sess.ID = "compaction-update"
+	m.engine.SetContextEstimateBaseline(17_500, 3)
+	messages := []session.Message{
+		{Role: llm.RoleUser, TextContent: "before", Sequence: 0},
+		{Role: llm.RoleUser, TextContent: "[Context Compaction]\nsummary", Sequence: 1},
+	}
+	refreshed := *m.sess
+	refreshed.CompactionSeq = 1
+	refreshed.CompactionCount = 1
+	m.currentResponse.WriteString("pre-boundary text")
+	m.tracker.AddTextSegment("pre-boundary text", m.width)
+
+	m.queueCompactionForUI(compactionAppliedMsg{
+		generation:  m.streamGeneration,
+		sessionID:   m.sess.ID,
+		messages:    messages,
+		activeStart: 1,
+		refreshed:   &refreshed,
+		model:       "compact-model",
+		usage:       llm.Usage{InputTokens: 20, OutputTokens: 5},
+	})
+	if m.compactionIdx != 0 {
+		t.Fatalf("boundary applied before ordered resume phase: %d", m.compactionIdx)
+	}
+
+	updated, cmd := m.Update(streamEventMsg{
+		event:      ui.PhaseEvent(llm.PhaseCompactingResumeTask),
+		generation: m.streamGeneration,
+	})
+	if cmd == nil {
+		t.Fatal("resume phase did not schedule the next stream listener")
+	}
+	rm := updated.(*Model)
+	if rm.compactionIdx != 1 || len(rm.messages) != 2 || rm.messages[1].Sequence != 1 {
+		t.Fatalf("compaction boundary state not applied: idx=%d messages=%#v", rm.compactionIdx, rm.messages)
+	}
+	if rm.sess.CompactionSeq != 1 || rm.sess.CompactionCount != 1 {
+		t.Fatalf("refreshed session not applied: %+v", rm.sess)
+	}
+	if total, count := rm.engine.ContextEstimateBaseline(); total != 0 || count != 0 {
+		t.Fatalf("context baseline = (%d, %d), want cleared", total, count)
+	}
+	if rm.stats.CompactionLLMCallCount != 1 {
+		t.Fatalf("compaction usage count = %d, want 1", rm.stats.CompactionLLMCallCount)
+	}
+	if rm.currentResponse.Len() != 0 || len(rm.tracker.CompletedSegments()) != 0 {
+		t.Fatalf("pre-boundary live presentation survived compaction: response=%q segments=%#v", rm.currentResponse.String(), rm.tracker.CompletedSegments())
+	}
+}
+
+func TestPendingCompactionForStaleSessionIsDiscarded(t *testing.T) {
+	m := newTestChatModel(false)
+	m.sess.ID = "current"
+	original := append([]session.Message(nil), m.messages...)
+	m.queueCompactionForUI(compactionAppliedMsg{
+		generation:  m.streamGeneration,
+		sessionID:   "stale",
+		messages:    []session.Message{{Role: llm.RoleUser, TextContent: "wrong session"}},
+		activeStart: 1,
+	})
+
+	m.applyAllPendingCompactionsToUI(m.streamGeneration)
+	if m.compactionIdx != 0 || len(m.messages) != len(original) {
+		t.Fatalf("stale compaction mutated current session: idx=%d messages=%#v", m.compactionIdx, m.messages)
+	}
+	m.compactionApplyMu.Lock()
+	pending := len(m.pendingCompactionApplies)
+	m.compactionApplyMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("stale compactions remained pending: %d", pending)
+	}
+}
+
+func TestQueuedCompactionsApplyInFIFOOrder(t *testing.T) {
+	m := newTestChatModel(false)
+	generation := m.streamGeneration
+	m.queueCompactionForUI(compactionAppliedMsg{generation: generation, messages: []session.Message{{TextContent: "first"}}, activeStart: 1})
+	m.queueCompactionForUI(compactionAppliedMsg{generation: generation, messages: []session.Message{{TextContent: "first"}, {TextContent: "second"}}, activeStart: 2})
+
+	m.applyNextPendingCompactionToUI(generation)
+	if m.compactionIdx != 1 || len(m.messages) != 1 {
+		t.Fatalf("first boundary = idx %d, messages %#v", m.compactionIdx, m.messages)
+	}
+	m.applyNextPendingCompactionToUI(generation)
+	if m.compactionIdx != 2 || len(m.messages) != 2 {
+		t.Fatalf("second boundary = idx %d, messages %#v", m.compactionIdx, m.messages)
+	}
+}
+
+func TestTerminalEventsApplyAllCompactionsForCurrentGeneration(t *testing.T) {
+	tests := []struct {
+		name  string
+		event ui.StreamEvent
+	}{
+		{name: "done", event: ui.DoneEvent(0)},
+		{name: "error", event: ui.ErrorEvent(errors.New("provider failed after compaction"))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.store = nil
+			m.streaming = true
+			m.streamGeneration = 2
+			m.queueCompactionForUI(compactionAppliedMsg{generation: 1, messages: []session.Message{{TextContent: "stale"}}, activeStart: 9})
+			m.queueCompactionForUI(compactionAppliedMsg{generation: 2, messages: []session.Message{{TextContent: "current"}}, activeStart: 1})
+
+			_, _ = m.Update(streamEventMsg{event: tt.event, generation: 2})
+			if m.compactionIdx != 1 || len(m.messages) != 1 || m.messages[0].TextContent != "current" {
+				t.Fatalf("terminal apply used wrong generation: idx=%d messages=%#v", m.compactionIdx, m.messages)
+			}
+			m.compactionApplyMu.Lock()
+			pending := len(m.pendingCompactionApplies)
+			m.compactionApplyMu.Unlock()
+			if pending != 0 {
+				t.Fatalf("terminal event left %d compactions pending", pending)
+			}
+		})
+	}
+}
+
+func TestDeferredBoundaryDoesNotClobberPostCompactionStreamingContext(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = nil
+	m.streaming = true
+	m.sess.ID = "stream-context"
+	m.streamGeneration = 3
+	m.messages = []session.Message{{Role: llm.RoleUser, TextContent: "old", Sequence: 0}}
+	m.pendingAssistantMsgID = 42
+	m.pendingAssistantTextSet = true
+	result := &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("[Context Compaction]\nsummary")}}
+
+	if err := m.streamCompactionCallback(m.sess, 3)(context.Background(), result); err != nil {
+		t.Fatalf("compaction callback: %v", err)
+	}
+	if m.pendingAssistantMsgID != 0 || m.pendingAssistantTextSet {
+		t.Fatalf("pre-boundary assistant identity survived callback: id=%d text_set=%v", m.pendingAssistantMsgID, m.pendingAssistantTextSet)
+	}
+	m.contextEstimateMu.Lock()
+	m.streamingContextMessages = append(m.streamingContextMessages, llm.AssistantText("post-compaction assistant"))
+	m.contextEstimateMu.Unlock()
+
+	m.applyNextPendingCompactionToUI(3)
+	contextMessages := m.buildMessagesForContextEstimate()
+	if got := llm.MessageText(contextMessages[len(contextMessages)-1]); got != "post-compaction assistant" {
+		t.Fatalf("deferred boundary clobbered post-compaction context: %#v", contextMessages)
+	}
+}
+
 func TestEnsureContextMessagesResetsBaselineWhenMutatingPrefix(t *testing.T) {
 	baseMessages := []session.Message{
 		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello", Sequence: 0},

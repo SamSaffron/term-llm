@@ -96,7 +96,9 @@ type Model struct {
 	// olderScrollbackLoaded is false when a compacted resume initially loaded only
 	// the active tail; scrolling upward can hydrate the older display prefix once.
 	olderScrollbackLoaded      bool
-	messagesMu                 sync.Mutex // Protects messages from concurrent compaction callback
+	messagesMu                 sync.Mutex // Protects messages read by the compaction callback.
+	compactionApplyMu          sync.Mutex
+	pendingCompactionApplies   []compactionAppliedMsg
 	streaming                  bool
 	transcriptMutationInFlight bool
 	shareInFlight              bool
@@ -1917,12 +1919,6 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
 		return m.handleStreamCancelTimeout(timeoutMsg)
 	}
-	if usageMsg, ok := msg.(compactionUsageMsg); ok {
-		// Compaction callbacks run on the stream goroutine. Apply stats and
-		// session-counter mutations only on Bubble Tea's Update goroutine.
-		m.recordCompactionUsage(context.Background(), usageMsg.sessionID, usageMsg.model, usageMsg.usage)
-		return m, nil
-	}
 	if handled, mentionCmd := m.handleMentionMessage(msg); handled {
 		return m, mentionCmd
 	}
@@ -2175,16 +2171,16 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		} else {
 			updated, activeStart, refreshed, _ = session.ApplyCompaction(context.Background(), nil, m.sess, full, msg.result)
 		}
-		if refreshed != nil {
-			m.sess = refreshed
-		}
-		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Model, msg.result.Usage)
-		m.messagesMu.Lock()
-		m.messages = updated
-		m.compactionIdx = activeStart
-		m.messagesMu.Unlock()
 		m.setStreamingContextMessages(msg.result.ActiveMessages())
-		m.invalidateHistoryCache()
+		m.applyCompactionToUI(compactionAppliedMsg{
+			sessionID:   sessionIDOf(m.sess),
+			messages:    updated,
+			activeStart: activeStart,
+			refreshed:   refreshed,
+			model:       msg.result.Model,
+			usage:       msg.result.Usage,
+		})
+		m.resetPendingAssistantAfterCompaction()
 
 		if m.engine != nil {
 			m.engine.ResetConversation()
@@ -2416,6 +2412,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 		switch ev.Type {
 		case ui.StreamEventError:
+			m.applyAllPendingCompactionsToUI(msg.generation)
 			if ev.Err != nil {
 				m.setRetryStatus("")
 				// Flush any buffered text on error
@@ -2709,6 +2706,13 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			}
 
 		case ui.StreamEventPhase:
+			if ev.Phase == llm.PhaseCompactingResumeTask {
+				// The resume phase is the ordered handoff before continuation provider
+				// text. Earlier stream events stay ahead of the durable boundary.
+				if m.applyNextPendingCompactionToUI(msg.generation) {
+					m.resetLivePresentationAfterCompaction()
+				}
+			}
 			m.phase = ev.Phase
 			m.setRetryStatus("")
 			// Display WARNING phases as visible text in the conversation
@@ -2823,6 +2827,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			}
 
 		case ui.StreamEventDone:
+			m.applyAllPendingCompactionsToUI(msg.generation)
 			m.setRetryStatus("")
 			m.currentTokens = ev.Tokens
 			m.resetAttemptUsage()
