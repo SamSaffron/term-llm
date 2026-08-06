@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -314,5 +318,93 @@ func TestServerLifecycleRemovesCA(t *testing.T) {
 	}
 	if err := server.Stop(ctx); err != nil {
 		t.Fatalf("second Stop: %v", err)
+	}
+}
+
+type blockingReadCloser struct {
+	io.Reader
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingReadCloser) Read(p []byte) (int, error) {
+	r.once.Do(func() {
+		close(r.started)
+		<-r.release
+	})
+	return r.Reader.Read(p)
+}
+
+func (*blockingReadCloser) Close() error { return nil }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestServerStopDoesNotBreakInFlightForward(t *testing.T) {
+	t.Setenv(GenerationTraceFileEnv, "")
+	var server Server
+	if _, _, err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Stop(context.Background()) })
+
+	server.mu.Lock()
+	transport := server.transport
+	server.mu.Unlock()
+	transport.RegisterProtocol("https", roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("forwarded")),
+		}, nil
+	}))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBody := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseBody)
+	body := &blockingReadCloser{
+		Reader:  strings.NewReader(string(generationBody("run_command"))),
+		started: started,
+		release: release,
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://"+CloudCodeHost+generationPath, body)
+	recorder := httptest.NewRecorder()
+	panicResult := make(chan any, 1)
+	go func() {
+		defer func() { panicResult <- recover() }()
+		server.forward(recorder, req)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("forward did not start reading request body")
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	releaseBody()
+
+	select {
+	case panicValue := <-panicResult:
+		if panicValue != nil {
+			t.Fatalf("forward panicked after Stop: %v", panicValue)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("forward did not finish")
+	}
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "forwarded" {
+		t.Fatalf("response = (%d, %q), want (200, %q)", recorder.Code, recorder.Body.String(), "forwarded")
+	}
+
+	stoppedReq := httptest.NewRequest(http.MethodGet, "https://"+CloudCodeHost+"/stopped", nil)
+	stoppedRecorder := httptest.NewRecorder()
+	server.forward(stoppedRecorder, stoppedReq)
+	if stoppedRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("post-stop response status = %d, want %d", stoppedRecorder.Code, http.StatusServiceUnavailable)
 	}
 }

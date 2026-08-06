@@ -1399,7 +1399,34 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 	return run, true, nil
 }
 
+func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, runID, jobsV2RunClaimed, m.workerID)
+	if err != nil {
+		log.Printf("jobs v2: failed to requeue unstarted run %q during shutdown: %v", runID, err)
+		return
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		log.Printf("jobs v2: could not confirm requeue of unstarted run %q during shutdown: %v", runID, err)
+		return
+	}
+	if affected == 0 {
+		return
+	}
+	if err := m.addRunEvent(runID, "requeued", "run returned to queue during worker shutdown", map[string]any{"worker_id": m.workerID}); err != nil {
+		log.Printf("jobs v2: failed to record shutdown requeue event for run %q: %v", runID, err)
+	}
+}
+
 func (m *jobsV2Manager) executeRun(run jobsV2Run) {
+	// Avoid turning a claim into a terminal failure when shutdown had already won
+	// before this worker began admission. Keep the check below as well: shutdown
+	// can still race with loading the job and preparing its context.
+	if m.isClosed() {
+		m.requeueClaimedRunAfterShutdown(run.ID)
+		return
+	}
+
 	job, err := m.GetJob(run.JobID)
 	if err != nil {
 		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
@@ -1418,7 +1445,12 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	m.mu.Lock()
-	closed := m.closed
+	if m.closed {
+		m.mu.Unlock()
+		cancel()
+		m.requeueClaimedRunAfterShutdown(run.ID)
+		return
+	}
 	m.cancels[run.ID] = cancel
 	m.mu.Unlock()
 	defer func() {
@@ -1427,9 +1459,6 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		delete(m.cancels, run.ID)
 		m.mu.Unlock()
 	}()
-	if closed {
-		return
-	}
 
 	started := time.Now().UTC()
 	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)

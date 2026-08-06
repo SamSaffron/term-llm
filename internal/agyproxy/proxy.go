@@ -125,8 +125,6 @@ func (s *Server) SetRequireMCP(required bool) {
 	s.mu.Unlock()
 }
 
-func (s *Server) requireMCPTool() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.requireMCP }
-
 // SetArtifactRoot restricts agy spill-file rehydration to the provider's
 // private antigravity-cli/brain directory. The directory may not exist yet when
 // configured; every candidate is resolved and containment-checked at read time.
@@ -134,12 +132,6 @@ func (s *Server) SetArtifactRoot(root string) {
 	s.mu.Lock()
 	s.artifactRoot = strings.TrimSpace(root)
 	s.mu.Unlock()
-}
-
-func (s *Server) artifactRootPath() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.artifactRoot
 }
 
 // BeginTurn resets interception evidence and configures dispatcher enforcement.
@@ -277,6 +269,19 @@ func (a loopbackAddr) Network() string { return "tcp" }
 func (a loopbackAddr) String() string  { return string(a) }
 
 func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
+	// A request admitted before Stop may finish with the transport and filtering
+	// configuration from that server generation. Requests admitted after Stop
+	// has detached the transport fail safely below.
+	s.mu.Lock()
+	transport := s.transport
+	artifactRoot := s.artifactRoot
+	requireMCP := s.requireMCP
+	s.mu.Unlock()
+	if transport == nil {
+		http.Error(w, "agy tool-filter proxy is stopping", http.StatusServiceUnavailable)
+		return
+	}
+
 	req.RequestURI = ""
 	req.URL.Scheme = "https"
 	req.URL.Host = CloudCodeHost
@@ -292,7 +297,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy rejected oversized request", http.StatusBadGateway)
 			return
 		}
-		expanded, err := ExpandGenerationArtifacts(body, s.artifactRootPath())
+		expanded, err := ExpandGenerationArtifacts(body, artifactRoot)
 		if err != nil {
 			http.Error(w, "agy tool-filter proxy rejected artifact expansion: "+err.Error(), http.StatusBadGateway)
 			return
@@ -301,7 +306,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy rejected oversized expanded request", http.StatusBadGateway)
 			return
 		}
-		filtered, err := FilterGenerationRequest(expanded, s.requireMCPTool())
+		filtered, err := FilterGenerationRequest(expanded, requireMCP)
 		if err != nil {
 			http.Error(w, "agy tool-filter proxy rejected request: "+err.Error(), http.StatusBadGateway)
 			return
@@ -317,7 +322,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 		req.TransferEncoding = nil
 		s.filtered.Add(1)
 	}
-	resp, err := s.transport.RoundTrip(req)
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		http.Error(w, "forward agy request: "+err.Error(), http.StatusBadGateway)
 		return

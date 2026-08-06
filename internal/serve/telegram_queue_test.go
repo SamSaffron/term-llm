@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,6 +98,27 @@ func TestTelegramStoreOpQueueCanceledContextDegradesWithoutBlocking(t *testing.T
 	defer drainCancel()
 	if !q.closeAndWait(drainCtx) {
 		t.Fatal("queue did not drain")
+	}
+}
+
+func TestTelegramStoreOpQueueOperationFailureDegrades(t *testing.T) {
+	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
+	q := newTelegramStoreOpQueue(mgr, "session-1")
+	sentinel := errors.New("write failed")
+
+	if !q.enqueue(context.Background(), "failing", func(context.Context) error {
+		return sentinel
+	}) {
+		t.Fatal("enqueue failed")
+	}
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !q.closeAndWait(drainCtx) {
+		t.Fatal("queue did not drain")
+	}
+	if !q.isDegraded() {
+		t.Fatal("queue was not marked degraded after operation failure")
 	}
 }
 

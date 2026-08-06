@@ -59,6 +59,49 @@ func (s *carryoverPagingStore) GetMessagesPageDescending(ctx context.Context, se
 	return page, nil
 }
 
+type failingTelegramTurnStore struct {
+	session.Store
+
+	mu           sync.Mutex
+	failRole     llm.Role
+	failAfter    int
+	matchedRole  int
+	failed       bool
+	failReplace  bool
+	replaceCalls int
+}
+
+func (s *failingTelegramTurnStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	s.mu.Lock()
+	if msg != nil && msg.Role == s.failRole {
+		if !s.failed && s.matchedRole >= s.failAfter {
+			s.failed = true
+			s.mu.Unlock()
+			return errors.New("injected AddMessage failure")
+		}
+		s.matchedRole++
+	}
+	s.mu.Unlock()
+	return s.Store.AddMessage(ctx, sessionID, msg)
+}
+
+func (s *failingTelegramTurnStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	s.mu.Lock()
+	s.replaceCalls++
+	fail := s.failReplace
+	s.mu.Unlock()
+	if fail {
+		return errors.New("injected ReplaceMessages failure")
+	}
+	return s.Store.ReplaceMessages(ctx, sessionID, messages)
+}
+
+func (s *failingTelegramTurnStore) stats() (failed bool, replaceCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed, s.replaceCalls
+}
+
 // fakeBotSender is a botSender that records all Send calls for test assertions.
 type fakeBotSender struct {
 	mu             sync.Mutex
@@ -570,6 +613,263 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	}
 }
 
+func TestStreamReply_ReconcilesTranscriptAfterTurnWriteFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		failRole        llm.Role
+		carryoverSystem bool
+	}{
+		{name: "direct system write", failRole: llm.RoleSystem},
+		{name: "direct user write", failRole: llm.RoleUser},
+		{name: "queued callback write", failRole: llm.RoleAssistant},
+		{name: "system write with old carryover system", failRole: llm.RoleSystem, carryoverSystem: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := testutil.NewEngineHarness()
+			h.AddMockTool("my_tool", "tool output")
+			h.Provider.AddToolCall("id-1", "my_tool", map[string]any{})
+			h.Provider.AddTextResponse("Result")
+
+			baseStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+			if err != nil {
+				t.Fatalf("create store: %v", err)
+			}
+			store := &failingTelegramTurnStore{Store: baseStore, failRole: tc.failRole}
+			defer store.Close()
+
+			mgr := &telegramSessionMgr{
+				sessions:       make(map[int64]*telegramSession),
+				store:          store,
+				tickerInterval: 10 * time.Millisecond,
+				settings: Settings{
+					MaxTurns:     5,
+					Store:        store,
+					SystemPrompt: "be helpful",
+					NewSession: func(context.Context) (*SessionRuntime, error) {
+						return &SessionRuntime{
+							Engine:       h.Engine,
+							ProviderName: "mock",
+							ModelName:    "test",
+						}, nil
+					},
+				},
+			}
+			ctx := context.Background()
+			sess, err := mgr.getOrCreate(ctx, 42)
+			if err != nil {
+				t.Fatalf("getOrCreate failed: %v", err)
+			}
+			if tc.carryoverSystem {
+				sess.history = []llm.Message{llm.SystemText("old carryover prompt")}
+				sess.carryoverMessageCount = len(sess.history)
+			}
+
+			if err := mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("run tool")); err != nil {
+				t.Fatalf("streamReply returned error: %v", err)
+			}
+
+			failed, replaceCalls := store.stats()
+			if !failed {
+				t.Fatalf("expected injected %s AddMessage failure", tc.failRole)
+			}
+			if replaceCalls != 1 {
+				t.Fatalf("ReplaceMessages calls = %d, want 1", replaceCalls)
+			}
+
+			msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+			if err != nil {
+				t.Fatalf("GetMessages failed: %v", err)
+			}
+			wantRoles := []llm.Role{llm.RoleSystem, llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleAssistant}
+			if len(msgs) != len(wantRoles) {
+				t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
+			}
+			for i, wantRole := range wantRoles {
+				if msgs[i].Role != wantRole {
+					t.Fatalf("message %d role = %s, want %s: %#v", i, msgs[i].Role, wantRole, msgs)
+				}
+			}
+			if msgs[0].TextContent != "be helpful" || msgs[1].TextContent != "run tool" || msgs[4].TextContent != "Result" {
+				t.Fatalf("reconciled transcript text mismatch: %#v", msgs)
+			}
+		})
+	}
+}
+
+func TestStreamReply_ReconcilesDegradedCallbackQueueAfterStreamError(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.AddMockTool("my_tool", "tool output")
+	h.Provider.AddToolCall("id-1", "my_tool", map[string]any{})
+	h.Provider.AddError(errors.New("upstream unavailable"))
+
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleAssistant}
+	defer store.Close()
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			Store:    store,
+			NewSession: func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{Engine: h.Engine, ProviderName: "mock", ModelName: "test"}, nil
+			},
+		},
+	}
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+
+	if err := mgr.streamReply(context.Background(), &fakeBotSender{}, sess, 42, llm.UserText("run tool")); err == nil {
+		t.Fatal("streamReply returned nil, want provider error")
+	}
+	failed, replaceCalls := store.stats()
+	if !failed || replaceCalls != 1 {
+		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
+	}
+	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	wantRoles := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleTool}
+	if len(msgs) != len(wantRoles) {
+		t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
+	}
+	for i, wantRole := range wantRoles {
+		if msgs[i].Role != wantRole {
+			t.Fatalf("message %d role = %s, want %s: %#v", i, msgs[i].Role, wantRole, msgs)
+		}
+	}
+}
+
+func TestStreamReply_LaterTurnReconcileRetainsPersistedSystemPrompt(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("first answer")
+	h.Provider.AddTextResponse("second answer")
+
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleUser, failAfter: 1}
+	defer store.Close()
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns:     5,
+			Store:        store,
+			SystemPrompt: "be helpful",
+			NewSession: func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{Engine: h.Engine, ProviderName: "mock", ModelName: "test"}, nil
+			},
+		},
+	}
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+	bot := &fakeBotSender{}
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first question")); err != nil {
+		t.Fatalf("first streamReply failed: %v", err)
+	}
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second question")); err != nil {
+		t.Fatalf("second streamReply failed: %v", err)
+	}
+
+	failed, replaceCalls := store.stats()
+	if !failed || replaceCalls != 1 {
+		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
+	}
+	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	systemCount := 0
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem && msg.TextContent == "be helpful" {
+			systemCount++
+		}
+	}
+	if systemCount != 1 {
+		t.Fatalf("system prompt count = %d, want 1: %#v", systemCount, msgs)
+	}
+	wantRoles := []llm.Role{llm.RoleSystem, llm.RoleUser, llm.RoleAssistant, llm.RoleUser, llm.RoleAssistant}
+	if len(msgs) != len(wantRoles) {
+		t.Fatalf("persisted message count = %d, want %d: %#v", len(msgs), len(wantRoles), msgs)
+	}
+	for i, wantRole := range wantRoles {
+		if msgs[i].Role != wantRole {
+			t.Fatalf("message %d role = %s, want %s: %#v", i, msgs[i].Role, wantRole, msgs)
+		}
+	}
+}
+
+func TestStreamReply_FailedReconcileRetriesSystemPromptNextTurn(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("first answer")
+	h.Provider.AddTextResponse("second answer")
+
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram.db")})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleSystem, failReplace: true}
+	defer store.Close()
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns:     5,
+			Store:        store,
+			SystemPrompt: "be helpful",
+			NewSession: func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{Engine: h.Engine, ProviderName: "mock", ModelName: "test"}, nil
+			},
+		},
+	}
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+	bot := &fakeBotSender{}
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("first question")); err != nil {
+		t.Fatalf("first streamReply failed: %v", err)
+	}
+	if sess.systemPromptPersisted {
+		t.Fatal("system prompt marked persisted after failed reconciliation")
+	}
+	store.mu.Lock()
+	store.failReplace = false
+	store.mu.Unlock()
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("second question")); err != nil {
+		t.Fatalf("second streamReply failed: %v", err)
+	}
+	if !sess.systemPromptPersisted {
+		t.Fatal("system prompt was not retried successfully on the next turn")
+	}
+	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	systemCount := 0
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem && msg.TextContent == "be helpful" {
+			systemCount++
+		}
+	}
+	if systemCount != 1 {
+		t.Fatalf("system prompt count = %d, want 1 after retry: %#v", systemCount, msgs)
+	}
+}
+
 func TestStreamReply_MarkdownRenderedAsHTML(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("**bold** and _italic_ and `code`")
@@ -940,10 +1240,11 @@ func TestStreamReply_StreamEventErrorReturnsError(t *testing.T) {
 
 func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "telegram-interrupt.db")
-	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleUser}
 	defer store.Close()
 
 	provider := newBlockingTextProvider("partial answer")
@@ -1010,6 +1311,13 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get messages: %v", err)
 	}
+	failed, replaceCalls := store.stats()
+	if !failed || replaceCalls != 1 {
+		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
+	}
+	if len(msgs) != 2 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != llm.RoleAssistant {
+		t.Fatalf("reconciled interrupted transcript = %#v, want user then partial assistant", msgs)
+	}
 
 	var foundAssistant bool
 	for _, msg := range msgs {
@@ -1027,12 +1335,74 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 	}
 }
 
-func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "telegram-stream-error.db")
-	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+func TestStreamReply_ReconcilesCanceledParentContext(t *testing.T) {
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "telegram-cancel.db")})
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleUser}
+	defer store.Close()
+	provider := newBlockingTextProvider("partial answer")
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			Store:    store,
+			NewSession: func(context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	replyDone := make(chan error, 1)
+	go func() {
+		replyDone <- mgr.streamReply(ctx, &fakeBotSender{}, sess, 42, llm.UserText("hi"))
+	}()
+	select {
+	case <-provider.firstChunkSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider never emitted first chunk")
+	}
+	cancel()
+	select {
+	case err := <-replyDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("streamReply error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("streamReply did not return after parent cancellation")
+	}
+
+	failed, replaceCalls := store.stats()
+	if !failed || replaceCalls != 1 {
+		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
+	}
+	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "partial answer" {
+		t.Fatalf("reconciled canceled transcript = %#v, want user then partial assistant", msgs)
+	}
+}
+
+func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telegram-stream-error.db")
+	baseStore, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	store := &failingTelegramTurnStore{Store: baseStore, failRole: llm.RoleAssistant}
 	defer store.Close()
 
 	provider := newErrorAfterTextProvider("partial answer", errors.New("upstream unavailable"))
@@ -1113,6 +1483,13 @@ func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
 	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
 	if err != nil {
 		t.Fatalf("get messages: %v", err)
+	}
+	failed, replaceCalls := store.stats()
+	if !failed || replaceCalls != 1 {
+		t.Fatalf("persistence repair stats = (failed=%v, replacements=%d), want (true, 1)", failed, replaceCalls)
+	}
+	if len(msgs) != 2 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hi" || msgs[1].Role != llm.RoleAssistant {
+		t.Fatalf("reconciled errored transcript = %#v, want user then partial assistant", msgs)
 	}
 
 	assistantPartialCount := 0
