@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	diff "github.com/shogoki/gotextdiff"
 )
 
@@ -26,14 +27,17 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, _ bool) {
 	if oldContent == newContent {
 		return
 	}
+	oldContent = terminaltext.EscapeControlsPreserveLayout(oldContent)
+	newContent = terminaltext.EscapeControlsPreserveLayout(newContent)
 
 	styles := DefaultStyles()
+	displayPath := terminaltext.EscapeControls(filePath)
 
 	// Print header
-	fmt.Printf("%s %s\n", styles.Bold.Render("Edit:"), filePath)
+	fmt.Printf("%s %s\n", styles.Bold.Render("Edit:"), displayPath)
 
-	// Generate unified diff using gotextdiff
-	diffBytes := diff.Diff(filePath, []byte(oldContent), filePath, []byte(newContent))
+	// Generate unified diff
+	diffBytes := diff.Diff(displayPath, []byte(oldContent), displayPath, []byte(newContent))
 	if len(diffBytes) == 0 {
 		return
 	}
@@ -826,15 +830,18 @@ func RenderDiffSegmentWithOperation(filePath, oldContent, newContent string, wid
 	if oldContent == newContent {
 		return ""
 	}
+	oldContent = terminaltext.EscapeControlsPreserveLayout(oldContent)
+	newContent = terminaltext.EscapeControlsPreserveLayout(newContent)
 
 	styles := DefaultStyles()
 	var b strings.Builder
+	displayPath := terminaltext.EscapeControls(filePath)
 
 	// Print header
-	b.WriteString(fmt.Sprintf("%s %s\n", styles.Bold.Render(diffSegmentHeader(operation)), filePath))
+	b.WriteString(fmt.Sprintf("%s %s\n", styles.Bold.Render(diffSegmentHeader(operation)), displayPath))
 
-	// Generate unified diff using gotextdiff
-	diffBytes := diff.Diff(filePath, []byte(oldContent), filePath, []byte(newContent))
+	// Generate unified diff
+	diffBytes := diff.Diff(displayPath, []byte(oldContent), displayPath, []byte(newContent))
 	if len(diffBytes) == 0 {
 		return ""
 	}

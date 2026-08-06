@@ -8,6 +8,7 @@ import (
 	"time"
 
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -233,9 +234,9 @@ func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 				continue
 			}
 		}
-		line := circle + " " + sanitizeTerminalText(item.tool.Name)
+		line := circle + " " + terminaltext.SanitizeSingleLine(item.tool.Name)
 		if item.tool.Info != "" {
-			line += " " + sanitizeTerminalText(item.tool.Info)
+			line += " " + terminaltext.SanitizeSingleLine(item.tool.Info)
 		}
 		preview = append(preview, line)
 		preview = append(preview, renderSubagentGuardian(item.tool.Guardian)...)
@@ -244,7 +245,7 @@ func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 	// Text is a fallback only when the subagent has not emitted any tool calls.
 	if len(toolsToShow) == 0 {
 		for _, line := range p.GetPreviewLines() {
-			line = sanitizeTerminalText(line)
+			line = terminaltext.SanitizeSingleLine(line)
 			if line != "" {
 				preview = append(preview, line)
 			}
@@ -277,12 +278,12 @@ func renderSubagentPlanPreview(args json.RawMessage, active bool, circle string,
 		}
 		line := fmt.Sprintf("%s %s · %d/%d completed", circle, label, summary.Completed, summary.Total)
 		if summary.CurrentStep != "" {
-			line += " · " + sanitizeTerminalText(summary.CurrentStep)
+			line += " · " + terminaltext.SanitizeSingleLine(summary.CurrentStep)
 		}
 		return []string{line}, true
 	}
 
-	lines := strings.Split(sanitizeTerminalText(snapshot.ChecklistText(active)), "\n")
+	lines := strings.Split(terminaltext.Sanitize(snapshot.ChecklistText(active)), "\n")
 	if len(lines) == 0 {
 		return nil, false
 	}
@@ -299,7 +300,7 @@ func renderSubagentGuardian(event *tools.GuardianEvent) []string {
 	if event == nil || strings.TrimSpace(event.Message) == "" {
 		return nil
 	}
-	message := strings.TrimSpace(sanitizeTerminalText(event.Message))
+	message := strings.TrimSpace(terminaltext.SanitizeSingleLine(event.Message))
 	message = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(message, "guardian:"), "Guardian:"))
 	return []string{"  Guardian: " + message}
 }

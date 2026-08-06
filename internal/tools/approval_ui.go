@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
@@ -439,19 +440,20 @@ func (m *ApprovalModel) View() tea.View {
 	b.WriteString(titleStyle.Render(m.title))
 	b.WriteString("\n")
 
-	// Path/command being requested
-	b.WriteString(pathStyle.Render(wordwrap.String(m.path, innerWidth)))
+	// Path/command being requested. Render controls visibly here: this text is
+	// security-relevant, so deleting bytes could misrepresent what will execute.
+	b.WriteString(pathStyle.Render(wordwrap.String(terminaltext.EscapeControls(m.path), innerWidth)))
 	b.WriteString("\n")
 
 	// Working directory (for shell commands with a non-default directory)
 	if m.workDir != "" {
-		b.WriteString(repoStyle.Render(fmt.Sprintf("in %s", m.workDir)))
+		b.WriteString(repoStyle.Render(fmt.Sprintf("in %s", terminaltext.EscapeControls(m.workDir))))
 		b.WriteString("\n")
 	}
 
 	// Repo info (if applicable)
 	if m.repoInfo != nil && m.repoInfo.IsRepo {
-		b.WriteString(repoStyle.Render(fmt.Sprintf("Git repository: %s", m.repoInfo.RepoName)))
+		b.WriteString(repoStyle.Render(fmt.Sprintf("Git repository: %s", terminaltext.EscapeControls(m.repoInfo.RepoName))))
 		b.WriteString("\n")
 	}
 
@@ -466,11 +468,11 @@ func (m *ApprovalModel) View() tea.View {
 		}
 
 		prefix := tuiutil.NumberedOptionPrefix(i, isSelected)
-		b.WriteString(style.Render(wordwrap.String(prefix+opt.Label, innerWidth)))
+		b.WriteString(style.Render(wordwrap.String(terminaltext.EscapeControls(prefix+opt.Label), innerWidth)))
 		b.WriteString("\n")
 
 		// Description (descStyle has PaddingLeft(3), so reduce wrap width)
-		b.WriteString(descStyle.Render(wordwrap.String(opt.Description, innerWidth-3)))
+		b.WriteString(descStyle.Render(wordwrap.String(terminaltext.EscapeControls(opt.Description), innerWidth-3)))
 		b.WriteString("\n")
 	}
 
