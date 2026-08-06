@@ -276,6 +276,58 @@ pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand
   pass(name);
 })());
 
+pendingAsyncTests.push((async function testExternalAuth401UsesTopLevelLogin() {
+  const name = 'external auth 401 redirects through a trusted login URL';
+  let redirectedTo = '';
+  const location = {
+    pathname: '/chat', href: 'https://example.test/chat/', origin: 'https://example.test',
+    protocol: 'https:', host: 'example.test',
+    assign(url) { redirectedTo = String(url); },
+  };
+  const testApp = loadAppCoreWith({
+    windowOverrides: {
+      location,
+      fetch: async () => new Response('', {
+        status: 401,
+        headers: { 'X-Term-LLM-Login-URL': '/jarvis-api/auth/google?source=web' },
+      }),
+    },
+  });
+
+  await testApp.apiFetch('/chat/v1/providers', {}, { retries: 0 });
+  if (redirectedTo !== 'https://example.test/jarvis-api/auth/google?source=web') {
+    fail(name, `redirected to ${JSON.stringify(redirectedTo)}`);
+    return;
+  }
+  pass(name);
+})());
+
+pendingAsyncTests.push((async function testExternalAuth401RejectsUnsafeLoginURL() {
+  const name = 'external auth redirect rejects unsafe URL schemes';
+  let redirects = 0;
+  const location = {
+    pathname: '/chat', href: 'https://example.test/chat/', origin: 'https://example.test',
+    protocol: 'https:', host: 'example.test',
+    assign() { redirects += 1; },
+  };
+  const testApp = loadAppCoreWith({
+    windowOverrides: {
+      location,
+      fetch: async () => new Response('', {
+        status: 401,
+        headers: { 'X-Term-LLM-Login-URL': 'javascript:alert(1)' },
+      }),
+    },
+  });
+
+  await testApp.apiFetch('/chat/v1/providers', {}, { retries: 0 });
+  if (redirects !== 0) {
+    fail(name, 'unsafe login URL triggered navigation');
+    return;
+  }
+  pass(name);
+})());
+
 (function testTokenCookieScopedToBasePathForWidgetsAndImages() {
   const name = 'syncTokenCookie scopes auth cookie to UI base path';
   const testApp = loadAppCore();
