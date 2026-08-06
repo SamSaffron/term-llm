@@ -233,9 +233,9 @@ func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 				continue
 			}
 		}
-		line := circle + " " + item.tool.Name
+		line := circle + " " + sanitizeTerminalText(item.tool.Name)
 		if item.tool.Info != "" {
-			line += " " + item.tool.Info
+			line += " " + sanitizeTerminalText(item.tool.Info)
 		}
 		preview = append(preview, line)
 		preview = append(preview, renderSubagentGuardian(item.tool.Guardian)...)
@@ -244,6 +244,7 @@ func BuildSubagentPreview(p *SubagentProgress, maxCalls int) []string {
 	// Text is a fallback only when the subagent has not emitted any tool calls.
 	if len(toolsToShow) == 0 {
 		for _, line := range p.GetPreviewLines() {
+			line = sanitizeTerminalText(line)
 			if line != "" {
 				preview = append(preview, line)
 			}
@@ -276,12 +277,12 @@ func renderSubagentPlanPreview(args json.RawMessage, active bool, circle string,
 		}
 		line := fmt.Sprintf("%s %s · %d/%d completed", circle, label, summary.Completed, summary.Total)
 		if summary.CurrentStep != "" {
-			line += " · " + summary.CurrentStep
+			line += " · " + sanitizeTerminalText(summary.CurrentStep)
 		}
 		return []string{line}, true
 	}
 
-	lines := strings.Split(snapshot.ChecklistText(active), "\n")
+	lines := strings.Split(sanitizeTerminalText(snapshot.ChecklistText(active)), "\n")
 	if len(lines) == 0 {
 		return nil, false
 	}
@@ -298,7 +299,7 @@ func renderSubagentGuardian(event *tools.GuardianEvent) []string {
 	if event == nil || strings.TrimSpace(event.Message) == "" {
 		return nil
 	}
-	message := strings.TrimSpace(event.Message)
+	message := strings.TrimSpace(sanitizeTerminalText(event.Message))
 	message = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(message, "guardian:"), "Guardian:"))
 	return []string{"  Guardian: " + message}
 }

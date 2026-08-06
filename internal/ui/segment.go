@@ -260,11 +260,11 @@ func buildExpandedShellInfo(args tools.ShellArgs) string {
 	}
 	var b strings.Builder
 	if args.Description != "" {
-		desc := truncateShellDescription(args.Description)
+		desc := truncateShellDescription(sanitizeTerminalText(args.Description))
 		b.WriteString(desc)
 		b.WriteString("\n")
 	}
-	b.WriteString(args.Command)
+	b.WriteString(sanitizeTerminalText(args.Command))
 	if len(args.Env) > 0 {
 		keys := make([]string, 0, len(args.Env))
 		for key := range args.Env {
@@ -273,9 +273,9 @@ func buildExpandedShellInfo(args tools.ShellArgs) string {
 		sort.Strings(keys)
 		for _, key := range keys {
 			b.WriteString("\n  ")
-			b.WriteString(key)
+			b.WriteString(sanitizeTerminalText(key))
 			b.WriteString("=")
-			b.WriteString(args.Env[key])
+			b.WriteString(sanitizeTerminalText(args.Env[key]))
 		}
 	}
 	return b.String()
@@ -291,7 +291,7 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 	if seg == nil || seg.Guardian == nil || strings.TrimSpace(seg.Guardian.Message) == "" {
 		return base
 	}
-	message := strings.TrimSpace(seg.Guardian.Message)
+	message := strings.TrimSpace(sanitizeTerminalText(seg.Guardian.Message))
 	message = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(message, "guardian:"), "Guardian:"))
 	prefix := "  Guardian: "
 	prefixWidth := runewidth.StringWidth(prefix)
@@ -316,7 +316,8 @@ func renderToolSegmentBase(seg *Segment, wavePos int, width int, expanded bool) 
 			return rendered
 		}
 	}
-	info := seg.ToolInfo
+	toolName := sanitizeTerminalText(seg.ToolName)
+	info := sanitizeTerminalText(seg.ToolInfo)
 	expandedShellInfo := ""
 	if expanded && seg.ToolName == "shell" && len(seg.ToolArgs) > 0 {
 		var args tools.ShellArgs
@@ -336,18 +337,18 @@ func renderToolSegmentBase(seg *Segment, wavePos int, width int, expanded bool) 
 	case ToolPending:
 		// spawn_agent tools with progress show stats instead of wave animation
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return appendToolExpandHint(PendingCircle()+" "+renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel), seg, expanded)
+			return appendToolExpandHint(PendingCircle()+" "+renderSpawnAgentStats(info, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, sanitizeTerminalText(seg.SubagentProvider), sanitizeTerminalText(seg.SubagentModel)), seg, expanded)
 		}
 		// Wave animation for other pending tools
 		activeText := ""
 		if expandedShellInfo != "" {
 			if info != "" {
-				activeText = seg.ToolName + " " + info
+				activeText = toolName + " " + info
 			} else {
-				activeText = seg.ToolName
+				activeText = toolName
 			}
 		} else {
-			phase := FormatToolPhase(seg.ToolName, info)
+			phase := FormatToolPhase(toolName, info)
 			activeText = phase.Active
 		}
 		if renderWidth > 0 {
@@ -368,25 +369,25 @@ func renderToolSegmentBase(seg *Segment, wavePos int, width int, expanded bool) 
 	case ToolSuccess:
 		// spawn_agent shows final stats on success
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return appendToolExpandHint(SuccessCircle()+" "+renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel), seg, expanded)
+			return appendToolExpandHint(SuccessCircle()+" "+renderSpawnAgentStats(info, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, sanitizeTerminalText(seg.SubagentProvider), sanitizeTerminalText(seg.SubagentModel)), seg, expanded)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
-		info = truncateToolInfo(seg.ToolName, info, renderWidth)
+		info = truncateToolInfo(toolName, info, renderWidth)
 		if info != "" {
-			return appendToolExpandHint(SuccessCircle()+" "+seg.ToolName+" "+paramStyle.Render(info), seg, expanded)
+			return appendToolExpandHint(SuccessCircle()+" "+toolName+" "+paramStyle.Render(info), seg, expanded)
 		}
-		return appendToolExpandHint(SuccessCircle()+" "+seg.ToolName, seg, expanded)
+		return appendToolExpandHint(SuccessCircle()+" "+toolName, seg, expanded)
 	case ToolError:
 		// spawn_agent shows stats even on error
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return appendToolExpandHint(ErrorCircle()+" "+renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel), seg, expanded)
+			return appendToolExpandHint(ErrorCircle()+" "+renderSpawnAgentStats(info, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, sanitizeTerminalText(seg.SubagentProvider), sanitizeTerminalText(seg.SubagentModel)), seg, expanded)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
-		info = truncateToolInfo(seg.ToolName, info, renderWidth)
+		info = truncateToolInfo(toolName, info, renderWidth)
 		if info != "" {
-			return appendToolExpandHint(ErrorCircle()+" "+seg.ToolName+" "+paramStyle.Render(info), seg, expanded)
+			return appendToolExpandHint(ErrorCircle()+" "+toolName+" "+paramStyle.Render(info), seg, expanded)
 		}
-		return appendToolExpandHint(ErrorCircle()+" "+seg.ToolName, seg, expanded)
+		return appendToolExpandHint(ErrorCircle()+" "+toolName, seg, expanded)
 	}
 	return ""
 }
@@ -405,7 +406,7 @@ func renderUpdatePlanChecklist(args json.RawMessage, running bool, width int) (s
 	if err != nil {
 		return "", false
 	}
-	rendered := snapshot.ChecklistText(running)
+	rendered := sanitizeTerminalText(snapshot.ChecklistText(running))
 	const gutter = "▌ "
 	gutterWidth := runewidth.StringWidth(gutter)
 	if width > 0 && width <= gutterWidth {
@@ -462,25 +463,26 @@ func RenderToolCallFromPartWithStatus(tc *llm.ToolCall, width int, expanded bool
 		circle = ErrorCircle()
 	}
 
+	toolName := sanitizeTerminalText(tc.Name)
 	if expanded && tc.Name == "shell" && len(tc.Arguments) > 0 {
 		var args tools.ShellArgs
 		if err := json.Unmarshal(tc.Arguments, &args); err == nil {
 			info := buildExpandedShellInfo(args)
 			if info != "" {
-				return circle + " " + tc.Name + " " + paramStyle.Render(info)
+				return circle + " " + toolName + " " + paramStyle.Render(info)
 			}
 		}
 	}
 
-	info := tc.ToolInfo
+	info := sanitizeTerminalText(tc.ToolInfo)
 	if info == "" {
-		info = llm.ExtractToolInfo(*tc)
+		info = sanitizeTerminalText(llm.ExtractToolInfo(*tc))
 	}
-	info = truncateToolInfo(tc.Name, info, width)
+	info = truncateToolInfo(toolName, info, width)
 	if info != "" {
-		return circle + " " + tc.Name + " " + paramStyle.Render(info)
+		return circle + " " + toolName + " " + paramStyle.Render(info)
 	}
-	return circle + " " + tc.Name
+	return circle + " " + toolName
 }
 
 // renderSpawnAgentStats renders the stats line for a spawn_agent tool.
@@ -934,7 +936,7 @@ func renderSegmentsWithLeadingState(leading *Segment, leadingPlan bool, segments
 			if seg.ToolName == "spawn_agent" && (seg.SubagentPrompt != "" || len(subagentPreview) > 0) {
 				var sb strings.Builder
 				sb.WriteString(rendered)
-				for _, line := range renderSubagentPromptLines(seg.SubagentPrompt, width, expanded) {
+				for _, line := range renderSubagentPromptLines(sanitizeTerminalText(seg.SubagentPrompt), width, expanded) {
 					sb.WriteString("\n")
 					sb.WriteString(subagentPromptPrefix)
 					sb.WriteString(line)
