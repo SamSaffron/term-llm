@@ -818,6 +818,50 @@ func TestChunkStreaming(t *testing.T) {
 	}
 }
 
+type outboundLimitDataChannel struct {
+	writes int
+}
+
+func (d *outboundLimitDataChannel) ReadDataChannel([]byte) (int, bool, error) {
+	return 0, false, io.EOF
+}
+
+func (d *outboundLimitDataChannel) WriteDataChannel(data []byte, _ bool) (int, error) {
+	d.writes++
+	return len(data), nil
+}
+
+func (d *outboundLimitDataChannel) Close() error { return nil }
+
+func TestWriteDataChannelTextEnforcesOutboundFrameLimit(t *testing.T) {
+	dc := &outboundLimitDataChannel{}
+	if _, err := writeDataChannelText(dc, strings.Repeat("a", maxOutboundFrameBytes)); err != nil {
+		t.Fatalf("frame at limit: %v", err)
+	}
+	if _, err := writeDataChannelText(dc, strings.Repeat("a", maxOutboundFrameBytes+1)); err == nil {
+		t.Fatal("oversized outbound frame was accepted")
+	}
+	if dc.writes != 1 {
+		t.Fatalf("data channel writes = %d, want only the at-limit frame", dc.writes)
+	}
+}
+
+func TestChunkFramesRemainBelowOutboundLimitAfterJSONEscaping(t *testing.T) {
+	largest := 0
+	err := sendChunkFrames(func(frame string) error {
+		if len(frame) > largest {
+			largest = len(frame)
+		}
+		return nil
+	}, "response-id", strings.Repeat("\x00", maxChunkDataBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if largest > maxOutboundFrameBytes {
+		t.Fatalf("escaped chunk frame = %d bytes, limit = %d", largest, maxOutboundFrameBytes)
+	}
+}
+
 func TestChunkWriter_SplitsLargePayloadInto16KFrames(t *testing.T) {
 	large := strings.Repeat("🙂", maxChunkDataBytes) + "tail"
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -425,8 +425,8 @@
   function patchedFetch(url, options) {
     const urlStr = typeof url === 'string' ? url : url.toString();
     if (dataChannel && dataChannel.readyState === 'open' && isAPIPath(urlStr)) {
-      // Only route string bodies (all term-llm API calls use JSON strings).
-      if (!options || options.body === undefined || typeof options.body === 'string') {
+      // Bodies over 100 KiB expand again inside one data-channel frame, so use HTTPS.
+      if ((!options || options.body === undefined || typeof options.body === 'string') && (!options?.body || new Blob([options.body]).size <= 100 * 1024)) {
         return webrtcFetch(urlStr, options || {});
       }
     }

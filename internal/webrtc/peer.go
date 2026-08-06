@@ -33,8 +33,9 @@ import (
 )
 
 const (
-	maxFrameBytes       = 10 * 1024 * 1024 // 10 MB
-	defaultSetupTimeout = 30 * time.Second
+	maxFrameBytes         = 10 * 1024 * 1024 // 10 MB
+	maxOutboundFrameBytes = 128 * 1024       // safely below the advertised 256 KiB SCTP message size
+	defaultSetupTimeout   = 30 * time.Second
 )
 
 // Cap per-channel HTTP dispatches so one client cannot create an unbounded
@@ -110,6 +111,13 @@ type dataChannelConn interface {
 	ReadDataChannel([]byte) (int, bool, error)
 	WriteDataChannel([]byte, bool) (int, error)
 	Close() error
+}
+
+func writeDataChannelText(dc dataChannelConn, text string) (int, error) {
+	if len(text) > maxOutboundFrameBytes {
+		return 0, fmt.Errorf("webrtc: outbound data channel frame is %d bytes, limit is %d", len(text), maxOutboundFrameBytes)
+	}
+	return dc.WriteDataChannel([]byte(text), true)
 }
 
 const maxChunkDataBytes = 16 * 1024
@@ -622,7 +630,7 @@ func (p *peer) runDataChannel(ctx context.Context, dc dataChannelConn, closeTran
 	send := func(text string) error {
 		sendMu.Lock()
 		defer sendMu.Unlock()
-		_, err := dc.WriteDataChannel([]byte(text), true)
+		_, err := writeDataChannelText(dc, text)
 		if err != nil {
 			stopDataChannel()
 		} else {
