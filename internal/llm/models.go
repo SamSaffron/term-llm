@@ -23,6 +23,11 @@ type ModelEntry struct {
 // may intentionally omit entries and populate model IDs from their live cache.
 // When adding a curated model, include InputLimit/OutputLimit if known.
 var ProviderModels = map[string][]ModelEntry{
+	"debug": {
+		// Hermetic automatic-compaction scenario: a 20k context with a 1k
+		// output reserve and deterministic usage above the 90% soft threshold.
+		{ID: "compaction", InputLimit: 19_000, OutputLimit: 1_000},
+	},
 	"anthropic": {
 		// Claude 4.x/5. Reasoning-effort metadata is provider-level below:
 		// Fable and Opus support low/medium/high/xhigh/max; Sonnet supports low/medium/high.

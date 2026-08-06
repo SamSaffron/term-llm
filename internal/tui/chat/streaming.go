@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -224,15 +225,12 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 	m.engine.SetTurnCompletedCallback(turnCompleted)
 }
 
-func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.CompactionCallback {
+func (m *Model) streamCompactionCallback(streamSess *session.Session, generation uint64) llm.CompactionCallback {
 	streamSessionID := ""
 	if streamSess != nil {
 		streamSessionID = streamSess.ID
 	}
 	return func(ctx context.Context, result *llm.CompactionResult) error {
-		if streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID) {
-			return nil
-		}
 		m.messagesMu.Lock()
 		full := append([]session.Message(nil), m.messages...)
 		m.messagesMu.Unlock()
@@ -240,40 +238,154 @@ func (m *Model) streamCompactionCallback(streamSess *session.Session) llm.Compac
 		if err != nil {
 			return err
 		}
-		m.messagesMu.Lock()
-		m.messages = updated
-		m.compactionIdx = activeStart
-		m.messagesMu.Unlock()
-		if refreshed != nil {
-			m.sess = refreshed
-		}
-		if result != nil && m.program != nil {
-			m.program.Send(compactionUsageMsg{
-				sessionID: streamSessionID,
-				model:     result.Model,
-				usage:     result.Usage,
-			})
-		}
-		if m.engine != nil {
-			m.engine.SetContextEstimateBaseline(0, 0)
+
+		msg := compactionAppliedMsg{
+			generation:  generation,
+			sessionID:   streamSessionID,
+			messages:    updated,
+			activeStart: activeStart,
+			refreshed:   refreshed,
 		}
 		if result != nil {
+			// Streaming context has its own mutex and must move immediately. Later
+			// persistence callbacks extend this compacted base with assistant/tool
+			// work produced after the boundary; replaying a frozen snapshot on the
+			// UI goroutine would erase those additions.
 			m.setStreamingContextMessages(result.ActiveMessages())
+			msg.model = result.Model
+			msg.usage = result.Usage
 		}
-		m.invalidateHistoryCache()
-		// Any pending assistant row that snapshot had upserted is now stale:
-		// compaction rewrote the message table. Clear the tracking so the
-		// next snapshot/response inserts fresh instead of trying to update
-		// a row that no longer exists.
-		m.pendingMu.Lock()
-		m.pendingAssistantMsgID = 0
-		m.pendingAssistantTextSet = false
-		m.pendingAssistantSnapshot = llm.Message{}
-		m.pendingAssistantSnapshotSet = false
-		m.completedAssistantTurns = 0
-		m.pendingMu.Unlock()
+		// Snapshot persistence may already own an assistant row from before the
+		// boundary. Clear that mutex-protected identity immediately so the response
+		// callback inserts the loose tool call on the compacted side before its
+		// result is persisted.
+		m.resetPendingAssistantAfterCompaction()
+		m.queueCompactionForUI(msg)
 		return nil
 	}
+}
+
+func (m *Model) queueCompactionForUI(msg compactionAppliedMsg) {
+	m.compactionApplyMu.Lock()
+	m.pendingCompactionApplies = append(m.pendingCompactionApplies, msg)
+	m.compactionApplyMu.Unlock()
+}
+
+func (m *Model) discardPendingCompactionsBeforeGeneration(generation uint64) {
+	m.compactionApplyMu.Lock()
+	kept := m.pendingCompactionApplies[:0]
+	for _, msg := range m.pendingCompactionApplies {
+		if msg.generation >= generation {
+			kept = append(kept, msg)
+		}
+	}
+	m.pendingCompactionApplies = kept
+	m.compactionApplyMu.Unlock()
+}
+
+func (m *Model) takePendingCompactions(generation uint64, all bool) []compactionAppliedMsg {
+	m.compactionApplyMu.Lock()
+	defer m.compactionApplyMu.Unlock()
+
+	pending := m.pendingCompactionApplies
+	kept := pending[:0]
+	var taken []compactionAppliedMsg
+	for _, msg := range pending {
+		switch {
+		case msg.generation < generation:
+			// A terminal event from the old stream was ignored after a new stream
+			// started. Its durable state belongs to that old generation and must not
+			// leak into this one.
+			continue
+		case msg.generation == generation && (all || len(taken) == 0):
+			taken = append(taken, msg)
+		default:
+			kept = append(kept, msg)
+		}
+	}
+	m.pendingCompactionApplies = kept
+	return taken
+}
+
+func (m *Model) applyNextPendingCompactionToUI(generation uint64) bool {
+	applied := false
+	for _, pending := range m.takePendingCompactions(generation, false) {
+		m.applyCompactionToUI(pending)
+		applied = true
+	}
+	return applied
+}
+
+func (m *Model) applyAllPendingCompactionsToUI(generation uint64) {
+	for _, pending := range m.takePendingCompactions(generation, true) {
+		m.applyCompactionToUI(pending)
+	}
+}
+
+func (m *Model) applyCompactionToUI(msg compactionAppliedMsg) {
+	if msg.sessionID != "" && (m.sess == nil || m.sess.ID != msg.sessionID) {
+		return
+	}
+	m.messagesMu.Lock()
+	m.messages = msg.messages
+	m.compactionIdx = msg.activeStart
+	m.messagesMu.Unlock()
+	if msg.refreshed != nil {
+		m.sess = msg.refreshed
+	}
+	if m.engine != nil {
+		m.engine.SetContextEstimateBaseline(0, 0)
+	}
+	m.invalidateHistoryCache()
+
+	if !msg.usage.BillableCountersZero() {
+		m.recordCompactionUsage(context.Background(), msg.sessionID, msg.model, msg.usage)
+	}
+}
+
+func (m *Model) resetLivePresentationAfterCompaction() {
+	// The callback's in-memory snapshot can lag response/tool persistence from the
+	// turn that crossed the boundary. Reload before clearing the tracker so history
+	// already owns those pre-boundary rows; otherwise the marker appears above the
+	// current turn and jumps downward when StreamEventDone performs the same reload.
+	if m.store != nil && m.sess != nil {
+		if loaded, compactionIdx, err := loadSessionMessagesForScrollback(context.Background(), m.store, m.sess); err != nil {
+			slog.Warn("reload TUI scrollback at compaction boundary failed", "error", err)
+		} else {
+			m.messagesMu.Lock()
+			m.messages = loaded
+			m.compactionIdx = compactionIdx
+			m.messagesMu.Unlock()
+			m.invalidateHistoryCache()
+		}
+	}
+
+	// History now owns everything before the boundary. The live tracker must only
+	// contain continuation events; retaining its earlier segments duplicates the
+	// pre-compaction tool/text rows below the durable marker and makes the marker
+	// jump when StreamEventDone reloads persisted history.
+	m.resetTracker()
+	m.currentResponse.Reset()
+	m.resetCurrentReasoning()
+	if m.smoothBuffer != nil {
+		m.smoothBuffer.Reset()
+	}
+	m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
+	m.smoothTickPending = false
+	m.viewCache.completedStream = ""
+	m.resetAltScreenStreamingAppendCache()
+	m.bumpContentVersion()
+}
+
+func (m *Model) resetPendingAssistantAfterCompaction() {
+	// Compaction rewrites the message table, so any snapshot-upsert row is stale.
+	m.pendingMu.Lock()
+	m.pendingAssistantMsgID = 0
+	m.pendingAssistantTextSet = false
+	m.pendingAssistantSnapshot = llm.Message{}
+	m.pendingAssistantSnapshotSet = false
+	m.completedAssistantTurns = 0
+	m.pendingMu.Unlock()
 }
 
 func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
@@ -587,6 +699,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 func (m *Model) startStream(content string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.rootContext())
 	m.streamGeneration++
+	m.discardPendingCompactionsBeforeGeneration(m.streamGeneration)
 	streamGeneration := m.streamGeneration
 	m.streamCancelFunc = cancel
 	m.setStreamCancelRequested(false)
@@ -692,7 +805,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// Set up compaction callback to update in-memory state and persist.
 		// This runs on the engine goroutine, so we protect m.messages with a mutex.
 		streamSess := m.sess
-		compactionCB := m.streamCompactionCallback(streamSess)
+		compactionCB := m.streamCompactionCallback(streamSess, streamGeneration)
 		if m.runner == nil {
 			m.engine.SetCompactionCallback(compactionCB)
 		}

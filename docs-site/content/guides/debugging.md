@@ -10,6 +10,32 @@ next:
 ---
 Use `--debug` to print provider-level diagnostics (requests, model info, etc.). Use `--debug-raw` for a timestamped, raw view of tool calls, tool results, and reconstructed requests. Raw debug is most useful for troubleshooting tool calling and search.
 
+### Exercise automatic compaction locally
+
+The `debug:compaction` provider is a hermetic, zero-cost TUI scenario with a 20k context window. Its deterministic first-turn usage crosses the default compaction threshold; the next turn emits a short internal brief and continues from the compacted context. Start it, send any seed message, then send a second message:
+
+```bash
+term-llm chat --provider debug:compaction
+```
+
+The second turn's status line should progress through the compaction phases. Normal chat should retain a `Context compacted` boundary immediately before the continuation; `Ctrl+O` shows the summary and retained-tail details. No provider credentials, local model, or special configuration are required.
+
+To exercise tool ordering across the boundary in one agent turn, enable the harmless `glob` tool and send exactly `run the tool compaction probe`:
+
+```bash
+term-llm chat --provider debug:compaction --tools glob
+```
+
+The deterministic sequence is three `glob` calls, automatic compaction, three more `glob` calls, then a completion message. This is intended for live TUI recordings and regression tests of tool/compaction placement.
+
+For a non-interactive smoke test, use:
+
+```bash
+term-llm chat --provider debug:compaction \
+  --auto-send "seed the compaction probe" \
+  --auto-send "continue after compaction"
+```
+
 ### Trace agy-bin generation requests
 
 To inspect the exact generation payload that `agy` sends through term-llm's compatibility proxy, set `TERM_LLM_AGY_PROXY_TRACE_FILE` to a JSONL file in a private directory:

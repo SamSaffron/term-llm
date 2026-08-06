@@ -216,10 +216,14 @@ func sessionIDOf(sess *session.Session) string {
 	return sess.ID
 }
 
-type compactionUsageMsg struct {
-	sessionID string
-	model     string
-	usage     llm.Usage
+type compactionAppliedMsg struct {
+	generation  uint64
+	sessionID   string
+	messages    []session.Message
+	activeStart int
+	refreshed   *session.Session
+	model       string
+	usage       llm.Usage
 }
 
 func (m *Model) recordGuardianUsage(ctx context.Context, model string, u llm.Usage) {
