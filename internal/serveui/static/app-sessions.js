@@ -122,6 +122,8 @@ const switchToDraftSession = async (options = {}) => {
   }
   state.activeSessionId = '';
   state.draftSessionActive = true;
+  state.pendingBranch = null;
+  if (elements.branchTreeBtn) elements.branchTreeBtn.hidden = true;
   updateURL('');
 
   if (options.clearComposer) {
@@ -266,6 +268,11 @@ const switchToSession = async (sessionId, options = {}) => {
     }
   }
   if (!session) return null;
+  if (state.pendingBranch && state.pendingBranch.sourceSessionId !== nextId) {
+    app.cancelPendingBranch?.();
+  }
+  state.branchTree = null;
+  if (elements.branchTreeBtn) elements.branchTreeBtn.hidden = true;
 
   const switchGeneration = (Number(state.sessionSwitchGeneration || 0) + 1);
   state.sessionSwitchGeneration = switchGeneration;
@@ -344,6 +351,7 @@ const switchToSession = async (sessionId, options = {}) => {
   if (options.closeSidebar !== false) {
     closeSidebarIfMobile();
   }
+  void app.refreshBranchTree?.({ render: false });
   return session;
 };
 
@@ -1130,6 +1138,7 @@ const initialize = async () => {
     // ordinary cadence instead of immediately reconciling the same status and
     // triggering duplicate selected-session state work during first paint.
     app.refreshSidebarStatusPoll();
+    void app.refreshBranchTree?.({ render: false });
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
       renderMessages(true);

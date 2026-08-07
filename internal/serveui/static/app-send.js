@@ -129,7 +129,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  if (!batchingFollowUps && /^\/(goal|mcp|model|new)$/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/(goal|mcp|model|new|tree)$/i.test(prompt)) {
     const command = prompt.toLowerCase();
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
@@ -146,6 +146,9 @@ const sendMessage = async (options = {}) => {
         break;
       case '/new':
         await app.createAndSwitchToFreshSession?.();
+        break;
+      case '/tree':
+        await app.openBranchTree?.();
         break;
     }
     return;
@@ -225,7 +228,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  if (!batchingFollowUps && /^\/(compact|compress)$/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/compact$/i.test(prompt)) {
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
     app.autoGrowPrompt();
@@ -273,7 +276,37 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
+  const contextOperation = state.branchContextOperation;
+  if (!batchingFollowUps && contextOperation?.sessionId === state.activeSessionId && !options._releaseBranchContextSend) {
+    if (contextOperation.phase === 'creating') {
+      app.showToast?.('Creating the new conversation path…', { id: 'conversation-branch' });
+      return;
+    }
+    if (state.branchContextQueuedSend) {
+      app.showToast?.('A message is already queued for this path.', { id: 'branch-context-queue', tone: 'warning' });
+      return;
+    }
+    state.branchContextQueuedSend = {
+      sessionId: state.activeSessionId,
+      prompt,
+      attachments: pendingAttachments.map((attachment) => cloneAttachmentForMessage(attachment))
+    };
+    elements.promptInput.value = '';
+    state.attachments = [];
+    renderAttachments();
+    app.autoGrowPrompt?.();
+    const active = getActiveSession();
+    if (active?.branchContextStatus) active.branchContextStatus.queued = true;
+    app.renderMessages?.(false);
+    return;
+  }
+
   let session = getActiveSession();
+  const branchIntent = !batchingFollowUps && session && !state.draftSessionActive
+    && state.pendingBranch?.sourceSessionId === session.id
+    ? { ...state.pendingBranch }
+    : null;
+  const branchSourceSession = branchIntent ? session : null;
   const skillInvocation = !batchingFollowUps && pendingAttachments.length === 0
     ? app.matchSkillInvocation?.(prompt)
     : null;
@@ -290,6 +323,10 @@ const sendMessage = async (options = {}) => {
     && !state.draftSessionActive
     && (session.activeResponseId || progressEntry?.serverActiveRun || ownsLiveStream)
   );
+  if (branchIntent && activeSessionBusy) {
+    app.showToast?.('Cannot branch while work is active.', { id: 'conversation-branch', tone: 'warning' });
+    return;
+  }
   if (skillInvocation && session && !state.draftSessionActive) {
     if (activeSessionBusy && skillInvocation.execution !== 'isolated') {
       app.queueMainSkillInvocation(session, skillInvocation);
@@ -480,7 +517,7 @@ const sendMessage = async (options = {}) => {
   setStreaming(true);
   options._onTransportStarted?.();
   app.refreshSidebarStatusPoll?.();
-  const streamState = createResponseStreamState(session);
+  let streamState = createResponseStreamState(session);
   let previousResponseId = '';
   try {
     const input = messageSpecs.map((spec, index) => {
@@ -504,12 +541,24 @@ const sendMessage = async (options = {}) => {
       client_message_id: userMessage.clientMessageId,
       input
     };
-    previousResponseId = String(session.lastResponseId || '').trim();
+    previousResponseId = branchIntent
+      ? String(branchIntent.previousResponseId || `resp_msg_${Number(branchIntent.anchorMessageId) || 0}`).trim()
+      : String(session.lastResponseId || '').trim();
     if (!previousResponseId && session.worktreeDir) {
       body.worktree_dir = session.worktreeDir;
     }
     if (previousResponseId) {
       body.previous_response_id = previousResponseId;
+    }
+    if (branchIntent) {
+      body.branch = true;
+      body.expected_rev = Math.max(0, Number(branchIntent.expectedRev) || 0);
+      body.idempotency_key = String(branchIntent.idempotencyKey || userMessage.responseRequestId).trim();
+      const branchContextMode = String(branchIntent.branchContextMode || 'clean').trim();
+      body.branch_context = {
+        mode: branchContextMode,
+        ...(branchContextMode === 'focused' ? { focus: String(branchIntent.branchContextFocus || '').trim() } : {})
+      };
     }
     app.canonicalizeSelectedModelEffort();
     const currentProvider = session.provider || '';
@@ -576,13 +625,35 @@ const sendMessage = async (options = {}) => {
     }, { policy: app.API_FETCH_POLICY.idempotentMutation, retries: 0, timeoutMs: 0 });
     controller._heartbeatStaleThreshold = HEARTBEAT_STALE_THRESHOLD;
     const headerResponseId = String(response.headers.get('x-response-id') || '').trim();
+    const authoritativeSessionId = String(response.headers.get('x-session-id') || '').trim();
+    const copiedBranchAnchorId = String(response.headers.get('x-branch-anchor-id') || '').trim();
     const headerSessionNumber = Number(response.headers.get('x-session-number') || 0);
+    if (!response.ok) {
+      throw await normalizeError(response);
+    }
+    if (branchIntent) {
+      if (!authoritativeSessionId || authoritativeSessionId === branchSourceSession?.id) {
+        throw new Error('Branch response did not identify a child session.');
+      }
+      clearDraftMessageForSession(branchSourceSession.id);
+      session = app.adoptBranchedSessionOwnership?.(branchSourceSession, authoritativeSessionId, userMessages, copiedBranchAnchorId) || session;
+      streamState = createResponseStreamState(session);
+      attachResponseStream(session, headerResponseId, controller);
+      if (headerResponseId) setActiveResponseTracking(session, headerResponseId, 0);
+      try {
+        await app.refreshActiveSessionMessagesFromServer?.(session, {
+          force: true, useEtag: false, forceScroll: true, reason: 'branch-ownership'
+        });
+      } catch (_err) {
+        app.showToast?.('New path created, but its notes have not loaded yet. Retrying…', { id: 'branch-notes-refresh', tone: 'warning' });
+        setTimeout(() => app.refreshActiveSessionMessagesFromServer?.(session, {
+          force: true, useEtag: false, forceScroll: false, reason: 'branch-notes-retry'
+        }).catch(() => {}), 1000);
+      }
+    }
     if (headerSessionNumber > 0 && session.number !== headerSessionNumber) {
       session.number = headerSessionNumber;
       updateURL(sessionSlug(session));
-    }
-    if (!response.ok) {
-      throw await normalizeError(response);
     }
     setConnectionState('', '');
     clearDraftMessageForSession(session.id);
@@ -819,11 +890,44 @@ const sendMessage = async (options = {}) => {
   }
 };
 
+const releaseBranchContextQueuedSend = (sessionId) => {
+  const queued = state.branchContextQueuedSend;
+  if (!queued || queued.sessionId !== sessionId || state.activeSessionId !== sessionId) return false;
+  state.branchContextQueuedSend = null;
+  const newerDraft = String(elements.promptInput.value || '');
+  const newerAttachments = [...state.attachments];
+  void sendMessage({
+    prompt: queued.prompt,
+    attachments: queued.attachments,
+    _releaseBranchContextSend: true,
+    _onTransportStarted() {
+      elements.promptInput.value = newerDraft;
+      state.attachments = newerAttachments;
+      renderAttachments();
+      app.autoGrowPrompt?.();
+    }
+  });
+  return true;
+};
+
+const restoreBranchContextQueuedSend = (sessionId) => {
+  const queued = state.branchContextQueuedSend;
+  if (!queued || queued.sessionId !== sessionId) return false;
+  state.branchContextQueuedSend = null;
+  if (state.activeSessionId !== sessionId) return false;
+  const current = String(elements.promptInput.value || '').trim();
+  elements.promptInput.value = current ? `${queued.prompt}\n\n${current}` : queued.prompt;
+  state.attachments = [...queued.attachments, ...state.attachments];
+  renderAttachments();
+  app.autoGrowPrompt?.();
+  return true;
+};
 
 restoreLatestDraftMessage();
 
 Object.assign(app, {
   stageDraftMessage, removeDraftMessage, clearDraftMessageForSession,
   restoreLatestDraftMessage, restoreDraftMessageForSession, sendMessage,
+  releaseBranchContextQueuedSend, restoreBranchContextQueuedSend,
 });
 })();

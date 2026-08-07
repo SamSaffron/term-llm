@@ -399,3 +399,25 @@ func TestMessageBlockRenderer_UserAgentMentionContextIsStructurallyHidden(t *tes
 		t.Fatalf("sticky user preview leaked provider context or lost visible text: %q", block.UserPreview)
 	}
 }
+
+func TestMessageBlockRenderer_PathNoteUsesCompactPlaceholder(t *testing.T) {
+	renderer := NewMessageBlockRenderer(100, nil, false)
+	msg := session.NewPathNoteMessage("child", "- Finding one.\n- Finding two.", llm.PathNoteProvenance{
+		SourceSessionID: "source",
+		ReadFiles:       []string{"a.go"},
+		ModifiedFiles:   []string{"b.go"},
+	}, 2)
+	block := renderer.Render(msg)
+	plain := ui.StripANSI(block.Rendered)
+	if want := "● Path notes from an earlier path · Ctrl+O to inspect"; !strings.Contains(plain, want) {
+		t.Fatalf("placeholder missing %q: %q", want, plain)
+	}
+	for _, unwanted := range []string{"Finding one", "not authoritative", "2 lines", "2 files"} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("placeholder contains unwanted detail %q: %q", unwanted, plain)
+		}
+	}
+	if !block.HasSegmentTypes || block.FirstSegmentType != ui.SegmentTool || block.LastSegmentType != ui.SegmentTool {
+		t.Fatalf("path-note placeholder segment type = (%v, %v, %v), want tool-like activity", block.HasSegmentTypes, block.FirstSegmentType, block.LastSegmentType)
+	}
+}

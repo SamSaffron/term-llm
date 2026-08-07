@@ -70,8 +70,8 @@ promptInput.dispatch('input');
 assert(!slashCommandMenu.hidden, 'typing / did not show slash commands');
 assert(slashCommandMenu.children.length === 9, 'expected all matching slash commands');
 const commandNames = slashCommandMenu.children.map((option) => option.children[0].textContent);
-assert(JSON.stringify(commandNames) === JSON.stringify(['/compact', '/compress', '/goal', '/mcp', '/model', '/new', '/redo', '/side', '/undo']), `commands were not alphabetized: ${JSON.stringify(commandNames)}`);
-assert(slashCommandMenu.children[7].children[1].textContent.includes('without interrupting'), '/side description was not useful');
+assert(JSON.stringify(commandNames) === JSON.stringify(['/compact', '/goal', '/mcp', '/model', '/new', '/redo', '/side', '/tree', '/undo']), `commands were not alphabetized: ${JSON.stringify(commandNames)}`);
+assert(slashCommandMenu.children[6].children[1].textContent.includes('without interrupting'), '/side description was not useful');
 assert(promptInput.attributes['aria-expanded'] === 'true', 'composer did not expose expanded autocomplete state');
 
 promptInput.value = '/si';
@@ -101,10 +101,16 @@ assert(slashCommandMenu.children[0].children[0].textContent === '/compact', '/co
 
 promptInput.value = '/compr';
 promptInput.dispatch('input');
-assert(slashCommandMenu.children.length === 1, '/compress filter did not produce one command');
-assert(slashCommandMenu.children[0].children[0].textContent === '/compress', '/compress command was not discoverable');
-promptInput.dispatch('keydown', { key: 'Enter' });
-assert(promptInput.value === '/compress ', 'Enter did not complete /compress');
+assert(slashCommandMenu.hidden, 'removed /compress alias was still discoverable');
+
+for (const command of commandNames) {
+  promptInput.value = command;
+  promptInput.dispatch('input');
+  const exactEntered = promptInput.dispatch('keydown', { key: 'Enter' });
+  assert(!exactEntered.defaultPrevented, `exact ${command} did not propagate Enter for immediate execution`);
+  assert(promptInput.value === command, `exact ${command} completion inserted a trailing space`);
+  assert(slashCommandMenu.hidden, `exact ${command} left autocomplete open`);
+}
 
 promptInput.value = '/unknown';
 promptInput.dispatch('input');
@@ -130,6 +136,10 @@ const invocation = app.matchSkillInvocation('/review "internal config" lifecycle
 assert(invocation && invocation.name === 'review' && invocation.arguments === '"internal config" lifecycle', `exact skill arguments were not preserved: ${JSON.stringify(invocation)}`);
 assert(app.matchSkillInvocation('/rev scope') === null, 'skill prefixes should not dispatch');
 assert(app.matchSkillInvocation('/tmp/file') === null, 'absolute paths should remain ordinary prompt text');
+promptInput.value = '/explain';
+promptInput.dispatch('input');
+const exactSkillEntered = promptInput.dispatch('keydown', { key: 'Enter' });
+assert(!exactSkillEntered.defaultPrevented && promptInput.value === '/explain', 'exact skill command did not execute on the first Enter');
 
 app.state.streaming = true;
 promptInput.value = '/';

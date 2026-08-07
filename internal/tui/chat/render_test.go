@@ -1216,6 +1216,40 @@ func TestRenderStatusLine_RightAlignsStreamingPhase(t *testing.T) {
 	}
 }
 
+func TestRenderStatusLine_RightAlignsBranchPathNotes(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 72
+	m.branchPathNotesRequest = &BranchPathNotesRequest{SourceSessionID: "source"}
+	m.branchOperationStarted = time.Now().Add(-3 * time.Second)
+	m.footerMessage = "Message queued; it will send as soon as the path notes are ready."
+
+	line := ui.StripANSI(m.renderStatusLine())
+	spinnerText := ui.StripANSI(m.spinner.View())
+	if spinnerText == "" || !strings.Contains(line, spinnerText+" Creating path notes") {
+		t.Fatalf("path-note status missing bottom-right spinner: %q", line)
+	}
+	if strings.Contains(line, "Message queued") {
+		t.Fatalf("transient notice displaced path-note activity status: %q", line)
+	}
+	if lipgloss.Width(line) != m.width {
+		t.Fatalf("path-note status width = %d, want %d: %q", lipgloss.Width(line), m.width, line)
+	}
+}
+
+func TestRenderHistory_HidesEmptyPromptWhilePathNotesRun(t *testing.T) {
+	m := newTestChatModel(true)
+	m.messages = nil
+	m.branchPathNotesRequest = &BranchPathNotesRequest{SourceSessionID: "source"}
+
+	if history := ui.StripANSI(m.renderHistory()); history != "" {
+		t.Fatalf("empty-history prompt rendered over path-note activity: %q", history)
+	}
+	activity := ui.StripANSI(m.renderBranchPathNotesActivity())
+	if !strings.Contains(activity, "○ Path notes from an earlier path") {
+		t.Fatalf("running path-note activity = %q", activity)
+	}
+}
+
 func TestRenderStatusLine_NarrowDropsNonEssentialParts(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 48

@@ -1,11 +1,13 @@
 package chat
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 func TestChatSpinnerUsesReducedDefaultFPS(t *testing.T) {
@@ -59,6 +61,37 @@ func TestChatSpinnerTickContinuesWhileSideQuestionRuns(t *testing.T) {
 	}
 	if after == before {
 		t.Fatalf("expected spinner frame to advance while side question runs, still %q", after)
+	}
+}
+
+func TestChatSpinnerTickContinuesInFooterWhileBranchPathNotesGenerate(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 100
+	m.branchPathNotesRequest = &BranchPathNotesRequest{SourceSessionID: "source"}
+	m.branchOperationCancel = func() {}
+	m.branchOperationStarted = time.Now().Add(-2 * time.Second)
+
+	spinnerText := ui.StripANSI(m.spinner.View())
+	plainActivity := ui.StripANSI(m.renderBranchPathNotesActivity())
+	if strings.Contains(plainActivity, spinnerText) {
+		t.Fatalf("branch activity rendered spinner %q in the stream: %q", spinnerText, plainActivity)
+	}
+	if !strings.Contains(plainActivity, "○ Path notes from an earlier path") {
+		t.Fatalf("branch activity missing running item: %q", plainActivity)
+	}
+	plainStatus := ui.StripANSI(m.renderStatusLine())
+	if spinnerText == "" || !strings.Contains(plainStatus, spinnerText) || !strings.Contains(plainStatus, "Creating path notes") {
+		t.Fatalf("footer missing path-note spinner/status %q: %q", spinnerText, plainStatus)
+	}
+
+	before := m.spinner.View()
+	_, cmd := m.Update(spinner.TickMsg{ID: m.spinner.ID()})
+	after := m.spinner.View()
+	if cmd == nil {
+		t.Fatal("expected spinner tick to be re-scheduled while path notes generate")
+	}
+	if after == before {
+		t.Fatalf("expected branch spinner frame to advance, still %q", after)
 	}
 }
 

@@ -515,6 +515,8 @@ func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
 	}{
 		{objectType: "table", name: "push_subscriptions"},
 		{objectType: "table", name: "session_provider_state"},
+		{objectType: "table", name: "session_branches"},
+		{objectType: "index", name: "idx_session_branches_idempotency"},
 		{objectType: "index", name: "idx_messages_session_sequence"},
 		{objectType: "index", name: "idx_sessions_status"},
 		{objectType: "index", name: "idx_sessions_title_skipped"},

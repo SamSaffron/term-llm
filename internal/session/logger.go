@@ -386,6 +386,45 @@ func (s *LoggingStore) TranscriptRev(ctx context.Context, sessionID string) (int
 	return rev, err
 }
 
+// CreateBranch preserves the optional branching capability through the logging decorator.
+func (s *LoggingStore) CreateBranch(ctx context.Context, sourceSessionID string, opts CreateBranchOptions) (BranchResult, error) {
+	store, ok := s.Store.(ConversationBranchStore)
+	if !ok {
+		return BranchResult{}, ErrBranchingUnsupported
+	}
+	result, err := store.CreateBranch(ctx, sourceSessionID, opts)
+	if err != nil && !errors.Is(err, ErrBranchConflict) {
+		s.logOnce("CreateBranch", err)
+	}
+	return result, err
+}
+
+// GetBranchByIdempotencyKey preserves replay lookup through the logging decorator.
+func (s *LoggingStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessionID, idempotencyKey string) (BranchResult, bool, error) {
+	store, ok := s.Store.(ConversationBranchReplayStore)
+	if !ok {
+		return BranchResult{}, false, nil
+	}
+	result, found, err := store.GetBranchByIdempotencyKey(ctx, sourceSessionID, idempotencyKey)
+	if err != nil {
+		s.logOnce("GetBranchByIdempotencyKey", err)
+	}
+	return result, found, err
+}
+
+// GetBranchTree preserves the optional branching capability through the logging decorator.
+func (s *LoggingStore) GetBranchTree(ctx context.Context, sessionID string) (BranchTree, error) {
+	store, ok := s.Store.(ConversationBranchStore)
+	if !ok {
+		return BranchTree{}, ErrBranchingUnsupported
+	}
+	tree, err := store.GetBranchTree(ctx, sessionID)
+	if err != nil {
+		s.logOnce("GetBranchTree", err)
+	}
+	return tree, err
+}
+
 // PreviousUserPrompt delegates the optional PromptHistoryStore capability when
 // the wrapped store supports it.
 func (s *LoggingStore) PreviousUserPrompt(ctx context.Context, agent string, beforeID int64) (*PromptHistoryEntry, error) {

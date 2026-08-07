@@ -864,6 +864,7 @@ type sessionMessagePartEntry struct {
 	Type            string                         `json:"type"`
 	Text            string                         `json:"text,omitempty"`
 	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
+	PathNote        *llm.PathNoteProvenance        `json:"path_note,omitempty"`
 	ToolName        string                         `json:"tool_name,omitempty"`
 	ToolInfo        string                         `json:"tool_info,omitempty"`
 	ToolArgs        string                         `json:"tool_arguments,omitempty"`
@@ -1394,14 +1395,20 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 	}
 	result := make([]sessionMessageEntry, 0, len(msgs))
 	for _, msg := range msgs {
-		// System and developer messages contain internal prompts — never expose to UI clients.
-		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper {
+		// System and ordinary developer messages contain internal prompts. Path
+		// notes are explicitly marked and expose only their display text/provenance.
+		pathNote, isPathNote := msg.PathNoteProvenance()
+		if msg.Role == llm.RoleSystem || (msg.Role == llm.RoleDeveloper && !isPathNote) {
 			continue
+		}
+		entryRole := string(msg.Role)
+		if isPathNote {
+			entryRole = "path-note"
 		}
 		entry := sessionMessageEntry{
 			ID:                   msg.ID,
 			Sequence:             msg.Sequence,
-			Role:                 string(msg.Role),
+			Role:                 entryRole,
 			CreatedAt:            msg.CreatedAt.UnixMilli(),
 			CompactionTail:       msg.CompactionTail,
 			ClientMessageID:      msg.ClientMessageID,
@@ -1412,6 +1419,14 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		if msg.Role == llm.RoleAssistant && msg.ResponseID != "" {
 			ordinal := msg.AssistantSegmentOrdinal
 			entry.AssistantSegmentOrdinal = &ordinal
+		}
+		if isPathNote {
+			copyProvenance := *pathNote
+			copyProvenance.ReadFiles = append([]string(nil), pathNote.ReadFiles...)
+			copyProvenance.ModifiedFiles = append([]string(nil), pathNote.ModifiedFiles...)
+			entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "path_note", Text: msg.PathNoteDisplayText(), PathNote: &copyProvenance})
+			result = append(result, entry)
+			continue
 		}
 		if msg.Role == llm.RoleEvent {
 			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
@@ -1748,6 +1763,34 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			s.handleSessionFileChangeDiff(w, r, sessionID)
 		default:
 			s.handleSessionFileChangeContent(w, r, sessionID)
+		}
+		return
+	}
+
+	if suffix == "tree" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleSessionTree(w, r, sessionID)
+		return
+	}
+
+	if suffix == "branches" || suffix == "path-notes" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		if suffix == "branches" {
+			s.handleCreateSessionBranch(w, r, sessionID)
+		} else {
+			s.handleSessionPathNotes(w, r, sessionID)
 		}
 		return
 	}
@@ -2405,7 +2448,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
-			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-term-llm-ui-version")
+			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version")
 		}
 
 		w.Header().Set("X-Term-LLM-UI-Version", serveui.AssetVersion())

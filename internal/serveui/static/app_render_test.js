@@ -854,6 +854,8 @@ async function run(name, fn) {
     assertEqual(messages.children[2].querySelectorAll('.turn-action-panel').length, 1, 'second turn panel');
 
     const button = messages.children[1].querySelector('.turn-copy-btn');
+    assertEqual(button.title, 'Copy response', 'assistant action label');
+    assertEqual(button.getAttribute('aria-label'), 'Copy response', 'assistant action accessible label');
     await button.dispatchEvent({ type: 'click', preventDefault() {} });
     assertEqual(copied.length, 1, 'clipboard writes');
     assert(copied[0].includes('Earlier assistant'), 'copied earlier assistant text');
@@ -1651,6 +1653,20 @@ async function run(name, fn) {
     assertEqual(rows.length, 2, 'two session rows');
     assertEqual(rows[0].querySelector('.session-title').textContent, 'Alpha', 'first row title');
     assertEqual(rows[1].querySelector('.session-title').textContent, 'Beta', 'second row title');
+  });
+
+  await run('renderSidebar identifies branch sessions and their parent', () => {
+    const sessions = [
+      { id: 'parent', title: 'Parser work', created: 2000, messages: [], messageCount: 2, lastMessageAt: 2000 },
+      { id: 'child', title: 'Parser work', created: 3000, messages: [], messageCount: 2, lastMessageAt: 3000, branchParentSessionId: 'parent', branchParentTitle: 'Parser work', branchDepth: 1 },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+    app.renderSidebar();
+    const child = app.elements.sessionGroups.querySelector('[data-session-id="child"]')
+      || app.elements.sessionGroups.querySelectorAll('.session-row').find((row) => row.dataset.sessionId === 'child');
+    assert(child?.classList.contains('is-branch'), 'child row is marked as a branch');
+    assertEqual(child.querySelector('.session-title').textContent, '↳ Parser work', 'child title has branch marker');
+    assert(child.querySelector('.session-meta').textContent.startsWith('Branch of Parser work'), 'child meta names parent');
   });
 
   await run('renderSidebar trusts server conversation message count over loaded client rows', () => {

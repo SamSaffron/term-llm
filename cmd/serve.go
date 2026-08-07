@@ -1148,48 +1148,51 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
-	cfg                     serveServerConfig
-	sessionMgr              *serveSessionManager
-	jobsV2                  *jobsV2Manager
-	cfgRef                  *config.Config
-	store                   session.Store
-	server                  *http.Server
-	shutdownCh              chan struct{}
-	shutdownOnce            sync.Once
-	modelsMu                sync.Mutex
-	modelsProviders         map[string]llm.Provider // keyed by provider name
-	modelsCache             map[string]serveModelsCacheEntry
-	responseToSession       sync.Map // response_id (string) → session_id (string)
-	sessionToResponse       sync.Map // session_id (string) → latest response_id (string)
-	responseRunsOnce        sync.Once
-	responseRuns            *responseRunManager
-	transcriptIndexerOnce   sync.Once
-	transcriptIndexer       session.TranscriptIndexer
-	skillsSetup             *skills.Setup
-	skillsConfig            *config.SkillsConfig
-	skillsCacheMu           sync.Mutex
-	skillsByDir             map[string]serveSkillsCacheEntry
-	mentionsCacheMu         sync.Mutex
-	mentionsByRoot          map[string]*serveMentionCacheEntry
-	mentionBuildFn          func(context.Context, string, mentions.BuildOptions) (*mentions.Snapshot, error)
-	skillRunsMu             sync.Mutex
-	skillRuns               map[string]*serveSkillRun
-	skillRunsWG             sync.WaitGroup
-	skillRunsStopping       bool
-	skillRunRetention       time.Duration
-	skillChildRunnerFactory func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
-	webrtcEnabled           bool
-	webrtcHeadSnippet       string // injected into index.html <head>; empty when WebRTC disabled
-	runtimeFactory          func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
-	titleProviderFactory    func(*config.Config) (llm.Provider, error)
-	widgetsMgr              *widgets.Manager
-	indexHTMLOnce           sync.Once
-	cachedIndexHTML         []byte
-	worktreeRootOnce        sync.Once
-	worktreeRoot            string
-	worktreeRootErr         error
-	fileTrackStoreFn        func() *filetrack.Store // test seam; nil → process-wide store from config
-	worktreeRootFn          func() (string, error)  // test seam; nil → os.Getwd
+	cfg                      serveServerConfig
+	sessionMgr               *serveSessionManager
+	jobsV2                   *jobsV2Manager
+	cfgRef                   *config.Config
+	store                    session.Store
+	server                   *http.Server
+	shutdownCh               chan struct{}
+	shutdownOnce             sync.Once
+	modelsMu                 sync.Mutex
+	modelsProviders          map[string]llm.Provider // keyed by provider name
+	modelsCache              map[string]serveModelsCacheEntry
+	responseToSession        sync.Map // response_id (string) → session_id (string)
+	sessionToResponse        sync.Map // session_id (string) → latest response_id (string)
+	branchNotes              sync.Map // child session_id → in-flight path-note preparation
+	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
+	responseRunsOnce         sync.Once
+	responseRuns             *responseRunManager
+	transcriptIndexerOnce    sync.Once
+	transcriptIndexer        session.TranscriptIndexer
+	skillsSetup              *skills.Setup
+	skillsConfig             *config.SkillsConfig
+	skillsCacheMu            sync.Mutex
+	skillsByDir              map[string]serveSkillsCacheEntry
+	mentionsCacheMu          sync.Mutex
+	mentionsByRoot           map[string]*serveMentionCacheEntry
+	mentionBuildFn           func(context.Context, string, mentions.BuildOptions) (*mentions.Snapshot, error)
+	skillRunsMu              sync.Mutex
+	skillRuns                map[string]*serveSkillRun
+	skillRunsWG              sync.WaitGroup
+	skillRunsStopping        bool
+	skillRunRetention        time.Duration
+	skillChildRunnerFactory  func(sessionID string, runtime *serveRuntime) (runpkg.ChildRunner, error)
+	webrtcEnabled            bool
+	webrtcHeadSnippet        string // injected into index.html <head>; empty when WebRTC disabled
+	runtimeFactory           func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
+	titleProviderFactory     func(*config.Config) (llm.Provider, error)
+	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
+	widgetsMgr               *widgets.Manager
+	indexHTMLOnce            sync.Once
+	cachedIndexHTML          []byte
+	worktreeRootOnce         sync.Once
+	worktreeRoot             string
+	worktreeRootErr          error
+	fileTrackStoreFn         func() *filetrack.Store // test seam; nil → process-wide store from config
+	worktreeRootFn           func() (string, error)  // test seam; nil → os.Getwd
 }
 
 // fileTrackStore returns the file-change history store, or nil when file

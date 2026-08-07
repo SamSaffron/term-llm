@@ -11,9 +11,42 @@ import (
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
+
+func TestSessionIsConversationBranchUsesDurableLineage(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	source := &session.Session{ID: "title-branch-source", Provider: "mock", Model: "mock"}
+	if err := store.Create(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	anchor := session.NewMessage(source.ID, llm.AssistantText("branch here"), -1)
+	if err := store.AddMessage(ctx, source.ID, anchor); err != nil {
+		t.Fatal(err)
+	}
+	branchStore := store.(session.ConversationBranchStore)
+	result, err := branchStore.CreateBranch(ctx, source.ID, session.CreateBranchOptions{
+		AnchorMessageID: anchor.ID,
+		IdempotencyKey:  "title-branch-child",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionIsConversationBranch(ctx, store, source.ID) {
+		t.Fatal("root session was identified as a branch")
+	}
+	if result.Session == nil || !sessionIsConversationBranch(ctx, store, result.Session.ID) {
+		t.Fatalf("child session was not identified from durable branch lineage: %#v", result.Session)
+	}
+}
 
 func TestConfigureChatMCPServersInstallsSamplingBeforeEnable(t *testing.T) {
 	manager := &recordingChatMCPManager{}

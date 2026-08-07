@@ -307,6 +307,12 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		cancelled = true
 	}
 
+	if m.branchOperationCancel != nil {
+		m.branchOperationCancel()
+		m.branchOperationCancel = nil
+		cancelled = true
+	}
+
 	if (m.streaming || m.streamCancelFunc != nil) && !m.isStreamCancelRequested() {
 		m.phase = "Stopping..."
 		if m.streamCancelFunc != nil {
@@ -533,6 +539,61 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.dialog.Update(msg)
 			return m, nil
 		}
+		// Conversation tree supports type-to-search while preserving arrow-key navigation.
+		if m.dialog.Type() == DialogBranchTree {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):
+				selected := m.dialog.Selected()
+				if selected != nil {
+					m.dialog.Close()
+					return m.handleBranchTreeSelection(selected.ID)
+				}
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+				if m.dialog.Query() != "" {
+					m.dialog.SetQuery("")
+					return m, nil
+				}
+				m.dialog.Close()
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))):
+				m.dialog.Close()
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
+				m.dialog.SetCursor(m.dialog.Cursor() - 1)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
+				m.dialog.SetCursor(m.dialog.Cursor() + 1)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+				m.dialog.MoveTreeUserTurn(-1)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+				m.dialog.MoveTreeUserTurn(1)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
+				m.dialog.SetSelectedTreeTurnExpanded(true)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("left"))):
+				m.dialog.SetSelectedTreeTurnExpanded(false)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+t"))):
+				m.dialog.ToggleTreeTools()
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+				runes := []rune(m.dialog.Query())
+				if len(runes) > 0 {
+					m.dialog.SetQuery(string(runes[:len(runes)-1]))
+				}
+				return m, nil
+			default:
+				if len([]rune(msg.String())) == 1 {
+					m.dialog.SetQuery(m.dialog.Query() + msg.String())
+				}
+				return m, nil
+			}
+		}
+
 		// Model picker supports typing to filter (like completions)
 		if m.dialog.Type() == DialogModelPicker {
 			switch {
@@ -639,6 +700,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				case DialogSessionList:
 					m.dialog.Close()
 					return m.cmdResume([]string{selected.ID})
+				case DialogBranchTree:
+					m.dialog.Close()
+					return m.handleBranchTreeSelection(selected.ID)
+				case DialogBranchContext:
+					m.dialog.Close()
+					return m.handleBranchContextSelection(selected.ID)
 				case DialogShareChoice:
 					req := m.pendingShare
 					m.pendingShare = nil
@@ -674,6 +741,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
 			m.pendingFilePath = ""
 			m.pendingShare = nil
+			if m.dialog.Type() == DialogBranchContext {
+				m.pendingBranchPoint = nil
+			}
 			if m.dialog.Type() == DialogWorktreeRecovery {
 				return m.resolveWorktreeRecoveryPrompt(false)
 			}
@@ -794,6 +864,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Handle cancel during streaming (takes priority over clearing selection)
 	if key.Matches(msg, m.keyMap.Cancel) {
+		if m.branchOperationCancel != nil {
+			m.branchOperationCancel()
+			m.branchOperationCancel = nil
+			return m.showFooterMuted("Cancelling new path…")
+		}
+		if m.branchFocusCapture {
+			m.branchFocusCapture = false
+			m.pendingBranchPoint = nil
+			m.setTextareaValue("")
+			return m.showFooterMuted("New path cancelled.")
+		}
 		if m.streaming && m.streamCancelFunc != nil {
 			m.setStreamCancelRequested(true)
 			m.phase = "Stopping..."
@@ -817,6 +898,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.textarea.Value() != "" {
 			m.setTextareaValue("")
 			m.pasteChunks = nil
+			return m, nil
 		}
 		return m, nil
 	}
@@ -1142,6 +1224,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Handle send
 	if key.Matches(msg, m.keyMap.Send) {
 		content := strings.TrimSpace(m.textarea.Value())
+		if m.branchFocusCapture {
+			if content == "" {
+				return m.showFooterWarning("Describe what the new path should retain, or press Esc to cancel.")
+			}
+			return m.startConversationBranchWithNotes(content)
+		}
 
 		// Check for backslash continuation
 		if strings.HasSuffix(content, "\\") {
@@ -1156,7 +1244,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if strings.HasPrefix(content, "/") && m.isSlashCommandLike(content) {
 			return m.handleSlashCommand(content)
 		}
-
+		if m.branchContextInFlight() && (content != "" || len(m.images) > 0) {
+			return m.queueBranchMessage(content)
+		}
 		// sendMessage expands collapsed paste placeholders only after deriving
 		// delegation intent from the deliberately visible composer text.
 		if content != "" || len(m.images) > 0 {
@@ -1237,7 +1327,7 @@ func (m *Model) handleDialogPasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.dialog.Type() {
-	case DialogModelPicker, DialogMCPPicker:
+	case DialogModelPicker, DialogMCPPicker, DialogBranchTree:
 		if msg.Content != "" {
 			m.dialog.SetQuery(m.dialog.Query() + msg.Content)
 		}

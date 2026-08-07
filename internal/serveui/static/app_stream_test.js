@@ -19,6 +19,8 @@ const interjectSource = fs.readFileSync(path.join(dir, 'app-interject.js'), 'utf
 const modalsSource = fs.readFileSync(path.join(dir, 'app-modals.js'), 'utf8');
 const composerSource = fs.readFileSync(path.join(dir, 'app-composer.js'), 'utf8');
 const skillsSource = fs.readFileSync(path.join(dir, 'app-skills.js'), 'utf8');
+const pathNotesSource = fs.readFileSync(path.join(dir, 'app-path-notes.js'), 'utf8');
+const branchingSource = fs.readFileSync(path.join(dir, 'app-branching.js'), 'utf8');
 const conversation = require('./conversation.js');
 const projectedMessages = (session) => session?.transcript?.conversation
   ? conversation.sessionMessages(session)
@@ -767,7 +769,11 @@ function createHarness(options = {}) {
         },
       }), {
         status: 200,
-        headers: { 'x-response-id': responseId },
+        headers: {
+          'x-response-id': responseId,
+          ...(options.postSessionId ? { 'x-session-id': String(options.postSessionId) } : {}),
+          ...(options.postBranchAnchorId ? { 'x-branch-anchor-id': String(options.postBranchAnchorId) } : {}),
+        },
       });
     }
     if (url === `/ui/v1/responses/${responseId}`) {
@@ -841,6 +847,8 @@ function createHarness(options = {}) {
   vm.runInNewContext(interjectSource, context, { filename: 'app-interject.js' });
   vm.runInNewContext(modalsSource, context, { filename: 'app-modals.js' });
   vm.runInNewContext(skillsSource, context, { filename: 'app-skills.js' });
+  vm.runInNewContext(pathNotesSource, context, { filename: 'app-path-notes.js' });
+  vm.runInNewContext(branchingSource, context, { filename: 'app-branching.js' });
 
   const applyResponseRecoverySnapshot = app.applyResponseRecoverySnapshot;
   app.applyResponseRecoverySnapshot = (session, payload = {}) => {
@@ -4321,6 +4329,125 @@ async function testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasN
   pass(name);
 }
 
+async function testSendMessageBranchesAndTransfersStreamOwnership() {
+  const name = 'real branch adoption seeds copied anchor and preserves follow-up continuation ownership';
+  const childID = 'session_branch_child';
+  const copiedAnchorID = 'resp_msg_142';
+  const failedBranchBody = [
+    'event: response.created\n',
+    'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+    'event: response.failed\n',
+    'data: {"error":{"message":"branch stream interrupted"},"sequence_number":2}\n\n',
+    'data: [DONE]\n\n',
+  ].join('');
+  const harness = createHarness({ postSessionId: childID, postBranchAnchorId: copiedAnchorID, postBody: failedBranchBody });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const source = {
+    id: 'session_branch_source',
+    title: 'Branch source',
+    provider: 'mock',
+    activeModel: 'test-model',
+    activeEffort: '',
+    messages: [
+      { id: 'u1', role: 'user', content: 'original', created: 1, durable: true, durableSourceRowIds: [41] },
+      { id: 'a1', role: 'assistant', content: 'answer', created: 2, durable: true, durableSourceRowIds: [42] },
+      { id: 'u2', role: 'user', content: 'change my mind', created: 3, durable: true, durableSourceRowIds: [43] },
+    ],
+    lastResponseId: 'resp_msg_99',
+    activeResponseId: null,
+    number: 1,
+  };
+  state.sessions.push(source);
+  state.activeSessionId = source.id;
+  state.selectedProvider = 'mock';
+  state.selectedModel = 'test-model';
+  state.pendingBranch = {
+    sourceSessionId: source.id,
+    anchorMessageId: 42,
+    previousResponseId: 'resp_msg_42',
+    expectedRev: 8,
+    idempotencyKey: 'branch_idempotency',
+    selectedMessageId: 'u2',
+    selectedRole: 'user',
+    selectedText: 'change my mind',
+    branchContextMode: 'notes',
+  };
+  app.refreshActiveSessionMessagesFromServer = async () => true;
+  elements.promptInput.value = 'alternate follow-up';
+
+  await app.sendMessage();
+
+  const child = state.sessions.find((session) => session.id === childID);
+  const firstPost = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const firstBody = firstPost?.body ? JSON.parse(firstPost.body) : null;
+  if (!firstBody || firstBody.branch !== true || firstBody.previous_response_id !== 'resp_msg_42'
+      || firstBody.expected_rev !== 8 || firstBody.idempotency_key !== 'branch_idempotency'
+      || firstBody.branch_context?.mode !== 'notes') {
+    await cleanup();
+    fail(name, 'branch protocol fields missing from response request', firstPost?.body || JSON.stringify(fetchCalls));
+    return;
+  }
+  if (!child || child.lastResponseId !== copiedAnchorID || state.activeSessionId !== childID
+      || state.currentStreamSessionId && state.currentStreamSessionId !== childID) {
+    await cleanup();
+    fail(name, 'real adoption did not transfer ownership and seed the copied durable anchor', JSON.stringify({ active: state.activeSessionId, stream: state.currentStreamSessionId, lastResponseId: child?.lastResponseId }));
+    return;
+  }
+  const sourceUsers = projectedMessages(source).filter((message) => message.role === 'user');
+  if (sourceUsers.some((message) => message.content === 'alternate follow-up')) {
+    await cleanup();
+    fail(name, 'optimistic branch prompt remained in source projection', JSON.stringify(sourceUsers));
+    return;
+  }
+
+  elements.promptInput.value = 'safe follow-up after interruption';
+  await app.sendMessage();
+  const posts = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const followUpBody = posts[1]?.body ? JSON.parse(posts[1].body) : null;
+  await cleanup();
+  if (!followUpBody || followUpBody.branch === true || followUpBody.previous_response_id !== copiedAnchorID) {
+    fail(name, 'follow-up did not preserve copied history through the adopted durable anchor', posts[1]?.body || JSON.stringify(posts));
+    return;
+  }
+  pass(name);
+}
+
+async function testBranchContextQueuesSendUntilReady() {
+  const name = 'branch context queues one message and releases it after notes are ready';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'branch_context_child', title: 'Child path', provider: 'mock', activeModel: 'test-model',
+    messages: [], lastResponseId: 'resp_msg_142', activeResponseId: null,
+    branchContextStatus: { phase: 'running', mode: 'notes' },
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'mock';
+  state.selectedModel = 'test-model';
+  state.branchContextOperation = { sessionId: session.id, phase: 'running' };
+  elements.promptInput.value = 'send after context';
+
+  await app.sendMessage();
+  if (!state.branchContextQueuedSend || elements.promptInput.value !== ''
+      || fetchCalls.some((call) => call.url === '/ui/v1/responses' && call.method === 'POST')) {
+    await cleanup();
+    fail(name, 'message was not held while context was running', JSON.stringify({ queued: state.branchContextQueuedSend, fetchCalls }));
+    return;
+  }
+  state.branchContextOperation = null;
+  app.releaseBranchContextQueuedSend(session.id);
+  await waitFor(() => fetchCalls.some((call) => call.url === '/ui/v1/responses' && call.method === 'POST'), 'queued message was not released');
+  const post = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = post?.body ? JSON.parse(post.body) : null;
+  await cleanup();
+  if (body?.input?.[0]?.content !== 'send after context' || state.branchContextQueuedSend) {
+    fail(name, 'released request did not preserve queued text', post?.body || JSON.stringify(state));
+    return;
+  }
+  pass(name);
+}
+
 async function testSendMessageIncludesModelSwapForChangedTarget() {
   const name = 'sendMessage includes model_swap when active session target differs';
   const harness = createHarness();
@@ -7559,8 +7686,9 @@ async function testWebSlashCommandsInvokeExistingControls() {
   app.openSessionMCPModal = async () => { calls.push('mcp'); };
   elements.chipModelTrigger.click = () => { calls.push('model'); };
   app.createAndSwitchToFreshSession = async () => { calls.push('new'); };
+  app.openBranchTree = async () => { calls.push('tree'); };
 
-  for (const command of ['/goal', '/mcp', '/model', '/new']) {
+  for (const command of ['/goal', '/mcp', '/model', '/new', '/tree']) {
     elements.promptInput.value = command;
     await app.sendMessage();
     if (elements.promptInput.value !== '') {
@@ -7571,7 +7699,7 @@ async function testWebSlashCommandsInvokeExistingControls() {
   }
   await cleanup();
 
-  if (JSON.stringify(calls) !== JSON.stringify(['goal', 'mcp', 'model', 'new'])) {
+  if (JSON.stringify(calls) !== JSON.stringify(['goal', 'mcp', 'model', 'new', 'tree'])) {
     fail(name, 'commands did not invoke their existing controls', JSON.stringify(calls));
     return;
   }
@@ -7726,8 +7854,8 @@ async function testUndoWarnsWhenAttachmentsWereNotRestored() {
   pass(name);
 }
 
-async function testCompressCommandCompactsWithoutSendingMessage() {
-  const name = '/compress compacts active context without sending a chat message';
+async function testCompactCommandCompactsWithoutSendingMessage() {
+  const name = '/compact compacts active context without sending a chat message';
   const harness = createHarness({
     fetchImpl: async (url, requestOptions, { Response }) => {
       if (url === '/ui/v1/sessions/session_compress/runtime/compact' && requestOptions.method === 'POST') {
@@ -7751,7 +7879,7 @@ async function testCompressCommandCompactsWithoutSendingMessage() {
   };
   state.sessions.push(session);
   state.activeSessionId = session.id;
-  elements.promptInput.value = '/compress';
+  elements.promptInput.value = '/compact';
   let refreshOptions = null;
   app.refreshActiveSessionMessagesFromServer = async (_session, options) => {
     refreshOptions = options;
@@ -7759,14 +7887,12 @@ async function testCompressCommandCompactsWithoutSendingMessage() {
   };
 
   await app.sendMessage();
-  elements.promptInput.value = '/compact';
-  await app.sendMessage();
   await cleanup();
 
   const compactCalls = fetchCalls.filter((call) => call.url === '/ui/v1/sessions/session_compress/runtime/compact');
   const responseCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses');
-  if (compactCalls.length !== 2 || compactCalls.some((call) => call.method !== 'POST' || call.body !== '{}')) {
-    fail(name, 'expected /compress and /compact to issue compact POSTs', JSON.stringify(fetchCalls));
+  if (compactCalls.length !== 1 || compactCalls.some((call) => call.method !== 'POST' || call.body !== '{}')) {
+    fail(name, 'expected /compact to issue one compact POST', JSON.stringify(fetchCalls));
     return;
   }
   if (responseCalls.length !== 0 || projectedMessages(session).length !== 0) {
@@ -8104,6 +8230,8 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageUsesLocalContinuationIdWithoutPreflightSync();
   await testSendMessageIncludesServerToolsForFirstPartyUI();
+  await testSendMessageBranchesAndTransfersStreamOwnership();
+  await testBranchContextQueuesSendUntilReady();
   await testSendMessageRecoversStaleContinuationAfterConflict();
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();
@@ -8113,7 +8241,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testUndoRedoCommandsUseOptimisticTranscriptAndRestoreComposer();
   await testUndoDoesNotRestoreComposerAfterSessionSwitch();
   await testUndoWarnsWhenAttachmentsWereNotRestored();
-  await testCompressCommandCompactsWithoutSendingMessage();
+  await testCompactCommandCompactsWithoutSendingMessage();
   await testStaleInterrupt404RefreshesAndSendsMessage();
   await testStaleInterruptRecoveryFailedPostKeepsDraft();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();

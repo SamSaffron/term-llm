@@ -219,6 +219,7 @@ const (
 	PartProviderReplay  PartType = "provider_replay"  // Hidden provider protocol state; never rendered/exported.
 	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
 	PartAgentMention    PartType = "agent_mention"    // Provider-visible delegation instruction; excluded from human-visible text surfaces.
+	PartPathNote        PartType = "path_note"        // Persisted branch-context provenance; adjacent text is sent as developer context.
 )
 
 // Message holds a role with structured parts.
@@ -333,6 +334,20 @@ type Part struct {
 	ToolActivity              *ToolActivity
 	ProviderReplay            *ProviderReplayItem        // Opaque Responses output item used only for stateless continuation.
 	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
+	PathNote                  *PathNoteProvenance        // Branch-context metadata; persisted but not sent to providers.
+}
+
+// PathNoteProvenance identifies generated context carried from the suffix that
+// was left behind when a conversation branch was created.
+type PathNoteProvenance struct {
+	SourceSessionID string   `json:"source_session_id"`
+	AnchorMessageID int64    `json:"anchor_message_id,omitempty"`
+	SourceMessages  int      `json:"source_messages,omitempty"`
+	OmittedMessages int      `json:"omitted_messages,omitempty"`
+	ReadFiles       []string `json:"read_files,omitempty"`
+	ModifiedFiles   []string `json:"modified_files,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	Focus           string   `json:"focus,omitempty"`
 }
 
 // SkillActivationProvenance records the exact direct invocation and resolved

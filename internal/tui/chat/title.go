@@ -54,6 +54,7 @@ type titleState struct {
 	Agent     string
 	Task      string
 	Model     string
+	Branch    string
 	Phase     string
 	Streaming bool
 	Elapsed   time.Duration
@@ -68,7 +69,10 @@ func buildTitle(st titleState) string {
 		task = "term-llm"
 	}
 
-	metaSegments := make([]string, 0, 2)
+	metaSegments := make([]string, 0, 3)
+	if branch := titleSegment(st.Branch); branch != "" {
+		metaSegments = append(metaSegments, branch)
+	}
 	if agent != "" {
 		metaSegments = append(metaSegments, agent)
 	}
@@ -172,6 +176,7 @@ type terminalTitleFormatData struct {
 	Agent           string
 	Task            string
 	Model           string
+	Branch          string
 	Phase           string
 	State           string
 	Activity        string
@@ -206,7 +211,7 @@ func ValidateTerminalTitleFormat(format string) error {
 		return err
 	}
 	var b bytes.Buffer
-	if err := tmpl.Execute(&b, terminalTitleFormatDataForState(titleState{Agent: "agent", Task: "task", Model: "model"}, TerminalTitleEnvironment{})); err != nil {
+	if err := tmpl.Execute(&b, terminalTitleFormatDataForState(titleState{Agent: "agent", Task: "task", Model: "model", Branch: "branch"}, TerminalTitleEnvironment{})); err != nil {
 		return fmt.Errorf("execute terminal title format: %w", err)
 	}
 	return nil
@@ -253,6 +258,8 @@ func terminalTitleFormatField(name string) (string, bool) {
 		return "Task", true
 	case "model":
 		return "Model", true
+	case "branch":
+		return "Branch", true
 	case "phase":
 		return "Phase", true
 	case "state":
@@ -294,6 +301,7 @@ func terminalTitleFormatDataForState(st titleState, env TerminalTitleEnvironment
 		task = "term-llm"
 	}
 	model := titleSegment(st.Model)
+	branch := titleSegment(st.Branch)
 	phase := titleSegment(st.Phase)
 	state := "idle"
 	activity := model
@@ -322,6 +330,7 @@ func terminalTitleFormatDataForState(st titleState, env TerminalTitleEnvironment
 		Agent:           agent,
 		Task:            task,
 		Model:           model,
+		Branch:          branch,
 		Phase:           phase,
 		State:           state,
 		Activity:        activity,
@@ -501,6 +510,15 @@ func (m *Model) ConfigureTerminalTitleEnvironment(env TerminalTitleEnvironment) 
 	m.titleManager = newTerminalTitleManager(m.titleMode, env, m.titleProgress)
 }
 
+// SetConversationBranch marks whether the loaded session is a conversation branch.
+// The caller resolves this once from durable branch metadata so title updates stay cheap.
+func (m *Model) SetConversationBranch(branch bool) {
+	if m == nil {
+		return
+	}
+	m.conversationBranch = branch
+}
+
 func (m *Model) RestoreTerminalTitle() {
 	if m == nil || m.titleManager == nil {
 		return
@@ -548,6 +566,9 @@ func (m *Model) currentTitleState(includeElapsed bool) titleState {
 		Model:     shortenModelName(m.displayModelName()),
 		Phase:     m.phase,
 		Streaming: m.streaming,
+	}
+	if m.conversationBranch {
+		st.Branch = "branch"
 	}
 	if st.Model == "" {
 		st.Model = shortenModelName(m.modelName)

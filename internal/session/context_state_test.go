@@ -522,3 +522,21 @@ func TestLLMActiveMessagesExcludesPreBoundary(t *testing.T) {
 		t.Fatalf("LLMActiveMessages missing active rows: %q", joined)
 	}
 }
+
+func TestLLMActiveMessagesRetainsPathNotesAcrossCompactionBoundary(t *testing.T) {
+	provenance := llm.PathNoteProvenance{SourceSessionID: "source", AnchorMessageID: 7}
+	messages := []Message{
+		*NewPathNoteMessage("child", "- Useful parser finding.", provenance, 0),
+		*NewMessage("child", llm.UserText("old child prompt"), 1),
+		*NewMessage("child", llm.UserText("[Context Compaction]\nsummary"), 2),
+		*NewMessage("child", llm.AssistantText("ack"), 3),
+	}
+	active := LLMActiveMessages(messages, 2, "system")
+	joined := ""
+	for _, message := range active {
+		joined += "\n" + llm.MessageText(message)
+	}
+	if !strings.Contains(joined, "Useful parser finding") || strings.Contains(joined, "old child prompt") {
+		t.Fatalf("active context = %q", joined)
+	}
+}

@@ -394,6 +394,20 @@ const convertServerMessages = (serverMessages, options = {}) => {
       continue;
     }
 
+    if (msg.role === 'path-note') {
+      flushGroup();
+      const note = parts.find((part) => part.type === 'path_note');
+      result.push(addDurableSource({
+        id: baseId,
+        role: 'path-note',
+        content: String(note?.text || ''),
+        provenance: note?.path_note || null,
+        created,
+        ...(seq !== null ? { serverSeq: seq } : {})
+      }, msg));
+      continue;
+    }
+
     if (msg.role === 'user') {
       flushGroup();
 

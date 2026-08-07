@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -398,8 +399,8 @@ func (r *Renderer) renderHistory(state RenderState) string {
 	// re-rendering every message on each View().
 	r.blockCache.EnsureCapacity(end - start)
 
-	// Render only visible messages using cache
-	// Skip system and tool messages (they render as empty anyway)
+	// Render visible conversation roles plus compact path-note activity. Other
+	// developer/system/tool messages remain inspector-only.
 	b := historyBuilderPool.Get().(*strings.Builder)
 	b.Reset()
 	defer historyBuilderPool.Put(b)
@@ -413,8 +414,13 @@ func (r *Renderer) renderHistory(state RenderState) string {
 		if msg.CompactionTail {
 			continue
 		}
-		// Skip non-renderable roles
-		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "event" {
+		// Skip non-renderable roles. Path notes are developer context, but their
+		// compact non-authoritative placeholder is intentionally visible.
+		pathNote := false
+		if msg.Role == llm.RoleDeveloper {
+			_, pathNote = msg.PathNoteProvenance()
+		}
+		if msg.Role != llm.RoleUser && msg.Role != llm.RoleAssistant && msg.Role != llm.RoleEvent && !pathNote {
 			continue
 		}
 		block := r.getOrRenderBlock(msg, i, state.Messages, reasoningOrdinal, state.ReasoningExpansionOverrides)

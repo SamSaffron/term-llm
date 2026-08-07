@@ -12,10 +12,6 @@ const builtInCommands = [
     description: 'Compress the active conversation context',
   },
   {
-    name: '/compress',
-    description: 'Compress the active conversation context',
-  },
-  {
     name: '/goal',
     description: 'Set or manage the session goal',
   },
@@ -38,6 +34,10 @@ const builtInCommands = [
   {
     name: '/side',
     description: 'Ask without interrupting the main response',
+  },
+  {
+    name: '/tree',
+    description: 'Browse conversation paths or branch from an earlier turn',
   },
   {
     name: '/undo',
@@ -380,6 +380,13 @@ input.addEventListener('keydown', (event) => {
       hide();
     }
     return;
+  }
+  if (key === 'Enter' && !event.shiftKey && mode === 'slash') {
+    const command = matches[selected];
+    if (command && String(input.value || '').trim().toLowerCase() === String(command.name || '').toLowerCase()) {
+      hide();
+      return;
+    }
   }
   if (key === 'Enter' && !event.shiftKey && mode === 'mention' && !String(mentionToken?.query || '')) {
     return;
