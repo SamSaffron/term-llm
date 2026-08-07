@@ -304,7 +304,7 @@ func (m *Manager) ensureRunning(e *widgetEntry) error {
 		return err
 	}
 	if m.isShuttingDown() {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 	return nil
@@ -418,7 +418,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		defer close(procDone)
 		_ = cmd.Wait()
 		e.mu.Lock()
-		if e.state == stateRunning || e.state == stateStarting {
+		if e.proc == cmd.Process && (e.state == stateRunning || e.state == stateStarting) {
 			e.state = stateStopped
 			e.proc = nil
 			e.procDone = nil
@@ -429,7 +429,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	}()
 
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 
@@ -439,7 +439,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
-			e.stopProcess()
+			e.stopProcessLocked()
 			return errWidgetManagerShuttingDown
 		}
 
@@ -464,7 +464,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 			break
 		}
 		if ctx.Err() != nil {
-			e.stopProcess()
+			e.stopProcessLocked()
 			return errWidgetManagerShuttingDown
 		}
 		lastErr = err
@@ -478,13 +478,13 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 				default:
 				}
 			}
-			e.stopProcess()
+			e.stopProcessLocked()
 			return errWidgetManagerShuttingDown
 		case <-t.C:
 		}
 	}
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 	if lastErr != nil {
@@ -502,7 +502,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	proxy.Transport = transport
 
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 
@@ -513,7 +513,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	e.mu.Unlock()
 
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 
@@ -522,6 +522,13 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 }
 
 func (e *widgetEntry) stopProcess() {
+	e.startMu.Lock()
+	defer e.startMu.Unlock()
+	e.stopProcessLocked()
+}
+
+// stopProcessLocked requires startMu to be held.
+func (e *widgetEntry) stopProcessLocked() {
 	e.mu.Lock()
 	proc := e.proc
 	done := e.procDone
