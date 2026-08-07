@@ -299,7 +299,7 @@ func MessagesAfterBranchAnchor(messages []Message, anchorMessageID int64) ([]llm
 	out := make([]llm.Message, 0, len(messages))
 	for i := range messages {
 		message := &messages[i]
-		if message.Sequence <= anchorSequence || message.CompactionTail || isInternalCompactionSummaryMessage(*message) {
+		if message.Sequence <= anchorSequence || message.CompactionTail || message.isInternalCompactionSummary() {
 			continue
 		}
 		switch message.Role {
