@@ -75,6 +75,128 @@ func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
 	}
 }
 
+func TestQueueAgentRecoversRunAfterLostTriggerResponse(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		cancelOnAdmission bool
+	}{
+		{name: "connection closes"},
+		{name: "caller cancelled after admission", cancelOnAdmission: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var triggerRequests int32
+			var runLookups int32
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs":
+					writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_123"})
+				case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs/job_123/trigger":
+					atomic.AddInt32(&triggerRequests, 1)
+					if test.cancelOnAdmission {
+						cancel()
+					}
+					hijacker, ok := w.(http.Hijacker)
+					if !ok {
+						t.Error("response writer does not support hijacking")
+						return
+					}
+					conn, _, err := hijacker.Hijack()
+					if err != nil {
+						t.Errorf("hijack trigger response: %v", err)
+						return
+					}
+					_ = conn.Close()
+				case r.Method == http.MethodGet && r.URL.Path == "/v2/runs":
+					atomic.AddInt32(&runLookups, 1)
+					if got := r.URL.Query().Get("job_id"); got != "job_123" {
+						t.Errorf("job_id query = %q, want job_123", got)
+					}
+					writeJSON(t, w, jobsV2AgentRunsListResponse{Data: []jobsV2AgentRunResponse{{
+						ID: "run_123", JobID: "job_123", Status: "queued",
+					}}})
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+			tool := NewQueueAgentToolWithClient(client)
+			out, err := tool.Execute(ctx, json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
+			if err != nil {
+				t.Fatalf("queue Execute() error = %v", err)
+			}
+			var result QueueAgentResult
+			if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
+				t.Fatalf("queue output is not JSON: %v; %s", err, out.Content)
+			}
+			if result.JobID != "job_123" || result.RunID != "run_123" || result.AgentName != "developer" {
+				t.Fatalf("unexpected result: %+v; output: %s", result, out.Content)
+			}
+			if got := atomic.LoadInt32(&triggerRequests); got != 1 {
+				t.Fatalf("trigger requests = %d, want 1", got)
+			}
+			if got := atomic.LoadInt32(&runLookups); got != 1 {
+				t.Fatalf("run lookups = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestQueueAgentPreservesJobIDWhenTriggerCannotBeReconciled(t *testing.T) {
+	var triggerRequests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs":
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_123"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs/job_123/trigger":
+			atomic.AddInt32(&triggerRequests, 1)
+			hijacker := w.(http.Hijacker)
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Errorf("hijack trigger response: %v", err)
+				return
+			}
+			_ = conn.Close()
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs":
+			writeJSON(t, w, jobsV2AgentRunsListResponse{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	tool := NewQueueAgentToolWithClient(client)
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
+	if err != nil {
+		t.Fatalf("queue Execute() error = %v", err)
+	}
+	var result struct {
+		JobID     string `json:"job_id"`
+		AgentName string `json:"agent_name"`
+		Error     struct {
+			Type    ToolErrorType `json:"type"`
+			Message string        `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
+		t.Fatalf("queue output is not JSON: %v; %s", err, out.Content)
+	}
+	if result.JobID != "job_123" || result.AgentName != "developer" || result.Error.Type != ErrExecutionFailed {
+		t.Fatalf("unexpected partial result: %+v; output: %s", result, out.Content)
+	}
+	if !strings.Contains(result.Error.Message, "wait_for_jobs") {
+		t.Fatalf("partial result does not explain reconciliation: %s", out.Content)
+	}
+	if got := atomic.LoadInt32(&triggerRequests); got != 1 {
+		t.Fatalf("trigger requests = %d, want 1", got)
+	}
+}
+
 func TestQueueAgentNotifyWhenDonePersistsTrustedOrigin(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
