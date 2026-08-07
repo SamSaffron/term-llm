@@ -157,6 +157,18 @@ func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
 		return append([]byte(nil), i.Raw...), nil
 	}
 	type wire ResponsesInputItem
+	if i.Type == "function_call_output" {
+		// The Responses API requires output even when the tool returned an empty
+		// string. The field is otherwise omitted to avoid sending it on unrelated
+		// input item types.
+		return json.Marshal(struct {
+			wire
+			Output string `json:"output"`
+		}{
+			wire:   wire(i),
+			Output: i.Output,
+		})
+	}
 	return json.Marshal(wire(i))
 }
 
