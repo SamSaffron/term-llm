@@ -152,7 +152,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output path: %v", err))), nil
 		}
 		if t.approval != nil {
-			outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
+			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
 			if err != nil {
 				if toolErr, ok := err.(*ToolError); ok {
 					return llm.TextOutput(formatToolError(toolErr)), nil
@@ -187,7 +187,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	if t.approval != nil {
 		needOutputDirApproval := a.OutputPath == "" || filepath.Clean(filepath.Dir(a.OutputPath)) != filepath.Clean(resolvedOutputDir)
 		if needOutputDirApproval {
-			outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, resolvedOutputDir, resolvedOutputDir, true)
+			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputDir, resolvedOutputDir, true)
 			if err != nil {
 				if toolErr, ok := err.(*ToolError); ok {
 					return llm.TextOutput(formatToolError(toolErr)), nil
@@ -234,7 +234,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 					log.Printf("[image_generate] resolveToolPath input=%v — falling through to approval check", inputErr)
 				}
 
-				outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, inputPath, inputPath, false)
+				outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, inputPath, inputPath, false)
 				if debug {
 					log.Printf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
 				}

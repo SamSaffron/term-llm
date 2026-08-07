@@ -130,7 +130,11 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		for _, e := range req.Transcript {
 			transcript = append(transcript, guardian.TranscriptEntry{Role: e.Role, Text: e.Text})
 		}
-		decision, err := reviewerPool.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
+		decision, err := reviewerPool.Review(ctx, guardian.Request{
+			Command: req.Command, WorkDir: req.WorkDir, ToolName: req.ToolName, Path: req.Path,
+			Selector: req.Selector, IsWrite: req.IsWrite, IsDirectory: req.IsDirectory,
+			Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID,
+		})
 		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage}
 		return result, err
 	}

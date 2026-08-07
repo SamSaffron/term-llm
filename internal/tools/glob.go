@@ -123,7 +123,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(GlobToolName, absBasePath, a.Pattern, false)
+		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, GlobToolName, absBasePath, a.Pattern, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil

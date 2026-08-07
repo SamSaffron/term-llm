@@ -104,7 +104,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(ReadFileToolName, resolvedPath, a.Path, false)
+		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ReadFileToolName, resolvedPath, a.Path, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil

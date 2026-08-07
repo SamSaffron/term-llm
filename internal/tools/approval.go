@@ -279,10 +279,15 @@ type TranscriptEntry struct {
 	Text string
 }
 
-// PolicyReviewRequest describes a shell action requiring guardian review.
+// PolicyReviewRequest describes an action requiring guardian review.
 type PolicyReviewRequest struct {
 	Command         string
 	WorkDir         string
+	ToolName        string
+	Path            string
+	Selector        string
+	IsWrite         bool
+	IsDirectory     bool
 	Transcript      []TranscriptEntry
 	ApprovalContext string
 	ScopeID         string
@@ -327,10 +332,13 @@ const (
 	GuardianError    GuardianOutcome = "error"
 )
 
-// GuardianEvent is a guardian review annotation correlated with the shell tool
+// GuardianEvent is a guardian review annotation correlated with the tool
 // invocation that caused the review.
 type GuardianEvent struct {
 	ToolCallID string
+	ToolName   string
+	Path       string
+	IsWrite    bool
 	Command    string
 	WorkDir    string
 	Message    string
@@ -363,8 +371,8 @@ type ApprovalManager struct {
 	promptMu sync.Mutex
 
 	// Approval mode. Yolo mode auto-approves all tool executions without prompting;
-	// auto mode asks a policy reviewer for shell commands after deterministic
-	// checks fail and before falling back to a human prompt.
+	// auto mode asks a policy reviewer for unmatched shell commands and file
+	// requests after deterministic checks fail and before falling back to a human prompt.
 	modeMu       sync.RWMutex
 	mode         ApprovalMode
 	YoloMode     bool // Deprecated compatibility mirror for ModeYolo.
@@ -894,6 +902,12 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 // for one tool allows all tools to access files within it.
 // toolInfo is optional context for display (e.g., filename being accessed).
 func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
+	return m.CheckPathApprovalWithContext(context.Background(), toolName, path, toolInfo, isWrite)
+}
+
+// CheckPathApprovalWithContext checks path approval and supplies conversation
+// evidence to Guardian when auto mode reviews an unmatched file request.
+func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
 	// 0. Yolo mode - auto-approve everything
 	if m.YoloEnabled() {
 		if m.DebugApproval {
@@ -931,6 +945,14 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
 	}
 
+	guardianAttemptedBeforeLock := false
+	if m.ApprovalMode() == ModeAuto {
+		guardianAttemptedBeforeLock = true
+		if outcome, decided, err := m.checkPathGuardianApproval(ctx, toolName, absPath, guardianPathSelector(toolName, toolInfo), isWrite, isDirectoryPath(absPath)); decided || err != nil {
+			return outcome, err
+		}
+	}
+
 	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
 	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
 	promptLock := m.PromptLock()
@@ -964,6 +986,12 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return Cancel, NewToolErrorf(ErrSymlinkEscape, "path %s resolves to %s which is outside approved directories", originalPath, absPath)
 	}
 
+	if m.ApprovalMode() == ModeAuto && !guardianAttemptedBeforeLock {
+		if outcome, decided, err := m.checkPathGuardianApproval(ctx, toolName, absPath, guardianPathSelector(toolName, toolInfo), isWrite, isDirectoryPath(absPath)); decided || err != nil {
+			return outcome, err
+		}
+	}
+
 	projectApprovals := m.getProjectApprovals(absPath)
 
 	// Try new UI first (local, then ancestors), then fall back to legacy
@@ -982,7 +1010,11 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc result: choice=%v cancelled=%v", toolName, absPath, result.Choice, result.Cancelled)
 		}
-		return m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
+		outcome, err := m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
+		if err == nil && (outcome == ProceedOnce || outcome == ProceedAlways || outcome == ProceedAlwaysAndSave) {
+			m.resetGuardianDenials()
+		}
+		return outcome, err
 	}
 
 	if m.DebugApproval {
@@ -1017,6 +1049,9 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		m.dirCache.Set(absDir, outcome, isWrite)
+	}
+	if outcome == ProceedOnce || outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
+		m.resetGuardianDenials()
 	}
 
 	return outcome, nil
@@ -1087,6 +1122,20 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 	default:
 		return Cancel, nil
 	}
+}
+
+func guardianPathSelector(toolName, toolInfo string) string {
+	switch toolName {
+	case GrepToolName, GlobToolName:
+		return toolInfo
+	default:
+		return ""
+	}
+}
+
+func isDirectoryPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // getDirectoryForApproval determines which directory to ask approval for.
@@ -1234,6 +1283,20 @@ func (m *ApprovalManager) guardianApprovalContext(command, workDir string) strin
 	return b.String()
 }
 
+func (m *ApprovalManager) guardianPathApprovalContext(toolName, path string, isWrite bool) string {
+	var b strings.Builder
+	operation := "read"
+	if isWrite {
+		operation = "write"
+	}
+	fmt.Fprintf(&b, "file_operation=%q\n", operation)
+	fmt.Fprintf(&b, "file_tool=%q\n", strings.TrimSpace(toolName))
+	fmt.Fprintf(&b, "file_path=%q\n", path)
+	b.WriteString("These approvals are deterministic permissions already granted to term-llm tools. They are authorization evidence for equivalent first-party file operations only and do not authorize network transfer or credential disclosure.\n")
+	m.appendApprovalContextFromChain(&b)
+	return b.String()
+}
+
 func (m *ApprovalManager) appendApprovalContextFromChain(b *strings.Builder) {
 	seenRead := map[string]struct{}{}
 	seenWrite := map[string]struct{}{}
@@ -1287,6 +1350,61 @@ func addApprovalContextLine(b *strings.Builder, seen map[string]struct{}, label,
 	}
 	seen[key] = struct{}{}
 	fmt.Fprintf(b, "%s=%q\n", label, value)
+}
+
+func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolName, path, selector string, isWrite, isDirectory bool) (ConfirmOutcome, bool, error) {
+	reviewFunc := m.lookupPolicyReviewFunc()
+	if reviewFunc == nil {
+		m.emitGuardianEvent(m.guardianPathEvent(ctx, toolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); prompting for approval"))
+		if m.AutoHeadless() {
+			return Cancel, true, NewToolError(ErrPermissionDenied, "auto mode enabled but no guardian reviewer is configured")
+		}
+		return Cancel, false, nil
+	}
+	decision, err := reviewFunc(ctx, PolicyReviewRequest{
+		ToolName:        toolName,
+		Path:            path,
+		Selector:        selector,
+		IsWrite:         isWrite,
+		IsDirectory:     isDirectory,
+		Transcript:      approvalTranscriptFromContext(ctx),
+		ApprovalContext: m.guardianPathApprovalContext(toolName, path, isWrite),
+		ScopeID:         llm.SessionIDFromContext(ctx),
+	})
+	if err != nil {
+		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err), decision))
+		if m.AutoHeadless() {
+			return Cancel, true, NewToolErrorf(ErrPermissionDenied, "guardian review failed: %v", err)
+		}
+		return Cancel, false, nil
+	}
+	if decision.Allowed && guardianAllowContradictsPolicy(decision) {
+		rationale := strings.TrimSpace(decision.Rationale)
+		if rationale == "" {
+			rationale = "guardian allow contradicted policy risk/authorization fields"
+		}
+		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
+		m.recordGuardianDenial()
+		if !m.AutoHeadless() {
+			return Cancel, false, nil
+		}
+		return Cancel, true, NewToolError(ErrPermissionDenied, rationale+". Do not attempt to achieve this outcome via workarounds.")
+	}
+	if decision.Allowed {
+		m.resetGuardianDenials()
+		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
+		return ProceedOnce, true, nil
+	}
+	rationale := strings.TrimSpace(decision.Rationale)
+	if rationale == "" {
+		rationale = "action was not approved by guardian policy"
+	}
+	m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
+	m.recordGuardianDenial()
+	if !m.AutoHeadless() {
+		return Cancel, false, nil
+	}
+	return Cancel, true, NewToolError(ErrPermissionDenied, rationale+". Do not attempt to achieve this outcome via workarounds.")
 }
 
 func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, bool, error) {
@@ -1377,6 +1495,24 @@ func humanGuardianAuthorization(value string) string {
 	}
 }
 
+func (m *ApprovalManager) guardianPathDecisionEvent(ctx context.Context, toolName, path string, isWrite bool, outcome GuardianOutcome, message string, decision PolicyDecision) GuardianEvent {
+	event := m.guardianPathEvent(ctx, toolName, path, isWrite, outcome, message)
+	event.Model = strings.TrimSpace(decision.Model)
+	event.Usage = decision.Usage
+	return event
+}
+
+func (m *ApprovalManager) guardianPathEvent(ctx context.Context, toolName, path string, isWrite bool, outcome GuardianOutcome, message string) GuardianEvent {
+	return GuardianEvent{
+		ToolCallID: llm.CallIDFromContext(ctx),
+		ToolName:   toolName,
+		Path:       path,
+		IsWrite:    isWrite,
+		Message:    message,
+		Outcome:    outcome,
+	}
+}
+
 func (m *ApprovalManager) guardianDecisionEvent(ctx context.Context, command, workDir string, outcome GuardianOutcome, message string, decision PolicyDecision) GuardianEvent {
 	event := m.guardianEvent(ctx, command, workDir, outcome, message)
 	event.Model = strings.TrimSpace(decision.Model)
@@ -1387,6 +1523,7 @@ func (m *ApprovalManager) guardianDecisionEvent(ctx context.Context, command, wo
 func (m *ApprovalManager) guardianEvent(ctx context.Context, command, workDir string, outcome GuardianOutcome, message string) GuardianEvent {
 	return GuardianEvent{
 		ToolCallID: llm.CallIDFromContext(ctx),
+		ToolName:   ShellToolName,
 		Command:    command,
 		WorkDir:    normalizeGuardianWorkDir(workDir),
 		Message:    message,

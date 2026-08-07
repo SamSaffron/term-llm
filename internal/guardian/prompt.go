@@ -80,8 +80,25 @@ func writeApprovalContext(b *strings.Builder, approvalContext string) {
 func writeApprovalRequest(b *strings.Builder, req Request) {
 	b.WriteString("\nThe term-llm agent has requested the following action:\n")
 	b.WriteString(">>> APPROVAL REQUEST START\n")
-	b.WriteString("Assess the exact planned shell action below. Do not infer permission for broader commands or patterns.\n")
-	payload := map[string]string{"type": "shell", "command": req.Command, "workdir": req.WorkDir}
+	var payload map[string]any
+	if strings.TrimSpace(req.Path) != "" {
+		operation := "read"
+		if req.IsWrite {
+			operation = "write"
+		}
+		b.WriteString("Assess the exact planned local file action below. Do not infer permission for other paths, tools, or operations.\n")
+		scope := "file"
+		if req.IsDirectory {
+			scope = "directory"
+		}
+		payload = map[string]any{"type": "file", "operation": operation, "tool": req.ToolName, "path": req.Path, "scope": scope}
+		if selector := strings.TrimSpace(req.Selector); selector != "" && selector != strings.TrimSpace(req.Path) {
+			payload["selector"] = selector
+		}
+	} else {
+		b.WriteString("Assess the exact planned shell action below. Do not infer permission for broader commands or patterns.\n")
+		payload = map[string]any{"type": "shell", "command": req.Command, "workdir": req.WorkDir}
+	}
 	js, _ := json.MarshalIndent(payload, "", "  ")
 	b.WriteString(truncateString(string(js), maxActionChars))
 	b.WriteString("\n>>> APPROVAL REQUEST END\n")

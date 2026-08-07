@@ -333,9 +333,9 @@ func AddYoloFlag(cmd *cobra.Command, dest *bool) {
 	cmd.Flags().BoolVar(dest, "yolo", false, "Auto-approve all tool operations (for CI/container use, bypasses all prompts)")
 }
 
-// AddAutoFlag adds the --auto flag for LLM-reviewed automatic shell approvals.
+// AddAutoFlag adds the --auto flag for Guardian-reviewed automatic approvals.
 func AddAutoFlag(cmd *cobra.Command, dest *bool) {
-	cmd.Flags().BoolVar(dest, "auto", false, "Use guardian LLM review for unmatched shell approvals instead of prompting when safe")
+	cmd.Flags().BoolVar(dest, "auto", false, "Use guardian LLM review for unmatched shell and file approvals instead of prompting when safe")
 }
 
 // AddSkillsFlag adds the --skills flag with completion

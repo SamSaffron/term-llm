@@ -37,6 +37,11 @@ type TranscriptEntry struct {
 type Request struct {
 	Command          string
 	WorkDir          string
+	ToolName         string
+	Path             string
+	Selector         string
+	IsWrite          bool
+	IsDirectory      bool
 	Transcript       []TranscriptEntry
 	TranscriptOffset int
 	ApprovalContext  string

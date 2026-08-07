@@ -24,7 +24,7 @@ type ShellTool struct {
 	recorder  FileChangeRecorder
 }
 
-func shellApprovalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
+func approvalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
 	msgs := llm.ApprovalTranscriptFromContext(ctx)
 	if len(msgs) == 0 {
 		return nil
@@ -294,7 +294,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// approval UI can show the user where the command will run.
 	if t.approval != nil {
 		outcome, err := t.approval.checkShellApprovalWithContext(ctx, a.Command, workDir, func() []TranscriptEntry {
-			return shellApprovalTranscriptFromContext(ctx)
+			return approvalTranscriptFromContext(ctx)
 		})
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {

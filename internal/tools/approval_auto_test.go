@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,6 +16,195 @@ func newApprovalAutoTestManager(perms *ToolPermissions) *ApprovalManager {
 	mgr := NewApprovalManager(perms)
 	mgr.IgnoreProjectApprovals = true
 	return mgr
+}
+
+func TestApprovalManagerAutoReviewerHandlesUnmatchedRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guardian-read.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
+	mgr.SetApprovalMode(ModeAuto)
+	reviewCalls := 0
+	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+		reviewCalls++
+		if req.ToolName != ReadFileToolName || req.Path != path || req.IsWrite || req.Command != "" {
+			t.Fatalf("read review request = %#v", req)
+		}
+		if len(req.Transcript) != 1 || req.Transcript[0] != (TranscriptEntry{Role: "user", Text: "inspect the generated report"}) {
+			t.Fatalf("read review transcript = %#v", req.Transcript)
+		}
+		if !strings.Contains(req.ApprovalContext, `file_operation="read"`) || !strings.Contains(req.ApprovalContext, `file_path="`+path+`"`) {
+			t.Fatalf("read approval context = %q", req.ApprovalContext)
+		}
+		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high", Rationale: "requested inspection"}, nil
+	}, nil)
+	mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
+		t.Fatal("human prompt called after guardian approved read")
+		return ApprovalResult{}, nil
+	}
+	var event GuardianEvent
+	mgr.GuardianEventFunc = func(got GuardianEvent) { event = got }
+	ctx := llm.ContextWithCallID(context.Background(), "read-call")
+	ctx = llm.ContextWithApprovalTranscript(ctx, []llm.Message{llm.UserText("inspect the generated report")})
+
+	outcome, err := mgr.CheckPathApprovalWithContext(ctx, ReadFileToolName, path, path, false)
+	if err != nil || outcome != ProceedOnce {
+		t.Fatalf("read approval = %v, %v", outcome, err)
+	}
+	if event.ToolCallID != "read-call" || event.ToolName != ReadFileToolName || event.Path != path || event.IsWrite || event.Outcome != GuardianApproved {
+		t.Fatalf("read guardian event = %#v", event)
+	}
+	if outcome, err := mgr.CheckPathApprovalWithContext(ctx, ReadFileToolName, path, path, false); err != nil || outcome != ProceedOnce {
+		t.Fatalf("repeated read approval = %v, %v", outcome, err)
+	}
+	if reviewCalls != 2 {
+		t.Fatalf("one-shot read reviewer calls = %d, want 2", reviewCalls)
+	}
+}
+
+func TestApprovalManagerAutoReadDenialEscalatesToHuman(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
+	mgr.SetApprovalMode(ModeAuto)
+	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+		return PolicyDecision{Allowed: false, RiskLevel: "high", UserAuthorization: "low", Rationale: "unrelated sensitive file"}, nil
+	}, nil)
+	prompted := false
+	mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
+		prompted = true
+		return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
+	}
+
+	outcome, err := mgr.CheckPathApprovalWithContext(context.Background(), ReadFileToolName, path, path, false)
+	if err != nil || outcome != ProceedOnce || !prompted {
+		t.Fatalf("denied read fallback = outcome %v, prompted %v, err %v", outcome, prompted, err)
+	}
+	mgr.guardianMu.RLock()
+	denials := mgr.guardianConsecutiveDenials
+	mgr.guardianMu.RUnlock()
+	if denials != 0 {
+		t.Fatalf("guardian denials after human approval = %d, want reset", denials)
+	}
+}
+
+func TestApprovalManagerAutoReviewerHandlesUnmatchedWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "write.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
+	mgr.SetApprovalMode(ModeAuto)
+	mgr.SetPolicyReviewFunc(func(_ context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+		if req.ToolName != WriteFileToolName || req.Path != path || !req.IsWrite {
+			t.Fatalf("write review request = %#v", req)
+		}
+		if !strings.Contains(req.ApprovalContext, `file_operation="write"`) || !strings.Contains(req.ApprovalContext, `file_path="`+path+`"`) {
+			t.Fatalf("write approval context = %q", req.ApprovalContext)
+		}
+		return PolicyDecision{Allowed: true, RiskLevel: "medium", UserAuthorization: "high", Rationale: "requested edit"}, nil
+	}, nil)
+	mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
+		t.Fatal("human prompt called after guardian approved write")
+		return ApprovalResult{}, nil
+	}
+
+	outcome, err := mgr.CheckPathApprovalWithContext(context.Background(), WriteFileToolName, path, path, true)
+	if err != nil || outcome != ProceedOnce {
+		t.Fatalf("write approval = outcome %v, err %v", outcome, err)
+	}
+}
+
+func TestApprovalManagerAutoReviewerReceivesDirectorySelector(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
+	mgr.SetApprovalMode(ModeAuto)
+	mgr.SetPolicyReviewFunc(func(_ context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+		if req.ToolName != GrepToolName || req.Path != dir || req.Selector != "AWS_SECRET_ACCESS_KEY" || !req.IsDirectory {
+			t.Fatalf("directory review request = %#v", req)
+		}
+		return PolicyDecision{Allowed: true, RiskLevel: "low", UserAuthorization: "high"}, nil
+	}, nil)
+
+	if outcome, err := mgr.CheckPathApprovalWithContext(context.Background(), GrepToolName, dir, "AWS_SECRET_ACCESS_KEY", false); err != nil || outcome != ProceedOnce {
+		t.Fatalf("directory approval = %v, %v", outcome, err)
+	}
+}
+
+func TestApprovalManagerAutoPathFastPathSkipsReviewer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "allowed.txt")
+	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	perms := NewToolPermissions()
+	if err := perms.AddReadDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	mgr := newApprovalAutoTestManager(perms)
+	mgr.SetApprovalMode(ModeAuto)
+	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+		t.Fatal("guardian reviewer called for deterministic path allow")
+		return PolicyDecision{}, nil
+	}, nil)
+
+	if outcome, err := mgr.CheckPathApprovalWithContext(context.Background(), ReadFileToolName, path, path, false); err != nil || outcome != ProceedOnce {
+		t.Fatalf("deterministic path approval = %v, %v", outcome, err)
+	}
+}
+
+func TestApprovalManagerAutoPathHeadlessFailuresDeny(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blocked.txt")
+	if err := os.WriteFile(path, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		review func(context.Context, PolicyReviewRequest) (PolicyDecision, error)
+	}{
+		{name: "denial", review: func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+			return PolicyDecision{Allowed: false, Rationale: "blocked by policy"}, nil
+		}},
+		{name: "review error", review: func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+			return PolicyDecision{}, errors.New("review unavailable")
+		}},
+		{name: "contradictory allow", review: func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
+			return PolicyDecision{Allowed: true, RiskLevel: "critical", UserAuthorization: "unknown"}, nil
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := newApprovalAutoTestManager(NewToolPermissions())
+			mgr.SetApprovalMode(ModeAuto)
+			mgr.SetAutoHeadless(true)
+			mgr.SetPolicyReviewFunc(tt.review, nil)
+			outcome, err := mgr.CheckPathApprovalWithContext(context.Background(), ReadFileToolName, path, path, false)
+			if outcome != Cancel || err == nil {
+				t.Fatalf("headless path result = %v, %v; want denial", outcome, err)
+			}
+		})
+	}
 }
 
 func TestApprovalManagerApprovalModeParentInheritance(t *testing.T) {
@@ -342,7 +533,7 @@ func TestShellApprovalTranscriptIncludesToolCallsResultsAndApprovalRole(t *testi
 		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "shell", Arguments: args}}}},
 		llm.ToolResultMessage("call-1", "shell", "SECRET=value", nil),
 	}
-	entries := shellApprovalTranscriptFromContext(llm.ContextWithApprovalTranscript(context.Background(), msgs))
+	entries := approvalTranscriptFromContext(llm.ContextWithApprovalTranscript(context.Background(), msgs))
 	if len(entries) != 3 {
 		t.Fatalf("entries = %d, want 3: %#v", len(entries), entries)
 	}

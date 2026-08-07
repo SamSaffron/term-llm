@@ -193,6 +193,9 @@ func emitStreamEvent(e *jsonEmitter, ev ui.StreamEvent) error {
 		u := guardian.Usage
 		return e.emit("guardian.review", map[string]any{
 			"call_id":             guardian.ToolCallID,
+			"tool":                guardian.ToolName,
+			"path":                guardian.Path,
+			"is_write":            guardian.IsWrite,
 			"command":             guardian.Command,
 			"workdir":             guardian.WorkDir,
 			"message":             guardian.Message,

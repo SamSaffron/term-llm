@@ -248,7 +248,7 @@ func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 	}
 	switch next {
 	case tools.ModeAuto:
-		message = "Auto approval mode enabled. Unmatched shell commands will be reviewed by guardian. Other approvals will still prompt."
+		message = "Auto approval mode enabled. Unmatched shell commands and file requests will be reviewed by guardian."
 		tone = "success"
 	case tools.ModeYolo:
 		if !autoUnavailable {

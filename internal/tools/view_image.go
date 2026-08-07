@@ -153,7 +153,7 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(ViewImageToolName, resolvedPath, a.FilePath, false)
+		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ViewImageToolName, resolvedPath, a.FilePath, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return llm.TextOutput(formatToolError(toolErr)), nil

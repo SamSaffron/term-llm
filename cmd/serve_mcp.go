@@ -116,7 +116,7 @@ func init() {
 	serveMCPCmd.Flags().StringArrayVar(&serveMCPShellAllow, "shell-allow", nil, "Allowed shell patterns (repeatable, glob syntax)")
 	AddApprovalFlag(serveMCPCmd, &serveMCPApproval)
 	serveMCPCmd.Flags().BoolVar(&serveMCPYolo, "yolo", false, "Auto-approve all tool actions")
-	serveMCPCmd.Flags().BoolVar(&serveMCPAuto, "auto", false, "Use guardian LLM review for unmatched shell approvals (requires reviewer wiring)")
+	serveMCPCmd.Flags().BoolVar(&serveMCPAuto, "auto", false, "Use guardian LLM review for unmatched shell and file approvals (requires configured LLM provider)")
 	serveMCPCmd.MarkFlagsMutuallyExclusive("approval", "yolo", "auto")
 	serveMCPCmd.Flags().BoolVarP(&serveMCPDebug, "debug", "d", false, "Verbose logging")
 
@@ -329,7 +329,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	if serveMCPYolo {
 		fmt.Fprintf(os.Stderr, "yolo: true (all operations auto-approved)\n")
 	} else if serveMCPAuto {
-		fmt.Fprintf(os.Stderr, "auto: true (unmatched shell operations require guardian approval; unavailable reviewer denies)\n")
+		fmt.Fprintf(os.Stderr, "auto: true (unmatched shell and file operations require guardian approval; unavailable reviewer denies)\n")
 	}
 
 	<-ctx.Done()

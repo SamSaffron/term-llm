@@ -40,6 +40,51 @@ func TestReviewerReportsUsageWhenDecisionIsInvalid(t *testing.T) {
 	}
 }
 
+func TestBuildPromptFramesReadRequest(t *testing.T) {
+	prompt := BuildPrompt(Request{
+		ToolName:   "read_file",
+		Path:       "/private/tmp/report.txt",
+		Transcript: []TranscriptEntry{{Role: "user", Text: "inspect the generated report"}},
+	})
+	for _, want := range []string{
+		"exact planned local file action",
+		`"operation": "read"`,
+		`"path": "/private/tmp/report.txt"`,
+		`"tool": "read_file"`,
+		`"type": "file"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("read prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, `"type": "shell"`) {
+		t.Fatalf("read prompt framed as shell action:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptFramesWriteRequest(t *testing.T) {
+	prompt := BuildPrompt(Request{ToolName: "write_file", Path: "/repo/output.txt", IsWrite: true})
+	for _, want := range []string{`"operation": "write"`, `"path": "/repo/output.txt"`, `"tool": "write_file"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("write prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptFramesDirectorySelector(t *testing.T) {
+	prompt := BuildPrompt(Request{
+		ToolName:    "grep",
+		Path:        "/repo",
+		Selector:    "AWS_SECRET_ACCESS_KEY",
+		IsDirectory: true,
+	})
+	for _, want := range []string{`"scope": "directory"`, `"selector": "AWS_SECRET_ACCESS_KEY"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("directory prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptFramesTranscriptAsUntrustedEvidence(t *testing.T) {
 	prompt := BuildPrompt(Request{
 		Command:    "git status",
