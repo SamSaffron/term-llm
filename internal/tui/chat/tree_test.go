@@ -441,6 +441,13 @@ func TestTreeBusyGateAndBranchPrefillDoesNotAutoSend(t *testing.T) {
 	if m2.handoverAutoSend != "" {
 		t.Fatalf("branch prefill scheduled auto send: %q", m2.handoverAutoSend)
 	}
+	const wantNotice = "Selected message restored as draft. Ctrl+U clears it."
+	if got := m2.footerMessage; got != wantNotice {
+		t.Fatalf("branch prefill footer = %q, want %q", got, wantNotice)
+	}
+	if m2.footerMessageTone != "muted" || m2.footerMessageSeq == 0 {
+		t.Fatalf("branch prefill footer tone/sequence = %q/%d, want muted transient notice", m2.footerMessageTone, m2.footerMessageSeq)
+	}
 }
 
 func TestTreeBringUsefulContextEntersChildBeforeGeneratingPathNotes(t *testing.T) {

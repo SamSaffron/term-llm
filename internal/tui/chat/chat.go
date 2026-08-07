@@ -1694,6 +1694,10 @@ func (m *Model) Init() tea.Cmd {
 		m.textarea.SetValue(m.branchPrefill)
 		m.branchPrefill = ""
 		m.updateTextareaHeight()
+		_, footerCmd := m.showFooterMuted("Selected message restored as draft. Ctrl+U clears it.")
+		if footerCmd != nil {
+			baseCmds = append(baseCmds, footerCmd)
+		}
 	}
 	if cmd := m.startPendingBranchPathNotes(); cmd != nil {
 		baseCmds = append(baseCmds, cmd)
