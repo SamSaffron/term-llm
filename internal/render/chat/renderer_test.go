@@ -87,6 +87,26 @@ func TestRenderer_Render(t *testing.T) {
 	}
 }
 
+func TestRenderer_RendersPathNotePlaceholder(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	message := session.NewPathNoteMessage("child", "- retained finding", llm.PathNoteProvenance{SourceSessionID: "source"}, 0)
+	message.ID = 1
+
+	output := ui.StripANSI(renderer.Render(RenderState{
+		Messages: []session.Message{*message},
+		Viewport: ViewportState{Height: 24, AtBottom: true},
+		Mode:     RenderModeAltScreen,
+		Width:    80,
+		Height:   24,
+	}))
+	if !strings.Contains(output, "● Path notes from an earlier path") {
+		t.Fatalf("path-note placeholder missing from history: %q", output)
+	}
+	if strings.Contains(output, "retained finding") {
+		t.Fatalf("path-note placeholder leaked internal notes: %q", output)
+	}
+}
+
 func TestRenderer_SkipsCompactionTailMessages(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)

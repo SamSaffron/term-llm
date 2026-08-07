@@ -37,6 +37,11 @@ func TestBuildTitle(t *testing.T) {
 			want: "Fix ctrl-c exit · developer · fable",
 		},
 		{
+			name: "branch appears before agent and model",
+			st:   titleState{Agent: "developer", Task: "Fix ctrl-c exit", Model: "fable", Branch: "branch"},
+			want: "Fix ctrl-c exit · branch · developer · fable",
+		},
+		{
 			name: "missing task falls back to term llm",
 			st:   titleState{Agent: "developer", Model: "fable"},
 			want: "term-llm · developer · fable",
@@ -63,12 +68,12 @@ func TestBuildTitle(t *testing.T) {
 }
 
 func TestBuildTitleTruncates(t *testing.T) {
-	got := buildTitle(titleState{Agent: "developer", Task: strings.Repeat("verylong ", 20), Model: "fable-medium"})
+	got := buildTitle(titleState{Agent: "developer", Task: strings.Repeat("verylong ", 20), Model: "fable-medium", Branch: "branch"})
 	if n := len([]rune(got)); n > terminalTitleMaxRunes {
 		t.Fatalf("title length = %d, want <= %d: %q", n, terminalTitleMaxRunes, got)
 	}
-	if !strings.Contains(got, " · developer · fable-medium") {
-		t.Fatalf("truncated title should preserve agent/model suffix: %q", got)
+	if !strings.Contains(got, " · branch · developer · fable-medium") {
+		t.Fatalf("truncated title should preserve branch/agent/model suffix: %q", got)
 	}
 	if strings.HasSuffix(got, "…") {
 		t.Fatalf("default title should not end with streaming activity ellipsis: %q", got)
@@ -110,10 +115,17 @@ func TestTerminalTitleFormat(t *testing.T) {
 	}
 
 	formatter = newTerminalTitleFormatter(`{{env "MISSING" | default "host"}} · {{title}}`, env)
-	got = formatter.Format(titleState{Agent: "developer", Task: "Custom title", Model: "fable"})
-	want = "host · Custom title · developer · fable"
+	got = formatter.Format(titleState{Agent: "developer", Task: "Custom title", Model: "fable", Branch: "branch"})
+	want = "host · Custom title · branch · developer · fable"
 	if got != want {
 		t.Fatalf("formatted title with default env = %q, want %q", got, want)
+	}
+
+	formatter = newTerminalTitleFormatter(`{{task}} · {{branch}} · {{model}}`, env)
+	got = formatter.Format(titleState{Task: "Custom title", Model: "fable", Branch: "branch"})
+	want = "Custom title · branch · fable"
+	if got != want {
+		t.Fatalf("formatted title with branch = %q, want %q", got, want)
 	}
 }
 
@@ -354,14 +366,15 @@ func TestViewUsesCustomTerminalTitleFormat(t *testing.T) {
 	env := NewTerminalTitleEnvironment(map[string]string{"DOCKER_CONTAINER_NAME": "worker-1"})
 	m := newTestChatModel(true)
 	m.titleMode = TerminalTitleBasic
-	m.titleFormat = "[{{env.DOCKER_CONTAINER_NAME}}] {{agent}}/{{task}}/{{model}}"
+	m.titleFormat = "[{{env.DOCKER_CONTAINER_NAME}}] {{agent}}/{{task}}/{{branch}}/{{model}}"
 	m.agentName = "developer"
 	m.modelName = "fable"
 	m.sess = &session.Session{ID: "custom-title", GeneratedShortTitle: "Format titles"}
+	m.SetConversationBranch(true)
 	m.ConfigureTerminalTitleEnvironment(env)
 
 	raw := strings.Join(rawStringsFromCmd(m.terminalTitleCmd()), "")
-	if !strings.Contains(raw, "\x1b]2;[worker-1] developer/Format titles/fable\x07") {
+	if !strings.Contains(raw, "\x1b]2;[worker-1] developer/Format titles/branch/fable\x07") {
 		t.Fatalf("raw title command did not include custom formatted title: %q", raw)
 	}
 }

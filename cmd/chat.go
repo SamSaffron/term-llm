@@ -140,6 +140,7 @@ Slash commands:
   /inspect     - View conversation/tool details
   /compact     - Compact conversation context
   /resume      - Browse and resume previous sessions
+  /tree        - Browse paths or branch from an earlier message
   /reload      - Re-exec current binary and resume session
   /handover    - Hand conversation to another agent`,
 	RunE:              runChat,
@@ -201,9 +202,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 	resumeID := strings.TrimSpace(chatResume)
 
 	handoverAutoSend := ""
+	relaunchHandoff := chatRelaunchHandoff{}
 	chatHandoverApprovalMode = nil
 	for {
-		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend)
+		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff)
 		if err != nil {
 			return err
 		}
@@ -233,6 +235,28 @@ type chatProgramInput struct {
 	reader       io.Reader
 	disableInput bool
 	cleanup      func()
+}
+
+type chatRelaunchHandoff struct {
+	branchPrefill   string
+	branchPathNotes *chat.BranchPathNotesRequest
+}
+
+func sessionIsConversationBranch(ctx context.Context, store session.Store, sessionID string) bool {
+	branchStore, ok := store.(session.ConversationBranchStore)
+	if !ok || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	tree, err := branchStore.GetBranchTree(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	for _, node := range tree.Nodes {
+		if node.SessionID == sessionID {
+			return strings.TrimSpace(node.ParentSessionID) != ""
+		}
+	}
+	return false
 }
 
 func buildChatProgramInput(autoSendMode bool) (chatProgramInput, error) {
@@ -275,7 +299,7 @@ func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettin
 	return tools.NewApprovalManager(perms), nil
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string) (string, string, error) {
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff) (string, string, error) {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return "", "", err
@@ -603,6 +627,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
 	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: model.CurrentAgentMentionEngine, manager: toolMgr})
+	if sess != nil {
+		model.SetConversationBranch(sessionIsConversationBranch(context.Background(), store, sess.ID))
+	}
 	model.ConfigureTerminalTitleEnvironment(chat.TerminalTitleEnvironmentFromEnv())
 	terminalTitleRestored := false
 	restoreTerminalTitle := func() {
@@ -649,6 +676,16 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Wire handover auto-send if pending from previous iteration
 	if handoverAutoSend != "" {
 		model.SetHandoverAutoSend(handoverAutoSend)
+	}
+	if relaunchHandoff != nil {
+		if relaunchHandoff.branchPrefill != "" {
+			model.SetBranchPrefill(relaunchHandoff.branchPrefill)
+			relaunchHandoff.branchPrefill = ""
+		}
+		if relaunchHandoff.branchPathNotes != nil {
+			model.SetBranchPathNotes(relaunchHandoff.branchPathNotes)
+			relaunchHandoff.branchPathNotes = nil
+		}
 	}
 	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
 		if strings.TrimSpace(providerKey) == "" {
@@ -858,6 +895,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
 		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
+		if relaunchHandoff != nil {
+			relaunchHandoff.branchPrefill = m.RequestedBranchPrefill()
+			relaunchHandoff.branchPathNotes = m.RequestedBranchPathNotes()
+		}
 		// Carry a user-selected mode only into an actual handover. Ordinary /resume
 		// and /new relaunches must resolve the target session/config independently.
 		mode := m.ApprovalModeRequested()

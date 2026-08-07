@@ -76,6 +76,8 @@ type MessageBlockRenderer struct {
 // Shared theme instance to avoid allocations
 var sharedTheme = ui.DefaultStyles().Theme()
 
+const branchPathNoteHistoryLabel = "Path notes from an earlier path"
+
 // NewMessageBlockRenderer creates a new renderer for message blocks.
 func NewMessageBlockRenderer(width int, mdRenderer MarkdownRenderer, toolsExpanded bool) *MessageBlockRenderer {
 	return &MessageBlockRenderer{
@@ -148,6 +150,11 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 		content = r.renderEventMessage(msg)
 		if strings.TrimSpace(content) != "" {
 			r.noteRenderedSegment(ui.SegmentText)
+		}
+	case llm.RoleDeveloper:
+		if _, ok := msg.PathNoteProvenance(); ok {
+			content = r.renderPathNotePlaceholder()
+			r.noteRenderedSegment(ui.SegmentTool)
 		}
 	case llm.RoleSystem:
 		// Skip system messages - users can view them via Ctrl+O inspector
@@ -238,6 +245,12 @@ func (r *MessageBlockRenderer) renderEventMessage(msg *session.Message) string {
 	}
 	style := lipgloss.NewStyle().Foreground(r.theme.Muted).Italic(true)
 	return style.Render(text) + "\n\n"
+}
+
+func (r *MessageBlockRenderer) renderPathNotePlaceholder() string {
+	style := lipgloss.NewStyle().Foreground(r.theme.Muted)
+	line := branchPathNoteHistoryLabel + " · Ctrl+O to inspect"
+	return ui.SuccessCircle() + " " + style.Render(wordwrap.String(line, max(20, r.width-2))) + "\n\n"
 }
 
 func (r *MessageBlockRenderer) renderCompactionSummaryPlaceholder(msg *session.Message) string {

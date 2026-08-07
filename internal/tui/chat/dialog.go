@@ -22,6 +22,8 @@ const (
 	DialogNone DialogType = iota
 	DialogModelPicker
 	DialogSessionList
+	DialogBranchTree
+	DialogBranchContext
 	DialogDirApproval
 	DialogMCPPicker
 	DialogWorktreeRecovery
@@ -52,15 +54,30 @@ type DialogModel struct {
 	contentLines  []string
 	contentScroll int
 	contentFooter string
+
+	// Conversation tree specific
+	treeToolsVisible  bool
+	treeExpandedTurns map[string]bool
+
+	// New-path context specific
+	branchSourceRole    llm.Role
+	branchSourceNumber  int
+	branchSourcePreview string
 }
 
 // DialogItem represents an item in a dialog list
 type DialogItem struct {
-	ID          string
-	Label       string
-	Description string
-	Selected    bool
-	Category    string
+	ID            string
+	Label         string
+	Description   string
+	Selected      bool
+	Category      string
+	TreeUserTurn  bool
+	TreeTool      bool
+	TreeTurnID    string
+	TreeRole      llm.Role
+	TreeRoleLabel string
+	TreePreview   string
 }
 
 // NewDialogModel creates a new dialog model
@@ -101,6 +118,11 @@ func (d *DialogModel) Close() {
 	d.contentScroll = 0
 	d.contentFooter = ""
 	d.worktreeRecoveryQuestion = ""
+	d.treeToolsVisible = false
+	d.treeExpandedTurns = nil
+	d.branchSourceRole = ""
+	d.branchSourceNumber = 0
+	d.branchSourcePreview = ""
 }
 
 // ShowModelPicker opens the model picker dialog.
@@ -161,15 +183,48 @@ func (d *DialogModel) ShowModelPicker(currentProviderModel string, providers []P
 // ShowSessionList opens the session list dialog.
 // items should have ID=full session ID, Label=display name.
 func (d *DialogModel) ShowSessionList(items []DialogItem, currentSessionID string) {
-	d.dialogType = DialogSessionList
-	d.title = "Resume Session"
+	d.showSessionItems(DialogSessionList, "Resume Session", items, currentSessionID)
+}
+
+// ShowBranchTree opens the connected paths and durable branch-point picker.
+func (d *DialogModel) ShowBranchTree(items []DialogItem, currentItemID string) {
+	d.showSessionItems(DialogBranchTree, "Conversation Tree", items, currentItemID)
+	d.treeToolsVisible = false
+	d.treeExpandedTurns = make(map[string]bool)
+	d.filterItems()
+}
+
+// ShowBranchContext asks which context the new path should include.
+func (d *DialogModel) ShowBranchContext(sourceMessages int, sourceRole llm.Role, sourceNumber int, sourcePreview string) {
+	items := []DialogItem{{ID: "clean", Label: "Start clean", Description: "Start without additional conversation context"}}
+	if sourceMessages > 0 {
+		detail := fmt.Sprintf("Include useful context from %d other message%s", sourceMessages, map[bool]string{true: "", false: "s"}[sourceMessages == 1])
+		items = append(items,
+			DialogItem{ID: "notes", Label: "Include useful context", Description: detail + ", including tests and files touched"},
+			DialogItem{ID: "focused", Label: "Include specific context…", Description: "Choose specific context for the new path"},
+		)
+	} else {
+		items[0].Description = "No additional context is available at this branch point"
+	}
+	d.showSessionItems(DialogBranchContext, "Start a New Path", items, "clean")
+	d.branchSourceRole = sourceRole
+	d.branchSourceNumber = sourceNumber
+	d.branchSourcePreview = strings.TrimSpace(sourcePreview)
+}
+
+func (d *DialogModel) showSessionItems(dialogType DialogType, title string, items []DialogItem, currentItemID string) {
+	d.dialogType = dialogType
+	d.title = title
 	d.cursor = 0
 	d.query = ""
 	d.items = nil
 	d.filtered = nil
+	d.branchSourceRole = ""
+	d.branchSourceNumber = 0
+	d.branchSourcePreview = ""
 
 	for _, item := range items {
-		item.Selected = item.ID == currentSessionID
+		item.Selected = item.ID == currentItemID
 		d.items = append(d.items, item)
 		if item.Selected {
 			d.cursor = len(d.items) - 1
@@ -327,29 +382,98 @@ func (d *DialogModel) ItemAt(idx int) *DialogItem {
 	return &d.filtered[idx]
 }
 
-// SetQuery updates the filter query for model picker or MCP picker
+// SetQuery updates the filter query for searchable dialogs.
 func (d *DialogModel) SetQuery(query string) {
 	d.query = query
-	if d.dialogType == DialogModelPicker || d.dialogType == DialogMCPPicker {
+	if d.dialogType == DialogModelPicker || d.dialogType == DialogMCPPicker || d.dialogType == DialogBranchTree {
 		d.filterItems()
 	}
 }
 
-// filterItems filters items based on query
+// filterItems filters items based on query.
 func (d *DialogModel) filterItems() {
-	if d.query == "" {
-		d.filtered = d.items
-	} else {
-		d.filtered = nil
-		q := strings.ToLower(d.query)
-		for _, item := range d.items {
-			if strings.Contains(strings.ToLower(item.Label), q) {
-				d.filtered = append(d.filtered, item)
+	selectedID := ""
+	if d.dialogType == DialogBranchTree && d.cursor >= 0 && d.cursor < len(d.filtered) {
+		selectedID = d.filtered[d.cursor].ID
+	}
+	d.filtered = nil
+	q := strings.ToLower(d.query)
+	for _, item := range d.items {
+		turnExpanded := item.TreeTurnID != "" && d.treeExpandedTurns[item.TreeTurnID]
+		if d.dialogType == DialogBranchTree && item.TreeTool && d.query == "" && !d.treeToolsVisible && !turnExpanded {
+			continue
+		}
+		if q != "" {
+			haystack := strings.ToLower(strings.Join([]string{item.Label, item.Description, item.Category}, " "))
+			if !strings.Contains(haystack, q) {
+				continue
 			}
 		}
+		d.filtered = append(d.filtered, item)
 	}
-	if d.cursor >= len(d.filtered) {
+	if d.dialogType == DialogBranchTree {
+		d.cursor = 0
+		for i := range d.filtered {
+			if d.filtered[i].ID == selectedID {
+				d.cursor = i
+				break
+			}
+		}
+	} else if d.cursor >= len(d.filtered) {
 		d.cursor = max(0, len(d.filtered)-1)
+	}
+}
+
+// ToggleTreeTools shows or hides individual tool branch points.
+func (d *DialogModel) ToggleTreeTools() {
+	if d.dialogType != DialogBranchTree {
+		return
+	}
+	d.treeToolsVisible = !d.treeToolsVisible
+	d.filterItems()
+}
+
+// SetSelectedTreeTurnExpanded expands or collapses tools belonging to the selected user turn.
+func (d *DialogModel) SetSelectedTreeTurnExpanded(expanded bool) {
+	if d.dialogType != DialogBranchTree {
+		return
+	}
+	selected := d.Selected()
+	if selected == nil || !selected.TreeUserTurn || selected.TreeTurnID == "" {
+		return
+	}
+	if expanded {
+		d.treeExpandedTurns[selected.TreeTurnID] = true
+	} else {
+		delete(d.treeExpandedTurns, selected.TreeTurnID)
+	}
+	d.filterItems()
+}
+
+func (d *DialogModel) treeTurnExpanded(item DialogItem) bool {
+	return item.TreeUserTurn && item.TreeTurnID != "" && (d.treeToolsVisible || d.treeExpandedTurns[item.TreeTurnID])
+}
+
+func (d *DialogModel) treeTurnToolCount(turnID string) int {
+	count := 0
+	for _, item := range d.items {
+		if item.TreeTool && item.TreeTurnID == turnID {
+			count++
+		}
+	}
+	return count
+}
+
+// MoveTreeUserTurn moves to the next or previous visible user turn.
+func (d *DialogModel) MoveTreeUserTurn(direction int) {
+	if d.dialogType != DialogBranchTree || direction == 0 {
+		return
+	}
+	for i := d.cursor + direction; i >= 0 && i < len(d.filtered); i += direction {
+		if d.filtered[i].TreeUserTurn {
+			d.cursor = i
+			return
+		}
 	}
 }
 
@@ -365,6 +489,10 @@ func (d *DialogModel) Cursor() int {
 
 // SetCursor sets the cursor position, clamping to valid range
 func (d *DialogModel) SetCursor(pos int) {
+	if len(d.filtered) == 0 {
+		d.cursor = 0
+		return
+	}
 	if pos < 0 {
 		pos = 0
 	}
@@ -453,6 +581,11 @@ func (d *DialogModel) View() string {
 	// Use MCP-specific view for MCP picker
 	if d.dialogType == DialogMCPPicker {
 		return d.viewMCPPicker()
+	}
+
+	// Conversation trees have searchable, metadata-rich rows.
+	if d.dialogType == DialogBranchTree {
+		return d.viewBranchTree()
 	}
 
 	// Use content renderer for static modals.
@@ -606,6 +739,113 @@ func (d *DialogModel) viewContentDialog() string {
 	return borderStyle.Render(b.String())
 }
 
+func (d *DialogModel) viewBranchTree() string {
+	theme := d.styles.Theme()
+	dialogWidth := 88
+	if d.width > 0 {
+		dialogWidth = min(dialogWidth, max(20, d.width-4))
+	}
+	bodyWidth := max(12, dialogWidth-6)
+	maxItems := 10
+	if d.height > 0 {
+		maxItems = max(3, min(maxItems, (d.height-9)/2))
+	}
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Padding(1, 2).
+		Width(dialogWidth)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+	selectedStyle := lipgloss.NewStyle().Background(theme.Primary).Foreground(lipgloss.Color("0"))
+	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	categoryStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Secondary)
+	userRoleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Background(theme.UserMsgBg)
+	userPreviewStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.UserMsgBg)
+	assistantRoleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Secondary)
+	toolRoleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Muted)
+	previewStyle := lipgloss.NewStyle().Foreground(theme.Text)
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(d.title))
+	b.WriteString("\n")
+	b.WriteString(mutedStyle.Render("search: "))
+	b.WriteString(d.query)
+	b.WriteString("█\n\n")
+
+	if len(d.filtered) == 0 {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("No matches for %q", d.query)))
+	} else {
+		startIdx, endIdx := ui.VisibleRange(len(d.filtered), d.cursor, maxItems)
+		items := d.filtered[startIdx:endIdx]
+		lastCategory := ""
+		for i, item := range items {
+			if item.Category != "" && item.Category != lastCategory {
+				if i > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(categoryStyle.Render(item.Category))
+				b.WriteString("\n")
+				lastCategory = item.Category
+			}
+
+			actualIdx := startIdx + i
+			prefix := "  "
+			disclosure := ""
+			suffix := ""
+			if toolCount := d.treeTurnToolCount(item.TreeTurnID); item.TreeUserTurn && toolCount > 0 {
+				disclosure = "▸ "
+				if d.treeTurnExpanded(item) {
+					disclosure = "▾ "
+				}
+				noun := "tools"
+				if toolCount == 1 {
+					noun = "tool"
+				}
+				suffix = fmt.Sprintf(" · %d %s", toolCount, noun)
+			}
+			label := disclosure + item.Label + suffix
+			if actualIdx == d.cursor {
+				prefix = "❯ "
+				b.WriteString(selectedStyle.Render(prefix + label))
+			} else if item.TreeRoleLabel != "" {
+				b.WriteString(prefix)
+				roleText := disclosure + item.TreeRoleLabel + ":"
+				previewText := " " + item.TreePreview + suffix
+				switch item.TreeRole {
+				case llm.RoleUser:
+					b.WriteString(userRoleStyle.Render(roleText))
+					b.WriteString(userPreviewStyle.Render(previewText))
+				case llm.RoleAssistant:
+					b.WriteString(assistantRoleStyle.Render(roleText))
+					b.WriteString(previewStyle.Render(previewText))
+				default:
+					b.WriteString(toolRoleStyle.Render(roleText))
+					b.WriteString(previewStyle.Render(previewText))
+				}
+			} else {
+				b.WriteString(prefix + label)
+			}
+			if item.Description != "" {
+				b.WriteString("\n")
+				description := wrap.String(item.Description, bodyWidth-4)
+				b.WriteString(mutedStyle.Render("    " + strings.ReplaceAll(description, "\n", "\n    ")))
+			}
+			if i < len(items)-1 {
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	b.WriteString("\n\n")
+	toolsState := "tools hidden"
+	if d.treeToolsVisible || d.query != "" {
+		toolsState = "tools shown"
+	}
+	b.WriteString(mutedStyle.Render("type to search · ↑/↓ item · pgup/pgdn user turn · →/← expand/collapse tools · ctrl+t " + toolsState + " · enter select · esc clear/close"))
+	return borderStyle.Render(b.String())
+}
+
 func (d *DialogModel) viewStandardDialog() string {
 	theme := d.styles.Theme()
 
@@ -644,6 +884,29 @@ func (d *DialogModel) viewStandardDialog() string {
 
 	b.WriteString(titleStyle.Render(d.title))
 	b.WriteString("\n")
+
+	// New-path choices identify the selected branch point without relying on
+	// directional language such as "earlier" or "later".
+	if d.dialogType == DialogBranchContext {
+		bodyWidth := max(12, dialogWidth-6)
+		role := strings.TrimSpace(string(d.branchSourceRole))
+		if role == "" {
+			role = "conversation"
+		}
+		origin := fmt.Sprintf("Branching from %s message", role)
+		if d.branchSourceNumber > 0 {
+			origin += fmt.Sprintf(" #%d", d.branchSourceNumber)
+		}
+		b.WriteString(mutedStyle.Render(origin))
+		if d.branchSourcePreview != "" {
+			preview := wrap.String("“"+d.branchSourcePreview+"”", bodyWidth)
+			b.WriteString("\n")
+			b.WriteString(mutedStyle.Render(preview))
+		}
+		b.WriteString("\n\n")
+		b.WriteString(wrap.String("Choose what context to include in the new path.", bodyWidth))
+		b.WriteString("\n\n")
+	}
 
 	// Special message for directory approval
 	if d.dialogType == DialogDirApproval && d.dirApprovalPath != "" {

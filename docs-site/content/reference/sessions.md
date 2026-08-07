@@ -27,6 +27,20 @@ term-llm chat --resume=42
 
 Sessions are numbered sequentially for convenience, so `42` and `#42` both work.
 
+## Conversation paths
+
+Use `/tree` in the TUI, or the per-turn branch actions in the Web UI, to continue from an earlier message without deleting the current conversation. Every path is stored as a normal resumable child session; the tree view can switch between all surviving alternatives.
+
+When starting a path, choose what it should retain from the later turns being left out:
+
+- **Start clean** copies only the conversation prefix through the selected branch point.
+- **Bring useful context** asks the current model for short, non-authoritative notes covering useful findings, attempts, test results, and files touched.
+- **Bring specific context…** adds your focus instructions to that same bounded note-generation policy.
+
+Path notes are inserted as internal developer context before the first new user turn and shown as an expandable/inspectable artifact. They do not count as user messages. Generation uses a one-turn ephemeral helper request with bounded input and output. In the TUI, the child path opens immediately and note creation appears as live transcript work; you can draft at once, and a message submitted before the notes finish is queued until they are inserted. If generation is cancelled or fails, the queued message is restored to the composer and the new path remains clean. The Web flow prepares the selected context as part of its branch request.
+
+Conversation branching rewinds model context only. Filesystem changes, commands, network requests, and other tool side effects from the previous path are not undone.
+
 ## Storage
 
 Sessions are stored in SQLite at:

@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestShowContentInitializesContentDialog(t *testing.T) {
@@ -114,6 +115,31 @@ func TestContentDialogScrollUsesWrappedLines(t *testing.T) {
 	d.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	if d.contentScroll != d.maxContentScroll() {
 		t.Fatalf("end scroll = %d, want %d", d.contentScroll, d.maxContentScroll())
+	}
+}
+
+func TestBranchContextDialogIdentifiesOriginAndUsesNeutralContextWording(t *testing.T) {
+	d := NewDialogModel(nil)
+	d.SetSize(80, 24)
+	d.ShowBranchContext(4, llm.RoleUser, 1, "I think we can give more information")
+
+	view := d.View()
+	for _, want := range []string{
+		"Branching from user message #1",
+		"“I think we can give more information”",
+		"Choose what context to include in the new path.",
+		"Start clean",
+		"Include useful context",
+		"Include specific context…",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("branch context dialog missing %q:\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{"earlier context", "later conversation", "carry forward", "Bring useful context"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("branch context dialog contains ambiguous wording %q:\n%s", unwanted, view)
+		}
 	}
 }
 

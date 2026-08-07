@@ -104,6 +104,11 @@ func AllCommands() []Command {
 			Usage:       "/clear",
 		},
 		{
+			Name:        "tree",
+			Description: "Browse conversation paths or branch from an earlier message",
+			Usage:       "/tree",
+		},
+		{
 			Name:        "undo",
 			Description: "Remove the latest user turn and everything after it",
 			Usage:       "/undo",
@@ -528,6 +533,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdGoal(args, rawArgs)
 	case "clear":
 		return m.cmdClear()
+	case "tree":
+		return m.cmdTree(args)
 	case "undo":
 		return m.cmdUndoRedo(false, args)
 	case "redo":
@@ -986,7 +993,7 @@ type transcriptMutationDoneMsg struct {
 }
 
 func (m *Model) transcriptMutationBusy() bool {
-	return m.transcriptMutationInFlight || m.streaming || m.activeSkillRunCount() > 0 || m.sideQuestion.Running || m.titleGenerationInFlight ||
+	return m.transcriptMutationInFlight || m.branchContextInFlight() || m.streaming || m.activeSkillRunCount() > 0 || m.sideQuestion.Running || m.titleGenerationInFlight ||
 		m.worktreeOperationBusy() || m.shareInFlight || m.externalProcessActive || m.pausedForExternalUI
 }
 
@@ -1196,6 +1203,10 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 	m.cancelSideQuestion()
+	if m.branchOperationCancel != nil {
+		m.branchOperationCancel()
+		m.branchOperationCancel = nil
+	}
 	hadActiveStream := m.streaming || m.streamCancelFunc != nil
 	// Signal tool-initiated handover (if any) right before quitting.
 	// The session is about to restart so the tool result is moot,
@@ -1224,6 +1235,9 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
+	if m.branchContextInFlight() {
+		return m.showSystemMessage("Cannot reload while path notes are being created. Cancel first (Esc).")
+	}
 	if m.streaming {
 		return m.showSystemMessage("Cannot reload while streaming. Cancel first (Esc).")
 	}
@@ -2061,6 +2075,9 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
+	if m.branchContextInFlight() {
+		return m.showFooterWarning("Wait for path notes to finish, or press Esc to cancel them before starting a new session.")
+	}
 	m.clearSideQuestionHistory()
 	m.pauseGoalForLocalAction("paused because a new session was started")
 	m.clearPendingStreamModelSwitch()
@@ -2254,6 +2271,9 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
+	if m.branchContextInFlight() {
+		return m.showFooterWarning("Wait for path notes to finish, or press Esc to cancel them before resuming another session.")
+	}
 	if m.store == nil {
 		return m.showSystemMessage("Session storage is disabled.")
 	}

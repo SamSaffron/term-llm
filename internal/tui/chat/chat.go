@@ -52,6 +52,37 @@ type pendingStreamModelSwitch struct {
 	applied  bool
 }
 
+type conversationBranchPoint struct {
+	sourceSessionID     string
+	anchorMessageID     int64
+	expected            session.TranscriptMutationState
+	idempotencyKey      string
+	prefill             string
+	sourceMessages      []llm.Message
+	laterMessageCount   int
+	sourceRole          llm.Role
+	sourceMessageNumber int
+	sourcePreview       string
+}
+
+// BranchPathNotesRequest carries an abandoned-path suffix across the short TUI
+// relaunch used to enter a newly-created child session. Generation deliberately
+// starts in the child so navigation is immediate and uses a fresh provider.
+type BranchPathNotesRequest struct {
+	SourceSessionID string
+	AnchorMessageID int64
+	SourceMessages  []llm.Message
+	Focus           string
+}
+
+type pendingBranchSend struct {
+	content       string
+	files         []FileAttachment
+	images        []ImageAttachment
+	selectedImage int
+	pasteChunks   map[int]string
+}
+
 type promptHistoryState struct {
 	active          bool
 	cursorID        int64
@@ -311,12 +342,25 @@ type Model struct {
 
 	// If set, the caller should relaunch chat with this session ID.
 	pendingResumeSessionID string
+	pendingBranchPrefill   string
+	pendingBranchPathNotes *BranchPathNotesRequest
+	branchTreeChoices      map[string]conversationBranchPoint
+	pendingBranchPoint     *conversationBranchPoint
+	branchFocusCapture     bool
+	branchOperationCancel  context.CancelFunc
+	branchOperationDone    chan struct{}
+	branchOperationStarted time.Time
+	branchPathNotesRequest *BranchPathNotesRequest
+	queuedBranchSend       *pendingBranchSend
 
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string
 
 	// If set, auto-send this message on Init (used after handover restart).
 	handoverAutoSend string
+	// branchPrefill restores an edited/follow-up draft after a branch relaunch
+	// without submitting it to the model.
+	branchPrefill string
 
 	// Deferred model switch marker for non-submitting shortcuts such as Ctrl+R.
 	// Coalesces repeated effort changes and is appended when the next user turn is sent.
@@ -334,11 +378,12 @@ type Model struct {
 	streamPerf *streamPerfTelemetry
 
 	// Terminal/window title state
-	titleMode      TerminalTitleMode
-	titleFormat    string
-	titleProgress  bool
-	titleFormatter *terminalTitleFormatter
-	titleManager   *terminalTitleManager
+	titleMode          TerminalTitleMode
+	titleFormat        string
+	titleProgress      bool
+	conversationBranch bool
+	titleFormatter     *terminalTitleFormatter
+	titleManager       *terminalTitleManager
 	// Live generated session-title state
 	titleGenerationSessionID        string
 	titleGenerationAttempts         int
@@ -1643,6 +1688,17 @@ func (m *Model) Init() tea.Cmd {
 		m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
 	}
 
+	// Branch relaunches restore the user's edited/follow-up draft but deliberately
+	// require a fresh Enter confirmation instead of auto-sending it.
+	if m.branchPrefill != "" {
+		m.textarea.SetValue(m.branchPrefill)
+		m.branchPrefill = ""
+		m.updateTextareaHeight()
+	}
+	if cmd := m.startPendingBranchPathNotes(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
+
 	// Handover auto-send: send the target agent's default prompt after restart
 	if m.handoverAutoSend != "" {
 		m.textarea.SetValue(m.handoverAutoSend)
@@ -1690,6 +1746,22 @@ func (m *Model) RequestedHandoverAutoSend() string {
 	return strings.TrimSpace(m.pendingHandoverAutoSend)
 }
 
+// RequestedBranchPrefill returns a draft to restore without auto-submitting it.
+func (m *Model) RequestedBranchPrefill() string {
+	return m.pendingBranchPrefill
+}
+
+// RequestedBranchPathNotes returns helper work that should begin after the new
+// child session has relaunched.
+func (m *Model) RequestedBranchPathNotes() *BranchPathNotesRequest {
+	if m.pendingBranchPathNotes == nil {
+		return nil
+	}
+	request := *m.pendingBranchPathNotes
+	request.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
+	return &request
+}
+
 // YoloModeActive returns the current effective yolo state, including approval
 // managers that may have been toggled during the session.
 func (m *Model) YoloModeActive() bool {
@@ -1725,23 +1797,44 @@ func (m *Model) PersistApprovalMode(mode tools.ApprovalMode) {
 	m.persistApprovalMode(mode)
 }
 
-// WaitStreamDone blocks until the engine streaming goroutine has exited.
-// It is safe to call when no stream was started (no-op). Shutdown must not
-// hang forever if a provider/tool ignores cancellation, so the wait is bounded
+// WaitStreamDone blocks until engine streaming and branch-helper goroutines have
+// exited. It is safe to call when neither was started (no-op). Shutdown must not
+// hang forever if a provider/tool ignores cancellation, so each wait is bounded
 // by the same hard stop budget used by the interactive cancel watchdog.
 func (m *Model) WaitStreamDone() {
-	if m.streamDone == nil {
-		return
+	wait := func(done <-chan struct{}) {
+		if done == nil {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(streamCancelMaxWait):
+		}
 	}
-	select {
-	case <-m.streamDone:
-	case <-time.After(streamCancelMaxWait):
-	}
+	wait(m.streamDone)
+	wait(m.branchOperationDone)
 }
 
 // SetHandoverAutoSend sets a message to auto-send on Init (for handover restart).
 func (m *Model) SetHandoverAutoSend(text string) {
 	m.handoverAutoSend = strings.TrimSpace(text)
+}
+
+// SetBranchPrefill restores a branch draft on Init without scheduling send.
+func (m *Model) SetBranchPrefill(text string) {
+	m.branchPrefill = text
+}
+
+// SetBranchPathNotes schedules abandoned-path summarization after this model is
+// initialized in the newly-created child session.
+func (m *Model) SetBranchPathNotes(request *BranchPathNotesRequest) {
+	if request == nil {
+		m.branchPathNotesRequest = nil
+		return
+	}
+	copyRequest := *request
+	copyRequest.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
+	m.branchPathNotesRequest = &copyRequest
 }
 
 func chatMouseModeFromEnv() bool {
@@ -1822,6 +1915,7 @@ func isParentChatMessage(msg tea.Msg) bool {
 		GuardianReviewMsg,
 		chatGPTModelsLoadedMsg,
 		transcriptMutationDoneMsg,
+		conversationBranchNotesDoneMsg,
 		FlushBeforeAskUserMsg,
 		FlushBeforeApprovalMsg,
 		ResumeFromExternalUIMsg,
@@ -2045,7 +2139,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if (m.streaming || m.sideQuestion.Running) && !m.pausedForExternalUI {
+		if (m.streaming || m.sideQuestion.Running || m.branchContextInFlight()) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
@@ -2098,6 +2192,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case transcriptMutationDoneMsg:
 		return m.handleTranscriptMutationDone(msg)
+
+	case conversationBranchNotesDoneMsg:
+		return m.handleConversationBranchNotesDone(msg)
 
 	case promptHistoryLookupMsg:
 		return m.handlePromptHistoryLookupMsg(msg)

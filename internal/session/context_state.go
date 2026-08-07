@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -362,15 +363,15 @@ func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string)
 	if activeStart > 0 {
 		activeKeys := make(map[string]bool)
 		for i := activeStart; i < len(messages); i++ {
-			if key := skillContextMessageKey(messages[i]); key != "" {
+			if key := retainedDeveloperContextKey(messages[i]); key != "" {
 				activeKeys[key] = true
 			}
 		}
-		// Retain only the latest pre-boundary activation for each skill context.
-		// The durable transcript keeps every invocation; this protects provider
+		// Retain only the latest pre-boundary activation/note for each durable
+		// context key. The transcript keeps every invocation; this protects provider
 		// context from growing without bound after repeated compactions.
 		for i := activeStart - 1; i >= 0; i-- {
-			key := skillContextMessageKey(messages[i])
+			key := retainedDeveloperContextKey(messages[i])
 			if key == "" || activeKeys[key] {
 				continue
 			}
@@ -401,16 +402,23 @@ func LLMActiveMessages(messages []Message, activeStart int, systemPrompt string)
 	return llm.FilterConversationMessages(out)
 }
 
-func skillContextMessageKey(message Message) string {
+func retainedDeveloperContextKey(message Message) string {
 	if message.Role != llm.RoleDeveloper {
 		return ""
 	}
 	for _, part := range message.Parts {
-		if part.Type != llm.PartSkillActivation || part.SkillActivation == nil {
-			continue
+		switch part.Type {
+		case llm.PartPathNote:
+			if part.PathNote != nil {
+				return fmt.Sprintf("path-note\x00%s\x00%d", part.PathNote.SourceSessionID, part.PathNote.AnchorMessageID)
+			}
+		case llm.PartSkillActivation:
+			if part.SkillActivation == nil {
+				continue
+			}
+			provenance := part.SkillActivation
+			return "skill\x00" + strings.Join([]string{provenance.Name, provenance.SourcePath, provenance.Origin, provenance.Execution}, "\x00")
 		}
-		provenance := part.SkillActivation
-		return strings.Join([]string{provenance.Name, provenance.SourcePath, provenance.Origin, provenance.Execution}, "\x00")
 	}
 	return ""
 }

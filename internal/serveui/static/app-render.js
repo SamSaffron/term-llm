@@ -217,6 +217,7 @@ const computeSidebarKey = (sorted) =>
       s.id, s.title, s.longTitle || '', s.searchSnippet || '',
       s._refiningTitle ? 1 : 0,
       s.pinned ? 1 : 0, s.archived ? 1 : 0,
+      s.branchParentSessionId || '', s.branchParentTitle || '', s.branchDepth || 0,
       conversationMessageCount(s),
       s.lastMessageAt || s.created,
       sessionHasInProgressState(s) ? 1 : 0,
@@ -236,6 +237,9 @@ const getOrCreateGroupSection = (label) => {
 };
 
 const sidebarSessionDisplayTitle = (session) => String(session?.title || 'New chat').trim() || 'New chat';
+const sidebarSessionRowTitle = (session) => session?.branchParentSessionId
+  ? `↳ ${sidebarSessionDisplayTitle(session)}`
+  : sidebarSessionDisplayTitle(session);
 
 const sidebarSessionTooltip = (session) => {
   const title = sidebarSessionDisplayTitle(session);
@@ -254,6 +258,8 @@ const buildCachedSessionRow = (session) => {
   row.dataset.sessionId = session.id;
   row.classList.toggle('is-active', sessionHasInProgressState(session));
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
+  row.classList.toggle('is-branch', Boolean(session.branchParentSessionId));
+  row.dataset.branchDepth = String(Math.max(0, Number(session.branchDepth) || 0));
 
   const btn = document.createElement('button');
   btn.className = 'session-btn';
@@ -264,7 +270,7 @@ const buildCachedSessionRow = (session) => {
 
   const titleEl = document.createElement('div');
   titleEl.className = 'session-title';
-  titleEl.textContent = sidebarSessionDisplayTitle(session);
+  titleEl.textContent = sidebarSessionRowTitle(session);
   titleEl.title = tooltip;
 
   const metaEl = document.createElement('div');
@@ -276,7 +282,9 @@ const buildCachedSessionRow = (session) => {
     metaEl.textContent = 'Refining title…';
     metaEl.title = 'Using the fast model to generate a better session title';
   } else {
-    const metaParts = [formatSessionMessageCount(session)];
+    const metaParts = [];
+    if (session.branchParentSessionId) metaParts.push(`Branch of ${session.branchParentTitle || 'earlier chat'}`);
+    metaParts.push(formatSessionMessageCount(session));
     if (session.archived) metaParts.push('hidden');
     const activityAt = session.lastMessageAt || session.created;
     metaParts.push(relativeTime(activityAt));
@@ -374,9 +382,11 @@ const updateCachedSessionRow = (session, cached) => {
 
   row.classList.toggle('is-active', sessionHasInProgressState(session));
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
+  row.classList.toggle('is-branch', Boolean(session.branchParentSessionId));
+  row.dataset.branchDepth = String(Math.max(0, Number(session.branchDepth) || 0));
   btn.classList.toggle('active', session.id === state.activeSessionId);
 
-  const newTitle = sidebarSessionDisplayTitle(session);
+  const newTitle = sidebarSessionRowTitle(session);
   if (titleEl.textContent !== newTitle) titleEl.textContent = newTitle;
   const newTooltip = sidebarSessionTooltip(session);
   if (titleEl.title !== newTooltip) titleEl.title = newTooltip;
@@ -393,7 +403,9 @@ const updateCachedSessionRow = (session, cached) => {
     newMeta = 'Refining title…';
     newMetaTitle = 'Using the fast model to generate a better session title';
   } else {
-    const metaParts = [formatSessionMessageCount(session)];
+    const metaParts = [];
+    if (session.branchParentSessionId) metaParts.push(`Branch of ${session.branchParentTitle || 'earlier chat'}`);
+    metaParts.push(formatSessionMessageCount(session));
     if (session.archived) metaParts.push('hidden');
     const activityAt = session.lastMessageAt || session.created;
     metaParts.push(relativeTime(activityAt));
@@ -1733,14 +1745,58 @@ const createTranscriptGapNode = (message) => {
   return gap;
 };
 
+const copyTextWithFeedback = async (button, text, idleLabel, timerKey) => {
+  const clipboard = getClipboardWriter();
+  if (!clipboard || !text) return;
+  button.disabled = true;
+  try {
+    await clipboard.writeText(text);
+    window.clearTimeout(button[timerKey]);
+    button.classList.add('copied');
+    button.innerHTML = TURN_COPIED_ICON;
+    button.title = 'Copied';
+    button.setAttribute('aria-label', 'Copied');
+    button[timerKey] = window.setTimeout(() => {
+      button.classList.remove('copied');
+      button.innerHTML = TURN_COPY_ICON;
+      button.title = idleLabel;
+      button.setAttribute('aria-label', idleLabel);
+      button.disabled = !getClipboardWriter();
+    }, TURN_COPY_RESET_MS);
+  } catch (_err) {
+    button.title = 'Copy failed';
+    window.setTimeout(() => { button.title = idleLabel; }, TURN_COPY_RESET_MS);
+  } finally {
+    button.disabled = button.classList.contains('copied') ? false : !getClipboardWriter();
+  }
+};
+
+const createMessageCopyButton = (message) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'turn-action-btn message-copy-btn';
+  button.title = 'Copy message';
+  button.setAttribute('aria-label', 'Copy message');
+  button.innerHTML = TURN_COPY_ICON;
+  if (!getClipboardWriter()) {
+    button.disabled = true;
+    button.title = 'Clipboard unavailable';
+  }
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    return copyTextWithFeedback(button, String(message?.content || ''), 'Copy message', '_messageCopyResetTimer');
+  });
+  return button;
+};
+
 const createMessageNode = (message) => {
   if (message.role === 'transcript-gap') return createTranscriptGapNode(message);
   if (message.role === 'skill-run') return createSkillRunNode(message);
   if (message.role === 'tool') return createToolCard(message);
   if (message.role === 'tool-group') return createToolGroupNode(message);
   if (message.role === 'model-swap') return createModelSwapNode(message);
+  if (message.role === 'path-note' && typeof app.createPathNoteNode === 'function') return app.createPathNoteNode(message);
   if (message.role === 'compaction' || message.role === 'compaction-boundary') return createCompactionNode(message);
-
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
   article.dataset.messageId = message.id;
@@ -1785,6 +1841,13 @@ const createMessageNode = (message) => {
   }
 
   article.appendChild(body);
+
+  if (message.role === 'user' && String(message.content || '')) {
+    const actions = document.createElement('div');
+    actions.className = 'message-action-panel';
+    actions.appendChild(createMessageCopyButton(message));
+    article.appendChild(actions);
+  }
 
   if (message.role === 'assistant' && message.usage) {
     const usage = document.createElement('div');
@@ -2323,8 +2386,8 @@ const createTurnActionPanel = (turn) => {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'turn-action-btn turn-copy-btn';
-  button.title = 'Copy turn';
-  button.setAttribute('aria-label', 'Copy turn');
+  button.title = 'Copy response';
+  button.setAttribute('aria-label', 'Copy response');
   button.dataset.turnAssistantId = turn.lastAssistantId || '';
   button.innerHTML = TURN_COPY_ICON;
 
@@ -2333,44 +2396,12 @@ const createTurnActionPanel = (turn) => {
     button.title = 'Clipboard unavailable';
   }
 
-  button.addEventListener('click', async (event) => {
+  button.addEventListener('click', (event) => {
     event.preventDefault();
-    const clipboard = getClipboardWriter();
-    if (!clipboard) return;
-
     const assistantId = button.dataset.turnAssistantId || '';
     const currentTurn = getAssistantTurns(ensureActiveSession())
       .find((candidate) => candidate.lastAssistantId === assistantId);
-    const text = buildTurnClipboardText(currentTurn);
-    if (!text) return;
-
-    button.disabled = true;
-    try {
-      await clipboard.writeText(text);
-      window.clearTimeout(button._turnCopyResetTimer);
-      button.classList.add('copied');
-      button.innerHTML = TURN_COPIED_ICON;
-      button.title = 'Copied';
-      button.setAttribute('aria-label', 'Copied');
-      button._turnCopyResetTimer = window.setTimeout(() => {
-        button.classList.remove('copied');
-        button.innerHTML = TURN_COPY_ICON;
-        button.title = 'Copy turn';
-        button.setAttribute('aria-label', 'Copy turn');
-        button.disabled = !getClipboardWriter();
-      }, TURN_COPY_RESET_MS);
-    } catch (_err) {
-      button.title = 'Copy failed';
-      window.setTimeout(() => {
-        button.title = 'Copy turn';
-      }, TURN_COPY_RESET_MS);
-    } finally {
-      if (!button.classList.contains('copied')) {
-        button.disabled = !getClipboardWriter();
-      } else {
-        button.disabled = false;
-      }
-    }
+    return copyTextWithFeedback(button, buildTurnClipboardText(currentTurn), 'Copy response', '_turnCopyResetTimer');
   });
 
   panel.appendChild(button);
@@ -2456,7 +2487,6 @@ const syncTurnActionPanelForAssistant = (assistantId) => {
 const syncTurnActionPanels = () => {
   const root = elements.messages;
   if (!root) return;
-
   root.querySelectorAll('.turn-action-panel').forEach((panel) => panel.remove());
 
   getAssistantTurns(ensureActiveSession()).forEach((turn) => {
@@ -2465,6 +2495,7 @@ const syncTurnActionPanels = () => {
     if (!node || !node.classList?.contains('assistant')) return;
     ensureTurnActionPanel(node, turn);
   });
+  app.syncBranchActions?.();
 };
 
 const updateToolGroupNode = (message) => {
@@ -2875,7 +2906,8 @@ const renderMessages = (forceScroll = false) => {
   if (!session?.transcript) resetAssistantStreamRenders();
 
   const sessionId = session ? session.id : '';
-  const messages = session ? window.TermLLMConversation.sessionMessages(session) : [];
+  const rawMessages = session ? window.TermLLMConversation.sessionMessages(session) : [];
+  const messages = app.projectPendingBranchMessages?.(rawMessages, session) || rawMessages;
   const sessionHistoryLoading = Boolean(session?._serverOnly);
   if (elements.messages?.dataset) elements.messages.dataset.sessionId = sessionId || '';
 

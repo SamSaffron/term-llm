@@ -261,7 +261,7 @@ chat:
   terminal_title: smart
 ```
 
-`chat.terminal_title_format` optionally customizes the text used for both the terminal/tab title and smart tmux window title. Leave it empty for the built-in smart format (`agent · task · model`, with streaming/attention variants).
+`chat.terminal_title_format` optionally customizes the text used for both the terminal/tab title and smart tmux window title. Leave it empty for the built-in smart format (`task · branch · agent · model`, with the `branch` segment omitted for root sessions and with streaming/attention variants).
 
 ```yaml
 chat:
@@ -276,6 +276,7 @@ Supported placeholders:
 - `{{agent}}` - current agent name.
 - `{{task}}` - session/task title, generated from the conversation when available.
 - `{{model}}` - display model name.
+- `{{branch}}` - `branch` when the current session is a child conversation path, otherwise empty.
 - `{{phase}}` - current phase, such as `Thinking` or `Responding`.
 - `{{state}}` - `idle`, `streaming`, or `attention`.
 - `{{activity}}` - model name while idle, streaming activity while streaming, or `attention` while waiting for input.

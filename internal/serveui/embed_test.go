@@ -35,7 +35,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			t.Fatalf("%s=%d lines, must be below 1500", name, lines[name])
 		}
 	}
-	if lines["app-render.js"] > 3113 || lines["app-core.js"] > 2650 {
+	if lines["app-render.js"] > 3145 || lines["app-core.js"] > 2650 {
 		t.Fatalf("shell/render grew beyond baseline: %v", lines)
 	}
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -51,6 +51,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	legacyProductionLines := 0
 	transportLines := map[string]int{}
 	completionLines := 0
+	branchingLines := 0
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
@@ -65,13 +66,15 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			transportLines[name] = lineCount
 		} else if name == "slash-commands.js" {
 			completionLines = lineCount
+		} else if name == "app-branching.js" {
+			branchingLines = lineCount
 		} else {
 			legacyProductionLines += lineCount
 		}
 	}
-	// Keep focused transport/completion boundaries from weakening the pre-existing
-	// ratchet: legacy production code must still decrease, while each extracted
-	// module gets a narrow independent ceiling tied to its audited responsibility.
+	// Keep focused transport/completion/branching boundaries from weakening the
+	// pre-existing ratchet: legacy production code must still decrease, while each
+	// extracted module gets a narrow independent ceiling.
 	if legacyProductionLines >= 20570 {
 		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20570", legacyProductionLines)
 	}
@@ -80,6 +83,9 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	}
 	if completionLines > 450 {
 		t.Fatalf("composer completion controller=%d lines, budget=450", completionLines)
+	}
+	if branchingLines == 0 || branchingLines > 466 {
+		t.Fatalf("conversation branching controller=%d lines, budget=466", branchingLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -99,6 +105,65 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			if strings.Contains(source, forbidden) {
 				t.Fatalf("pure lifecycle module %s accesses forbidden effect %q", name, forbidden)
 			}
+		}
+	}
+}
+
+func TestBranchingAssetIsVersionedAndCached(t *testing.T) {
+	for _, name := range []string{"app-branching.js", "app-path-notes.js"} {
+		if _, err := StaticAsset(name); err != nil {
+			t.Fatalf("StaticAsset(%s): %v", name, err)
+		}
+		rendered := string(RenderIndexHTML("/chat", "", RenderOptions{}))
+		if !strings.Contains(rendered, `src="`+name+`?v=`) || !strings.Contains(rendered, `href="`+name+`?v=`) {
+			t.Fatalf("%s must be versioned in both script and preload tags", name)
+		}
+		serviceWorker, err := StaticAsset("sw.js")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(serviceWorker), "'./"+name+"'") {
+			t.Fatalf("service worker shell cache is missing %s", name)
+		}
+	}
+}
+
+func TestBranchContextFocusUsesProgressiveDisclosure(t *testing.T) {
+	index := string(IndexHTML())
+	if !strings.Contains(index, `id="branchContextFocusForm" class="branch-context-focus" hidden`) {
+		t.Fatal("specific-context form must start hidden")
+	}
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".branch-context-focus[hidden] { display: none; }") {
+		t.Fatal("specific-context CSS must preserve the hidden attribute over its grid display")
+	}
+}
+
+func TestStaticAssetsSupportImmediateBranchNavigationAndProgress(t *testing.T) {
+	branching, err := StaticAsset("app-branching.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/branches`,", "/path-notes`,", "projectPendingBranchMessages", "branch-origin-divider", "branch-context-status", "branch_points", "branch-tree-section", "app.updateURL?.(app.sessionSlug?.(child)"} {
+		if !strings.Contains(string(branching), want) {
+			t.Fatalf("app-branching.js missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"message-branch-action", "turn-branch-btn", "Edit from here", "Branch from here"} {
+		if strings.Contains(string(branching), forbidden) {
+			t.Fatalf("app-branching.js still contains transcript branch control %q", forbidden)
+		}
+	}
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{".branch-origin-divider", ".branch-context-status", ".session-row.is-branch"} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("app.css missing %q", want)
 		}
 	}
 }
@@ -1002,7 +1067,7 @@ func TestStaticAssetsSupportCodeBlockUX(t *testing.T) {
 	}
 }
 
-func TestStaticAssetsSupportTurnCopyActionPanel(t *testing.T) {
+func TestStaticAssetsSupportResponseAndMessageCopyActions(t *testing.T) {
 	renderJS, err := StaticAsset("app-render.js")
 	if err != nil {
 		t.Fatalf("StaticAsset(app-render.js): %v", err)
@@ -1012,6 +1077,9 @@ func TestStaticAssetsSupportTurnCopyActionPanel(t *testing.T) {
 		"const getAssistantTurns = (session) => {",
 		"const buildTurnClipboardText = (turn) => {",
 		"button.className = 'turn-action-btn turn-copy-btn'",
+		"button.className = 'turn-action-btn message-copy-btn'",
+		"button.title = 'Copy response'",
+		"button.title = 'Copy message'",
 		"navigator.clipboard",
 		"clipboard.writeText(text)",
 		"syncTurnActionPanels",
@@ -1028,6 +1096,7 @@ func TestStaticAssetsSupportTurnCopyActionPanel(t *testing.T) {
 	cssSrc := string(css)
 	for _, want := range []string{
 		".turn-action-panel",
+		".message-action-panel",
 		".turn-action-btn",
 		".turn-action-btn.copied",
 		"@keyframes copy-success-pop",

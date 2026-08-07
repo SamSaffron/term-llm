@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -116,11 +117,15 @@ func (m *Model) View() (view tea.View) {
 		renderedLines++
 	}
 
-	// Live response/child-agent stream (if active)
+	// Live response/child-agent stream and branch-context preparation.
 	if m.streaming || m.activeSkillRunCount() > 0 {
 		streaming := m.renderStreamingInline()
 		b.WriteString(streaming)
 		renderedLines += lipgloss.Height(streaming)
+	} else if m.branchContextInFlight() {
+		activity := m.renderBranchPathNotesActivity()
+		b.WriteString(activity)
+		renderedLines += lipgloss.Height(activity)
 	}
 
 	// Error display (if error occurred and not streaming)
@@ -368,6 +373,9 @@ func (m *Model) viewAltScreen() string {
 			}
 		} else {
 			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
+			if m.branchContextInFlight() {
+				contentStr += m.renderBranchPathNotesActivity()
+			}
 			if m.handoverPreview != nil {
 				contentStr += m.handoverPreview.View()
 			}
@@ -847,6 +855,28 @@ func (m *Model) renderMd(text string, width int) string {
 	return m.renderMarkdown(text)
 }
 
+func (m *Model) renderBranchPathNotesActivity() string {
+	if !m.branchContextInFlight() {
+		return ""
+	}
+	muted := lipgloss.NewStyle().Foreground(m.styles.Theme().Muted)
+	var b strings.Builder
+	b.WriteString(ui.PendingCircle())
+	b.WriteString(" ")
+	b.WriteString(muted.Render(branchPathNotesLabel))
+	b.WriteString("\n")
+	if m.queuedBranchSend != nil {
+		preview := strings.TrimSpace(m.queuedBranchSend.content)
+		if preview == "" {
+			preview = "[message with attachments]"
+		}
+		preview = terminaltext.SanitizeSingleLine(preview)
+		b.WriteString(muted.Render("  ↳ Message queued · " + session.TruncateSummary(preview)))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // maybeFlushToScrollback checks if there are segments to flush to scrollback,
 // keeping View() small to avoid terminal scroll issues.
 // In alt screen mode, we never flush to scrollback since View() renders everything.
@@ -1071,7 +1101,10 @@ func (m *Model) renderStatusLine() string {
 	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
 	warningStyle := lipgloss.NewStyle().Foreground(theme.Warning)
 
-	if m.footerMessage != "" {
+	// Active path-note generation owns the right-aligned activity status. Transient
+	// notices (for example, that an early message was queued) remain represented
+	// by the in-stream activity row instead of displacing its spinner.
+	if m.footerMessage != "" && !m.branchContextInFlight() {
 		style := mutedStyle
 		switch m.footerMessageTone {
 		case "muted":
@@ -1420,19 +1453,34 @@ func (m *Model) statusLineMCPParts(successStyle, mutedStyle lipgloss.Style) (str
 }
 
 func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string {
-	if !m.streaming {
+	phase := ""
+	started := time.Time{}
+	tokens := 0
+	switch {
+	case m.streaming:
+		phase = m.phase
+		started = m.streamStartTime
+		tokens = m.currentTokens
+	case m.branchContextInFlight():
+		phase = branchContextStatus
+		started = m.branchOperationStarted
+	default:
 		return nil
 	}
-	elapsed := formatChatElapsed(time.Since(m.streamStartTime))
-	spinnerPhase := strings.TrimSpace(m.spinner.View() + " " + m.phase)
+
+	elapsed := "0s"
+	if !started.IsZero() {
+		elapsed = formatChatElapsed(time.Since(started))
+	}
+	spinnerPhase := strings.TrimSpace(m.spinner.View() + " " + phase)
 	var variants []string
-	if m.currentTokens > 0 {
-		variants = append(variants, mutedStyle.Render(strings.Join([]string{spinnerPhase, fmt.Sprintf("%d tok", m.currentTokens), elapsed}, " ")))
+	if tokens > 0 {
+		variants = append(variants, mutedStyle.Render(strings.Join([]string{spinnerPhase, fmt.Sprintf("%d tok", tokens), elapsed}, " ")))
 	}
 	variants = append(variants,
 		mutedStyle.Render(strings.Join([]string{spinnerPhase, elapsed}, " ")),
-		mutedStyle.Render(strings.Join([]string{m.phase, elapsed}, " ")),
-		mutedStyle.Render(m.phase),
+		mutedStyle.Render(strings.Join([]string{phase, elapsed}, " ")),
+		mutedStyle.Render(phase),
 	)
 	return variants
 }
@@ -1791,6 +1839,9 @@ func isAllDigits(s string) bool {
 
 func (m *Model) renderHistory() string {
 	if len(m.messages) == 0 {
+		if m.branchContextInFlight() {
+			return ""
+		}
 		return render.RenderEmptyHistory(m.styles.Theme())
 	}
 
