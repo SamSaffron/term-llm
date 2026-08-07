@@ -4351,6 +4351,7 @@ async function testSendMessageBranchesAndTransfersStreamOwnership() {
     messages: [
       { id: 'u1', role: 'user', content: 'original', created: 1, durable: true, durableSourceRowIds: [41] },
       { id: 'a1', role: 'assistant', content: 'answer', created: 2, durable: true, durableSourceRowIds: [42] },
+      { id: 'u2', role: 'user', content: 'change my mind', created: 3, durable: true, durableSourceRowIds: [43] },
     ],
     lastResponseId: 'resp_msg_99',
     activeResponseId: null,
@@ -4366,8 +4367,9 @@ async function testSendMessageBranchesAndTransfersStreamOwnership() {
     previousResponseId: 'resp_msg_42',
     expectedRev: 8,
     idempotencyKey: 'branch_idempotency',
-    selectedMessageId: 'a1',
-    selectedRole: 'assistant',
+    selectedMessageId: 'u2',
+    selectedRole: 'user',
+    selectedText: 'change my mind',
     branchContextMode: 'notes',
   };
   app.refreshActiveSessionMessagesFromServer = async () => true;
@@ -7684,8 +7686,9 @@ async function testWebSlashCommandsInvokeExistingControls() {
   app.openSessionMCPModal = async () => { calls.push('mcp'); };
   elements.chipModelTrigger.click = () => { calls.push('model'); };
   app.createAndSwitchToFreshSession = async () => { calls.push('new'); };
+  app.openBranchTree = async () => { calls.push('tree'); };
 
-  for (const command of ['/goal', '/mcp', '/model', '/new']) {
+  for (const command of ['/goal', '/mcp', '/model', '/new', '/tree']) {
     elements.promptInput.value = command;
     await app.sendMessage();
     if (elements.promptInput.value !== '') {
@@ -7696,7 +7699,7 @@ async function testWebSlashCommandsInvokeExistingControls() {
   }
   await cleanup();
 
-  if (JSON.stringify(calls) !== JSON.stringify(['goal', 'mcp', 'model', 'new'])) {
+  if (JSON.stringify(calls) !== JSON.stringify(['goal', 'mcp', 'model', 'new', 'tree'])) {
     fail(name, 'commands did not invoke their existing controls', JSON.stringify(calls));
     return;
   }
@@ -7851,8 +7854,8 @@ async function testUndoWarnsWhenAttachmentsWereNotRestored() {
   pass(name);
 }
 
-async function testCompressCommandCompactsWithoutSendingMessage() {
-  const name = '/compress compacts active context without sending a chat message';
+async function testCompactCommandCompactsWithoutSendingMessage() {
+  const name = '/compact compacts active context without sending a chat message';
   const harness = createHarness({
     fetchImpl: async (url, requestOptions, { Response }) => {
       if (url === '/ui/v1/sessions/session_compress/runtime/compact' && requestOptions.method === 'POST') {
@@ -7876,7 +7879,7 @@ async function testCompressCommandCompactsWithoutSendingMessage() {
   };
   state.sessions.push(session);
   state.activeSessionId = session.id;
-  elements.promptInput.value = '/compress';
+  elements.promptInput.value = '/compact';
   let refreshOptions = null;
   app.refreshActiveSessionMessagesFromServer = async (_session, options) => {
     refreshOptions = options;
@@ -7884,14 +7887,12 @@ async function testCompressCommandCompactsWithoutSendingMessage() {
   };
 
   await app.sendMessage();
-  elements.promptInput.value = '/compact';
-  await app.sendMessage();
   await cleanup();
 
   const compactCalls = fetchCalls.filter((call) => call.url === '/ui/v1/sessions/session_compress/runtime/compact');
   const responseCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses');
-  if (compactCalls.length !== 2 || compactCalls.some((call) => call.method !== 'POST' || call.body !== '{}')) {
-    fail(name, 'expected /compress and /compact to issue compact POSTs', JSON.stringify(fetchCalls));
+  if (compactCalls.length !== 1 || compactCalls.some((call) => call.method !== 'POST' || call.body !== '{}')) {
+    fail(name, 'expected /compact to issue one compact POST', JSON.stringify(fetchCalls));
     return;
   }
   if (responseCalls.length !== 0 || projectedMessages(session).length !== 0) {
@@ -8240,7 +8241,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testUndoRedoCommandsUseOptimisticTranscriptAndRestoreComposer();
   await testUndoDoesNotRestoreComposerAfterSessionSwitch();
   await testUndoWarnsWhenAttachmentsWereNotRestored();
-  await testCompressCommandCompactsWithoutSendingMessage();
+  await testCompactCommandCompactsWithoutSendingMessage();
   await testStaleInterrupt404RefreshesAndSendsMessage();
   await testStaleInterruptRecoveryFailedPostKeepsDraft();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();

@@ -79,27 +79,20 @@ func webBranchTreePoints(messages []session.Message) []webBranchTreePoint {
 		if message.CompactionTail || llm.IsInternalCompactionSummaryText(message.TextContent) {
 			continue
 		}
-		role := string(message.Role)
-		anchorID := message.ID
-		prefill := ""
-		laterCount := after[message.ID]
-		switch message.Role {
-		case llm.RoleUser:
-			anchorID = previousContinuationID
-			prefill = message.TextContent
-			laterCount = contextCount
-			if anchorID > 0 {
-				laterCount = after[anchorID]
-			}
-			if laterCount > 0 {
-				laterCount--
-			}
-		case llm.RoleAssistant:
-			if strings.TrimSpace(message.TextContent) == "" {
-				continue
-			}
-		default:
+		if message.Role == llm.RoleAssistant {
+			previousContinuationID = message.ID
 			continue
+		}
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		anchorID := previousContinuationID
+		laterCount := contextCount
+		if anchorID > 0 {
+			laterCount = after[anchorID]
+		}
+		if laterCount > 0 {
+			laterCount--
 		}
 		preview := session.TruncateSummary(strings.Join(strings.Fields(message.TextContent), " "))
 		if preview == "" {
@@ -107,9 +100,8 @@ func webBranchTreePoints(messages []session.Message) []webBranchTreePoint {
 		}
 		points = append(points, webBranchTreePoint{
 			MessageID: message.ID, AnchorMessageID: anchorID, Sequence: message.Sequence,
-			Role: role, Preview: preview, Prefill: prefill, LaterMessageCount: laterCount,
+			Role: string(llm.RoleUser), Preview: preview, Prefill: message.TextContent, LaterMessageCount: laterCount,
 		})
-		previousContinuationID = message.ID
 	}
 	return points
 }

@@ -870,27 +870,6 @@ async function run(name, fn) {
     assert(!button.classList.contains('copied'), 'copied class resets');
   });
 
-  await run('user messages have a copy message action', async () => {
-    const { app, copied, timers } = createHarness();
-    const node = app.createMessageNode({
-      id: 'u1', role: 'user', content: '  Keep the original spacing.\n', created: Date.now(),
-    });
-    const panel = node.querySelector('.message-action-panel');
-    const button = panel?.querySelector('.message-copy-btn');
-    assert(button, 'user message copy button exists');
-    assertEqual(button.title, 'Copy message', 'user action label');
-    assertEqual(button.getAttribute('aria-label'), 'Copy message', 'user action accessible label');
-
-    await button.dispatchEvent({ type: 'click', preventDefault() {} });
-    assertEqual(copied[0], '  Keep the original spacing.\n', 'copies exact user message text');
-    assert(button.classList.contains('copied'), 'button gets copied class');
-
-    const reset = timers.find((timer) => timer.ms === 1500 && !timer.cleared);
-    assert(reset, 'reset timer scheduled');
-    reset.callback();
-    assertEqual(button.title, 'Copy message', 'copy message label resets');
-  });
-
   await run('turn copy uses app clipboard fallback writer when navigator clipboard is unavailable', async () => {
     const fallbackWrites = [];
     const { app, session, messages } = createHarness({

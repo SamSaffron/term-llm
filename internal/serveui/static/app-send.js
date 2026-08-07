@@ -129,7 +129,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  if (!batchingFollowUps && /^\/(goal|mcp|model|new)$/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/(goal|mcp|model|new|tree)$/i.test(prompt)) {
     const command = prompt.toLowerCase();
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
@@ -146,6 +146,9 @@ const sendMessage = async (options = {}) => {
         break;
       case '/new':
         await app.createAndSwitchToFreshSession?.();
+        break;
+      case '/tree':
+        await app.openBranchTree?.();
         break;
     }
     return;
@@ -225,7 +228,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
-  if (!batchingFollowUps && /^\/(compact|compress)$/i.test(prompt)) {
+  if (!batchingFollowUps && /^\/compact$/i.test(prompt)) {
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
     app.autoGrowPrompt();

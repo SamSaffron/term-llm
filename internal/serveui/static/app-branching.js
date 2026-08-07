@@ -12,6 +12,7 @@ const elements = app.elements || {};
 Object.assign(elements, {
   branchTreeBtn: document.getElementById('branchTreeBtn'),
   branchTreeModal: document.getElementById('branchTreeModal'),
+  branchTreeCard: document.getElementById('branchTreeCard'),
   branchTreeList: document.getElementById('branchTreeList'),
   branchTreeCloseBtn: document.getElementById('branchTreeCloseBtn'),
   pendingBranchBanner: document.getElementById('pendingBranchBanner'),
@@ -28,14 +29,12 @@ const durableSourceTailID = (message) => {
 
 const beginBranchPoint = (point) => {
   const session = app.getActiveSession?.();
-  if (!session || state.draftSessionActive || !point) return false;
+  if (!session || state.draftSessionActive || !point || point.role !== 'user') return false;
   if (state.streaming || state.compressing || state.sideQuestion?.running || app.sessionHasInProgressState?.(session)) {
     app.showToast?.('Cannot branch while work is active.', { id: 'conversation-branch', tone: 'warning' });
     return false;
   }
-  const selectedRole = point.role === 'user' ? 'user' : 'assistant';
   const anchorMessageId = Math.max(0, Number(point.anchor_message_id) || 0);
-  if (selectedRole === 'assistant' && anchorMessageId <= 0) return false;
   const messages = window.TermLLMConversation.sessionMessages(session);
   const selected = messages.find((message) => durableSourceTailID(message) === Number(point.message_id));
   const laterMessageCount = Math.max(0, Number(point.later_message_count) || 0);
@@ -47,8 +46,8 @@ const beginBranchPoint = (point) => {
     idempotencyKey: app.generateId?.('branch') || `branch_${Date.now()}`,
     selectedMessageId: selected?.id || '',
     selectedMessageDurableId: Number(point.message_id) || 0,
-    selectedRole,
-    selectedText: selectedRole === 'user' ? String(point.prefill || '') : '',
+    selectedRole: 'user',
+    selectedText: String(point.prefill || ''),
     hasLaterConversation: laterMessageCount > 0,
     laterMessageCount,
     originalComposer: String(elements.promptInput.value || ''),
@@ -76,7 +75,7 @@ const projectPendingBranchMessages = (messages, session) => {
   const index = messages.findIndex((message) => message?.id === pending.selectedMessageId
     || (pending.selectedMessageDurableId > 0 && durableSourceTailID(message) === pending.selectedMessageDurableId));
   if (index < 0) return messages;
-  return messages.slice(0, pending.selectedRole === 'user' ? index : index + 1);
+  return messages.slice(0, index);
 };
 
 const branchTopLevelNode = (node, root) => {
@@ -246,7 +245,7 @@ const createConversationBranch = async (draft, mode = 'clean', focus = '') => {
       localStorage.setItem('term_llm_branching_notice', '1');
       app.showToast?.('Conversation context branches; filesystem and tool side effects do not rewind.', { id: 'conversation-branch', tone: 'warning', duration: 7000 });
     }
-    elements.promptInput.value = draft.selectedRole === 'user' ? String(draft.selectedText || '') : '';
+    elements.promptInput.value = String(draft.selectedText || '');
     app.autoGrowPrompt?.();
     app.renderMessages?.(true);
     const preparesContext = mode === 'notes' || mode === 'focused';
@@ -331,7 +330,8 @@ const renderBranchTree = (tree) => {
     paths.appendChild(button);
   }
 
-  const points = Array.isArray(tree?.branch_points) ? tree.branch_points : [];
+  const points = (Array.isArray(tree?.branch_points) ? tree.branch_points : [])
+    .filter((point) => point?.role === 'user');
   if (points.length > 0) {
     const branchPoints = createBranchTreeSection('Branch points');
     for (const point of points) {
@@ -339,11 +339,11 @@ const renderBranchTree = (tree) => {
       button.type = 'button';
       button.className = 'branch-tree-item branch-tree-point';
       const marker = document.createElement('span');
-      marker.className = `branch-tree-role ${point.role === 'user' ? 'user' : 'assistant'}`;
-      marker.textContent = point.role === 'user' ? 'U' : 'A';
+      marker.className = 'branch-tree-role user';
+      marker.textContent = 'U';
       const copy = document.createElement('span');
       const title = document.createElement('span');
-      title.textContent = `${point.role === 'user' ? 'Edit' : 'Continue after'}: ${point.preview || '(attachment content)'}`;
+      title.textContent = `Edit: ${point.preview || '(attachment content)'}`;
       const detail = document.createElement('small');
       const later = Math.max(0, Number(point.later_message_count) || 0);
       detail.textContent = `Message ${Math.max(1, Number(point.sequence) + 1)}${later ? ` · ${later} later message${later === 1 ? '' : 's'}` : ''}`;
@@ -390,7 +390,7 @@ const refreshBranchTree = async (options = {}) => {
     const count = Math.max(1, Number(tree.path_count) || 1);
     if (elements.branchTreeBtn) {
       elements.branchTreeBtn.textContent = count > 1 ? `${count} paths` : 'Paths';
-      elements.branchTreeBtn.hidden = false;
+      elements.branchTreeBtn.hidden = !String(byID.get(ownerID)?.parent_session_id || '').trim();
     }
     if (options.render !== false) renderBranchTree(tree);
     return tree;
@@ -404,7 +404,7 @@ const openBranchTree = async () => {
   const tree = await refreshBranchTree({ includeBranchPoints: true });
   if (!tree || !elements.branchTreeModal) return;
   elements.branchTreeModal.hidden = false;
-  elements.branchTreeCloseBtn?.focus?.();
+  elements.branchTreeCard?.focus?.({ preventScroll: true });
 };
 
 const adoptBranchedSessionOwnership = (source, childSessionId, userMessages = [], copiedAnchorResponseId = '') => {

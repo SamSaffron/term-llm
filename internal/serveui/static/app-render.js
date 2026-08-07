@@ -1771,24 +1771,6 @@ const copyTextWithFeedback = async (button, text, idleLabel, timerKey) => {
   }
 };
 
-const createMessageCopyButton = (message) => {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'turn-action-btn message-copy-btn';
-  button.title = 'Copy message';
-  button.setAttribute('aria-label', 'Copy message');
-  button.innerHTML = TURN_COPY_ICON;
-  if (!getClipboardWriter()) {
-    button.disabled = true;
-    button.title = 'Clipboard unavailable';
-  }
-  button.addEventListener('click', (event) => {
-    event.preventDefault();
-    return copyTextWithFeedback(button, String(message?.content || ''), 'Copy message', '_messageCopyResetTimer');
-  });
-  return button;
-};
-
 const createMessageNode = (message) => {
   if (message.role === 'transcript-gap') return createTranscriptGapNode(message);
   if (message.role === 'skill-run') return createSkillRunNode(message);
@@ -1841,13 +1823,6 @@ const createMessageNode = (message) => {
   }
 
   article.appendChild(body);
-
-  if (message.role === 'user' && String(message.content || '')) {
-    const actions = document.createElement('div');
-    actions.className = 'message-action-panel';
-    actions.appendChild(createMessageCopyButton(message));
-    article.appendChild(actions);
-  }
 
   if (message.role === 'assistant' && message.usage) {
     const usage = document.createElement('div');

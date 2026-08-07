@@ -7148,15 +7148,21 @@ async function testConversationBranchTreeOpensAndSwitchesPaths() {
           { session_id: root.id, session_number: 10, title: 'Root path' },
           { session_id: child.id, session_number: 11, parent_session_id: root.id, title: 'Alternate path', anchor_preview: 'first answer' },
         ],
-        branch_points: [{ message_id: 72, anchor_message_id: 72, sequence: 1, role: 'assistant', preview: 'first answer', later_message_count: 2 }],
+        branch_points: [
+          { message_id: 72, anchor_message_id: 72, sequence: 1, role: 'assistant', preview: 'legacy continuation point', later_message_count: 3 },
+          { message_id: 74, anchor_message_id: 72, sequence: 2, role: 'user', preview: 'edit this request', prefill: 'edit this request', later_message_count: 2 },
+        ],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     if (String(url).includes(`/sessions/${child.id}/tree`)) {
       return new Response(JSON.stringify({
-        root_session_id: child.id,
+        root_session_id: root.id,
         active_session_id: child.id,
-        path_count: 1,
-        nodes: [{ session_id: child.id, session_number: 11, title: 'Alternate path' }],
+        path_count: 2,
+        nodes: [
+          { session_id: root.id, session_number: 10, title: 'Root path' },
+          { session_id: child.id, session_number: 11, parent_session_id: root.id, title: 'Alternate path', anchor_preview: 'first answer' },
+        ],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -7164,7 +7170,7 @@ async function testConversationBranchTreeOpensAndSwitchesPaths() {
 
   await app.openBranchTree();
   const sections = app.elements.branchTreeList.children;
-  if (app.elements.branchTreeBtn.textContent !== '2 paths'
+  if (!app.elements.branchTreeBtn.hidden
       || app.elements.branchTreeModal.hidden
       || sections.length !== 2
       || sections[0].children.length !== 3
@@ -7173,8 +7179,8 @@ async function testConversationBranchTreeOpensAndSwitchesPaths() {
     return;
   }
   sections[1].children[1].click();
-  if (app.state.pendingBranchDraft?.anchorMessageId !== 72 || app.state.pendingBranchDraft?.selectedRole !== 'assistant'
-      || app.elements.branchContextModal.hidden) {
+  if (app.state.pendingBranchDraft?.anchorMessageId !== 72 || app.state.pendingBranchDraft?.selectedRole !== 'user'
+      || app.state.pendingBranchDraft?.selectedText !== 'edit this request' || app.elements.branchContextModal.hidden) {
     fail(name, 'tree branch point did not open the context chooser', JSON.stringify(app.state.pendingBranchDraft));
     return;
   }
@@ -7182,7 +7188,7 @@ async function testConversationBranchTreeOpensAndSwitchesPaths() {
   await app.openBranchTree();
   app.elements.branchTreeList.children[0].children[2].click();
   await waitFor(() => app.state.activeSessionId === child.id, 'branch path did not become active');
-  await waitFor(() => app.elements.branchTreeBtn.textContent === 'Paths' && !app.elements.branchTreeBtn.hidden, 'single-path child did not retain the tree entry point');
+  await waitFor(() => app.elements.branchTreeBtn.textContent === '2 paths' && !app.elements.branchTreeBtn.hidden, 'child branch did not expose the tree entry point');
   if (!app.elements.branchTreeModal.hidden || !windowObj.location.pathname.includes('/11')) {
     fail(name, 'path switch did not close the tree and update the URL', windowObj.location.pathname);
     return;
@@ -7254,22 +7260,17 @@ async function testPendingBranchProjectionHidesVirtualTranscriptGaps() {
   const name = 'pending branch projection slices message data before grouped DOM rendering';
   const { app } = await createSessionsHarness({ appOverrides: { renderMessages() {} } });
   const messages = [
-    { id: 'before', role: 'user' },
-    { id: 'selected', role: 'assistant' },
+    { id: 'before-user', role: 'user' },
+    { id: 'before-assistant', role: 'assistant' },
+    { id: 'selected', role: 'user' },
     { id: 'gap', role: 'transcript-gap' },
-    { id: 'suffix', role: 'user' },
+    { id: 'suffix', role: 'assistant' },
   ];
   const session = { id: 'branch_gap_source', messages };
-  app.state.pendingBranch = { sourceSessionId: session.id, selectedMessageId: 'selected', selectedRole: 'assistant' };
-  let projected = app.projectPendingBranchMessages(messages, session);
-  if (projected.map((message) => message.id).join(',') !== 'before,selected') {
-    fail(name, 'assistant projection retained suffix data', JSON.stringify(projected));
-    return;
-  }
-  app.state.pendingBranch.selectedRole = 'user';
-  projected = app.projectPendingBranchMessages(messages, session);
-  if (projected.map((message) => message.id).join(',') !== 'before') {
-    fail(name, 'user edit projection retained selected message or suffix', JSON.stringify(projected));
+  app.state.pendingBranch = { sourceSessionId: session.id, selectedMessageId: 'selected', selectedRole: 'user' };
+  const projected = app.projectPendingBranchMessages(messages, session);
+  if (projected.map((message) => message.id).join(',') !== 'before-user,before-assistant') {
+    fail(name, 'edit projection retained selected user message or suffix data', JSON.stringify(projected));
     return;
   }
   pass(name);

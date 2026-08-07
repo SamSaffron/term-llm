@@ -112,7 +112,7 @@ Set `TERM_LLM_AT_MENTIONS=0` to disable `@` autocomplete and submit-time textual
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
 
-In the web UI, typing `/` opens an alphabetized command menu. `/compact` and `/compress` manually compress the active conversation context without adding a user message; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
+In the web UI, typing `/` opens an alphabetized command menu. `/compact` manually compresses the active conversation context without adding a user message; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
 
 ### Side questions
 

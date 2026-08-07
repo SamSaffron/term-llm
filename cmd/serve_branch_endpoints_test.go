@@ -14,6 +14,37 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
+	message := func(id int64, sequence int, value llm.Message) session.Message {
+		result := *session.NewMessage("source", value, sequence)
+		result.ID = id
+		return result
+	}
+	messages := []session.Message{
+		message(10, 0, llm.UserText("first request")),
+		message(20, 1, llm.AssistantText("first answer")),
+		message(30, 2, llm.ToolResultMessage("call-1", "read_file", "done", nil)),
+		message(40, 3, llm.UserText("second request")),
+		message(50, 4, llm.UserText("consecutive correction")),
+		message(60, 5, llm.AssistantText("second answer")),
+		message(70, 6, llm.UserText("third request")),
+		message(80, 7, llm.UserText("hidden compaction duplicate")),
+	}
+	messages[len(messages)-1].CompactionTail = true
+
+	points := webBranchTreePoints(messages)
+	if len(points) != 4 {
+		t.Fatalf("branch points = %#v, want one for each of 4 visible user messages", points)
+	}
+	wantIDs := []int64{10, 40, 50, 70}
+	wantAnchors := []int64{0, 20, 20, 60}
+	for i, point := range points {
+		if point.MessageID != wantIDs[i] || point.AnchorMessageID != wantAnchors[i] || point.Role != string(llm.RoleUser) || point.Prefill == "" {
+			t.Fatalf("branch point %d = %#v, want message %d anchored at %d", i, point, wantIDs[i], wantAnchors[i])
+		}
+	}
+}
+
 func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
@@ -34,9 +65,8 @@ func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 	}
 	messages, _ := store.GetMessages(ctx, sourceID, 0, 0)
 	points := webBranchTreePoints(messages)
-	if len(points) != 3 || points[0].Role != "user" || points[0].AnchorMessageID != 0 || points[0].LaterMessageCount != 2 ||
-		points[1].Role != "assistant" || points[1].AnchorMessageID != messages[1].ID ||
-		points[2].Prefill != "later finding" || points[2].AnchorMessageID != messages[1].ID || points[2].LaterMessageCount != 0 {
+	if len(points) != 2 || points[0].Role != "user" || points[0].AnchorMessageID != 0 || points[0].LaterMessageCount != 2 ||
+		points[1].Role != "user" || points[1].Prefill != "later finding" || points[1].AnchorMessageID != messages[1].ID || points[1].LaterMessageCount != 0 {
 		t.Fatalf("web branch points = %#v", points)
 	}
 	state, _ := store.(session.TranscriptUndoRedoStore).TranscriptMutationState(ctx, sourceID)
@@ -49,7 +79,7 @@ func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 	treeRR := httptest.NewRecorder()
 	srv.handleSessionByID(treeRR, treeReq)
 	var treeResponse webBranchTreeResponse
-	if treeRR.Code != http.StatusOK || json.Unmarshal(treeRR.Body.Bytes(), &treeResponse) != nil || len(treeResponse.BranchPoints) != 3 {
+	if treeRR.Code != http.StatusOK || json.Unmarshal(treeRR.Body.Bytes(), &treeResponse) != nil || len(treeResponse.BranchPoints) != 2 {
 		t.Fatalf("tree branch points status/body = %d %s", treeRR.Code, treeRR.Body.String())
 	}
 	branchBody := fmt.Sprintf(`{"anchor_message_id":%d,"expected_rev":%d,"idempotency_key":"immediate-branch"}`, messages[1].ID, state.Rev)

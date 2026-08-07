@@ -1510,20 +1510,6 @@
       transition: height 0.22s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
     }
 
-    .session-row.is-branch {
-  margin-left: .65rem;
-  width: calc(100% - .65rem);
-  border-left: 1px solid var(--border);
-}
-
-.session-row.is-branch .session-title {
-  color: var(--text-muted);
-}
-
-.session-row.is-branch .session-btn.active .session-title {
-  color: var(--text);
-}
-
 .session-row.is-hiding {
       overflow: hidden;
       opacity: 0;
@@ -4964,20 +4950,6 @@
   cursor: pointer;
   text-decoration: underline;
 }
-.message-action-panel {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-end;
-  gap: .25rem;
-  margin-top: .15rem;
-  opacity: 0;
-  transition: opacity .15s ease;
-}
-.message.user:hover .message-action-panel,
-.message.user:focus-within .message-action-panel { opacity: 1; }
-@media (hover: none) {
-  .message.user .message-action-panel { opacity: .7; }
-}
 .branch-origin-divider {
   width: min(100%, 820px);
   display: grid;
@@ -5040,7 +5012,10 @@
 .message.path-note details { border: 1px dashed var(--border); border-radius: .6rem; padding: .55rem .7rem; background: var(--surface-2); }
 .message.path-note summary { cursor: pointer; font-style: italic; }
 .message.path-note .path-note-body { margin-top: .65rem; color: var(--text); font-size: .88rem; }
-.branch-tree-trigger { white-space: nowrap; }
+.branch-tree-trigger {
+  margin-left: var(--header-cluster-gap);
+  white-space: nowrap;
+}
 .branch-tree-modal,
 .branch-context-modal {
   position: fixed;
@@ -5064,6 +5039,7 @@
   box-shadow: var(--shadow-strong);
   padding: 1rem;
 }
+.branch-tree-card:focus { outline: none; }
 .branch-tree-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .branch-tree-header p,
 .branch-tree-note { color: var(--text-muted); font-size: .8rem; margin: .25rem 0 0; }
