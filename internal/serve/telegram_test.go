@@ -1010,6 +1010,7 @@ func TestStreamReply_ToolNameShownDuringExec(t *testing.T) {
 
 	mgr, sess := newTestMgrAndSession(h)
 	mgr.tickerInterval = 5 * time.Millisecond
+	mgr.editInterval = time.Millisecond
 	bot := &fakeBotSender{}
 
 	done := make(chan error, 1)
@@ -1092,6 +1093,7 @@ func TestStreamReply_UnicodeChunkBoundaryPreservesUTF8(t *testing.T) {
 
 	mgr, sess := newTestMgrAndSession(h)
 	mgr.tickerInterval = 1 * time.Millisecond
+	mgr.editInterval = time.Millisecond
 	bot := &fakeBotSender{}
 
 	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {

@@ -15,16 +15,26 @@ const (
 	agyKeychainAccount = "antigravity"
 )
 
-func agyPlatformHasCredentials(home string) bool {
-	security, err := exec.LookPath("security")
+func detectAgyPlatformCredentials(home string) bool {
+	cmd, err := agySecurityCredentialCommand(home)
 	if err != nil {
 		return false
+	}
+	return cmd.Run() == nil
+}
+
+var agyPlatformHasCredentials = detectAgyPlatformCredentials
+
+func agySecurityCredentialCommand(home string) (*exec.Cmd, error) {
+	security, err := exec.LookPath("security")
+	if err != nil {
+		return nil, err
 	}
 	cmd := exec.Command(security, "find-generic-password", "-s", agyKeychainService, "-a", agyKeychainAccount)
 	cmd.Env = envWithValue(os.Environ(), "HOME", home)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	return cmd.Run() == nil
+	return cmd, nil
 }
 
 func prepareAgyPlatformCredentials(realHome, privateHome string) (bool, error) {

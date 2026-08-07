@@ -4053,8 +4053,17 @@ func newGitRepoForChatWorktreeTest(t *testing.T) string {
 		t.Fatalf("MkdirAll repo: %v", err)
 	}
 	runGitForChatWorktreeTest(t, repo, "init", "-q")
-	runGitForChatWorktreeTest(t, repo, "config", "user.name", "Test User")
-	runGitForChatWorktreeTest(t, repo, "config", "user.email", "test@example.com")
+	gitConfig, err := os.OpenFile(filepath.Join(repo, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("Open git config: %v", err)
+	}
+	if _, err := gitConfig.WriteString("\n[user]\n\tname = Test User\n\temail = test@example.com\n"); err != nil {
+		_ = gitConfig.Close()
+		t.Fatalf("Write git config: %v", err)
+	}
+	if err := gitConfig.Close(); err != nil {
+		t.Fatalf("Close git config: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile README: %v", err)
 	}
@@ -4445,20 +4454,15 @@ func TestCmdWorktreePromoteDefaultsToActiveSessionCWD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create A: %v", err)
 	}
-	wtB, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-stale-b"})
-	if err != nil {
-		t.Fatalf("Create B: %v", err)
-	}
 	t.Cleanup(func() {
 		_ = worktree.Remove(context.Background(), wtA.Dir, worktree.RemoveOptions{Force: true})
-		_ = worktree.Remove(context.Background(), wtB.Dir, worktree.RemoveOptions{Force: true})
 	})
 	if err := os.WriteFile(filepath.Join(wtA.Dir, "active.txt"), []byte("active\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	m := newTestChatModel(false)
-	m.sess = &session.Session{ID: "merge-active", CWD: wtA.Dir, WorktreeDir: wtB.Dir}
+	m.sess = &session.Session{ID: "merge-active", CWD: wtA.Dir, WorktreeDir: filepath.Join(repo, "stale-worktree")}
 	_, cmd := m.ExecuteCommand("/worktree promote")
 	msg := runWorktreeOperationTestCmd(t, cmd)
 	if msg.err != nil {
@@ -4776,10 +4780,7 @@ func TestAssistedRecoverySnapshotsChangesMadeAfterConflictPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() {
-		runGitForChatWorktreeTest(t, repo, "reset", "--merge")
-		_ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true})
-	})
+	t.Cleanup(func() { _ = os.RemoveAll(wt.Dir) })
 
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root change\n"), 0o644); err != nil {
 		t.Fatal(err)

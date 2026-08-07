@@ -4223,9 +4223,15 @@ async function testDetachDuringSlowReconnectTransfersResumeOwnership() {
 async function testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable() {
   const name = 'resumeActiveResponse falls back to event replay when snapshot fetch fails';
   const responseId = 'resp_snapshot_fallback';
+  const retryDelays = [];
   const harness = createHarness({
     responseId,
     snapshotStatus: 500,
+    setTimeout(callback, ms) {
+      retryDelays.push(Number(ms || 0));
+      return setTimeout(callback, 0);
+    },
+    clearTimeout(handle) { clearTimeout(handle); },
     eventsBody: [
       'id: 1\n',
       'event: response.created\n',
@@ -4256,6 +4262,12 @@ async function testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable(
   const snapshotCall = fetchCalls.find((call) => call.url === `/ui/v1/responses/${responseId}`);
   if (!snapshotCall) {
     fail(name, 'expected snapshot fetch attempt before falling back', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  const networkRetryDelays = retryDelays.filter((delay) => delay === 1000 || delay === 1500);
+  if (networkRetryDelays.join(',') !== '1000,1500') {
+    fail(name, 'snapshot retries did not preserve the expected backoff schedule', JSON.stringify(retryDelays));
     await cleanup();
     return;
   }

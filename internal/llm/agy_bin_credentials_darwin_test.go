@@ -106,11 +106,44 @@ func installFakeAgySecurity(t *testing.T, expectedHome string) {
 	binDir := t.TempDir()
 	for _, name := range []string{"agy", "security"} {
 		path := filepath.Join(binDir, name)
-		script := "#!/bin/sh\n[ \"$HOME\" = \"$EXPECTED_AGY_HOME\" ]\n"
-		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		if err := os.WriteFile(path, nil, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("EXPECTED_AGY_HOME", expectedHome)
+	previousCheck := agyPlatformHasCredentials
+	agyPlatformHasCredentials = func(home string) bool { return home == expectedHome }
+	t.Cleanup(func() { agyPlatformHasCredentials = previousCheck })
 	t.Setenv("PATH", binDir)
+}
+
+func TestAgySecurityCredentialCommandUsesRequestedHome(t *testing.T) {
+	binDir := t.TempDir()
+	security := filepath.Join(binDir, "security")
+	if err := os.WriteFile(security, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("HOME", "/unexpected/home")
+
+	cmd, err := agySecurityCredentialCommand("/real/home")
+	if err != nil {
+		t.Fatalf("agySecurityCredentialCommand: %v", err)
+	}
+	if got := envValue(cmd.Env, "HOME"); got != "/real/home" {
+		t.Fatalf("security HOME = %q, want /real/home", got)
+	}
+	wantArgs := []string{"find-generic-password", "-s", agyKeychainService, "-a", agyKeychainAccount}
+	if got := cmd.Args[1:]; strings.Join(got, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("security args = %q, want %q", got, wantArgs)
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }

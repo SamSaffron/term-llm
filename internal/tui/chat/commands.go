@@ -693,12 +693,15 @@ func (m *Model) showFooterMessageWithToneFor(content string, tone string, durati
 
 func (m *Model) showFooterMutedWithCmd(content string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	_, footerCmd := m.showFooterMuted(content)
-	return m, tea.Batch(footerCmd, cmd)
+	// Batch commands run concurrently, so their order is not observable by the
+	// application. Put the operation first so synchronous command consumers do
+	// not wait for the transient footer's expiration before reaching it.
+	return m, tea.Batch(cmd, footerCmd)
 }
 
 func (m *Model) showSystemMessageWithCmd(content string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	_, systemCmd := m.showSystemMessage(content)
-	return m, tea.Batch(systemCmd, cmd)
+	return m, tea.Batch(cmd, systemCmd)
 }
 
 // cancelHandoverTool signals false on the tool-initiated handover channel
