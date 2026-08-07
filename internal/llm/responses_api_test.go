@@ -235,6 +235,32 @@ func TestBuildResponsesInput_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_EmptyToolResultIncludesOutput(t *testing.T) {
+	messages := []Message{
+		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{
+			ID:        "call_empty",
+			Name:      "web_search",
+			Arguments: json.RawMessage(`{"query":"test"}`),
+		}}}},
+		{Role: RoleTool, Parts: []Part{{Type: PartToolResult, ToolResult: &ToolResult{
+			ID:   "call_empty",
+			Name: "web_search",
+		}}}},
+	}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items, got %d", len(input))
+	}
+	got, err := json.Marshal(input[1])
+	if err != nil {
+		t.Fatalf("marshal empty tool result: %v", err)
+	}
+	if !bytes.Contains(got, []byte(`"output":""`)) {
+		t.Fatalf("empty function_call_output omitted required output field: %s", got)
+	}
+}
+
 func TestBuildResponsesInput_ToolResultStructuredImageParts(t *testing.T) {
 	messages := []Message{
 		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{
