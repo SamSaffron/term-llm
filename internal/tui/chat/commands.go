@@ -89,6 +89,12 @@ func AllCommands() []Command {
 			Usage:       "/side <question>",
 		},
 		{
+			Name:         "copy",
+			Description:  "Copy one assistant response as source Markdown",
+			Usage:        "/copy [N]",
+			ArgumentHint: "[N]",
+		},
+		{
 			Name:        "share",
 			Description: "Share this session as a GitHub Gist",
 			Usage:       "/share [new] [public]",
@@ -414,6 +420,7 @@ func isStreamingLocalSlashCommand(input string) bool {
 	// replace the active provider/engine must either be blocked or explicitly
 	// defer their side effects until the current stream has ended.
 	localCommands := map[string]bool{
+		"copy":      true,
 		"side":      true,
 		"thinking":  true,
 		"reasoning": true,
@@ -522,6 +529,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdHelp()
 	case "side":
 		return m.cmdSide(rawArgs)
+	case "copy":
+		return m.cmdCopy(args)
 	case "stats":
 		return m.cmdStats()
 	case "goal":
@@ -946,7 +955,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 				{"PageUp / PageDown", "Scroll conversation"},
 				{"Ctrl+Up / Ctrl+Down", "Jump between user prompts"},
 				{"Up / Down", "Scroll when composer is empty; select queued interjections while streaming"},
-				{"Ctrl+Y", "Copy selected conversation text"},
+				{"Ctrl+Y", "Copy selection, or latest assistant response"},
 			},
 		},
 		{

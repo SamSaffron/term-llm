@@ -479,6 +479,7 @@ type Model struct {
 	selection               Selection
 	contentLines            []string // full viewport content split by \n
 	copyStatus              string   // transient status message after copy attempt
+	copyStatusSeq           uint64   // monotonically increasing copy-status timer token
 	footerMessage           string   // transient footer message for short system notices
 	footerMessageTone       string   // "", "muted", "success", "warning", or "error"
 	footerMessageSeq        uint64   // monotonically increasing footer message timer token
@@ -1809,6 +1810,8 @@ func isParentChatMessage(msg tea.Msg) bool {
 		ui.WaveTickMsg,
 		ui.WavePauseMsg,
 		footerMessageClearMsg,
+		copyResultMsg,
+		copyStatusClearMsg,
 		interruptClassifiedMsg,
 		compactStartedMsg,
 		compactDoneMsg,
@@ -2075,6 +2078,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case footerMessageClearMsg:
 		if msg.Seq == m.footerMessageSeq {
 			m.clearFooterMessage()
+		}
+
+	case copyResultMsg:
+		return m.handleCopyResult(msg)
+
+	case copyStatusClearMsg:
+		if msg.seq == m.copyStatusSeq {
+			m.copyStatus = ""
 		}
 
 	case shellExitedMsg:

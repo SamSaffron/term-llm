@@ -1,13 +1,10 @@
 package chat
 
 import (
-	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 )
@@ -37,7 +34,6 @@ func (s Selection) Normalized() (start, end ContentPos) {
 }
 
 func (m *Model) beginSelection(pos ContentPos, sideQuestion bool) {
-	m.copyStatus = ""
 	m.selection = Selection{
 		Active:       true,
 		Anchor:       pos,
@@ -150,29 +146,14 @@ func (m *Model) applySelectionHighlight(viewOutput string) string {
 	return applySelectionHighlight(viewOutput, m.selection, m.viewport.YOffset(), 0, -1)
 }
 
-// copySelectionToClipboard extracts selected text and copies to clipboard.
+// copySelectionToClipboard snapshots selected rendered text and routes it through
+// the shared asynchronous clipboard result path.
 func (m *Model) copySelectionToClipboard() tea.Cmd {
 	text := m.extractSelectedText()
 	if text == "" {
-		m.copyStatus = "nothing to copy"
-		return nil
+		return copyStatusCmd("Nothing to copy yet")
 	}
-
-	// Try both clipboard paths; succeed if either works
-	sysErr := clipboard.CopyText(text)
-	oscErr := clipboard.CopyTextOSC52(text)
-
-	n := utf8.RuneCountInString(text)
-	switch {
-	case sysErr == nil:
-		m.copyStatus = fmt.Sprintf("copied %d chars", n)
-	case oscErr == nil:
-		m.copyStatus = fmt.Sprintf("copied %d chars (osc52)", n)
-	default:
-		m.copyStatus = fmt.Sprintf("copy failed: sys=%v, osc52=%v", sysErr, oscErr)
-	}
-
-	return nil
+	return copyTextCmd(text, "selection")
 }
 
 // extractSelectedText returns the text for the current selection by stripping

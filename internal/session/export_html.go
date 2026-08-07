@@ -196,7 +196,7 @@ func buildHTMLExportMessages(messages []Message, opts ExportOptions) ([]htmlExpo
 	detailCount := 0
 
 	for _, msg := range messages {
-		compaction := isInternalCompactionSummaryMessage(msg)
+		compaction := IsInternalCompactionSummaryMessage(msg)
 		if msg.Role == llm.RoleSystem && !opts.IncludeSystem && !compaction {
 			continue
 		}

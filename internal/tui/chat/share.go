@@ -35,6 +35,9 @@ type shareDoneMsg struct {
 	updated         bool
 	public          bool
 	requestedPublic bool
+	copyAttempted   bool
+	copyMethod      clipboard.CopyMethod
+	copyErr         error
 	err             error
 }
 
@@ -144,6 +147,8 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 			}
 			result.gist = &gist.Gist{ID: updateID, URL: updateURL, Public: updatePublic}
 			result.preview = session.GistPreviewURL(updateID)
+			result.copyAttempted = true
+			result.copyMethod, result.copyErr = copyTextBestEffort(result.preview)
 			return result
 		}
 		g, err := client.Create("term-llm session: "+name, req.public, files)
@@ -159,6 +164,8 @@ func (m *Model) startShare(req shareRequest, update bool) (tea.Model, tea.Cmd) {
 		result.gist = g
 		result.preview = preview
 		result.public = req.public
+		result.copyAttempted = true
+		result.copyMethod, result.copyErr = copyTextBestEffort(result.preview)
 		return result
 	}
 	return updatedModel, tea.Batch(footerCmd, cmd)
@@ -188,9 +195,7 @@ func (m *Model) handleShareDone(msg shareDoneMsg) (tea.Model, tea.Cmd) {
 	if m.sess != nil && m.sess.ID == msg.sessionID {
 		m.sess.Share = state
 	}
-	sysErr := clipboard.CopyText(msg.preview)
-	oscErr := clipboard.CopyTextOSC52(msg.preview)
-	copied := sysErr == nil || oscErr == nil
+	copied := msg.copyAttempted && msg.copyErr == nil
 	action := "Created new gist"
 	if msg.updated {
 		action = "Updated existing gist"
@@ -204,7 +209,11 @@ func (m *Model) handleShareDone(msg shareDoneMsg) (tea.Model, tea.Cmd) {
 		content += "\n\nVisibility unchanged: updating an existing gist cannot make it public. Create a new public gist instead."
 	}
 	if copied {
-		content += "\n\nURL copied to clipboard."
+		if msg.copyMethod == clipboard.CopyMethodOSC52 {
+			content += "\n\nURL copied to clipboard via OSC 52."
+		} else {
+			content += "\n\nURL copied to clipboard."
+		}
 	} else {
 		content += "\n\nClipboard copy failed; copy the preview URL above."
 	}

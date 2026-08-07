@@ -2,6 +2,7 @@ package clipboard
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -74,6 +75,195 @@ func TestOSC52SequenceScreen(t *testing.T) {
 	}
 	if !strings.Contains(got, "\033]52;c;") {
 		t.Fatalf("expected OSC 52 inside DCS, got %q", got)
+	}
+}
+
+func TestCopyTextBestEffortOrdering(t *testing.T) {
+	tests := []struct {
+		name        string
+		preferOSC52 bool
+		nativeErr   error
+		osc52Err    error
+		wantMethod  CopyMethod
+		wantCalls   []CopyMethod
+		wantErr     bool
+	}{
+		{name: "local native success stops", wantMethod: CopyMethodNative, wantCalls: []CopyMethod{CopyMethodNative}},
+		{name: "local native failure falls back", nativeErr: errors.New("native unavailable"), wantMethod: CopyMethodOSC52, wantCalls: []CopyMethod{CopyMethodNative, CopyMethodOSC52}},
+		{name: "interactive SSH OSC 52 success stops", preferOSC52: true, wantMethod: CopyMethodOSC52, wantCalls: []CopyMethod{CopyMethodOSC52}},
+		{name: "interactive SSH OSC 52 failure falls back", preferOSC52: true, osc52Err: errors.New("terminal rejected sequence"), wantMethod: CopyMethodNative, wantCalls: []CopyMethod{CopyMethodOSC52, CopyMethodNative}},
+		{name: "both failures", nativeErr: errors.New("native unavailable"), osc52Err: errors.New("terminal unavailable"), wantCalls: []CopyMethod{CopyMethodNative, CopyMethodOSC52}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []CopyMethod
+			native := func(text string) error {
+				calls = append(calls, CopyMethodNative)
+				return tt.nativeErr
+			}
+			osc52 := func(text string) error {
+				calls = append(calls, CopyMethodOSC52)
+				return tt.osc52Err
+			}
+
+			method, err := copyTextBestEffort("secret payload", tt.preferOSC52, native, osc52)
+			if method != tt.wantMethod {
+				t.Fatalf("method = %q, want %q", method, tt.wantMethod)
+			}
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr=%v", err, tt.wantErr)
+			}
+			if strings.Join(copyMethodsToStrings(calls), ",") != strings.Join(copyMethodsToStrings(tt.wantCalls), ",") {
+				t.Fatalf("calls = %v, want %v", calls, tt.wantCalls)
+			}
+			if err != nil {
+				if !strings.Contains(err.Error(), "native unavailable") || !strings.Contains(err.Error(), "terminal unavailable") {
+					t.Fatalf("combined error = %q", err)
+				}
+				if strings.Contains(err.Error(), "secret payload") {
+					t.Fatalf("error leaked copied content: %q", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCopyTextBestEffortJoinsBackendErrors(t *testing.T) {
+	nativeErr := errors.New("native sentinel")
+	osc52Err := errors.New("OSC sentinel")
+	_, err := copyTextBestEffort("secret payload", false,
+		func(string) error { return nativeErr },
+		func(string) error { return osc52Err },
+	)
+	if !errors.Is(err, nativeErr) || !errors.Is(err, osc52Err) {
+		t.Fatalf("joined error = %v, want both backend causes", err)
+	}
+	if strings.Contains(err.Error(), "secret payload") {
+		t.Fatalf("joined error leaked payload: %q", err)
+	}
+}
+
+func copyMethodsToStrings(methods []CopyMethod) []string {
+	result := make([]string, len(methods))
+	for i, method := range methods {
+		result[i] = string(method)
+	}
+	return result
+}
+
+func TestCopyTextOSC52RejectsOverCapBeforeTTYWrite(t *testing.T) {
+	err := CopyTextOSC52(strings.Repeat("x", osc52MaxPayloadBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "too large for terminal clipboard transfer") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCopyTextBestEffortOSC52PayloadCap(t *testing.T) {
+	t.Run("exact boundary uses OSC 52 unchanged", func(t *testing.T) {
+		text := strings.Repeat("x", osc52MaxPayloadBytes)
+		var got string
+		method, err := copyTextBestEffort(text, true,
+			func(string) error { return errors.New("native should not run") },
+			func(value string) error { got = value; return nil },
+		)
+		if err != nil || method != CopyMethodOSC52 {
+			t.Fatalf("method=%q error=%v", method, err)
+		}
+		if got != text {
+			t.Fatal("OSC 52 backend received modified boundary payload")
+		}
+	})
+
+	t.Run("over cap skips OSC 52 and falls back native", func(t *testing.T) {
+		text := strings.Repeat("界", osc52MaxPayloadBytes/3+1)
+		oscCalled := false
+		var got string
+		method, err := copyTextBestEffort(text, true,
+			func(value string) error { got = value; return nil },
+			func(string) error { oscCalled = true; return nil },
+		)
+		if err != nil || method != CopyMethodNative {
+			t.Fatalf("method=%q error=%v", method, err)
+		}
+		if oscCalled {
+			t.Fatal("over-cap payload was emitted through OSC 52")
+		}
+		if got != text {
+			t.Fatal("native fallback received truncated or modified payload")
+		}
+	})
+
+	t.Run("over cap and native failure explains terminal limit", func(t *testing.T) {
+		text := strings.Repeat("x", osc52MaxPayloadBytes+1)
+		method, err := copyTextBestEffort(text, true,
+			func(string) error { return errors.New("native unavailable") },
+			func(string) error { t.Fatal("over-cap OSC 52 backend called"); return nil },
+		)
+		if method != "" || err == nil {
+			t.Fatalf("method=%q error=%v", method, err)
+		}
+		if !strings.Contains(err.Error(), "too large for terminal clipboard transfer") || strings.Contains(err.Error(), text) {
+			t.Fatalf("error = %q", err)
+		}
+	})
+}
+
+func TestCopyTextBestEffortPassesPayloadUnchanged(t *testing.T) {
+	payloads := []struct {
+		name string
+		text string
+	}{
+		{name: "empty", text: ""},
+		{name: "unicode", text: "héllo 世界"},
+		{name: "large", text: strings.Repeat("large\n", 10_000)},
+	}
+	for _, payload := range payloads {
+		t.Run(payload.name, func(t *testing.T) {
+			text := payload.text
+			var got string
+			method, err := copyTextBestEffort(text, false,
+				func(value string) error { got = value; return nil },
+				func(string) error { t.Fatal("fallback unexpectedly called"); return nil },
+			)
+			if err != nil || method != CopyMethodNative {
+				t.Fatalf("method=%q error=%v", method, err)
+			}
+			if got != text {
+				t.Fatalf("payload changed: got length %d, want %d", len(got), len(text))
+			}
+		})
+	}
+}
+
+func TestInteractiveSSHSessionRequiresUsableTTY(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       map[string]string
+		usableTTY bool
+		want      bool
+	}{
+		{name: "SSH with usable controlling TTY", env: map[string]string{"SSH_CONNECTION": "client 1 server 2", "TERM": "xterm-256color"}, usableTTY: true, want: true},
+		{name: "SSH without controlling TTY", env: map[string]string{"SSH_CONNECTION": "client 1 server 2", "TERM": "xterm-256color"}, usableTTY: false},
+		{name: "SSH dumb terminal", env: map[string]string{"SSH_TTY": "/dev/pts/1", "TERM": "dumb"}, usableTTY: true},
+		{name: "local usable TTY", env: map[string]string{"TERM": "xterm-256color"}, usableTTY: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ttyCalls := 0
+			got := isInteractiveSSHSessionWith(func(key string) string {
+				return tt.env[key]
+			}, func() bool {
+				ttyCalls++
+				return tt.usableTTY
+			})
+			if got != tt.want {
+				t.Fatalf("isInteractiveSSHSessionWith() = %t, want %t", got, tt.want)
+			}
+			if tt.env["SSH_CONNECTION"] != "" && tt.env["TERM"] != "dumb" && ttyCalls != 1 {
+				t.Fatalf("usable TTY probe calls = %d, want 1", ttyCalls)
+			}
+		})
 	}
 }
 

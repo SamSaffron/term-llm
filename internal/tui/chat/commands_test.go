@@ -19,6 +19,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/agents/gist"
+	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -612,7 +613,7 @@ func TestCmdHelpOpensModal(t *testing.T) {
 	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
 		t.Fatalf("help should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
 	}
-	if !strings.Contains(rm.dialog.Content(), "Slash commands") || !strings.Contains(rm.dialog.Content(), "/stats") {
+	if !strings.Contains(rm.dialog.Content(), "Slash commands") || !strings.Contains(rm.dialog.Content(), "/stats") || !strings.Contains(rm.dialog.Content(), "/copy [N]") {
 		t.Fatalf("help content missing expected commands: %q", rm.dialog.Content())
 	}
 	for _, want := range []string{
@@ -626,7 +627,7 @@ func TestCmdHelpOpensModal(t *testing.T) {
 		"Ctrl+O",
 		"Inspect conversation context",
 		"Ctrl+Y",
-		"Copy selected conversation text",
+		"Copy selection, or latest assistant response",
 		"PageUp / PageDown",
 		"Ctrl+Up / Ctrl+Down",
 		"Jump between user prompts",
@@ -5191,6 +5192,95 @@ func TestCmdShareRejectsWhileStreamingOrInFlight(t *testing.T) {
 	}
 }
 
+type recordingGistSharer struct {
+	createResult *gist.Gist
+	createCalls  int
+	updateCalls  int
+}
+
+func (s *recordingGistSharer) Create(string, bool, map[string]string) (*gist.Gist, error) {
+	s.createCalls++
+	return s.createResult, nil
+}
+
+func (s *recordingGistSharer) Update(string, map[string]string) error {
+	s.updateCalls++
+	return nil
+}
+
+func installGistSharer(t *testing.T, sharer gistSharer) {
+	t.Helper()
+	old := newGistClient
+	newGistClient = func() (gistSharer, error) { return sharer, nil }
+	t.Cleanup(func() { newGistClient = old })
+}
+
+func shareWorkResult(t *testing.T, cmd tea.Cmd) shareDoneMsg {
+	t.Helper()
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) < 2 {
+		t.Fatalf("share command = %T, want batch with footer and work commands", cmd())
+	}
+	msg := batch[len(batch)-1]()
+	result, ok := msg.(shareDoneMsg)
+	if !ok {
+		t.Fatalf("share work command returned %T", msg)
+	}
+	return result
+}
+
+func TestStartShareCopiesPreviewExactlyOnceForCreateAndUpdate(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		update     bool
+		wantCreate int
+		wantUpdate int
+	}{
+		{name: "create", wantCreate: 1},
+		{name: "update", update: true, wantUpdate: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &session.Session{ID: "share-flow", Name: "Share flow"}
+			if tt.update {
+				sess.Share = &session.ShareState{GistID: "abc123", GistURL: "https://gist.github.com/u/abc123"}
+			}
+			store := &mockStore{
+				sessions: map[string]*session.Session{sess.ID: sess},
+				messages: map[string][]session.Message{sess.ID: {*session.NewMessage(sess.ID, llm.UserText("hello"), -1)}},
+			}
+			m := newCmdTestModel(store)
+			m.sess = sess
+			sharer := &recordingGistSharer{createResult: &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"}}
+			installGistSharer(t, sharer)
+			copyCalls := 0
+			var copied string
+			installCopyBackend(t, func(text string) (clipboard.CopyMethod, error) {
+				copyCalls++
+				copied = text
+				return clipboard.CopyMethodNative, nil
+			})
+
+			_, cmd := m.startShare(shareRequest{}, tt.update)
+			result := shareWorkResult(t, cmd)
+			if result.err != nil {
+				t.Fatalf("share result error = %v", result.err)
+			}
+			if copyCalls != 1 {
+				t.Fatalf("CopyTextBestEffort calls = %d, want 1", copyCalls)
+			}
+			if copied != session.GistPreviewURL("abc123") {
+				t.Fatalf("copied preview = %q", copied)
+			}
+			if !result.copyAttempted || result.copyErr != nil || result.copyMethod != clipboard.CopyMethodNative {
+				t.Fatalf("copy result = %+v", result)
+			}
+			if sharer.createCalls != tt.wantCreate || sharer.updateCalls != tt.wantUpdate {
+				t.Fatalf("gist calls create=%d update=%d", sharer.createCalls, sharer.updateCalls)
+			}
+		})
+	}
+}
+
 func TestHandleShareDonePersistsOriginatingSession(t *testing.T) {
 	origin := &session.Session{ID: "origin"}
 	current := &session.Session{ID: "current"}
@@ -5221,6 +5311,40 @@ func TestHandleShareDonePersistsOriginatingSession(t *testing.T) {
 	}
 	if len(m.messages) != beforeMessages {
 		t.Fatalf("share result added scrollback: before=%d after=%d", beforeMessages, len(m.messages))
+	}
+}
+
+func TestHandleShareDoneReportsClipboardDelivery(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		method        clipboard.CopyMethod
+		copyAttempted bool
+		copyErr       error
+		wantDialog    string
+	}{
+		{name: "native success", method: clipboard.CopyMethodNative, copyAttempted: true, wantDialog: "URL copied to clipboard."},
+		{name: "OSC 52 success", method: clipboard.CopyMethodOSC52, copyAttempted: true, wantDialog: "URL copied to clipboard via OSC 52."},
+		{name: "failure", copyAttempted: true, copyErr: errors.New("clipboard unavailable"), wantDialog: "Clipboard copy failed"},
+		{name: "missing copy result", wantDialog: "Clipboard copy failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &session.Session{ID: "origin"}
+			store := &mockStore{sessions: map[string]*session.Session{"origin": sess}}
+			m := newCmdTestModel(store)
+			m.sess = sess
+			result, _ := m.handleShareDone(shareDoneMsg{
+				store:         store,
+				sessionID:     sess.ID,
+				gist:          &gist.Gist{ID: "abc123", URL: "https://gist.github.com/u/abc123"},
+				preview:       session.GistPreviewURL("abc123"),
+				copyAttempted: tt.copyAttempted,
+				copyMethod:    tt.method,
+				copyErr:       tt.copyErr,
+			})
+			if got := result.(*Model).dialog.Content(); !strings.Contains(got, tt.wantDialog) {
+				t.Fatalf("dialog = %q, want %q", got, tt.wantDialog)
+			}
+		})
 	}
 }
 

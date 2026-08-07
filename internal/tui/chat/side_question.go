@@ -331,7 +331,7 @@ func (m *Model) clearSideQuestionHistory() {
 
 func (m *Model) handleSideQuestionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyName := strings.ToLower(msg.String())
-	if m.selection.SideQuestion && keyName != "ctrl+c" {
+	if m.selection.SideQuestion && keyName != "ctrl+c" && keyName != "ctrl+y" {
 		m.selection = Selection{}
 	}
 	if m.sideQuestion.ConfirmClear && keyName != "ctrl+x" {
@@ -372,6 +372,13 @@ func (m *Model) handleSideQuestionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.sideQuestion.Visible = false
 		m.sideQuestion.ConfirmClear = false
 		m.selection = Selection{}
+	case "ctrl+y":
+		if m.selection.Active {
+			cmd := m.copySelectionToClipboard()
+			m.selection = Selection{}
+			return m, cmd
+		}
+		return m.cmdCopy(nil)
 	case "ctrl+x":
 		if !m.sideQuestion.Running {
 			if m.sideQuestion.ConfirmClear {

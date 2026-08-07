@@ -781,14 +781,15 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Clear stale copy status on any keypress
-	m.copyStatus = ""
-
-	// Copy selection on Ctrl+Y
-	if key.Matches(msg, m.keyMap.Copy) && m.selection.Active {
-		cmd := m.copySelectionToClipboard()
-		m.selection = Selection{}
-		return m, cmd
+	// Ctrl+Y copies the active rendered selection, or the latest assistant
+	// response when there is no selection.
+	if key.Matches(msg, m.keyMap.Copy) {
+		if m.selection.Active {
+			cmd := m.copySelectionToClipboard()
+			m.selection = Selection{}
+			return m, cmd
+		}
+		return m.cmdCopy(nil)
 	}
 
 	// Handle cancel during streaming (takes priority over clearing selection)
