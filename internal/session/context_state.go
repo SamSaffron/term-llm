@@ -179,7 +179,7 @@ func dropLeadingCompactionSystemMessages(messages []llm.Message) []llm.Message {
 func markNewCompactionTailRows(messages []Message) {
 	summaryIdx := -1
 	for i := range messages {
-		if isInternalCompactionSummaryMessage(messages[i]) {
+		if IsInternalCompactionSummaryMessage(messages[i]) {
 			summaryIdx = i
 			break
 		}
@@ -205,12 +205,12 @@ func markCompactionDisplayTailsForPersistence(messages []Message) ([]Message, []
 	var fingerprints []string
 	var persistedTailIDs []int64
 	for i := 0; i < len(out); i++ {
-		if !isInternalCompactionSummaryMessage(out[i]) {
+		if !IsInternalCompactionSummaryMessage(out[i]) {
 			continue
 		}
 		ackWasTail := i+1 < len(out) && out[i+1].CompactionTail
 		if persistedCompactionTailAlreadyMarked(out, i) {
-			if !ackWasTail && i+1 < len(out) && isSyntheticCompactionAckMessage(out[i+1]) && out[i+1].CompactionTail && out[i+1].ID != 0 {
+			if !ackWasTail && i+1 < len(out) && IsSyntheticCompactionAckMessage(out[i+1]) && out[i+1].CompactionTail && out[i+1].ID != 0 {
 				persistedTailIDs = append(persistedTailIDs, out[i+1].ID)
 			}
 			continue
@@ -238,7 +238,7 @@ func markCompactionDisplayTailsForPersistence(messages []Message) ([]Message, []
 			}
 			continue
 		}
-		if i+1 < len(out) && isSyntheticCompactionAckMessage(out[i+1]) && !out[i+1].CompactionTail {
+		if i+1 < len(out) && IsSyntheticCompactionAckMessage(out[i+1]) && !out[i+1].CompactionTail {
 			out[i+1].CompactionTail = true
 			if out[i+1].ID != 0 {
 				persistedTailIDs = append(persistedTailIDs, out[i+1].ID)
@@ -255,7 +255,7 @@ func persistedCompactionTailAlreadyMarked(messages []Message, summaryIdx int) bo
 	if messages[summaryIdx+1].CompactionTail {
 		return true
 	}
-	if isSyntheticCompactionAckMessage(messages[summaryIdx+1]) && summaryIdx+2 < len(messages) && messages[summaryIdx+2].CompactionTail {
+	if IsSyntheticCompactionAckMessage(messages[summaryIdx+1]) && summaryIdx+2 < len(messages) && messages[summaryIdx+2].CompactionTail {
 		messages[summaryIdx+1].CompactionTail = true
 		return true
 	}
@@ -268,7 +268,7 @@ func compactionDuplicateTailRange(messages []Message, fingerprints []string, sum
 	}
 
 	candidates := []int{summaryIdx + 1}
-	if isSyntheticCompactionAckMessage(messages[summaryIdx+1]) {
+	if IsSyntheticCompactionAckMessage(messages[summaryIdx+1]) {
 		candidates = append(candidates, summaryIdx+2)
 	}
 
@@ -323,11 +323,17 @@ func messageFingerprintSuffixPrefixOverlap(left, right []string) int {
 	return prefix[len(prefix)-1]
 }
 
-func isSyntheticCompactionAckMessage(msg Message) bool {
+const syntheticCompactionAckText = "I've reviewed the context summary. I'll continue from where we left off."
+
+// IsSyntheticCompactionAckMessage reports whether msg is the internal assistant
+// acknowledgement inserted after a context-compaction summary. It deliberately
+// matches the persisted TextContent representation used by compaction-tail
+// detection so exporting this predicate does not widen persistence behavior.
+func IsSyntheticCompactionAckMessage(msg Message) bool {
 	if msg.Role != llm.RoleAssistant {
 		return false
 	}
-	return strings.TrimSpace(msg.TextContent) == "I've reviewed the context summary. I'll continue from where we left off."
+	return strings.TrimSpace(msg.TextContent) == syntheticCompactionAckText
 }
 
 func messageDisplayFingerprint(msg Message) string {
@@ -338,7 +344,9 @@ func messageDisplayFingerprint(msg Message) string {
 	return string(msg.Role) + "\x00" + msg.TextContent + "\x00" + string(parts)
 }
 
-func isInternalCompactionSummaryMessage(msg Message) bool {
+// IsInternalCompactionSummaryMessage reports whether msg contains term-llm's
+// internal context-compaction summary payload.
+func IsInternalCompactionSummaryMessage(msg Message) bool {
 	if llm.IsInternalCompactionSummaryText(msg.TextContent) {
 		return true
 	}

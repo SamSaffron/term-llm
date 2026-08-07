@@ -10,6 +10,33 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestCompactionMessagePredicates(t *testing.T) {
+	ackText := syntheticCompactionAckText
+	persistedAck := NewMessage("session", llm.AssistantText(ackText), -1)
+	if !IsSyntheticCompactionAckMessage(*persistedAck) {
+		t.Fatalf("ack predicate rejected NewMessage-derived row %#v", persistedAck)
+	}
+	for _, msg := range []Message{
+		{Role: llm.RoleUser, TextContent: ackText},
+		{Role: llm.RoleAssistant, TextContent: "ordinary answer"},
+		// Persistence historically keys this predicate from TextContent. Keep a
+		// parts-only row from widening compaction-tail marking behavior.
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: ackText}}},
+	} {
+		if IsSyntheticCompactionAckMessage(msg) {
+			t.Fatalf("ack predicate accepted %#v", msg)
+		}
+	}
+
+	summary := "[Context Compaction]\ninternal summary"
+	if !IsInternalCompactionSummaryMessage(Message{TextContent: summary}) {
+		t.Fatal("internal summary TextContent was not recognized")
+	}
+	if !IsInternalCompactionSummaryMessage(Message{Parts: []llm.Part{{Type: llm.PartText, Text: summary}}}) {
+		t.Fatal("internal summary part was not recognized")
+	}
+}
+
 func TestApplyCompactionDoesNotPersistEphemeralMessages(t *testing.T) {
 	ctx := context.Background()
 	store := newContextStateTestStore(t)

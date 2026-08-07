@@ -113,7 +113,7 @@ Keyboard shortcuts:
   Ctrl+O       - Inspect conversation context
   Ctrl+E       - Expand/collapse tool and reasoning details
   Ctrl+P       - Command palette
-  Ctrl+Y       - Copy selected conversation text
+  Ctrl+Y       - Copy selection, or latest assistant response
   PageUp/Down  - Scroll conversation
   Esc          - Cancel streaming / close modal / clear input
 
@@ -128,6 +128,7 @@ Slash commands:
   /fast        - Toggle ChatGPT fast mode
   /new         - Start a new session
   /save        - Save session with a name
+  /copy        - Copy one assistant response as source Markdown
   /export      - Export conversation as markdown
   /thinking    - Toggle reasoning display
   /system      - Set custom system prompt

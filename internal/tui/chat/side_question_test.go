@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/llm"
 	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -679,12 +680,18 @@ func TestSideOverlayMouseSelectionCopiesVisibleDialogText(t *testing.T) {
 }
 
 func TestSideCtrlCClosesUnlessSelectionIsActive(t *testing.T) {
+	installCopyBackend(t, func(string) (clipboard.CopyMethod, error) {
+		return clipboard.CopyMethodNative, nil
+	})
 	m := newTestChatModel(true)
 	m.sideQuestion.Visible = true
 	m.sideQuestion.History = []sidequestion.Entry{{Question: "q", Response: "answer"}}
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("Ctrl+C without a selection returned a command")
+	}
 	if m.sideQuestion.Visible {
 		t.Fatal("Ctrl+C without a selection did not close the side overlay")
 	}
@@ -699,7 +706,12 @@ func TestSideCtrlCClosesUnlessSelectionIsActive(t *testing.T) {
 		Anchor: ContentPos{Line: 0, Col: 0},
 		Cursor: ContentPos{Line: 0, Col: 8},
 	}
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Ctrl+C with a selection did not return a copy command")
+	}
+	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
 	if !m.sideQuestion.Visible {
 		t.Fatal("Ctrl+C with a selection closed the side overlay instead of copying")

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -50,6 +51,9 @@ func assertQuitCommand(t *testing.T, cmd tea.Cmd) {
 }
 
 func TestCtrlCCopiesActiveSelection(t *testing.T) {
+	installCopyBackend(t, func(string) (clipboard.CopyMethod, error) {
+		return clipboard.CopyMethodNative, nil
+	})
 	m := newTestChatModel(true)
 	m.contentLines = []string{"hello world"}
 	m.selection = Selection{
@@ -60,9 +64,11 @@ func TestCtrlCCopiesActiveSelection(t *testing.T) {
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	rm := updated.(*Model)
-	if cmd != nil {
-		t.Fatalf("copy selection should not return quit command, got %T", cmd())
+	if cmd == nil {
+		t.Fatal("copy selection should return an asynchronous copy command")
 	}
+	updated, _ = rm.Update(cmd())
+	rm = updated.(*Model)
 	if rm.quitting {
 		t.Fatal("Ctrl+C with active selection should copy, not quit")
 	}

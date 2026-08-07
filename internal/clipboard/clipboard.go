@@ -3,6 +3,7 @@ package clipboard
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // ReadText reads text content from the system clipboard
@@ -285,7 +288,8 @@ func normalizeImageMIME(raw string) string {
 // OSC52Sequence returns the OSC 52 escape sequence that instructs a terminal
 // emulator to set the system clipboard to text. Uses the ST (ESC \) terminator.
 // If running inside tmux or screen, wraps the sequence in a DCS passthrough
-// so the outer terminal receives it.
+// so the outer terminal receives it. This framing helper does not enforce the
+// 100 KiB raw UTF-8 payload cap; CopyTextOSC52 and CopyTextBestEffort do.
 func OSC52Sequence(text string) string {
 	payload := base64.StdEncoding.EncodeToString([]byte(text))
 	osc := "\033]52;c;" + payload + "\033\\"
@@ -305,8 +309,12 @@ func OSC52Sequence(text string) string {
 // CopyTextOSC52 writes an OSC 52 escape sequence directly to /dev/tty,
 // instructing the terminal emulator to set the system clipboard. This works
 // over SSH because the local terminal interprets the sequence. Writing to
-// /dev/tty bypasses any stdout buffering or filtering by bubbletea.
+// /dev/tty bypasses any stdout buffering or filtering by bubbletea. Payloads
+// are capped at 100 KiB of raw UTF-8 text and are rejected rather than truncated.
 func CopyTextOSC52(text string) error {
+	if len(text) > osc52MaxPayloadBytes {
+		return errors.New(osc52PayloadTooLargeMessage)
+	}
 	seq := OSC52Sequence(text)
 
 	f, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
@@ -318,6 +326,82 @@ func CopyTextOSC52(text string) error {
 		return fmt.Errorf("write OSC 52: %w", err)
 	}
 	return nil
+}
+
+// CopyMethod identifies the clipboard backend that accepted copied text.
+type CopyMethod string
+
+const (
+	CopyMethodNative CopyMethod = "native"
+	CopyMethodOSC52  CopyMethod = "osc52"
+
+	osc52MaxPayloadBytes        = 100 * 1024
+	osc52PayloadTooLargeMessage = "content is too large for terminal clipboard transfer (maximum 100 KiB)"
+)
+
+type copyTextFunc func(string) error
+
+// CopyTextBestEffort copies text through exactly one successful backend. An
+// interactive SSH session with a usable controlling TTY prefers OSC 52 so the
+// user's local terminal receives the text; other sessions prefer the platform
+// clipboard. The alternate backend is attempted only when the preferred backend
+// fails. OSC 52 is capped at 100 KiB of raw UTF-8; native clipboard delivery is
+// uncapped.
+func CopyTextBestEffort(text string) (CopyMethod, error) {
+	return copyTextBestEffort(text, isInteractiveSSHSession(), CopyText, CopyTextOSC52)
+}
+
+func copyTextBestEffort(text string, preferOSC52 bool, native, osc52 copyTextFunc) (CopyMethod, error) {
+	type backend struct {
+		method CopyMethod
+		copy   copyTextFunc
+	}
+
+	backends := []backend{
+		{method: CopyMethodNative, copy: native},
+		{method: CopyMethodOSC52, copy: osc52},
+	}
+	if preferOSC52 {
+		backends[0], backends[1] = backends[1], backends[0]
+	}
+
+	failures := make([]error, 0, len(backends))
+	for _, backend := range backends {
+		label := "native clipboard"
+		if backend.method == CopyMethodOSC52 {
+			label = "OSC 52"
+			if len(text) > osc52MaxPayloadBytes {
+				failures = append(failures, fmt.Errorf("%s: %s", label, osc52PayloadTooLargeMessage))
+				continue
+			}
+		}
+		if err := backend.copy(text); err == nil {
+			return backend.method, nil
+		} else {
+			failures = append(failures, fmt.Errorf("%s: %w", label, err))
+		}
+	}
+
+	return "", errors.Join(failures...)
+}
+
+func isInteractiveSSHSession() bool {
+	return isInteractiveSSHSessionWith(os.Getenv, hasUsableTTY)
+}
+
+func isInteractiveSSHSessionWith(getenv func(string) string, usableTTY func() bool) bool {
+	ssh := getenv("SSH_CONNECTION") != "" || getenv("SSH_CLIENT") != "" || getenv("SSH_TTY") != ""
+	termName := strings.TrimSpace(getenv("TERM"))
+	return ssh && termName != "" && !strings.EqualFold(termName, "dumb") && usableTTY()
+}
+
+func hasUsableTTY() bool {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return false
+	}
+	defer tty.Close()
+	return term.IsTerminal(int(tty.Fd()))
 }
 
 // CopyText copies text to the system clipboard
