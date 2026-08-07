@@ -129,18 +129,44 @@ func TestCreateBranchEmptyIdempotentAndRevisionConflict(t *testing.T) {
 		t.Fatalf("empty branch copied messages: %#v", messages)
 	}
 	replay, err := store.CreateBranch(ctx, source.ID, CreateBranchOptions{
+		ExpectedState:  &state,
+		IdempotencyKey: "empty",
+	})
+	if err != nil || !replay.Reused || replay.Session.ID != result.Session.ID || replay.AnchorMessageID != 0 || replay.ForkAfterMessageID != 0 {
+		t.Fatalf("idempotent replay = %#v, %v", replay, err)
+	}
+	_, err = store.CreateBranch(ctx, source.ID, CreateBranchOptions{
 		AnchorMessageID: sourceMessage.ID,
-		ExpectedState:   &state,
 		IdempotencyKey:  "empty",
 	})
-	if err != nil || !replay.Reused || replay.Session.ID != result.Session.ID || replay.AnchorMessageID != 0 {
-		t.Fatalf("idempotent replay = %#v, %v", replay, err)
+	if !errors.Is(err, ErrBranchIdempotencyConflict) {
+		t.Fatalf("mismatched idempotent replay error = %v", err)
 	}
 
 	staleRev := state.Rev - 1
 	_, err = store.CreateBranch(ctx, source.ID, CreateBranchOptions{ExpectedRev: &staleRev})
 	if !errors.Is(err, ErrBranchConflict) {
 		t.Fatalf("stale revision error = %v", err)
+	}
+}
+
+func TestCreateBranchIdempotentReplayPrecedesOptimisticRevisionChecks(t *testing.T) {
+	ctx := context.Background()
+	store, source := newBranchTestStore(t)
+	anchor := addBranchTestMessage(t, store, source.ID, llm.UserText("anchor"))
+	state, err := store.TranscriptMutationState(ctx, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateBranch(ctx, source.ID, CreateBranchOptions{AnchorMessageID: anchor.ID, ExpectedState: &state, IdempotencyKey: "stable-replay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = addBranchTestMessage(t, store, source.ID, llm.AssistantText("later mutation"))
+
+	replay, err := store.CreateBranch(ctx, source.ID, CreateBranchOptions{AnchorMessageID: anchor.ID, ExpectedState: &state, IdempotencyKey: "stable-replay"})
+	if err != nil || !replay.Reused || replay.Session.ID != created.Session.ID || replay.ForkAfterMessageID != anchor.ID {
+		t.Fatalf("stale idempotent replay = %#v, %v", replay, err)
 	}
 }
 
@@ -330,6 +356,16 @@ func TestCreateBranchAtomicallyAppendsPathNoteAfterCopiedAnchor(t *testing.T) {
 	messages, _ = store.GetMessages(ctx, result.Session.ID, 0, 0)
 	if len(messages) != 2 || strings.Contains(messages[1].TextContent, "duplicate") {
 		t.Fatalf("idempotent replay duplicated/replaced note: %#v", messages)
+	}
+}
+
+func TestPathNoteDisplayTextRestoresEscapedClosingTags(t *testing.T) {
+	note := NewPathNoteMessage("child", "before </path_notes> after", llm.PathNoteProvenance{SourceSessionID: "source"}, 0)
+	if got, want := note.PathNoteDisplayText(), "before </path_notes> after"; got != want {
+		t.Fatalf("display text = %q, want %q", got, want)
+	}
+	if nested := NewPathNoteMessage("grandchild", note.PathNoteDisplayText(), llm.PathNoteProvenance{SourceSessionID: "child"}, 0).PathNoteDisplayText(); nested != "before </path_notes> after" {
+		t.Fatalf("nested display text = %q", nested)
 	}
 }
 

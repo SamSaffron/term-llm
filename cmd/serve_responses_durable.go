@@ -7,12 +7,28 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-const durableResponseMessagePrefix = "resp_msg_"
+const (
+	durableResponseMessagePrefix = "resp_msg_"
+	branchPathNoteWorkTimeout    = 2 * time.Minute
+)
+
+type branchPathNoteFlight struct {
+	signature string
+	done      chan struct{}
+	note      *session.BranchPathNote
+	status    int
+	message   string
+}
+
+func detachedBranchWorkContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), branchPathNoteWorkTimeout)
+}
 
 type latestVisibleMessageIDStore interface {
 	GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, error)
@@ -194,6 +210,44 @@ func (s *serveServer) prepareBranchPathNote(ctx context.Context, sourceSessionID
 	}, 0, ""
 }
 
+func (s *serveServer) prepareBranchPathNoteOnce(ctx context.Context, sourceSessionID string, anchorMessageID int64, idempotencyKey string, requested *responsesBranchContextRequest) (*session.BranchPathNote, int, string, context.Context, func()) {
+	mode := ""
+	focus := ""
+	if requested != nil {
+		mode = strings.ToLower(strings.TrimSpace(requested.Mode))
+		focus = strings.TrimSpace(requested.Focus)
+	}
+	if mode == "" || mode == "none" || mode == "clean" {
+		return nil, 0, "", ctx, func() {}
+	}
+
+	key := strings.TrimSpace(sourceSessionID) + "\x00" + strings.TrimSpace(idempotencyKey)
+	signature := fmt.Sprintf("%d\x00%s\x00%s", anchorMessageID, mode, focus)
+	candidate := &branchPathNoteFlight{signature: signature, done: make(chan struct{})}
+	actual, loaded := s.branchPathNoteFlights.LoadOrStore(key, candidate)
+	flight := actual.(*branchPathNoteFlight)
+	if loaded {
+		if flight.signature != signature {
+			return nil, http.StatusConflict, "idempotency key was already used for different branch context", ctx, func() {}
+		}
+		select {
+		case <-flight.done:
+			return flight.note, flight.status, flight.message, ctx, func() {}
+		case <-ctx.Done():
+			return nil, http.StatusRequestTimeout, "branch context generation was cancelled", ctx, func() {}
+		}
+	}
+
+	workCtx, cancel := detachedBranchWorkContext(ctx)
+	release := func() {
+		s.branchPathNoteFlights.CompareAndDelete(key, flight)
+		cancel()
+	}
+	flight.note, flight.status, flight.message = s.prepareBranchPathNote(workCtx, sourceSessionID, anchorMessageID, requested)
+	close(flight.done)
+	return flight.note, flight.status, flight.message, workCtx, release
+}
+
 func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponseID, headerSessionID string, inputMessages []llm.Message, allowIdentifiedUserBatch bool, expectedRev *int64, idempotencyKey string, branchContext *responsesBranchContextRequest) (durablePreviousResponseResolution, int, string) {
 	msgID, ok := parseBranchDurableResponseMessageID(previousResponseID)
 	if !ok {
@@ -242,12 +296,28 @@ func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponse
 		} else if err != nil {
 			return durablePreviousResponseResolution{}, http.StatusInternalServerError, "failed to resolve conversation branch"
 		} else if found && replay.Session != nil {
+			if replay.ForkAfterMessageID != msgID {
+				return durablePreviousResponseResolution{}, http.StatusConflict, "idempotency key was already used for a different branch point"
+			}
 			latestID := durableResponseIDForMessageID(replay.AnchorMessageID)
 			if replay.AnchorMessageID == 0 {
 				latestID = durableResponseMessagePrefix + "0"
 			}
 			return durablePreviousResponseResolution{sessionID: replay.Session.ID, latestID: latestID}, 0, ""
 		}
+	}
+
+	var expectedState *session.TranscriptMutationState
+	if expectedRev == nil {
+		mutationStore, ok := s.store.(session.TranscriptUndoRedoStore)
+		if !ok {
+			return durablePreviousResponseResolution{}, http.StatusConflict, "revision-safe conversation branching is unavailable"
+		}
+		state, err := mutationStore.TranscriptMutationState(ctx, sourceSessionID)
+		if err != nil {
+			return durablePreviousResponseResolution{}, http.StatusInternalServerError, "failed to inspect conversation revision"
+		}
+		expectedState = &state
 	}
 
 	// Check source activity before spending a helper call, then lock again before
@@ -258,7 +328,8 @@ func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponse
 	}
 	unlockSource()
 
-	pathNote, status, message := s.prepareBranchPathNote(ctx, sourceSessionID, msgID, branchContext)
+	pathNote, status, message, operationCtx, releasePathNote := s.prepareBranchPathNoteOnce(ctx, sourceSessionID, msgID, idempotencyKey, branchContext)
+	defer releasePathNote()
 	if status != 0 {
 		return durablePreviousResponseResolution{}, status, message
 	}
@@ -273,8 +344,9 @@ func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponse
 	if !ok {
 		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation branching is unavailable"
 	}
-	result, err := branchStore.CreateBranch(ctx, sourceSessionID, session.CreateBranchOptions{
+	result, err := branchStore.CreateBranch(operationCtx, sourceSessionID, session.CreateBranchOptions{
 		AnchorMessageID: msgID,
+		ExpectedState:   expectedState,
 		ExpectedRev:     expectedRev,
 		IdempotencyKey:  strings.TrimSpace(idempotencyKey),
 		PathNote:        pathNote,
@@ -282,6 +354,8 @@ func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponse
 	switch {
 	case errors.Is(err, session.ErrBranchConflict):
 		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation changed in another client; refresh and try again"
+	case errors.Is(err, session.ErrBranchIdempotencyConflict):
+		return durablePreviousResponseResolution{}, http.StatusConflict, "idempotency key was already used for a different branch point"
 	case errors.Is(err, session.ErrBranchingUnsupported):
 		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation branching is unavailable"
 	case errors.Is(err, session.ErrNotFound):

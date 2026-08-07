@@ -1162,6 +1162,7 @@ type serveServer struct {
 	responseToSession        sync.Map // response_id (string) → session_id (string)
 	sessionToResponse        sync.Map // session_id (string) → latest response_id (string)
 	branchNotes              sync.Map // child session_id → in-flight path-note preparation
+	branchPathNoteFlights    sync.Map // source/idempotency key → shared path-note helper result
 	responseRunsOnce         sync.Once
 	responseRuns             *responseRunManager
 	transcriptIndexerOnce    sync.Once

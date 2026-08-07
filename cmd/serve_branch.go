@@ -164,6 +164,45 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
+	if replayStore, ok := s.store.(session.ConversationBranchReplayStore); ok {
+		replay, found, replayErr := replayStore.GetBranchByIdempotencyKey(r.Context(), sourceSessionID, req.IdempotencyKey)
+		switch {
+		case errors.Is(replayErr, session.ErrBranchingUnsupported):
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "conversation branching is unavailable")
+			return
+		case replayErr != nil:
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to resolve conversation branch")
+			return
+		case found && replay.Session != nil:
+			if replay.ForkAfterMessageID != req.AnchorMessageID {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "idempotency key was already used for a different branch point")
+				return
+			}
+			writeJSON(w, http.StatusOK, createSessionBranchResponse{
+				Session:               s.webSessionEntryFromSession(replay.Session),
+				ParentSessionID:       sourceSessionID,
+				ParentTitle:           source.PreferredShortTitle(),
+				ForkAfterMessageID:    replay.ForkAfterMessageID,
+				CopiedAnchorMessageID: replay.AnchorMessageID,
+				Reused:                true,
+			})
+			return
+		}
+	}
+	var expectedState *session.TranscriptMutationState
+	if req.ExpectedRev == nil {
+		mutationStore, ok := s.store.(session.TranscriptUndoRedoStore)
+		if !ok {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "revision-safe conversation branching is unavailable")
+			return
+		}
+		state, stateErr := mutationStore.TranscriptMutationState(r.Context(), sourceSessionID)
+		if stateErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to inspect conversation revision")
+			return
+		}
+		expectedState = &state
+	}
 	unlock, busy := s.lockBranchSourceRuntime(sourceSessionID)
 	if busy {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot branch while source work is active")
@@ -172,12 +211,15 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 	defer unlock()
 	result, err := branchStore.CreateBranch(r.Context(), sourceSessionID, session.CreateBranchOptions{
 		AnchorMessageID: req.AnchorMessageID,
+		ExpectedState:   expectedState,
 		ExpectedRev:     req.ExpectedRev,
 		IdempotencyKey:  req.IdempotencyKey,
 	})
 	switch {
 	case errors.Is(err, session.ErrBranchConflict):
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "conversation changed in another client; refresh and try again")
+	case errors.Is(err, session.ErrBranchIdempotencyConflict):
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "idempotency key was already used for a different branch point")
 	case errors.Is(err, session.ErrBranchingUnsupported):
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "conversation branching is unavailable")
 	case errors.Is(err, session.ErrNotFound):
@@ -191,7 +233,7 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 			Session:               s.webSessionEntryFromSession(result.Session),
 			ParentSessionID:       sourceSessionID,
 			ParentTitle:           source.PreferredShortTitle(),
-			ForkAfterMessageID:    req.AnchorMessageID,
+			ForkAfterMessageID:    result.ForkAfterMessageID,
 			CopiedAnchorMessageID: result.AnchorMessageID,
 			Reused:                result.Reused,
 		})
@@ -268,7 +310,9 @@ func (s *serveServer) handleSessionPathNotes(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer unlockSource()
-	pathNote, status, message := s.prepareBranchPathNote(r.Context(), edge.ParentSessionID, edge.ForkAfterMessageID, &responsesBranchContextRequest{Mode: mode, Focus: req.Focus})
+	workCtx, cancelWork := detachedBranchWorkContext(r.Context())
+	defer cancelWork()
+	pathNote, status, message := s.prepareBranchPathNote(workCtx, edge.ParentSessionID, edge.ForkAfterMessageID, &responsesBranchContextRequest{Mode: mode, Focus: req.Focus})
 	if status != 0 {
 		errType := "invalid_request_error"
 		if status == http.StatusConflict {
@@ -283,7 +327,7 @@ func (s *serveServer) handleSessionPathNotes(w http.ResponseWriter, r *http.Requ
 		pathNote.Provenance.SourceSessionID = edge.ParentSessionID
 		pathNote.Provenance.AnchorMessageID = edge.ForkAfterMessageID
 		note := session.NewPathNoteMessage(childSessionID, pathNote.Text, pathNote.Provenance, -1)
-		if err := s.store.AddMessage(r.Context(), childSessionID, note); err != nil {
+		if err := s.store.AddMessage(workCtx, childSessionID, note); err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save branch context")
 			return
 		}

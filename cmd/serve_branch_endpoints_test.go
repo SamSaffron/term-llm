@@ -102,6 +102,23 @@ func TestSessionBranchEndpointsCreateChildBeforePreparingContext(t *testing.T) {
 		t.Fatalf("child should exist before helper: messages=%#v requests=%d", childMessages, len(provider.Requests))
 	}
 
+	branchReplayReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(branchBody))
+	branchReplayReq.Header.Set("Content-Type", "application/json")
+	branchReplayRR := httptest.NewRecorder()
+	srv.handleSessionByID(branchReplayRR, branchReplayReq)
+	var replayed createSessionBranchResponse
+	if branchReplayRR.Code != http.StatusOK || json.Unmarshal(branchReplayRR.Body.Bytes(), &replayed) != nil || !replayed.Reused || replayed.ForkAfterMessageID != messages[1].ID {
+		t.Fatalf("branch replay status/body = %d %s", branchReplayRR.Code, branchReplayRR.Body.String())
+	}
+	mismatchBody := fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"immediate-branch"}`, messages[0].ID)
+	mismatchReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(mismatchBody))
+	mismatchReq.Header.Set("Content-Type", "application/json")
+	mismatchRR := httptest.NewRecorder()
+	srv.handleSessionByID(mismatchRR, mismatchReq)
+	if mismatchRR.Code != http.StatusConflict || !strings.Contains(mismatchRR.Body.String(), "different branch point") {
+		t.Fatalf("mismatched replay status/body = %d %s", mismatchRR.Code, mismatchRR.Body.String())
+	}
+
 	notesReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+created.Session.ID+"/path-notes", strings.NewReader(`{"mode":"notes"}`))
 	notesReq.Header.Set("Content-Type", "application/json")
 	notesRR := httptest.NewRecorder()

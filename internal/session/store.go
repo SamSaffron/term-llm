@@ -34,6 +34,8 @@ var (
 	// ErrBranchConflict is branch-specific while matching the shared transcript
 	// conflict sentinel for callers that handle all optimistic transcript races.
 	ErrBranchConflict = fmt.Errorf("session: branch conflict: %w", ErrTranscriptConflict)
+	// ErrBranchIdempotencyConflict means a key was reused for a different source prefix.
+	ErrBranchIdempotencyConflict = errors.New("session: branch idempotency key reused with different parameters")
 	// ErrNothingToUndo means there is no real post-compaction user turn to undo.
 	ErrNothingToUndo = errors.New("session: nothing to undo")
 	// ErrNothingToRedo means no durable undo suffix remains for this session.
@@ -411,9 +413,10 @@ type BranchPathNote struct {
 
 // BranchResult is the newly materialized (or idempotently reused) linear child.
 type BranchResult struct {
-	Session         *Session `json:"session"`
-	AnchorMessageID int64    `json:"anchor_message_id,omitempty"`
-	Reused          bool     `json:"reused,omitempty"`
+	Session            *Session `json:"session"`
+	ForkAfterMessageID int64    `json:"fork_after_message_id,omitempty"`
+	AnchorMessageID    int64    `json:"anchor_message_id,omitempty"`
+	Reused             bool     `json:"reused,omitempty"`
 }
 
 // BranchTreeNode is one normal session in a connected conversation tree.

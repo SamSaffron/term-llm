@@ -25,10 +25,11 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 		return BranchResult{}, false, nil
 	}
 	var childID string
+	var forkAfterMessageID sql.NullInt64
 	var anchorSequence int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT child_session_id, fork_after_sequence FROM session_branches
-		WHERE parent_session_id = ? AND idempotency_key = ?`, sourceSessionID, idempotencyKey).Scan(&childID, &anchorSequence)
+		SELECT child_session_id, fork_after_message_id, fork_after_sequence FROM session_branches
+		WHERE parent_session_id = ? AND idempotency_key = ?`, sourceSessionID, idempotencyKey).Scan(&childID, &forkAfterMessageID, &anchorSequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return BranchResult{}, false, nil
 	}
@@ -39,7 +40,7 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 	if err != nil {
 		return BranchResult{}, false, err
 	}
-	result := BranchResult{Session: child, Reused: true}
+	result := BranchResult{Session: child, ForkAfterMessageID: forkAfterMessageID.Int64, Reused: true}
 	if anchorSequence >= 0 {
 		err := s.db.QueryRowContext(ctx, `SELECT id FROM messages WHERE session_id = ? AND sequence <= ? AND role IN ('user', 'assistant') ORDER BY sequence DESC, id DESC LIMIT 1`, childID, anchorSequence).Scan(&result.AnchorMessageID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -62,7 +63,10 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 	}
 	opts.IdempotencyKey = strings.TrimSpace(opts.IdempotencyKey)
 
-	var result BranchResult
+	var childID string
+	var forkAfterMessageID int64
+	var copiedAnchorID int64
+	var reused bool
 	err := retryOnBusy(ctx, 5, func() error {
 		conn, err := s.beginImmediate(ctx)
 		if err != nil {
@@ -72,8 +76,40 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 		defer func() {
 			if !committed {
 				rollbackImmediate(conn)
+				return
 			}
+			_ = conn.Close()
 		}()
+
+		if opts.IdempotencyKey != "" {
+			var replayForkAfterMessageID sql.NullInt64
+			var replayAnchorSequence int
+			err := conn.QueryRowContext(ctx, `
+				SELECT child_session_id, fork_after_message_id, fork_after_sequence FROM session_branches
+				WHERE parent_session_id = ? AND idempotency_key = ?`, sourceSessionID, opts.IdempotencyKey).
+				Scan(&childID, &replayForkAfterMessageID, &replayAnchorSequence)
+			if err == nil {
+				forkAfterMessageID = replayForkAfterMessageID.Int64
+				if forkAfterMessageID != opts.AnchorMessageID {
+					return ErrBranchIdempotencyConflict
+				}
+				if replayAnchorSequence >= 0 {
+					err := conn.QueryRowContext(ctx, `SELECT id FROM messages WHERE session_id = ? AND sequence <= ? AND role IN ('user', 'assistant') ORDER BY sequence DESC, id DESC LIMIT 1`, childID, replayAnchorSequence).Scan(&copiedAnchorID)
+					if err != nil && !errors.Is(err, sql.ErrNoRows) {
+						return fmt.Errorf("resolve idempotent branch anchor: %w", err)
+					}
+				}
+				if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+					return fmt.Errorf("commit branch replay: %w", err)
+				}
+				committed = true
+				reused = true
+				return nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("lookup idempotent branch: %w", err)
+			}
+		}
 
 		actual, err := transcriptMutationState(ctx, conn, sourceSessionID)
 		if err != nil {
@@ -105,33 +141,6 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			nullableAnchor = opts.AnchorMessageID
 		}
 
-		if opts.IdempotencyKey != "" {
-			var childID string
-			var replayAnchorSequence int
-			err := conn.QueryRowContext(ctx, `
-				SELECT child_session_id, fork_after_sequence FROM session_branches
-				WHERE parent_session_id = ? AND idempotency_key = ?`, sourceSessionID, opts.IdempotencyKey).Scan(&childID, &replayAnchorSequence)
-			if err == nil {
-				if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-					return fmt.Errorf("commit branch replay: %w", err)
-				}
-				committed = true
-				_ = conn.Close()
-				child, err := s.Get(ctx, childID)
-				if err != nil {
-					return err
-				}
-				result = BranchResult{Session: child, Reused: true}
-				if replayAnchorSequence >= 0 {
-					_ = s.db.QueryRowContext(ctx, `SELECT id FROM messages WHERE session_id = ? AND sequence <= ? AND role IN ('user', 'assistant') ORDER BY sequence DESC, id DESC LIMIT 1`, childID, replayAnchorSequence).Scan(&result.AnchorMessageID)
-				}
-				return nil
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("lookup idempotent branch: %w", err)
-			}
-		}
-
 		var parentCompactionSeq, parentCompactionCount int
 		if err := conn.QueryRowContext(ctx, `SELECT compaction_seq, compaction_count FROM sessions WHERE id = ?`, sourceSessionID).Scan(&parentCompactionSeq, &parentCompactionCount); err != nil {
 			return fmt.Errorf("load branch source compaction: %w", err)
@@ -144,7 +153,8 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			preserveCompactionTail = true
 		}
 
-		childID := NewID()
+		forkAfterMessageID = opts.AnchorMessageID
+		childID = NewID()
 		now := time.Now()
 		insertSession := `
 			INSERT INTO sessions (
@@ -243,7 +253,7 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			) VALUES (?, ?, ?, ?, ?, ?)`, childID, sourceSessionID, nullableAnchor, anchorSequence, opts.IdempotencyKey, now); err != nil {
 			return fmt.Errorf("insert branch edge: %w", err)
 		}
-		copiedAnchorID := int64(0)
+		copiedAnchorID = 0
 		if anchorSequence >= 0 {
 			err := conn.QueryRowContext(ctx, `SELECT id FROM messages WHERE session_id = ? AND sequence <= ? AND role IN ('user', 'assistant') ORDER BY sequence DESC, id DESC LIMIT 1`, childID, anchorSequence).Scan(&copiedAnchorID)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -254,16 +264,19 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			return fmt.Errorf("commit branch: %w", err)
 		}
 		committed = true
-		_ = conn.Close()
-
-		child, err := s.Get(ctx, childID)
-		if err != nil {
-			return err
-		}
-		result = BranchResult{Session: child, AnchorMessageID: copiedAnchorID}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return BranchResult{}, err
+	}
+	// Keep reads after COMMIT outside retryOnBusy. Retrying the whole transaction
+	// after a transient post-commit read failure could materialize another child
+	// when the caller did not supply an idempotency key.
+	child, err := s.Get(ctx, childID)
+	if err != nil {
+		return BranchResult{}, err
+	}
+	return BranchResult{Session: child, ForkAfterMessageID: forkAfterMessageID, AnchorMessageID: copiedAnchorID, Reused: reused}, nil
 }
 
 // MessagesAfterBranchAnchor returns the visible conversation suffix omitted by

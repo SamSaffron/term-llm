@@ -280,7 +280,7 @@ func (m *Message) PathNoteDisplayText() string {
 	}
 	text = strings.TrimSpace(strings.TrimPrefix(text, "<path_notes>"))
 	text = strings.TrimSpace(strings.TrimSuffix(text, "</path_notes>"))
-	return text
+	return strings.ReplaceAll(text, `<\/path_notes>`, "</path_notes>")
 }
 
 // ExtractTextContent extracts and concatenates all text parts from the message.

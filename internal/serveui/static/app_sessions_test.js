@@ -7170,7 +7170,7 @@ async function testConversationBranchTreeOpensAndSwitchesPaths() {
 
   await app.openBranchTree();
   const sections = app.elements.branchTreeList.children;
-  if (!app.elements.branchTreeBtn.hidden
+  if (app.elements.branchTreeBtn.hidden
       || app.elements.branchTreeModal.hidden
       || sections.length !== 2
       || sections[0].children.length !== 3

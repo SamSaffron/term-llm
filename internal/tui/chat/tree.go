@@ -88,6 +88,21 @@ func hiddenBranchTreeMessage(message session.Message) bool {
 	return false
 }
 
+func branchContextSourceMessage(message session.Message) bool {
+	if hiddenBranchTreeMessage(message) {
+		return false
+	}
+	switch message.Role {
+	case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+		return true
+	case llm.RoleDeveloper:
+		_, ok := message.PathNoteProvenance()
+		return ok
+	default:
+		return false
+	}
+}
+
 func visibleAssistantBranchRow(message session.Message) bool {
 	if strings.TrimSpace(message.TextContent) != "" {
 		return true
@@ -162,6 +177,14 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	after := make(map[int64]int, len(messages))
+	contextCount := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		after[messages[i].ID] = contextCount
+		if branchContextSourceMessage(messages[i]) {
+			contextCount++
+		}
+	}
 	previousContinuationID := int64(0)
 	currentUserTurnID := ""
 	for _, message := range messages {
@@ -201,12 +224,12 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 			sourceMessageNumber: message.Sequence + 1,
 			sourcePreview:       preview,
 		}
-		choice.sourceMessages, _ = session.MessagesAfterBranchAnchor(messages, anchorID)
-		// Editing a user turn rewinds to the previous continuation, so the helper
-		// transcript includes that selected prompt for context. Do not count the
-		// prompt itself when deciding whether there is context to carry, but do count
-		// marked path notes between the prior continuation and the selected prompt.
-		choice.laterMessageCount = len(choice.sourceMessages)
+		// Editing a user turn rewinds to the previous continuation, so exclude the
+		// selected prompt itself when deciding whether there is context to carry.
+		choice.laterMessageCount = contextCount
+		if anchorID > 0 {
+			choice.laterMessageCount = after[anchorID]
+		}
 		if message.Role == llm.RoleUser && choice.laterMessageCount > 0 {
 			choice.laterMessageCount--
 		}
@@ -299,6 +322,14 @@ func (m *Model) startConversationBranchWithNotes(focus string) (tea.Model, tea.C
 	if !ok {
 		return m.showFooterError("Session storage does not support conversation branching.")
 	}
+	messages, err := m.store.GetMessages(m.rootContext(), point.sourceSessionID, 0, 0)
+	if err != nil {
+		return m.showFooterError(fmt.Sprintf("Load branch context: %v", err))
+	}
+	point.sourceMessages, err = session.MessagesAfterBranchAnchor(messages, point.anchorMessageID)
+	if err != nil {
+		return m.showFooterError(fmt.Sprintf("Load branch context: %v", err))
+	}
 
 	// Materialize the inexpensive child first. Path-note generation starts only
 	// after the TUI has relaunched into that child, so the user can begin drafting
@@ -324,17 +355,22 @@ func (m *Model) startConversationBranchWithNotes(focus string) (tea.Model, tea.C
 	if len(focusRunes) > 2_000 {
 		focus = string(focusRunes[:2_000])
 	}
-	m.pendingBranchPathNotes = &BranchPathNotesRequest{
+	request := &BranchPathNotesRequest{
+		ChildSessionID:  result.Session.ID,
 		SourceSessionID: point.sourceSessionID,
 		AnchorMessageID: point.anchorMessageID,
 		SourceMessages:  append([]llm.Message(nil), point.sourceMessages...),
 		Focus:           strings.TrimSpace(focus),
 	}
-	return m.finishConversationBranch(point, result)
+	return m.finishConversationBranch(point, result, request)
 }
 
 func (m *Model) startPendingBranchPathNotes() tea.Cmd {
 	if m.branchPathNotesRequest == nil || m.branchOperationCancel != nil || m.provider == nil || m.store == nil || m.sess == nil {
+		return nil
+	}
+	if childID := strings.TrimSpace(m.branchPathNotesRequest.ChildSessionID); childID != "" && childID != m.sess.ID {
+		m.branchPathNotesRequest = nil
 		return nil
 	}
 	request := *m.branchPathNotesRequest
@@ -555,16 +591,17 @@ func (m *Model) createConversationBranch(point conversationBranchPoint) (tea.Mod
 	case result.Session == nil:
 		return m.showFooterError("Create branch: storage returned no child session.")
 	}
-	return m.finishConversationBranch(point, result)
+	return m.finishConversationBranch(point, result, nil)
 }
 
-func (m *Model) finishConversationBranch(point conversationBranchPoint, result session.BranchResult) (tea.Model, tea.Cmd) {
+func (m *Model) finishConversationBranch(point conversationBranchPoint, result session.BranchResult, pathNotes *BranchPathNotesRequest) (tea.Model, tea.Cmd) {
 	if result.Session == nil || strings.TrimSpace(result.Session.ID) == "" {
 		return m.showFooterError("Create branch: storage returned no child session.")
 	}
 	if err := m.store.SetCurrent(m.rootContext(), result.Session.ID); err != nil {
 		return m.showFooterError(fmt.Sprintf("Select branch: %v", err))
 	}
+	m.pendingBranchPathNotes = pathNotes
 	m.pendingBranchPrefill = point.prefill
 	m.clearSideQuestionHistory()
 	m.pendingResumeSessionID = result.Session.ID

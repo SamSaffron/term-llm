@@ -390,7 +390,7 @@ const refreshBranchTree = async (options = {}) => {
     const count = Math.max(1, Number(tree.path_count) || 1);
     if (elements.branchTreeBtn) {
       elements.branchTreeBtn.textContent = count > 1 ? `${count} paths` : 'Paths';
-      elements.branchTreeBtn.hidden = !String(byID.get(ownerID)?.parent_session_id || '').trim();
+      elements.branchTreeBtn.hidden = count <= 1;
     }
     if (options.render !== false) renderBranchTree(tree);
     return tree;

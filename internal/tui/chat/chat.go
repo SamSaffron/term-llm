@@ -69,6 +69,7 @@ type conversationBranchPoint struct {
 // relaunch used to enter a newly-created child session. Generation deliberately
 // starts in the child so navigation is immediate and uses a fresh provider.
 type BranchPathNotesRequest struct {
+	ChildSessionID  string
 	SourceSessionID string
 	AnchorMessageID int64
 	SourceMessages  []llm.Message
@@ -1837,6 +1838,10 @@ func (m *Model) SetBranchPathNotes(request *BranchPathNotesRequest) {
 		return
 	}
 	copyRequest := *request
+	if m.sess == nil || (strings.TrimSpace(copyRequest.ChildSessionID) != "" && copyRequest.ChildSessionID != m.sess.ID) {
+		m.branchPathNotesRequest = nil
+		return
+	}
 	copyRequest.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
 	m.branchPathNotesRequest = &copyRequest
 }

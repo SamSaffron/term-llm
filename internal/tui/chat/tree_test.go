@@ -21,6 +21,7 @@ type branchChatStore struct {
 	createErr  error
 	createOpts []session.CreateBranchOptions
 	currentID  string
+	currentErr error
 }
 
 func (s *branchChatStore) GetBranchTree(context.Context, string) (session.BranchTree, error) {
@@ -46,7 +47,7 @@ func (s *branchChatStore) CreateBranch(_ context.Context, _ string, opts session
 
 func (s *branchChatStore) SetCurrent(_ context.Context, id string) error {
 	s.currentID = id
-	return nil
+	return s.currentErr
 }
 
 func newBranchChatModel() (*Model, *branchChatStore, []session.Message) {
@@ -113,6 +114,18 @@ func TestTreeUserSelectionAtTipOffersOnlyCleanAndRelaunchesWithPrefill(t *testin
 	}
 	if store.currentID != "new-child" || len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != messages[1].ID {
 		t.Fatalf("store branch call/current = %#v / %q", store.createOpts, store.currentID)
+	}
+}
+
+func TestFinishConversationBranchDoesNotCarryPathNotesWhenSelectionFails(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	store.currentErr = errors.New("database busy")
+	request := &BranchPathNotesRequest{ChildSessionID: "new-child", SourceSessionID: m.sess.ID}
+
+	updated, _ := m.finishConversationBranch(conversationBranchPoint{}, store.result, request)
+	m = updated.(*Model)
+	if m.RequestedBranchPathNotes() != nil || m.RequestedResumeSessionID() != "" {
+		t.Fatalf("failed selection leaked relaunch state: notes=%#v resume=%q", m.RequestedBranchPathNotes(), m.RequestedResumeSessionID())
 	}
 }
 
