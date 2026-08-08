@@ -778,6 +778,54 @@ func TestGCEnforcesTotalBudget(t *testing.T) {
 	}
 }
 
+func TestRecordChangeEnforcesTotalBudget(t *testing.T) {
+	dir := t.TempDir()
+	const maxTotalBytes = 256 * 1024
+	store, err := Open(filepath.Join(dir, "file_history.db"), Options{MaxTotalBytes: maxTotalBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// Poorly compressible text makes each ordinary record materially grow the
+	// database without tripping the binary-content check.
+	noisy := func(seed byte) []byte {
+		content := make([]byte, 128*1024)
+		x := uint32(seed) + 1
+		for i := range content {
+			x = x*1664525 + 1013904223
+			content[i] = byte(32 + (x>>16)%95)
+		}
+		return content
+	}
+	for i, sessionID := range []string{"a-oldest", "b-middle", "c-newest"} {
+		mustRecord(t, store, ChangeRecord{
+			SessionID: sessionID, Path: "/work/f.txt",
+			After: noisy(byte(i)), BeforeMissing: true,
+		})
+	}
+
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	size, err := databaseSize(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size > maxTotalBytes {
+		t.Fatalf("db size after ordinary records = %d, want <= %d", size, maxTotalBytes)
+	}
+	if paths, _ := store.SessionPaths(ctx, "c-newest"); len(paths) != 1 {
+		t.Fatal("newest session history must survive live budget pruning")
+	}
+	if paths, _ := store.SessionPaths(ctx, "a-oldest"); len(paths) != 0 {
+		t.Fatal("oldest session history must be pruned by live budget enforcement")
+	}
+}
+
 func TestRecorderSwallowsAndConverts(t *testing.T) {
 	store := openTestStore(t, Options{})
 	rec := NewRecorder(store)
