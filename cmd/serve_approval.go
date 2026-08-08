@@ -100,8 +100,10 @@ func (rt *serveRuntime) awaitWorkspaceApproval(workspace string) (tools.Workspac
 	if err != nil {
 		return tools.WorkspaceApprovalResult{}, err
 	}
+	choice := result.Choice
 	return tools.WorkspaceApprovalResult{
-		Approved:  !result.Cancelled && result.Choice == tools.ApprovalChoiceWorkspace,
+		Approved:  !result.Cancelled && (choice == tools.ApprovalChoiceWorkspace || choice == tools.ApprovalChoiceWorkspaceRemember),
+		Remember:  !result.Cancelled && choice == tools.ApprovalChoiceWorkspaceRemember,
 		Cancelled: result.Cancelled,
 	}, nil
 }
@@ -309,6 +311,8 @@ func approvalChoiceName(c tools.ApprovalChoice) string {
 		return "command"
 	case tools.ApprovalChoiceWorkspace:
 		return "workspace"
+	case tools.ApprovalChoiceWorkspaceRemember:
+		return "workspace_remember"
 	case tools.ApprovalChoiceCancelled:
 		return "cancelled"
 	default:

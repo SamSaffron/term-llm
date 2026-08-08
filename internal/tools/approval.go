@@ -357,6 +357,7 @@ type GuardianEvent struct {
 // choices because neither Guardian nor the model may establish this authority.
 type WorkspaceApprovalResult struct {
 	Approved  bool
+	Remember  bool
 	Cancelled bool
 }
 
@@ -385,6 +386,7 @@ type ApprovalManager struct {
 	workspaceGrants        map[string]session.WorkspaceGrant // canonical path -> durable/non-yolo baseline grant
 	workspaceYoloGrants    map[string]session.WorkspaceGrant // canonical path -> ephemeral yolo overlay
 	workspaceStore         session.WorkspaceGrantStore
+	workspaceTrustStore    workspaceTrustStore
 	workspaceSessionID     string
 	workspaceVersion       uint64
 
@@ -456,6 +458,7 @@ func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 		toolReadDirs:             make(map[string][]string),
 		workspaceGrants:          make(map[string]session.WorkspaceGrant),
 		workspaceYoloGrants:      make(map[string]session.WorkspaceGrant),
+		workspaceTrustStore:      defaultWorkspaceTrustStore(),
 		guardianConsecutiveLimit: 3,
 		guardianTotalLimit:       20,
 	}

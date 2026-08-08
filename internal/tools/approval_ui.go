@@ -19,16 +19,17 @@ import (
 type ApprovalChoice int
 
 const (
-	ApprovalChoiceDeny      ApprovalChoice = iota // Deny the request
-	ApprovalChoiceOnce                            // Allow once, no memory
-	ApprovalChoiceFile                            // Allow this file only (session)
-	ApprovalChoiceDirectory                       // Allow this directory (session)
-	ApprovalChoiceRepoRead                        // Allow read for entire repo (remembered)
-	ApprovalChoiceRepoWrite                       // Allow write for entire repo (remembered)
-	ApprovalChoicePattern                         // Allow shell pattern in repo (remembered)
-	ApprovalChoiceCommand                         // Allow this specific command (session)
-	ApprovalChoiceWorkspace                       // Confirm the canonical primary workspace (session)
-	ApprovalChoiceCancelled                       // User cancelled with esc/ctrl+c
+	ApprovalChoiceDeny              ApprovalChoice = iota // Deny the request
+	ApprovalChoiceOnce                                    // Allow once, no memory
+	ApprovalChoiceFile                                    // Allow this file only (session)
+	ApprovalChoiceDirectory                               // Allow this directory (session)
+	ApprovalChoiceRepoRead                                // Allow read for entire repo (remembered)
+	ApprovalChoiceRepoWrite                               // Allow write for entire repo (remembered)
+	ApprovalChoicePattern                                 // Allow shell pattern in repo (remembered)
+	ApprovalChoiceCommand                                 // Allow this specific command (session)
+	ApprovalChoiceWorkspace                               // Confirm the canonical primary workspace (session)
+	ApprovalChoiceCancelled                               // User cancelled with esc/ctrl+c
+	ApprovalChoiceWorkspaceRemember                       // Confirm and remember the canonical primary workspace
 )
 
 // ApprovalResult contains the result of an approval prompt.
@@ -299,14 +300,20 @@ func BuildFileOptions(path string, repoInfo *GitRepoInfo, isWrite bool) []Approv
 	return options
 }
 
-// BuildWorkspaceOptions returns the only valid human choices for proposed
-// primary authority. The canonical root is shown separately by ApprovalModel.
+// BuildWorkspaceOptions returns the valid human choices for proposed primary
+// authority. The canonical root is shown separately by ApprovalModel.
 func BuildWorkspaceOptions(workspace string) []ApprovalOption {
 	return []ApprovalOption{
 		{
 			Label:       "Allow this session's canonical workspace read/write",
 			Description: "Allow read and write access to the entire workspace for this session. Shell commands remain separately controlled.",
 			Choice:      ApprovalChoiceWorkspace,
+			Path:        workspace,
+		},
+		{
+			Label:       "Allow and remember this canonical workspace",
+			Description: "Allow read and write access now and in future sessions. Shell commands remain separately controlled.",
+			Choice:      ApprovalChoiceWorkspaceRemember,
 			Path:        workspace,
 		},
 		{
@@ -610,8 +617,10 @@ func RunWorkspaceApprovalUI(workspace string) (WorkspaceApprovalResult, error) {
 	if !result.result.Cancelled {
 		fmt.Fprint(tty, result.RenderSummary())
 	}
+	choice := result.result.Choice
 	return WorkspaceApprovalResult{
-		Approved:  !result.result.Cancelled && result.result.Choice == ApprovalChoiceWorkspace,
+		Approved:  !result.result.Cancelled && (choice == ApprovalChoiceWorkspace || choice == ApprovalChoiceWorkspaceRemember),
+		Remember:  !result.result.Cancelled && choice == ApprovalChoiceWorkspaceRemember,
 		Cancelled: result.result.Cancelled,
 	}, nil
 }

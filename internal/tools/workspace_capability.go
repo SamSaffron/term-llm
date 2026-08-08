@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -299,6 +300,7 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 	confirmed = root.primaryWorkspaceConfirmedLocked()
 	denied = root.primaryWorkspaceDenied
 	version := root.workspaceVersion
+	trustStore := root.workspaceTrustStore
 	root.workspaceMu.RUnlock()
 	if proposal == "" || !pathWithinWorkspace(canonicalPath, proposal) || confirmed {
 		return nil
@@ -307,29 +309,58 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 		return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s was denied by the human; explicit workspace read/write confirmation is required", proposal)
 	}
 
-	prompt := m.lookupWorkspacePromptFunc()
-	if prompt == nil {
-		return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation, but no workspace approval transport is available", proposal)
-	}
-	result, err := prompt(proposal)
-	if err != nil {
-		return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation: %v", proposal, err)
-	}
-	if !result.Approved || result.Cancelled {
-		root.workspaceMu.Lock()
-		if root.workspaceVersion == version && root.primaryWorkspace == proposal && !root.primaryWorkspaceConfirmedLocked() {
-			root.primaryWorkspaceDenied = true
-			root.workspaceVersion++
+	remembered := false
+	if trustStore != nil {
+		var err error
+		remembered, err = trustStore.IsTrusted(proposal)
+		if err != nil {
+			// An unreadable ledger grants no authority, but it must not disable the
+			// existing direct-human confirmation path. Remember writes still fail
+			// closed below because the user explicitly requested durable approval.
+			remembered = false
+			if m.DebugApproval {
+				log.Printf("[approval] remembered workspace lookup failed for %q: %v", proposal, err)
+			}
 		}
-		root.workspaceMu.Unlock()
-		return NewToolErrorf(ErrPermissionDenied, "human denied read/write access to proposed primary workspace %s", proposal)
+	}
+	if !remembered {
+		prompt := m.lookupWorkspacePromptFunc()
+		if prompt == nil {
+			return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation, but no workspace approval transport is available", proposal)
+		}
+		result, err := prompt(proposal)
+		if err != nil {
+			return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation: %v", proposal, err)
+		}
+		if !result.Approved || result.Cancelled {
+			root.workspaceMu.Lock()
+			if root.workspaceVersion == version && root.primaryWorkspace == proposal && !root.primaryWorkspaceConfirmedLocked() {
+				root.primaryWorkspaceDenied = true
+				root.workspaceVersion++
+			}
+			root.workspaceMu.Unlock()
+			return NewToolErrorf(ErrPermissionDenied, "human denied read/write access to proposed primary workspace %s", proposal)
+		}
+		if result.Remember {
+			if trustStore == nil {
+				return NewToolError(ErrPermissionDenied, "remembered workspace approval is unavailable")
+			}
+			if err := trustStore.Remember(proposal); err != nil {
+				return NewToolErrorf(ErrPermissionDenied, "remember primary workspace %s: %v", proposal, err)
+			}
+			remembered = true
+		}
 	}
 
 	now := time.Now()
+	rationale := "direct human confirmation for this session; shell commands remain separately controlled"
+	if remembered {
+		rationale = "remembered direct human confirmation; shell commands remain separately controlled"
+	}
 	grant := session.WorkspaceGrant{
 		ID: primaryWorkspaceID, Path: proposal, Access: session.WorkspaceAccessWrite,
 		Provenance: primaryWorkspaceProvenanceConfirmed,
-		Rationale:  "direct human confirmation for this session; shell commands remain separately controlled",
+		Rationale:  rationale,
 		CreatedAt:  now, UpdatedAt: now,
 	}
 	root.workspaceMu.RLock()

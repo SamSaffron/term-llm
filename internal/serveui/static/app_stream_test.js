@@ -1576,13 +1576,15 @@ async function testInactiveSessionPromptEventsRemainActionable() {
     resume_auto_available: true,
     options: [
       { index: 0, label: "Allow this session's canonical workspace read/write", description: 'Shell commands remain separately controlled.', choice: 'workspace' },
-      { index: 1, label: 'Deny', choice: 'deny' },
+      { index: 1, label: 'Allow and remember this canonical workspace', description: 'Allow now and in future sessions.', choice: 'workspace_remember' },
+      { index: 2, label: 'Deny', choice: 'deny' },
     ],
     sequence_number: 8,
   });
 
   if (!state.approval || state.approval.sessionId !== sessionA.id || state.approval.approvalId !== 'approval_1'
     || !state.approval.isWorkspace || state.approval.path !== '/tmp/workspace'
+    || state.approval.options.length !== 3 || state.approval.options[1]?.choice !== 'workspace_remember'
     || !state.approval.resumeAutoAvailable || state.approval.resumeAuto) {
     fail(name, 'inactive workspace approval prompt did not create dedicated modal state', JSON.stringify(state.approval));
     await cleanup();

@@ -298,17 +298,20 @@ func TestBuildFileOptions_RelativePaths(t *testing.T) {
 	}
 }
 
-func TestWorkspaceApprovalOptionsAreSessionScopedAndShellExplicit(t *testing.T) {
+func TestWorkspaceApprovalOptionsOfferRememberedChoiceAndKeepShellExplicit(t *testing.T) {
 	workspace := t.TempDir()
 	options := BuildWorkspaceOptions(workspace)
-	if len(options) != 2 {
+	if len(options) != 3 {
 		t.Fatalf("workspace options = %#v", options)
 	}
 	if options[0].Choice != ApprovalChoiceWorkspace || options[0].Path != workspace || !strings.Contains(options[0].Label, "this session's canonical workspace read/write") {
-		t.Fatalf("allow option = %#v", options[0])
+		t.Fatalf("session allow option = %#v", options[0])
 	}
-	if options[1].Choice != ApprovalChoiceDeny || options[1].SaveToRepo {
-		t.Fatalf("deny option = %#v", options[1])
+	if options[1].Choice != ApprovalChoiceWorkspaceRemember || options[1].Path != workspace || !strings.Contains(options[1].Label, "remember") || !strings.Contains(options[1].Description, "future sessions") {
+		t.Fatalf("remember allow option = %#v", options[1])
+	}
+	if options[2].Choice != ApprovalChoiceDeny || options[2].SaveToRepo {
+		t.Fatalf("deny option = %#v", options[2])
 	}
 	for _, option := range options {
 		if !strings.Contains(option.Description, "Shell commands remain separately controlled") {
@@ -321,7 +324,7 @@ func TestWorkspaceApprovalOptionsAreSessionScopedAndShellExplicit(t *testing.T) 
 	}
 	model := NewEmbeddedWorkspaceApprovalModel(workspace, width)
 	rendered := model.View().Content
-	for _, want := range []string{"Primary Workspace Access Request", workspace, "this session's canonical workspace read/write", "Shell commands remain", "separately controlled"} {
+	for _, want := range []string{"Primary Workspace Access Request", workspace, "this session's canonical workspace read/write", "remember this canonical workspace", "future sessions", "Shell commands remain", "separately controlled"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("workspace UI missing %q: %s", want, rendered)
 		}
@@ -341,6 +344,7 @@ func TestApprovalChoiceValues(t *testing.T) {
 		ApprovalChoiceCommand,
 		ApprovalChoiceWorkspace,
 		ApprovalChoiceCancelled,
+		ApprovalChoiceWorkspaceRemember,
 	}
 
 	seen := make(map[ApprovalChoice]bool)

@@ -18,6 +18,19 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+type failingWorkspaceTrustStore struct {
+	checkErr    error
+	rememberErr error
+}
+
+func (s failingWorkspaceTrustStore) IsTrusted(string) (bool, error) {
+	return false, s.checkErr
+}
+
+func (s failingWorkspaceTrustStore) Remember(string) error {
+	return s.rememberErr
+}
+
 type legacyYoloDeleteFailureStore struct {
 	session.Store
 	grants []session.WorkspaceGrant
@@ -697,6 +710,100 @@ func TestPrimaryWorkspaceNoTransportAndHumanDenialFailClosed(t *testing.T) {
 	}
 	if prompts != 1 {
 		t.Fatalf("workspace prompts = %d, want one", prompts)
+	}
+}
+
+func TestPrimaryWorkspaceTrustLookupFailureFallsBackToHumanPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "file.txt")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewApprovalManager(NewToolPermissions())
+	mgr.workspaceTrustStore = failingWorkspaceTrustStore{checkErr: errors.New("malformed ledger")}
+	if err := mgr.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	mgr.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		prompts++
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	if outcome, err := mgr.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("lookup fallback confirmation = %v, %v", outcome, err)
+	}
+	if prompts != 1 {
+		t.Fatalf("workspace prompts = %d, want 1", prompts)
+	}
+}
+
+func TestRememberedPrimaryWorkspaceAppliesToFutureSessions(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "file.txt")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trustPath := filepath.Join(t.TempDir(), "remembered-workspaces.yaml")
+	trustStore := &fileWorkspaceTrustStore{path: trustPath}
+
+	first := NewApprovalManager(NewToolPermissions())
+	first.workspaceTrustStore = trustStore
+	if err := first.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	first.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		return WorkspaceApprovalResult{Approved: true, Remember: true}, nil
+	}
+	if outcome, err := first.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("remembered confirmation = %v, %v", outcome, err)
+	}
+
+	future := NewApprovalManager(NewToolPermissions())
+	future.workspaceTrustStore = trustStore
+	if err := future.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := future.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("future session remembered confirmation = %v, %v", outcome, err)
+	}
+
+	sessionOnly := NewApprovalManager(NewToolPermissions())
+	sessionOnly.workspaceTrustStore = &fileWorkspaceTrustStore{path: filepath.Join(t.TempDir(), "empty.yaml")}
+	if err := sessionOnly.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	sessionOnly.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		prompts++
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	if outcome, err := sessionOnly.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("session-only confirmation = %v, %v", outcome, err)
+	}
+	if prompts != 1 {
+		t.Fatalf("session-only prompts = %d, want 1", prompts)
+	}
+}
+
+func TestRememberedPrimaryWorkspacePersistenceFailureInstallsNoAuthority(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "file.txt")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewApprovalManager(NewToolPermissions())
+	mgr.workspaceTrustStore = failingWorkspaceTrustStore{rememberErr: errors.New("disk full")}
+	if err := mgr.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	mgr.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		return WorkspaceApprovalResult{Approved: true, Remember: true}, nil
+	}
+	if _, err := mgr.CheckPathApproval(ReadFileToolName, path, path, false); err == nil || !strings.Contains(err.Error(), "remember primary workspace") {
+		t.Fatalf("remember failure = %v", err)
+	}
+	if mgr.IsWorkspacePathAllowed(path, false) {
+		t.Fatal("failed remembered approval installed primary authority")
 	}
 }
 

@@ -154,16 +154,19 @@ func TestAwaitWorkspaceApprovalUsesDedicatedWebPrompt(t *testing.T) {
 		t.Fatalf("workspace payload = %#v", payload)
 	}
 	prompts := rt.pendingApprovalPrompts()
-	if len(prompts) != 1 || !prompts[0].IsWorkspace || len(prompts[0].Options) != 2 {
+	if len(prompts) != 1 || !prompts[0].IsWorkspace || len(prompts[0].Options) != 3 {
 		t.Fatalf("workspace prompts = %#v", prompts)
 	}
 	if got := prompts[0].Options[0]; got.Choice != "workspace" || got.Label != "Allow this session's canonical workspace read/write" || got.Description != "Allow read and write access to the entire workspace for this session. Shell commands remain separately controlled." {
-		t.Fatalf("workspace allow option = %#v", got)
+		t.Fatalf("workspace session allow option = %#v", got)
 	}
-	if got := prompts[0].Options[1]; got.Choice != "deny" {
+	if got := prompts[0].Options[1]; got.Choice != "workspace_remember" || got.Label != "Allow and remember this canonical workspace" {
+		t.Fatalf("workspace remembered allow option = %#v", got)
+	}
+	if got := prompts[0].Options[2]; got.Choice != "deny" {
 		t.Fatalf("workspace deny option = %#v", got)
 	}
-	if err := rt.submitApproval(prompts[0].ApprovalID, 0, false, false); err != nil {
+	if err := rt.submitApproval(prompts[0].ApprovalID, 1, false, false); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -171,7 +174,7 @@ func TestAwaitWorkspaceApprovalUsesDedicatedWebPrompt(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("workspace approval did not complete")
 	}
-	if awaitErr != nil || !result.Approved || result.Cancelled {
+	if awaitErr != nil || !result.Approved || !result.Remember || result.Cancelled {
 		t.Fatalf("workspace result = %#v, %v", result, awaitErr)
 	}
 }

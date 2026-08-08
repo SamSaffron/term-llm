@@ -800,8 +800,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 				p.Send(chat.ApprovalRequestMsg{Path: workspace, IsWorkspace: true, DoneCh: doneCh})
 				select {
 				case result := <-doneCh:
+					choice := result.Choice
 					return tools.WorkspaceApprovalResult{
-						Approved:  !result.Cancelled && result.Choice == tools.ApprovalChoiceWorkspace,
+						Approved:  !result.Cancelled && (choice == tools.ApprovalChoiceWorkspace || choice == tools.ApprovalChoiceWorkspaceRemember),
+						Remember:  !result.Cancelled && choice == tools.ApprovalChoiceWorkspaceRemember,
 						Cancelled: result.Cancelled,
 					}, nil
 				case <-ctx.Done():
