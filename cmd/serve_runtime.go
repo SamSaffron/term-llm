@@ -1023,6 +1023,7 @@ func serveRuntimeSetupFromContext(ctx context.Context) func(*llm.Request) error 
 var (
 	errServeSessionBusy         = errors.New("session is busy processing another request")
 	errServeSessionLimitReached = errors.New("session limit reached: all sessions are busy")
+	errServeSessionPersistence  = errors.New("failed to persist or hydrate session")
 )
 
 func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
@@ -1066,6 +1067,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	defer restoreAllowedTools()
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
+	if stateful && rt.store != nil && req.SessionID != "" && !persisted {
+		return serveRunResult{}, errServeSessionPersistence
+	}
 	if persisted {
 		rt.persistStatus(ctx, req.SessionID, session.StatusActive)
 	}
