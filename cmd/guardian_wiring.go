@@ -37,6 +37,7 @@ func applyResolvedApprovalMode(cfg *config.Config, approvalMgr *tools.ApprovalMa
 		// review, so even headless auto can start without a manager.
 		return nil
 	}
+	approvalMgr.SetGuardianClassifyAllShell(cfg != nil && cfg.Guardian.ClassifyAllShell)
 	approvalMgr.SetApprovalMode(tools.ModePrompt)
 	if resolved.Mode == tools.ModeYolo {
 		approvalMgr.SetApprovalMode(tools.ModeYolo)
@@ -90,16 +91,9 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		return fail(fmt.Errorf("auto approval requires configuration and an LLM provider"))
 	}
 	approvalMgr.SetAutoHeadless(headless)
-	model := resolveGuardianModelName(cfg, modelName)
-	guardianName := strings.TrimSpace(cfg.Guardian.Provider)
-	if guardianName == "" {
-		guardianName = strings.TrimSpace(providerName)
-	}
-	if guardianName == "" {
-		guardianName = strings.TrimSpace(cfg.DefaultProvider)
-	}
-	if guardianName == "" {
-		return fail(fmt.Errorf("auto approval requires an LLM provider"))
+	target, err := resolveGuardianTarget(cfg, providerName, modelName)
+	if err != nil {
+		return fail(err)
 	}
 	policy, err := guardian.LoadPolicy(cfg.Guardian.PolicyPath)
 	if err != nil {
@@ -107,14 +101,14 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 	}
 
 	newReviewer := func() (*guardian.Reviewer, error) {
-		provider, err := newGuardianProviderByName(cfg, guardianName, model)
+		provider, err := newGuardianProviderByName(cfg, target.Provider, target.Model)
 		if err != nil {
 			return nil, fmt.Errorf("guardian provider: %w", err)
 		}
 		if provider == nil {
 			return nil, fmt.Errorf("auto approval requires an LLM provider")
 		}
-		reviewer := &guardian.Reviewer{Provider: provider, Model: model, Policy: policy}
+		reviewer := &guardian.Reviewer{Provider: provider, Model: target.Model, Policy: policy}
 		if cfg.Guardian.TimeoutSeconds > 0 {
 			reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
 		}
@@ -134,6 +128,7 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 			Command: req.Command, WorkDir: req.WorkDir, ToolName: req.ToolName, Path: req.Path,
 			Selector: req.Selector, IsWrite: req.IsWrite, IsDirectory: req.IsDirectory,
 			Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID,
+			WorkspaceAccess: req.WorkspaceAccess, Reason: req.Reason,
 		})
 		result := tools.PolicyDecision{Allowed: decision.Allowed(), RiskLevel: decision.RiskLevel, UserAuthorization: decision.UserAuthorization, Rationale: decision.Rationale, Model: decision.Model, Usage: decision.Usage}
 		return result, err
@@ -147,26 +142,58 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 	return nil
 }
 
-func resolveGuardianModelName(cfg *config.Config, fallback string) string {
+type guardianTarget struct {
+	Provider string
+	Model    string
+}
+
+func resolveGuardianTarget(cfg *config.Config, activeProvider, activeModel string) (guardianTarget, error) {
 	if cfg == nil {
-		return strings.TrimSpace(fallback)
+		return guardianTarget{}, fmt.Errorf("auto approval requires configuration and an LLM provider")
 	}
+	activeProvider = strings.TrimSpace(activeProvider)
+	activeModel = strings.TrimSpace(activeModel)
+	providerName := strings.TrimSpace(cfg.Guardian.Provider)
+	if providerName == "" {
+		providerName = activeProvider
+	}
+	if providerName == "" {
+		providerName = strings.TrimSpace(cfg.DefaultProvider)
+	}
+	if providerName == "" {
+		return guardianTarget{}, fmt.Errorf("auto approval requires an LLM provider")
+	}
+
+	// An explicit model is authoritative and remains paired with the explicitly
+	// selected Guardian provider, or with the active/default provider.
 	if model := strings.TrimSpace(cfg.Guardian.Model); model != "" {
-		return model
+		return guardianTarget{Provider: providerName, Model: model}, nil
 	}
-	if guardianName := strings.TrimSpace(cfg.Guardian.Provider); guardianName != "" {
-		if pc := cfg.GetProviderConfig(guardianName); pc != nil {
-			if model := strings.TrimSpace(pc.Model); model != "" {
-				return model
+
+	providerConfig := cfg.GetProviderConfig(providerName)
+	if providerConfig != nil {
+		if model := strings.TrimSpace(providerConfig.FastModel); model != "" {
+			targetProvider := providerName
+			if fastProvider := strings.TrimSpace(providerConfig.FastProvider); fastProvider != "" {
+				targetProvider = fastProvider
 			}
-			if model := strings.TrimSpace(pc.FastModel); model != "" {
-				return model
-			}
+			return guardianTarget{Provider: targetProvider, Model: model}, nil
 		}
-		providerType := string(config.InferProviderType(guardianName, ""))
-		if model := strings.TrimSpace(llm.ProviderFastModels[providerType]); model != "" {
-			return model
+		if model := strings.TrimSpace(providerConfig.Model); model != "" {
+			return guardianTarget{Provider: providerName, Model: model}, nil
 		}
 	}
-	return strings.TrimSpace(fallback)
+
+	providerType := config.ProviderType("")
+	if providerConfig != nil {
+		providerType = providerConfig.Type
+	}
+	providerType = config.InferProviderType(providerName, providerType)
+	if model := strings.TrimSpace(llm.ProviderFastModels[string(providerType)]); model != "" {
+		return guardianTarget{Provider: providerName, Model: model}, nil
+	}
+	if providerName == activeProvider && activeModel != "" {
+		return guardianTarget{Provider: providerName, Model: activeModel}, nil
+	}
+	return guardianTarget{}, fmt.Errorf("guardian provider %q has no configured model or built-in fast model; set guardian.model", providerName)
 }

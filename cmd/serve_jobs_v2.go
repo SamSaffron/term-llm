@@ -3127,11 +3127,11 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 		maxTurnsSet = true
 	}
 	// CLI flags replace (not extend) agent dirs, so combine the serve-level dirs
-	// with the job's extra dirs before handing them to ResolveSettings.
+	// with the job's extra dirs before handing them to ResolveSettingsInDir.
 	readDirs := append(append([]string{}, def.ReadDirs...), cfg.ReadDir...)
 	writeDirs := append(append([]string{}, def.WriteDirs...), cfg.WriteDir...)
 
-	settings, err := ResolveSettings(jobCfg, agent, CLIFlags{
+	settings, err := ResolveSettingsInDir(jobCfg, agent, CLIFlags{
 		Provider:        providerFlag,
 		Tools:           toolsFlag,
 		ReadDirs:        readDirs,
@@ -3145,19 +3145,12 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 		Search:          def.Search || cfg.Search,
 		NoSearch:        def.NoSearch && !cfg.Search,
 		Platform:        runpkg.PlatformJob,
-	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
+	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50, cfg.Cwd)
 	if err != nil {
 		return SessionSettings{}, "", err
 	}
-
-	// cwd (required, enforced in jobsV2LLMRunner.Run) roots this run's file/shell
-	// tools at a directory WITHOUT a process-wide os.Chdir: it authorizes
-	// read/write within cwd and sets the shell tool's exec working directory. The
-	// guard keeps this resolver defensive if a caller passes an empty cwd.
-	if runCwd := strings.TrimSpace(cfg.Cwd); runCwd != "" {
-		settings.ReadDirs = append(settings.ReadDirs, runCwd)
-		settings.WriteDirs = append(settings.WriteDirs, runCwd)
-		settings.ShellWorkingDir = runCwd
+	if strings.TrimSpace(cfg.Cwd) != "" {
+		settings.PrimaryWorkspace = settings.BaseDir
 	}
 
 	return settings, cfg.Instructions, nil

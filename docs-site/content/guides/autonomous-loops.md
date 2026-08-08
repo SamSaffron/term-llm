@@ -32,6 +32,12 @@ term-llm loop --done-file TODO.md:COMPLETE \
 
 All standard flags work: `--tools`, `--mcp`, `--agent`, `--provider`, `--search`, etc.
 
+Loop auto mode is unattended at the proposed-primary workspace boundary: if the
+primary has not already been confirmed, first file/path access fails closed rather
+than opening a human prompt or delegating authority to Guardian. Explicit yolo does
+not install or use the workspace prompt; it bypasses confirmation for the run without
+persisting a primary workspace grant. Prompt mode retains the direct human confirmation.
+
 ### File Expansion
 
 Use `{{file}}` in your prompt to inline file contents. Files are re-read each iteration, so agents can update them for inter-iteration state:

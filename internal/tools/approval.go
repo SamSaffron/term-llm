@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // ApprovalCache provides session-scoped caching for tool+path decisions.
@@ -291,6 +294,8 @@ type PolicyReviewRequest struct {
 	Transcript      []TranscriptEntry
 	ApprovalContext string
 	ScopeID         string
+	WorkspaceAccess string
+	Reason          string
 }
 
 // PolicyDecision is the guardian's allow/deny verdict.
@@ -347,6 +352,14 @@ type GuardianEvent struct {
 	Usage      llm.Usage
 }
 
+// WorkspaceApprovalResult is the direct human decision for a proposed primary
+// workspace. It is intentionally separate from per-file/project approval
+// choices because neither Guardian nor the model may establish this authority.
+type WorkspaceApprovalResult struct {
+	Approved  bool
+	Cancelled bool
+}
+
 // ApprovalManager coordinates approval requests and caching.
 type ApprovalManager struct {
 	cache         *ApprovalCache
@@ -365,6 +378,16 @@ type ApprovalManager struct {
 	toolAllowMu  sync.RWMutex
 	toolReadDirs map[string][]string // per-tool read allowlist, e.g. routed view_image uploads
 
+	workspaceMu            sync.RWMutex
+	primaryWorkspace       string // canonical proposal; grants no authority by itself
+	primaryWorkspaceGrant  session.WorkspaceGrant
+	primaryWorkspaceDenied bool
+	workspaceGrants        map[string]session.WorkspaceGrant // canonical path -> durable/non-yolo baseline grant
+	workspaceYoloGrants    map[string]session.WorkspaceGrant // canonical path -> ephemeral yolo overlay
+	workspaceStore         session.WorkspaceGrantStore
+	workspaceSessionID     string
+	workspaceVersion       uint64
+
 	// promptMu serializes interactive approval prompts.
 	// When tools execute in parallel, multiple may need approval simultaneously.
 	// This mutex ensures only one prompt is shown at a time to avoid UI conflicts.
@@ -372,14 +395,19 @@ type ApprovalManager struct {
 
 	// Approval mode. Yolo mode auto-approves all tool executions without prompting;
 	// auto mode asks a policy reviewer for unmatched shell commands and file
-	// requests after deterministic checks fail and before falling back to a human prompt.
+	// requests after deterministic checks fail. Guardian denials and failures are
+	// terminal for the reviewed action.
 	modeMu       sync.RWMutex
 	mode         ApprovalMode
 	YoloMode     bool // Deprecated compatibility mirror for ModeYolo.
 	autoHeadless bool
 
-	guardianConsecutiveDenials  int
-	guardianCircuitBreakerLimit int
+	guardianConsecutiveDenials int
+	guardianTotalDenials       int
+	guardianConsecutiveLimit   int
+	guardianTotalLimit         int
+	guardianAutoSuspended      bool
+	guardianClassifyAllShell   bool
 
 	// IgnoreProjectApprovals when true, skips persisted project-level approvals
 	// (e.g., read_approved/write_approved from prior CLI sessions).
@@ -393,33 +421,43 @@ type ApprovalManager struct {
 	// Legacy callback - will be replaced by PromptUIFunc
 	PromptFunc func(req *ApprovalRequest) (ConfirmOutcome, string)
 
-	// New UI callback for improved approval prompts.
+	// New UI callback for improved per-file and shell approval prompts.
 	// Takes path/command, isWrite (for files), isShell, and workDir
 	// (non-empty for shell commands to show where the command will run).
 	// If nil, falls back to PromptFunc.
 	PromptUIFunc func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error)
 
+	// WorkspacePromptFunc asks the human to establish whole-workspace read/write
+	// authority for the proposed primary workspace outside yolo mode. Yolo never
+	// invokes this callback or persists confirmation. PromptUIFunc cannot substitute
+	// for it because per-file/project choices are not valid at this boundary.
+	WorkspacePromptFunc func(workspace string) (WorkspaceApprovalResult, error)
+
 	// GuardianEventFunc receives structured audit events for auto approvals/denials.
 	GuardianEventFunc func(event GuardianEvent)
 
-	// Parent manager for inheriting session approvals and prompt function.
-	// When set, this manager will check parent's caches and use parent's
-	// PromptUIFunc if local is nil. This enables sub-agents to inherit
-	// the parent session's approvals and prompting capability.
+	// Parent manager for inheriting session approvals and prompt functions.
+	// When set, this manager checks the parent's caches and uses the parent's
+	// per-action and primary-workspace prompt transports when local ones are nil.
+	// This enables sub-agents to inherit the root session's approvals and direct
+	// human confirmation capability.
 	parent *ApprovalManager
 }
 
 // NewApprovalManager creates a new ApprovalManager.
 func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 	return &ApprovalManager{
-		cache:                       NewApprovalCache(),
-		dirCache:                    NewDirCache(),
-		shellCache:                  NewShellApprovalCache(),
-		guardianExact:               make(map[guardianShellKey]struct{}),
-		permissions:                 perms,
-		projectCache:                make(map[string]*ProjectApprovals),
-		toolReadDirs:                make(map[string][]string),
-		guardianCircuitBreakerLimit: 3,
+		cache:                    NewApprovalCache(),
+		dirCache:                 NewDirCache(),
+		shellCache:               NewShellApprovalCache(),
+		guardianExact:            make(map[guardianShellKey]struct{}),
+		permissions:              perms,
+		projectCache:             make(map[string]*ProjectApprovals),
+		toolReadDirs:             make(map[string][]string),
+		workspaceGrants:          make(map[string]session.WorkspaceGrant),
+		workspaceYoloGrants:      make(map[string]session.WorkspaceGrant),
+		guardianConsecutiveLimit: 3,
+		guardianTotalLimit:       20,
 	}
 }
 
@@ -471,9 +509,8 @@ func (m *ApprovalManager) isPathAllowedForToolRead(toolName, path string) bool {
 }
 
 // SetParent sets the parent ApprovalManager for inheritance.
-// When set, this manager will check parent's session caches (dirCache, shellCache)
-// and use parent's PromptUIFunc if local is nil.
-// Also shares the parent's promptMu to serialize prompts across all sub-agents.
+// When set, this manager checks the parent's session caches and prompt
+// transports. The shared root prompt lock serializes parent/child prompts.
 // Returns an error if setting parent would create a cycle.
 func (m *ApprovalManager) SetParent(parent *ApprovalManager) error {
 	// Check for self-reference
@@ -516,6 +553,15 @@ func (m *ApprovalManager) lookupPromptUIFunc() func(path string, isWrite bool, i
 	for cur := m; cur != nil; cur = cur.parent {
 		if cur.PromptUIFunc != nil {
 			return cur.PromptUIFunc
+		}
+	}
+	return nil
+}
+
+func (m *ApprovalManager) lookupWorkspacePromptFunc() func(workspace string) (WorkspaceApprovalResult, error) {
+	for cur := m; cur != nil; cur = cur.parent {
+		if cur.WorkspacePromptFunc != nil {
+			return cur.WorkspacePromptFunc
 		}
 	}
 	return nil
@@ -597,36 +643,122 @@ func (m *ApprovalManager) GuardianReviewerAvailable() bool {
 	return m.lookupPolicyReviewFunc() != nil
 }
 
-// SetApprovalMode sets the manager's approval mode.
+// SetApprovalMode sets the manager's requested approval mode. Root mode
+// transitions start or end an auto epoch; child setup must not reset root-owned
+// Guardian breaker state. Yolo workspace grants are ephemeral overlays: the
+// transition out of an effective yolo mode removes them before it returns.
 func (m *ApprovalManager) SetApprovalMode(mode ApprovalMode) {
 	if m == nil {
 		return
 	}
 	m.modeMu.Lock()
 	old := m.mode
+	oldEffective := old
+	if oldEffective == ModePrompt && m.parent != nil {
+		oldEffective = m.parent.ApprovalMode()
+	}
 	m.mode = mode
 	m.YoloMode = mode == ModeYolo
+	newEffective := mode
+	if newEffective == ModePrompt && m.parent != nil {
+		newEffective = m.parent.ApprovalMode()
+	}
+	if oldEffective == ModeYolo && newEffective != ModeYolo {
+		// Keep this under modeMu so a rapid re-entry cannot race the cleanup and
+		// make grants from the previous yolo epoch visible again.
+		m.clearYoloWorkspaceGrants()
+	}
 	m.modeMu.Unlock()
+	if old == mode {
+		return
+	}
+	if m.parent == nil && (old == ModeAuto || mode == ModeAuto) {
+		m.guardianMu.Lock()
+		m.guardianConsecutiveDenials = 0
+		m.guardianTotalDenials = 0
+		m.guardianAutoSuspended = false
+		m.guardianMu.Unlock()
+	}
 	if old == ModeAuto && mode != ModeAuto {
 		m.clearGuardianExactShell()
 	}
 }
 
-// ApprovalMode returns this manager's effective mode, inheriting from parents.
-func (m *ApprovalManager) ApprovalMode() ApprovalMode {
+func (m *ApprovalManager) requestedMode() ApprovalMode {
 	if m == nil {
 		return ModePrompt
 	}
-	m.modeMu.RLock()
-	mode := m.mode
-	m.modeMu.RUnlock()
-	if mode != ModePrompt {
-		return mode
-	}
-	if m.parent != nil {
-		return m.parent.ApprovalMode()
+	for cur := m; cur != nil; cur = cur.parent {
+		cur.modeMu.RLock()
+		mode := cur.mode
+		cur.modeMu.RUnlock()
+		if mode != ModePrompt {
+			return mode
+		}
 	}
 	return ModePrompt
+}
+
+// ApprovalMode returns this manager's effective mode, inheriting from parents.
+// A root breaker suspension demotes locally-auto children without mutating the
+// requested or persisted policy.
+func (m *ApprovalManager) ApprovalMode() ApprovalMode {
+	mode := m.requestedMode()
+	if mode != ModeAuto {
+		return mode
+	}
+	root := m.root()
+	root.guardianMu.RLock()
+	suspended := root.guardianAutoSuspended
+	root.guardianMu.RUnlock()
+	if suspended {
+		return ModePrompt
+	}
+	return ModeAuto
+}
+
+// GuardianAutoSuspended reports whether the root breaker is currently holding a
+// requested auto policy in effective prompt mode. It is used to offer an
+// explicit resume control; ordinary approvals must not clear the latch.
+func (m *ApprovalManager) GuardianAutoSuspended() bool {
+	root := m.root()
+	if root == nil {
+		return false
+	}
+	root.guardianMu.RLock()
+	suspended := root.guardianAutoSuspended
+	root.guardianMu.RUnlock()
+	return suspended
+}
+
+// ResumeAuto explicitly clears a breaker suspension and starts a fresh auto
+// epoch. It returns false when auto is not currently suspended.
+func (m *ApprovalManager) ResumeAuto() bool {
+	root := m.root()
+	if root == nil {
+		return false
+	}
+	root.guardianMu.Lock()
+	defer root.guardianMu.Unlock()
+	if !root.guardianAutoSuspended {
+		return false
+	}
+	root.guardianConsecutiveDenials = 0
+	root.guardianTotalDenials = 0
+	root.guardianAutoSuspended = false
+	return true
+}
+
+// SetGuardianClassifyAllShell controls whether auto mode sends every
+// pattern-based shell approval through Guardian. Exact approvals remain usable.
+func (m *ApprovalManager) SetGuardianClassifyAllShell(enabled bool) {
+	root := m.root()
+	if root == nil {
+		return
+	}
+	root.guardianMu.Lock()
+	root.guardianClassifyAllShell = enabled
+	root.guardianMu.Unlock()
 }
 
 // SetYoloMode enables or disables yolo mode.
@@ -648,7 +780,8 @@ func (m *ApprovalManager) SetAutoMode(enabled bool) {
 	m.SetApprovalMode(ModePrompt)
 }
 
-// SetAutoHeadless configures whether reviewer failures deny instead of prompting.
+// SetAutoHeadless preserves the legacy headless marker for API/setup
+// compatibility. Guardian review outcomes fail closed in every runtime.
 func (m *ApprovalManager) SetAutoHeadless(headless bool) {
 	if m == nil {
 		return
@@ -706,6 +839,13 @@ func (m *ApprovalManager) getProjectApprovals(path string) *ProjectApprovals {
 // Returns (outcome, true, nil) when a decision is made, or (Cancel, false, nil)
 // when prompting is still required.
 func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath string, isWrite bool) (ConfirmOutcome, bool, error) {
+	// Session workspace capabilities are root-owned and inherited immediately by
+	// all descendants. They authorize file operations only; shell checks never
+	// consult this set.
+	if m.IsWorkspacePathAllowed(path, isWrite) {
+		return ProceedAlways, true, nil
+	}
+
 	// 1. Check pre-approved allowlist first (--read-dir / --write-dir flags)
 	var allowed bool
 	var err error
@@ -795,7 +935,9 @@ func (m *ApprovalManager) addGuardianExactShell(command, workDir string) {
 		return
 	}
 	root.guardianMu.Lock()
-	root.guardianExact[key] = struct{}{}
+	if !root.guardianAutoSuspended {
+		root.guardianExact[key] = struct{}{}
+	}
 	root.guardianMu.Unlock()
 }
 
@@ -851,9 +993,17 @@ func normalizeGuardianWorkDir(workDir string) string {
 // Returns (outcome, true) when a decision is made, or (Cancel, false) when
 // prompting is still required.
 func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (ConfirmOutcome, bool) {
-	// Check pre-approved patterns
-	if m.permissions.IsShellCommandAllowed(command) {
+	// Exact configured script commands are never pattern grants.
+	if m.permissions != nil && m.permissions.isExactScriptCommandAllowed(command) {
 		return ProceedOnce, true
+	}
+
+	// Filter configured patterns independently from every other source.
+	if m.permissions != nil {
+		_, _, patterns := m.permissions.Snapshot()
+		if m.matchShellPatterns(patterns, command) {
+			return ProceedOnce, true
+		}
 	}
 
 	// Check guardian-approved exact commands. These intentionally use string
@@ -863,20 +1013,14 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 		return ProceedAlways, true
 	}
 
-	// Check session-approved exact commands and patterns.
-	if m.shellCache.IsCommandApproved(command, workDir) {
-		return ProceedAlways, true
-	}
-	if matchAnyShellPattern(m.shellCache.GetPatterns(), command) {
-		return ProceedAlways, true
-	}
-
-	// Check parent's session-approved commands and patterns (inherited approvals).
-	if m.parent != nil {
-		if m.parent.shellCache.IsCommandApproved(command, workDir) {
+	// Check exact commands and pattern lists on this manager and every ancestor.
+	// Each pattern source is evaluated independently so patterns cannot combine
+	// across child/parent session scopes to approve a compound command.
+	for cur := m; cur != nil; cur = cur.parent {
+		if cur.shellCache.IsCommandApproved(command, workDir) {
 			return ProceedAlways, true
 		}
-		if matchAnyShellPattern(m.parent.shellCache.GetPatterns(), command) {
+		if m.matchShellPatterns(cur.shellCache.GetPatterns(), command) {
 			return ProceedAlways, true
 		}
 	}
@@ -889,12 +1033,33 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 			dir, _ = os.Getwd()
 		}
 		projectApprovals := m.getProjectApprovals(dir)
-		if projectApprovals != nil && projectApprovals.IsShellPatternApproved(command) {
+		if projectApprovals != nil && m.matchShellPatterns(projectApprovals.shellPatternsSnapshot(), command) {
 			return ProceedAlways, true
 		}
 	}
 
 	return Cancel, false
+}
+
+func (m *ApprovalManager) matchShellPatterns(patterns []string, command string) bool {
+	// Breaker suspension changes only the effective mode. Keep filtering based on
+	// the requested auto policy so a suspended broad rule cannot become an
+	// implicit approval while the next action is routed through prompt mode.
+	if m.requestedMode() != ModeAuto {
+		return matchAnyShellPattern(patterns, command)
+	}
+	root := m.root()
+	root.guardianMu.RLock()
+	classifyAll := root.guardianClassifyAllShell
+	root.guardianMu.RUnlock()
+	filtered := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if classifyAll || isArbitraryExecutionShellPattern(pattern) {
+			continue
+		}
+		filtered = append(filtered, pattern)
+	}
+	return matchAnyShellPattern(filtered, command)
 }
 
 // CheckPathApproval checks if a path is approved for the given tool.
@@ -908,14 +1073,6 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 // CheckPathApprovalWithContext checks path approval and supplies conversation
 // evidence to Guardian when auto mode reviews an unmatched file request.
 func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
-	// 0. Yolo mode - auto-approve everything
-	if m.YoloEnabled() {
-		if m.DebugApproval {
-			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
-		}
-		return ProceedOnce, nil
-	}
-
 	absPath, err := canonicalApprovalPath(path, isWrite)
 	if err != nil {
 		if m.DebugApproval {
@@ -923,6 +1080,23 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 		}
 		return Cancel, err
 	}
+
+	// Yolo is the unconditional approval fast path, including for an unconfirmed
+	// proposed primary workspace. It must not prompt or persist workspace authority.
+	if m.YoloEnabled() {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
+		}
+		return ProceedOnce, nil
+	}
+
+	// A launch/current/worktree binding is only a proposal. Its first canonical
+	// path access outside yolo must cross the direct-human workspace boundary
+	// before Guardian, static allowlists, project approvals, or execution can apply.
+	if err := m.ensurePrimaryWorkspaceAccess(ctx, absPath); err != nil {
+		return Cancel, err
+	}
+
 	originalPath := path
 	if resolved, err := filepath.Abs(path); err == nil {
 		originalPath = resolved
@@ -1355,11 +1529,9 @@ func addApprovalContextLine(b *strings.Builder, seen map[string]struct{}, label,
 func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolName, path, selector string, isWrite, isDirectory bool) (ConfirmOutcome, bool, error) {
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
-		m.emitGuardianEvent(m.guardianPathEvent(ctx, toolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); prompting for approval"))
-		if m.AutoHeadless() {
-			return Cancel, true, NewToolError(ErrPermissionDenied, "auto mode enabled but no guardian reviewer is configured")
-		}
-		return Cancel, false, nil
+		detail := "guardian policy reviewer is not configured"
+		m.emitGuardianEvent(m.guardianPathEvent(ctx, toolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
+		return Cancel, true, guardianReviewFailure(detail)
 	}
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{
 		ToolName:        toolName,
@@ -1372,49 +1544,34 @@ func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolNam
 		ScopeID:         llm.SessionIDFromContext(ctx),
 	})
 	if err != nil {
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err), decision))
-		if m.AutoHeadless() {
-			return Cancel, true, NewToolErrorf(ErrPermissionDenied, "guardian review failed: %v", err)
-		}
-		return Cancel, false, nil
+		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
+		return Cancel, true, guardianReviewFailure(err.Error())
 	}
 	if decision.Allowed && guardianAllowContradictsPolicy(decision) {
-		rationale := strings.TrimSpace(decision.Rationale)
-		if rationale == "" {
-			rationale = "guardian allow contradicted policy risk/authorization fields"
-		}
+		rationale := guardianDenialRationale(decision, "guardian allow contradicted policy risk/authorization fields")
+		trip := m.recordGuardianDenial()
 		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
-		m.recordGuardianDenial()
-		if !m.AutoHeadless() {
-			return Cancel, false, nil
-		}
-		return Cancel, true, NewToolError(ErrPermissionDenied, rationale+". Do not attempt to achieve this outcome via workarounds.")
+		m.applyGuardianBreakerTrip(trip)
+		return Cancel, true, guardianPolicyDenial(rationale)
 	}
 	if decision.Allowed {
 		m.resetGuardianDenials()
 		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 		return ProceedOnce, true, nil
 	}
-	rationale := strings.TrimSpace(decision.Rationale)
-	if rationale == "" {
-		rationale = "action was not approved by guardian policy"
-	}
+	rationale := guardianDenialRationale(decision, "action was not approved by guardian policy")
+	trip := m.recordGuardianDenial()
 	m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
-	m.recordGuardianDenial()
-	if !m.AutoHeadless() {
-		return Cancel, false, nil
-	}
-	return Cancel, true, NewToolError(ErrPermissionDenied, rationale+". Do not attempt to achieve this outcome via workarounds.")
+	m.applyGuardianBreakerTrip(trip)
+	return Cancel, true, guardianPolicyDenial(rationale)
 }
 
 func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, command, workDir string, transcript func() []TranscriptEntry) (ConfirmOutcome, bool, error) {
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
-		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); prompting for approval"))
-		if m.AutoHeadless() {
-			return Cancel, true, NewToolError(ErrPermissionDenied, "auto mode enabled but no guardian reviewer is configured")
-		}
-		return Cancel, false, nil
+		detail := "guardian policy reviewer is not configured"
+		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
+		return Cancel, true, guardianReviewFailure(detail)
 	}
 	approvalContext := m.guardianApprovalContext(command, workDir)
 	var entries []TranscriptEntry
@@ -1423,23 +1580,15 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	}
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: entries, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
 	if err != nil {
-		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v)", err), decision))
-		if m.AutoHeadless() {
-			return Cancel, true, NewToolErrorf(ErrPermissionDenied, "guardian review failed: %v", err)
-		}
-		return Cancel, false, nil
+		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
+		return Cancel, true, guardianReviewFailure(err.Error())
 	}
 	if decision.Allowed && guardianAllowContradictsPolicy(decision) {
-		rationale := strings.TrimSpace(decision.Rationale)
-		if rationale == "" {
-			rationale = "guardian allow contradicted policy risk/authorization fields"
-		}
+		rationale := guardianDenialRationale(decision, "guardian allow contradicted policy risk/authorization fields")
+		trip := m.recordGuardianDenial()
 		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
-		m.recordGuardianDenial()
-		if !m.AutoHeadless() {
-			return Cancel, false, nil
-		}
-		return Cancel, true, NewToolError(ErrPermissionDenied, rationale+". Do not attempt to achieve this outcome via workarounds.")
+		m.applyGuardianBreakerTrip(trip)
+		return Cancel, true, guardianPolicyDenial(rationale)
 	}
 	if decision.Allowed {
 		m.resetGuardianDenials()
@@ -1447,19 +1596,75 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 		return ProceedAlways, true, nil
 	}
+	rationale := guardianDenialRationale(decision, "action was not approved by guardian policy")
+	trip := m.recordGuardianDenial()
+	m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
+	m.applyGuardianBreakerTrip(trip)
+	return Cancel, true, guardianPolicyDenial(rationale)
+}
+
+const guardianSafeNextStep = "Do not retry this action or achieve the same outcome through a workaround. Choose a materially safer alternative, or ask the user to authorize this exact action explicitly."
+
+func guardianDenialRationale(decision PolicyDecision, fallback string) string {
 	rationale := strings.TrimSpace(decision.Rationale)
 	if rationale == "" {
-		rationale = "action was not approved by guardian policy"
+		return fallback
 	}
-	m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
-	m.recordGuardianDenial()
-	if !m.AutoHeadless() {
-		// In interactive auto mode, guardian denials are rare and high-signal.
-		// Escalate to the human instead of silently denying so the user can make
-		// an explicit override decision with the rationale visible in the stream.
-		return Cancel, false, nil
+	return rationale
+}
+
+func guardianPolicyDenial(rationale string) *ToolError {
+	return NewToolError(ErrPermissionDenied, guardianActionMessage("guardian denied this action", rationale))
+}
+
+func guardianReviewFailure(detail string) *ToolError {
+	return NewToolError(ErrPermissionDenied, guardianActionMessage("guardian could not review this action", detail))
+}
+
+func guardianActionMessage(prefix, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		detail = "no review detail was provided"
 	}
-	return Cancel, true, NewToolError(ErrPermissionDenied, rationale+". Do not attempt to achieve this outcome via workarounds.")
+	separator := ". "
+	if strings.HasSuffix(detail, ".") {
+		separator = " "
+	}
+	return prefix + ": " + detail + separator + guardianSafeNextStep
+}
+
+func pathApprovalErrorOutput(prefix string, err error) llm.ToolOutput {
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		toolErr = NewToolError(ErrPermissionDenied, err.Error())
+	}
+	output := llm.TextOutput(prefix + formatToolError(toolErr))
+	output.IsError = toolErr.Type == ErrPermissionDenied
+	return output
+}
+
+// GuardianDenialReason extracts a concise human-facing reason from a Guardian
+// permission denial. Model-directed retry guidance is intentionally omitted.
+func GuardianDenialReason(err error) (string, bool) {
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) || toolErr.Type != ErrPermissionDenied {
+		return "", false
+	}
+	message := strings.TrimSpace(toolErr.Message)
+	for _, prefix := range []string{"guardian denied this action: ", "guardian could not review this action: "} {
+		if !strings.HasPrefix(message, prefix) {
+			continue
+		}
+		reason := strings.TrimPrefix(message, prefix)
+		if index := strings.Index(reason, ". "+guardianSafeNextStep); index >= 0 {
+			reason = reason[:index]
+		}
+		if strings.HasPrefix(prefix, "guardian could not") {
+			reason = "could not review this action: " + reason
+		}
+		return strings.TrimSpace(reason), true
+	}
+	return "", false
 }
 
 func guardianAllowContradictsPolicy(decision PolicyDecision) bool {
@@ -1548,20 +1753,55 @@ func (m *ApprovalManager) resetGuardianDenials() {
 	root.guardianMu.Unlock()
 }
 
-func (m *ApprovalManager) recordGuardianDenial() {
+type guardianBreakerTrip struct {
+	tripped     bool
+	reason      string
+	consecutive int
+	total       int
+}
+
+func (m *ApprovalManager) recordGuardianDenial() guardianBreakerTrip {
 	root := m.root()
 	if root == nil {
-		return
+		return guardianBreakerTrip{}
 	}
 	root.guardianMu.Lock()
-	root.guardianConsecutiveDenials++
-	tripped := root.guardianCircuitBreakerLimit > 0 && root.guardianConsecutiveDenials >= root.guardianCircuitBreakerLimit
-	root.guardianMu.Unlock()
-	if tripped {
-		root.clearGuardianExactShell()
-		root.SetApprovalMode(ModePrompt)
-		root.emitGuardianEvent(GuardianEvent{Message: "guardian: circuit breaker tripped after repeated denials; auto mode disabled", Outcome: GuardianWarning})
+	defer root.guardianMu.Unlock()
+	if root.guardianAutoSuspended {
+		return guardianBreakerTrip{}
 	}
+	root.guardianConsecutiveDenials++
+	root.guardianTotalDenials++
+	trip := guardianBreakerTrip{
+		consecutive: root.guardianConsecutiveDenials,
+		total:       root.guardianTotalDenials,
+	}
+	switch {
+	case root.guardianConsecutiveLimit > 0 && trip.consecutive >= root.guardianConsecutiveLimit:
+		trip.tripped = true
+		trip.reason = "consecutive denial limit"
+	case root.guardianTotalLimit > 0 && trip.total >= root.guardianTotalLimit:
+		trip.tripped = true
+		trip.reason = "total denial limit"
+	}
+	if trip.tripped {
+		root.guardianAutoSuspended = true
+		root.guardianConsecutiveDenials = 0
+		root.guardianTotalDenials = 0
+	}
+	return trip
+}
+
+func (m *ApprovalManager) applyGuardianBreakerTrip(trip guardianBreakerTrip) {
+	if !trip.tripped {
+		return
+	}
+	root := m.root()
+	root.clearGuardianExactShell()
+	root.emitGuardianEvent(GuardianEvent{
+		Message: fmt.Sprintf("guardian: auto mode suspended after %s (consecutive=%d, total=%d); the triggering action remains denied and the next approval will prompt", trip.reason, trip.consecutive, trip.total),
+		Outcome: GuardianWarning,
+	})
 }
 
 // handleShellApprovalResult processes the result from the shell approval UI.
@@ -1659,6 +1899,43 @@ func isSafePipeTarget(command string) bool {
 		return false
 	}
 	return safePipeTargets[filepath.Base(words[0])]
+}
+
+var arbitraryExecutionShellPattern = regexp.MustCompile(`^(python|node|ruby|perl|php|lua|deno|bun|pwsh)[0-9._-]*$`)
+
+var arbitraryExecutionShellCommands = map[string]bool{
+	"sh": true, "bash": true, "dash": true, "zsh": true, "fish": true,
+	"ksh": true, "powershell": true, "cmd": true, "wsl": true, "env": true,
+	"xargs": true, "sudo": true, "doas": true,
+	"uv": true, "npx": true, "pipx": true,
+}
+
+func hasShellGlobMetachar(value string) bool {
+	return strings.ContainsAny(value, "*?[{")
+}
+
+// isArbitraryExecutionShellPattern mechanically identifies broad patterns that
+// can run arbitrary code. Auto mode suspends these grants and asks Guardian
+// instead; invalid patterns remain unusable through normal validation.
+func isArbitraryExecutionShellPattern(pattern string) bool {
+	parts, err := splitShellWords(pattern)
+	if err != nil || len(parts) == 0 {
+		return false
+	}
+	if hasShellGlobMetachar(parts[0]) {
+		return true
+	}
+	executable := filepath.Base(parts[0])
+	executable = strings.TrimSuffix(executable, ".exe")
+	if !arbitraryExecutionShellPattern.MatchString(executable) && !arbitraryExecutionShellCommands[executable] {
+		return false
+	}
+	for _, argument := range parts[1:] {
+		if hasShellGlobMetachar(argument) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchAnyShellPattern returns true if the command is covered by the set of

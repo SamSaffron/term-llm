@@ -180,6 +180,9 @@ func (r *SpawnAgentRunner) buildChildExecutionRequest(ctx context.Context, reque
 			parentSessionID = contextSessionID
 		}
 	}
+	if r.parentApprovalMgr != nil {
+		r.parentApprovalMgr.BindWorkspaceSessionID(parentSessionID)
+	}
 	baseDir := strings.TrimSpace(request.BaseDir)
 	if baseDir == "" {
 		baseDir = r.currentBaseDir()
@@ -500,12 +503,6 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 	settings.SessionID = childSessionID
 	settings.Provider = strings.TrimSpace(cfg.DefaultProvider)
 	settings.Model = strings.TrimSpace(activeModel(cfg))
-	if baseDir != "" {
-		settings.BaseDir = baseDir
-		settings.ReadDirs = append(settings.ReadDirs, baseDir)
-		settings.WriteDirs = append(settings.WriteDirs, baseDir)
-		settings.ShellWorkingDir = baseDir
-	}
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil || toolMgr == nil {
 		return toolMgr, err

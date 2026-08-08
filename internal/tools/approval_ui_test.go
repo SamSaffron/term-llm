@@ -285,6 +285,32 @@ func TestBuildFileOptions_RelativePaths(t *testing.T) {
 	}
 }
 
+func TestWorkspaceApprovalOptionsAreSessionScopedAndShellExplicit(t *testing.T) {
+	workspace := t.TempDir()
+	options := BuildWorkspaceOptions(workspace)
+	if len(options) != 2 {
+		t.Fatalf("workspace options = %#v", options)
+	}
+	if options[0].Choice != ApprovalChoiceWorkspace || options[0].Path != workspace || !strings.Contains(options[0].Label, "this session's canonical workspace read/write") {
+		t.Fatalf("allow option = %#v", options[0])
+	}
+	if options[1].Choice != ApprovalChoiceDeny || options[1].SaveToRepo {
+		t.Fatalf("deny option = %#v", options[1])
+	}
+	for _, option := range options {
+		if !strings.Contains(option.Description, "Shell commands remain separately controlled") {
+			t.Fatalf("option omits shell boundary: %#v", option)
+		}
+	}
+	model := NewEmbeddedWorkspaceApprovalModel(workspace, 100)
+	rendered := model.View().Content
+	for _, want := range []string{"Primary Workspace Access Request", workspace, "this session's canonical workspace read/write", "Shell commands remain", "separately controlled"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("workspace UI missing %q: %s", want, rendered)
+		}
+	}
+}
+
 func TestApprovalChoiceValues(t *testing.T) {
 	// Verify the enum values are distinct and in expected order
 	choices := []ApprovalChoice{
@@ -296,6 +322,7 @@ func TestApprovalChoiceValues(t *testing.T) {
 		ApprovalChoiceRepoWrite,
 		ApprovalChoicePattern,
 		ApprovalChoiceCommand,
+		ApprovalChoiceWorkspace,
 		ApprovalChoiceCancelled,
 	}
 

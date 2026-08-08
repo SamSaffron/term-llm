@@ -26,6 +26,7 @@ const (
 	ApprovalChoiceRepoWrite                       // Allow write for entire repo (remembered)
 	ApprovalChoicePattern                         // Allow shell pattern in repo (remembered)
 	ApprovalChoiceCommand                         // Allow this specific command (session)
+	ApprovalChoiceWorkspace                       // Confirm the canonical primary workspace (session)
 	ApprovalChoiceCancelled                       // User cancelled with esc/ctrl+c
 )
 
@@ -142,7 +143,22 @@ func NewEmbeddedShellApprovalModel(command, workDir string, width int) *Approval
 		cursor:      0,
 		width:       width,
 		isShell:     true,
-		accentColor: approvalWriteColor, // Shell commands use write color
+		accentColor: approvalWriteColor,
+	}
+}
+
+// NewEmbeddedWorkspaceApprovalModel creates the dedicated authority-boundary
+// prompt for a proposed primary workspace. It deliberately offers no per-file,
+// directory, pattern, or project-persistent choices.
+func NewEmbeddedWorkspaceApprovalModel(workspace string, width int) *ApprovalModel {
+	return &ApprovalModel{
+		title:       "Primary Workspace Access Request",
+		path:        workspace,
+		options:     BuildWorkspaceOptions(workspace),
+		cursor:      0,
+		width:       width,
+		isWrite:     true,
+		accentColor: approvalWriteColor,
 	}
 }
 
@@ -280,6 +296,24 @@ func BuildFileOptions(path string, repoInfo *GitRepoInfo, isWrite bool) []Approv
 	})
 
 	return options
+}
+
+// BuildWorkspaceOptions returns the only valid human choices for proposed
+// primary authority. The canonical root is shown separately by ApprovalModel.
+func BuildWorkspaceOptions(workspace string) []ApprovalOption {
+	return []ApprovalOption{
+		{
+			Label:       "Allow this session's canonical workspace read/write",
+			Description: "Allow read and write access to the entire workspace for this session. Shell commands remain separately controlled.",
+			Choice:      ApprovalChoiceWorkspace,
+			Path:        workspace,
+		},
+		{
+			Label:       "Deny",
+			Description: "Keep this proposed workspace untrusted and block this file/path access. Shell commands remain separately controlled.",
+			Choice:      ApprovalChoiceDeny,
+		},
+	}
 }
 
 // BuildShellOptions creates the options for a shell command prompt.
@@ -548,6 +582,34 @@ func RunFileApprovalUI(path string, isWrite bool) (ApprovalResult, error) {
 	}
 
 	return result.result, nil
+}
+
+// RunWorkspaceApprovalUI displays the dedicated proposed-primary confirmation.
+func RunWorkspaceApprovalUI(workspace string) (WorkspaceApprovalResult, error) {
+	tty, err := getApprovalTTY()
+	if err != nil {
+		return WorkspaceApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available for workspace confirmation: %w", err)
+	}
+	defer tty.Close()
+
+	width := 80
+	if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
+		width = w
+	}
+	model := NewEmbeddedWorkspaceApprovalModel(workspace, width)
+	program := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
+	finalModel, err := program.Run()
+	if err != nil {
+		return WorkspaceApprovalResult{Cancelled: true}, err
+	}
+	result := finalModel.(*ApprovalModel)
+	if !result.result.Cancelled {
+		fmt.Fprint(tty, result.RenderSummary())
+	}
+	return WorkspaceApprovalResult{
+		Approved:  !result.result.Cancelled && result.result.Choice == ApprovalChoiceWorkspace,
+		Cancelled: result.result.Cancelled,
+	}, nil
 }
 
 // RunShellApprovalUI displays the approval UI for shell commands and returns the result.

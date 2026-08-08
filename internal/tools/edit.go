@@ -126,13 +126,10 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 	if t.approval != nil {
 		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, EditFileToolName, absPath, a.Path, true)
 		if err != nil {
-			if toolErr, ok := err.(*ToolError); ok {
-				return textOutput(formatToolError(toolErr)), nil
-			}
-			return textOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return pathApprovalErrorOutput(warning, err), nil
 		}
 		if outcome == Cancel {
-			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.Path))), nil
+			return pathApprovalErrorOutput(warning, NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.Path)), nil
 		}
 	}
 
@@ -344,13 +341,10 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		if t.approval != nil {
 			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, UnifiedDiffToolName, absPath, fd.Path, true)
 			if err != nil {
-				if toolErr, ok := err.(*ToolError); ok {
-					return llm.TextOutput(formatToolError(toolErr)), nil
-				}
-				return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+				return pathApprovalErrorOutput("", err), nil
 			}
 			if outcome == Cancel {
-				return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", fd.Path))), nil
+				return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", fd.Path)), nil
 			}
 		}
 	}

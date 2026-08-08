@@ -211,8 +211,9 @@ type Model struct {
 	toolMgr                  *tools.ToolManager
 
 	// Embedded inline approval UI (alt screen mode only)
-	approvalModel  *tools.ApprovalModel
-	approvalDoneCh chan<- tools.ApprovalResult
+	approvalModel       *tools.ApprovalModel
+	approvalDoneCh      chan<- tools.ApprovalResult
+	approvalIsWorkspace bool
 
 	// Embedded inline ask_user UI (alt screen mode only)
 	askUserModel  *tools.AskUserModel
@@ -670,11 +671,12 @@ type chatGPTModelsLoadedMsg struct {
 
 // ApprovalRequestMsg triggers an inline approval prompt.
 type ApprovalRequestMsg struct {
-	Path    string
-	IsWrite bool
-	IsShell bool
-	WorkDir string // directory where a shell command will execute (may be empty)
-	DoneCh  chan<- tools.ApprovalResult
+	Path        string
+	IsWrite     bool
+	IsShell     bool
+	IsWorkspace bool
+	WorkDir     string // directory where a shell command will execute (may be empty)
+	DoneCh      chan<- tools.ApprovalResult
 }
 
 // AskUserRequestMsg triggers an inline ask_user prompt.
@@ -3230,11 +3232,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, m.withTerminalTitleCmd(m.spinner.Tick)
 
 	case ApprovalRequestMsg:
-		if m.isYoloModeActive() {
+		// Yolo may resolve ordinary per-action prompts, but it can never make the
+		// direct-human primary workspace authority decision.
+		if m.isYoloModeActive() && !msg.IsWorkspace {
 			msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
 			m.pausedForExternalUI = false
 			m.approvalModel = nil
 			m.approvalDoneCh = nil
+			m.approvalIsWorkspace = false
 			return m, nil
 		}
 
@@ -3243,9 +3248,13 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if m.altScreen {
 			m.pausedForExternalUI = true
 			m.approvalDoneCh = msg.DoneCh
-			if msg.IsShell {
+			m.approvalIsWorkspace = msg.IsWorkspace
+			switch {
+			case msg.IsWorkspace:
+				m.approvalModel = tools.NewEmbeddedWorkspaceApprovalModel(msg.Path, m.width)
+			case msg.IsShell:
 				m.approvalModel = tools.NewEmbeddedShellApprovalModel(msg.Path, msg.WorkDir, m.width)
-			} else {
+			default:
 				m.approvalModel = tools.NewEmbeddedApprovalModel(msg.Path, msg.IsWrite, m.width)
 			}
 			// Mark current text as complete so it shows above the approval UI

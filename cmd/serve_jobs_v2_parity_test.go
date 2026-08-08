@@ -399,9 +399,21 @@ func TestJobsV2LLMSkillsFlagThreaded(t *testing.T) {
 	}
 }
 
+func TestResolveJobLLMSettingsWithoutCwdDoesNotBindDaemonWorkspace(t *testing.T) {
+	settings, _, err := resolveJobLLMSettings(&config.Config{}, nil, jobsV2LLMConfig{
+		Instructions: "do work",
+	}, jobLLMServeDefaults{})
+	if err != nil {
+		t.Fatalf("resolveJobLLMSettings: %v", err)
+	}
+	if settings.PrimaryWorkspace != "" {
+		t.Fatalf("PrimaryWorkspace = %q without explicit job cwd", settings.PrimaryWorkspace)
+	}
+}
+
 // TestResolveJobLLMSettingsCwdRoutesToolRootsWithoutChdir asserts that cwd is
-// routed into the read/write tool roots and the shell working dir, and that
-// resolving never performs a process-wide os.Chdir.
+// routed into the explicit primary capability and shell working dir without
+// mutating static allowlists or performing a process-wide os.Chdir.
 func TestResolveJobLLMSettingsCwdRoutesToolRootsWithoutChdir(t *testing.T) {
 	runCwd := t.TempDir()
 
@@ -421,11 +433,11 @@ func TestResolveJobLLMSettingsCwdRoutesToolRootsWithoutChdir(t *testing.T) {
 	if settings.ShellWorkingDir != runCwd {
 		t.Errorf("ShellWorkingDir = %q, want cwd %q", settings.ShellWorkingDir, runCwd)
 	}
-	if !sliceHasString(settings.ReadDirs, runCwd) {
-		t.Errorf("ReadDirs = %v, want it to include cwd %q", settings.ReadDirs, runCwd)
+	if settings.PrimaryWorkspace != runCwd {
+		t.Errorf("PrimaryWorkspace = %q, want cwd %q", settings.PrimaryWorkspace, runCwd)
 	}
-	if !sliceHasString(settings.WriteDirs, runCwd) {
-		t.Errorf("WriteDirs = %v, want it to include cwd %q", settings.WriteDirs, runCwd)
+	if len(settings.ReadDirs) != 0 || len(settings.WriteDirs) != 0 {
+		t.Errorf("ReadDirs/WriteDirs = %v/%v, primary must remain separate from static allowlists", settings.ReadDirs, settings.WriteDirs)
 	}
 
 	wd1, err := os.Getwd()

@@ -368,31 +368,137 @@ func assertDeadlineNear(t *testing.T, deadline time.Time, ok bool, want time.Dur
 	}
 }
 
-func TestResolveGuardianModelNameUsesGuardianProviderConfig(t *testing.T) {
-	cfg := &config.Config{
-		DefaultProvider: "anthropic-main",
-		Guardian:        config.GuardianConfig{Provider: "openai-guardian"},
-		Providers: map[string]config.ProviderConfig{
-			"anthropic-main":  {Model: "claude-main", FastModel: "claude-fast"},
-			"openai-guardian": {Type: config.ProviderTypeOpenAI, Model: "gpt-guardian", FastModel: "gpt-fast"},
-		},
+func TestApplyResolvedApprovalModeWiresClassifyAllShell(t *testing.T) {
+	provider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
+	perms := tools.NewToolPermissions()
+	if err := perms.AddShellPattern("git status"); err != nil {
+		t.Fatal(err)
 	}
-	if got := resolveGuardianModelName(cfg, "claude-main"); got != "gpt-guardian" {
-		t.Fatalf("model = %q, want guardian provider model", got)
+	mgr := tools.NewApprovalManager(perms)
+	cfg := &config.Config{
+		Guardian:  config.GuardianConfig{ClassifyAllShell: true},
+		Providers: map[string]config.ProviderConfig{"active": {Model: "main", FastModel: "fast"}},
+	}
+	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, "active", "main", approvalRuntimeOptions{}); err != nil {
+		t.Fatalf("applyResolvedApprovalMode: %v", err)
+	}
+	if outcome, err := mgr.CheckShellApproval("git status", t.TempDir()); err != nil || outcome != tools.ProceedAlways {
+		t.Fatalf("classified narrow pattern = %v, %v", outcome, err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("Guardian requests = %d, want 1", len(provider.Requests))
 	}
 }
 
-func TestResolveGuardianModelNameExplicitOverrideWins(t *testing.T) {
+func TestInstallGuardianReviewerCallbacksUsesFastProviderPair(t *testing.T) {
+	provider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	var gotName, gotModel string
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+		gotName, gotModel = name, model
+		return provider, nil
+	})
 	cfg := &config.Config{
-		DefaultProvider: "anthropic-main",
-		Guardian:        config.GuardianConfig{Provider: "openai-guardian", Model: "explicit-guardian"},
+		Guardian: config.GuardianConfig{Provider: "main"},
 		Providers: map[string]config.ProviderConfig{
-			"anthropic-main":  {Model: "claude-main"},
-			"openai-guardian": {Type: config.ProviderTypeOpenAI, Model: "gpt-guardian"},
+			"main": {Model: "large", FastProvider: "fast", FastModel: "small"},
+			"fast": {Model: "other"},
 		},
 	}
-	if got := resolveGuardianModelName(cfg, "claude-main"); got != "explicit-guardian" {
-		t.Fatalf("model = %q, want explicit guardian model", got)
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "main", "large", false); err != nil {
+		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
+	}
+	if gotName != "fast" || gotModel != "small" {
+		t.Fatalf("factory target = %s:%s, want fast:small", gotName, gotModel)
+	}
+}
+
+func TestResolveGuardianTarget(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            *config.Config
+		activeProvider string
+		activeModel    string
+		want           guardianTarget
+		wantErr        string
+	}{
+		{
+			name: "explicit model prevents fast provider switch",
+			cfg: &config.Config{
+				Guardian:  config.GuardianConfig{Provider: "main", Model: "pinned"},
+				Providers: map[string]config.ProviderConfig{"main": {FastProvider: "fast", FastModel: "small"}},
+			},
+			want: guardianTarget{Provider: "main", Model: "pinned"},
+		},
+		{
+			name: "same-provider fast model",
+			cfg: &config.Config{
+				Guardian:  config.GuardianConfig{Provider: "main"},
+				Providers: map[string]config.ProviderConfig{"main": {Model: "large", FastModel: "small"}},
+			},
+			want: guardianTarget{Provider: "main", Model: "small"},
+		},
+		{
+			name: "fast provider pair",
+			cfg: &config.Config{
+				Guardian: config.GuardianConfig{Provider: "main"},
+				Providers: map[string]config.ProviderConfig{
+					"main": {Model: "large", FastProvider: "fast", FastModel: "small"},
+					"fast": {Model: "other"},
+				},
+			},
+			want: guardianTarget{Provider: "fast", Model: "small"},
+		},
+		{
+			name: "normal model fallback",
+			cfg: &config.Config{
+				Guardian:  config.GuardianConfig{Provider: "custom"},
+				Providers: map[string]config.ProviderConfig{"custom": {Model: "normal"}},
+			},
+			want: guardianTarget{Provider: "custom", Model: "normal"},
+		},
+		{
+			name: "built-in fast fallback",
+			cfg:  &config.Config{Guardian: config.GuardianConfig{Provider: "openai"}},
+			want: guardianTarget{Provider: "openai", Model: llm.ProviderFastModels["openai"]},
+		},
+		{
+			name:           "compatible active fallback",
+			cfg:            &config.Config{},
+			activeProvider: "custom-active",
+			activeModel:    "active-model",
+			want:           guardianTarget{Provider: "custom-active", Model: "active-model"},
+		},
+		{
+			name:           "incompatible provider error",
+			cfg:            &config.Config{Guardian: config.GuardianConfig{Provider: "custom-guardian"}},
+			activeProvider: "custom-active",
+			activeModel:    "active-model",
+			wantErr:        "guardian provider \"custom-guardian\" has no configured model",
+		},
+		{
+			name: "default provider selected when active absent",
+			cfg: &config.Config{
+				DefaultProvider: "default",
+				Providers:       map[string]config.ProviderConfig{"default": {FastModel: "default-fast"}},
+			},
+			want: guardianTarget{Provider: "default", Model: "default-fast"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveGuardianTarget(tt.cfg, tt.activeProvider, tt.activeModel)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("target = %#v, err=%v; want %#v", got, err, tt.want)
+			}
+		})
 	}
 }
 

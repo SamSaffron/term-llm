@@ -212,30 +212,48 @@ func (m *Model) autoApprovalAvailable() bool {
 	return false
 }
 
+func (m *Model) resumeAutoApproval() {
+	if m.approvalMgr != nil {
+		m.approvalMgr.ResumeAuto()
+	}
+	if m.handoverApprovalMgr != nil && m.handoverApprovalMgr != m.approvalMgr {
+		m.handoverApprovalMgr.ResumeAuto()
+	}
+	m.setApprovalMode(tools.ModeAuto)
+}
+
 func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 	current := m.currentApprovalMode()
+	resumeAuto := current == tools.ModePrompt && m.requestedApprovalMode == tools.ModeAuto && m.autoApprovalAvailable()
 	next := tools.ModeAuto
 	autoUnavailable := false
-	switch current {
-	case tools.ModePrompt:
-		if m.autoApprovalAvailable() {
-			next = tools.ModeAuto
-		} else {
+	if !resumeAuto {
+		switch current {
+		case tools.ModePrompt:
+			if m.autoApprovalAvailable() {
+				next = tools.ModeAuto
+			} else {
+				next = tools.ModeYolo
+				autoUnavailable = true
+			}
+		case tools.ModeAuto:
 			next = tools.ModeYolo
-			autoUnavailable = true
+		case tools.ModeYolo:
+			next = tools.ModePrompt
 		}
-	case tools.ModeAuto:
-		next = tools.ModeYolo
-	case tools.ModeYolo:
-		next = tools.ModePrompt
 	}
-	m.setApprovalMode(next)
+	if resumeAuto {
+		m.resumeAutoApproval()
+	} else {
+		m.setApprovalMode(next)
+	}
 
 	var cmds []tea.Cmd
-	if next == tools.ModeYolo && m.approvalModel != nil && m.approvalDoneCh != nil {
+	if next == tools.ModeYolo && m.approvalModel != nil && m.approvalDoneCh != nil && !m.approvalIsWorkspace {
 		m.approvalDoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
 		m.approvalModel = nil
 		m.approvalDoneCh = nil
+		m.approvalIsWorkspace = false
 		m.pausedForExternalUI = false
 		cmds = append(cmds, m.spinner.Tick)
 	}
@@ -279,6 +297,7 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		}
 		m.approvalDoneCh = nil
 		m.approvalModel = nil
+		m.approvalIsWorkspace = false
 		m.pausedForExternalUI = false
 		cancelled = true
 	}
@@ -433,6 +452,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.approvalDoneCh <- result
 			m.approvalModel = nil
 			m.approvalDoneCh = nil
+			m.approvalIsWorkspace = false
 			m.pausedForExternalUI = false
 			return m, m.withTerminalTitleCmd(m.spinner.Tick)
 		}

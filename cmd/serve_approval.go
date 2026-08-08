@@ -16,14 +16,16 @@ var (
 )
 
 type serveApprovalPrompt struct {
-	ApprovalID string                `json:"approval_id"`
-	Path       string                `json:"path"`
-	IsWrite    bool                  `json:"is_write"`
-	IsShell    bool                  `json:"is_shell"`
-	WorkDir    string                `json:"work_dir,omitempty"`
-	Title      string                `json:"title"`
-	Options    []serveApprovalOption `json:"options"`
-	CreatedAt  int64                 `json:"created_at"`
+	ApprovalID          string                `json:"approval_id"`
+	Path                string                `json:"path"`
+	IsWrite             bool                  `json:"is_write"`
+	IsShell             bool                  `json:"is_shell"`
+	IsWorkspace         bool                  `json:"is_workspace,omitempty"`
+	WorkDir             string                `json:"work_dir,omitempty"`
+	Title               string                `json:"title"`
+	Options             []serveApprovalOption `json:"options"`
+	ResumeAutoAvailable bool                  `json:"resume_auto_available,omitempty"`
+	CreatedAt           int64                 `json:"created_at"`
 }
 
 type serveApprovalOption struct {
@@ -39,15 +41,17 @@ type serveApprovalSubmission struct {
 }
 
 type servePendingApproval struct {
-	ApprovalID string
-	Path       string
-	IsWrite    bool
-	IsShell    bool
-	WorkDir    string
-	Options    []tools.ApprovalOption
-	CreatedAt  time.Time
-	responseC  chan serveApprovalSubmission
-	responded  bool
+	ApprovalID          string
+	Path                string
+	IsWrite             bool
+	IsShell             bool
+	IsWorkspace         bool
+	WorkDir             string
+	Options             []tools.ApprovalOption
+	ResumeAutoAvailable bool
+	CreatedAt           time.Time
+	responseC           chan serveApprovalSubmission
+	responded           bool
 }
 
 func (p *servePendingApproval) snapshot() serveApprovalPrompt {
@@ -63,6 +67,8 @@ func (p *servePendingApproval) snapshot() serveApprovalPrompt {
 
 	title := "Access Request"
 	switch {
+	case p.IsWorkspace:
+		title = "Primary Workspace Access Request"
 	case p.IsShell:
 		title = "Shell Command Request"
 	case p.IsWrite:
@@ -72,22 +78,41 @@ func (p *servePendingApproval) snapshot() serveApprovalPrompt {
 	}
 
 	return serveApprovalPrompt{
-		ApprovalID: p.ApprovalID,
-		Path:       p.Path,
-		IsWrite:    p.IsWrite,
-		IsShell:    p.IsShell,
-		WorkDir:    p.WorkDir,
-		Title:      title,
-		Options:    options,
-		CreatedAt:  p.CreatedAt.UnixMilli(),
+		ApprovalID:          p.ApprovalID,
+		Path:                p.Path,
+		IsWrite:             p.IsWrite,
+		IsShell:             p.IsShell,
+		IsWorkspace:         p.IsWorkspace,
+		WorkDir:             p.WorkDir,
+		Title:               title,
+		Options:             options,
+		ResumeAutoAvailable: p.ResumeAutoAvailable,
+		CreatedAt:           p.CreatedAt.UnixMilli(),
 	}
 }
 
 func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
+	return rt.awaitApprovalRequest(target, isWrite, isShell, false, workDir)
+}
+
+func (rt *serveRuntime) awaitWorkspaceApproval(workspace string) (tools.WorkspaceApprovalResult, error) {
+	result, err := rt.awaitApprovalRequest(workspace, true, false, true, "")
+	if err != nil {
+		return tools.WorkspaceApprovalResult{}, err
+	}
+	return tools.WorkspaceApprovalResult{
+		Approved:  !result.Cancelled && result.Choice == tools.ApprovalChoiceWorkspace,
+		Cancelled: result.Cancelled,
+	}, nil
+}
+
+func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) (tools.ApprovalResult, error) {
 	approvalID := "appr_" + randomSuffix()
 
 	var options []tools.ApprovalOption
-	if isShell {
+	if isWorkspace {
+		options = tools.BuildWorkspaceOptions(target)
+	} else if isShell {
 		dir := workDir
 		if dir == "" {
 			dir, _ = os.Getwd()
@@ -125,15 +150,18 @@ func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool,
 	if rt.pendingApprovals == nil {
 		rt.pendingApprovals = make(map[string]*servePendingApproval)
 	}
+	resumeAutoAvailable := rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil && rt.toolMgr.ApprovalMgr.GuardianAutoSuspended()
 	pending := &servePendingApproval{
-		ApprovalID: approvalID,
-		Path:       target,
-		IsWrite:    isWrite,
-		IsShell:    isShell,
-		WorkDir:    workDir,
-		Options:    options,
-		CreatedAt:  time.Now(),
-		responseC:  make(chan serveApprovalSubmission, 1),
+		ApprovalID:          approvalID,
+		Path:                target,
+		IsWrite:             isWrite,
+		IsShell:             isShell,
+		IsWorkspace:         isWorkspace,
+		WorkDir:             workDir,
+		Options:             options,
+		ResumeAutoAvailable: resumeAutoAvailable,
+		CreatedAt:           time.Now(),
+		responseC:           make(chan serveApprovalSubmission, 1),
 	}
 	rt.pendingApprovals[approvalID] = pending
 	rt.approvalMu.Unlock()
@@ -144,13 +172,15 @@ func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool,
 	// pending approval, so return immediately instead of blocking forever.
 	snap := pending.snapshot()
 	payload := map[string]any{
-		"approval_id": snap.ApprovalID,
-		"path":        snap.Path,
-		"is_write":    snap.IsWrite,
-		"is_shell":    snap.IsShell,
-		"title":       snap.Title,
-		"options":     snap.Options,
-		"created_at":  snap.CreatedAt,
+		"approval_id":           snap.ApprovalID,
+		"path":                  snap.Path,
+		"is_write":              snap.IsWrite,
+		"is_shell":              snap.IsShell,
+		"is_workspace":          snap.IsWorkspace,
+		"title":                 snap.Title,
+		"options":               snap.Options,
+		"resume_auto_available": snap.ResumeAutoAvailable,
+		"created_at":            snap.CreatedAt,
 	}
 	if snap.WorkDir != "" {
 		payload["work_dir"] = snap.WorkDir
@@ -168,7 +198,7 @@ func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool,
 	}
 }
 
-func (rt *serveRuntime) submitApproval(approvalID string, choiceIndex int, cancelled bool) error {
+func (rt *serveRuntime) submitApproval(approvalID string, choiceIndex int, cancelled bool, resumeAuto bool) error {
 	rt.approvalMu.Lock()
 	pending := rt.pendingApprovals[approvalID]
 	if pending == nil {
@@ -178,6 +208,10 @@ func (rt *serveRuntime) submitApproval(approvalID string, choiceIndex int, cance
 	if pending.responded {
 		rt.approvalMu.Unlock()
 		return errServeApprovalAnswered
+	}
+	if resumeAuto && !pending.ResumeAutoAvailable {
+		rt.approvalMu.Unlock()
+		return errors.New("auto resume is not available for this approval")
 	}
 
 	submission := serveApprovalSubmission{}
@@ -202,6 +236,13 @@ func (rt *serveRuntime) submitApproval(approvalID string, choiceIndex int, cance
 
 	pending.responded = true
 	rt.approvalMu.Unlock()
+
+	// Approval and breaker recovery are independent decisions. Only this explicit
+	// protocol bit starts a fresh auto epoch; choosing any approval option alone
+	// leaves the breaker suspended.
+	if resumeAuto && rt.toolMgr != nil && rt.toolMgr.ApprovalMgr != nil {
+		rt.toolMgr.ApprovalMgr.ResumeAuto()
+	}
 
 	select {
 	case pending.responseC <- submission:
@@ -266,6 +307,8 @@ func approvalChoiceName(c tools.ApprovalChoice) string {
 		return "pattern"
 	case tools.ApprovalChoiceCommand:
 		return "command"
+	case tools.ApprovalChoiceWorkspace:
+		return "workspace"
 	case tools.ApprovalChoiceCancelled:
 		return "cancelled"
 	default:

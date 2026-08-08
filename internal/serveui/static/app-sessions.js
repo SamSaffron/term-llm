@@ -501,7 +501,8 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
       && state.approval.approvalId === pendingApproval.approval_id;
     if (!sameApproval) {
       openApprovalModal(session.id, pendingApproval.approval_id, pendingApproval.path,
-        pendingApproval.is_shell, pendingApproval.title, pendingApproval.options);
+        pendingApproval.is_shell, pendingApproval.is_workspace, pendingApproval.title, pendingApproval.options,
+        pendingApproval.resume_auto_available);
     }
   } else if (state.approval?.sessionId === session.id) {
     closeApprovalModal();

@@ -261,7 +261,7 @@ func TestProjectApprovals_ShellPatterns(t *testing.T) {
 	}
 
 	// Initially no patterns approved
-	if pa.IsShellPatternApproved("go test ./...") {
+	if unfilteredProjectShellAllowedForTest(pa, "go test ./...") {
 		t.Error("command should not be approved initially")
 	}
 
@@ -271,12 +271,12 @@ func TestProjectApprovals_ShellPatterns(t *testing.T) {
 	}
 
 	// Matching command should be approved
-	if !pa.IsShellPatternApproved("go test ./...") {
+	if !unfilteredProjectShellAllowedForTest(pa, "go test ./...") {
 		t.Error("matching command should be approved")
 	}
 
 	// Non-matching command should not be approved
-	if pa.IsShellPatternApproved("go build ./...") {
+	if unfilteredProjectShellAllowedForTest(pa, "go build ./...") {
 		t.Error("non-matching command should not be approved")
 	}
 
@@ -285,7 +285,7 @@ func TestProjectApprovals_ShellPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload failed: %v", err)
 	}
-	if !pa2.IsShellPatternApproved("go test ./...") {
+	if !unfilteredProjectShellAllowedForTest(pa2, "go test ./...") {
 		t.Error("shell pattern should persist after reload")
 	}
 }
@@ -313,13 +313,13 @@ func TestProjectApprovals_CompoundShellPatterns(t *testing.T) {
 	}
 
 	cmd := `gh pr view 1 --json title && echo "---DIFF---" && gh pr diff 1`
-	if !pa.IsShellPatternApproved(cmd) {
+	if !unfilteredProjectShellAllowedForTest(pa, cmd) {
 		t.Errorf("compound command covered by approved patterns should be approved: %q", cmd)
 	}
 
 	// A segment that is not covered should still cause rejection.
 	unsafe := `gh pr view 1 && rm -rf /tmp/foo`
-	if pa.IsShellPatternApproved(unsafe) {
+	if unfilteredProjectShellAllowedForTest(pa, unsafe) {
 		t.Errorf("compound command with uncovered segment must NOT be approved: %q", unsafe)
 	}
 }
@@ -337,8 +337,8 @@ func TestProjectApprovals_NilSafe(t *testing.T) {
 	if pa.IsPathApproved("/some/path", false) {
 		t.Error("nil.IsPathApproved should return false")
 	}
-	if pa.IsShellPatternApproved("some command") {
-		t.Error("nil.IsShellPatternApproved should return false")
+	if unfilteredProjectShellAllowedForTest(pa, "some command") {
+		t.Error("nil project shell patterns should not match")
 	}
 
 	// These should not panic

@@ -147,6 +147,7 @@ var keySpecs = []KeySpec{
 	optional("guardian.model"),
 	optional("guardian.policy_path"),
 	optional("guardian.timeout_seconds", withPlaceholder(0)),
+	def("guardian.classify_all_shell", false),
 
 	optional("exec.provider"),
 	optional("exec.model"),

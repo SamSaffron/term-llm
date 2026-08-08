@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -346,6 +345,15 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		sess = r.ensureRunSession(ctx, store, req, provider, cfg.DefaultProvider, modelName, agentName, settings)
 		runtime.sessionMeta = sess
 	}
+	if toolMgr != nil {
+		workspaceSessionID := strings.TrimSpace(req.SessionID)
+		if sess != nil {
+			workspaceSessionID = sess.ID
+		}
+		if err := toolMgr.ConfigureWorkspacePersistence(ctx, store, workspaceSessionID); err != nil {
+			return nil, err
+		}
+	}
 
 	if settings.MCP != "" && !borrowedEngine {
 		mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: yoloMode}
@@ -482,11 +490,18 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 	if err != nil {
 		return SessionSettings{}, err
 	}
-	if runCwd := strings.TrimSpace(req.Cwd); runCwd != "" {
-		settings.BaseDir = runCwd
-		settings.ReadDirs = append(settings.ReadDirs, runCwd)
-		settings.WriteDirs = append(settings.WriteDirs, runCwd)
-		settings.ShellWorkingDir = runCwd
+	explicitBinding := strings.TrimSpace(req.Cwd) != ""
+	localLaunch := req.Platform == runpkg.PlatformConsole || req.Platform == runpkg.PlatformChat || req.Platform == runpkg.PlatformExec
+	if explicitBinding || localLaunch {
+		settings.PrimaryWorkspace = settings.BaseDir
+	} else if req.Platform == runpkg.PlatformWeb || req.Platform == runpkg.PlatformTelegram {
+		// ResolveSettingsInDir uses process CWD for project-sensitive prompt setup,
+		// but an unbound daemon runtime must not retain that ambient directory as a
+		// tool-path or process-execution default. A later explicit session/worktree
+		// binding sets BaseDir and makes relative operations well-defined again.
+		settings.BaseDir = ""
+		settings.ShellWorkingDir = ""
+		settings.RequireExplicitWorkingDir = true
 	}
 	return settings, nil
 }
@@ -514,6 +529,9 @@ func configureInteractiveSink(toolMgr *tools.ToolManager, sink runpkg.EventSink)
 	}
 	if prompter, ok := sink.(runpkg.ApprovalPrompter); ok {
 		toolMgr.ApprovalMgr.PromptUIFunc = prompter.PromptApproval
+	}
+	if prompter, ok := sink.(runpkg.WorkspaceApprovalPrompter); ok {
+		toolMgr.ApprovalMgr.WorkspacePromptFunc = prompter.PromptWorkspaceApproval
 	}
 	if guardian, ok := sink.(runpkg.GuardianEventSink); ok {
 		toolMgr.ApprovalMgr.GuardianEventFunc = guardian.GuardianEvent
@@ -557,9 +575,7 @@ func (r *cmdRunner) ensureRunSession(ctx context.Context, store session.Store, r
 		MCP:         settings.MCP,
 		Status:      session.StatusActive,
 	}
-	if cwd := strings.TrimSpace(settings.BaseDir); cwd != "" {
-		sess.CWD = cwd
-	} else if cwd, err := os.Getwd(); err == nil {
+	if cwd := strings.TrimSpace(settings.PrimaryWorkspace); cwd != "" {
 		sess.CWD = cwd
 	}
 	if err := store.Create(ctx, sess); err != nil {

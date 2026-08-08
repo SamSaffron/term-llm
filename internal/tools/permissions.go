@@ -159,25 +159,23 @@ func isHandoverPath(resolvedPath string) bool {
 	return strings.HasPrefix(resolvedPath, root+string(filepath.Separator))
 }
 
-// IsShellCommandAllowed checks if a shell command matches any allowlist pattern or script.
-func (p *ToolPermissions) IsShellCommandAllowed(command string) bool {
-	trimmedCmd := strings.TrimSpace(command)
+func (p *ToolPermissions) isExactScriptCommandAllowed(command string) bool {
+	if p == nil {
+		return false
+	}
 	p.mu.RLock()
 	scripts := append([]string(nil), p.ScriptCommands...)
-	shellAllow := append([]string(nil), p.ShellAllow...)
 	p.mu.RUnlock()
+	return matchesExactShellCommand(scripts, strings.TrimSpace(command))
+}
 
-	// Check exact script matches first.
-	for _, script := range scripts {
-		if trimmedCmd == script {
+func matchesExactShellCommand(commands []string, command string) bool {
+	for _, exact := range commands {
+		if command == exact {
 			return true
 		}
 	}
-
-	// Use the same shell-aware matcher as session and project approvals. In
-	// particular, every command in a compound expression must be covered by an
-	// allowlist pattern; a wildcard never consumes raw shell operators.
-	return matchAnyShellPattern(shellAllow, trimmedCmd)
+	return false
 }
 
 func (p *ToolPermissions) Snapshot() (readDirs, writeDirs, shellAllow []string) {
@@ -249,22 +247,30 @@ func canonicalizePathForWrite(path string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-// resolveParentSymlinks resolves symlinks in the parent directory.
+// resolveParentSymlinks resolves the longest existing ancestor and appends the
+// missing suffix. Resolving only the immediate parent is unsafe when a missing
+// directory appears below an existing symlink that escapes an allowed root.
 func resolveParentSymlinks(abs string) (string, error) {
-	parent := filepath.Dir(abs)
-	filename := filepath.Base(abs)
-
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Parent doesn't exist either - this is fine for write operations
-			// that will create directories
-			return abs, nil
+	current := filepath.Clean(abs)
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
 		}
-		return "", NewToolErrorf(ErrInvalidParams, "cannot evaluate parent symlinks: %v", err)
+		if !os.IsNotExist(err) {
+			return "", NewToolErrorf(ErrInvalidParams, "cannot evaluate parent symlinks: %v", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", NewToolErrorf(ErrInvalidParams, "cannot resolve an existing parent for path: %s", abs)
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
 	}
-
-	return filepath.Join(resolvedParent, filename), nil
 }
 
 // ExtractCommandPrefix extracts a shell command prefix for policy learning.

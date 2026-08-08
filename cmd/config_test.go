@@ -220,7 +220,8 @@ func TestDefaultConfigContentContainsEveryDefault(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"# guardian:",
+		"guardian:",
+		"classify_all_shell:",
 		"music:",
 		"audio:",
 		"reasoning:",

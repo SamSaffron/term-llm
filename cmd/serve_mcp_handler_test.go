@@ -29,6 +29,20 @@ func TestMain(m *testing.M) {
 		runServeMCPHandlerTestServer()
 		os.Exit(0)
 	}
+	for key, value := range map[string]string{
+		"GIT_CONFIG_GLOBAL":   "/dev/null",
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME":     "Test User",
+		"GIT_AUTHOR_EMAIL":    "test@example.com",
+		"GIT_COMMITTER_NAME":  "Test User",
+		"GIT_COMMITTER_EMAIL": "test@example.com",
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", key, err)
+			os.Exit(1)
+		}
+	}
+
 	dataHome, err := os.MkdirTemp("", "term-llm-cmd-test-data-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create temp XDG_DATA_HOME: %v\n", err)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -567,6 +568,9 @@ func queueAgentCwd(explicit string, config *ToolConfig) (string, error) {
 	}
 	if cwd == "" && config != nil {
 		cwd = config.WorkingDir()
+		if cwd == "" && config.RequiresExplicitWorkingDir() {
+			return "", fmt.Errorf("cwd is required when the session has no explicit working directory")
+		}
 	}
 	if cwd == "" {
 		var err error
@@ -579,6 +583,9 @@ func queueAgentCwd(explicit string, config *ToolConfig) (string, error) {
 		return "", fmt.Errorf("cwd is required")
 	}
 	if config != nil && explicit != "" {
+		if config.RequiresExplicitWorkingDir() && config.WorkingDir() == "" && !filepath.IsAbs(cwd) {
+			return "", fmt.Errorf("relative cwd requires an absolute path or explicit session working directory")
+		}
 		cwd = config.ResolveDir(cwd)
 	}
 	return cwd, nil

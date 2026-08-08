@@ -375,6 +375,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if err != nil {
 		return "", "", err
 	}
+	settings.PrimaryWorkspace = runtimeDir
 	applyChatSearchDefault(&settings, chatNoSearch, sess, agent != nil)
 
 	// Saved session settings win on resume.
@@ -383,12 +384,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		settings.Tools = sess.Tools
 		settings.MCP = sess.MCP
 		settings.SessionID = sess.ID
-		if dir := effectiveSessionDirectory(sess); dir != "" {
-			settings.BaseDir = dir
-			settings.ReadDirs = append(settings.ReadDirs, dir)
-			settings.WriteDirs = append(settings.WriteDirs, dir)
-			settings.ShellWorkingDir = dir
-		}
 	}
 
 	// Resolve requested approval policy before runtime guardian setup so a
@@ -484,6 +479,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	if toolMgr != nil {
 		toolMgr.Registry.SetPlanStore(store)
+		workspaceSessionID := ""
+		if sess != nil {
+			workspaceSessionID = sess.ID
+		}
+		if err := toolMgr.ConfigureWorkspacePersistence(context.Background(), store, workspaceSessionID); err != nil {
+			return "", "", err
+		}
 	}
 	if sess != nil && toolMgr != nil {
 		if err := RestoreWorktreeBinding(context.Background(), store, sess, toolMgr); err != nil {
@@ -759,18 +761,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			p.Send(chat.GuardianReviewMsg{Event: event})
 		}
 		approvalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
-			// In alt screen mode, use inline approval UI
+			// In alt screen mode, use inline approval UI.
 			if useAltScreen {
-				// Use buffered channel to prevent goroutine leak if TUI exits before responding
 				doneCh := make(chan tools.ApprovalResult, 1)
 				p.Send(chat.ApprovalRequestMsg{
-					Path:    path,
-					IsWrite: isWrite,
-					IsShell: isShell,
-					WorkDir: workDir,
-					DoneCh:  doneCh,
+					Path: path, IsWrite: isWrite, IsShell: isShell, WorkDir: workDir, DoneCh: doneCh,
 				})
-				// Block until user responds or context is cancelled
 				select {
 				case result := <-doneCh:
 					return result, nil
@@ -779,23 +775,44 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 				}
 			}
 
-			// Inline mode: use external UI with terminal release
+			// Inline mode: use external UI with terminal release.
 			done := make(chan struct{})
 			p.Send(chat.FlushBeforeApprovalMsg{Done: done})
 			<-done
-
-			// Pause the TUI
 			p.ReleaseTerminal()
 			defer func() {
 				p.RestoreTerminal()
 				p.Send(chat.ResumeFromExternalUIMsg{})
 			}()
-
-			// Run the appropriate approval UI
 			if isShell {
 				return tools.RunShellApprovalUI(path, workDir)
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
+		}
+		approvalMgr.WorkspacePromptFunc = func(workspace string) (tools.WorkspaceApprovalResult, error) {
+			if useAltScreen {
+				doneCh := make(chan tools.ApprovalResult, 1)
+				p.Send(chat.ApprovalRequestMsg{Path: workspace, IsWorkspace: true, DoneCh: doneCh})
+				select {
+				case result := <-doneCh:
+					return tools.WorkspaceApprovalResult{
+						Approved:  !result.Cancelled && result.Choice == tools.ApprovalChoiceWorkspace,
+						Cancelled: result.Cancelled,
+					}, nil
+				case <-ctx.Done():
+					return tools.WorkspaceApprovalResult{Cancelled: true}, fmt.Errorf("cancelled: %w", ctx.Err())
+				}
+			}
+
+			done := make(chan struct{})
+			p.Send(chat.FlushBeforeApprovalMsg{Done: done})
+			<-done
+			p.ReleaseTerminal()
+			defer func() {
+				p.RestoreTerminal()
+				p.Send(chat.ResumeFromExternalUIMsg{})
+			}()
+			return tools.RunWorkspaceApprovalUI(workspace)
 		}
 	}
 
@@ -1015,8 +1032,12 @@ func effectiveSessionDirectory(sess *session.Session) string {
 		if dir := strings.TrimSpace(sess.WorktreeDir); dir != "" {
 			return dir
 		}
-		if dir := strings.TrimSpace(sess.CWD); dir != "" {
-			return dir
+		// Web/telegram sessions historically recorded the daemon process CWD.
+		// A local interactive resume must not treat that as user-selected state.
+		if sess.Origin != session.OriginWeb && sess.Origin != session.OriginTelegram {
+			if dir := strings.TrimSpace(sess.CWD); dir != "" {
+				return dir
+			}
 		}
 	}
 	cwd, _ := os.Getwd()

@@ -3363,6 +3363,32 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	}
 }
 
+func TestRunHandoverScriptGuardianDenialIsHumanFacing(t *testing.T) {
+	agentDir := t.TempDir()
+	scriptPath := filepath.Join(agentDir, "handover.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho should-not-run\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := &agents.Agent{Name: "target", Source: agents.SourceLocal, SourcePath: agentDir}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	mgr.SetApprovalMode(tools.ModeAuto)
+	mgr.SetPolicyReviewFunc(func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+		return tools.PolicyDecision{Allowed: false, Rationale: "not explicitly requested"}, nil
+	}, nil)
+	mgr.PromptUIFunc = func(string, bool, bool, string) (tools.ApprovalResult, error) {
+		t.Fatal("handover Guardian denial prompted the human")
+		return tools.ApprovalResult{}, nil
+	}
+
+	_, err := runHandoverScript(context.Background(), mgr, agent, "./handover.sh", nil)
+	if err == nil || err.Error() != "handover script denied by guardian: not explicitly requested" {
+		t.Fatalf("handover denial = %v", err)
+	}
+	if strings.Contains(err.Error(), "Do not retry") || strings.Contains(err.Error(), "workaround") {
+		t.Fatalf("handover denial leaked model-facing guidance: %v", err)
+	}
+}
+
 func TestRunHandoverScript_CancelKillsProcessGroup(t *testing.T) {
 	if os.Getenv("TERM_LLM_SLOW_TESTS") == "" {
 		t.Skip("set TERM_LLM_SLOW_TESTS=1 to run process-group cancellation integration test")

@@ -132,6 +132,7 @@ const (
 	WaitForJobsToolName      = "wait_for_jobs"
 	RunAgentScriptToolName   = "run_agent_script"
 	InitiateHandoverToolName = "initiate_handover"
+	ManageWorkspaceToolName  = "manage_workspace"
 	UpdatePlanToolName       = planpkg.ToolName
 
 	HubDelegateToolName        = "hub_delegate"
@@ -173,7 +174,7 @@ func StandardToolNames() []string {
 // configuration behaves consistently with the historical allowlist.
 func ValidToolNames() []string {
 	names := StandardToolNames()
-	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, UpdatePlanToolName} {
+	for _, name := range []string{HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName} {
 		found := false
 		for _, existing := range names {
 			if existing == name {
@@ -207,6 +208,7 @@ var validToolNames = map[string]bool{
 	WaitForJobsToolName:        true,
 	RunAgentScriptToolName:     true,
 	InitiateHandoverToolName:   true,
+	ManageWorkspaceToolName:    true,
 	UpdatePlanToolName:         true,
 	HubDelegateToolName:        true,
 	HubCheckDelegationToolName: true,
@@ -237,7 +239,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute
-	case UpdatePlanToolName:
+	case UpdatePlanToolName, ManageWorkspaceToolName:
 		return KindSessionState
 	case ActivateSkillToolName:
 		return KindSkill

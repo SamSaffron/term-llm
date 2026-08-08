@@ -154,13 +154,10 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		if t.approval != nil {
 			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
 			if err != nil {
-				if toolErr, ok := err.(*ToolError); ok {
-					return llm.TextOutput(formatToolError(toolErr)), nil
-				}
-				return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+				return pathApprovalErrorOutput("", err), nil
 			}
 			if outcome == Cancel {
-				return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath))), nil
+				return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath)), nil
 			}
 		}
 		// Keep the resolved path for downstream comparisons/writes.
@@ -189,13 +186,10 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		if needOutputDirApproval {
 			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputDir, resolvedOutputDir, true)
 			if err != nil {
-				if toolErr, ok := err.(*ToolError); ok {
-					return llm.TextOutput(formatToolError(toolErr)), nil
-				}
-				return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+				return pathApprovalErrorOutput("", err), nil
 			}
 			if outcome == Cancel {
-				return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", resolvedOutputDir))), nil
+				return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", resolvedOutputDir)), nil
 			}
 		}
 	}
@@ -239,13 +233,10 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 					log.Printf("[image_generate] CheckPathApproval input=%q → outcome=%v err=%v", inputPath, outcome, err)
 				}
 				if err != nil {
-					if toolErr, ok := err.(*ToolError); ok {
-						return llm.TextOutput(formatToolError(toolErr)), nil
-					}
-					return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+					return pathApprovalErrorOutput("", err), nil
 				}
 				if outcome == Cancel {
-					return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath))), nil
+					return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath)), nil
 				}
 
 				resolvedInput, err = resolveToolPathWithConfig(inputPath, false, t.toolConfig)

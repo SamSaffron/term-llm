@@ -350,6 +350,15 @@ func resolveToolPathWithConfig(path string, isWrite bool, config *ToolConfig) (s
 	baseDir := ""
 	if config != nil {
 		baseDir = config.WorkingDir()
+		if config.RequiresExplicitWorkingDir() && strings.TrimSpace(baseDir) == "" {
+			expanded, err := pathutil.Expand(path)
+			if err != nil {
+				return "", NewToolErrorf(ErrInvalidParams, "%v", err)
+			}
+			if !filepath.IsAbs(expanded) {
+				return "", NewToolError(ErrInvalidParams, "relative path requires an absolute path or explicit session working directory")
+			}
+		}
 	}
 	return resolveToolPathInBase(path, isWrite, baseDir)
 }

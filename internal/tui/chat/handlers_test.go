@@ -18,6 +18,26 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestWorkspaceApprovalPromptIsNotBypassedByYolo(t *testing.T) {
+	m := newTestChatModel(true)
+	m.yolo = true
+	done := make(chan tools.ApprovalResult, 1)
+	workspace := t.TempDir()
+	_, _ = m.Update(ApprovalRequestMsg{Path: workspace, IsWorkspace: true, DoneCh: done})
+	if m.approvalModel == nil || !m.approvalIsWorkspace {
+		t.Fatal("workspace prompt was not rendered while yolo was active")
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("yolo answered workspace prompt: %#v", result)
+	default:
+	}
+	rendered := m.approvalModel.View().Content
+	if !strings.Contains(rendered, "Primary Workspace Access Request") || !strings.Contains(rendered, "Shell commands remain") || !strings.Contains(rendered, "separately controlled") {
+		t.Fatalf("workspace prompt wording = %q", rendered)
+	}
+}
+
 func pressPromptHistoryKey(t *testing.T, m *Model, msg tea.KeyPressMsg) *Model {
 	t.Helper()
 	updated, cmd := m.handleKeyMsg(msg)
@@ -1821,5 +1841,37 @@ func TestHandleKeyMsg_ShiftTabSkipsAutoWhenGuardianUnavailable(t *testing.T) {
 	}
 	if !m.yolo || !approvalMgr.YoloEnabled() {
 		t.Fatal("expected Shift+Tab to skip unavailable auto and enable yolo")
+	}
+}
+
+func TestHandleKeyMsg_ShiftTabResumesAutoAfterGuardianBreaker(t *testing.T) {
+	m := newTestChatModel(false)
+	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	approvalMgr.SetPolicyReviewFunc(func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+		return tools.PolicyDecision{Allowed: false, Rationale: "blocked"}, nil
+	}, nil)
+	m.SetApprovalManager(approvalMgr)
+	m.setApprovalMode(tools.ModeAuto)
+	for i := 0; i < 3; i++ {
+		_, _ = approvalMgr.CheckShellApproval(fmt.Sprintf("blocked %d", i), t.TempDir())
+	}
+	if got := m.currentApprovalMode(); got != tools.ModePrompt {
+		t.Fatalf("breaker effective mode = %v, want prompt", got)
+	}
+	if got := m.ApprovalModeRequested(); got != tools.ModeAuto {
+		t.Fatalf("breaker requested mode = %v, want auto", got)
+	}
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if got := m.currentApprovalMode(); got != tools.ModeAuto {
+		t.Fatalf("mode after first Shift+Tab = %v, want resumed auto", got)
+	}
+	if m.yolo || approvalMgr.YoloEnabled() {
+		t.Fatal("first Shift+Tab after breaker jumped directly to yolo")
+	}
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if got := m.currentApprovalMode(); got != tools.ModeYolo {
+		t.Fatalf("mode after second Shift+Tab = %v, want yolo", got)
 	}
 }

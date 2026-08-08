@@ -149,6 +149,21 @@ CREATE TABLE IF NOT EXISTS session_plans (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS session_workspace_grants (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    access TEXT NOT NULL CHECK (access IN ('read', 'write')),
+    provenance TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (session_id, id),
+    UNIQUE (session_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_workspace_grants_session
+    ON session_workspace_grants(session_id, created_at, id);
+
 CREATE TABLE IF NOT EXISTS session_redo (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     stack_pos INTEGER NOT NULL,
@@ -362,7 +377,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 45
+const schemaVersion = 46
 
 // migration represents a schema migration.
 type migration struct {
@@ -1242,6 +1257,33 @@ var migrations = []migration{
 					WHERE idempotency_key <> ''`,
 				`CREATE INDEX IF NOT EXISTS idx_session_branches_parent
 					ON session_branches(parent_session_id)`,
+			} {
+				if _, err := db.Exec(statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		version:     46,
+		description: "create session workspace grants",
+		up: func(db schemaExecutor) error {
+			for _, statement := range []string{
+				`CREATE TABLE IF NOT EXISTS session_workspace_grants (
+					session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+					id TEXT NOT NULL,
+					path TEXT NOT NULL,
+					access TEXT NOT NULL CHECK (access IN ('read', 'write')),
+					provenance TEXT NOT NULL,
+					rationale TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					PRIMARY KEY (session_id, id),
+					UNIQUE (session_id, path)
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_session_workspace_grants_session
+					ON session_workspace_grants(session_id, created_at, id)`,
 			} {
 				if _, err := db.Exec(statement); err != nil {
 					return err

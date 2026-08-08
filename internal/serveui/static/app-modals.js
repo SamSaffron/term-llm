@@ -427,15 +427,18 @@ const submitAskUserModal = async (cancelled = false) => {
 };
 
 // ===== Approval modal =====
-const openApprovalModal = (sessionId, approvalId, path, isShell, title, options) => {
-  state.approval = { sessionId, approvalId, path, isShell, title, options, selectedIndex: 0 };
+const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, title, options, resumeAutoAvailable = false) => {
+  state.approval = {
+    sessionId, approvalId, path, isShell, isWorkspace, title, options, selectedIndex: 0,
+    resumeAutoAvailable: Boolean(resumeAutoAvailable), resumeAuto: false
+  };
 
-  elements.approvalTitle.textContent = title || 'Access Request';
+  elements.approvalTitle.textContent = title || (isWorkspace ? 'Primary Workspace Access Request' : 'Access Request');
   elements.approvalPath.textContent = path || '';
   elements.approvalError.textContent = '';
   elements.approvalApproveBtn.disabled = false;
   elements.approvalDenyBtn.disabled = false;
-  elements.approvalApproveBtn.textContent = 'Approve';
+  elements.approvalApproveBtn.textContent = isWorkspace ? 'Allow workspace' : 'Approve';
   elements.approvalDenyBtn.textContent = 'Deny';
 
   // Build radio options as a vertical list
@@ -473,6 +476,31 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, title, options)
   });
   body.appendChild(group);
 
+  if (state.approval.resumeAutoAvailable) {
+    const resumeLabel = document.createElement('label');
+    resumeLabel.className = 'approval-option';
+    const resumeCheckbox = document.createElement('input');
+    resumeCheckbox.type = 'checkbox';
+    resumeCheckbox.name = 'resume_auto';
+    resumeCheckbox.checked = false;
+    resumeCheckbox.addEventListener('change', () => {
+      if (state.approval) state.approval.resumeAuto = Boolean(resumeCheckbox.checked);
+    });
+    const resumeCopy = document.createElement('div');
+    resumeCopy.className = 'approval-option-copy';
+    const resumeTitle = document.createElement('span');
+    resumeTitle.className = 'approval-option-title';
+    resumeTitle.textContent = 'Resume Guardian auto after this decision';
+    const resumeDescription = document.createElement('span');
+    resumeDescription.className = 'approval-option-desc';
+    resumeDescription.textContent = 'Start a fresh automatic-review epoch. Leave unchecked to keep auto suspended.';
+    resumeCopy.appendChild(resumeTitle);
+    resumeCopy.appendChild(resumeDescription);
+    resumeLabel.appendChild(resumeCheckbox);
+    resumeLabel.appendChild(resumeCopy);
+    body.appendChild(resumeLabel);
+  }
+
   elements.approvalModal.classList.remove('hidden');
   setTimeout(() => {
     const firstRadio = body.querySelector('input[type="radio"]');
@@ -505,7 +533,11 @@ const submitApprovalModal = async (denied = false) => {
   const denyOpt = prompt.options.find(o => o.choice === 'deny');
   const denyIndex = denyOpt ? denyOpt.index : prompt.options.length - 1;
   const choiceIndex = denied ? denyIndex : prompt.selectedIndex;
-  const body = { approval_id: prompt.approvalId, choice: choiceIndex };
+  const body = {
+    approval_id: prompt.approvalId,
+    choice: choiceIndex,
+    resume_auto: Boolean(prompt.resumeAutoAvailable && prompt.resumeAuto)
+  };
 
   try {
     const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/approval`, {

@@ -10,6 +10,7 @@ type sessionApprovalRequest struct {
 	ApprovalID string `json:"approval_id"`
 	Choice     *int   `json:"choice"`
 	Cancelled  bool   `json:"cancelled,omitempty"`
+	ResumeAuto bool   `json:"resume_auto,omitempty"`
 }
 
 func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -39,7 +40,7 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 	if req.Choice != nil {
 		choiceIndex = *req.Choice
 	}
-	err := rt.submitApproval(approvalID, choiceIndex, req.Cancelled)
+	err := rt.submitApproval(approvalID, choiceIndex, req.Cancelled, req.ResumeAuto)
 	if err != nil {
 		switch {
 		case errors.Is(err, errServeApprovalNotPending), errors.Is(err, errServeApprovalAnswered):

@@ -93,6 +93,83 @@ type Store interface {
 	Close() error
 }
 
+// WorkspaceAccess is the level of local filesystem authority granted to a
+// session workspace. Write access always implies read access.
+type WorkspaceAccess string
+
+const (
+	WorkspaceAccessRead  WorkspaceAccess = "read"
+	WorkspaceAccessWrite WorkspaceAccess = "write"
+)
+
+// WorkspaceGrant is a durable, session-scoped filesystem capability record.
+// Migration 46 stores additional grants plus the reserved primary decision row;
+// Session.CWD/WorktreeDir remains the separate primary proposal binding.
+type WorkspaceGrant struct {
+	ID         string
+	Path       string
+	Access     WorkspaceAccess
+	Provenance string
+	Rationale  string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// WorkspaceGrantStore is an optional Store capability. Custom and mock stores
+// that do not implement it remain usable; primary confirmations and dynamic
+// grants then live only for the current runtime.
+type WorkspaceGrantStore interface {
+	ListWorkspaceGrants(ctx context.Context, sessionID string) ([]WorkspaceGrant, error)
+	SaveWorkspaceGrant(ctx context.Context, sessionID string, grant WorkspaceGrant) error
+	DeleteWorkspaceGrant(ctx context.Context, sessionID, grantID string) error
+}
+
+// AsWorkspaceGrantStore resolves the optional capability through term-llm's
+// logging decorator without making an unsupported wrapped store appear durable.
+func AsWorkspaceGrantStore(store Store) (WorkspaceGrantStore, bool) {
+	if store == nil {
+		return nil, false
+	}
+	if logging, ok := store.(*LoggingStore); ok {
+		underlying, supported := AsWorkspaceGrantStore(logging.Store)
+		if !supported {
+			return nil, false
+		}
+		return &loggingWorkspaceGrantStore{logger: logging, store: underlying}, true
+	}
+	workspaceStore, ok := store.(WorkspaceGrantStore)
+	return workspaceStore, ok
+}
+
+type loggingWorkspaceGrantStore struct {
+	logger *LoggingStore
+	store  WorkspaceGrantStore
+}
+
+func (s *loggingWorkspaceGrantStore) ListWorkspaceGrants(ctx context.Context, sessionID string) ([]WorkspaceGrant, error) {
+	grants, err := s.store.ListWorkspaceGrants(ctx, sessionID)
+	if err != nil {
+		s.logger.logOnce("ListWorkspaceGrants", err)
+	}
+	return grants, err
+}
+
+func (s *loggingWorkspaceGrantStore) SaveWorkspaceGrant(ctx context.Context, sessionID string, grant WorkspaceGrant) error {
+	err := s.store.SaveWorkspaceGrant(ctx, sessionID, grant)
+	if err != nil {
+		s.logger.logOnce("SaveWorkspaceGrant", err)
+	}
+	return err
+}
+
+func (s *loggingWorkspaceGrantStore) DeleteWorkspaceGrant(ctx context.Context, sessionID, grantID string) error {
+	err := s.store.DeleteWorkspaceGrant(ctx, sessionID, grantID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logger.logOnce("DeleteWorkspaceGrant", err)
+	}
+	return err
+}
+
 // TranscriptRevisionWriter reports the exact revision committed by a message
 // mutation. Serve response handoff uses this optional capability instead of a
 // session-wide post-write revision sample.
