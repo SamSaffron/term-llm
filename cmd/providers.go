@@ -136,6 +136,13 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: true,
 		description:        "OpenCode Zen API (free tier available)",
 	},
+	"opencode-go": {
+		credential:         "api_key",
+		envVar:             "OPENCODE_API_KEY",
+		requiresKey:        true,
+		supportsListModels: true,
+		description:        "OpenCode Go subscription (dynamic Chat Completions, Responses, and Messages routing)",
+	},
 	"claude-bin": {
 		credential:         "none",
 		envVar:             "",

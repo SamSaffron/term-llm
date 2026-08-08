@@ -1324,6 +1324,24 @@ func (m *Model) baseModelAndEffort(provider, model string) (string, string) {
 	if base, effort, _, ok := m.configuredModelEffort(provider, model); ok {
 		return base, effort
 	}
+	model = strings.TrimSpace(model)
+	// Dynamic provider metadata must be consulted exact-first. A natural model
+	// ID can itself end in an effort word (qwen3.8-max), while its variants add
+	// another suffix (qwen3.8-max-high and qwen3.8-max-max).
+	for _, metadata := range m.modelMetadata {
+		base := strings.TrimSpace(metadata.ID)
+		if strings.EqualFold(model, base) && len(metadata.ReasoningEfforts) > 0 {
+			return base, ""
+		}
+	}
+	for _, metadata := range m.modelMetadata {
+		base := strings.TrimSpace(metadata.ID)
+		for _, effort := range normalizedModelReasoningEfforts(metadata.ReasoningEfforts) {
+			if strings.EqualFold(model, base+"-"+effort) {
+				return base, effort
+			}
+		}
+	}
 	return llm.BaseModelAndEffortForProvider(provider, model)
 }
 
@@ -2073,7 +2091,7 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 		if m.fastMetadataLoading {
 			return m.showFooterMuted("Loading model metadata…")
 		}
-		if cmd := m.loadChatGPTModelsCmd(); cmd != nil {
+		if cmd := m.loadModelMetadataCmd(); cmd != nil {
 			return m.showFooterMutedWithCmd("Loading model metadata…", cmd)
 		}
 		return m.showFooterError("Could not load model metadata; fast support unknown.")
@@ -3191,6 +3209,14 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	m.providerKey = providerName
 	m.modelName = modelName
 
+	// Cached model capabilities are provider-scoped. Never carry one provider's
+	// metadata into another provider's effort parser.
+	if !strings.EqualFold(oldProvider, providerName) {
+		m.modelMetadata = nil
+		m.fastMetadataLoaded = false
+		m.fastMetadataStale = false
+	}
+
 	// Recompute fast/service-tier state for the new provider. /fast overrides are
 	// per-provider-session state, so switching models/providers returns to config.
 	var fastMetadataCmd tea.Cmd
@@ -3198,8 +3224,8 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	m.fastProviderDefault = m.configuredFastDefault()
 	m.pendingFastToggle = false
 	m.refreshEffectiveFastMode()
-	if m.canUseFastMetadata() && (!m.fastMetadataLoaded || m.fastMetadataStale) {
-		fastMetadataCmd = m.loadChatGPTModelsCmd()
+	if m.canLoadModelMetadata() && (!m.fastMetadataLoaded || m.fastMetadataStale) {
+		fastMetadataCmd = m.loadModelMetadataCmd()
 	} else if !m.supportsServiceTierToggle() {
 		m.fastMode = false
 	}

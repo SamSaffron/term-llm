@@ -453,6 +453,7 @@ func TestInferProviderType(t *testing.T) {
 		{"openrouter", "", ProviderTypeOpenRouter},
 		{"nearai", "", ProviderTypeNearAI},
 		{"zen", "", ProviderTypeZen},
+		{"opencode-go", "", ProviderTypeOpenCodeGo},
 		{"claude-bin", "", ProviderTypeClaudeBin},
 		{"grok-bin", "", ProviderTypeGrokBin},
 		{"cursor-bin", "", ProviderTypeCursorBin},
@@ -534,6 +535,26 @@ func TestDescribeCredentialSource_ZenNoKey(t *testing.T) {
 	}
 	if !strings.Contains(source, "free tier") {
 		t.Fatalf("source=%q, expected to mention free tier", source)
+	}
+}
+
+func TestResolveProviderCredentialsOpenCodeGoTrimsKey(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "  go-env-key\n")
+	cfg := &ProviderConfig{Type: ProviderTypeOpenCodeGo}
+	if err := resolveProviderCredentials("opencode-go", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResolvedAPIKey != "go-env-key" {
+		t.Fatalf("ResolvedAPIKey = %q, want trimmed key", cfg.ResolvedAPIKey)
+	}
+}
+
+func TestDescribeCredentialSource_OpenCodeGo(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "go-env-key")
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("opencode-go", cfg)
+	if !found || source != "OPENCODE_API_KEY env" {
+		t.Fatalf("source/found = %q/%v, want OPENCODE_API_KEY env/true", source, found)
 	}
 }
 

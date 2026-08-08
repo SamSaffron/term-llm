@@ -159,6 +159,11 @@ func TestProviderModelIDsMatchEntries(t *testing.T) {
 	t.Parallel()
 
 	for provider, entries := range ProviderModels {
+		// These providers intentionally prefer account-scoped live caches over
+		// their static starter entries.
+		if provider == "copilot" || provider == "cursor-bin" || provider == "opencode-go" {
+			continue
+		}
 		ids := ProviderModelIDs(provider)
 		if len(ids) != len(entries) {
 			t.Errorf("provider %q: ProviderModelIDs returned %d items, entries has %d",

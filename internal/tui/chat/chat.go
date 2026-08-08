@@ -957,6 +957,12 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 			fastMetadataLoaded = true
 			fastMetadataStale = !fresh
 		}
+	} else if providerType == config.ProviderTypeOpenCodeGo {
+		if cached, fresh, err := llm.CachedOpenCodeGoModels(); err == nil {
+			modelMetadata = cached
+			fastMetadataLoaded = true
+			fastMetadataStale = !fresh
+		}
 	}
 
 	titleMode, _ := ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
@@ -1655,7 +1661,7 @@ func (m *Model) Init() tea.Cmd {
 
 	baseCmds := []tea.Cmd{textarea.Blink, m.spinner.Tick}
 	if (!m.fastMetadataLoaded || m.fastMetadataStale) && !m.fastMetadataLoading {
-		if cmd := m.loadChatGPTModelsCmd(); cmd != nil {
+		if cmd := m.loadModelMetadataCmd(); cmd != nil {
 			baseCmds = append(baseCmds, cmd)
 		}
 	}

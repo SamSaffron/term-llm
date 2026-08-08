@@ -1258,6 +1258,28 @@ func TestCycleEffortShortcutPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestCycleEffortShortcutHandlesBaseModelEndingInMax(t *testing.T) {
+	m, _ := newEffortCmdTestModel("opencode-go", "qwen3.8-max")
+	prepareEffortShortcutTestModel(m)
+	m.modelMetadata = []llm.ModelInfo{{
+		ID:               "qwen3.8-max",
+		ReasoningEfforts: []string{"high", "max"},
+	}}
+	m.fastMetadataLoaded = true
+
+	rm := m
+	for i, want := range []string{"qwen3.8-max-high", "qwen3.8-max-max", "qwen3.8-max"} {
+		result, _ := rm.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+		rm = result.(*Model)
+		if rm.modelName != want {
+			t.Fatalf("Ctrl-R %d model = %q, want %q; footer=%q", i+1, rm.modelName, want, rm.footerMessage)
+		}
+		if strings.Contains(rm.footerMessage, "does not expose switchable reasoning efforts") {
+			t.Fatalf("Ctrl-R %d lost qwen reasoning metadata: %q", i+1, rm.footerMessage)
+		}
+	}
+}
+
 func TestCycleEffortShortcutUsesConfiguredCycleWithoutDefaultState(t *testing.T) {
 	const model = "deepseek-ai/DeepSeek-V4-Flash"
 	m, _ := newEffortCmdTestModel("cdck_deepseek", model)

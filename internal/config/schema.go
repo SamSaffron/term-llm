@@ -458,6 +458,10 @@ var providerSpecs = []ProviderSpec{
 		Defaults: []DefaultField{{"model", "minimax-m2.5-free"}, {"fast_model", "minimax-m2.5-free"}},
 	},
 	{
+		Name: "opencode-go", Type: ProviderTypeOpenCodeGo, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Defaults: []DefaultField{{"model", "glm-5.2"}, {"fast_model", "deepseek-v4-flash"}},
+	},
+	{
 		Name: "copilot", Type: ProviderTypeCopilot,
 		Defaults: []DefaultField{{"model", "gpt-4.1"}, {"fast_model", "gpt-4.1"}},
 	},

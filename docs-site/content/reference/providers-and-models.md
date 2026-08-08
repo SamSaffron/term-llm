@@ -53,6 +53,17 @@ Most providers use API keys via environment variables. Some use OAuth credential
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `vllm` / custom `type: vllm` entries | `VLLM_API_KEY` or `<PROVIDER_NAME>_API_KEY` | Optional for unauthenticated local servers; vLLM OpenAI-compatible API plus reasoning controls for supported chat templates |
 | `zen` | `ZEN_API_KEY` optional | empty is valid for free tier |
+| `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; models dynamically route across Chat Completions, Responses, and Anthropic Messages |
+
+### OpenCode Go
+
+```bash
+export OPENCODE_API_KEY=your-key
+term-llm models --provider opencode-go
+term-llm ask --provider opencode-go:glm-5.2 "question"
+```
+
+OpenCode Go's model set changes frequently. term-llm merges the live Go `/models` availability list with OpenCode's model catalog for protocol, limits, pricing, and reasoning metadata, then caches the result for five minutes. Models marked for `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, and `@ai-sdk/anthropic` are sent to the Go Chat Completions, Responses, and Messages endpoints respectively. Effort-based models expose their advertised suffixes, while budget-based Anthropic-compatible models such as `qwen3.8-max` expose `-high` and `-max` reasoning variants. A newly available model without catalog metadata falls back to Chat Completions until its metadata arrives.
 
 Examples:
 

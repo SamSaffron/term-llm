@@ -251,12 +251,19 @@ func (p *AnthropicProvider) requestModelAndEffort(req Request) (model string, ef
 }
 
 func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (Stream, error) {
+	model, reasoningEffort := p.requestModelAndEffort(req)
+	return p.streamStandardForModel(ctx, req, model, reasoningEffort, p.thinkingBudget, p.useAdaptive, true)
+}
+
+func (p *AnthropicProvider) streamStandardForModel(ctx context.Context, req Request, model, reasoningEffort string, thinkingBudget int64, useAdaptive, includeOutputEffort bool) (Stream, error) {
+	if req.MaxOutputTokens > 0 && thinkingBudget >= int64(req.MaxOutputTokens) {
+		thinkingBudget = int64(req.MaxOutputTokens - 1)
+	}
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		system, messages := buildAnthropicMessages(req.Messages)
 		applyLastMessageCacheControl(messages)
 		accumulator := newToolCallAccumulator()
 
-		model, reasoningEffort := p.requestModelAndEffort(req)
 		params := anthropic.MessageNewParams{
 			Model:     anthropic.Model(model),
 			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
@@ -270,25 +277,31 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		}
 		if len(req.Tools) > 0 {
 			params.Tools = buildAnthropicTools(req.Tools)
-			if p.thinkingBudget == 0 && !p.useAdaptive {
+			if thinkingBudget == 0 && !useAdaptive {
 				params.ToolChoice = buildAnthropicToolChoice(req.ToolChoice, req.ParallelToolCalls)
 			}
 		}
 
-		if p.useAdaptive {
+		if useAdaptive {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
 			params.Thinking = anthropic.ThinkingConfigParamUnion{
 				OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
 			}
-		} else if p.thinkingBudget > 0 {
-			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
+		} else if thinkingBudget > 0 {
+			fallbackMaxTokens := 16000
+			if thinkingBudget >= int64(fallbackMaxTokens) {
+				fallbackMaxTokens = int(thinkingBudget + 1)
+			}
+			params.MaxTokens = maxTokens(req.MaxOutputTokens, fallbackMaxTokens)
 			params.Thinking = anthropic.ThinkingConfigParamUnion{
 				OfEnabled: &anthropic.ThinkingConfigEnabledParam{
-					BudgetTokens: p.thinkingBudget,
+					BudgetTokens: thinkingBudget,
 				},
 			}
-			params.OutputConfig = anthropic.OutputConfigParam{
-				Effort: anthropic.OutputConfigEffortMax,
+			if includeOutputEffort {
+				params.OutputConfig = anthropic.OutputConfigParam{
+					Effort: anthropic.OutputConfigEffortMax,
+				}
 			}
 		}
 		if eff := strings.TrimSpace(reasoningEffort); eff != "" {

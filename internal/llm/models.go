@@ -130,6 +130,8 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "trinity-large-preview-free", InputLimit: 96_000, OutputLimit: 32_000},
 		{ID: "qwen3.6-plus-free", InputLimit: 900_000, OutputLimit: 100_000},
 	},
+	// OpenCode Go models are populated dynamically from its merged live catalog.
+	"opencode-go": {},
 	"claude-bin": {
 		// Aliases resolved internally by claude-bin provider
 		{ID: "opus", ReasoningEfforts: claudeBinOpusEffortVariants},
@@ -299,6 +301,8 @@ func ProviderModelIDs(provider string) []string {
 	switch resolveProviderType(provider) {
 	case "copilot":
 		return GetCachedCopilotModels()
+	case "opencode-go":
+		return GetCachedOpenCodeGoModels()
 	case "cursor-bin":
 		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
 			return ids
@@ -440,6 +444,8 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 		if strings.HasPrefix(nameLower, "gpt-5") && !strings.HasSuffix(nameLower, "-codex-max") {
 			return cloneEfforts(defaultEffortVariants)
 		}
+	case "opencode-go":
+		return opencodeGoCachedReasoningEfforts(model)
 	case "anthropic", "bedrock":
 		if isClaudeOpusModelName(nameLower) || isClaudeFableModelName(nameLower) {
 			return cloneEfforts(claudeBinOpusEffortVariants)
@@ -777,7 +783,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "opencode-go", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

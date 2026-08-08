@@ -315,7 +315,11 @@ func TestWorkspaceApprovalOptionsAreSessionScopedAndShellExplicit(t *testing.T) 
 			t.Fatalf("option omits shell boundary: %#v", option)
 		}
 	}
-	model := NewEmbeddedWorkspaceApprovalModel(workspace, 100)
+	width := 100
+	if pathWidth := len(workspace) + 10; pathWidth > width {
+		width = pathWidth
+	}
+	model := NewEmbeddedWorkspaceApprovalModel(workspace, width)
 	rendered := model.View().Content
 	for _, want := range []string{"Primary Workspace Access Request", workspace, "this session's canonical workspace read/write", "Shell commands remain", "separately controlled"} {
 		if !strings.Contains(rendered, want) {

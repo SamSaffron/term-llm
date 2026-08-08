@@ -314,6 +314,15 @@ func InputLimitForProviderModel(providerName, model string) int {
 		return configInputLimitForProvider(providerName, model)
 	}
 
+	// OpenCode Go model limits are dynamic and provider-specific. Prefer the
+	// merged live catalog and avoid direct-provider prefix assumptions.
+	if providerType == string(config.ProviderTypeOpenCodeGo) {
+		if result := opencodeGoCachedInputLimit(model); result > 0 {
+			return result
+		}
+		return configInputLimitForProvider(providerName, model)
+	}
+
 	// 1. Explicit provider-scoped limits from ProviderModels
 	if v, ok := explicitProviderInput[configKey(providerType, model)]; ok {
 		return v

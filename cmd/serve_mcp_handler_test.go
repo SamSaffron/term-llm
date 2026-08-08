@@ -29,6 +29,15 @@ func TestMain(m *testing.M) {
 		runServeMCPHandlerTestServer()
 		os.Exit(0)
 	}
+	// macOS exposes /var as a symlink to /private/var. Production workspace
+	// paths are symlink-resolved, so create test temp directories beneath the
+	// canonical root as well.
+	if tempRoot, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		if err := os.Setenv("TMPDIR", filepath.Clean(tempRoot)); err != nil {
+			fmt.Fprintf(os.Stderr, "set canonical TMPDIR: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	for key, value := range map[string]string{
 		"GIT_CONFIG_GLOBAL":   "/dev/null",
 		"GIT_CONFIG_NOSYSTEM": "1",

@@ -58,6 +58,7 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeOpenAICompat: true,
 	config.ProviderTypeVLLM:         true,
 	config.ProviderTypeZen:          true,
+	config.ProviderTypeOpenCodeGo:   true,
 	config.ProviderTypeXAI:          true,
 	config.ProviderTypeVenice:       true,
 	config.ProviderTypeNearAI:       true,
@@ -165,6 +166,14 @@ func runModels(cmd *cobra.Command, args []string) error {
 		lister = llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName)
 	case config.ProviderTypeZen:
 		lister = llm.NewZenProvider(providerCfg.ResolvedAPIKey, "")
+	case config.ProviderTypeOpenCodeGo:
+		apiKey := providerCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENCODE_API_KEY")
+		}
+		// The Go model and metadata endpoints are public; a key is required only
+		// when the returned provider is used for inference.
+		lister = llm.NewOpenCodeGoProvider(apiKey, providerCfg.Model)
 	case config.ProviderTypeXAI:
 		apiKey := providerCfg.ResolvedAPIKey
 		if apiKey == "" {

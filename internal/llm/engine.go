@@ -608,7 +608,25 @@ func (e *Engine) ConfigureContextManagement(provider Provider, providerName, mod
 
 func refreshDynamicModelLimitsForContext(provider Provider, providerName, modelName string) {
 	providerType := resolveProviderType(providerName)
-	if providerType != "copilot" || strings.TrimSpace(modelName) == "" {
+	if (providerType != "copilot" && providerType != "opencode-go") || strings.TrimSpace(modelName) == "" {
+		return
+	}
+	timeout := 30 * time.Second
+	if providerType == "opencode-go" {
+		timeout = opencodeGoRefreshTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if providerType == "opencode-go" {
+		refresher, ok := provider.(interface {
+			RefreshModelMetadata(context.Context) error
+		})
+		if !ok {
+			return
+		}
+		if err := refresher.RefreshModelMetadata(ctx); err != nil {
+			slog.Debug("failed to refresh dynamic model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
+		}
 		return
 	}
 	lister, ok := provider.(interface {
@@ -617,14 +635,14 @@ func refreshDynamicModelLimitsForContext(provider Provider, providerName, modelN
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	models, err := lister.ListModels(ctx)
 	if err != nil {
-		slog.Debug("failed to refresh Copilot model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
+		slog.Debug("failed to refresh dynamic model metadata for context limits", "provider", providerName, "model", modelName, "error", err)
 		return
 	}
-	RefreshCopilotCacheSync(models)
+	if providerType == "copilot" {
+		RefreshCopilotCacheSync(models)
+	}
 }
 
 // InputLimit returns the configured input token limit (0 if unknown).

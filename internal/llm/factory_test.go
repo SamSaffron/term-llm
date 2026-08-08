@@ -176,6 +176,38 @@ func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
 	})
 }
 
+func TestCreateProviderFromConfigOpenCodeGo(t *testing.T) {
+	provider, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
+		Type:           config.ProviderTypeOpenCodeGo,
+		ResolvedAPIKey: "test-key",
+		Model:          "glm-5.2",
+	})
+	if err != nil {
+		t.Fatalf("createProviderFromConfig: %v", err)
+	}
+	if _, ok := provider.(*OpenCodeGoProvider); !ok {
+		t.Fatalf("provider type = %T, want *OpenCodeGoProvider", provider)
+	}
+}
+
+func TestCreateProviderFromConfigOpenCodeGoRejectsURLOverrides(t *testing.T) {
+	_, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
+		Type:           config.ProviderTypeOpenCodeGo,
+		ResolvedAPIKey: "test-key",
+		BaseURL:        "https://example.test/v1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support base_url or url overrides") {
+		t.Fatalf("error = %v, want URL override guidance", err)
+	}
+}
+
+func TestCreateProviderFromConfigOpenCodeGoRequiresKey(t *testing.T) {
+	_, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{Type: config.ProviderTypeOpenCodeGo})
+	if err == nil || !strings.Contains(err.Error(), "OPENCODE_API_KEY") {
+		t.Fatalf("error = %v, want OPENCODE_API_KEY guidance", err)
+	}
+}
+
 func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T) {
 	t.Parallel()
 

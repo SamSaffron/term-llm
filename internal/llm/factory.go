@@ -196,6 +196,12 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			// zen can work without API key (free tier)
 			provider := NewZenProvider("", model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeOpenCodeGo:
+			apiKey := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", name)
+			}
+			return WrapWithRetry(NewOpenCodeGoProvider(apiKey, model), DefaultRetryConfig()), nil
 		case config.ProviderTypeBedrock:
 			provider, err := NewBedrockProvider(model, "", "", "", "", "", nil)
 			if err != nil {
@@ -351,6 +357,12 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 		case config.ProviderTypeZen:
 			// zen can work without API key (free tier)
 			return NewZenProvider("", ""), nil
+		case config.ProviderTypeOpenCodeGo:
+			apiKey := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", cfg.DefaultProvider)
+			}
+			return NewOpenCodeGoProvider(apiKey, ""), nil
 		case config.ProviderTypeBedrock:
 			// bedrock uses AWS credential chain (env vars, ~/.aws/credentials, instance roles)
 			return NewBedrockProvider("", "", "", "", "", "", nil)
@@ -462,6 +474,16 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	case config.ProviderTypeZen:
 		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+
+	case config.ProviderTypeOpenCodeGo:
+		if strings.TrimSpace(cfg.BaseURL) != "" || strings.TrimSpace(cfg.URL) != "" {
+			return nil, fmt.Errorf("provider %q does not support base_url or url overrides", name)
+		}
+		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", name)
+		}
+		return NewOpenCodeGoProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeXAI:
 		apiKey := cfg.ResolvedAPIKey

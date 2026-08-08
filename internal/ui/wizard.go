@@ -113,6 +113,12 @@ func detectAvailableProviders() []providerOption {
 			available: true, // Always available
 			hint:      "",
 		},
+		{
+			name:      "OpenCode Go - OPENCODE_API_KEY",
+			value:     "opencode-go",
+			available: os.Getenv("OPENCODE_API_KEY") != "",
+			hint:      "set OPENCODE_API_KEY",
+		},
 	}
 
 	return options

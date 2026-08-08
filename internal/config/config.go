@@ -27,6 +27,7 @@ const (
 	ProviderTypeGeminiCLI    ProviderType = "gemini-cli"
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
 	ProviderTypeZen          ProviderType = "zen"
+	ProviderTypeOpenCodeGo   ProviderType = "opencode-go"
 	ProviderTypeClaudeBin    ProviderType = "claude-bin"
 	ProviderTypeGrokBin      ProviderType = "grok-bin"
 	ProviderTypeCursorBin    ProviderType = "cursor-bin"
@@ -43,25 +44,26 @@ const (
 
 // builtInProviderTypes maps known provider names to their types
 var builtInProviderTypes = map[string]ProviderType{
-	"anthropic":  ProviderTypeAnthropic,
-	"openai":     ProviderTypeOpenAI,
-	"chatgpt":    ProviderTypeChatGPT,
-	"copilot":    ProviderTypeCopilot,
-	"gemini":     ProviderTypeGemini,
-	"gemini-cli": ProviderTypeGeminiCLI,
-	"openrouter": ProviderTypeOpenRouter,
-	"zen":        ProviderTypeZen,
-	"claude-bin": ProviderTypeClaudeBin,
-	"grok-bin":   ProviderTypeGrokBin,
-	"cursor-bin": ProviderTypeCursorBin,
-	"agy-bin":    ProviderTypeAgyBin,
-	"vllm":       ProviderTypeVLLM,
-	"xai":        ProviderTypeXAI,
-	"venice":     ProviderTypeVenice,
-	"nearai":     ProviderTypeNearAI,
-	"sambanova":  ProviderTypeSambaNova,
-	"bedrock":    ProviderTypeBedrock,
-	"ollama":     ProviderTypeOllama,
+	"anthropic":   ProviderTypeAnthropic,
+	"openai":      ProviderTypeOpenAI,
+	"chatgpt":     ProviderTypeChatGPT,
+	"copilot":     ProviderTypeCopilot,
+	"gemini":      ProviderTypeGemini,
+	"gemini-cli":  ProviderTypeGeminiCLI,
+	"openrouter":  ProviderTypeOpenRouter,
+	"zen":         ProviderTypeZen,
+	"opencode-go": ProviderTypeOpenCodeGo,
+	"claude-bin":  ProviderTypeClaudeBin,
+	"grok-bin":    ProviderTypeGrokBin,
+	"cursor-bin":  ProviderTypeCursorBin,
+	"agy-bin":     ProviderTypeAgyBin,
+	"vllm":        ProviderTypeVLLM,
+	"xai":         ProviderTypeXAI,
+	"venice":      ProviderTypeVenice,
+	"nearai":      ProviderTypeNearAI,
+	"sambanova":   ProviderTypeSambaNova,
+	"bedrock":     ProviderTypeBedrock,
+	"ollama":      ProviderTypeOllama,
 }
 
 // InferProviderType returns the provider type for a given provider name
@@ -1837,6 +1839,12 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		}
 		// Empty API key is valid for free tier
 
+	case ProviderTypeOpenCodeGo:
+		cfg.ResolvedAPIKey = strings.TrimSpace(expandEnv(cfg.APIKey))
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = strings.TrimSpace(os.Getenv("OPENCODE_API_KEY"))
+		}
+
 	case ProviderTypeXAI:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
 		if cfg.ResolvedAPIKey == "" {
@@ -1999,6 +2007,8 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 			return "none (free tier)", true // Zen works without a key
 		}
 		return source, found
+	case ProviderTypeOpenCodeGo:
+		return describeEnvKeyCredential(cfg, "OPENCODE_API_KEY")
 	case ProviderTypeXAI:
 		return describeEnvKeyCredential(cfg, "XAI_API_KEY")
 	case ProviderTypeVenice:

@@ -197,6 +197,38 @@ func (r *RetryProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	return nil, ErrListModelsUnsupported
 }
 
+func (r *RetryProvider) ListModelsWithFreshness(ctx context.Context) ([]ModelInfo, bool, error) {
+	lister, ok := r.inner.(interface {
+		ListModelsWithFreshness(context.Context) ([]ModelInfo, bool, error)
+	})
+	if !ok {
+		models, err := r.ListModels(ctx)
+		return models, err == nil, err
+	}
+	type result struct {
+		models []ModelInfo
+		fresh  bool
+	}
+	loaded, err := retryCall(ctx, r.config, func() (result, error) {
+		models, fresh, err := lister.ListModelsWithFreshness(ctx)
+		return result{models: models, fresh: fresh}, err
+	}, nil)
+	return loaded.models, loaded.fresh, err
+}
+
+func (r *RetryProvider) RefreshModelMetadata(ctx context.Context) error {
+	refresher, ok := r.inner.(interface {
+		RefreshModelMetadata(context.Context) error
+	})
+	if !ok {
+		return ErrListModelsUnsupported
+	}
+	_, err := retryCall(ctx, r.config, func() (struct{}, error) {
+		return struct{}{}, refresher.RefreshModelMetadata(ctx)
+	}, nil)
+	return err
+}
+
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	config := normalizeRetryConfig(r.config)
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {

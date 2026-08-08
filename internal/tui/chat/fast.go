@@ -48,6 +48,18 @@ func (m *Model) supportsServiceTierToggle() bool {
 	}
 }
 
+func (m *Model) canLoadModelMetadata() bool {
+	if m == nil {
+		return false
+	}
+	switch m.providerType() {
+	case config.ProviderTypeChatGPT, config.ProviderTypeOpenCodeGo:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Model) canUseFastMetadata() bool {
 	return m != nil && m.isChatGPTProvider()
 }
@@ -111,8 +123,8 @@ func (m *Model) currentServiceTier() (string, bool) {
 	}
 }
 
-func (m *Model) loadChatGPTModelsCmd() tea.Cmd {
-	if m == nil || !m.canUseFastMetadata() || m.provider == nil {
+func (m *Model) loadModelMetadataCmd() tea.Cmd {
+	if m == nil || !m.canLoadModelMetadata() || m.provider == nil {
 		return nil
 	}
 	m.fastMetadataLoading = true
