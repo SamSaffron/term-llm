@@ -84,6 +84,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("provider %q: %w", providerName, err)
 		}
 		providerCfg = cfg.Providers[providerName]
+		if err := providerCfg.ResolveForInference(); err != nil {
+			return fmt.Errorf("provider %q: %w", providerName, err)
+		}
 	}
 
 	// Infer provider type - only use config type if provider is configured
@@ -119,7 +122,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	var lister ModelLister
 	switch providerType {
 	case config.ProviderTypeAnthropic:
-		provider, err := llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials)
+		provider, err := llm.NewAnthropicProviderWithBaseURL(providerCfg.ResolvedAPIKey, providerCfg.Model, providerCfg.Credentials, providerCfg.BaseURL)
 		if err != nil {
 			return fmt.Errorf("anthropic: %w", err)
 		}

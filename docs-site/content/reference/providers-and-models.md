@@ -63,6 +63,21 @@ term-llm ask --provider copilot "question"
 term-llm ask --provider gemini-cli "question"
 ```
 
+### Anthropic-compatible endpoints
+
+Use `type: anthropic` with `base_url` to point the native Anthropic protocol provider at a compatible gateway or self-hosted endpoint:
+
+```yaml
+providers:
+  custom-anthropic:
+    type: anthropic
+    base_url: https://gateway.example.com/anthropic
+    api_key: ${CUSTOM_ANTHROPIC_API_KEY}
+    model: custom-model
+```
+
+The Anthropic SDK appends paths such as `/v1/messages` and `/v1/models` to `base_url`. The field supports the same lazy `srv://` and `$()` endpoint resolution as `url`. Omit `base_url` to use Anthropic's standard API endpoint.
+
 ## WebSocket defaults
 
 The built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default. This improves latency in agentic/tool-heavy runs by reusing one connection and continuing compatible turns with `previous_response_id` plus only new input. If setup fails before streaming starts, term-llm falls back to HTTP/SSE; if a WebSocket continuation rejects the previous response ID, it retries once with full input.
@@ -228,7 +243,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | Field | Type | Description |
 |---|---|---|
 | `type` | string | Use `openai_compatible` for generic custom providers, or `vllm` for vLLM servers that should receive reasoning controls for Qwen/DeepSeek-style chat templates. Inferred automatically for known names like `ollama`, `cerebras`, `groq`, and `vllm`. |
-| `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. |
+| `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. Supports `srv://` and `$()` resolution. |
 | `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
 | `model` | string | Default model name. For configured model objects, this may be either the upstream `id` or the friendly `alias`. |

@@ -115,6 +115,12 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 		baseURL := cfg.Embed.Ollama.BaseURL
 		if baseURL == "" {
 			baseURL = config.DefaultEmbedOllamaBaseURL
+		} else {
+			var err error
+			baseURL, err = config.ResolveValue(baseURL)
+			if err != nil {
+				return nil, fmt.Errorf("embed.ollama.base_url: %w", err)
+			}
 		}
 		p := NewOllamaProvider(baseURL)
 		if model != "" {

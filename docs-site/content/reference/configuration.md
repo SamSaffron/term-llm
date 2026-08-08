@@ -717,7 +717,7 @@ providers:
     api_key: "op://Infrastructure/vLLM Cluster/credential?account=company.1password.com"
 ```
 
-These values are resolved lazily when term-llm actually needs them.
+These values are resolved lazily when term-llm actually needs them. Endpoint resolution applies to both provider `url` and `base_url`; `embed.ollama.base_url` uses the same resolver when the embedding provider is created.
 
 ## WebRTC direct routing config
 

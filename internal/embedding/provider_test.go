@@ -7,6 +7,23 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestNewEmbeddingProviderResolvesOllamaBaseURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Embed.Ollama.BaseURL = "$(printf https://ollama.example.test)"
+
+	provider, err := NewEmbeddingProvider(cfg, "ollama")
+	if err != nil {
+		t.Fatalf("NewEmbeddingProvider: %v", err)
+	}
+	ollama, ok := provider.(*OllamaProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *OllamaProvider", provider)
+	}
+	if want := "https://ollama.example.test"; ollama.baseURL != want {
+		t.Fatalf("baseURL = %q, want %q", ollama.baseURL, want)
+	}
+}
+
 func TestCosineSimilarity(t *testing.T) {
 	tests := []struct {
 		name     string

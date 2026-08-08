@@ -1,6 +1,10 @@
 package llm
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -61,6 +65,115 @@ func TestNewProviderByNameCursorBinNeedsNoAPIKey(t *testing.T) {
 	if provider.Credential() != "cursor-bin" {
 		t.Fatalf("credential = %q, want cursor-bin", provider.Credential())
 	}
+}
+
+func TestCreateProviderFromConfigAnthropicCustomBaseURL(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-custom-key")
+
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if got := r.Header.Get("X-Api-Key"); got != "sk-custom-key" {
+			t.Errorf("X-Api-Key = %q, want %q", got, "sk-custom-key")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[],"has_more":false}`)
+	}))
+	defer ts.Close()
+
+	provider, err := createProviderFromConfig("custom-anthropic", &config.ProviderConfig{
+		Type:    config.ProviderTypeAnthropic,
+		BaseURL: ts.URL + "/proxy",
+		Model:   "custom-model",
+	})
+	if err != nil {
+		t.Fatalf("createProviderFromConfig: %v", err)
+	}
+	anthropicProvider, ok := provider.(*AnthropicProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *AnthropicProvider", provider)
+	}
+	if _, err := anthropicProvider.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if gotPath != "/proxy/v1/models" {
+		t.Fatalf("request path = %q, want %q", gotPath, "/proxy/v1/models")
+	}
+}
+
+func TestCreateProviderFromConfigRejectsInvalidAnthropicBaseURL(t *testing.T) {
+	_, err := createProviderFromConfig("custom-anthropic", &config.ProviderConfig{
+		Type:           config.ProviderTypeAnthropic,
+		BaseURL:        "gateway.example.test/anthropic",
+		ResolvedAPIKey: "sk-custom-key",
+	})
+	if err == nil || !strings.Contains(err.Error(), "must include scheme and host") {
+		t.Fatalf("error = %v, want invalid base_url guidance", err)
+	}
+}
+
+func TestCreateProviderFromConfigRoutesLazyBaseURLs(t *testing.T) {
+	t.Run("openai compatible appends chat path", func(t *testing.T) {
+		var gotPath string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"choices":[]}`)
+		}))
+		defer ts.Close()
+
+		cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+			"custom": {
+				Type:    config.ProviderTypeOpenAICompat,
+				BaseURL: fmt.Sprintf("$(printf %s)", ts.URL+"/v1"),
+				Model:   "custom-model",
+			},
+		}}
+		if err := cfg.ResolveProviderCredentials("custom"); err != nil {
+			t.Fatalf("ResolveProviderCredentials: %v", err)
+		}
+		providerCfg := cfg.Providers["custom"]
+		provider, err := createProviderFromConfig("custom", &providerCfg)
+		if err != nil {
+			t.Fatalf("createProviderFromConfig: %v", err)
+		}
+		compat, ok := provider.(*OpenAICompatProvider)
+		if !ok {
+			t.Fatalf("provider type = %T, want *OpenAICompatProvider", provider)
+		}
+		resp, err := compat.makeChatRequest(context.Background(), oaiChatRequest{Model: "custom-model"})
+		if err != nil {
+			t.Fatalf("makeChatRequest: %v", err)
+		}
+		resp.Body.Close()
+		if gotPath != "/v1/chat/completions" {
+			t.Fatalf("request path = %q, want %q", gotPath, "/v1/chat/completions")
+		}
+	})
+
+	t.Run("ollama receives resolved base", func(t *testing.T) {
+		cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+			"ollama": {
+				BaseURL: "$(printf https://ollama.example.test)",
+				Model:   "custom-model",
+			},
+		}}
+		if err := cfg.ResolveProviderCredentials("ollama"); err != nil {
+			t.Fatalf("ResolveProviderCredentials: %v", err)
+		}
+		providerCfg := cfg.Providers["ollama"]
+		provider, err := createProviderFromConfig("ollama", &providerCfg)
+		if err != nil {
+			t.Fatalf("createProviderFromConfig: %v", err)
+		}
+		ollama, ok := provider.(*OllamaProvider)
+		if !ok {
+			t.Fatalf("provider type = %T, want *OllamaProvider", provider)
+		}
+		if ollama.baseURL != "https://ollama.example.test" {
+			t.Fatalf("baseURL = %q, want resolved URL", ollama.baseURL)
+		}
+	})
 }
 
 func TestCreateProviderFromConfig_OpenAICompatRequiresProviderName(t *testing.T) {
