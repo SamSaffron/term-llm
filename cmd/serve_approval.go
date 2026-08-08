@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -243,27 +242,10 @@ func (rt *serveRuntime) clearPendingApprovals() {
 func (rt *serveRuntime) pendingApprovalPrompts() []serveApprovalPrompt {
 	rt.approvalMu.Lock()
 	defer rt.approvalMu.Unlock()
-	if len(rt.pendingApprovals) == 0 {
-		return nil
-	}
-	prompts := make([]serveApprovalPrompt, 0, len(rt.pendingApprovals))
-	for _, pending := range rt.pendingApprovals {
-		if pending == nil {
-			continue
-		}
-		prompts = append(prompts, pending.snapshot())
-	}
-	slices.SortFunc(prompts, func(a, b serveApprovalPrompt) int {
-		switch {
-		case a.CreatedAt < b.CreatedAt:
-			return -1
-		case a.CreatedAt > b.CreatedAt:
-			return 1
-		default:
-			return 0
-		}
-	})
-	return prompts
+	return sortedPendingSnapshots(rt.pendingApprovals,
+		func(pending *servePendingApproval) serveApprovalPrompt { return pending.snapshot() },
+		func(prompt serveApprovalPrompt) int64 { return prompt.CreatedAt },
+	)
 }
 
 func approvalChoiceName(c tools.ApprovalChoice) string {

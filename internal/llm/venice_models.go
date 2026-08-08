@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -25,29 +24,7 @@ func GetCachedVeniceModels(apiKey string) []string {
 }
 
 func GetCachedVeniceModelInfos(apiKey string) []ModelInfo {
-	cached, err := cache.ReadModelCache(veniceCacheKey)
-	if err == nil && cache.IsCacheValid(cached) {
-		return modelInfosFromCache(cached)
-	}
-
-	if apiKey == "" {
-		apiKey = os.Getenv("VENICE_API_KEY")
-	}
-	if apiKey == "" {
-		if cached != nil && len(cached.Models) > 0 {
-			return modelInfosFromCache(cached)
-		}
-		return nil
-	}
-
-	if cached != nil && len(cached.Models) > 0 {
-		if veniceCacheRefreshInFlight.CompareAndSwap(false, true) {
-			go refreshVeniceCache(apiKey)
-		}
-		return modelInfosFromCache(cached)
-	}
-
-	return fetchVeniceModelInfosSync(apiKey)
+	return getCachedModelInfos(apiKey, "VENICE_API_KEY", veniceCacheKey, &veniceCacheRefreshInFlight, refreshVeniceCache, fetchVeniceModelInfosSync)
 }
 
 func fetchVeniceModelInfosSync(apiKey string) []ModelInfo {
@@ -63,7 +40,6 @@ func fetchVeniceModelInfosSync(apiKey string) []ModelInfo {
 }
 
 func refreshVeniceCache(apiKey string) {
-	defer veniceCacheRefreshInFlight.Store(false)
 	_ = fetchVeniceModelInfosSync(apiKey)
 }
 

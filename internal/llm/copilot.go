@@ -312,24 +312,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 		if resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body)
 
-			if debugRaw {
-				var debugInfo strings.Builder
-				debugInfo.WriteString(fmt.Sprintf("Status: %d %s\n", resp.StatusCode, resp.Status))
-				debugInfo.WriteString("Headers:\n")
-				for key, values := range resp.Header {
-					for _, value := range values {
-						debugInfo.WriteString(fmt.Sprintf("  %s: %s\n", key, value))
-					}
-				}
-				debugInfo.WriteString("Body:\n")
-				var prettyBody bytes.Buffer
-				if json.Indent(&prettyBody, respBody, "", "  ") == nil {
-					debugInfo.WriteString(prettyBody.String())
-				} else {
-					debugInfo.WriteString(string(respBody))
-				}
-				DebugRawSection(debugRaw, "Copilot Error Response", debugInfo.String())
-			}
+			debugRawHTTPErrorResponse(debugRaw, "Copilot Error Response", resp, respBody)
 
 			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 				return fmt.Errorf("Copilot authentication failed (status %d): token may be invalid or expired. Re-run with --provider copilot to re-authenticate", resp.StatusCode)

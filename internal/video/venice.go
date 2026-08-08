@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/mediautil"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
@@ -226,39 +226,11 @@ func (p *VeniceProvider) doJSON(ctx context.Context, method, endpoint string, pa
 }
 
 func (p *VeniceProvider) do(ctx context.Context, method, endpoint string, payload any, debug bool) ([]byte, string, error) {
-	jsonBody, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", fmt.Errorf("marshal Venice request: %w", err)
-	}
-	if debug {
-		debugLog("Venice Request", "%s %s\n%s", method, p.baseURL+endpoint, string(jsonBody))
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, method, p.baseURL+endpoint, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, "", fmt.Errorf("create Venice request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, "", veniceRequestError(err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("read Venice response: %w", err)
-	}
-	contentType := resp.Header.Get("Content-Type")
-	if debug {
-		debugLog("Venice Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", providerhttp.NewStatusError("Venice", resp, body)
-	}
-	return body, contentType, nil
+	return providerhttp.DoJSONRequest(ctx, providerhttp.JSONRequestOptions{
+		Client: p.client, Method: method, URL: p.baseURL + endpoint, APIKey: p.apiKey, Payload: payload,
+		Provider: "Venice", WrapRequestError: veniceRequestError, Debug: debug, Debugf: debugLog,
+		RequestLabel: "Venice Request", ResponseLabel: "Venice Response",
+	})
 }
 
 func ResolveModel(model string, hasInput bool) string {
@@ -299,21 +271,12 @@ func LoadInputImage(path string) ([]byte, error) {
 }
 
 func SaveVideo(data []byte, outputDir, prompt string) (string, error) {
-	dir := expandPath(outputDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create output directory: %w", err)
-	}
-	filename := generateVideoFilename(prompt)
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", fmt.Errorf("write video: %w", err)
-	}
-	return path, nil
+	return mediautil.SaveFile(data, outputDir, "", generateVideoFilename(prompt), "video")
 }
 
 func generateVideoFilename(prompt string) string {
 	timestamp := time.Now().Format("20060102-150405")
-	safe := sanitizeForFilename(prompt)
+	safe := mediautil.SanitizeFilename(prompt)
 	if len(safe) > 30 {
 		safe = safe[:30]
 	}
@@ -321,27 +284,6 @@ func generateVideoFilename(prompt string) string {
 		safe = "video"
 	}
 	return fmt.Sprintf("%s-%s.mp4", timestamp, safe)
-}
-
-func sanitizeForFilename(s string) string {
-	replacer := strings.NewReplacer(" ", "_", "/", "", "\\", "", ":", "", "?", "", "*", "", "\"", "", "<", "", ">", "", "|", "")
-	s = replacer.Replace(s)
-	var b strings.Builder
-	b.Grow(len(s))
-	lastUnderscore := false
-	for _, r := range strings.ToLower(s) {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if isAlphaNum || r == '-' {
-			b.WriteRune(r)
-			lastUnderscore = false
-			continue
-		}
-		if r == '_' && !lastUnderscore {
-			b.WriteRune(r)
-			lastUnderscore = true
-		}
-	}
-	return strings.Trim(b.String(), "_")
 }
 
 func withDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -373,16 +315,6 @@ func validateEnum(name, value string, allowed []string) error {
 		}
 	}
 	return fmt.Errorf("invalid %s %q (allowed: %s)", name, value, strings.Join(allowed, ", "))
-}
-
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
 }
 
 func veniceRequestError(err error) error {

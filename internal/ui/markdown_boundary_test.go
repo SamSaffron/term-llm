@@ -72,55 +72,22 @@ func TestFindSafeBoundary(t *testing.T) {
 }
 
 func TestIsInCodeBlock(t *testing.T) {
-	tests := []struct {
-		name string
+	cases := map[string]struct {
 		text string
 		pos  int
 		want bool
 	}{
-		{
-			name: "no code blocks",
-			text: "just regular text",
-			pos:  10,
-			want: false,
-		},
-		{
-			name: "before code block",
-			text: "text\n```\ncode\n```\nafter",
-			pos:  3,
-			want: false,
-		},
-		{
-			name: "inside code block",
-			text: "text\n```\ncode\n```\nafter",
-			pos:  10,
-			want: true,
-		},
-		{
-			name: "after closed code block",
-			text: "text\n```\ncode\n```\nafter",
-			pos:  20,
-			want: false,
-		},
-		{
-			name: "inside unclosed code block",
-			text: "text\n```\ncode continues",
-			pos:  15,
-			want: true,
-		},
-		{
-			name: "indented code fence",
-			text: "text\n  ```\ncode\n  ```\nafter",
-			pos:  12,
-			want: true,
-		},
+		"no code blocks":             {text: "just regular text", pos: 10},
+		"before code block":          {text: "text\n```\ncode\n```\nafter", pos: 3},
+		"inside code block":          {text: "text\n```\ncode\n```\nafter", pos: 10, want: true},
+		"after closed code block":    {text: "text\n```\ncode\n```\nafter", pos: 20},
+		"inside unclosed code block": {text: "text\n```\ncode continues", pos: 15, want: true},
+		"indented code fence":        {text: "text\n  ```\ncode\n  ```\nafter", pos: 12, want: true},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isInCodeBlock(tt.text, tt.pos)
-			if got != tt.want {
-				t.Errorf("isInCodeBlock(%q, %d) = %v, want %v", tt.text, tt.pos, got, tt.want)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := isInCodeBlock(tc.text, tc.pos); got != tc.want {
+				t.Errorf("isInCodeBlock(%q, %d) = %v, want %v", tc.text, tc.pos, got, tc.want)
 			}
 		})
 	}

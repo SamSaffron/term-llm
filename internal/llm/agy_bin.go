@@ -539,55 +539,9 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 }
 
 func (p *AgyBinProvider) dispatchEvents(ctx context.Context, lineCh <-chan string, toolReqCh <-chan cliToolRequest, send eventSender, state *agyStreamState) error {
-	linesOpen := true
-	handle := func(line string) error { return handleAgyStreamLine(line, send, state) }
-	for linesOpen {
-		had := false
-		for linesOpen {
-			select {
-			case line, ok := <-lineCh:
-				if !ok {
-					linesOpen = false
-					break
-				}
-				had = true
-				if err := handle(line); err != nil {
-					return err
-				}
-			default:
-				goto drained
-			}
-		}
-	drained:
-		if had {
-			continue
-		}
-		select {
-		case line, ok := <-lineCh:
-			if !ok {
-				linesOpen = false
-				continue
-			}
-			if err := handle(line); err != nil {
-				return err
-			}
-		case request := <-toolReqCh:
-			if err := drainCLILinesWithGrace(ctx, lineCh, agyToolDrainGrace, handle); err != nil {
-				return err
-			}
-			handleCLIToolRequest(request, send)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	for {
-		select {
-		case request := <-toolReqCh:
-			handleCLIToolRequest(request, send)
-		default:
-			return nil
-		}
-	}
+	return dispatchCLILines(ctx, lineCh, toolReqCh, send, agyToolDrainGrace, func(line string) error {
+		return handleAgyStreamLine(line, send, state)
+	})
 }
 
 func (s *agyStreamState) observeConversationID(event, conversationID string) error {
@@ -652,18 +606,12 @@ func handleAgyStreamLine(line string, send eventSender, state *agyStreamState) e
 }
 
 func (p *AgyBinProvider) commandError(waitErr error, stderrTail, stdoutTail []string) error {
-	diagnostic := firstUsefulCLIDiagnosticLine(strings.Join(stderrTail, "\n"))
-	if diagnostic == "" {
-		diagnostic = firstUsefulCLIDiagnosticLine(strings.Join(stdoutTail, "\n"))
-	}
-	lower := strings.ToLower(diagnostic)
-	if strings.Contains(lower, "authentication") || strings.Contains(lower, "not logged") || strings.Contains(lower, "log in") {
-		return &UserFacingProviderError{Summary: "agy is not logged in", Detail: "Run `agy` and complete Antigravity authentication.", Cause: waitErr}
-	}
-	if diagnostic != "" {
-		return fmt.Errorf("agy command failed: %w: %s", waitErr, diagnostic)
-	}
-	return fmt.Errorf("agy command failed: %w", waitErr)
+	return newCLIProcessError(waitErr, stderrTail, stdoutTail, cliCommandErrorOptions{
+		name:        "agy",
+		authTerms:   []string{"authentication", "not logged", "log in"},
+		authSummary: "agy is not logged in",
+		authDetail:  "Run `agy` and complete Antigravity authentication.",
+	})
 }
 
 func (p *AgyBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec, debug bool) error {
@@ -903,29 +851,7 @@ func (p *AgyBinProvider) gcAgyHomes() {
 	if err != nil {
 		return
 	}
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-agyHomeMaxAge)
-	for _, entry := range entries {
-		if !entry.IsDir() || !isAgyHomeID(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(base, entry.Name())
-		if filepath.Clean(path) == filepath.Clean(p.agyHome) {
-			continue
-		}
-		info, err := os.Stat(filepath.Join(path, ".last_used"))
-		if os.IsNotExist(err) {
-			info, err = entry.Info()
-		}
-		if err == nil && info.ModTime().Before(cutoff) {
-			if err := os.RemoveAll(path); err != nil {
-				slog.Debug("agy-bin stale home cleanup failed", "err", err)
-			}
-		}
-	}
+	gcStaleCLIHomes(base, p.agyHome, agyHomeMaxAge, isAgyHomeID, "agy-bin")
 }
 
 func (p *AgyBinProvider) cleanupRuntime() {

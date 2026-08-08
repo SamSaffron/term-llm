@@ -494,59 +494,9 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 }
 
 func (p *CursorBinProvider) dispatchCursorEvents(ctx context.Context, lineCh <-chan string, toolReqCh <-chan cliToolRequest, send eventSender, state *cursorStreamState) error {
-	linesOpen := true
-	handleLine := func(line string) error {
+	return dispatchCLILines(ctx, lineCh, toolReqCh, send, cursorToolDrainGrace, func(line string) error {
 		return handleCursorStreamLine(line, send, state)
-	}
-
-	for linesOpen {
-		hadLine := false
-		for linesOpen {
-			select {
-			case line, ok := <-lineCh:
-				if !ok {
-					linesOpen = false
-					break
-				}
-				hadLine = true
-				if err := handleLine(line); err != nil {
-					return err
-				}
-			default:
-				goto drainDone
-			}
-		}
-	drainDone:
-		if hadLine {
-			continue
-		}
-		select {
-		case line, ok := <-lineCh:
-			if !ok {
-				linesOpen = false
-				continue
-			}
-			if err := handleLine(line); err != nil {
-				return err
-			}
-		case request := <-toolReqCh:
-			if err := drainCLILinesWithGrace(ctx, lineCh, cursorToolDrainGrace, handleLine); err != nil {
-				return err
-			}
-			handleCLIToolRequest(request, send)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	for {
-		select {
-		case request := <-toolReqCh:
-			handleCLIToolRequest(request, send)
-		default:
-			return nil
-		}
-	}
+	})
 }
 
 func handleCursorStreamLine(line string, send eventSender, state *cursorStreamState) error {
@@ -603,18 +553,12 @@ func cursorMessageText(message cursorStreamMessage) string {
 }
 
 func (p *CursorBinProvider) cursorCommandError(waitErr error, stderrTail, stdoutTail []string) error {
-	diagnostic := firstUsefulCLIDiagnosticLine(strings.Join(stderrTail, "\n"))
-	if diagnostic == "" {
-		diagnostic = firstUsefulCLIDiagnosticLine(strings.Join(stdoutTail, "\n"))
-	}
-	lower := strings.ToLower(diagnostic)
-	if strings.Contains(lower, "authentication") || strings.Contains(lower, "login") || strings.Contains(lower, "sign in") {
-		return &UserFacingProviderError{Summary: "Cursor Agent is not logged in", Detail: "Run `cursor-agent login` or set CURSOR_API_KEY.", Cause: waitErr}
-	}
-	if diagnostic != "" {
-		return fmt.Errorf("Cursor command failed: %w: %s", waitErr, diagnostic)
-	}
-	return fmt.Errorf("Cursor command failed: %w", waitErr)
+	return newCLIProcessError(waitErr, stderrTail, stdoutTail, cliCommandErrorOptions{
+		name:        "Cursor",
+		authTerms:   []string{"authentication", "login", "sign in"},
+		authSummary: "Cursor Agent is not logged in",
+		authDetail:  "Run `cursor-agent login` or set CURSOR_API_KEY.",
+	})
 }
 
 func (p *CursorBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec, debug bool) error {
@@ -871,29 +815,7 @@ func (p *CursorBinProvider) gcCursorHomes() {
 	if err != nil {
 		return
 	}
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-cursorHomeMaxAge)
-	for _, entry := range entries {
-		if !entry.IsDir() || !isGrokHomeID(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(base, entry.Name())
-		if filepath.Clean(path) == filepath.Clean(p.cursorHome) {
-			continue
-		}
-		info, err := os.Stat(filepath.Join(path, ".last_used"))
-		if os.IsNotExist(err) {
-			info, err = entry.Info()
-		}
-		if err == nil && info.ModTime().Before(cutoff) {
-			if err := os.RemoveAll(path); err != nil {
-				slog.Debug("cursor-bin stale home cleanup failed", "err", err)
-			}
-		}
-	}
+	gcStaleCLIHomes(base, p.cursorHome, cursorHomeMaxAge, isGrokHomeID, "cursor-bin")
 }
 
 // ListModels parses the account-specific model list exposed by Cursor Agent.

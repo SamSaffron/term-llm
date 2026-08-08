@@ -704,174 +704,143 @@ func prepareAnthropicMessages(messages []Message) []Message {
 	return normalized
 }
 
-func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBlockParamUnion {
-	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(parts))
+type anthropicPartConstructors[T any] struct {
+	thinking   func(string, string) T
+	text       func(string) T
+	image      func(*ToolImageData) T
+	toolUse    func(*ToolCall) T
+	toolResult func(*ToolResult) T
+}
+
+func buildAnthropicParts[T any](parts []Part, allowToolUse bool, constructors anthropicPartConstructors[T]) []T {
+	blocks := make([]T, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
 		case PartText, PartFile:
 			if allowToolUse && part.ReasoningEncryptedContent != "" {
-				blocks = append(blocks, anthropic.NewThinkingBlock(part.ReasoningEncryptedContent, part.ReasoningContent))
+				blocks = append(blocks, constructors.thinking(part.ReasoningEncryptedContent, part.ReasoningContent))
 			}
 			if part.Text != "" {
-				blocks = append(blocks, anthropic.NewTextBlock(part.Text))
+				blocks = append(blocks, constructors.text(part.Text))
 			}
 		case PartImage:
 			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
-				blocks = append(blocks, anthropic.ContentBlockParamUnion{
-					OfImage: &anthropic.ImageBlockParam{
-						Source: anthropic.ImageBlockParamSourceUnion{
-							OfBase64: &anthropic.Base64ImageSourceParam{
-								Data:      part.ImageData.Base64,
-								MediaType: anthropic.Base64ImageSourceMediaType(part.ImageData.MediaType),
-							},
-						},
-					},
-				})
+				blocks = append(blocks, constructors.image(part.ImageData))
 				if part.ImagePath != "" {
-					blocks = append(blocks, anthropic.NewTextBlock("[image saved at: "+part.ImagePath+"]"))
+					blocks = append(blocks, constructors.text("[image saved at: "+part.ImagePath+"]"))
 				}
 			}
 		case PartToolCall:
 			if allowToolUse && part.ToolCall != nil {
-				blocks = append(blocks, anthropic.NewToolUseBlock(part.ToolCall.ID, part.ToolCall.Arguments, part.ToolCall.Name))
+				blocks = append(blocks, constructors.toolUse(part.ToolCall))
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				blocks = append(blocks, toolResultBlock(part.ToolResult))
+				blocks = append(blocks, constructors.toolResult(part.ToolResult))
 			}
 		}
 	}
 	return blocks
+}
+
+func newAnthropicImageBlock(image *ToolImageData) anthropic.ContentBlockParamUnion {
+	return anthropic.ContentBlockParamUnion{OfImage: &anthropic.ImageBlockParam{Source: anthropic.ImageBlockParamSourceUnion{OfBase64: &anthropic.Base64ImageSourceParam{Data: image.Base64, MediaType: anthropic.Base64ImageSourceMediaType(image.MediaType)}}}}
+}
+
+func newAnthropicBetaImageBlock(image *ToolImageData) anthropic.BetaContentBlockParamUnion {
+	return anthropic.BetaContentBlockParamUnion{OfImage: &anthropic.BetaImageBlockParam{Source: anthropic.BetaImageBlockParamSourceUnion{OfBase64: &anthropic.BetaBase64ImageSourceParam{Data: image.Base64, MediaType: anthropic.BetaBase64ImageSourceMediaType(image.MediaType)}}}}
+}
+
+func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBlockParamUnion {
+	return buildAnthropicParts(parts, allowToolUse, anthropicPartConstructors[anthropic.ContentBlockParamUnion]{
+		thinking: anthropic.NewThinkingBlock,
+		text:     anthropic.NewTextBlock,
+		image:    newAnthropicImageBlock,
+		toolUse: func(call *ToolCall) anthropic.ContentBlockParamUnion {
+			return anthropic.NewToolUseBlock(call.ID, call.Arguments, call.Name)
+		},
+		toolResult: toolResultBlock,
+	})
 }
 
 func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaContentBlockParamUnion {
-	blocks := make([]anthropic.BetaContentBlockParamUnion, 0, len(parts))
-	for _, part := range parts {
+	return buildAnthropicParts(parts, allowToolUse, anthropicPartConstructors[anthropic.BetaContentBlockParamUnion]{
+		thinking: anthropic.NewBetaThinkingBlock,
+		text:     anthropic.NewBetaTextBlock,
+		image:    newAnthropicBetaImageBlock,
+		toolUse: func(call *ToolCall) anthropic.BetaContentBlockParamUnion {
+			return anthropic.NewBetaToolUseBlock(call.ID, call.Arguments, call.Name)
+		},
+		toolResult: betaToolResultBlock,
+	})
+}
+
+type anthropicResultContent struct {
+	text       string
+	mimeType   string
+	base64Data string
+}
+
+func normalizedAnthropicResultContent(result *ToolResult) []anthropicResultContent {
+	var content []anthropicResultContent
+	for _, part := range toolResultContentParts(result) {
 		switch part.Type {
-		case PartText, PartFile:
-			if allowToolUse && part.ReasoningEncryptedContent != "" {
-				blocks = append(blocks, anthropic.NewBetaThinkingBlock(part.ReasoningEncryptedContent, part.ReasoningContent))
-			}
+		case ToolContentPartText:
 			if part.Text != "" {
-				blocks = append(blocks, anthropic.NewBetaTextBlock(part.Text))
+				content = append(content, anthropicResultContent{text: part.Text})
 			}
-		case PartImage:
-			if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
-				blocks = append(blocks, anthropic.BetaContentBlockParamUnion{
-					OfImage: &anthropic.BetaImageBlockParam{
-						Source: anthropic.BetaImageBlockParamSourceUnion{
-							OfBase64: &anthropic.BetaBase64ImageSourceParam{
-								Data:      part.ImageData.Base64,
-								MediaType: anthropic.BetaBase64ImageSourceMediaType(part.ImageData.MediaType),
-							},
-						},
-					},
-				})
-				if part.ImagePath != "" {
-					blocks = append(blocks, anthropic.NewBetaTextBlock("[image saved at: "+part.ImagePath+"]"))
-				}
+		case ToolContentPartImageData:
+			mimeType, base64Data, ok := toolResultImageData(part)
+			if ok {
+				content = append(content, anthropicResultContent{mimeType: mimeType, base64Data: base64Data})
 			}
-		case PartToolCall:
-			if allowToolUse && part.ToolCall != nil {
-				blocks = append(blocks, anthropic.NewBetaToolUseBlock(part.ToolCall.ID, part.ToolCall.Arguments, part.ToolCall.Name))
-			}
-		case PartToolResult:
-			if part.ToolResult != nil {
-				blocks = append(blocks, betaToolResultBlock(part.ToolResult))
-			}
+		}
+	}
+	if len(content) == 0 {
+		content = append(content, anthropicResultContent{text: toolResultTextContent(result)})
+	}
+	return content
+}
+
+func mapAnthropicResultContent[T any](result *ToolResult, text func(string) T, image func(string, string) T) []T {
+	content := normalizedAnthropicResultContent(result)
+	blocks := make([]T, 0, len(content))
+	for _, part := range content {
+		if part.text != "" {
+			blocks = append(blocks, text(part.text))
+		} else {
+			blocks = append(blocks, image(part.mimeType, part.base64Data))
 		}
 	}
 	return blocks
 }
 
+func newBetaResultText(text string) anthropic.BetaToolResultBlockParamContentUnion {
+	return anthropic.BetaToolResultBlockParamContentUnion{OfText: &anthropic.BetaTextBlockParam{Text: text}}
+}
+
+func newBetaResultImage(mimeType, data string) anthropic.BetaToolResultBlockParamContentUnion {
+	return anthropic.BetaToolResultBlockParamContentUnion{OfImage: &anthropic.BetaImageBlockParam{Source: anthropic.BetaImageBlockParamSourceUnion{OfBase64: &anthropic.BetaBase64ImageSourceParam{Data: data, MediaType: anthropic.BetaBase64ImageSourceMediaType(mimeType)}}}}
+}
+
+func newResultText(text string) anthropic.ToolResultBlockParamContentUnion {
+	return anthropic.ToolResultBlockParamContentUnion{OfText: &anthropic.TextBlockParam{Text: text}}
+}
+
+func newResultImage(mimeType, data string) anthropic.ToolResultBlockParamContentUnion {
+	return anthropic.ToolResultBlockParamContentUnion{OfImage: &anthropic.ImageBlockParam{Source: anthropic.ImageBlockParamSourceUnion{OfBase64: &anthropic.Base64ImageSourceParam{Data: data, MediaType: anthropic.Base64ImageSourceMediaType(mimeType)}}}}
+}
+
 func betaToolResultBlock(result *ToolResult) anthropic.BetaContentBlockParamUnion {
-	contentBlocks := make([]anthropic.BetaToolResultBlockParamContentUnion, 0)
-
-	for _, part := range toolResultContentParts(result) {
-		switch part.Type {
-		case ToolContentPartText:
-			if part.Text == "" {
-				continue
-			}
-			contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
-				OfText: &anthropic.BetaTextBlockParam{Text: part.Text},
-			})
-		case ToolContentPartImageData:
-			mimeType, base64Data, ok := toolResultImageData(part)
-			if !ok {
-				continue
-			}
-			contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
-				OfImage: &anthropic.BetaImageBlockParam{
-					Source: anthropic.BetaImageBlockParamSourceUnion{
-						OfBase64: &anthropic.BetaBase64ImageSourceParam{
-							Data:      base64Data,
-							MediaType: anthropic.BetaBase64ImageSourceMediaType(mimeType),
-						},
-					},
-				},
-			})
-		}
-	}
-
-	if len(contentBlocks) == 0 {
-		textContent := toolResultTextContent(result)
-		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
-			OfText: &anthropic.BetaTextBlockParam{Text: textContent},
-		})
-	}
-
-	block := anthropic.BetaToolResultBlockParam{
-		ToolUseID: result.ID,
-		IsError:   anthropic.Bool(result.IsError),
-		Content:   contentBlocks,
-	}
+	content := mapAnthropicResultContent(result, newBetaResultText, newBetaResultImage)
+	block := anthropic.BetaToolResultBlockParam{ToolUseID: result.ID, IsError: anthropic.Bool(result.IsError), Content: content}
 	return anthropic.BetaContentBlockParamUnion{OfToolResult: &block}
 }
 
 // toolResultBlock creates a non-beta tool result block with structured image support.
 func toolResultBlock(result *ToolResult) anthropic.ContentBlockParamUnion {
-	contentBlocks := make([]anthropic.ToolResultBlockParamContentUnion, 0)
-
-	for _, part := range toolResultContentParts(result) {
-		switch part.Type {
-		case ToolContentPartText:
-			if part.Text == "" {
-				continue
-			}
-			contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
-				OfText: &anthropic.TextBlockParam{Text: part.Text},
-			})
-		case ToolContentPartImageData:
-			mimeType, base64Data, ok := toolResultImageData(part)
-			if !ok {
-				continue
-			}
-			contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
-				OfImage: &anthropic.ImageBlockParam{
-					Source: anthropic.ImageBlockParamSourceUnion{
-						OfBase64: &anthropic.Base64ImageSourceParam{
-							Data:      base64Data,
-							MediaType: anthropic.Base64ImageSourceMediaType(mimeType),
-						},
-					},
-				},
-			})
-		}
-	}
-
-	if len(contentBlocks) == 0 {
-		textContent := toolResultTextContent(result)
-		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
-			OfText: &anthropic.TextBlockParam{Text: textContent},
-		})
-	}
-
-	block := anthropic.ToolResultBlockParam{
-		ToolUseID: result.ID,
-		IsError:   anthropic.Bool(result.IsError),
-		Content:   contentBlocks,
-	}
+	content := mapAnthropicResultContent(result, newResultText, newResultImage)
+	block := anthropic.ToolResultBlockParam{ToolUseID: result.ID, IsError: anthropic.Bool(result.IsError), Content: content}
 	return anthropic.ContentBlockParamUnion{OfToolResult: &block}
 }
 
@@ -1022,24 +991,31 @@ func buildAnthropicBetaToolChoice(choice ToolChoice, parallel bool) anthropic.Be
 	}
 }
 
+func emitAnthropicTextStart(send eventSender, text string) error {
+	if text == "" {
+		return nil
+	}
+	return send.Send(Event{Type: EventTextDelta, Text: text})
+}
+
+func emitAnthropicThinkingStart(send eventSender, thinking, signature string) error {
+	return emitReasoningDelta(send, thinking, signature)
+}
+
+func recordAnthropicToolStart(index int64, accumulator *toolCallAccumulator, call ToolCall) error {
+	accumulator.Start(index, call)
+	return nil
+}
+
 func handleAnthropicStartBlockContent(send eventSender, block any, index int64, accumulator *toolCallAccumulator) error {
 	switch variant := block.(type) {
 	case anthropic.TextBlock:
-		if variant.Text != "" {
-			if err := send.Send(Event{Type: EventTextDelta, Text: variant.Text}); err != nil {
-				return err
-			}
-		}
+		return emitAnthropicTextStart(send, variant.Text)
 	case anthropic.ThinkingBlock:
-		if err := emitReasoningDelta(send, variant.Thinking, variant.Signature); err != nil {
-			return err
-		}
+		return emitAnthropicThinkingStart(send, variant.Thinking, variant.Signature)
 	case anthropic.ToolUseBlock:
-		accumulator.Start(index, ToolCall{
-			ID:        variant.ID,
-			Name:      variant.Name,
-			Arguments: toolInputToRaw(variant.Input),
-		})
+		call := ToolCall{ID: variant.ID, Name: variant.Name, Arguments: toolInputToRaw(variant.Input)}
+		return recordAnthropicToolStart(index, accumulator, call)
 	}
 	return nil
 }
@@ -1047,21 +1023,12 @@ func handleAnthropicStartBlockContent(send eventSender, block any, index int64, 
 func handleAnthropicBetaStartBlockContent(send eventSender, block any, index int64, accumulator *toolCallAccumulator) error {
 	switch variant := block.(type) {
 	case anthropic.BetaTextBlock:
-		if variant.Text != "" {
-			if err := send.Send(Event{Type: EventTextDelta, Text: variant.Text}); err != nil {
-				return err
-			}
-		}
+		return emitAnthropicTextStart(send, variant.Text)
 	case anthropic.BetaThinkingBlock:
-		if err := emitReasoningDelta(send, variant.Thinking, variant.Signature); err != nil {
-			return err
-		}
+		return emitAnthropicThinkingStart(send, variant.Thinking, variant.Signature)
 	case anthropic.BetaToolUseBlock:
-		accumulator.Start(index, ToolCall{
-			ID:        variant.ID,
-			Name:      variant.Name,
-			Arguments: toolInputToRaw(variant.Input),
-		})
+		call := ToolCall{ID: variant.ID, Name: variant.Name, Arguments: toolInputToRaw(variant.Input)}
+		return recordAnthropicToolStart(index, accumulator, call)
 	}
 	return nil
 }

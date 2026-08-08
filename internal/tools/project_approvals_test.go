@@ -59,91 +59,34 @@ func TestLoadProjectApprovals_NewProject(t *testing.T) {
 	}
 }
 
-func TestProjectApprovals_ReadApproval(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "test-repo-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	configDir, err := os.MkdirTemp("", "test-config-*")
-	if err != nil {
-		t.Fatalf("failed to create config dir: %v", err)
-	}
-	defer os.RemoveAll(configDir)
-
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", configDir)
-	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
-
-	pa, err := LoadProjectApprovals(tempDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Approve read
-	if err := pa.ApproveRead(); err != nil {
-		t.Fatalf("ApproveRead failed: %v", err)
-	}
-
-	if !pa.IsReadApproved() {
-		t.Error("expected read to be approved")
-	}
-	if pa.IsWriteApproved() {
-		t.Error("write should not be approved")
-	}
-
-	// Reload and verify persistence
-	pa2, err := LoadProjectApprovals(tempDir)
-	if err != nil {
-		t.Fatalf("reload failed: %v", err)
-	}
-	if !pa2.IsReadApproved() {
-		t.Error("read approval should persist after reload")
-	}
-}
-
-func TestProjectApprovals_WriteApproval(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "test-repo-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	configDir, err := os.MkdirTemp("", "test-config-*")
-	if err != nil {
-		t.Fatalf("failed to create config dir: %v", err)
-	}
-	defer os.RemoveAll(configDir)
-
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", configDir)
-	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
-
-	pa, err := LoadProjectApprovals(tempDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Approve write
-	if err := pa.ApproveWrite(); err != nil {
-		t.Fatalf("ApproveWrite failed: %v", err)
-	}
-
-	if !pa.IsWriteApproved() {
-		t.Error("expected write to be approved")
-	}
-	if pa.IsReadApproved() {
-		t.Error("read should not be approved (only write was approved)")
-	}
-
-	// Reload and verify persistence
-	pa2, err := LoadProjectApprovals(tempDir)
-	if err != nil {
-		t.Fatalf("reload failed: %v", err)
-	}
-	if !pa2.IsWriteApproved() {
-		t.Error("write approval should persist after reload")
+func TestProjectApprovals_PersistApproval(t *testing.T) {
+	for _, kind := range []string{"read", "write"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			repo := t.TempDir()
+			approvals, err := LoadProjectApprovals(repo)
+			if err != nil {
+				t.Fatalf("LoadProjectApprovals: %v", err)
+			}
+			if kind == "read" {
+				err = approvals.ApproveRead()
+			} else {
+				err = approvals.ApproveWrite()
+			}
+			if err != nil {
+				t.Fatalf("approve %s: %v", kind, err)
+			}
+			if approvals.IsReadApproved() != (kind == "read") || approvals.IsWriteApproved() != (kind == "write") {
+				t.Fatalf("approval state after %s: read=%v write=%v", kind, approvals.IsReadApproved(), approvals.IsWriteApproved())
+			}
+			reloaded, err := LoadProjectApprovals(repo)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if reloaded.IsReadApproved() != (kind == "read") || reloaded.IsWriteApproved() != (kind == "write") {
+				t.Fatalf("persisted %s state: read=%v write=%v", kind, reloaded.IsReadApproved(), reloaded.IsWriteApproved())
+			}
+		})
 	}
 }
 

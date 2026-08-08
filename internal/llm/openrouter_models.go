@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -25,29 +24,7 @@ func GetCachedOpenRouterModels(apiKey string) []string {
 }
 
 func GetCachedOpenRouterModelInfos(apiKey string) []ModelInfo {
-	cached, err := cache.ReadModelCache(openRouterCacheKey)
-	if err == nil && cache.IsCacheValid(cached) {
-		return modelInfosFromCache(cached)
-	}
-
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENROUTER_API_KEY")
-	}
-	if apiKey == "" {
-		if cached != nil && len(cached.Models) > 0 {
-			return modelInfosFromCache(cached)
-		}
-		return nil
-	}
-
-	if cached != nil && len(cached.Models) > 0 {
-		if openRouterCacheRefreshInFlight.CompareAndSwap(false, true) {
-			go refreshOpenRouterCache(apiKey)
-		}
-		return modelInfosFromCache(cached)
-	}
-
-	return fetchOpenRouterModelInfosSync(apiKey)
+	return getCachedModelInfos(apiKey, "OPENROUTER_API_KEY", openRouterCacheKey, &openRouterCacheRefreshInFlight, refreshOpenRouterCache, fetchOpenRouterModelInfosSync)
 }
 
 func fetchOpenRouterModelsSync(apiKey string) []string {
@@ -82,7 +59,6 @@ func fetchOpenRouterModelInfosSync(apiKey string) []ModelInfo {
 }
 
 func refreshOpenRouterCache(apiKey string) {
-	defer openRouterCacheRefreshInFlight.Store(false)
 	_ = fetchOpenRouterModelsSync(apiKey)
 }
 

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
+	"github.com/samsaffron/term-llm/internal/textmatch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,24 +73,7 @@ func projectApprovalsFilePath(repoRoot string) (string, error) {
 	return filepath.Join(projectsDir, repoSlug, contextSlug+"-"+shortID+".yaml"), nil
 }
 
-func slugifyApprovalPathPart(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			b.WriteRune(r)
-			lastDash = false
-		case r == '-' || r == '_' || r == '.' || unicode.IsSpace(r):
-			if b.Len() > 0 && !lastDash {
-				b.WriteByte('-')
-				lastDash = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
+func slugifyApprovalPathPart(value string) string { return textmatch.Slug(value) }
 
 // LoadProjectApprovals loads or creates approval data for a git repository.
 // Returns nil if the repo root is empty or invalid.

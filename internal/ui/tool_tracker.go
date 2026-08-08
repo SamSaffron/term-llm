@@ -1328,6 +1328,25 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	}
 }
 
+// InvalidateRenderCaches clears width-dependent segment renders and resizes active renderers.
+func (t *ToolTracker) InvalidateRenderCaches(width int) {
+	if t == nil {
+		return
+	}
+	for i := range t.Segments {
+		t.Segments[i].Rendered = ""
+		t.Segments[i].SafeRendered = ""
+		t.Segments[i].SafePos = 0
+		t.Segments[i].DiffRendered = ""
+		t.Segments[i].DiffWidth = 0
+		for j := range t.Segments[i].SubagentDiffs {
+			t.Segments[i].SubagentDiffs[j].Rendered = ""
+			t.Segments[i].SubagentDiffs[j].Width = 0
+		}
+	}
+	t.ResizeStreamRenderers(width)
+}
+
 // ResizeStreamRenderers updates all active streaming renderers with new width.
 // On resize error, the renderer is disabled to avoid inconsistent output.
 func (t *ToolTracker) ResizeStreamRenderers(width int) {

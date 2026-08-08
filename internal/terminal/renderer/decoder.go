@@ -298,6 +298,34 @@ func (p *EventDecoder) Decode(buf []byte) (n int, Event Event) {
 	}
 }
 
+// scanParams is shared by CSI and DCS parsing. Keep its state transitions aligned
+// with the upstream parser when syncing this owned renderer module.
+func scanParams(b []byte, i int, params []ansi.Param) (next, count int) {
+	var scanned int
+	for scanned = 0; i < len(b) && count < len(params) && b[i] >= 0x30 && b[i] <= 0x3F; i, scanned = i+1, scanned+1 {
+		if b[i] >= '0' && b[i] <= '9' {
+			if params[count] == parser.MissingParam {
+				params[count] = 0
+			}
+			params[count] *= 10
+			params[count] += ansi.Param(b[i]) - '0'
+		}
+		if b[i] == ':' {
+			params[count] |= parser.HasMoreFlag
+		}
+		if b[i] == ';' || b[i] == ':' {
+			count++
+			if count < len(params) {
+				params[count] = parser.MissingParam
+			}
+		}
+	}
+	if scanned > 0 && count < len(params) {
+		count++
+	}
+	return i, count
+}
+
 func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 	if len(b) == 2 && b[0] == ansi.ESC {
 		// short cut if this is an alt+[ key
@@ -321,32 +349,7 @@ func (p *EventDecoder) parseCsi(b []byte) (int, Event) {
 		cmd |= ansi.Cmd(b[i]) << parser.PrefixShift
 	}
 
-	// Scan parameter bytes in the range 0x30-0x3F
-	var j int
-	for j = 0; i < len(b) && paramsLen < len(params) && b[i] >= 0x30 && b[i] <= 0x3F; i, j = i+1, j+1 {
-		if b[i] >= '0' && b[i] <= '9' {
-			if params[paramsLen] == parser.MissingParam {
-				params[paramsLen] = 0
-			}
-			params[paramsLen] *= 10
-			params[paramsLen] += ansi.Param(b[i]) - '0'
-		}
-		if b[i] == ':' {
-			params[paramsLen] |= parser.HasMoreFlag
-		}
-		if b[i] == ';' || b[i] == ':' {
-			paramsLen++
-			if paramsLen < len(params) {
-				// Don't overflow the params slice
-				params[paramsLen] = parser.MissingParam
-			}
-		}
-	}
-
-	if j > 0 && paramsLen < len(params) {
-		// has parameters
-		paramsLen++
-	}
+	i, paramsLen = scanParams(b, i, params[:])
 
 	// Scan intermediate bytes in the range 0x20-0x2F
 	var intermed byte
@@ -989,32 +992,7 @@ func (p *EventDecoder) parseDcs(b []byte) (int, Event) {
 		cmd |= ansi.Cmd(b[i]) << parser.PrefixShift
 	}
 
-	// Scan parameter bytes in the range 0x30-0x3F
-	var j int
-	for j = 0; i < len(b) && paramsLen < len(params) && b[i] >= 0x30 && b[i] <= 0x3F; i, j = i+1, j+1 {
-		if b[i] >= '0' && b[i] <= '9' {
-			if params[paramsLen] == parser.MissingParam {
-				params[paramsLen] = 0
-			}
-			params[paramsLen] *= 10
-			params[paramsLen] += ansi.Param(b[i]) - '0'
-		}
-		if b[i] == ':' {
-			params[paramsLen] |= parser.HasMoreFlag
-		}
-		if b[i] == ';' || b[i] == ':' {
-			paramsLen++
-			if paramsLen < len(params) {
-				// Don't overflow the params slice
-				params[paramsLen] = parser.MissingParam
-			}
-		}
-	}
-
-	if j > 0 && paramsLen < len(params) {
-		// has parameters
-		paramsLen++
-	}
+	i, paramsLen = scanParams(b, i, params[:])
 
 	// Scan intermediate bytes in the range 0x20-0x2F
 	var intermed byte

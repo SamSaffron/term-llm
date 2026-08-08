@@ -298,6 +298,20 @@
       return queued;
     }
   }
+  const resolveRunAnchor = (options, fallback) => {
+    const clientMessageId = String(options.clientMessageId || options.client_message_id || '').trim();
+    const rowId = options.anchorRowId ?? options.anchor_row_id;
+    return options.anchor || (clientMessageId
+      ? { clientMessageId }
+      : (rowId != null && String(rowId) !== '' ? { durableRowId: rowId } : fallback));
+  };
+  const recordTerminalCompactionMetadata = (controller) => {
+    const terminal = controller.conversation.active?.terminal;
+    if (!terminal) return;
+    if (!Object.prototype.hasOwnProperty.call(terminal, 'compactionSeq')) terminal.compactionSeq = controller.compactionSeq;
+    if (!Object.prototype.hasOwnProperty.call(terminal, 'compactionCount')) terminal.compactionCount = controller.compactionCount;
+  };
+
   class ConversationController extends TranscriptWindow {
     constructor(sessionId, budgets = {}) {
       super(sessionId, budgets);
@@ -319,14 +333,9 @@
         return true;
       }
       this.startedRev = Math.max(0, Number(startedRev) || 0);
-      const explicitClientMessageId = String(options.clientMessageId || options.client_message_id || '').trim();
-      const explicitRowID = options.anchorRowId ?? options.anchor_row_id;
       const durableTailID = this.ids.at(-1);
-      const anchor = options.anchor || (explicitClientMessageId
-        ? { clientMessageId: explicitClientMessageId }
-        : (explicitRowID != null && String(explicitRowID) !== ''
-          ? { durableRowId: explicitRowID }
-          : (this.conversation.active?.anchor || (durableTailID != null ? { durableRowId: durableTailID } : null))));
+      const fallback = this.conversation.active?.anchor || (durableTailID != null ? { durableRowId: durableTailID } : null);
+      const anchor = resolveRunAnchor(options, fallback);
       return startActiveRun(this.conversation, {
         responseId: id,
         runEpoch: epoch,
@@ -344,14 +353,8 @@
         return this.setActiveRun(id, revision, epoch, options);
       }
       if (epoch <= active.runEpoch) return false;
-      const explicitClientMessageId = String(options.clientMessageId || options.client_message_id || '').trim();
-      const explicitRowID = options.anchorRowId ?? options.anchor_row_id;
       const durableTailID = this.ids.at(-1);
-      const anchor = options.anchor || (explicitClientMessageId
-        ? { clientMessageId: explicitClientMessageId }
-        : (explicitRowID != null && String(explicitRowID) !== ''
-          ? { durableRowId: explicitRowID }
-          : (durableTailID != null ? { durableRowId: durableTailID } : null)));
+      const anchor = resolveRunAnchor(options, durableTailID != null ? { durableRowId: durableTailID } : null);
       this.conversation.active = initializeDurableBaseline(activeResponse.createActiveRun({ responseId: id, runEpoch: epoch, anchor }), this.conversation.durable);
       activeResponse.recordCompactionRefs(this.conversation.active, durableMessages(this.conversation.durable));
       this.conversation.protocolError = '';
@@ -372,11 +375,7 @@
       const changed = replaceActiveFromSnapshot(this.conversation, snapshot, { ...options, responseId: owner, anchor });
       if (!changed) return false;
       this.latestRunEpoch = Math.max(this.latestRunEpoch, Number(this.conversation.active?.runEpoch) || 0);
-      if (this.conversation.active?.terminal) {
-        const terminal = this.conversation.active.terminal;
-        if (!Object.prototype.hasOwnProperty.call(terminal, 'compactionSeq')) terminal.compactionSeq = this.compactionSeq;
-        if (!Object.prototype.hasOwnProperty.call(terminal, 'compactionCount')) terminal.compactionCount = this.compactionCount;
-      }
+      recordTerminalCompactionMetadata(this);
       return true;
     }
     applyResponseEvent(event, payload = {}) {
@@ -395,11 +394,7 @@
         }
       }
       const result = applyRunEvent(this.conversation, event, payload);
-      if (this.conversation.active?.terminal) {
-        const terminal = this.conversation.active.terminal;
-        if (!Object.prototype.hasOwnProperty.call(terminal, 'compactionSeq')) terminal.compactionSeq = this.compactionSeq;
-        if (!Object.prototype.hasOwnProperty.call(terminal, 'compactionCount')) terminal.compactionCount = this.compactionCount;
-      }
+      recordTerminalCompactionMetadata(this);
       this.latestRunEpoch = Math.max(this.latestRunEpoch, Number(this.conversation.active?.runEpoch) || 0);
       return result;
     }

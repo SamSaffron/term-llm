@@ -244,65 +244,8 @@ func wrapDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor string
 		return buildLine(lineNumStr, content)
 	}
 
-	// Need to wrap - split content into chunks
-	var b strings.Builder
-	remaining := content
-	isFirst := true
-	activeColors := "" // Track active ANSI codes across chunks
-
-	for len(remaining) > 0 {
-		rawRemaining := stripAnsi(remaining)
-		rawRemainingWidth := ansiDisplayWidth(remaining, 0)
-		if rawRemainingWidth == 0 {
-			break
-		}
-
-		chunkLen := contentWidth
-		if chunkLen > rawRemainingWidth {
-			chunkLen = rawRemainingWidth
-		}
-		if chunkLen == 0 {
-			chunkLen = 1
-		}
-
-		// Find a good break point (prefer space)
-		if chunkLen < rawRemainingWidth {
-			breakAt := chunkLen
-			// rawRemaining is byte-indexed; this heuristic is only for ASCII space.
-			for i := min(chunkLen-1, len(rawRemaining)-1); i > chunkLen/2; i-- {
-				if i < len(rawRemaining) && rawRemaining[i] == ' ' {
-					breakAt = i + 1
-					break
-				}
-			}
-			chunkLen = breakAt
-		}
-
-		chunk, rest := splitAtVisibleLength(remaining, chunkLen)
-
-		// Prefix chunk with any active colors from previous chunk
-		chunkWithColors := activeColors + chunk
-
-		if isFirst {
-			lineNumStr := fmt.Sprintf("%*d", lineNumWidth, lineNum)
-			b.WriteString(buildLine(lineNumStr, chunkWithColors))
-			isFirst = false
-		} else {
-			// Continuation line: spaces instead of line number
-			b.WriteString(buildLine(strings.Repeat(" ", lineNumWidth), chunkWithColors))
-		}
-
-		// Track active colors at end of this chunk for next iteration
-		activeColors = getActiveAnsiCodes(chunkWithColors)
-
-		remaining = rest
-	}
-
-	return b.String()
+	return wrapDiffChunks(content, contentWidth, lineNumWidth, lineNum, buildLine, getActiveAnsiCodes)
 }
-
-// diffAnsiRegex matches ANSI escape sequences for length calculation
-var diffAnsiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // getActiveAnsiCodes returns the ANSI codes that are "active" at the end of a string.
 // It tracks foreground colors set by \x1b[3Xm or \x1b[38;...m and returns them,
@@ -311,7 +254,7 @@ func getActiveAnsiCodes(s string) string {
 	var activeFg string
 
 	// Find all ANSI sequences and track state
-	matches := diffAnsiRegex.FindAllStringIndex(s, -1)
+	matches := ansiPattern.FindAllStringIndex(s, -1)
 	for _, match := range matches {
 		code := s[match[0]:match[1]]
 
@@ -328,11 +271,6 @@ func getActiveAnsiCodes(s string) string {
 	}
 
 	return activeFg
-}
-
-// stripAnsi removes ANSI escape codes from a string for length calculation
-func stripAnsi(s string) string {
-	return diffAnsiRegex.ReplaceAllString(s, "")
 }
 
 // expandTabsFromCol expands tabs to spaces, starting from a given column position.
@@ -470,7 +408,7 @@ func wordDiff(oldLine, newLine string) (oldSegs, newSegs []diffSegment) {
 	newWords := splitIntoTokens(newLine)
 
 	// Find LCS of words
-	lcs := computeWordLCS(oldWords, newWords)
+	lcs := computeLCS(oldWords, newWords)
 
 	// Build segments for old line
 	oldSegs = buildSegments(oldWords, lcs)
@@ -503,55 +441,6 @@ func splitIntoTokens(s string) []string {
 	}
 
 	return tokens
-}
-
-// computeWordLCS computes the longest common subsequence of word tokens
-func computeWordLCS(old, new []string) []string {
-	m, n := len(old), len(new)
-	if m == 0 || n == 0 {
-		return nil
-	}
-
-	// Build LCS length table
-	dp := make([][]int, m+1)
-	for i := range dp {
-		dp[i] = make([]int, n+1)
-	}
-
-	for i := 1; i <= m; i++ {
-		for j := 1; j <= n; j++ {
-			if old[i-1] == new[j-1] {
-				dp[i][j] = dp[i-1][j-1] + 1
-			} else if dp[i-1][j] >= dp[i][j-1] {
-				dp[i][j] = dp[i-1][j]
-			} else {
-				dp[i][j] = dp[i][j-1]
-			}
-		}
-	}
-
-	// Backtrack to find LCS
-	lcsLen := dp[m][n]
-	if lcsLen == 0 {
-		return nil
-	}
-
-	lcs := make([]string, lcsLen)
-	i, j := m, n
-	for i > 0 && j > 0 {
-		if old[i-1] == new[j-1] {
-			lcsLen--
-			lcs[lcsLen] = old[i-1]
-			i--
-			j--
-		} else if dp[i-1][j] >= dp[i][j-1] {
-			i--
-		} else {
-			j--
-		}
-	}
-
-	return lcs
 }
 
 // buildSegments converts a list of words into segments by comparing against LCS
@@ -621,7 +510,7 @@ func shouldUseWordDiff(oldLine, newLine string) bool {
 	}
 
 	// Compute LCS and check similarity
-	lcs := computeWordLCS(oldWords, newWords)
+	lcs := computeLCS(oldWords, newWords)
 
 	// Count non-whitespace tokens in LCS
 	lcsNonSpace := 0
@@ -693,60 +582,50 @@ func wrapWordDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor st
 		return buildLine(lineNumStr, content)
 	}
 
-	// Need to wrap - split content into chunks
+	return wrapDiffChunks(content, contentWidth, lineNumWidth, lineNum, buildLine, getActiveAnsiCodesWithBg)
+}
+
+// stripAnsi preserves the package-local test helper name while production code uses StripANSI.
+func stripAnsi(s string) string {
+	return StripANSI(s)
+}
+
+func wrapDiffChunks(content string, contentWidth, lineNumWidth, lineNum int, buildLine func(string, string) string, activeCodes func(string) string) string {
 	var b strings.Builder
 	remaining := content
 	isFirst := true
-	activeColors := "" // Track active ANSI codes (fg and bg) across chunks
-
+	active := ""
 	for len(remaining) > 0 {
-		rawRemaining := stripAnsi(remaining)
+		rawRemaining := StripANSI(remaining)
 		rawRemainingWidth := ansiDisplayWidth(remaining, 0)
 		if rawRemainingWidth == 0 {
 			break
 		}
-
-		chunkLen := contentWidth
-		if chunkLen > rawRemainingWidth {
-			chunkLen = rawRemainingWidth
-		}
+		chunkLen := min(contentWidth, rawRemainingWidth)
 		if chunkLen == 0 {
 			chunkLen = 1
 		}
-
-		// Find a good break point (prefer space)
 		if chunkLen < rawRemainingWidth {
 			breakAt := chunkLen
-			// rawRemaining is byte-indexed; this heuristic is only for ASCII space.
 			for i := min(chunkLen-1, len(rawRemaining)-1); i > chunkLen/2; i-- {
-				if i < len(rawRemaining) && rawRemaining[i] == ' ' {
+				if rawRemaining[i] == ' ' {
 					breakAt = i + 1
 					break
 				}
 			}
 			chunkLen = breakAt
 		}
-
 		chunk, rest := splitAtVisibleLength(remaining, chunkLen)
-
-		// Prefix chunk with any active colors from previous chunk
-		chunkWithColors := activeColors + chunk
-
+		chunk = active + chunk
+		lineNumStr := strings.Repeat(" ", lineNumWidth)
 		if isFirst {
-			lineNumStr := fmt.Sprintf("%*d", lineNumWidth, lineNum)
-			b.WriteString(buildLine(lineNumStr, chunkWithColors))
+			lineNumStr = fmt.Sprintf("%*d", lineNumWidth, lineNum)
 			isFirst = false
-		} else {
-			// Continuation line: spaces instead of line number
-			b.WriteString(buildLine(strings.Repeat(" ", lineNumWidth), chunkWithColors))
 		}
-
-		// Track active colors at end of this chunk for next iteration
-		activeColors = getActiveAnsiCodesWithBg(chunkWithColors)
-
+		b.WriteString(buildLine(lineNumStr, chunk))
+		active = activeCodes(chunk)
 		remaining = rest
 	}
-
 	return b.String()
 }
 
@@ -755,7 +634,7 @@ func getActiveAnsiCodesWithBg(s string) string {
 	var activeFg, activeBg string
 
 	// Find all ANSI sequences and track state
-	matches := diffAnsiRegex.FindAllStringIndex(s, -1)
+	matches := ansiPattern.FindAllStringIndex(s, -1)
 	for _, match := range matches {
 		code := s[match[0]:match[1]]
 

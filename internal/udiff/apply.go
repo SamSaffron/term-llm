@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/textmatch"
 )
 
 // ApplyResult contains the result of applying hunks with warnings for failures.
@@ -499,70 +501,11 @@ func matchSequenceSimilar(content []string, pattern []string) bool {
 }
 
 // lineSimilarity computes similarity ratio between two strings (0.0 to 1.0).
-// Uses Levenshtein distance normalized by max length.
 func lineSimilarity(a, b string) float64 {
-	// Trim for comparison but compute on trimmed strings
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-
-	if a == b {
-		return 1.0
-	}
-
-	maxLen := len(a)
-	if len(b) > maxLen {
-		maxLen = len(b)
-	}
-	if maxLen == 0 {
-		return 1.0 // Both empty
-	}
-
-	dist := levenshteinDistance(a, b)
-	return 1.0 - float64(dist)/float64(maxLen)
+	return textmatch.LineSimilarity(a, b)
 }
 
 // levenshteinDistance computes the edit distance between two strings.
 func levenshteinDistance(a, b string) int {
-	if len(a) == 0 {
-		return len(b)
-	}
-	if len(b) == 0 {
-		return len(a)
-	}
-
-	// Use two rows for space efficiency
-	prev := make([]int, len(b)+1)
-	curr := make([]int, len(b)+1)
-
-	for j := range prev {
-		prev[j] = j
-	}
-
-	for i := 1; i <= len(a); i++ {
-		curr[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			curr[j] = min(
-				prev[j]+1,      // deletion
-				curr[j-1]+1,    // insertion
-				prev[j-1]+cost, // substitution
-			)
-		}
-		prev, curr = curr, prev
-	}
-
-	return prev[len(b)]
-}
-
-func min(nums ...int) int {
-	m := nums[0]
-	for _, n := range nums[1:] {
-		if n < m {
-			m = n
-		}
-	}
-	return m
+	return textmatch.LevenshteinDistance(a, b)
 }

@@ -14,6 +14,15 @@ const {
   refreshSessionFromServerTruth
 } = app;
 
+const resumeAfterInteractiveSubmission = (sessionId) => {
+  if (state.abortController) return;
+  setSessionOptimisticBusy(sessionId, true);
+  setStreaming(true);
+  persistAndRefreshShell();
+  app.refreshSidebarStatusPoll?.();
+  app.scheduleSessionStatePoll(sessionId, 400);
+};
+
 // ===== ask_user modal =====
 const closeAskUserModal = () => {
   state.askUser = null;
@@ -395,13 +404,7 @@ const submitAskUserModal = async (cancelled = false) => {
       }
     }
     closeAskUserModal();
-    if (!state.abortController) {
-      setSessionOptimisticBusy(prompt.sessionId, true);
-      setStreaming(true);
-      persistAndRefreshShell();
-      app.refreshSidebarStatusPoll?.();
-      app.scheduleSessionStatePoll(prompt.sessionId, 400);
-    }
+    resumeAfterInteractiveSubmission(prompt.sessionId);
   } catch (err) {
     if (err?.status === 409) {
       const session = state.sessions.find((item) => item.id === prompt.sessionId) || null;
@@ -514,13 +517,7 @@ const submitApprovalModal = async (denied = false) => {
       throw await normalizeError(response);
     }
     closeApprovalModal();
-    if (!state.abortController) {
-      setSessionOptimisticBusy(prompt.sessionId, true);
-      setStreaming(true);
-      persistAndRefreshShell();
-      app.refreshSidebarStatusPoll?.();
-      app.scheduleSessionStatePoll(prompt.sessionId, 400);
-    }
+    resumeAfterInteractiveSubmission(prompt.sessionId);
   } catch (err) {
     if (err?.status === 409) {
       const session = state.sessions.find((item) => item.id === prompt.sessionId) || null;

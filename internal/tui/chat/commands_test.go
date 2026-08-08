@@ -25,6 +25,7 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/testutil"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/worktree"
@@ -3476,26 +3477,7 @@ func procStatState(data []byte) (byte, bool) {
 }
 
 func TestProcStatState(t *testing.T) {
-	tests := []struct {
-		name string
-		stat string
-		want byte
-		ok   bool
-	}{
-		{name: "running", stat: "123 (sleep) S 1 2 3", want: 'S', ok: true},
-		{name: "zombie", stat: "123 (sleep) Z 1 2 3", want: 'Z', ok: true},
-		{name: "command with paren", stat: "123 (odd)name) R 1 2 3", want: 'R', ok: true},
-		{name: "missing close paren", stat: "123 sleep S 1 2 3", ok: false},
-		{name: "missing state", stat: "123 (sleep)", ok: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := procStatState([]byte(tt.stat))
-			if ok != tt.ok || got != tt.want {
-				t.Fatalf("procStatState(%q) = %q, %v; want %q, %v", tt.stat, got, ok, tt.want, tt.ok)
-			}
-		})
-	}
+	testutil.AssertProcStatState(t, procStatState)
 }
 
 func TestStreamDoneReloadRespectsCompactionSeq(t *testing.T) {

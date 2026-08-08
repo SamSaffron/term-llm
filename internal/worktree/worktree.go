@@ -19,10 +19,10 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/textmatch"
 )
 
 // Status describes where a worktree is in its lifecycle.
@@ -1558,24 +1558,7 @@ func randomInt(n int) int {
 	return int(v.Int64())
 }
 
-func slug(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			b.WriteRune(r)
-			lastDash = false
-		case r == '-' || r == '_' || r == '.' || unicode.IsSpace(r):
-			if b.Len() > 0 && !lastDash {
-				b.WriteByte('-')
-				lastDash = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
+func slug(value string) string { return textmatch.Slug(value) }
 
 func metaDir(root string) string        { return filepath.Join(root, ".meta") }
 func metaPath(root, name string) string { return filepath.Join(metaDir(root), slug(name)+".json") }

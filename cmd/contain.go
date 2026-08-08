@@ -364,7 +364,7 @@ func printContainWebUIInfo(cmd *cobra.Command, name string) {
 		return
 	}
 	envPath := filepath.Join(dir, ".env")
-	values, err := readContainEnvFile(envPath)
+	values, err := contain.ReadEnvFile(envPath)
 	if err != nil {
 		return
 	}
@@ -409,7 +409,7 @@ func printContainAuthSeedHints(cmd *cobra.Command, name string) {
 	if err != nil {
 		return
 	}
-	values, err := readContainEnvFile(filepath.Join(dir, ".env"))
+	values, err := contain.ReadEnvFile(filepath.Join(dir, ".env"))
 	if err != nil {
 		return
 	}
@@ -462,31 +462,6 @@ func promptAndMaybeStartContainWorkspace(cmd *cobra.Command, name string) (bool,
 
 func containCommandInputIsTerminal(cmd *cobra.Command) bool {
 	return containInputIsTerminal(cmd.InOrStdin())
-}
-
-func readContainEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-		if key != "" {
-			values[key] = value
-		}
-	}
-	return values, nil
 }
 
 func init() {

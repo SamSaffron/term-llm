@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -375,44 +376,8 @@ type schemaExecutor interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-type connSchemaExecutor struct {
-	ctx  context.Context
-	conn *sql.Conn
-}
-
-func (e connSchemaExecutor) Exec(query string, args ...any) (sql.Result, error) {
-	return e.conn.ExecContext(e.ctx, query, args...)
-}
-
-func (e connSchemaExecutor) Query(query string, args ...any) (*sql.Rows, error) {
-	return e.conn.QueryContext(e.ctx, query, args...)
-}
-
-func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) (err error) {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("get migration connection: %w", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("begin immediate migration transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
-		}
-	}()
-
-	if err := fn(connSchemaExecutor{ctx: ctx, conn: conn}); err != nil {
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("commit migration transaction: %w", err)
-	}
-	committed = true
-	return nil
+func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) error {
+	return sqliteutil.WithImmediateMigrationTx(ctx, db, func(exec sqliteutil.Executor) error { return fn(exec) })
 }
 
 // migrations defines schema migrations for upgrading existing databases.
@@ -2238,6 +2203,48 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 }
 
 // List returns sessions matching the options.
+func (s *SQLiteStore) sessionCategoryFilter(categories []string) (string, []any) {
+	if len(categories) == 0 {
+		return "", nil
+	}
+	clauses := make([]string, 0, len(categories))
+	args := make([]any, 0, len(categories))
+	sawSpecificCategory := false
+	for _, raw := range categories {
+		category := strings.ToLower(strings.TrimSpace(raw))
+		switch category {
+		case "", "all":
+			clauses = nil
+		case "chat":
+			sawSpecificCategory = true
+			if s.hasOrigin {
+				clauses = append(clauses, "(s.mode = 'chat' AND COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'tui')")
+			} else {
+				clauses = append(clauses, "(s.mode = 'chat')")
+			}
+		case "web":
+			sawSpecificCategory = true
+			if s.hasOrigin {
+				clauses = append(clauses, "(COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'web')")
+			}
+		case "ask", "plan", "exec":
+			sawSpecificCategory = true
+			clauses = append(clauses, "(s.mode = ?)")
+			args = append(args, category)
+		}
+		if clauses == nil {
+			break
+		}
+	}
+	if len(clauses) > 0 {
+		return " AND (" + strings.Join(clauses, " OR ") + ")", args
+	}
+	if sawSpecificCategory {
+		return " AND 1 = 0", nil
+	}
+	return "", nil
+}
+
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSummary, error) {
 	cacheWriteCol := "0"
 	if s.hasCacheWriteTokens {
@@ -2321,41 +2328,9 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		query += " AND (',' || s.tags || ',' LIKE '%,' || ? || ',%')"
 		args = append(args, opts.Tag)
 	}
-	if len(opts.Categories) > 0 {
-		clauses := make([]string, 0, len(opts.Categories))
-		sawSpecificCategory := false
-		for _, raw := range opts.Categories {
-			category := strings.ToLower(strings.TrimSpace(raw))
-			switch category {
-			case "", "all":
-				clauses = nil
-			case "chat":
-				sawSpecificCategory = true
-				if s.hasOrigin {
-					clauses = append(clauses, "(s.mode = 'chat' AND COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'tui')")
-				} else {
-					clauses = append(clauses, "(s.mode = 'chat')")
-				}
-			case "web":
-				sawSpecificCategory = true
-				if s.hasOrigin {
-					clauses = append(clauses, "(COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'web')")
-				}
-			case "ask", "plan", "exec":
-				sawSpecificCategory = true
-				clauses = append(clauses, "(s.mode = ?)")
-				args = append(args, category)
-			}
-			if clauses == nil {
-				break
-			}
-		}
-		if len(clauses) > 0 {
-			query += " AND (" + strings.Join(clauses, " OR ") + ")"
-		} else if sawSpecificCategory {
-			query += " AND 1 = 0"
-		}
-	}
+	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
+	query += categoryClause
+	args = append(args, categoryArgs...)
 	if opts.BeforeNumber > 0 {
 		query += " AND s.number < ?"
 		args = append(args, opts.BeforeNumber)
@@ -2499,41 +2474,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 
 	filterClause := ""
 	args := []any{ftsQuery}
-	if len(opts.Categories) > 0 {
-		clauses := make([]string, 0, len(opts.Categories))
-		sawSpecificCategory := false
-		for _, raw := range opts.Categories {
-			category := strings.ToLower(strings.TrimSpace(raw))
-			switch category {
-			case "", "all":
-				clauses = nil
-			case "chat":
-				sawSpecificCategory = true
-				if s.hasOrigin {
-					clauses = append(clauses, "(s.mode = 'chat' AND COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'tui')")
-				} else {
-					clauses = append(clauses, "(s.mode = 'chat')")
-				}
-			case "web":
-				sawSpecificCategory = true
-				if s.hasOrigin {
-					clauses = append(clauses, "(COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') = 'web')")
-				}
-			case "ask", "plan", "exec":
-				sawSpecificCategory = true
-				clauses = append(clauses, "(s.mode = ?)")
-				args = append(args, category)
-			}
-			if clauses == nil {
-				break
-			}
-		}
-		if len(clauses) > 0 {
-			filterClause += " AND (" + strings.Join(clauses, " OR ") + ")"
-		} else if sawSpecificCategory {
-			filterClause += " AND 1 = 0"
-		}
-	}
+	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
+	filterClause += categoryClause
+	args = append(args, categoryArgs...)
 	if !opts.Archived {
 		filterClause += " AND s.archived = FALSE"
 	}

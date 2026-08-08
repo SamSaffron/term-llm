@@ -4,6 +4,8 @@ package edit
 import (
 	"fmt"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/textmatch"
 )
 
 // MatchLevel indicates which matching strategy succeeded.
@@ -404,58 +406,17 @@ func findFuzzyMatch(content, search string) (MatchResult, bool) {
 
 // lineSimilarity computes similarity ratio between two strings (0.0 to 1.0).
 func lineSimilarity(a, b string) float64 {
-	a = strings.TrimSpace(a)
-	b = strings.TrimSpace(b)
-
-	if a == b {
-		return 1.0
-	}
-
-	maxLen := len(a)
-	if len(b) > maxLen {
-		maxLen = len(b)
-	}
-	if maxLen == 0 {
-		return 1.0
-	}
-
-	dist := levenshteinDistance(a, b)
-	return 1.0 - float64(dist)/float64(maxLen)
+	return textmatch.LineSimilarity(a, b)
 }
 
 // levenshteinDistance computes edit distance between two strings.
 func levenshteinDistance(a, b string) int {
-	if len(a) == 0 {
-		return len(b)
-	}
-	if len(b) == 0 {
-		return len(a)
-	}
+	return textmatch.LevenshteinDistance(a, b)
+}
 
-	prev := make([]int, len(b)+1)
-	curr := make([]int, len(b)+1)
-
-	for j := range prev {
-		prev[j] = j
-	}
-
-	for i := 1; i <= len(a); i++ {
-		curr[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			curr[j] = min(
-				prev[j]+1,
-				curr[j-1]+1,
-				prev[j-1]+cost,
-			)
-		}
-		prev, curr = curr, prev
-	}
-
-	return prev[len(b)]
+// LineRangeToByteRange converts one-indexed line numbers to byte offsets.
+func LineRangeToByteRange(content string, startLine, endLine int) (int, int) {
+	return lineRangeToByteRange(content, startLine, endLine)
 }
 
 // lineRangeToByteRange converts 1-indexed line numbers to byte offsets.

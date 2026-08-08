@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -167,27 +166,10 @@ func (rt *serveRuntime) submitAskUser(callID string, answers []tools.AskUserAnsw
 func (rt *serveRuntime) pendingAskUserPrompts() []serveAskUserPrompt {
 	rt.askUserMu.Lock()
 	defer rt.askUserMu.Unlock()
-	if len(rt.pendingAskUsers) == 0 {
-		return nil
-	}
-	prompts := make([]serveAskUserPrompt, 0, len(rt.pendingAskUsers))
-	for _, pending := range rt.pendingAskUsers {
-		if pending == nil {
-			continue
-		}
-		prompts = append(prompts, pending.snapshot())
-	}
-	slices.SortFunc(prompts, func(a, b serveAskUserPrompt) int {
-		switch {
-		case a.CreatedAt < b.CreatedAt:
-			return -1
-		case a.CreatedAt > b.CreatedAt:
-			return 1
-		default:
-			return 0
-		}
-	})
-	return prompts
+	return sortedPendingSnapshots(rt.pendingAskUsers,
+		func(pending *servePendingAskUser) serveAskUserPrompt { return pending.snapshot() },
+		func(prompt serveAskUserPrompt) int64 { return prompt.CreatedAt },
+	)
 }
 
 func (rt *serveRuntime) clearPendingAskUsers() {

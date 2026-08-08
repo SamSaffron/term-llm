@@ -1,56 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-const source = fs.readFileSync(path.join(__dirname, 'slash-commands.js'), 'utf8');
+const { Element, assert, loadSource, vm } = require('../testdata/completions_harness.js');
+const source = loadSource('slash-commands.js');
 
-class ClassList {
-  constructor(element) { this.element = element; }
-  values() { return new Set(String(this.element.className || '').split(/\s+/).filter(Boolean)); }
-  toggle(token, force) {
-    const values = this.values();
-    if (force) values.add(token); else values.delete(token);
-    this.element.className = [...values].join(' ');
-  }
-}
-
-class Element {
-  constructor() {
-    this.children = [];
-    this.listeners = {};
-    this.attributes = {};
-    this.className = '';
-    this.classList = new ClassList(this);
-    this.hidden = false;
-    this.value = '';
-  }
-  addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); }
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.children = [...children]; }
-  setAttribute(name, value) { this.attributes[name] = String(value); }
-  focus() { this.focused = true; }
-  dispatch(type, init = {}) {
-    const event = {
-      type,
-      key: '',
-      isComposing: false,
-      defaultPrevented: false,
-      immediatePropagationStopped: false,
-      preventDefault() { this.defaultPrevented = true; },
-      stopImmediatePropagation() { this.immediatePropagationStopped = true; },
-      ...init,
-    };
-    for (const listener of this.listeners[type] || []) {
-      listener(event);
-      if (event.immediatePropagationStopped) break;
-    }
-    return event;
-  }
-}
-
-const promptInput = new Element();
+const promptInput = new Element({ selection: false });
 const slashCommandMenu = new Element();
 const document = {
   createElement() { return new Element(); },
@@ -63,7 +17,6 @@ const app = {
 const window = { TermLLMApp: app };
 vm.runInNewContext(source, { window, document, console }, { filename: 'slash-commands.js' });
 
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 promptInput.value = '/';
 promptInput.dispatch('input');

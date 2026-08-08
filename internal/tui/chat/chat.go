@@ -1216,21 +1216,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 
 	// Invalidate cached markdown renderings only when their width changes.
 	if widthChanged && m.tracker != nil {
-		for i := range m.tracker.Segments {
-			m.tracker.Segments[i].Rendered = ""
-			m.tracker.Segments[i].SafeRendered = ""
-			m.tracker.Segments[i].SafePos = 0
-			// Also clear diff caches (Issue 2: diff render cache invalidation).
-			m.tracker.Segments[i].DiffRendered = ""
-			m.tracker.Segments[i].DiffWidth = 0
-			// Clear subagent diff caches.
-			for j := range m.tracker.Segments[i].SubagentDiffs {
-				m.tracker.Segments[i].SubagentDiffs[j].Rendered = ""
-				m.tracker.Segments[i].SubagentDiffs[j].Width = 0
-			}
-		}
-		// Resize active streaming renderers.
-		m.tracker.ResizeStreamRenderers(m.width)
+		m.tracker.InvalidateRenderCaches(m.width)
 	}
 
 	// Completed streaming output and historical markdown are width-dependent.
@@ -1957,6 +1943,37 @@ func (m *Model) closeEmbeddedViewsForInteractivePrompt() {
 	m.sideQuestion.ConfirmClear = false
 	m.selection = Selection{}
 	m.textarea.Focus()
+}
+
+func (m *Model) flushBeforeExternalUI(done chan<- struct{}) (tea.Model, tea.Cmd) {
+	m.pausedForExternalUI = true
+	markComplete := func() {
+		if m.tracker != nil {
+			m.tracker.MarkCurrentTextComplete(func(text string) string {
+				return m.renderMarkdown(text)
+			})
+		}
+	}
+	if m.altScreen {
+		markComplete()
+		close(done)
+		return m, nil
+	}
+	if m.tracker != nil {
+		markComplete()
+		result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMd)
+		if result.ToPrint != "" {
+			return m, tea.Sequence(
+				tea.Println(result.ToPrint),
+				func() tea.Msg {
+					close(done)
+					return nil
+				},
+			)
+		}
+	}
+	close(done)
+	return m, nil
 }
 
 // Update handles messages
@@ -3189,82 +3206,10 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		}
 
 	case FlushBeforeAskUserMsg:
-		// Set flag to suppress spinner in View() while external UI is active
-		m.pausedForExternalUI = true
-
-		// In alt screen mode, no flushing needed - just mark text complete and signal done.
-		if m.altScreen {
-			if m.tracker != nil {
-				m.tracker.MarkCurrentTextComplete(func(text string) string {
-					return m.renderMarkdown(text)
-				})
-			}
-			close(msg.Done)
-			return m, nil
-		}
-
-		// Partial flush - keep last maxViewLines visible for after external UI returns
-		if m.tracker != nil {
-			// Mark current text as complete
-			m.tracker.MarkCurrentTextComplete(func(text string) string {
-				return m.renderMarkdown(text)
-			})
-
-			// Partial flush - keep some context visible
-			result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMd)
-			if result.ToPrint != "" {
-				// Signal that flush is complete after the print finishes
-				return m, tea.Sequence(
-					tea.Println(result.ToPrint),
-					func() tea.Msg {
-						close(msg.Done)
-						return nil
-					},
-				)
-			}
-		}
-		// Nothing to flush, signal done immediately
-		close(msg.Done)
-		return m, nil
+		return m.flushBeforeExternalUI(msg.Done)
 
 	case FlushBeforeApprovalMsg:
-		// Set flag to suppress spinner in View() while approval UI is active
-		m.pausedForExternalUI = true
-
-		// In alt screen mode, no flushing needed - just mark text complete and signal done.
-		if m.altScreen {
-			if m.tracker != nil {
-				m.tracker.MarkCurrentTextComplete(func(text string) string {
-					return m.renderMarkdown(text)
-				})
-			}
-			close(msg.Done)
-			return m, nil
-		}
-
-		// Partial flush - keep some context visible for after external UI returns
-		if m.tracker != nil {
-			// Mark current text as complete
-			m.tracker.MarkCurrentTextComplete(func(text string) string {
-				return m.renderMarkdown(text)
-			})
-
-			// Partial flush - keep some context visible
-			result := m.tracker.FlushBeforeExternalUI(m.width, 0, maxViewLines, m.renderMd)
-			if result.ToPrint != "" {
-				// Signal that flush is complete after the print finishes
-				return m, tea.Sequence(
-					tea.Println(result.ToPrint),
-					func() tea.Msg {
-						close(msg.Done)
-						return nil
-					},
-				)
-			}
-		}
-		// Nothing to flush, signal done immediately
-		close(msg.Done)
-		return m, nil
+		return m.flushBeforeExternalUI(msg.Done)
 
 	case ResumeFromExternalUIMsg:
 		// Resume from external UI (ask_user or approval)

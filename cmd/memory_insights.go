@@ -339,57 +339,70 @@ func runMemoryInsightsExpand(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+type insightMaintenanceKind int
+
+const (
+	insightMaintenanceDecay insightMaintenanceKind = iota
+	insightMaintenanceGC
+)
+
+type insightMaintenanceSpec struct {
+	preview       func(*memorydb.Store, context.Context, string, float64) (int, error)
+	apply         func(*memorydb.Store, context.Context, string, float64) (int, error)
+	previewFormat string
+	applyFormat   string
+}
+
+var insightMaintenanceSpecs = map[insightMaintenanceKind]insightMaintenanceSpec{
+	insightMaintenanceDecay: {
+		preview: func(store *memorydb.Store, ctx context.Context, agent string, value float64) (int, error) {
+			return countInsightDecayPreview(ctx, store, agent, value)
+		},
+		apply:         (*memorydb.Store).DecayInsights,
+		previewFormat: "decay: would update %d insights (half-life=%.1f days; dry-run, no changes)\n",
+		applyFormat:   "decayed %d insights (half-life=%.1f days)\n",
+	},
+	insightMaintenanceGC: {
+		preview: func(store *memorydb.Store, ctx context.Context, agent string, value float64) (int, error) {
+			return countInsightGCCandidates(ctx, store, agent, value)
+		},
+		apply:         (*memorydb.Store).GCInsights,
+		previewFormat: "gc: would delete %d insights below confidence %.2f (dry-run, no changes)\n",
+		applyFormat:   "gc: deleted %d insights below confidence %.2f\n",
+	},
+}
+
 func runMemoryInsightsDecay(cmd *cobra.Command, args []string) error {
-	agent := strings.TrimSpace(memoryAgent)
-
-	store, err := openMemoryStore()
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
 	halfLife, _ := cmd.Flags().GetFloat64("half-life")
-	if memoryDryRun {
-		n, err := countInsightDecayPreview(context.Background(), store, agent, halfLife)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("decay: would update %d insights (half-life=%.1f days; dry-run, no changes)\n", n, halfLife)
-		return nil
-	}
-
-	n, err := store.DecayInsights(context.Background(), agent, halfLife)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("decayed %d insights (half-life=%.1f days)\n", n, halfLife)
-	return nil
+	return runInsightMaintenance(insightMaintenanceDecay, halfLife)
 }
 
 func runMemoryInsightsGC(cmd *cobra.Command, args []string) error {
-	agent := strings.TrimSpace(memoryAgent)
+	minConf, _ := cmd.Flags().GetFloat64("min-confidence")
+	return runInsightMaintenance(insightMaintenanceGC, minConf)
+}
 
+func runInsightMaintenance(kind insightMaintenanceKind, value float64) error {
+	spec, ok := insightMaintenanceSpecs[kind]
+	if !ok {
+		return fmt.Errorf("unknown insight maintenance operation %d", kind)
+	}
 	store, err := openMemoryStore()
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-
-	minConf, _ := cmd.Flags().GetFloat64("min-confidence")
+	operation := spec.apply
+	format := spec.applyFormat
 	if memoryDryRun {
-		n, err := countInsightGCCandidates(context.Background(), store, agent, minConf)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("gc: would delete %d insights below confidence %.2f (dry-run, no changes)\n", n, minConf)
-		return nil
+		operation = spec.preview
+		format = spec.previewFormat
 	}
-
-	n, err := store.GCInsights(context.Background(), agent, minConf)
+	n, err := operation(store, context.Background(), strings.TrimSpace(memoryAgent), value)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("gc: deleted %d insights below confidence %.2f\n", n, minConf)
+	fmt.Printf(format, n, value)
 	return nil
 }
 

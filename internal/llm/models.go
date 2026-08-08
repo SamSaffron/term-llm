@@ -18,6 +18,22 @@ type ModelEntry struct {
 	ReasoningEfforts []string // supported suffix-based reasoning-effort aliases (e.g. low, medium, high)
 }
 
+func modelsWithLimits(inputLimit, outputLimit int, ids ...string) []ModelEntry {
+	models := make([]ModelEntry, len(ids))
+	for i, id := range ids {
+		models[i] = ModelEntry{ID: id, InputLimit: inputLimit, OutputLimit: outputLimit}
+	}
+	return models
+}
+
+func concatModelEntries(groups ...[]ModelEntry) []ModelEntry {
+	var models []ModelEntry
+	for _, group := range groups {
+		models = append(models, group...)
+	}
+	return models
+}
+
 // ProviderModels contains curated fallback model entries for providers without
 // dynamic discovery or for offline/default UIs. Dynamic providers such as Copilot
 // may intentionally omit entries and populate model IDs from their live cache.
@@ -177,26 +193,16 @@ var ProviderModels = map[string][]ModelEntry{
 		// Grok 2
 		{ID: "grok-2", InputLimit: 123_000, OutputLimit: 8_192},
 	},
-	"ollama": {
-		// Qwen3 coding/agent (think suffix enables extended reasoning via -think flag)
-		{ID: "qwen2.5-coder:7b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen2.5-coder:14b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen2.5-coder:32b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen3:8b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen3:8b-think", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen3:14b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen3:14b-think", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen3:32b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "qwen3:32b-think", InputLimit: 30_000, OutputLimit: 8_192},
-		// Llama
-		{ID: "llama3.3:70b", InputLimit: 120_000, OutputLimit: 8_192},
-		{ID: "llama3.2:3b", InputLimit: 120_000, OutputLimit: 8_192},
-		{ID: "llama3.2:1b", InputLimit: 120_000, OutputLimit: 8_192},
-		// DeepSeek-R1 (think is always on)
-		{ID: "deepseek-r1:7b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "deepseek-r1:14b", InputLimit: 30_000, OutputLimit: 8_192},
-		{ID: "deepseek-r1:32b", InputLimit: 30_000, OutputLimit: 8_192},
-	},
+	"ollama": concatModelEntries(
+		// Qwen coding/agent models; the -think suffix enables extended reasoning.
+		modelsWithLimits(30_000, 8_192,
+			"qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b",
+			"qwen3:8b", "qwen3:8b-think", "qwen3:14b", "qwen3:14b-think", "qwen3:32b", "qwen3:32b-think",
+		),
+		modelsWithLimits(120_000, 8_192, "llama3.3:70b", "llama3.2:3b", "llama3.2:1b"),
+		// DeepSeek-R1 models always reason; no explicit -think variant is needed.
+		modelsWithLimits(30_000, 8_192, "deepseek-r1:7b", "deepseek-r1:14b", "deepseek-r1:32b"),
+	),
 	"bedrock": {
 		// AWS Bedrock: same friendly names as anthropic (translated to Bedrock IDs internally)
 		// and the same reasoning-effort defaults as anthropic/claude-bin.

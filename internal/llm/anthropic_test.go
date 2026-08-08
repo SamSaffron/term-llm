@@ -365,33 +365,40 @@ func TestBuildAnthropicBlocks_UserImagePart(t *testing.T) {
 	}
 }
 
-func TestBuildAnthropicToolResult_NonViewImageToolDoesNotParseImageMarker(t *testing.T) {
-	content := "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""
-	parts := []Part{{
-		Type: PartToolResult,
-		ToolResult: &ToolResult{
-			ID:      "call-1",
-			Name:    "read_file",
-			Content: content,
-		},
-	}}
-
-	blocks := buildAnthropicBlocks(parts, false)
-	if len(blocks) != 1 {
-		t.Fatalf("expected 1 block, got %d", len(blocks))
+func TestAnthropicToolResultMarkerTextRemainsText(t *testing.T) {
+	cases := []struct {
+		name    string
+		tool    string
+		content string
+		beta    bool
+	}{
+		{name: "normal non-image tool", tool: "read_file", content: "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""},
+		{name: "normal image marker", tool: "view_image", content: "Image loaded\n[IMAGE_DATA:image/png:aGVsbG8=]"},
+		{name: "beta non-image tool", tool: "read_file", content: "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\"", beta: true},
 	}
-	tr := blocks[0].OfToolResult
-	if tr == nil {
-		t.Fatalf("expected tool_result block")
-	}
-	if len(tr.Content) != 1 {
-		t.Fatalf("expected 1 tool_result content block, got %d", len(tr.Content))
-	}
-	if tr.Content[0].OfText == nil || tr.Content[0].OfImage != nil {
-		t.Fatalf("expected only text content block, got %#v", tr.Content[0])
-	}
-	if got := tr.Content[0].OfText.Text; got != content {
-		t.Fatalf("expected tool_result text to remain unchanged, got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := []Part{{Type: PartToolResult, ToolResult: &ToolResult{ID: "call-1", Name: tc.tool, Content: tc.content}}}
+			if tc.beta {
+				blocks := buildAnthropicBetaBlocks(parts, false)
+				if len(blocks) != 1 || blocks[0].OfToolResult == nil || len(blocks[0].OfToolResult.Content) != 1 {
+					t.Fatalf("unexpected beta tool result: %#v", blocks)
+				}
+				content := blocks[0].OfToolResult.Content[0]
+				if content.OfText == nil || content.OfImage != nil || content.OfText.Text != tc.content {
+					t.Fatalf("expected unchanged beta text content, got %#v", content)
+				}
+				return
+			}
+			blocks := buildAnthropicBlocks(parts, false)
+			if len(blocks) != 1 || blocks[0].OfToolResult == nil || len(blocks[0].OfToolResult.Content) != 1 {
+				t.Fatalf("unexpected tool result: %#v", blocks)
+			}
+			content := blocks[0].OfToolResult.Content[0]
+			if content.OfText == nil || content.OfImage != nil || content.OfText.Text != tc.content {
+				t.Fatalf("expected unchanged text content, got %#v", content)
+			}
+		})
 	}
 }
 
@@ -435,66 +442,6 @@ func TestBuildAnthropicToolResult_ViewImageToolUsesStructuredContentParts(t *tes
 	}
 	if tr.Content[2].OfText == nil || tr.Content[2].OfText.Text != "done" {
 		t.Fatalf("expected third content block to be text 'done', got %#v", tr.Content[2])
-	}
-}
-
-func TestBuildAnthropicToolResult_ViewImageToolDoesNotParseImageMarkerText(t *testing.T) {
-	content := "Image loaded\n[IMAGE_DATA:image/png:aGVsbG8=]"
-	parts := []Part{{
-		Type: PartToolResult,
-		ToolResult: &ToolResult{
-			ID:      "call-1",
-			Name:    "view_image",
-			Content: content,
-		},
-	}}
-
-	blocks := buildAnthropicBlocks(parts, false)
-	if len(blocks) != 1 {
-		t.Fatalf("expected 1 block, got %d", len(blocks))
-	}
-	tr := blocks[0].OfToolResult
-	if tr == nil {
-		t.Fatalf("expected tool_result block")
-	}
-	if len(tr.Content) != 1 {
-		t.Fatalf("expected 1 tool_result content block, got %d", len(tr.Content))
-	}
-	if tr.Content[0].OfText == nil || tr.Content[0].OfImage != nil {
-		t.Fatalf("expected only text content block, got %#v", tr.Content[0])
-	}
-	if got := tr.Content[0].OfText.Text; got != content {
-		t.Fatalf("expected tool_result text to remain unchanged, got %q", got)
-	}
-}
-
-func TestBuildAnthropicBetaToolResult_NonViewImageToolDoesNotParseImageMarker(t *testing.T) {
-	content := "644: \tconst prefix = \"[IMAGE_DATA:\"\n645: \tconst suffix = \"]\""
-	parts := []Part{{
-		Type: PartToolResult,
-		ToolResult: &ToolResult{
-			ID:      "call-1",
-			Name:    "read_file",
-			Content: content,
-		},
-	}}
-
-	blocks := buildAnthropicBetaBlocks(parts, false)
-	if len(blocks) != 1 {
-		t.Fatalf("expected 1 block, got %d", len(blocks))
-	}
-	tr := blocks[0].OfToolResult
-	if tr == nil {
-		t.Fatalf("expected beta tool_result block")
-	}
-	if len(tr.Content) != 1 {
-		t.Fatalf("expected 1 beta tool_result content block, got %d", len(tr.Content))
-	}
-	if tr.Content[0].OfText == nil || tr.Content[0].OfImage != nil {
-		t.Fatalf("expected only beta text content block, got %#v", tr.Content[0])
-	}
-	if got := tr.Content[0].OfText.Text; got != content {
-		t.Fatalf("expected beta tool_result text to remain unchanged, got %q", got)
 	}
 }
 

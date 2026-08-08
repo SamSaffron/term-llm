@@ -327,45 +327,47 @@ func TestReviewerTranscriptShrinkResetsToFull(t *testing.T) {
 	}
 }
 
-func TestReviewerScopeChangeResetsToFull(t *testing.T) {
-	provider := llm.NewMockProvider("managed").WithCapabilities(llm.Capabilities{ManagesOwnContext: true}).
-		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
-		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
-	reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
-
-	if _, err := reviewer.Review(context.Background(), Request{Command: "echo one", ScopeID: "parent", Transcript: []TranscriptEntry{{Role: "user", Text: "parent intent"}, {Role: "assistant", Text: "parent plan"}}}); err != nil {
-		t.Fatalf("first Review: %v", err)
+func TestReviewerChangedHistoryResetsToFull(t *testing.T) {
+	tests := []struct {
+		name     string
+		first    Request
+		second   Request
+		unwanted string
+		wanted   string
+	}{
+		{
+			name:     "scope change",
+			first:    Request{Command: "echo one", ScopeID: "parent", Transcript: []TranscriptEntry{{Role: "user", Text: "parent intent"}, {Role: "assistant", Text: "parent plan"}}},
+			second:   Request{Command: "echo child", ScopeID: "child", Transcript: []TranscriptEntry{{Role: "user", Text: "child intent"}, {Role: "assistant", Text: "child plan"}}},
+			unwanted: "parent intent", wanted: "child intent",
+		},
+		{
+			name:     "prefix replacement",
+			first:    Request{Command: "echo one", ScopeID: "same", Transcript: []TranscriptEntry{{Role: "user", Text: "original"}, {Role: "assistant", Text: "plan"}}},
+			second:   Request{Command: "echo two", ScopeID: "same", Transcript: []TranscriptEntry{{Role: "user", Text: "replacement"}, {Role: "assistant", Text: "plan"}}},
+			unwanted: "original", wanted: "replacement",
+		},
 	}
-	if _, err := reviewer.Review(context.Background(), Request{Command: "echo child", ScopeID: "child", Transcript: []TranscriptEntry{{Role: "user", Text: "child intent"}, {Role: "assistant", Text: "child plan"}}}); err != nil {
-		t.Fatalf("second Review: %v", err)
-	}
-	prompt := messageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
-	if !strings.Contains(prompt, ">>> TRANSCRIPT START") || strings.Contains(prompt, ">>> TRANSCRIPT DELTA START") {
-		t.Fatalf("scope change should reset to full prompt:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "parent intent") || !strings.Contains(prompt, "child intent") {
-		t.Fatalf("scope reset prompt has wrong transcript:\n%s", prompt)
-	}
-}
-
-func TestReviewerPrefixChangeSameLengthResetsToFull(t *testing.T) {
-	provider := llm.NewMockProvider("managed").WithCapabilities(llm.Capabilities{ManagesOwnContext: true}).
-		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
-		AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
-	reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
-
-	if _, err := reviewer.Review(context.Background(), Request{Command: "echo one", ScopeID: "same", Transcript: []TranscriptEntry{{Role: "user", Text: "original"}, {Role: "assistant", Text: "plan"}}}); err != nil {
-		t.Fatalf("first Review: %v", err)
-	}
-	if _, err := reviewer.Review(context.Background(), Request{Command: "echo two", ScopeID: "same", Transcript: []TranscriptEntry{{Role: "user", Text: "replacement"}, {Role: "assistant", Text: "plan"}}}); err != nil {
-		t.Fatalf("second Review: %v", err)
-	}
-	prompt := messageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
-	if !strings.Contains(prompt, ">>> TRANSCRIPT START") || strings.Contains(prompt, ">>> TRANSCRIPT DELTA START") {
-		t.Fatalf("prefix replacement should reset to full prompt:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "original") || !strings.Contains(prompt, "replacement") {
-		t.Fatalf("prefix reset prompt has wrong transcript:\n%s", prompt)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := llm.NewMockProvider("managed").WithCapabilities(llm.Capabilities{ManagesOwnContext: true}).
+				AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`).
+				AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`)
+			reviewer := &Reviewer{Provider: provider, Model: "mock", Policy: "policy"}
+			if _, err := reviewer.Review(context.Background(), tc.first); err != nil {
+				t.Fatalf("first Review: %v", err)
+			}
+			if _, err := reviewer.Review(context.Background(), tc.second); err != nil {
+				t.Fatalf("second Review: %v", err)
+			}
+			prompt := messageText(provider.Requests[1].Messages[len(provider.Requests[1].Messages)-1])
+			if !strings.Contains(prompt, ">>> TRANSCRIPT START") || strings.Contains(prompt, ">>> TRANSCRIPT DELTA START") {
+				t.Fatalf("changed history should reset to full prompt:\n%s", prompt)
+			}
+			if strings.Contains(prompt, tc.unwanted) || !strings.Contains(prompt, tc.wanted) {
+				t.Fatalf("reset prompt has wrong transcript:\n%s", prompt)
+			}
+		})
 	}
 }
 

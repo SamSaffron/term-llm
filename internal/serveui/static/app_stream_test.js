@@ -1591,6 +1591,29 @@ async function testInactiveSessionPromptEventsRemainActionable() {
   pass(name);
 }
 
+async function testFailedResponseUsesPayloadResponseIDForRecoveryClassification() {
+  const name = 'response.failed classifies recovery using its durable response id';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const session = { id: 'session_failed_recovery', title: 'Recovery', messages: [], activeResponseId: 'resp_failed', lastResponseId: '', lastSequenceNumber: 0, number: 1 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const result = app.applyResponseStreamEvent(session, app.createResponseStreamState(session), 'response.failed', {
+    response_id: 'resp_failed',
+    response: { id: 'resp_durable' },
+    error: { message: 'previous_response_id is stale' },
+    sequence_number: 1,
+  });
+  if (session.lastResponseId !== 'resp_durable' || result?.error?.recoverableContinuationFailure !== 'previous_response_id') {
+    fail(name, 'durable response id was not available to recovery classification', JSON.stringify({ lastResponseId: session.lastResponseId, result }));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
 async function testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM() {
   const name = 'response.failed for inactive session stays out of transcript and visible DOM';
   const harness = createHarness();
@@ -8226,6 +8249,7 @@ async function testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch()
   await testIdleRecoveryRetiresOnlyUnownedInterjectionIntents();
   await testAskUserAnswerHasStableClientIdentity();
   await testInactiveSessionPromptEventsRemainActionable();
+  await testFailedResponseUsesPayloadResponseIDForRecoveryClassification();
   await testInactiveSessionFailureDoesNotMutateProjectionOrVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testParseSSEStreamUpdatesHeartbeatOnCommentFrame();

@@ -17,8 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/embedding"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -320,40 +322,8 @@ var memoryMigrations = []memoryMigration{
 	},
 }
 
-type connSchemaExecutor struct {
-	ctx  context.Context
-	conn *sql.Conn
-}
-
-func (e connSchemaExecutor) Exec(query string, args ...any) (sql.Result, error) {
-	return e.conn.ExecContext(e.ctx, query, args...)
-}
-
-func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) (err error) {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("get migration connection: %w", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("begin immediate migration transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
-		}
-	}()
-
-	if err := fn(connSchemaExecutor{ctx: ctx, conn: conn}); err != nil {
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("commit migration transaction: %w", err)
-	}
-	committed = true
-	return nil
+func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) error {
+	return sqliteutil.WithImmediateMigrationTx(ctx, db, func(exec sqliteutil.Executor) error { return fn(exec) })
 }
 
 // NewStore opens memory.db and initializes schema.
@@ -519,16 +489,7 @@ func ensureFTSInitialized(db *sql.DB) error {
 }
 
 // GetDataDir returns the XDG data directory for term-llm.
-func GetDataDir() (string, error) {
-	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
-		return filepath.Join(xdgData, "term-llm"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(homeDir, ".local", "share", "term-llm"), nil
-}
+func GetDataDir() (string, error) { return appdata.GetDataDir() }
 
 // GetDBPath returns the default memory.db path.
 func GetDBPath() (string, error) {
@@ -541,28 +502,7 @@ func GetDBPath() (string, error) {
 
 // ResolveDBPath resolves an optional DB path override.
 func ResolveDBPath(pathOverride string) (string, error) {
-	pathOverride = strings.TrimSpace(pathOverride)
-	if pathOverride == "" {
-		return GetDBPath()
-	}
-	if pathOverride == ":memory:" {
-		return pathOverride, nil
-	}
-
-	pathOverride = os.ExpandEnv(pathOverride)
-	if strings.HasPrefix(pathOverride, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get home directory: %w", err)
-		}
-		pathOverride = filepath.Join(homeDir, pathOverride[2:])
-	}
-
-	abs, err := filepath.Abs(pathOverride)
-	if err != nil {
-		return "", fmt.Errorf("resolve db path %q: %w", pathOverride, err)
-	}
-	return abs, nil
+	return sqliteutil.ResolveDBPathOverride(pathOverride, GetDBPath)
 }
 
 // CreateFragment inserts a new fragment and syncs FTS explicitly.

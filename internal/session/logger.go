@@ -104,34 +104,25 @@ func (s *LoggingStore) DeletePlanSnapshot(ctx context.Context, sessionID string)
 
 // UpdateGoal wraps the optional goal-only update path with error logging.
 func (s *LoggingStore) UpdateGoal(ctx context.Context, id string, goal *Goal) error {
-	updater, ok := s.Store.(GoalUpdater)
-	if !ok {
-		err := UpdateGoal(ctx, s.Store, id, goal)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			s.logOnce("UpdateGoal", err)
-		}
-		return err
+	update := func() error { return UpdateGoal(ctx, s.Store, id, goal) }
+	if updater, ok := s.Store.(GoalUpdater); ok {
+		update = func() error { return updater.UpdateGoal(ctx, id, goal) }
 	}
-	err := updater.UpdateGoal(ctx, id, goal)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		s.logOnce("UpdateGoal", err)
-	}
-	return err
+	return s.logUpdateError("UpdateGoal", update())
 }
 
 // UpdateShare wraps the optional share-only update path with error logging.
 func (s *LoggingStore) UpdateShare(ctx context.Context, id string, share *ShareState) error {
-	updater, ok := s.Store.(ShareUpdater)
-	if !ok {
-		err := UpdateShare(ctx, s.Store, id, share)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			s.logOnce("UpdateShare", err)
-		}
-		return err
+	update := func() error { return UpdateShare(ctx, s.Store, id, share) }
+	if updater, ok := s.Store.(ShareUpdater); ok {
+		update = func() error { return updater.UpdateShare(ctx, id, share) }
 	}
-	err := updater.UpdateShare(ctx, id, share)
+	return s.logUpdateError("UpdateShare", update())
+}
+
+func (s *LoggingStore) logUpdateError(operation string, err error) error {
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		s.logOnce("UpdateShare", err)
+		s.logOnce(operation, err)
 	}
 	return err
 }

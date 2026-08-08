@@ -1,19 +1,16 @@
 package audio
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/mediautil"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
@@ -185,39 +182,11 @@ func (p *VeniceProvider) Generate(ctx context.Context, req Request) (*Result, er
 }
 
 func (p *VeniceProvider) do(ctx context.Context, method, endpoint string, payload any, debug bool) ([]byte, string, error) {
-	jsonBody, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", fmt.Errorf("marshal Venice request: %w", err)
-	}
-	if debug {
-		debugLog("Venice Audio Request", "%s %s\n%s", method, p.baseURL+endpoint, string(jsonBody))
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, method, p.baseURL+endpoint, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, "", fmt.Errorf("create Venice request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, "", veniceRequestError(err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("read Venice response: %w", err)
-	}
-	contentType := resp.Header.Get("Content-Type")
-	if debug {
-		debugLog("Venice Audio Response", "status=%d content-type=%s body_len=%d", resp.StatusCode, contentType, len(body))
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", providerhttp.NewStatusError("Venice", resp, body)
-	}
-	return body, contentType, nil
+	return providerhttp.DoJSONRequest(ctx, providerhttp.JSONRequestOptions{
+		Client: p.client, Method: method, URL: p.baseURL + endpoint, APIKey: p.apiKey, Payload: payload,
+		Provider: "Venice", WrapRequestError: veniceRequestError, Debug: debug, Debugf: debugLog,
+		RequestLabel: "Venice Audio Request", ResponseLabel: "Venice Audio Response",
+	})
 }
 
 func ValidateFormat(format string) error {
@@ -249,19 +218,7 @@ func ValidateTopP(topP float64) error {
 }
 
 func Save(data []byte, outputDir, text, format string) (string, error) {
-	dir := expandPath(outputDir)
-	if dir == "" {
-		dir = expandPath(config.DefaultAudioOutputDir)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create output directory: %w", err)
-	}
-	filename := generateFilename(text, format)
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", fmt.Errorf("write audio: %w", err)
-	}
-	return path, nil
+	return mediautil.SaveFile(data, outputDir, config.DefaultAudioOutputDir, generateFilename(text, format), "audio")
 }
 
 func MimeTypeForFormat(format string) string {
@@ -299,7 +256,7 @@ func ExtensionForFormat(format string) string {
 
 func generateFilename(text, format string) string {
 	timestamp := time.Now().Format("20060102-150405")
-	safe := sanitizeForFilename(text)
+	safe := mediautil.SanitizeFilename(text)
 	if len(safe) > 30 {
 		safe = safe[:30]
 	}
@@ -307,37 +264,6 @@ func generateFilename(text, format string) string {
 		safe = "audio"
 	}
 	return fmt.Sprintf("%s-%s.%s", timestamp, safe, ExtensionForFormat(format))
-}
-
-func sanitizeForFilename(s string) string {
-	replacer := strings.NewReplacer(" ", "_", "/", "", "\\", "", ":", "", "?", "", "*", "", "\"", "", "<", "", ">", "", "|", "")
-	s = replacer.Replace(s)
-	var b strings.Builder
-	b.Grow(len(s))
-	lastUnderscore := false
-	for _, r := range strings.ToLower(s) {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if isAlphaNum || r == '-' {
-			b.WriteRune(r)
-			lastUnderscore = false
-			continue
-		}
-		if r == '_' && !lastUnderscore {
-			b.WriteRune(r)
-			lastUnderscore = true
-		}
-	}
-	return strings.Trim(b.String(), "_")
-}
-
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
 }
 
 func normalizeMime(contentType string) string {

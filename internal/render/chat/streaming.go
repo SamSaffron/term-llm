@@ -49,20 +49,7 @@ func NewStreamingBlock(width int, mdRenderer MarkdownRenderer) *StreamingBlock {
 func (s *StreamingBlock) Resize(width int) {
 	s.width = width
 	if s.tracker != nil {
-		// Invalidate segment caches
-		for i := range s.tracker.Segments {
-			s.tracker.Segments[i].Rendered = ""
-			s.tracker.Segments[i].SafeRendered = ""
-			s.tracker.Segments[i].SafePos = 0
-			s.tracker.Segments[i].DiffRendered = ""
-			s.tracker.Segments[i].DiffWidth = 0
-			for j := range s.tracker.Segments[i].SubagentDiffs {
-				s.tracker.Segments[i].SubagentDiffs[j].Rendered = ""
-				s.tracker.Segments[i].SubagentDiffs[j].Width = 0
-			}
-		}
-		// Resize streaming renderers
-		s.tracker.ResizeStreamRenderers(width)
+		s.tracker.InvalidateRenderCaches(width)
 	}
 }
 

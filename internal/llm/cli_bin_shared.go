@@ -316,6 +316,57 @@ func loadCLIToolLineDrainGrace(envName string, fallback time.Duration) time.Dura
 	return ms
 }
 
+func dispatchCLILines(ctx context.Context, lineCh <-chan string, toolReqCh <-chan cliToolRequest, send eventSender, grace time.Duration, handleLine func(string) error) error {
+	linesOpen := true
+	for linesOpen {
+		hadLine := false
+		for linesOpen {
+			select {
+			case line, ok := <-lineCh:
+				if !ok {
+					linesOpen = false
+					break
+				}
+				hadLine = true
+				if err := handleLine(line); err != nil {
+					return err
+				}
+			default:
+				goto drained
+			}
+		}
+	drained:
+		if hadLine {
+			continue
+		}
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				linesOpen = false
+				continue
+			}
+			if err := handleLine(line); err != nil {
+				return err
+			}
+		case request := <-toolReqCh:
+			if err := drainCLILinesWithGrace(ctx, lineCh, grace, handleLine); err != nil {
+				return err
+			}
+			handleCLIToolRequest(request, send)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	for {
+		select {
+		case request := <-toolReqCh:
+			handleCLIToolRequest(request, send)
+		default:
+			return nil
+		}
+	}
+}
+
 // drainCLILinesWithGrace preserves stdout/tool-call ordering when the MCP call
 // reaches the HTTP server just before its preceding streamed text reaches the
 // stdout scanner.
@@ -423,6 +474,56 @@ func (t *tempFileTracker) cleanupTempFiles() {
 				name = "CLI provider"
 			}
 			slog.Warn(name+" failed to remove temp file", "path", path, "err", err)
+		}
+	}
+}
+
+type cliCommandErrorOptions struct {
+	name        string
+	authTerms   []string
+	authSummary string
+	authDetail  string
+}
+
+func newCLIProcessError(waitErr error, stderrTail, stdoutTail []string, opts cliCommandErrorOptions) error {
+	diagnostic := firstUsefulCLIDiagnosticLine(strings.Join(stderrTail, "\n"))
+	if diagnostic == "" {
+		diagnostic = firstUsefulCLIDiagnosticLine(strings.Join(stdoutTail, "\n"))
+	}
+	lower := strings.ToLower(diagnostic)
+	for _, term := range opts.authTerms {
+		if strings.Contains(lower, term) {
+			return &UserFacingProviderError{Summary: opts.authSummary, Detail: opts.authDetail, Cause: waitErr}
+		}
+	}
+	if diagnostic != "" {
+		return fmt.Errorf("%s command failed: %w: %s", opts.name, waitErr, diagnostic)
+	}
+	return fmt.Errorf("%s command failed: %w", opts.name, waitErr)
+}
+
+func gcStaleCLIHomes(base, current string, maxAge time.Duration, validID func(string) bool, logName string) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if !entry.IsDir() || !validID(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(base, entry.Name())
+		if filepath.Clean(path) == filepath.Clean(current) {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(path, ".last_used"))
+		if os.IsNotExist(err) {
+			info, err = entry.Info()
+		}
+		if err == nil && info.ModTime().Before(cutoff) {
+			if err := os.RemoveAll(path); err != nil {
+				slog.Debug(logName+" stale home cleanup failed", "err", err)
+			}
 		}
 	}
 }

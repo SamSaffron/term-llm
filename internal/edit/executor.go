@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/textmatch"
 	"github.com/samsaffron/term-llm/internal/udiff"
 )
 
@@ -655,27 +656,7 @@ func toolCallMessage(calls []llm.ToolCall) llm.Message {
 
 // extractLineRangeNumbered extracts lines startLine to endLine (1-indexed) with line numbers.
 func extractLineRangeNumbered(content string, startLine, endLine int) string {
-	lines := strings.Split(content, "\n")
-
-	// Adjust for 0-based indexing
-	start := startLine - 1
-	if start < 0 {
-		start = 0
-	}
-	end := endLine
-	if end <= 0 || end > len(lines) {
-		end = len(lines)
-	}
-	if start >= len(lines) {
-		return ""
-	}
-
-	// Build output with line numbers
-	var sb strings.Builder
-	for i := start; i < end; i++ {
-		sb.WriteString(fmt.Sprintf("%d: %s\n", i+1, lines[i]))
-	}
-	return strings.TrimSuffix(sb.String(), "\n")
+	return textmatch.NumberedLineRange(content, startLine, endLine)
 }
 
 // findWorkingContent finds content for a path, handling both absolute and relative paths.

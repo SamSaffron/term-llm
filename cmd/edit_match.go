@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/edit"
 )
 
 const editWildcardToken = "<<<elided>>>"
@@ -73,40 +75,7 @@ func applyEditMatch(content string, match editMatch, newString string) string {
 // lineRangeToByteRange converts 1-indexed line numbers to byte offsets
 // Returns (startOffset, endOffset) where endOffset is exclusive
 func lineRangeToByteRange(content string, startLine, endLine int) (int, int) {
-	lines := strings.Split(content, "\n")
-
-	startOffset := 0
-	endOffset := len(content)
-
-	// Calculate start offset (byte position at start of startLine)
-	if startLine > 1 {
-		lineCount := 0
-		for i, ch := range content {
-			if ch == '\n' {
-				lineCount++
-				if lineCount == startLine-1 {
-					startOffset = i + 1
-					break
-				}
-			}
-		}
-	}
-
-	// Calculate end offset (byte position after endLine, including its newline)
-	if endLine > 0 && endLine < len(lines) {
-		lineCount := 0
-		for i, ch := range content {
-			if ch == '\n' {
-				lineCount++
-				if lineCount == endLine {
-					endOffset = i + 1
-					break
-				}
-			}
-		}
-	}
-
-	return startOffset, endOffset
+	return edit.LineRangeToByteRange(content, startLine, endLine)
 }
 
 // findEditMatchWithGuard searches for oldString only within the guarded line range

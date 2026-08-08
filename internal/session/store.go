@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/llm"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
 // ErrNotFound is returned when a lookup or update targets a row that does not
@@ -681,29 +681,7 @@ func handoverPathInDir(path, dir string) bool {
 // Empty path uses the default XDG location.
 // Supports :memory: for ephemeral in-memory storage.
 func ResolveDBPath(pathOverride string) (string, error) {
-	pathOverride = strings.TrimSpace(pathOverride)
-	if pathOverride == "" {
-		return GetDBPath()
-	}
-	if pathOverride == ":memory:" {
-		return pathOverride, nil
-	}
-
-	// Expand env vars and leading "~/".
-	pathOverride = os.ExpandEnv(pathOverride)
-	if strings.HasPrefix(pathOverride, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("failed to get home directory: %w", err)
-		}
-		pathOverride = filepath.Join(homeDir, pathOverride[2:])
-	}
-
-	abs, err := filepath.Abs(pathOverride)
-	if err != nil {
-		return "", fmt.Errorf("resolve db path %q: %w", pathOverride, err)
-	}
-	return abs, nil
+	return sqliteutil.ResolveDBPathOverride(pathOverride, GetDBPath)
 }
 
 // NewStore creates a new Store based on the configuration.

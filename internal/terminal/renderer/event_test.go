@@ -134,98 +134,44 @@ func TestSizeBounds(t *testing.T) {
 	}
 }
 
-// TestKeyPressEventMethods tests all methods of KeyPressEvent
-func TestKeyPressEventMethods(t *testing.T) {
-	k := KeyPressEvent{Code: 'a', Mod: ModCtrl}
-
-	t.Run("MatchString", func(t *testing.T) {
-		if !k.MatchString("ctrl+a") {
-			t.Error("MatchString(\"ctrl+a\") = false, want true")
-		}
-		if k.MatchString("ctrl+b") {
-			t.Error("MatchString(\"ctrl+b\") = true, want false")
-		}
-	})
-
-	t.Run("MatchStrings", func(t *testing.T) {
-		if !k.MatchString("ctrl+b", "ctrl+a", "ctrl+c") {
-			t.Error("MatchStrings() = false, want true")
-		}
-		if k.MatchString("ctrl+b", "ctrl+c") {
-			t.Error("MatchStrings() = true, want false")
-		}
-	})
-
-	t.Run("String", func(t *testing.T) {
-		got := k.String()
-		want := "ctrl+a"
-		if got != want {
-			t.Errorf("String() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("Keystroke", func(t *testing.T) {
-		got := k.Keystroke()
-		want := "ctrl+a"
-		if got != want {
-			t.Errorf("Keystroke() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("Key", func(t *testing.T) {
-		got := k.Key()
-		want := Key{Code: 'a', Mod: ModCtrl}
-		if got != want {
-			t.Errorf("Key() = %v, want %v", got, want)
-		}
-	})
+type keyEventMethods interface {
+	MatchString(...string) bool
+	String() string
+	Keystroke() string
+	Key() Key
 }
 
-// TestKeyReleaseEventMethods tests all methods of KeyReleaseEvent
-func TestKeyReleaseEventMethods(t *testing.T) {
-	k := KeyReleaseEvent{Code: 'b', Mod: ModAlt}
-
-	t.Run("MatchString", func(t *testing.T) {
-		if !k.MatchString("alt+b") {
-			t.Error("MatchString(\"alt+b\") = false, want true")
-		}
-		if k.MatchString("alt+a") {
-			t.Error("MatchString(\"alt+a\") = true, want false")
-		}
-	})
-
-	t.Run("MatchStrings", func(t *testing.T) {
-		if !k.MatchString("alt+a", "alt+b", "alt+c") {
-			t.Error("MatchStrings() = false, want true")
-		}
-		if k.MatchString("alt+a", "alt+c") {
-			t.Error("MatchStrings() = true, want false")
-		}
-	})
-
-	t.Run("String", func(t *testing.T) {
-		got := k.String()
-		want := "alt+b"
-		if got != want {
-			t.Errorf("String() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("Keystroke", func(t *testing.T) {
-		got := k.Keystroke()
-		want := "alt+b"
-		if got != want {
-			t.Errorf("Keystroke() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("Key", func(t *testing.T) {
-		got := k.Key()
-		want := Key{Code: 'b', Mod: ModAlt}
-		if got != want {
-			t.Errorf("Key() = %v, want %v", got, want)
-		}
-	})
+func TestKeyEventMethods(t *testing.T) {
+	tests := []struct {
+		name   string
+		event  keyEventMethods
+		want   string
+		other  string
+		other2 string
+		key    Key
+	}{
+		{name: "press", event: KeyPressEvent{Code: 'a', Mod: ModCtrl}, want: "ctrl+a", other: "ctrl+b", other2: "ctrl+c", key: Key{Code: 'a', Mod: ModCtrl}},
+		{name: "release", event: KeyReleaseEvent{Code: 'b', Mod: ModAlt}, want: "alt+b", other: "alt+a", other2: "alt+c", key: Key{Code: 'b', Mod: ModAlt}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.event.MatchString(tc.want) || tc.event.MatchString(tc.other) {
+				t.Fatalf("MatchString mismatch for %s", tc.want)
+			}
+			if !tc.event.MatchString(tc.other, tc.want) || tc.event.MatchString(tc.other, tc.other2) {
+				t.Fatalf("multi MatchString mismatch for %s", tc.want)
+			}
+			if got := tc.event.String(); got != tc.want {
+				t.Errorf("String() = %q, want %q", got, tc.want)
+			}
+			if got := tc.event.Keystroke(); got != tc.want {
+				t.Errorf("Keystroke() = %q, want %q", got, tc.want)
+			}
+			if got := tc.event.Key(); got != tc.key {
+				t.Errorf("Key() = %v, want %v", got, tc.key)
+			}
+		})
+	}
 }
 
 // TestMouseEventMethods tests all mouse event types and their methods

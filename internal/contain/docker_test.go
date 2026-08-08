@@ -284,44 +284,26 @@ services:
 	}
 }
 
-func TestStartReconcilesExistingContainers(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	dir := writeComposeForDockerTest(t, "box", "")
-	compose := filepath.Join(dir, "compose.yaml")
-	base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
-	// A non-empty `ps --all -q` output means a container already exists; Start
-	// must still reconcile config drift (e.g. a changed WEB_PORT in .env) via
-	// `up -d` rather than booting the stale container as-is with `compose start`.
-	r := &fakeRunner{output: []byte("abc123\n")}
-	if err := Start(context.Background(), r, "box", io.Discard, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	wantOutputs := [][]string{append(append([]string{}, base...), "ps", "--all", "-q")}
-	if !reflect.DeepEqual(r.outputsRun, wantOutputs) {
-		t.Fatalf("outputs = %#v\nwant %#v", r.outputsRun, wantOutputs)
-	}
-	wantRuns := [][]string{append(append([]string{}, base...), "up", "-d")}
-	if !reflect.DeepEqual(r.runs, wantRuns) {
-		t.Fatalf("runs = %#v\nwant %#v", r.runs, wantRuns)
-	}
-}
-
-func TestStartUsesComposeUpWhenNoContainersExist(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	dir := writeComposeForDockerTest(t, "box", "")
-	compose := filepath.Join(dir, "compose.yaml")
-	base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
-	r := &fakeRunner{output: []byte("\n")}
-	if err := Start(context.Background(), r, "box", io.Discard, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	wantOutputs := [][]string{append(append([]string{}, base...), "ps", "--all", "-q")}
-	if !reflect.DeepEqual(r.outputsRun, wantOutputs) {
-		t.Fatalf("outputs = %#v\nwant %#v", r.outputsRun, wantOutputs)
-	}
-	wantRuns := [][]string{append(append([]string{}, base...), "up", "-d")}
-	if !reflect.DeepEqual(r.runs, wantRuns) {
-		t.Fatalf("runs = %#v\nwant %#v", r.runs, wantRuns)
+func TestStartUsesComposeUpRegardlessOfExistingContainers(t *testing.T) {
+	for _, output := range []string{"abc123\n", "\n"} {
+		t.Run(strings.TrimSpace(output), func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			dir := writeComposeForDockerTest(t, "box", "")
+			compose := filepath.Join(dir, "compose.yaml")
+			base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
+			runner := &fakeRunner{output: []byte(output)}
+			if err := Start(context.Background(), runner, "box", io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			wantOutputs := [][]string{append(append([]string{}, base...), "ps", "--all", "-q")}
+			if !reflect.DeepEqual(runner.outputsRun, wantOutputs) {
+				t.Fatalf("outputs = %#v\nwant %#v", runner.outputsRun, wantOutputs)
+			}
+			wantRuns := [][]string{append(append([]string{}, base...), "up", "-d")}
+			if !reflect.DeepEqual(runner.runs, wantRuns) {
+				t.Fatalf("runs = %#v\nwant %#v", runner.runs, wantRuns)
+			}
+		})
 	}
 }
 

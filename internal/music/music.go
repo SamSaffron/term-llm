@@ -13,12 +13,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/audio"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/mediautil"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
 )
 
@@ -415,19 +415,7 @@ func (p *ElevenLabsProvider) do(ctx context.Context, endpoint string, payload an
 }
 
 func Save(data []byte, outputDir, prompt, format string) (string, error) {
-	dir := expandPath(outputDir)
-	if dir == "" {
-		dir = expandPath(config.DefaultMusicOutputDir)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create output directory: %w", err)
-	}
-	filename := generateFilename(prompt, format)
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", fmt.Errorf("write music: %w", err)
-	}
-	return path, nil
+	return mediautil.SaveFile(data, outputDir, config.DefaultMusicOutputDir, generateFilename(prompt, format), "music")
 }
 
 func ValidateVeniceFormat(format string) error { return validateEnum("format", format, VeniceFormats) }
@@ -580,7 +568,7 @@ func requestError(err error) error {
 
 func generateFilename(prompt, format string) string {
 	timestamp := time.Now().Format("20060102-150405")
-	safe := sanitizeForFilename(prompt)
+	safe := mediautil.SanitizeFilename(prompt)
 	if len(safe) > 30 {
 		safe = safe[:30]
 	}
@@ -590,37 +578,6 @@ func generateFilename(prompt, format string) string {
 	return fmt.Sprintf("%s-%s.%s", timestamp, safe, ExtensionForFormat(format))
 }
 
-func sanitizeForFilename(s string) string {
-	replacer := strings.NewReplacer(" ", "_", "/", "", "\\", "", ":", "", "?", "", "*", "", "\"", "", "<", "", ">", "", "|", "")
-	s = replacer.Replace(s)
-	var b strings.Builder
-	b.Grow(len(s))
-	lastUnderscore := false
-	for _, r := range strings.ToLower(s) {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if isAlphaNum || r == '-' {
-			b.WriteRune(r)
-			lastUnderscore = false
-			continue
-		}
-		if r == '_' && !lastUnderscore {
-			b.WriteRune(r)
-			lastUnderscore = true
-		}
-	}
-	return strings.Trim(b.String(), "_")
-}
-
 func debugLog(title, format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "\n=== %s ===\n%s\n", title, fmt.Sprintf(format, args...))
-}
-
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
 }

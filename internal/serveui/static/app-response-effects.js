@@ -75,6 +75,31 @@ const applyOwnedResponseProjectionEvent = (session, event, payload) => {
   return { terminal: false };
 };
 
+const terminalResponseId = (session, payload) => String(
+  payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || ''
+).trim();
+
+const finalizeNonCompletedResponse = (session, streamState, responseId, payload) => {
+  const durableResponseId = String(payload?.response?.id || '').trim();
+  if (durableResponseId) session.lastResponseId = durableResponseId;
+  streamState.closeToolGroup();
+  app.requeuePendingInterjections(session);
+  state.expectCanceledRun = false;
+  clearTerminalPendingEffort(session);
+  clearActiveResponseTracking(session, responseId);
+  setSessionOptimisticBusy(session, false);
+  setSessionServerActiveRun(session, false);
+  const lastAssistant = window.TermLLMConversation.sessionMessages(session).findLast((message) => message.role === 'assistant');
+  if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
+  flushStreamPersistence();
+  saveSessions();
+  renderSidebar();
+  forceSidebarStatusRefreshSoon();
+  app.refreshFileChangesAfterRun?.(session);
+  scrollVisibleStreamToBottom(session, true);
+  void app.trackTranscriptTerminalHandoff(session, responseId, payload);
+};
+
 const applyResponseStreamEvent = (session, streamState, event, payload) => {
   const projectionResult = applyOwnedResponseProjectionEvent(session, event, payload);
   if (projectionResult) return projectionResult;
@@ -234,7 +259,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.completed') {
-    const responseId = String(payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+    const responseId = terminalResponseId(session, payload);
     if (lifecycleResult?.duplicate) {
       return { terminal: true, repeatedTerminal: true };
     }
@@ -284,33 +309,16 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.cancelled') {
-    const responseId = String(payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+    const responseId = terminalResponseId(session, payload);
     if (lifecycleResult?.duplicate) {
       return { terminal: true, repeatedTerminal: true };
     }
-    const durableResponseId = String(payload?.response?.id || '').trim();
-    if (durableResponseId) session.lastResponseId = durableResponseId;
-    streamState.closeToolGroup();
-    app.requeuePendingInterjections(session);
-    state.expectCanceledRun = false;
-    clearTerminalPendingEffort(session);
-    clearActiveResponseTracking(session, responseId);
-    setSessionOptimisticBusy(session, false);
-    setSessionServerActiveRun(session, false);
-    const lastAssistant = window.TermLLMConversation.sessionMessages(session).findLast((message) => message.role === 'assistant');
-    if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
-    flushStreamPersistence();
-    saveSessions();
-    renderSidebar();
-    forceSidebarStatusRefreshSoon();
-    app.refreshFileChangesAfterRun?.(session);
-    scrollVisibleStreamToBottom(session, true);
-    void app.trackTranscriptTerminalHandoff(session, responseId, payload);
+    finalizeNonCompletedResponse(session, streamState, responseId, payload);
     return { terminal: true };
   }
 
   if (event === 'response.failed') {
-    const responseId = String(payload?.response_id || payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+    const responseId = terminalResponseId(session, payload);
     if (lifecycleResult?.duplicate) {
       return { terminal: true, repeatedTerminal: true };
     }
@@ -332,24 +340,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (!canceledByInterrupt && !recoverableContinuationFailure) {
       addErrorMessage(errorMessage, session);
     }
-    state.expectCanceledRun = false;
-
-    streamState.closeToolGroup();
-    app.requeuePendingInterjections(session);
-    clearTerminalPendingEffort(session);
-    clearActiveResponseTracking(session, responseId);
-    setSessionOptimisticBusy(session, false);
-    setSessionServerActiveRun(session, false);
-
-    const lastAssistant = window.TermLLMConversation.sessionMessages(session).findLast((message) => message.role === 'assistant');
-    if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
-    flushStreamPersistence();
-    saveSessions();
-    renderSidebar();
-    forceSidebarStatusRefreshSoon();
-    app.refreshFileChangesAfterRun?.(session);
-    scrollVisibleStreamToBottom(session, true);
-    void app.trackTranscriptTerminalHandoff(session, responseId, payload);
+    finalizeNonCompletedResponse(session, streamState, responseId, payload);
     return {
       terminal: true,
       error: recoverableContinuationFailure

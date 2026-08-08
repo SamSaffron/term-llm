@@ -7,10 +7,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 )
+
+func debugRawHTTPErrorResponse(enabled bool, label string, resp *http.Response, body []byte) {
+	if !enabled {
+		return
+	}
+	var debugInfo strings.Builder
+	fmt.Fprintf(&debugInfo, "Status: %d %s\n", resp.StatusCode, resp.Status)
+	debugInfo.WriteString("Headers:\n")
+	for key, values := range resp.Header {
+		for _, value := range values {
+			fmt.Fprintf(&debugInfo, "  %s: %s\n", key, value)
+		}
+	}
+	debugInfo.WriteString("Body:\n")
+	var prettyBody bytes.Buffer
+	if json.Indent(&prettyBody, body, "", "  ") == nil {
+		debugInfo.WriteString(prettyBody.String())
+	} else {
+		debugInfo.Write(body)
+	}
+	DebugRawSection(enabled, label, debugInfo.String())
+}
 
 // DebugToolCall prints a tool call in debug mode with readable formatting.
 func DebugToolCall(enabled bool, call ToolCall) {

@@ -238,6 +238,16 @@ func HasTTY() bool {
 	return true
 }
 
+func defaultWizardProviderConfigs(codeAssistModel string) map[string]config.ProviderConfig {
+	providers := make(map[string]config.ProviderConfig)
+	for _, name := range []string{"chatgpt", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen"} {
+		providers[name] = config.ProviderConfig{Model: config.DefaultProviderModel(name)}
+	}
+	providers["openrouter"] = config.ProviderConfig{Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"}
+	providers["codeassist"] = config.ProviderConfig{Model: codeAssistModel}
+	return providers
+}
+
 // RunHeadlessSetup auto-configures term-llm when no TTY is available (e.g. Docker).
 // It picks the first provider with credentials set in the environment and saves a config.
 func RunHeadlessSetup() (*config.Config, error) {
@@ -267,23 +277,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 
 	cfg := &config.Config{
 		DefaultProvider: provider,
-		Providers: map[string]config.ProviderConfig{
-			"chatgpt":    {Model: config.DefaultProviderModel("chatgpt")},
-			"anthropic":  {Model: config.DefaultProviderModel("anthropic")},
-			"openai":     {Model: config.DefaultProviderModel("openai")},
-			"claude-bin": {Model: config.DefaultProviderModel("claude-bin")},
-			"grok-bin":   {Model: config.DefaultProviderModel("grok-bin")},
-			"cursor-bin": {Model: config.DefaultProviderModel("cursor-bin")},
-			"agy-bin":    {Model: config.DefaultProviderModel("agy-bin")},
-			"openrouter": {Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"},
-			"gemini":     {Model: config.DefaultProviderModel("gemini")},
-			"codeassist": {Model: "gemini-3.1-pro"},
-			"xai":        {Model: config.DefaultProviderModel("xai")},
-			"venice":     {Model: config.DefaultProviderModel("venice")},
-			"nearai":     {Model: config.DefaultProviderModel("nearai")},
-			"sambanova":  {Model: config.DefaultProviderModel("sambanova")},
-			"zen":        {Model: config.DefaultProviderModel("zen")},
-		},
+		Providers:       defaultWizardProviderConfigs("gemini-3.1-pro"),
 		Exec: config.ExecConfig{
 			Suggestions: 3,
 		},
@@ -439,55 +433,7 @@ func RunSetupWizard() (*config.Config, error) {
 
 	cfg := &config.Config{
 		DefaultProvider: provider,
-		Providers: map[string]config.ProviderConfig{
-			"chatgpt": {
-				Model: config.DefaultProviderModel("chatgpt"),
-			},
-			"anthropic": {
-				Model: config.DefaultProviderModel("anthropic"),
-			},
-			"openai": {
-				Model: config.DefaultProviderModel("openai"),
-			},
-			"claude-bin": {
-				Model: config.DefaultProviderModel("claude-bin"),
-			},
-			"grok-bin": {
-				Model: config.DefaultProviderModel("grok-bin"),
-			},
-			"cursor-bin": {
-				Model: config.DefaultProviderModel("cursor-bin"),
-			},
-			"agy-bin": {
-				Model: config.DefaultProviderModel("agy-bin"),
-			},
-			"openrouter": {
-				Model:    config.DefaultProviderModel("openrouter"),
-				AppURL:   "https://github.com/samsaffron/term-llm",
-				AppTitle: "term-llm",
-			},
-			"gemini": {
-				Model: config.DefaultProviderModel("gemini"),
-			},
-			"codeassist": {
-				Model: "gemini-2.5-pro",
-			},
-			"xai": {
-				Model: config.DefaultProviderModel("xai"),
-			},
-			"venice": {
-				Model: config.DefaultProviderModel("venice"),
-			},
-			"nearai": {
-				Model: config.DefaultProviderModel("nearai"),
-			},
-			"sambanova": {
-				Model: config.DefaultProviderModel("sambanova"),
-			},
-			"zen": {
-				Model: config.DefaultProviderModel("zen"),
-			},
-		},
+		Providers:       defaultWizardProviderConfigs("gemini-2.5-pro"),
 		Exec: config.ExecConfig{
 			Suggestions: 3,
 		},

@@ -1086,24 +1086,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 	if resp.StatusCode != http.StatusOK {
 		respBody := readResponsesAPIErrorBody(resp)
 
-		if debugRaw {
-			var debugInfo strings.Builder
-			debugInfo.WriteString(fmt.Sprintf("Status: %d %s\n", resp.StatusCode, resp.Status))
-			debugInfo.WriteString("Headers:\n")
-			for key, values := range resp.Header {
-				for _, value := range values {
-					debugInfo.WriteString(fmt.Sprintf("  %s: %s\n", key, value))
-				}
-			}
-			debugInfo.WriteString("Body:\n")
-			var prettyBody bytes.Buffer
-			if json.Indent(&prettyBody, respBody, "", "  ") == nil {
-				debugInfo.WriteString(prettyBody.String())
-			} else {
-				debugInfo.WriteString(string(respBody))
-			}
-			DebugRawSection(debugRaw, "Responses API Error Response", debugInfo.String())
-		}
+		debugRawHTTPErrorResponse(debugRaw, "Responses API Error Response", resp, respBody)
 
 		// Provider-specific error handling (e.g., ChatGPT rate limits)
 		if c.HandleError != nil {

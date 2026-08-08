@@ -1,9 +1,6 @@
 package prompt
 
-import (
-	"fmt"
-	"strings"
-)
+import "github.com/samsaffron/term-llm/internal/textmatch"
 
 // EditSpec describes a file with optional line range guard.
 type EditSpec struct {
@@ -15,25 +12,5 @@ type EditSpec struct {
 
 // extractLineRange extracts lines startLine to endLine (1-indexed, inclusive) from content.
 func extractLineRange(content string, startLine, endLine int) string {
-	lines := strings.Split(content, "\n")
-
-	// Adjust for 0-based indexing
-	start := startLine - 1
-	if start < 0 {
-		start = 0
-	}
-	end := endLine
-	if end <= 0 || end > len(lines) {
-		end = len(lines)
-	}
-	if start >= len(lines) {
-		return ""
-	}
-
-	// Build output with line numbers
-	var sb strings.Builder
-	for i := start; i < end; i++ {
-		sb.WriteString(fmt.Sprintf("%d: %s\n", i+1, lines[i]))
-	}
-	return strings.TrimSuffix(sb.String(), "\n")
+	return textmatch.NumberedLineRange(content, startLine, endLine)
 }

@@ -938,47 +938,32 @@ func TestStreamingFlush_UserReproKeepsOrderedItemsAfterNestedList(t *testing.T) 
 	}
 }
 
-func TestStreamingFlush_HeadingThenText(t *testing.T) {
-	md := "1. **Has heading**\n" +
-		"    ### Nested heading\n" +
-		"    Text after heading in the same item.\n" +
-		"\n" +
-		"2. **Next item**\n"
-
+func streamMarkdownForTest(md string, width, chunkSize int) string {
 	tracker := NewToolTracker()
-	width := 80
-	chunkSize := 20
-
-	var allPrinted strings.Builder
+	var printed strings.Builder
 	for i := 0; i < len(md); i += chunkSize {
-		end := i + chunkSize
-		if end > len(md) {
-			end = len(md)
-		}
-		chunk := md[i:end]
-		tracker.AddTextSegment(chunk, width)
-		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
-		if result.ToPrint != "" {
-			allPrinted.WriteString(result.ToPrint)
-			allPrinted.WriteString("\n")
+		end := min(i+chunkSize, len(md))
+		tracker.AddTextSegment(md[i:end], width)
+		if result := tracker.FlushStreamingText(0, width, RenderMarkdown); result.ToPrint != "" {
+			printed.WriteString(result.ToPrint)
+			printed.WriteString("\n")
 		}
 	}
-
-	tracker.CompleteTextSegments(func(text string) string {
-		return RenderMarkdown(text, width)
-	})
-	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
-	if result.ToPrint != "" {
-		allPrinted.WriteString(result.ToPrint)
-		allPrinted.WriteString("\n")
+	tracker.CompleteTextSegments(func(text string) string { return RenderMarkdown(text, width) })
+	if result := tracker.FlushAllRemaining(width, 0, RenderMarkdown); result.ToPrint != "" {
+		printed.WriteString(result.ToPrint)
+		printed.WriteString("\n")
 	}
+	return stripAnsi(printed.String())
+}
 
-	output := stripAnsi(allPrinted.String())
-	if !strings.Contains(output, "Text after heading in the same item.") {
-		t.Fatalf("Expected paragraph after heading to be present in output.\nOutput:\n%s", output)
-	}
-	if !strings.Contains(output, "Next item") {
-		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+func TestStreamingFlush_HeadingThenText(t *testing.T) {
+	md := "1. **Has heading**\n    ### Nested heading\n    Text after heading in the same item.\n\n2. **Next item**\n"
+	output := streamMarkdownForTest(md, 80, 20)
+	for _, want := range []string{"Text after heading in the same item.", "Next item"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output:\n%s", want, output)
+		}
 	}
 }
 
@@ -1048,45 +1033,11 @@ func TestStreamingFlush_SuggestionsKeepsAllNumberedItems(t *testing.T) {
 }
 
 func TestStreamingFlush_ThematicBreakThenText(t *testing.T) {
-	md := "1. **Has break**\n" +
-		"    ---\n" +
-		"    Text after break in the same item.\n" +
-		"\n" +
-		"2. **Next item**\n"
-
-	tracker := NewToolTracker()
-	width := 80
-	chunkSize := 20
-
-	var allPrinted strings.Builder
-	for i := 0; i < len(md); i += chunkSize {
-		end := i + chunkSize
-		if end > len(md) {
-			end = len(md)
+	md := "1. **Has break**\n    ---\n    Text after break in the same item.\n\n2. **Next item**\n"
+	output := streamMarkdownForTest(md, 80, 20)
+	for _, want := range []string{"Text after break in the same item.", "Next item"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output:\n%s", want, output)
 		}
-		chunk := md[i:end]
-		tracker.AddTextSegment(chunk, width)
-		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
-		if result.ToPrint != "" {
-			allPrinted.WriteString(result.ToPrint)
-			allPrinted.WriteString("\n")
-		}
-	}
-
-	tracker.CompleteTextSegments(func(text string) string {
-		return RenderMarkdown(text, width)
-	})
-	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
-	if result.ToPrint != "" {
-		allPrinted.WriteString(result.ToPrint)
-		allPrinted.WriteString("\n")
-	}
-
-	output := stripAnsi(allPrinted.String())
-	if !strings.Contains(output, "Text after break in the same item.") {
-		t.Fatalf("Expected paragraph after thematic break to be present in output.\nOutput:\n%s", output)
-	}
-	if !strings.Contains(output, "Next item") {
-		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
 	}
 }
