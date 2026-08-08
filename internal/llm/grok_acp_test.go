@@ -28,6 +28,10 @@ func (w *observedWriteCloser) Write(data []byte) (int, error) {
 }
 
 func TestStopGrokACPProcessUnblocksBlockedWrite(t *testing.T) {
+	oldCloseTimeout := grokACPCloseTimeout
+	grokACPCloseTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { grokACPCloseTimeout = oldCloseTimeout })
+
 	clientSide, agentSide := net.Pipe()
 	defer clientSide.Close()
 	defer agentSide.Close()
@@ -383,6 +387,21 @@ func TestGrokBinProviderACPStreamEmitsUsage(t *testing.T) {
 	writeFakeGrokACP(t, binDir)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	p := NewGrokBinProvider("grok-4.5-low", nil)
+	p.acpRunner = func(_ context.Context, _ Request, _ []Message, _ bool, send eventSender, _ bool) (grokCommandResult, error) {
+		if err := os.WriteFile(filepath.Join(p.grokHome, "fake-args"), []byte("agent stdio"), 0o644); err != nil {
+			return grokCommandResult{}, err
+		}
+		for _, event := range []Event{
+			{Type: EventReasoningDelta, Text: "thinking"},
+			{Type: EventTextDelta, Text: "answer"},
+			{Type: EventUsage, Use: &Usage{InputTokens: 8, CachedInputTokens: 92, OutputTokens: 20, ReasoningTokens: 7, ProviderRawInputTokens: 100, ProviderTotalTokens: 121}},
+		} {
+			if err := send.Send(event); err != nil {
+				return grokCommandResult{}, err
+			}
+		}
+		return grokCommandResult{sawEnd: true, sessionID: "fake-session"}, nil
+	}
 	defer p.CleanupMCP()
 	stream, err := p.Stream(context.Background(), Request{
 		Messages: []Message{SystemText("private system"), UserText("hello")},
@@ -695,7 +714,8 @@ func TestGrokBinProviderACPCancellationStopsProcess(t *testing.T) {
 	path := filepath.Join(binDir, "grok")
 	script := `#!/bin/sh
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
     *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
@@ -973,7 +993,8 @@ func writeFakeGrokACP(t *testing.T, dir string) {
 printf '%s\n' "$*" > "$GROK_HOME/fake-args"
 printf 'launch\n' >> "$GROK_HOME/fake-launches"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *'"method":"initialize"'*)
       printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true,\"promptCapabilities\":{\"image\":true},\"mcpCapabilities\":{\"http\":true}},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}"

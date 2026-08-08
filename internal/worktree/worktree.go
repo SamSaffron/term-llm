@@ -451,6 +451,8 @@ func (m *changeMigration) restore() error {
 	return nil
 }
 
+var finishMigrationTestHook func(*changeMigration) error
+
 func (m *changeMigration) finish() error {
 	if m == nil || !m.active {
 		return nil
@@ -458,6 +460,11 @@ func (m *changeMigration) finish() error {
 	if !m.refActive {
 		m.active = false
 		return nil
+	}
+	if finishMigrationTestHook != nil {
+		if err := finishMigrationTestHook(m); err != nil {
+			return fmt.Errorf("delete recovery ref %s: %w", m.ref, err)
+		}
 	}
 	if out, err := runGit(m.root, "update-ref", "-d", m.ref, m.oid); err != nil {
 		return fmt.Errorf("delete recovery ref %s: %w: %s", m.ref, err, strings.TrimSpace(out))
@@ -612,9 +619,6 @@ func Create(ctx context.Context, repoRoot string, opts CreateOptions) (*Worktree
 
 // List returns managed worktrees for the repository, excluding the main checkout.
 func List(repoRoot string) ([]Worktree, error) {
-	if !IsGitRepo(repoRoot) {
-		return nil, fmt.Errorf("worktree: %q is not a git repository", repoRoot)
-	}
 	mainRoot, err := canonicalRepoRoot(repoRoot)
 	if err != nil {
 		return nil, err
@@ -672,6 +676,7 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 	}
 	metasByDir := metadataByDir(bucket)
 	seen := map[string]bool{}
+	prunableSeen := false
 	var result []Worktree
 	for _, rec := range parsePorcelainWorktrees(out) {
 		dir := rec["worktree"]
@@ -679,6 +684,7 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 			continue
 		}
 		if _, ok := rec["prunable"]; ok {
+			prunableSeen = true
 			continue
 		}
 		if samePath(dir, mainRoot) {
@@ -734,7 +740,9 @@ func listForRoot(mainRoot, bucket string) ([]Worktree, error) {
 			_ = os.Remove(metaPath(bucket, m.Name))
 		}
 	}
-	_, _ = runGit(mainRoot, "worktree", "prune")
+	if prunableSeen {
+		_, _ = runGit(mainRoot, "worktree", "prune")
+	}
 	sortWorktrees(result)
 	return result, nil
 }
@@ -755,25 +763,35 @@ func getWorktree(dir string, includeDirty bool) (*Worktree, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !IsGitRepo(abs) {
-		return nil, fmt.Errorf("worktree: %q is not a git repository", dir)
-	}
-	wt, err := describeWorktree(abs, includeDirty)
+	mainRoot, err := canonicalRepoRoot(abs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("worktree: %q is not a git repository: %w", dir, err)
 	}
-	mainRoot, _ := canonicalRepoRoot(abs)
 	if root, err := ManagedRoot(mainRoot); err == nil {
 		key, _ := samePathKey(abs)
 		if m, ok := metadataByDir(root)[key]; ok {
-			wt.Name = m.Name
-			wt.Base = m.Base
-			wt.RepoRoot = m.RepoRoot
-			wt.CreatedAt = m.CreatedAt
-			wt.LastBoundAt = m.LastBoundAt
+			head, _ := revParseFull(abs, "HEAD")
+			branchOut, _ := runGit(abs, "symbolic-ref", "--short", "-q", "HEAD")
+			branch := strings.TrimSpace(branchOut)
+			wt := &Worktree{
+				Name:        m.Name,
+				Dir:         abs,
+				RepoRoot:    mainRoot,
+				Base:        m.Base,
+				Branch:      branch,
+				Detached:    branch == "",
+				Status:      StatusReady,
+				HeadSHA:     head,
+				CreatedAt:   m.CreatedAt,
+				LastBoundAt: m.LastBoundAt,
+			}
+			if includeDirty {
+				wt.DirtyFiles = dirtyCount(abs)
+			}
+			return wt, nil
 		}
 	}
-	return wt, nil
+	return describeWorktree(abs, includeDirty)
 }
 
 // TouchLastBound records that a session bound this worktree now.
@@ -792,7 +810,7 @@ func TouchLastBound(dir string) error {
 
 // Diff returns a unified diff from the recorded base and includes untracked files.
 func Diff(dir string) (string, error) {
-	wt, err := Get(dir)
+	wt, err := getWorktreeForOperation(dir)
 	if err != nil {
 		return "", err
 	}
@@ -1722,7 +1740,12 @@ func runGitCtx(ctx context.Context, dir string, args ...string) (string, error) 
 	return runGitCtxEnv(ctx, dir, nil, args...)
 }
 
+var runGitTestHook func(dir string, args []string)
+
 func runGitCtxEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	if runGitTestHook != nil {
+		runGitTestHook(dir, append([]string(nil), args...))
+	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	if len(env) > 0 {

@@ -26,6 +26,8 @@ const (
 	grokLegacyTransportEnv  = "TERM_LLM_GROK_LEGACY_STREAMING_JSON"
 )
 
+var grokACPCloseTimeout = time.Second
+
 var errGrokACPResumeUnavailable = errors.New("Grok ACP session could not be restored")
 
 type grokACPProcess struct {
@@ -470,6 +472,13 @@ func grokACPMCPServer(url, token string) acp.MCPServer {
 			Value: "Bearer " + token,
 		}},
 	}
+}
+
+func (p *GrokBinProvider) executeGrokACP(ctx context.Context, req Request, messages []Message, debug bool, send eventSender, exposeToolBridge bool) (grokCommandResult, error) {
+	if p.acpRunner != nil {
+		return p.acpRunner(ctx, req, messages, debug, send, exposeToolBridge)
+	}
+	return p.runGrokACP(ctx, req, messages, debug, send, exposeToolBridge)
 }
 
 func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages []Message, debug bool, send eventSender, exposeToolBridge bool) (grokCommandResult, error) {
@@ -940,7 +949,7 @@ func (p *GrokBinProvider) stopGrokACPProcess(process *grokACPProcess) {
 	}
 	process.stopOnce.Do(func() {
 		if process.capabilities.SessionCapabilities.SupportsClose() && process.sessionID != "" {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), grokACPCloseTimeout)
 			closeDone := make(chan struct{})
 			go func() {
 				defer close(closeDone)

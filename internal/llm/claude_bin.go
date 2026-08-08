@@ -70,15 +70,16 @@ var claudeCommandWaitDelay = time.Second
 // modifies shared state (sessionID, messagesSent). Create separate instances
 // for concurrent streams.
 type ClaudeBinProvider struct {
-	model        string
-	effort       string // reasoning effort for opus: "low", "medium", "high", "max", or ""
-	sessionID    string // For session continuity with --resume
-	messagesSent int    // Track messages already in session to avoid re-sending
-	forkSession  bool   // Add --fork-session when resuming an isolated branch.
-	toolExecutor mcphttp.ToolExecutor
-	preferOAuth  bool              // If true, clear ANTHROPIC_API_KEY to force OAuth auth
-	extraEnv     map[string]string // Extra subprocess env vars from provider config
-	enableHooks  bool              // Opt in to Claude Code hooks (disabled by default)
+	model         string
+	effort        string // reasoning effort for opus: "low", "medium", "high", "max", or ""
+	sessionID     string // For session continuity with --resume
+	messagesSent  int    // Track messages already in session to avoid re-sending
+	forkSession   bool   // Add --fork-session when resuming an isolated branch.
+	toolExecutor  mcphttp.ToolExecutor
+	preferOAuth   bool                // If true, clear ANTHROPIC_API_KEY to force OAuth auth
+	extraEnv      map[string]string   // Extra subprocess env vars from provider config
+	enableHooks   bool                // Opt in to Claude Code hooks (disabled by default)
+	commandRunner claudeCommandRunner // Optional command transport override used by focused harnesses.
 
 	// Persistent MCP server for multi-turn conversations.
 	// The server is kept alive across turns so Claude CLI can maintain
@@ -100,6 +101,7 @@ type ClaudeCommandError = CLICommandError
 
 type claudeToolRequest = cliToolRequest
 type claudeTurnBridge = cliTurnBridge
+type claudeCommandRunner func(context.Context, []string, string, string, string, bool, eventSender, bool, bool) error
 
 const (
 	claudeToolLineDrainGraceDefault = 75 * time.Millisecond
@@ -228,6 +230,7 @@ func (p *ClaudeBinProvider) cloneHelperProvider() *ClaudeBinProvider {
 	clone.effort = p.effort
 	clone.preferOAuth = p.preferOAuth
 	clone.enableHooks = p.enableHooks
+	clone.commandRunner = p.commandRunner
 	if len(p.extraEnv) > 0 {
 		clone.extraEnv = make(map[string]string, len(p.extraEnv))
 		for key, value := range p.extraEnv {
@@ -394,7 +397,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// acquire activeStream above, so the bridge is never shared with a parent
 		// conversation while still allowing standalone one-shot tool requests.
 		exposeToolBridge := len(req.Tools) > 0
-		err := p.runClaudeCommand(ctx, args, effort, userPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
+		err := p.executeClaudeCommand(ctx, args, effort, userPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
 		if err != nil && isPromptTooLong(err) {
 			// Retry with progressively more aggressive truncation
 			retryLimits := []int{maxToolResultCharsOnRetry, maxToolResultCharsOnAggressiveRetry}
@@ -410,7 +413,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				slog.Info("prompt too long, retrying with truncated tool results",
 					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
 				prevLen = len(retryPrompt)
-				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
+				err = p.executeClaudeCommand(ctx, args, effort, retryPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
 				if err == nil || !isPromptTooLong(err) {
 					break
 				}
@@ -674,6 +677,13 @@ func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []str
 	}
 
 	return cmd, stdin, cleanup, nil
+}
+
+func (p *ClaudeBinProvider) executeClaudeCommand(ctx context.Context, args []string, effort, userPrompt, workingDir string, debug bool, send eventSender, ephemeral, exposeToolBridge bool) error {
+	if p.commandRunner != nil {
+		return p.commandRunner(ctx, args, effort, userPrompt, workingDir, debug, send, ephemeral, exposeToolBridge)
+	}
+	return p.runClaudeCommand(ctx, args, effort, userPrompt, workingDir, debug, send, ephemeral, exposeToolBridge)
 }
 
 // runClaudeCommand executes the claude CLI binary with the given arguments and prompt,

@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+var worktreeTestRepoTemplate string
+
 func TestMain(m *testing.M) {
 	dataHome, err := os.MkdirTemp("", "term-llm-worktree-test-*")
 	if err != nil {
@@ -21,33 +23,37 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "set XDG_DATA_HOME: %v\n", err)
 		os.Exit(1)
 	}
+	worktreeTestRepoTemplate = filepath.Join(dataHome, "repo-template")
+	if err := os.MkdirAll(worktreeTestRepoTemplate, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "create git template: %v\n", err)
+		os.Exit(1)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "file.txt"},
+		{"commit", "-q", "-m", "init"},
+	} {
+		if len(args) == 2 && args[0] == "add" {
+			if err := os.WriteFile(filepath.Join(worktreeTestRepoTemplate, "file.txt"), []byte("base\n"), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "write git template file: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		cmd := exec.Command("git", args...)
+		cmd.Dir = worktreeTestRepoTemplate
+		cmd.Env = worktreeTestGitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "initialize git template with git %v: %v\n%s", args, err, out)
+			os.Exit(1)
+		}
+	}
 	code := m.Run()
 	_ = os.RemoveAll(dataHome)
 	os.Exit(code)
 }
 
-func newGitRepoForWorktreeTest(t *testing.T) string {
-	t.Helper()
-	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatalf("MkdirAll repo: %v", err)
-	}
-	runGitForWorktreeTest(t, repo, "init", "-q")
-	runGitForWorktreeTest(t, repo, "config", "user.name", "Test User")
-	runGitForWorktreeTest(t, repo, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	runGitForWorktreeTest(t, repo, "add", "file.txt")
-	runGitForWorktreeTest(t, repo, "commit", "-q", "-m", "init")
-	return repo
-}
-
-func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+func worktreeTestGitEnv() []string {
+	return append(os.Environ(),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_AUTHOR_NAME=Test User",
@@ -55,6 +61,24 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 		"GIT_COMMITTER_NAME=Test User",
 		"GIT_COMMITTER_EMAIL=test@example.com",
 	)
+}
+
+func newGitRepoForWorktreeTest(t *testing.T) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), "repo")
+	cmd := exec.Command("git", "clone", "-q", worktreeTestRepoTemplate, repo)
+	cmd.Env = worktreeTestGitEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("clone git test template: %v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return repo
+}
+
+func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = worktreeTestGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Skipf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
@@ -201,22 +225,10 @@ func TestCreateKeepsSuccessfulWorktreeWhenRecoveryRefCleanupFails(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("moved changes\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile tracked: %v", err)
 	}
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath git: %v", err)
+	finishMigrationTestHook = func(*changeMigration) error {
+		return errors.New("forced ref cleanup failure")
 	}
-	wrapperDir := t.TempDir()
-	wrapper := filepath.Join(wrapperDir, "git")
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = update-ref ] && [ \"$2\" = -d ]; then\n" +
-		"  case \"$3\" in refs/term-llm/worktree-migrations/*) echo forced ref cleanup failure >&2; exit 1;; esac\n" +
-		"fi\n" +
-		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatalf("write git wrapper: %v", err)
-	}
-	t.Setenv("TERM_LLM_REAL_GIT", realGit)
-	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { finishMigrationTestHook = nil })
 
 	var progress []string
 	wt, err := Create(context.Background(), repo, CreateOptions{
@@ -230,7 +242,7 @@ func TestCreateKeepsSuccessfulWorktreeWhenRecoveryRefCleanupFails(t *testing.T) 
 	if len(progress) == 0 || !strings.Contains(progress[len(progress)-1], "recovery ref cleanup failed") {
 		t.Fatalf("final progress = %q, want recovery ref cleanup warning", progress)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	t.Cleanup(func() { _ = os.RemoveAll(wt.Dir) })
 	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); got != "" {
 		t.Fatalf("root status = %q, want clean", got)
 	}
@@ -242,11 +254,7 @@ func TestCreateKeepsSuccessfulWorktreeWhenRecoveryRefCleanupFails(t *testing.T) 
 	if refs == "" {
 		t.Fatal("recovery ref missing after forced cleanup failure")
 	}
-	t.Cleanup(func() {
-		cmd := exec.Command(realGit, "update-ref", "-d", refs)
-		cmd.Dir = repo
-		_ = cmd.Run()
-	})
+	t.Cleanup(func() { runGitForWorktreeTest(t, repo, "update-ref", "-d", refs) })
 }
 
 func TestCreateRestoresUnrelatedStashDroppedByConcurrentChange(t *testing.T) {
@@ -293,29 +301,22 @@ func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create wt1: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt1.Dir, RemoveOptions{Force: true}) })
+	t.Cleanup(func() { _ = os.RemoveAll(wt1.Dir) })
 	wt2, err := Create(context.Background(), repo, CreateOptions{Name: "list-fast-two"})
 	if err != nil {
 		t.Fatalf("Create wt2: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt2.Dir, RemoveOptions{Force: true}) })
+	t.Cleanup(func() { _ = os.RemoveAll(wt2.Dir) })
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath git: %v", err)
+	type gitCall struct {
+		dir  string
+		args []string
 	}
-	wrapperDir := t.TempDir()
-	wrapper := filepath.Join(wrapperDir, "git")
-	logPath := filepath.Join(wrapperDir, "git.log")
-	script := "#!/bin/sh\n" +
-		"printf '%s|%s\\n' \"$PWD\" \"$*\" >> \"$TERM_LLM_GIT_LOG\"\n" +
-		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatalf("write git wrapper: %v", err)
+	var calls []gitCall
+	runGitTestHook = func(dir string, args []string) {
+		calls = append(calls, gitCall{dir: dir, args: args})
 	}
-	t.Setenv("TERM_LLM_REAL_GIT", realGit)
-	t.Setenv("TERM_LLM_GIT_LOG", logPath)
-	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { runGitTestHook = nil })
 
 	items, err := List(repo)
 	if err != nil {
@@ -338,30 +339,23 @@ func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
 		}
 	}
 
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read git log: %v", err)
-	}
 	worktreeDirs := map[string]bool{filepath.Clean(wt1.Dir): true, filepath.Clean(wt2.Dir): true}
 	statusCalls := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		if line == "" {
+	for _, call := range calls {
+		if !worktreeDirs[filepath.Clean(call.dir)] {
 			continue
 		}
-		cwd, args, ok := strings.Cut(line, "|")
-		if !ok || !worktreeDirs[filepath.Clean(cwd)] {
-			continue
-		}
+		args := strings.Join(call.args, " ")
 		if args == "status --porcelain" {
 			statusCalls++
 			continue
 		}
 		if strings.HasPrefix(args, "rev-parse ") || strings.HasPrefix(args, "symbolic-ref ") || strings.HasPrefix(args, "merge-base ") {
-			t.Fatalf("List ran per-worktree metadata probe in %s: git %s\nfull log:\n%s", cwd, args, data)
+			t.Fatalf("List ran per-worktree metadata probe in %s: git %s\nfull calls: %#v", call.dir, args, calls)
 		}
 	}
 	if statusCalls != 2 {
-		t.Fatalf("per-worktree status calls = %d, want 2\nfull log:\n%s", statusCalls, data)
+		t.Fatalf("per-worktree status calls = %d, want 2\nfull calls: %#v", statusCalls, calls)
 	}
 }
 
@@ -486,14 +480,12 @@ func TestMergeBackRefusesDirtyRootByDefault(t *testing.T) {
 }
 
 func TestMergeBackConflictCleansCherryPickState(t *testing.T) {
-	t.Parallel()
-
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "conflict-test"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	t.Cleanup(func() { _ = os.RemoveAll(wt.Dir) })
 
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root changed\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile root: %v", err)
@@ -729,15 +721,13 @@ func TestStartAssistedMergeAppliesCleanlyOnCurrentRootBranch(t *testing.T) {
 }
 
 func TestStartAssistedMergeLeavesConflictsOnCurrentRootBranch(t *testing.T) {
-	t.Parallel()
-
 	repo := newGitRepoForWorktreeTest(t)
 	previousBranch := strings.TrimSpace(runGitForWorktreeTest(t, repo, "branch", "--show-current"))
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "assist-conflict"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	t.Cleanup(func() { _ = os.RemoveAll(wt.Dir) })
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root assisted change\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile root: %v", err)
 	}

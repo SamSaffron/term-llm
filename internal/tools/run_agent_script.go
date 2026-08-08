@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,28 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+type runAgentScriptCommandFunc func(context.Context, string, []string, string, *limitedBuffer, *limitedBuffer) error
+
+type runAgentScriptSetupError struct{ err error }
+
+func (e *runAgentScriptSetupError) Error() string { return e.err.Error() }
+func (e *runAgentScriptSetupError) Unwrap() error { return e.err }
+
+var runAgentScriptCommand runAgentScriptCommandFunc = executeAgentScriptCommand
+
+func executeAgentScriptCommand(ctx context.Context, script string, argv []string, workDir string, stdout, stderr *limitedBuffer) error {
+	cmd := exec.CommandContext(ctx, script, argv...)
+	cmd.Dir = workDir
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cleanup, err := prepareToolCommand(cmd)
+	if err != nil {
+		return &runAgentScriptSetupError{err: err}
+	}
+	defer cleanup()
+	return cmd.Run()
+}
 
 // RunAgentScriptTool executes scripts bundled in the agent's source directory.
 // Scripts are resolved by filename only (no paths), and execution is implicitly
@@ -178,21 +201,15 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 
 	var execErr error
 	for attempt := 0; ; attempt++ {
-		cmd := exec.CommandContext(execCtx, realScript, argv...)
-		cmd.Dir = workDir
-		cmd.Stdout = stdout
-		cmd.Stderr = stderr
-
-		cleanup, prepErr := prepareToolCommand(cmd)
-		if prepErr != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
-		}
-
-		execErr = cmd.Run()
-		cleanup()
+		execErr = runAgentScriptCommand(execCtx, realScript, argv, workDir, stdout, stderr)
 		if !retryScriptBusy(execCtx, execErr, attempt) {
 			break
 		}
+	}
+
+	var setupErr *runAgentScriptSetupError
+	if errors.As(execErr, &setupErr) {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", setupErr.err))), nil
 	}
 
 	result := ShellResult{

@@ -151,9 +151,6 @@ func fmtInt(v int) string {
 }
 
 func TestBuildGitFailureDoesNotFallBackToIgnoredWalk(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake git executable uses a shell script")
-	}
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -161,13 +158,10 @@ func TestBuildGitFailureDoesNotFallBackToIgnoredWalk(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bin := t.TempDir()
-	fakeGit := filepath.Join(bin, "git")
-	script := "#!/bin/sh\nif [ \"$1\" = rev-parse ]; then echo true; exit 0; fi\nexit 42\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	discoverGitForBuild = func(context.Context, string, *candidateCollector) error {
+		return errors.New("forced git discovery failure")
 	}
-	t.Setenv("PATH", bin)
+	t.Cleanup(func() { discoverGitForBuild = discoverGit })
 
 	if snapshot, err := Build(context.Background(), root, DefaultBuildOptions()); err == nil {
 		for _, candidate := range snapshot.Candidates {

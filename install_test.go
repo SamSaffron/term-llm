@@ -23,47 +23,68 @@ func TestInstallScriptResolvesLatestReleaseWithoutGitHubAPI(t *testing.T) {
 		}
 	}
 
-	writeExecutable("curl", `#!/bin/sh
-case "$*" in
-  *https://github.com/samsaffron/term-llm/releases/latest*)
-    printf '%s\n' 'https://github.com/samsaffron/term-llm/releases/tag/v1.2.3'
-    ;;
-  *https://github.com/samsaffron/term-llm/releases/download/v1.2.3/*)
-    while [ "$#" -gt 0 ]; do
-      if [ "$1" = "-o" ]; then
-        : > "$2"
-        exit 0
-      fi
-      shift
-    done
-    echo 'missing output path' >&2
-    exit 1
-    ;;
-  *)
-    echo "unexpected curl request: $*" >&2
-    exit 22
-    ;;
-esac
-`)
-	writeExecutable("tar", `#!/bin/sh
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-C" ]; then
-    dest=$2
-    break
-  fi
-  shift
-done
-cat > "$dest/term-llm" <<'EOF'
+	harnessPath := filepath.Join(binDir, "install-harness.sh")
+	writeExecutable("install-harness.sh", `#!/bin/sh
+set -eu
+installer=$1
+shift
+curl() {
+  case "$*" in
+    *https://github.com/samsaffron/term-llm/releases/latest*)
+      printf '%s\n' 'https://github.com/samsaffron/term-llm/releases/tag/v1.2.3'
+      ;;
+    *https://github.com/samsaffron/term-llm/releases/download/v1.2.3/*)
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = "-o" ]; then
+          : > "$2"
+          return 0
+        fi
+        shift
+      done
+      echo 'missing output path' >&2
+      return 1
+      ;;
+    *)
+      echo "unexpected curl request: $*" >&2
+      return 22
+      ;;
+  esac
+}
+uname() {
+  case "$1" in
+    -s) printf 'Darwin\n' ;;
+    -m) printf 'arm64\n' ;;
+  esac
+}
+mktemp() {
+  mkdir -p "$MOCK_TMPDIR"
+  printf '%s\n' "$MOCK_TMPDIR"
+}
+tar() {
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-C" ]; then dest=$2; break; fi
+    shift
+  done
+  cat > "$dest/term-llm" <<'EOF'
 #!/bin/sh
 echo 'term-llm v1.2.3'
 EOF
-chmod +x "$dest/term-llm"
+  chmod +x "$dest/term-llm"
+}
+install() {
+  src=$3
+  dest=$4
+  cat "$src" > "$dest"
+  chmod 755 "$dest"
+}
+rm() { :; }
+. "$installer"
 `)
 
-	cmd := exec.Command("sh", "install.sh")
+	cmd := exec.Command("sh", harnessPath, "install.sh")
 	cmd.Env = append(os.Environ(),
-		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"TERM_LLM_INSTALL_DIR="+installDir,
+		"MOCK_TMPDIR="+filepath.Join(tempDir, "extract"),
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

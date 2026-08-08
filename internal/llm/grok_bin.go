@@ -83,6 +83,7 @@ type GrokBinProvider struct {
 	preferOAuth            bool
 	extraEnv               map[string]string
 	toolExecutorConfigured bool
+	acpRunner              func(context.Context, Request, []Message, bool, eventSender, bool) (grokCommandResult, error)
 
 	// grokHome is durable because Grok stores resumable session SQLite data under
 	// GROK_HOME. CleanupMCP deliberately leaves this directory in place.
@@ -344,7 +345,7 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 				return err
 			}
 		} else {
-			result, err = p.runGrokACP(ctx, req, messagesToSend, debug, send, exposeToolBridge)
+			result, err = p.executeGrokACP(ctx, req, messagesToSend, debug, send, exposeToolBridge)
 			if err != nil {
 				return err
 			}

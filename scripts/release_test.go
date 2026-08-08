@@ -14,33 +14,36 @@ func TestReleaseAutoWaitsForGitHubWorkflow(t *testing.T) {
 	logPath := filepath.Join(tempDir, "commands.log")
 	statePath := filepath.Join(tempDir, "gh-list-count")
 
-	writeExecutable(t, filepath.Join(tempDir, "git"), `#!/bin/bash
+	harnessPath := filepath.Join(tempDir, "release-harness.sh")
+	writeExecutable(t, harnessPath, `#!/bin/bash
 set -eu
-printf 'git %s\n' "$*" >> "$COMMAND_LOG"
-case "${1:-}" in
-  remote) printf 'origin\n' ;;
-  fetch) ;;
-  tag)
-    if [ "${2:-}" = "-l" ]; then printf 'v1.2.3\n'; fi
-    ;;
-  branch) printf 'main\n' ;;
-  status) ;;
-  push) ;;
-esac
-`)
-	writeExecutable(t, filepath.Join(tempDir, "gh"), `#!/bin/bash
-set -eu
-printf 'gh %s\n' "$*" >> "$COMMAND_LOG"
-if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then
-  count=0
-  if [ -f "$GH_STATE" ]; then count=$(cat "$GH_STATE"); fi
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$GH_STATE"
-  if [ "$count" -ge 2 ]; then printf '12345\n'; fi
-fi
-`)
-	writeExecutable(t, filepath.Join(tempDir, "sleep"), `#!/bin/bash
-exit 0
+release_script=$1
+git() {
+  printf 'git %s\n' "$*" >> "$COMMAND_LOG"
+  case "${1:-}" in
+    remote) printf 'origin\n' ;;
+    fetch) ;;
+    tag)
+      if [ "${2:-}" = "-l" ]; then printf 'v1.2.3\n'; fi
+      ;;
+    branch) printf 'main\n' ;;
+    status) ;;
+    push) ;;
+  esac
+}
+gh() {
+  printf 'gh %s\n' "$*" >> "$COMMAND_LOG"
+  if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then
+    count=0
+    if [ -f "$GH_STATE" ]; then read -r count < "$GH_STATE"; fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$GH_STATE"
+    if [ "$count" -ge 2 ]; then printf '12345\n'; fi
+  fi
+}
+sleep() { :; }
+export -f git gh sleep
+source "$release_script" --auto --wait
 `)
 
 	_, currentFile, _, ok := runtime.Caller(0)
@@ -48,9 +51,8 @@ exit 0
 		t.Fatal("could not locate test file")
 	}
 	scriptPath := filepath.Join(filepath.Dir(currentFile), "release.sh")
-	cmd := exec.Command("bash", scriptPath, "--auto", "--wait")
+	cmd := exec.Command("bash", harnessPath, scriptPath)
 	cmd.Env = append(os.Environ(),
-		"PATH="+tempDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"COMMAND_LOG="+logPath,
 		"GH_STATE="+statePath,
 	)

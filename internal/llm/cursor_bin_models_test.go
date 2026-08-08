@@ -52,13 +52,7 @@ func TestCursorBinListModelsNormalizesAndCaches(t *testing.T) {
 	binDir := t.TempDir()
 	script := `#!/bin/sh
 if [ "$1" = "models" ]; then
-  cat <<'EOF'
-Available models
-
-auto - Auto (default)
-cursor-grok-4.5-high - Cursor Grok 4.5
-composer-2.5-fast - Composer 2.5 Fast
-EOF
+  printf '%s\n' 'Available models' '' 'auto - Auto (default)' 'cursor-grok-4.5-high - Cursor Grok 4.5' 'composer-2.5-fast - Composer 2.5 Fast'
   exit 0
 fi
 echo "unexpected args: $*" >&2
@@ -68,6 +62,10 @@ exit 1
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cursorModelsCommandOutput = func(context.Context, *CursorBinProvider, string) ([]byte, error) {
+		return []byte("Available models\n\nauto - Auto (default)\ncursor-grok-4.5-high - Cursor Grok 4.5\ncomposer-2.5-fast - Composer 2.5 Fast\n"), nil
+	}
+	t.Cleanup(func() { cursorModelsCommandOutput = defaultCursorModelsCommandOutput })
 
 	models, err := NewCursorBinProvider("", nil).ListModels(context.Background())
 	if err != nil {

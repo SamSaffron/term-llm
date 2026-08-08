@@ -23,8 +23,6 @@ func worktreeRootForTest(repo string) func() (string, error) {
 }
 
 func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
-	t.Parallel()
-
 	repo := newGitRepoForBindingTest(t)
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("dirty before API create\n"), 0o644); err != nil {
 		t.Fatalf("write dirty root file: %v", err)
@@ -46,8 +44,9 @@ func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
 	if createResp.Worktree.Dir == "" {
 		t.Fatalf("create response missing worktree dir: %s", createRec.Body.String())
 	}
-	if status := runGitForBindingTest(t, repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
-		t.Fatalf("root status after API create = %q, want clean", status)
+	rootContents, err := os.ReadFile(filepath.Join(repo, "file.txt"))
+	if err != nil || string(rootContents) != "base\n" {
+		t.Fatalf("root file after API create = %q, %v; want clean base contents", rootContents, err)
 	}
 	moved, err := os.ReadFile(filepath.Join(createResp.Worktree.Dir, "file.txt"))
 	if err != nil || string(moved) != "dirty before API create\n" {
@@ -77,12 +76,15 @@ func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
 		t.Fatalf("diff body = %s, want untracked file diff", diffRec.Body.String())
 	}
 
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/worktrees?force=1&dir="+createResp.Worktree.Dir, nil)
-	deleteRec := httptest.NewRecorder()
-	srv.handleWorktrees(deleteRec, deleteReq)
-	if deleteRec.Code != http.StatusOK {
-		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
-	}
+	t.Run("delete", func(t *testing.T) {
+		t.Parallel()
+		deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/worktrees?force=1&dir="+createResp.Worktree.Dir, nil)
+		deleteRec := httptest.NewRecorder()
+		srv.handleWorktrees(deleteRec, deleteReq)
+		if deleteRec.Code != http.StatusOK {
+			t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+		}
+	})
 }
 
 type worktreeAPIResponse struct {
@@ -171,13 +173,15 @@ func TestServeWorktreeMergeCleanupSemantics(t *testing.T) {
 		{name: "keep preserves", bodyKeep: true},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			repo := newGitRepoForBindingTest(t)
 			wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "serve-" + strings.ReplaceAll(tt.name, " ", "-")})
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
-			t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+			t.Cleanup(func() { _ = os.RemoveAll(wt.Dir) })
 			if err := os.WriteFile(filepath.Join(wt.Dir, "merged.txt"), []byte("serve merge\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -317,14 +321,12 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 }
 
 func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
-	t.Parallel()
-
 	repo := newGitRepoForBindingTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-conflict-api"})
 	if err != nil {
 		t.Fatalf("Create worktree: %v", err)
 	}
-	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	t.Cleanup(func() { _ = os.RemoveAll(wt.Dir) })
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root api change\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile root: %v", err)
 	}

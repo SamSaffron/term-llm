@@ -20,6 +20,11 @@ func TestRunAgentScriptTool(t *testing.T) {
 	os.WriteFile(echoScript, []byte("#!/bin/sh\necho \"hello $@\"\n"), 0755)
 
 	limits := DefaultOutputLimits()
+	runAgentScriptCommand = func(_ context.Context, _ string, argv []string, _ string, stdout, _ *limitedBuffer) error {
+		_, _ = stdout.Write([]byte("hello " + strings.Join(argv, " ") + "\n"))
+		return nil
+	}
+	t.Cleanup(func() { runAgentScriptCommand = executeAgentScriptCommand })
 
 	tests := []struct {
 		name     string
@@ -156,6 +161,14 @@ func TestRunAgentScriptTool_DirectoryTarget(t *testing.T) {
 }
 
 func TestRunAgentScriptTool_ArgsAreNotShellExpanded(t *testing.T) {
+	runAgentScriptCommand = func(_ context.Context, _ string, argv []string, _ string, stdout, _ *limitedBuffer) error {
+		if len(argv) > 0 {
+			_, _ = stdout.Write([]byte(argv[0] + "\n"))
+		}
+		return nil
+	}
+	t.Cleanup(func() { runAgentScriptCommand = executeAgentScriptCommand })
+
 	agentDir := t.TempDir()
 	writeErr := os.WriteFile(filepath.Join(agentDir, "echo.sh"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\"\n"), 0755)
 	if writeErr != nil {

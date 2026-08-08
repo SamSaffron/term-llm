@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	vcsDirs           = map[string]struct{}{`.git`: {}, `.hg`: {}, `.svn`: {}}
-	errNotGitWorktree = errors.New("not in a git worktree")
+	vcsDirs             = map[string]struct{}{`.git`: {}, `.hg`: {}, `.svn`: {}}
+	errNotGitWorktree   = errors.New("not in a git worktree")
+	discoverGitForBuild = discoverGit
 )
 
 // Build discovers project files and synthesized parent directories.
@@ -40,7 +41,7 @@ func Build(ctx context.Context, root string, opts BuildOptions) (*Snapshot, erro
 
 	collector := newCandidateCollector(opts)
 	source := "git"
-	gitErr := discoverGit(ctx, absRoot, collector)
+	gitErr := discoverGitForBuild(ctx, absRoot, collector)
 	if errors.Is(gitErr, errNotGitWorktree) {
 		source = "walk"
 		if err := discoverWalk(ctx, absRoot, collector); err != nil {

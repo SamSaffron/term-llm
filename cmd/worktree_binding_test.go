@@ -17,25 +17,16 @@ import (
 func newGitRepoForBindingTest(t *testing.T) string {
 	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatalf("MkdirAll repo: %v", err)
+	cmd := exec.Command("git", "clone", "-q", bindingTestRepoTemplate, repo)
+	cmd.Env = bindingTestGitEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("clone git test template: %v\n%s", err, strings.TrimSpace(string(out)))
 	}
-	runGitForBindingTest(t, repo, "init", "-q")
-	runGitForBindingTest(t, repo, "config", "user.name", "Test User")
-	runGitForBindingTest(t, repo, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	runGitForBindingTest(t, repo, "add", "file.txt")
-	runGitForBindingTest(t, repo, "commit", "-q", "-m", "init")
 	return repo
 }
 
-func runGitForBindingTest(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+func bindingTestGitEnv() []string {
+	return append(os.Environ(),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_AUTHOR_NAME=Test User",
@@ -43,6 +34,13 @@ func runGitForBindingTest(t *testing.T, dir string, args ...string) string {
 		"GIT_COMMITTER_NAME=Test User",
 		"GIT_COMMITTER_EMAIL=test@example.com",
 	)
+}
+
+func runGitForBindingTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = bindingTestGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Skipf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))

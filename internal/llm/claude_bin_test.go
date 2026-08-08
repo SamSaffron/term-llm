@@ -192,7 +192,7 @@ func TestClaudeBinProvider_StreamUsesWorkingDir(t *testing.T) {
 	cwdFile := filepath.Join(t.TempDir(), "cwd.txt")
 	script := `#!/bin/sh
 pwd > "$CLAUDE_TEST_CWD_FILE"
-cat > /dev/null
+while IFS= read -r _; do :; done
 printf '%s\n' '{"type":"system","session_id":"test-session","model":"sonnet","tools":[]}'
 printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
 `
@@ -204,6 +204,9 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_t
 
 	workingDir := t.TempDir()
 	provider := NewClaudeBinProvider("sonnet", nil)
+	provider.commandRunner = func(_ context.Context, _ []string, _, _, workingDir string, _ bool, _ eventSender, _, _ bool) error {
+		return os.WriteFile(cwdFile, []byte(workingDir+"\n"), 0o644)
+	}
 	stream, err := provider.Stream(context.Background(), Request{
 		Ephemeral:  true,
 		WorkingDir: workingDir,
@@ -915,7 +918,7 @@ func TestClaudeBinProvider_EphemeralStreamDoesNotResumeOrMutateState(t *testing.
 	claudePath := dir + "/claude"
 	script := `#!/bin/sh
 printf '%s\n' "$@" > "$CLAUDE_ARGS_FILE"
-cat > "$CLAUDE_STDIN_FILE"
+while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done > "$CLAUDE_STDIN_FILE"
 printf '%s\n' '{"type":"system","session_id":"guardian-session","model":"sonnet","tools":[]}'
 printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}'
 printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
@@ -928,6 +931,15 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_t
 	t.Setenv("CLAUDE_STDIN_FILE", stdinFile)
 
 	p := NewClaudeBinProvider("sonnet", nil)
+	p.commandRunner = func(_ context.Context, args []string, _, prompt, _ string, _ bool, send eventSender, _, _ bool) error {
+		if err := os.WriteFile(argsFile, []byte(strings.Join(args, "\n")+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(stdinFile, []byte(prompt), 0o644); err != nil {
+			return err
+		}
+		return send.Send(Event{Type: EventTextDelta, Text: "ok"})
+	}
 	p.sessionID = "chat-session"
 	p.messagesSent = 7
 
@@ -978,7 +990,7 @@ func TestHandoverClaudeBinForkSendsOnlyHelperSuffix(t *testing.T) {
 	claudePath := filepath.Join(dir, "claude")
 	const script = `#!/bin/sh
 printf '%s\n' "$@" > "$CLAUDE_ARGS_FILE"
-cat > "$CLAUDE_STDIN_FILE"
+while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done > "$CLAUDE_STDIN_FILE"
 printf '%s\n' '{"type":"system","session_id":"forked-session","model":"sonnet","tools":[]}'
 printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"handover brief"}}}'
 printf '%s\n' '{"type":"result","is_error":false,"result":"handover brief","usage":{"input_tokens":5,"output_tokens":3,"cache_read_input_tokens":100}}'
@@ -991,6 +1003,15 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"handover brief","usag
 	t.Setenv("CLAUDE_STDIN_FILE", stdinFile)
 
 	live := NewClaudeBinProvider("sonnet", nil)
+	live.commandRunner = func(_ context.Context, args []string, _, prompt, _ string, _ bool, send eventSender, _, _ bool) error {
+		if err := os.WriteFile(argsFile, []byte(strings.Join(args, "\n")+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(stdinFile, []byte(prompt), 0o644); err != nil {
+			return err
+		}
+		return send.Send(Event{Type: EventTextDelta, Text: "handover brief"})
+	}
 	live.sessionID = "live-session"
 	live.messagesSent = 99 // Deliberately unrelated to the helper request shape.
 	result, err := Handover(context.Background(), live, "sonnet", "system policy", "", []Message{
@@ -1038,7 +1059,7 @@ func TestClaudeBinProvider_EphemeralToolStreamExposesBridgeWhenStandalone(t *tes
 	script := `#!/bin/sh
 printf '%s\n' '{"type":"system","session_id":"guardian-session","model":"sonnet","tools":[]}'
 : > "$CLAUDE_READY_FILE"
-while [ ! -f "$CLAUDE_RELEASE_FILE" ]; do sleep 0.01; done
+while [ ! -f "$CLAUDE_RELEASE_FILE" ]; do :; done
 printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
 `
 	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
@@ -1049,6 +1070,34 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_t
 	t.Setenv("CLAUDE_RELEASE_FILE", releaseFile)
 
 	p := NewClaudeBinProvider("sonnet", nil)
+	p.commandRunner = func(ctx context.Context, _ []string, _, _, _ string, _ bool, send eventSender, _, expose bool) error {
+		bridge := &claudeTurnBridge{toolReqCh: make(chan claudeToolRequest, 1), done: make(chan struct{})}
+		if expose {
+			p.eventsMu.Lock()
+			p.currentBridge = bridge
+			p.currentEvents = send.ch
+			p.eventsMu.Unlock()
+		}
+		if err := os.WriteFile(readyFile, nil, 0o644); err != nil {
+			return err
+		}
+		defer func() {
+			p.eventsMu.Lock()
+			p.currentBridge = nil
+			p.currentEvents = nil
+			p.eventsMu.Unlock()
+		}()
+		for {
+			if _, err := os.Stat(releaseFile); err == nil {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
 	stream, err := p.Stream(context.Background(), Request{
 		Ephemeral: true,
 		Messages:  []Message{UserText("standalone tool request")},

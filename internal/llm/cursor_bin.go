@@ -818,6 +818,17 @@ func (p *CursorBinProvider) gcCursorHomes() {
 	gcStaleCLIHomes(base, p.cursorHome, cursorHomeMaxAge, isGrokHomeID, "cursor-bin")
 }
 
+func defaultCursorModelsCommandOutput(ctx context.Context, p *CursorBinProvider, home string) ([]byte, error) {
+	cmd, err := newCLICommand(ctx, "cursor-agent", []string{"models"}, filepath.Join(home, "cwd"))
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = p.buildCommandEnv(home)
+	return cmd.Output()
+}
+
+var cursorModelsCommandOutput = defaultCursorModelsCommandOutput
+
 // ListModels parses the account-specific model list exposed by Cursor Agent.
 func (p *CursorBinProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	home, err := os.MkdirTemp("", "term-llm-cursor-models-")
@@ -828,12 +839,7 @@ func (p *CursorBinProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 	if err := ensureCursorHomeLayout(home); err != nil {
 		return nil, err
 	}
-	cmd, err := newCLICommand(ctx, "cursor-agent", []string{"models"}, filepath.Join(home, "cwd"))
-	if err != nil {
-		return nil, err
-	}
-	cmd.Env = p.buildCommandEnv(home)
-	output, err := cmd.Output()
+	output, err := cursorModelsCommandOutput(ctx, p, home)
 	if err != nil {
 		return nil, fmt.Errorf("list Cursor models: %w", err)
 	}

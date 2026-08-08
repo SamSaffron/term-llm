@@ -18,11 +18,16 @@ import (
 )
 
 func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
+	t.Run("descendant process group", func(t *testing.T) {
+		t.Parallel()
+		testWidgetStopProcessReapsChildProcessGroup(t)
+	})
+}
+
+func testWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups are Unix-specific")
 	}
-
-	t.Setenv("TERM_LLM_WIDGET_TEST_CHILD", "1")
 
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "wrapper.sh")
@@ -74,8 +79,6 @@ func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups are Unix-specific")
 	}
-
-	t.Setenv("TERM_LLM_WIDGET_TEST_CHILD", "1")
 
 	dir := t.TempDir()
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
@@ -258,10 +261,6 @@ func TestManagerReapIdleKeepsActiveProxyRequest(t *testing.T) {
 }
 
 func TestWidgetChildHTTPServer(t *testing.T) {
-	if os.Getenv("TERM_LLM_WIDGET_TEST_CHILD") != "1" {
-		t.Skip("helper process")
-	}
-
 	var port string
 	for i, arg := range os.Args {
 		if arg == "--" && i+1 < len(os.Args) {
@@ -270,7 +269,7 @@ func TestWidgetChildHTTPServer(t *testing.T) {
 		}
 	}
 	if port == "" {
-		log.Fatal("missing port")
+		t.Skip("helper process")
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
