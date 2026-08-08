@@ -144,6 +144,12 @@ type ApprovalPrompter interface {
 	PromptApproval(target string, isWrite, isShell bool, workDir string) (tools.ApprovalResult, error)
 }
 
+// WorkspaceApprovalPrompter is the distinct direct-human transport for a
+// proposed primary workspace. ApprovalPrompter choices are not valid here.
+type WorkspaceApprovalPrompter interface {
+	PromptWorkspaceApproval(workspace string) (tools.WorkspaceApprovalResult, error)
+}
+
 // AskUserPrompter is an optional EventSink capability for the ask_user tool.
 type AskUserPrompter interface {
 	AskUser(ctx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)

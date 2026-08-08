@@ -98,12 +98,14 @@ chat:
 
 guardian:
   # Optional: override the provider/model used for auto approval review.
-  # If omitted, the current chat provider/model is used.
+  # Without a model override, Guardian prefers a configured fast provider/model.
   # provider: anthropic
   # model: claude-sonnet-4-6
   # policy_path: ~/.config/term-llm/guardian-policy.md
   # Review timeout in seconds. Defaults to 90.
   # timeout_seconds: 90
+  # Suspend every shell pattern while auto mode is active.
+  classify_all_shell: false
 
 edit:
   model: gpt-5.2-codex
@@ -130,7 +132,13 @@ A blank configuration uses these built-in defaults:
 | `chat`, `ask` | `auto` |
 | `edit`, `exec`, `loop`, `serve`, `serve mcp` | `prompt` |
 
-In **prompt** mode, actions outside deterministic file/directory and shell allowlists ask before proceeding. In **auto** mode, those deterministic checks still run first. Unmatched shell commands are reviewed by a guardian model using the exact command, working directory, transcript evidence, and current approval context. Auto does not grant broader filesystem access and is not yolo. Guardian approvals are cached only for the exact command and working directory.
+In **prompt** mode, actions outside deterministic file/directory and shell allowlists ask before proceeding. In **auto** mode, deterministic exact approvals and usable narrow patterns still run first. Guardian reviews unmatched shell commands, file reads, file writes and edits/diffs, grep/glob directory searches, image input/output paths, and explicit additional-workspace grants/elevations. Auto does not review MCP/network/service actions and is not yolo. Shell approvals from Guardian are cached only for the exact command and working directory; ordinary per-file reviews do not silently create workspace grants.
+
+Local launches record the canonical runtime/project directory as a per-session **proposed primary workspace**, initially with zero file authority. The first path access inside it outside yolo uses a direct human whole-workspace read/write confirmation before Guardian or deterministic file rules. The prompt names the canonical root, offers only session read/write or deny, and states that shell remains separately controlled. Allow is persisted with the root session; resume does not reprompt. Deny blocks the triggering call, and no confirmation transport fails closed. While yolo is effective, file access bypasses this confirmation without prompting or persisting workspace authority; after leaving yolo, the next access prompts if the primary remains unconfirmed. Worktree rebinding invalidates a mismatched primary confirmation while preserving additional grants.
+
+Serve/web never derives even a proposal from daemon CWD. Only explicit request/session state can propose a workspace, and web uses the same dedicated first-access confirmation modal outside yolo. Before a session/request/worktree is explicitly bound, relative local-tool paths and shell calls without an absolute `working_dir` fail closed rather than using daemon CWD; absolute targets still pass through normal approval checks. Guardian and headless/synchronous operation cannot substitute for the human workspace decision; explicit yolo bypasses it for tool access without establishing primary authority.
+
+Whenever any local file/search/image path tool is enabled—including through an explicit tool list—term-llm also exposes `manage_workspace`. Additional workspaces default to read-only, are canonicalized and narrowed to their enclosing Git worktree root when applicable, and can be explicitly elevated to write. Auto mode Guardian-reviews each new grant and each read-to-write elevation once; duplicate/weaker grants are idempotent. Grants can be listed or revoked, are shared immediately with child agents, never grant shell/MCP/network authority, and never modify project/global approvals. SQLite sessions persist non-yolo grants across resume and copy them to conversation branches; stores without the optional persistence capability keep runtime-only grants. Yolo grants are always ephemeral overlays: they are never persisted or branched, disappear throughout the parent/child tree on leaving yolo, and a temporary write elevation restores any durable read grant beneath it.
 
 Choose a mode for one invocation with `--approval`:
 
@@ -168,25 +176,34 @@ Configuration accepts only `prompt` and `auto`. An omitted or empty surface valu
 
 Auto mode is intentionally narrower than yolo:
 
-- `prompt`: ask before unapproved tool actions.
-- `auto`: guardian-review supported unmatched operations; other approvals still prompt.
+- `prompt`: ask before unapproved tool actions; existing pattern rules retain their prior behavior.
+- `auto`: Guardian reviews supported unmatched local operations and fails closed on denials/review failures.
 - `yolo`: auto-approve tool actions without prompting (explicit CLI use only).
 
-Interactive Guardian initialization failure produces one warning and temporarily uses prompt mode; the requested auto policy remains saved so a later resume can retry. Headless auto runtimes fail startup if Guardian cannot initialize. Runtime review errors remain fail-closed.
+Interactive Guardian initialization failure produces one warning and temporarily uses prompt mode; the requested auto policy remains saved so a later resume can retry. Headless auto runtimes fail startup if Guardian cannot initialize. Once auto is running, a Guardian denial, contradictory allow, timeout, malformed response, unavailability, or transport failure returns an error to the agent in terminal, web/serve, and headless runtimes. It does not immediately fall through to a human prompt for that action.
 
-Configure guardian review with:
+Configure Guardian review with:
 
 ```yaml
 guardian:
   provider: anthropic       # optional override
-  model: claude-sonnet-4-6  # optional override
+  model: claude-sonnet-4-6  # optional authoritative model pin
   policy_path: ~/.config/term-llm/guardian-policy.md # optional custom policy
-  timeout_seconds: 90        # optional; default 90
+  timeout_seconds: 90       # optional; default 90
+  classify_all_shell: false # true sends every shell pattern through Guardian
 ```
 
-If `guardian.provider` is set and `guardian.model` is omitted, term-llm uses that provider's configured model/fast model instead of accidentally mixing it with the chat provider's model.
+Without explicit `guardian.model`, resolution selects a provider/model pair: the selected provider's `fast_model` (and its `fast_provider`, when set), then its normal model, then the provider type's built-in fast model. The active model is used only when it belongs to the resolved Guardian provider; otherwise setup reports a clear error instead of mixing a provider with another provider's model. This changes the default from inheriting the main/large model to preferring the fast model. Pin `guardian.model` to retain the main model; an explicit model never implicitly switches to `fast_provider`.
 
-> Privacy note: guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If you set `guardian.provider` to a different provider than your chat provider, that evidence is sent to the guardian provider as well. Leave `guardian.provider` unset if you do not want approval evidence routed to an additional provider.
+In auto mode, arbitrary-execution shell patterns are suspended before matching. The mechanical set includes executable globs (`*`, `*/bin/*`) plus wildcard arguments to interpreters, shells, elevation tools, and common dispatchers. Examples include `python *`, `python *.py`, `/usr/bin/python3 *`, `node *.js`, `bash *`, `env *`, `sudo *`, `uv run *`, `npx *`, and `pipx run *`. Existing generated rules of this form continue to work after an explicit switch to prompt mode but are intentionally ignored while auto is requested. Narrow fixed commands such as `git status`, `go test *`, `npm test`, `python script.py`, `uv run pytest`, `npx eslint`, and `pipx run black` remain deterministic unless `classify_all_shell` is true. Exact configured scripts, exact session commands, and exact Guardian command/workdir approvals remain active either way.
+
+Configured, session, ancestor, and project pattern sets remain independent; term-llm does not union them to cover different segments of a compound command. Safe pipe targets can satisfy only a later pipe segment after the head has a usable deterministic approval, so they cannot restore a suspended head. A suspended pattern is not a deny: the unresolved exact action goes to Guardian.
+
+Three consecutive Guardian policy denials or 20 total policy denials in the current auto epoch suspend auto across the root manager and all child agents. Successful Guardian approval resets only the consecutive count; reviewer failures do not count. The threshold-triggering action remains denied and the next approval-bearing action uses effective prompt mode. The requested auto policy remains responsible for shell-pattern filtering while suspended, so arbitrary-execution rules—or all rules under `classify_all_shell`—cannot become implicit post-breaker approvals. In the TUI, the first Shift+Tab after suspension calls the explicit auto-resume path, clears the latch/counters, and starts a fresh epoch; it does not jump directly to yolo. An explicit switch out of and back into auto also starts a fresh epoch. Suspension affects runtime behavior only, not the requested/persisted policy, so a cold resume may enter auto with a fresh epoch. Web/serve has no direct mode-cycle control from this feature; its existing approval transport handles later prompt-mode requests.
+
+To override a denial deliberately, explicitly authorize the exact action in a subsequent message so Guardian can reassess it using the new trusted transcript evidence, or switch the session to prompt/yolo using existing controls. Guardian never directly offers a wildcard command pattern, directory, or repository grant after a denial.
+
+> Privacy note: Guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` or the selected `fast_provider` differs from the chat provider, that evidence is sent to the resolved Guardian provider as well.
 
 ## Per-command overrides
 

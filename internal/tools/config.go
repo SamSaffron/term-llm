@@ -32,9 +32,18 @@ type ToolConfig struct {
 	// deliberately implemented through explicit path resolution / exec.Cmd.Dir;
 	// callers must never use process-wide os.Chdir for session binding.
 	BaseDir string `mapstructure:"-"`
+	// PrimaryWorkspace is set only for an explicit local/session proposal. BaseDir
+	// may still be present solely for relative-path resolution; notably, a serve
+	// daemon's process CWD must never become even a proposal by implication.
+	PrimaryWorkspace string `mapstructure:"-"`
+	// RequireExplicitWorkingDir is enabled only for unbound remote/daemon
+	// runtimes. With no BaseDir it rejects relative paths and default process
+	// execution instead of falling back to the daemon's ambient CWD.
+	RequireExplicitWorkingDir bool `mapstructure:"-"`
 	// ShellWorkingDir is retained for compatibility with older callers. Prefer
 	// BaseDir for new code. When ShellWorkingDir is empty, shell execution falls
-	// back to BaseDir; when both are empty it falls back to the process cwd.
+	// back to BaseDir. Legacy callers then use process CWD; unbound daemon
+	// runtimes set RequireExplicitWorkingDir to reject that ambient fallback.
 	ShellWorkingDir string `mapstructure:"-"`
 }
 
@@ -68,14 +77,14 @@ func (c *ToolConfig) mutex() *sync.RWMutex {
 	return c.mu
 }
 
-func (c *ToolConfig) baseDirFields() (baseDir, shellDir string) {
+func (c *ToolConfig) baseDirFields() (baseDir, shellDir string, requireExplicit bool) {
 	if c == nil {
-		return "", ""
+		return "", "", false
 	}
 	mu := c.mutex()
 	mu.RLock()
 	defer mu.RUnlock()
-	return c.BaseDir, c.ShellWorkingDir
+	return c.BaseDir, c.ShellWorkingDir, c.RequireExplicitWorkingDir
 }
 
 func (c *ToolConfig) permissionsFields() (baseDir string, readDirs, writeDirs, shellAllow, scriptCommands []string) {
@@ -92,9 +101,9 @@ func (c *ToolConfig) permissionsFields() (baseDir string, readDirs, writeDirs, s
 		append([]string(nil), c.ScriptCommands...)
 }
 
-// UpdateBaseDir updates the runtime working directory fields guarded by the
-// config lock. It also grants the directory through ReadDirs/WriteDirs so
-// permission snapshots built after the change include the active BaseDir.
+// UpdateBaseDir updates only the runtime working directory fields guarded by
+// the config lock. ApprovalManager separately owns the proposed/confirmed
+// primary workspace state and additional capabilities.
 func (c *ToolConfig) UpdateBaseDir(dir string) {
 	if c == nil {
 		return
@@ -103,9 +112,23 @@ func (c *ToolConfig) UpdateBaseDir(dir string) {
 	mu.Lock()
 	defer mu.Unlock()
 	c.BaseDir = dir
+	c.PrimaryWorkspace = dir
 	c.ShellWorkingDir = dir
-	c.ReadDirs = appendUniqueConfig(c.ReadDirs, dir)
-	c.WriteDirs = appendUniqueConfig(c.WriteDirs, dir)
+}
+
+// ClearBaseDir removes an explicit runtime/session binding. Legacy callers then
+// fall back to process CWD; runtimes requiring an explicit working directory
+// remain fail-closed.
+func (c *ToolConfig) ClearBaseDir() {
+	if c == nil {
+		return
+	}
+	mu := c.mutex()
+	mu.Lock()
+	c.BaseDir = ""
+	c.PrimaryWorkspace = ""
+	c.ShellWorkingDir = ""
+	mu.Unlock()
 }
 
 // BaseDirValue returns the current runtime BaseDir without racing writers.
@@ -119,13 +142,15 @@ func (c *ToolConfig) BaseDirValue() string {
 	return c.BaseDir
 }
 
-func appendUniqueConfig(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
+// PrimaryWorkspaceValue returns the explicitly proposed primary workspace.
+func (c *ToolConfig) PrimaryWorkspaceValue() string {
+	if c == nil {
+		return ""
 	}
-	return append(values, value)
+	mu := c.mutex()
+	mu.RLock()
+	defer mu.RUnlock()
+	return c.PrimaryWorkspace
 }
 
 // Merge combines this config with another, with other taking precedence for non-empty values.
@@ -169,6 +194,12 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	if other.BaseDir != "" {
 		result.BaseDir = other.BaseDir
 	}
+	if other.PrimaryWorkspace != "" {
+		result.PrimaryWorkspace = other.PrimaryWorkspace
+	}
+	if other.RequireExplicitWorkingDir {
+		result.RequireExplicitWorkingDir = true
+	}
 	if other.ShellWorkingDir != "" {
 		result.ShellWorkingDir = other.ShellWorkingDir
 	}
@@ -201,6 +232,8 @@ func (c *ToolConfig) Validate() []error {
 	}
 	mu := c.mutex()
 	mu.RLock()
+	baseDir := c.BaseDir
+	requireExplicitWorkingDir := c.RequireExplicitWorkingDir
 	enabled := append([]string(nil), c.Enabled...)
 	readDirs := append([]string(nil), c.ReadDirs...)
 	writeDirs := append([]string(nil), c.WriteDirs...)
@@ -218,6 +251,19 @@ func (c *ToolConfig) Validate() []error {
 	for _, pattern := range shellAllow {
 		if err := validateShellApprovalPattern(pattern); err != nil {
 			errs = append(errs, fmt.Errorf("invalid shell pattern %q: %w", pattern, err))
+		}
+	}
+
+	if requireExplicitWorkingDir && strings.TrimSpace(baseDir) == "" {
+		for _, dir := range readDirs {
+			if !filepath.IsAbs(strings.TrimSpace(dir)) {
+				errs = append(errs, fmt.Errorf("read_dir %q must be absolute when no session working directory is bound", dir))
+			}
+		}
+		for _, dir := range writeDirs {
+			if !filepath.IsAbs(strings.TrimSpace(dir)) {
+				errs = append(errs, fmt.Errorf("write_dir %q must be absolute when no session working directory is bound", dir))
+			}
 		}
 	}
 
@@ -300,18 +346,21 @@ func (c *ToolConfig) CanRunShellNonTTY() bool {
 
 // WorkingDir returns the effective per-run working directory. BaseDir is the
 // preferred source. ShellWorkingDir is a legacy shell-only override retained for
-// compatibility. If neither is set, the process cwd is used as a last-resort
-// fallback for legacy callers.
+// compatibility. If neither is set, legacy callers use process CWD; runtimes
+// requiring an explicit directory return empty instead.
 func (c *ToolConfig) WorkingDir() string {
 	if c == nil {
 		return mustGetwd()
 	}
-	baseDir, shellDir := c.baseDirFields()
+	baseDir, shellDir, requireExplicit := c.baseDirFields()
 	if dir := strings.TrimSpace(baseDir); dir != "" {
 		return cleanAbsDir(dir)
 	}
 	if dir := strings.TrimSpace(shellDir); dir != "" {
 		return cleanAbsDir(dir)
+	}
+	if requireExplicit {
+		return ""
 	}
 	return mustGetwd()
 }
@@ -322,14 +371,30 @@ func (c *ToolConfig) ShellDir() string {
 	if c == nil {
 		return mustGetwd()
 	}
-	baseDir, shellDir := c.baseDirFields()
+	baseDir, shellDir, requireExplicit := c.baseDirFields()
 	if dir := strings.TrimSpace(shellDir); dir != "" {
 		return cleanAbsDir(dir)
 	}
 	if dir := strings.TrimSpace(baseDir); dir != "" {
 		return cleanAbsDir(dir)
 	}
+	if requireExplicit {
+		return ""
+	}
 	return mustGetwd()
+}
+
+// RequiresExplicitWorkingDir reports whether ambient process-CWD fallback is
+// forbidden for this runtime.
+func (c *ToolConfig) RequiresExplicitWorkingDir() bool {
+	if c == nil {
+		return false
+	}
+	mu := c.mutex()
+	mu.RLock()
+	required := c.RequireExplicitWorkingDir
+	mu.RUnlock()
+	return required
 }
 
 // ResolveDir resolves a user-supplied directory against WorkingDir when it is
@@ -419,12 +484,6 @@ func (c *ToolConfig) BuildPermissions() (*ToolPermissions, error) {
 
 	if baseDir != "" {
 		baseAbs = cleanAbsDir(baseDir)
-		if err := perms.AddReadDir(baseAbs); err != nil {
-			slog.Warn("failed to add base read dir", "dir", baseAbs, "error", err)
-		}
-		if err := perms.AddWriteDir(baseAbs); err != nil {
-			slog.Warn("failed to add base write dir", "dir", baseAbs, "error", err)
-		}
 	}
 
 	for _, dir := range readDirs {

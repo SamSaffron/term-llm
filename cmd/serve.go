@@ -520,6 +520,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 					return runtime.awaitApproval(path, isWrite, isShell, workDir)
 				}
 			}
+			if hasWeb {
+				runtime.toolMgr.ApprovalMgr.WorkspacePromptFunc = runtime.awaitWorkspaceApproval
+			}
 		}
 		runtime.Touch()
 		return runtime, nil

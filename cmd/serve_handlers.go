@@ -2856,7 +2856,16 @@ func (s *serveServer) ensureRuntimeBaseDirForSession(ctx context.Context, sessio
 	if err != nil || sess == nil {
 		return nil
 	}
-	if err := RestoreWorktreeBinding(ctx, s.store, sess, rt.toolMgr); err != nil {
+	if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, s.store, sessionID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(sess.WorktreeDir) == "" {
+		// A long-lived web runtime may contain a historical daemon CWD. Only an
+		// explicit request/session workspace is eligible even as a proposal.
+		if err := rt.toolMgr.ClearPrimaryWorkspace(ctx); err != nil {
+			return err
+		}
+	} else if err := RestoreWorktreeBinding(ctx, s.store, sess, rt.toolMgr); err != nil {
 		return err
 	}
 	rt.mu.Lock()
@@ -3041,8 +3050,6 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		if requestedWorktree != "" {
 			sess.WorktreeDir = requestedWorktree
 			sess.CWD = requestedWorktree
-		} else if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			sess.CWD = cwd
 		}
 		if createErr := s.store.Create(ctx, sess); createErr != nil {
 			if existing, getErr := s.store.Get(ctx, sessionID); getErr == nil && existing != nil {
@@ -3052,7 +3059,7 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 				return
 			}
 		} else {
-			applyRuntimeWorktreeBaseDir(sessionID, rt, sess.WorktreeDir)
+			applyRuntimeWorktreeBaseDir(ctx, s.store, sessionID, rt, sess.WorktreeDir)
 			rt.mu.Lock()
 			rt.sessionMeta = sess
 			rt.mu.Unlock()
@@ -3109,7 +3116,7 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 			return
 		}
 	}
-	applyRuntimeWorktreeBaseDir(sessionID, rt, acceptedWorktree)
+	applyRuntimeWorktreeBaseDir(ctx, s.store, sessionID, rt, acceptedWorktree)
 	rt.mu.Lock()
 	rt.sessionMeta = sess
 	rt.mu.Unlock()
@@ -3136,12 +3143,16 @@ func (s *serveServer) syncPersistedSessionReasoningMode(ctx context.Context, ses
 	}
 }
 
-func applyRuntimeWorktreeBaseDir(sessionID string, rt *serveRuntime, dir string) {
+func applyRuntimeWorktreeBaseDir(ctx context.Context, store session.Store, sessionID string, rt *serveRuntime, dir string) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" || rt == nil || rt.toolMgr == nil {
 		return
 	}
-	if err := rt.toolMgr.SetBaseDir(dir); err != nil {
+	if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, store, sessionID); err != nil {
+		log.Printf("[serve] configure workspace persistence failed for %s: %v", sessionID, err)
+		return
+	}
+	if err := rt.toolMgr.SetBaseDirWithContext(ctx, dir); err != nil {
 		log.Printf("[serve] set worktree BaseDir failed for %s: %v", sessionID, err)
 		return
 	}

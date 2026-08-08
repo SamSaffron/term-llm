@@ -66,6 +66,7 @@ The `--tools` flag is **required**. Pass a comma-separated list of tool names, o
 | `edit_file` | Surgical find/replace edits (default edit tool) |
 | `glob` | Find files by pattern |
 | `grep` | Search file contents with regex |
+| `manage_workspace` | Grant/list/revoke runtime-scoped local workspaces; added automatically with any file/search/image path tool |
 | `shell` | Run shell commands (build, test, git, docker, etc.) |
 
 ### Web
@@ -85,7 +86,7 @@ The `--tools` flag is **required**. Pass a comma-separated list of tool names, o
 
 ### The `all` shorthand
 
-`--tools all` expands to: `read_file`, `write_file`, `edit_file`, `shell`, `grep`, `glob`, `image_generate`, `web_search`, `read_url`.
+`--tools all` expands to: `read_file`, `write_file`, `edit_file`, `shell`, `grep`, `glob`, `image_generate`, `web_search`, `read_url`. Because that set contains path-capable tools, `manage_workspace` is registered alongside it automatically. The same happens for an explicit list such as `read_file,grep`; a shell/web-only list does not receive it.
 
 Tools whose backing provider isn't configured are skipped with a warning.
 
@@ -133,8 +134,8 @@ term-llm serve mcp --tools all --edit-format diff
 - **Auth**: Bearer token authentication on every request (constant-time comparison). Token is auto-generated if not provided.
 - **Localhost by default**: Binds to `127.0.0.1`. You must explicitly pass `--host 0.0.0.0` to accept remote connections.
 - **Transport security**: The server uses plain HTTP. When exposing beyond localhost, use an SSH tunnel, VPN, or TLS-terminating reverse proxy to protect traffic in transit.
-- **Permissions**: `--read-dir`, `--write-dir`, and `--shell-allow` restrict what the tools can access. The built-in mode is prompt. Since the server has no interactive approval UI, pre-configure permissions or select an explicit approval policy.
-- **Auto**: `--approval auto` asks Guardian to review supported unmatched operations. Guardian must initialize before the server starts; review errors deny the operation.
+- **Permissions**: `--read-dir`, `--write-dir`, and `--shell-allow` restrict what the tools can access. The built-in mode is prompt. The MCP daemon CWD is not even a proposed workspace. If an explicit request/session workspace is supplied, it is only a pending primary proposal; this headless server has no human workspace-confirmation transport, so first file/path access inside it fails closed even in auto or yolo. Pre-configure deterministic file permissions instead. Additional `manage_workspace` grants are runtime-only here (there is no persisted conversation session) and never authorize shell commands.
+- **Auto**: `--approval auto` asks Guardian to review supported unmatched shell and local file/path operations. Guardian must initialize before the server starts; denials and review errors return to the agent without prompting for that same action. If the 3-consecutive/20-total breaker suspends auto, the existing approval transport handles subsequent effective-prompt requests, but auto's arbitrary-execution shell-pattern filter remains latched so broad rules cannot become implicit approvals. This feature does not add a web mode-cycle or explicit-resume control.
 - **No `ask_user`**: The server runs non-interactively. Use deterministic permission flags, guardian-reviewed auto, or explicit yolo as appropriate.
 
 ## Examples

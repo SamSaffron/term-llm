@@ -22,7 +22,8 @@ const applyRecoveredInteractiveFact = (session, event, payload = {}) => {
   if (event === 'response.approval.prompt') {
     const approvalId = String(payload.approval_id || '').trim();
     const options = Array.isArray(payload.options) ? payload.options : [];
-    if (approvalId && options.length > 0) app.openApprovalModal(session.id, approvalId, payload.path, payload.is_shell, payload.title, options);
+    if (approvalId && options.length > 0) app.openApprovalModal(session.id, approvalId, payload.path, payload.is_shell,
+      payload.is_workspace, payload.title, options, payload.resume_auto_available);
     return true;
   }
   return false;

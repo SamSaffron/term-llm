@@ -48,6 +48,8 @@ type Request struct {
 	Policy           string
 	PromptMode       PromptMode
 	ScopeID          string
+	WorkspaceAccess  string
+	Reason           string
 }
 
 type Decision struct {

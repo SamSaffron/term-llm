@@ -3706,6 +3706,9 @@ func runHandoverScript(ctx context.Context, approvalMgr *tools.ApprovalManager, 
 	}
 	outcome, err := approvalMgr.CheckShellApprovalWithContext(ctx, script, workDir, transcript)
 	if err != nil {
+		if rationale, ok := tools.GuardianDenialReason(err); ok {
+			return "", fmt.Errorf("handover script denied by guardian: %s", rationale)
+		}
 		return "", err
 	}
 	if outcome == tools.Cancel {

@@ -92,10 +92,13 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	}
 
 	// Working directory: same as the session BaseDir, falling back to process cwd
-	// for legacy callers that have not configured one.
+	// only for legacy callers that have not forbidden ambient execution.
 	workDir := ""
 	if t.toolConfig != nil {
 		workDir = t.toolConfig.WorkingDir()
+		if workDir == "" && t.toolConfig.RequiresExplicitWorkingDir() {
+			return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run custom tools"))), nil
+		}
 	}
 	if workDir == "" {
 		var err error

@@ -222,6 +222,15 @@ func checkDoneFile(doneFileSpec string) bool {
 	return strings.Contains(string(content), searchText)
 }
 
+// loopWorkspaceApprovalTransport is installed only for prompt mode. Auto loops
+// are unattended and fail closed at the primary boundary; yolo bypasses it.
+func loopWorkspaceApprovalTransport(mode tools.ApprovalMode) func(string) (tools.WorkspaceApprovalResult, error) {
+	if mode != tools.ModePrompt {
+		return nil
+	}
+	return tools.RunWorkspaceApprovalUI
+}
+
 func runLoop(cmd *cobra.Command, args []string) error {
 	// Extract @agent from args if present
 	atAgent, filteredArgs := ExtractAgentFromArgs(args)
@@ -276,6 +285,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	settings.PrimaryWorkspace = settings.BaseDir
 
 	// Apply provider overrides
 	agentProvider, agentModel := "", ""
@@ -326,6 +336,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		reportApprovalMode(cmd.ErrOrStderr(), loopDebug, resolvedApproval, toolMgr.ApprovalMgr)
+		toolMgr.ApprovalMgr.WorkspacePromptFunc = loopWorkspaceApprovalTransport(resolvedApproval.Mode)
 		if resolvedApproval.Mode == tools.ModePrompt {
 			toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
 		}

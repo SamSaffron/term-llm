@@ -1539,7 +1539,7 @@ async function testAskUserAnswerHasStableClientIdentity() {
 async function testInactiveSessionPromptEventsRemainActionable() {
   const name = 'inactive ask-user and approval prompt events still create actionable modal state';
   const harness = createHarness();
-  const { app, state, cleanup } = harness;
+  const { app, state, elements, cleanup } = harness;
 
   const sessionA = { id: 'session_prompt_a', title: 'A', messages: [], activeResponseId: 'resp_prompt', latestRunEpoch: 1, lastSequenceNumber: 6, number: 1 };
   sessionA.transcript = new ConversationController(sessionA.id);
@@ -1570,14 +1570,26 @@ async function testInactiveSessionPromptEventsRemainActionable() {
   streamState = app.createResponseStreamState(sessionA);
   app.applyResponseStreamEvent(sessionA, streamState, 'response.approval.prompt', {
     approval_id: 'approval_1',
-    title: 'Approve tool',
-    path: '/tmp/file',
-    options: [{ index: 0, label: 'Allow', choice: 'allow' }, { index: 1, label: 'Deny', choice: 'deny' }],
+    title: 'Primary Workspace Access Request',
+    path: '/tmp/workspace',
+    is_workspace: true,
+    resume_auto_available: true,
+    options: [
+      { index: 0, label: "Allow this session's canonical workspace read/write", description: 'Shell commands remain separately controlled.', choice: 'workspace' },
+      { index: 1, label: 'Deny', choice: 'deny' },
+    ],
     sequence_number: 8,
   });
 
-  if (!state.approval || state.approval.sessionId !== sessionA.id || state.approval.approvalId !== 'approval_1') {
-    fail(name, 'inactive approval prompt did not create modal state', JSON.stringify(state.approval));
+  if (!state.approval || state.approval.sessionId !== sessionA.id || state.approval.approvalId !== 'approval_1'
+    || !state.approval.isWorkspace || state.approval.path !== '/tmp/workspace'
+    || !state.approval.resumeAutoAvailable || state.approval.resumeAuto) {
+    fail(name, 'inactive workspace approval prompt did not create dedicated modal state', JSON.stringify(state.approval));
+    await cleanup();
+    return;
+  }
+  if (elements.approvalApproveBtn.textContent !== 'Allow workspace') {
+    fail(name, `workspace approval button text = ${elements.approvalApproveBtn.textContent}`);
     await cleanup();
     return;
   }

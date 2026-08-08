@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,7 +68,7 @@ func TestApprovalManagerAutoReviewerHandlesUnmatchedRead(t *testing.T) {
 	}
 }
 
-func TestApprovalManagerAutoReadDenialEscalatesToHuman(t *testing.T) {
+func TestApprovalManagerAutoReadDenialIsTerminal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
@@ -81,21 +82,23 @@ func TestApprovalManagerAutoReadDenialEscalatesToHuman(t *testing.T) {
 	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: false, RiskLevel: "high", UserAuthorization: "low", Rationale: "unrelated sensitive file"}, nil
 	}, nil)
-	prompted := false
 	mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
-		prompted = true
-		return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
+		t.Fatal("PromptUIFunc called after Guardian denial")
+		return ApprovalResult{}, nil
+	}
+	mgr.PromptFunc = func(*ApprovalRequest) (ConfirmOutcome, string) {
+		t.Fatal("PromptFunc called after Guardian denial")
+		return Cancel, ""
 	}
 
 	outcome, err := mgr.CheckPathApprovalWithContext(context.Background(), ReadFileToolName, path, path, false)
-	if err != nil || outcome != ProceedOnce || !prompted {
-		t.Fatalf("denied read fallback = outcome %v, prompted %v, err %v", outcome, prompted, err)
+	if outcome != Cancel || err == nil {
+		t.Fatalf("denied read = outcome %v, err %v; want terminal denial", outcome, err)
 	}
-	mgr.guardianMu.RLock()
-	denials := mgr.guardianConsecutiveDenials
-	mgr.guardianMu.RUnlock()
-	if denials != 0 {
-		t.Fatalf("guardian denials after human approval = %d, want reset", denials)
+	want := "guardian denied this action: unrelated sensitive file. " + guardianSafeNextStep
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) || toolErr.Type != ErrPermissionDenied || toolErr.Message != want {
+		t.Fatalf("denial = %#v, want PERMISSION_DENIED %q", err, want)
 	}
 }
 
@@ -354,100 +357,103 @@ func TestApprovalManagerGuardianExactCacheDoesNotTreatStarAsPattern(t *testing.T
 	}
 }
 
-func TestApprovalManagerGuardianCircuitBreakerTripsParentFromChild(t *testing.T) {
-	parent := newApprovalAutoTestManager(NewToolPermissions())
-	parent.SetApprovalMode(ModeAuto)
-	parent.SetAutoHeadless(true)
-	parent.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+func TestApprovalManagerGuardianCircuitBreakerTripsRootAndLocallyAutoChild(t *testing.T) {
+	root := newApprovalAutoTestManager(NewToolPermissions())
+	root.SetApprovalMode(ModeAuto)
+	root.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: false, Rationale: "blocked"}, nil
 	}, nil)
 	child := newApprovalAutoTestManager(NewToolPermissions())
-	if err := child.SetParent(parent); err != nil {
+	if err := child.SetParent(root); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
-		_, _ = child.CheckShellApproval("bad command", "")
+	child.SetApprovalMode(ModeAuto)
+	warnings := 0
+	root.GuardianEventFunc = func(event GuardianEvent) {
+		if event.Outcome == GuardianWarning && strings.Contains(event.Message, "auto mode suspended") {
+			warnings++
+			if !strings.Contains(event.Message, "consecutive=3, total=3") {
+				t.Errorf("breaker warning missing counts: %q", event.Message)
+			}
+		}
 	}
-	if got := parent.ApprovalMode(); got != ModePrompt {
-		t.Fatalf("parent mode after child denials = %v, want prompt", got)
+	for i := 0; i < 3; i++ {
+		outcome, err := child.CheckShellApproval(fmt.Sprintf("bad command %d", i), "")
+		if outcome != Cancel || err == nil {
+			t.Fatalf("denial %d = %v, %v; triggering action must remain denied", i+1, outcome, err)
+		}
+	}
+	if got := root.ApprovalMode(); got != ModePrompt {
+		t.Fatalf("root mode after child denials = %v, want prompt", got)
 	}
 	if got := child.ApprovalMode(); got != ModePrompt {
-		t.Fatalf("child effective mode after circuit breaker = %v, want prompt", got)
+		t.Fatalf("locally-auto child effective mode after breaker = %v, want prompt", got)
+	}
+	if warnings != 1 {
+		t.Fatalf("breaker warnings = %d, want 1", warnings)
 	}
 }
 
-func TestApprovalManagerAutoReviewerFailureFallback(t *testing.T) {
+func TestApprovalManagerAutoReviewerFailureIsTerminal(t *testing.T) {
 	reviewErr := errors.New("bad json")
-	for _, tt := range []struct {
-		name     string
-		headless bool
-		wantErr  bool
-	}{
-		{name: "interactive falls back to prompt", headless: false, wantErr: false},
-		{name: "headless denies", headless: true, wantErr: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, headless := range []bool{false, true} {
+		t.Run(map[bool]string{false: "interactive", true: "headless"}[headless], func(t *testing.T) {
 			mgr := newApprovalAutoTestManager(NewToolPermissions())
 			mgr.SetApprovalMode(ModeAuto)
-			mgr.SetAutoHeadless(tt.headless)
-			mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+			mgr.SetAutoHeadless(headless)
+			mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 				return PolicyDecision{}, reviewErr
 			}, nil)
-			mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
-				return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
+			mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
+				t.Fatal("prompt called after Guardian review failure")
+				return ApprovalResult{}, nil
 			}
 			outcome, err := mgr.CheckShellApproval("echo hi", "")
-			if tt.wantErr {
-				if err == nil || outcome != Cancel {
-					t.Fatalf("outcome=%v err=%v, want denial", outcome, err)
-				}
-				return
+			if err == nil || outcome != Cancel {
+				t.Fatalf("outcome=%v err=%v, want terminal denial", outcome, err)
 			}
-			if err != nil || outcome != ProceedOnce {
-				t.Fatalf("outcome=%v err=%v, want prompt fallback allow", outcome, err)
+			want := "guardian could not review this action: bad json. " + guardianSafeNextStep
+			var toolErr *ToolError
+			if !errors.As(err, &toolErr) || toolErr.Message != want {
+				t.Fatalf("review failure = %#v, want %q", err, want)
+			}
+			mgr.guardianMu.RLock()
+			consecutive, total := mgr.guardianConsecutiveDenials, mgr.guardianTotalDenials
+			mgr.guardianMu.RUnlock()
+			if consecutive != 0 || total != 0 {
+				t.Fatalf("review failure counted as denial: consecutive=%d total=%d", consecutive, total)
 			}
 		})
 	}
 }
 
-func TestApprovalManagerAutoDenialPromptsHumanInInteractiveMode(t *testing.T) {
+func TestApprovalManagerAutoShellDenialIsTerminal(t *testing.T) {
 	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
-	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+	mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: false, Rationale: "not requested"}, nil
 	}, nil)
-	prompted := false
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
-		prompted = true
-		return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
+	mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
+		t.Fatal("PromptUIFunc called after Guardian denial")
+		return ApprovalResult{}, nil
+	}
+	mgr.PromptFunc = func(*ApprovalRequest) (ConfirmOutcome, string) {
+		t.Fatal("PromptFunc called after Guardian denial")
+		return Cancel, ""
 	}
 	outcome, err := mgr.CheckShellApproval("rm -rf important", "")
-	if err != nil || outcome != ProceedOnce {
-		t.Fatalf("outcome=%v err=%v, want human prompt allow", outcome, err)
-	}
-	if !prompted {
-		t.Fatal("expected guardian denial to escalate to human prompt")
+	if err == nil || outcome != Cancel {
+		t.Fatalf("outcome=%v err=%v, want terminal denial", outcome, err)
 	}
 	if calls != 1 {
-		t.Fatalf("guardian calls = %d, want 1 before human prompt", calls)
+		t.Fatalf("guardian calls = %d, want 1", calls)
 	}
-}
-
-func TestApprovalManagerAutoDenialIncludesNoWorkaroundsInHeadlessMode(t *testing.T) {
-	mgr := newApprovalAutoTestManager(NewToolPermissions())
-	mgr.SetApprovalMode(ModeAuto)
-	mgr.SetAutoHeadless(true)
-	mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
-		return PolicyDecision{Allowed: false, Rationale: "not requested"}, nil
-	}, nil)
-	outcome, err := mgr.CheckShellApproval("rm -rf important", "")
-	if outcome != Cancel || err == nil {
-		t.Fatalf("outcome=%v err=%v, want denial", outcome, err)
-	}
-	if !strings.Contains(err.Error(), "Do not attempt to achieve this outcome via workarounds") {
-		t.Fatalf("denial missing workaround warning: %v", err)
+	want := "guardian denied this action: not requested. " + guardianSafeNextStep
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) || toolErr.Message != want {
+		t.Fatalf("denial = %#v, want %q", err, want)
 	}
 }
 
@@ -548,35 +554,28 @@ func TestShellApprovalTranscriptIncludesToolCallsResultsAndApprovalRole(t *testi
 	}
 }
 
-func TestApprovalManagerGuardianContradictoryAllowEscalatesOrDenies(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		headless bool
-	}{
-		{name: "interactive escalates", headless: false},
-		{name: "headless denies", headless: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
+func TestApprovalManagerGuardianContradictoryAllowIsTerminalAndCounts(t *testing.T) {
+	for _, headless := range []bool{false, true} {
+		t.Run(map[bool]string{false: "interactive", true: "headless"}[headless], func(t *testing.T) {
 			mgr := newApprovalAutoTestManager(NewToolPermissions())
 			mgr.SetApprovalMode(ModeAuto)
-			mgr.SetAutoHeadless(tt.headless)
-			mgr.SetPolicyReviewFunc(func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
+			mgr.SetAutoHeadless(headless)
+			mgr.SetPolicyReviewFunc(func(context.Context, PolicyReviewRequest) (PolicyDecision, error) {
 				return PolicyDecision{Allowed: true, RiskLevel: "critical", UserAuthorization: "unknown", Rationale: "too risky"}, nil
 			}, nil)
-			prompted := false
-			mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
-				prompted = true
-				return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
+			mgr.PromptUIFunc = func(string, bool, bool, string) (ApprovalResult, error) {
+				t.Fatal("prompt called for contradictory Guardian allow")
+				return ApprovalResult{}, nil
 			}
 			outcome, err := mgr.CheckShellApproval("rm -rf /", t.TempDir())
-			if tt.headless {
-				if err == nil || outcome != Cancel {
-					t.Fatalf("outcome=%v err=%v, want headless denial", outcome, err)
-				}
-				return
+			if err == nil || outcome != Cancel {
+				t.Fatalf("outcome=%v err=%v, want denial", outcome, err)
 			}
-			if err != nil || outcome != ProceedOnce || !prompted {
-				t.Fatalf("outcome=%v err=%v prompted=%v, want human escalation", outcome, err, prompted)
+			mgr.guardianMu.RLock()
+			consecutive, total := mgr.guardianConsecutiveDenials, mgr.guardianTotalDenials
+			mgr.guardianMu.RUnlock()
+			if consecutive != 1 || total != 1 {
+				t.Fatalf("contradictory allow counts = %d/%d, want 1/1", consecutive, total)
 			}
 		})
 	}

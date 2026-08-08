@@ -268,16 +268,23 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Determine the default work dir before approval so prompts/project approvals
 	// are scoped to the same directory exec.Cmd.Dir will use. Precedence:
 	// explicit working_dir (resolved against BaseDir), then ShellWorkingDir, then
-	// BaseDir, then process cwd.
+	// BaseDir, then process cwd for legacy callers. Unbound daemon runtimes reject
+	// the final ambient fallback.
 	workDir := ""
 	if a.WorkingDir != "" {
 		if t.config != nil {
+			if t.config.RequiresExplicitWorkingDir() && t.config.WorkingDir() == "" && !filepath.IsAbs(strings.TrimSpace(a.WorkingDir)) {
+				return errorOutput(formatToolError(NewToolError(ErrInvalidParams, "relative working_dir requires an absolute path or explicit session working directory"))), nil
+			}
 			workDir = t.config.ResolveDir(a.WorkingDir)
 		} else {
 			workDir = resolvePathAgainstBase(a.WorkingDir, "")
 		}
 	} else if t.config != nil {
 		workDir = t.config.ShellDir()
+		if workDir == "" && t.config.RequiresExplicitWorkingDir() {
+			return errorOutput(formatToolError(NewToolError(ErrInvalidParams, "working_dir is required when the session has no explicit working directory"))), nil
+		}
 	} else {
 		var err error
 		workDir, err = os.Getwd()

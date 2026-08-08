@@ -81,7 +81,13 @@ func writeApprovalRequest(b *strings.Builder, req Request) {
 	b.WriteString("\nThe term-llm agent has requested the following action:\n")
 	b.WriteString(">>> APPROVAL REQUEST START\n")
 	var payload map[string]any
-	if strings.TrimSpace(req.Path) != "" {
+	if workspaceAccess := strings.TrimSpace(req.WorkspaceAccess); workspaceAccess != "" {
+		b.WriteString("Assess this exact session-scoped local workspace capability request. It authorizes first-party file tools only and never authorizes shell commands, network access, or broader parent directories.\n")
+		payload = map[string]any{
+			"type": "workspace", "tool": req.ToolName, "path": req.Path,
+			"access": workspaceAccess, "reason": strings.TrimSpace(req.Reason), "scope": "session",
+		}
+	} else if strings.TrimSpace(req.Path) != "" {
 		operation := "read"
 		if req.IsWrite {
 			operation = "write"

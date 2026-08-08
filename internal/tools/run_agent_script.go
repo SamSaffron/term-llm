@@ -172,10 +172,14 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		timeout = 300
 	}
 
-	// Get working directory from the session BaseDir, falling back to process cwd.
+	// Get the working directory from the session BaseDir. Ambient process CWD is
+	// retained only for legacy/local callers.
 	workDir := ""
 	if t.config != nil {
 		workDir = t.config.WorkingDir()
+		if workDir == "" && t.config.RequiresExplicitWorkingDir() {
+			return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run agent scripts"))), nil
+		}
 	}
 	if workDir == "" {
 		var err error

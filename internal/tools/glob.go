@@ -125,13 +125,10 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	if t.approval != nil {
 		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, GlobToolName, absBasePath, a.Pattern, false)
 		if err != nil {
-			if toolErr, ok := err.(*ToolError); ok {
-				return textOutput(formatToolError(toolErr)), nil
-			}
-			return textOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return pathApprovalErrorOutput(warning, err), nil
 		}
 		if outcome == Cancel {
-			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", basePath))), nil
+			return pathApprovalErrorOutput(warning, NewToolErrorf(ErrPermissionDenied, "access denied: %s", basePath)), nil
 		}
 	}
 

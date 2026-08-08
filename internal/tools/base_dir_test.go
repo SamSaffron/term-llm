@@ -69,6 +69,76 @@ func TestToolsResolveRelativePathsAgainstBaseDir(t *testing.T) {
 	}
 }
 
+func TestUnboundDaemonToolsRejectAmbientCWD(t *testing.T) {
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, "marker.txt"), []byte("bound marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ToolConfig{RequireExplicitWorkingDir: true}
+	ctx := context.Background()
+	if errs := (&ToolConfig{RequireExplicitWorkingDir: true, ReadDirs: []string{"relative-read"}, WriteDirs: []string{"relative-write"}}).Validate(); len(errs) != 2 {
+		t.Fatalf("relative unbound allowlist validation = %v", errs)
+	}
+	mgr, err := NewToolManager(&ToolConfig{Enabled: []string{ReadFileToolName}, RequireExplicitWorkingDir: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetBaseDir("relative-binding"); err == nil || !strings.Contains(err.Error(), "absolute path") {
+		t.Fatalf("relative unbound binding = %v", err)
+	}
+	if err := mgr.SetBaseDir(base); err != nil {
+		t.Fatalf("absolute binding = %v", err)
+	}
+
+	readOut, err := NewReadFileTool(nil, DefaultOutputLimits(), cfg).Execute(ctx, mustToolArgs(t, ReadFileArgs{Path: "marker.txt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readOut.Content, "relative path requires") {
+		t.Fatalf("unbound relative read = %#v", readOut)
+	}
+	globOut, err := NewGlobTool(nil, cfg).Execute(ctx, mustToolArgs(t, GlobArgs{Pattern: "*.go"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(globOut.Content, "relative path requires") {
+		t.Fatalf("unbound default glob = %#v", globOut)
+	}
+	shellOut, err := NewShellTool(nil, cfg, DefaultOutputLimits()).Execute(ctx, mustToolArgs(t, ShellArgs{Command: "pwd"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shellOut.IsError || !strings.Contains(shellOut.Content, "working_dir is required") {
+		t.Fatalf("unbound default shell = %#v", shellOut)
+	}
+	shellOut, err = NewShellTool(nil, cfg, DefaultOutputLimits()).Execute(ctx, mustToolArgs(t, ShellArgs{Command: "pwd", WorkingDir: "relative"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shellOut.IsError || !strings.Contains(shellOut.Content, "relative working_dir requires") {
+		t.Fatalf("unbound relative shell dir = %#v", shellOut)
+	}
+
+	readOut, err = NewReadFileTool(nil, DefaultOutputLimits(), cfg).Execute(ctx, mustToolArgs(t, ReadFileArgs{Path: filepath.Join(base, "marker.txt")}))
+	if err != nil || readOut.IsError || !strings.Contains(readOut.Content, "bound marker") {
+		t.Fatalf("absolute read = %#v, %v", readOut, err)
+	}
+	shellOut, err = NewShellTool(nil, cfg, DefaultOutputLimits()).Execute(ctx, mustToolArgs(t, ShellArgs{Command: "pwd", WorkingDir: base}))
+	if err != nil || shellOut.IsError || !strings.Contains(shellOut.Content, base) {
+		t.Fatalf("absolute shell dir = %#v, %v", shellOut, err)
+	}
+
+	cfg.UpdateBaseDir(base)
+	readOut, err = NewReadFileTool(nil, DefaultOutputLimits(), cfg).Execute(ctx, mustToolArgs(t, ReadFileArgs{Path: "marker.txt"}))
+	if err != nil || readOut.IsError || !strings.Contains(readOut.Content, "bound marker") {
+		t.Fatalf("bound relative read = %#v, %v", readOut, err)
+	}
+	shellOut, err = NewShellTool(nil, cfg, DefaultOutputLimits()).Execute(ctx, mustToolArgs(t, ShellArgs{Command: "pwd"}))
+	if err != nil || shellOut.IsError || !strings.Contains(shellOut.Content, base) {
+		t.Fatalf("bound default shell = %#v, %v", shellOut, err)
+	}
+}
+
 func TestToolManagerSetBaseDirUpdatesRegisteredTools(t *testing.T) {
 	t.Parallel()
 
@@ -84,6 +154,12 @@ func TestToolManagerSetBaseDirUpdatesRegisteredTools(t *testing.T) {
 	}
 	if err := mgr.SetBaseDir(second); err != nil {
 		t.Fatalf("SetBaseDir: %v", err)
+	}
+	mgr.ApprovalMgr.WorkspacePromptFunc = func(workspace string) (WorkspaceApprovalResult, error) {
+		if workspace != second {
+			t.Fatalf("workspace = %q, want %q", workspace, second)
+		}
+		return WorkspaceApprovalResult{Approved: true}, nil
 	}
 	tool, ok := mgr.Registry.tools[ReadFileToolName].(*ReadFileTool)
 	if !ok {

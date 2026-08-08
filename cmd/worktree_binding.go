@@ -32,9 +32,10 @@ func BindWorktreeSession(ctx context.Context, store session.Store, sess *session
 		return fmt.Errorf("not a git worktree: %s", abs)
 	}
 	if toolMgr != nil {
-		if err := toolMgr.SetBaseDir(abs); err != nil {
+		if err := toolMgr.SetBaseDirWithContext(ctx, abs); err != nil {
 			return err
 		}
+		abs = toolMgr.BaseDir()
 	}
 	// Touching metadata is best-effort: manually-created/non-managed git
 	// worktrees are still valid session BaseDirs.
@@ -67,9 +68,10 @@ func BindRootSession(ctx context.Context, store session.Store, sess *session.Ses
 		return err
 	}
 	if toolMgr != nil {
-		if err := toolMgr.SetBaseDir(abs); err != nil {
+		if err := toolMgr.SetBaseDirWithContext(ctx, abs); err != nil {
 			return err
 		}
+		abs = toolMgr.BaseDir()
 	}
 	if sess != nil {
 		changed := strings.TrimSpace(sess.WorktreeDir) != "" || filepath.Clean(sess.CWD) != filepath.Clean(abs)

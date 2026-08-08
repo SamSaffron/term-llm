@@ -14,6 +14,37 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 )
 
+func TestCmdRunnerUnboundRemoteSettingsRejectAmbientCWD(t *testing.T) {
+	runner := newCmdRunner(&config.Config{}, cmdRunnerOptions{}).(*cmdRunner)
+	for _, platform := range []string{runpkg.PlatformWeb, runpkg.PlatformTelegram} {
+		t.Run(platform, func(t *testing.T) {
+			settings, err := runner.resolveSettings(&config.Config{}, nil, runpkg.Request{Platform: platform}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.BaseDir != "" || settings.ShellWorkingDir != "" || !settings.RequireExplicitWorkingDir || settings.PrimaryWorkspace != "" {
+				t.Fatalf("unbound remote settings = %#v", settings)
+			}
+		})
+	}
+
+	bound := t.TempDir()
+	settings, err := runner.resolveSettings(&config.Config{}, nil, runpkg.Request{Platform: runpkg.PlatformWeb, Cwd: bound}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.BaseDir != bound || settings.ShellWorkingDir != bound || settings.PrimaryWorkspace != bound || settings.RequireExplicitWorkingDir {
+		t.Fatalf("explicitly bound web settings = %#v", settings)
+	}
+	local, err := runner.resolveSettings(&config.Config{}, nil, runpkg.Request{Platform: runpkg.PlatformConsole}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.BaseDir == "" || local.ShellWorkingDir == "" || local.PrimaryWorkspace == "" || local.RequireExplicitWorkingDir {
+		t.Fatalf("local settings lost cwd compatibility = %#v", local)
+	}
+}
+
 func TestCmdRunnerResolveSettingsUsesRequestWorkingDir(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required for project-instruction discovery")
@@ -42,8 +73,11 @@ func TestCmdRunnerResolveSettingsUsesRequestWorkingDir(t *testing.T) {
 	if settings.BaseDir != workingDir || settings.ShellWorkingDir != workingDir {
 		t.Fatalf("BaseDir/ShellWorkingDir = %q/%q, want %q", settings.BaseDir, settings.ShellWorkingDir, workingDir)
 	}
-	if !sessionTestStringSliceContains(settings.ReadDirs, workingDir) || !sessionTestStringSliceContains(settings.WriteDirs, workingDir) {
-		t.Fatalf("ReadDirs/WriteDirs = %#v/%#v, want request directory %q", settings.ReadDirs, settings.WriteDirs, workingDir)
+	if settings.PrimaryWorkspace != workingDir {
+		t.Fatalf("PrimaryWorkspace = %q, want request directory %q", settings.PrimaryWorkspace, workingDir)
+	}
+	if len(settings.ReadDirs) != 0 || len(settings.WriteDirs) != 0 {
+		t.Fatalf("ReadDirs/WriteDirs = %#v/%#v, primary must remain separate from static allowlists", settings.ReadDirs, settings.WriteDirs)
 	}
 }
 
@@ -114,7 +148,7 @@ func TestCmdRunnerPreparePropagatesWorkingDirToLLMRequest(t *testing.T) {
 	}
 }
 
-func TestCmdRunnerEnsureRunSessionUsesConfiguredBaseDir(t *testing.T) {
+func TestCmdRunnerEnsureRunSessionUsesExplicitPrimaryWorkspace(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	runner := newCmdRunner(&config.Config{}, cmdRunnerOptions{}).(*cmdRunner)
 	store := newServeRuntimeTestStore()
@@ -128,7 +162,7 @@ func TestCmdRunnerEnsureRunSessionUsesConfiguredBaseDir(t *testing.T) {
 		"mock",
 		"mock-model",
 		"",
-		SessionSettings{BaseDir: workingDir},
+		SessionSettings{BaseDir: workingDir, PrimaryWorkspace: workingDir},
 	)
 	if sess == nil {
 		t.Fatal("ensureRunSession returned nil")

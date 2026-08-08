@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,6 +34,145 @@ func TestAwaitApproval_NoTransport_FailsFast(t *testing.T) {
 	}
 	if result.Choice != 0 {
 		t.Errorf("expected zero-value result, got choice=%v", result.Choice)
+	}
+}
+
+func TestServeApprovalRequiresExplicitBreakerResume(t *testing.T) {
+	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	approvalMgr.SetApprovalMode(tools.ModeAuto)
+	approvalMgr.SetPolicyReviewFunc(func(context.Context, tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
+		return tools.PolicyDecision{Allowed: false, RiskLevel: "high", UserAuthorization: "low", Rationale: "denied"}, nil
+	}, nil)
+	for i := 0; i < 3; i++ {
+		_, _ = approvalMgr.CheckShellApproval("deny", t.TempDir())
+	}
+	if !approvalMgr.GuardianAutoSuspended() || approvalMgr.ApprovalMode() != tools.ModePrompt {
+		t.Fatal("test setup did not suspend auto")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan map[string]any, 2)
+	rt := &serveRuntime{
+		toolMgr: &tools.ToolManager{ApprovalMgr: approvalMgr},
+		approvalEventFunc: func(event string, data map[string]any) error {
+			if event != "response.approval.prompt" {
+				t.Fatalf("event = %q", event)
+			}
+			events <- data
+			return nil
+		},
+		approvalCtx: ctx,
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := rt.awaitApproval("/tmp/first", false, false, "")
+		firstDone <- err
+	}()
+	firstPayload := <-events
+	if firstPayload["resume_auto_available"] != true {
+		t.Fatalf("first approval payload = %#v", firstPayload)
+	}
+	firstPrompts := rt.pendingApprovalPrompts()
+	if len(firstPrompts) != 1 || !firstPrompts[0].ResumeAutoAvailable {
+		t.Fatalf("first pending prompt = %#v", firstPrompts)
+	}
+	if err := rt.submitApproval(firstPrompts[0].ApprovalID, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if !approvalMgr.GuardianAutoSuspended() || approvalMgr.ApprovalMode() != tools.ModePrompt {
+		t.Fatal("ordinary approval silently resumed auto")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := rt.awaitApproval("/tmp/second", false, false, "")
+		secondDone <- err
+	}()
+	<-events
+	secondPrompts := rt.pendingApprovalPrompts()
+	if len(secondPrompts) != 1 || !secondPrompts[0].ResumeAutoAvailable {
+		t.Fatalf("second pending prompt = %#v", secondPrompts)
+	}
+	mgr := newServeSessionManager(time.Hour, 10, nil)
+	defer mgr.Close()
+	putTestSession(mgr, "resume-session", rt)
+	body := fmt.Sprintf(`{"approval_id":%q,"choice":0,"resume_auto":true}`, secondPrompts[0].ApprovalID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/resume-session/approval", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	server := &serveServer{sessionMgr: mgr}
+	server.handleSessionApproval(w, req, "resume-session")
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume response = %d: %s", w.Code, w.Body.String())
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if approvalMgr.GuardianAutoSuspended() || approvalMgr.ApprovalMode() != tools.ModeAuto {
+		t.Fatal("explicit web control did not resume auto")
+	}
+}
+
+func TestAwaitWorkspaceApprovalUsesDedicatedWebPrompt(t *testing.T) {
+	rt := newTestRuntime()
+	if _, err := rt.awaitWorkspaceApproval("/workspace"); err != errServeApprovalNoTransport {
+		t.Fatalf("missing transport error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventFired := make(chan map[string]any, 1)
+	rt.approvalMu.Lock()
+	rt.approvalEventFunc = func(event string, data map[string]any) error {
+		if event != "response.approval.prompt" {
+			t.Fatalf("event = %q", event)
+		}
+		eventFired <- data
+		return nil
+	}
+	rt.approvalCtx = ctx
+	rt.approvalMu.Unlock()
+
+	done := make(chan struct{})
+	var result tools.WorkspaceApprovalResult
+	var awaitErr error
+	go func() {
+		result, awaitErr = rt.awaitWorkspaceApproval("/workspace")
+		close(done)
+	}()
+	var payload map[string]any
+	select {
+	case payload = <-eventFired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for workspace approval event")
+	}
+	if payload["is_workspace"] != true || payload["title"] != "Primary Workspace Access Request" || payload["path"] != "/workspace" {
+		t.Fatalf("workspace payload = %#v", payload)
+	}
+	prompts := rt.pendingApprovalPrompts()
+	if len(prompts) != 1 || !prompts[0].IsWorkspace || len(prompts[0].Options) != 2 {
+		t.Fatalf("workspace prompts = %#v", prompts)
+	}
+	if got := prompts[0].Options[0]; got.Choice != "workspace" || got.Label != "Allow this session's canonical workspace read/write" || got.Description != "Allow read and write access to the entire workspace for this session. Shell commands remain separately controlled." {
+		t.Fatalf("workspace allow option = %#v", got)
+	}
+	if got := prompts[0].Options[1]; got.Choice != "deny" {
+		t.Fatalf("workspace deny option = %#v", got)
+	}
+	if err := rt.submitApproval(prompts[0].ApprovalID, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("workspace approval did not complete")
+	}
+	if awaitErr != nil || !result.Approved || result.Cancelled {
+		t.Fatalf("workspace result = %#v, %v", result, awaitErr)
 	}
 }
 
@@ -99,7 +239,7 @@ func TestAwaitApproval_WithTransport_EmitsEventAndBlocks(t *testing.T) {
 		t.Fatal("no 'once' option found")
 	}
 
-	if err := rt.submitApproval(approvalID, onceIdx, false); err != nil {
+	if err := rt.submitApproval(approvalID, onceIdx, false, false); err != nil {
 		t.Fatalf("submitApproval failed: %v", err)
 	}
 
@@ -204,7 +344,7 @@ func TestSubmitApproval_DenyFlow(t *testing.T) {
 	approvalID := prompts[0].ApprovalID
 
 	// Submit as cancelled (deny)
-	if err := rt.submitApproval(approvalID, 0, true); err != nil {
+	if err := rt.submitApproval(approvalID, 0, true, false); err != nil {
 		t.Fatalf("submitApproval failed: %v", err)
 	}
 
@@ -221,7 +361,7 @@ func TestSubmitApproval_DenyFlow(t *testing.T) {
 
 func TestSubmitApproval_NotPending(t *testing.T) {
 	rt := newTestRuntime()
-	err := rt.submitApproval("nonexistent", 0, false)
+	err := rt.submitApproval("nonexistent", 0, false, false)
 	if err != errServeApprovalNotPending {
 		t.Errorf("expected errServeApprovalNotPending, got %v", err)
 	}
@@ -259,14 +399,14 @@ func TestSubmitApproval_AlreadyAnswered(t *testing.T) {
 	approvalID := prompts[0].ApprovalID
 
 	// First submit should succeed
-	if err := rt.submitApproval(approvalID, 0, true); err != nil {
+	if err := rt.submitApproval(approvalID, 0, true, false); err != nil {
 		t.Fatalf("first submit failed: %v", err)
 	}
 
 	<-done
 
 	// Second submit should fail
-	err := rt.submitApproval(approvalID, 0, true)
+	err := rt.submitApproval(approvalID, 0, true, false)
 	if err == nil {
 		t.Error("expected error on double submit")
 	}

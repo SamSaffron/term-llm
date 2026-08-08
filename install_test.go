@@ -81,7 +81,11 @@ rm() { :; }
 . "$installer"
 `)
 
-	cmd := exec.Command("sh", harnessPath, "install.sh")
+	installerPath, err := filepath.Abs("install.sh")
+	if err != nil {
+		t.Fatalf("resolve install.sh path: %v", err)
+	}
+	cmd := exec.Command("sh", harnessPath, installerPath)
 	cmd.Env = append(os.Environ(),
 		"TERM_LLM_INSTALL_DIR="+installDir,
 		"MOCK_TMPDIR="+filepath.Join(tempDir, "extract"),

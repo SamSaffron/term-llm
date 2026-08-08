@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -63,6 +66,11 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 	// Register enabled tools
 	if err := r.registerEnabledTools(); err != nil {
 		return nil, err
+	}
+	if primary := strings.TrimSpace(toolConfig.PrimaryWorkspaceValue()); primary != "" {
+		if err := approvalMgr.SetPrimaryWorkspace(primary); err != nil {
+			return nil, fmt.Errorf("bind primary workspace: %w", err)
+		}
 	}
 
 	return r, nil
@@ -132,12 +140,34 @@ func (r *LocalToolRegistry) applyFileRecorderLocked() {
 
 // registerEnabledTools registers all tools that are enabled in config.
 func (r *LocalToolRegistry) registerEnabledTools() error {
+	hasPathTool := false
 	for _, specName := range r.config.Enabled {
+		if specName == ManageWorkspaceToolName {
+			continue
+		}
+		if IsPathCapableTool(specName) {
+			hasPathTool = true
+		}
 		if err := r.registerTool(specName); err != nil {
 			return err
 		}
 	}
+	if hasPathTool {
+		return r.registerTool(ManageWorkspaceToolName)
+	}
 	return nil
+}
+
+// IsPathCapableTool reports whether name is a local file/path operation that
+// requires access to manage_workspace so explicit tool lists cannot strand it.
+func IsPathCapableTool(name string) bool {
+	switch name {
+	case ReadFileToolName, WriteFileToolName, EditFileToolName, UnifiedDiffToolName,
+		GrepToolName, GlobToolName, ViewImageToolName, ShowImageToolName, ImageGenerateToolName:
+		return true
+	default:
+		return false
+	}
 }
 
 // registerTool registers a single tool by spec name.
@@ -186,6 +216,8 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewRunAgentScriptTool(r.config, r.limits)
 	case InitiateHandoverToolName:
 		tool = NewInitiateHandoverTool()
+	case ManageWorkspaceToolName:
+		tool = NewManageWorkspaceTool(r.approval, r.config)
 	case UpdatePlanToolName:
 		controller := NewPlanController(nil)
 		controller.SetPromptGuidance(r.config.PlanGuidance)
@@ -207,6 +239,9 @@ func (r *LocalToolRegistry) SetViewImageVisionProvider(provider llm.Provider, mo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[ViewImageToolName] = NewViewImageToolWithVision(r.approval, provider, model, r.config)
+	if _, ok := r.tools[ManageWorkspaceToolName]; !ok {
+		r.tools[ManageWorkspaceToolName] = NewManageWorkspaceTool(r.approval, r.config)
+	}
 	if !stringSliceContains(r.config.Enabled, ViewImageToolName) {
 		r.config.Enabled = append(r.config.Enabled, ViewImageToolName)
 	}
@@ -318,33 +353,36 @@ func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 	return r.permissions.AddShellPattern(pattern)
 }
 
-// SetBaseDir updates the registry's per-session working directory and grants
-// read/write access to that directory for this manager. Tools resolve relative
-// paths through the shared ToolConfig pointer, so no re-registration is needed.
+// SetBaseDir updates the registry's per-session working directory and records a
+// pending primary workspace proposal. Dynamic grants are preserved and shell
+// approval remains independent.
 func (r *LocalToolRegistry) SetBaseDir(dir string) error {
+	return r.SetBaseDirWithContext(context.Background(), dir)
+}
+
+// SetBaseDirWithContext is the context-aware session/worktree rebinding path.
+func (r *LocalToolRegistry) SetBaseDirWithContext(ctx context.Context, dir string) error {
 	if r == nil || r.config == nil {
 		return nil
 	}
-	abs := r.config.ResolveDir(dir)
-	if abs == "" {
+	if r.config.RequiresExplicitWorkingDir() && r.config.WorkingDir() == "" && !filepath.IsAbs(strings.TrimSpace(dir)) {
+		return NewToolError(ErrInvalidParams, "relative base directory requires an absolute path when the session is unbound")
+	}
+	resolved := r.config.ResolveDir(dir)
+	if resolved == "" {
 		return NewToolError(ErrInvalidParams, "base directory is empty")
 	}
-	if info, err := os.Stat(abs); err != nil {
-		return NewToolErrorf(ErrInvalidParams, "base directory %q is not accessible: %v", abs, err)
-	} else if !info.IsDir() {
-		return NewToolErrorf(ErrInvalidParams, "base directory %q is not a directory", abs)
+	canonical, err := canonicalWorkspaceDirectory(resolved)
+	if err != nil {
+		return err
+	}
+	if err := r.approval.SetPrimaryWorkspaceWithContext(ctx, canonical); err != nil {
+		return err
 	}
 
 	r.mu.Lock()
-	r.config.UpdateBaseDir(abs)
+	r.config.UpdateBaseDir(canonical)
 	r.mu.Unlock()
-
-	if err := r.permissions.AddReadDir(abs); err != nil {
-		return err
-	}
-	if err := r.permissions.AddWriteDir(abs); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -412,10 +450,32 @@ func NewToolManager(toolConfig *ToolConfig, appConfig *config.Config) (*ToolMana
 
 // SetBaseDir updates the per-manager base directory used by all local tools.
 func (m *ToolManager) SetBaseDir(dir string) error {
+	return m.SetBaseDirWithContext(context.Background(), dir)
+}
+
+// SetBaseDirWithContext is the context-aware session/worktree rebinding path.
+func (m *ToolManager) SetBaseDirWithContext(ctx context.Context, dir string) error {
 	if m == nil || m.Registry == nil {
 		return nil
 	}
-	return m.Registry.SetBaseDir(dir)
+	return m.Registry.SetBaseDirWithContext(ctx, dir)
+}
+
+// ClearPrimaryWorkspace removes an explicit session binding and its pending or
+// confirmed primary capability while preserving dynamic grants.
+func (m *ToolManager) ClearPrimaryWorkspace(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if m.ApprovalMgr != nil {
+		if err := m.ApprovalMgr.ClearPrimaryWorkspace(ctx); err != nil {
+			return err
+		}
+	}
+	if m.Registry != nil && m.Registry.config != nil {
+		m.Registry.config.ClearBaseDir()
+	}
+	return nil
 }
 
 // BaseDir returns the current per-session base directory, if any.
@@ -424,6 +484,15 @@ func (m *ToolManager) BaseDir() string {
 		return ""
 	}
 	return m.Registry.BaseDir()
+}
+
+// ConfigureWorkspacePersistence installs optional session grant persistence and
+// rehydrates additional grants before tool execution.
+func (m *ToolManager) ConfigureWorkspacePersistence(ctx context.Context, store session.Store, sessionID string) error {
+	if m == nil || m.ApprovalMgr == nil {
+		return nil
+	}
+	return m.ApprovalMgr.ConfigureWorkspacePersistence(ctx, store, sessionID)
 }
 
 // IsReadPathApproved reports whether path may be read without prompting. It is

@@ -368,6 +368,10 @@ func (s *execRunSink) PromptApproval(target string, isWrite, isShell bool, workD
 	return tools.RunFileApprovalUI(target, isWrite)
 }
 
+func (s *execRunSink) PromptWorkspaceApproval(workspace string) (tools.WorkspaceApprovalResult, error) {
+	return tools.RunWorkspaceApprovalUI(workspace)
+}
+
 func (s *execRunSink) GuardianEvent(event tools.GuardianEvent) {
 	if s != nil {
 		addGuardianUsage(s.stats, event)

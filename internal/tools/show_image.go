@@ -106,13 +106,10 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	if t.approval != nil {
 		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ShowImageToolName, resolvedPath, a.FilePath, false)
 		if err != nil {
-			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
-			}
-			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return pathApprovalErrorOutput("", err), nil
 		}
 		if outcome == Cancel {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
+			return pathApprovalErrorOutput("", NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath)), nil
 		}
 	}
 

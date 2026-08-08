@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -580,9 +579,6 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 		MCP:         rt.mcpSetting,
 		Status:      session.StatusActive,
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		sess.CWD = cwd
-	}
 	for _, msg := range inputMessages {
 		if msg.Role != llm.RoleUser {
 			continue
@@ -623,6 +619,12 @@ func (rt *serveRuntime) restorePersistedHistory(ctx context.Context, sess *sessi
 func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID string, inputMessages []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
+	}
+	if rt.toolMgr != nil {
+		if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, rt.store, sessionID); err != nil {
+			log.Printf("[serve] workspace grant restore failed for %s: %v", sessionID, err)
+			return false
+		}
 	}
 	if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
 		// Metadata-only setup (for example restoring a worktree BaseDir or
@@ -672,9 +674,6 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 		Tools:       rt.toolsSetting,
 		MCP:         rt.mcpSetting,
 		Status:      session.StatusActive,
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		sess.CWD = cwd
 	}
 	for _, msg := range inputMessages {
 		if msg.Role != llm.RoleUser {
@@ -938,8 +937,15 @@ func (rt *serveRuntime) selectTools(requested map[string]bool) []llm.ToolSpec {
 		resolved[name] = true
 	}
 	out := make([]llm.ToolSpec, 0, len(all))
+	pathToolRequested := false
+	for name := range resolved {
+		if tools.IsPathCapableTool(name) {
+			pathToolRequested = true
+			break
+		}
+	}
 	for _, spec := range all {
-		if resolved[spec.Name] {
+		if resolved[spec.Name] || (pathToolRequested && spec.Name == tools.ManageWorkspaceToolName) {
 			out = append(out, spec)
 		}
 	}

@@ -283,6 +283,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	settings.PrimaryWorkspace = settings.BaseDir
 
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.
@@ -340,6 +341,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				settings.PlanGuidance = resumedAgent.Name == "developer" && resumedAgent.Source == agents.SourceBuiltin
 			}
 		}
+		if err := RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore session directory: %v\n", err)
+		}
+		if dir := effectiveSessionDirectory(sess); dir != "" {
+			if canonical, dirErr := canonicalRuntimeDir(dir); dirErr == nil {
+				settings.BaseDir = canonical
+				settings.ShellWorkingDir = canonical
+				settings.PrimaryWorkspace = canonical
+			}
+		}
 
 		// Load active session history (post-compaction when a boundary exists).
 		if sessionMsgs, loadErr := session.LoadActiveMessages(ctx, store, sess); loadErr == nil {
@@ -369,6 +380,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	if toolMgr != nil {
 		toolMgr.Registry.SetPlanStore(store)
+		if err := toolMgr.ConfigureWorkspacePersistence(ctx, store, sessionID); err != nil {
+			return err
+		}
 	}
 	var outputTool *tools.SetOutputTool
 	if toolMgr != nil {
@@ -466,9 +480,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			ApprovalMode: approvalModeForColdPersistence(resolvedApproval.Mode),
 			Status:       session.StatusActive,
 		}
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			sess.CWD = cwd
-		}
+		sess.CWD = settings.PrimaryWorkspace
 		_ = store.Create(ctx, sess)
 	}
 
@@ -587,6 +599,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
+		toolMgr.ApprovalMgr.WorkspacePromptFunc = tools.RunWorkspaceApprovalUI
 	}
 
 	runRenderer := func(ctx context.Context, events <-chan ui.StreamEvent) error {
@@ -1949,6 +1962,17 @@ func newAskRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store
 			return tools.RunShellApprovalUI(path, workDir)
 		}
 		return tools.RunFileApprovalUI(path, isWrite)
+	}
+	toolMgr.ApprovalMgr.WorkspacePromptFunc = func(workspace string) (tools.WorkspaceApprovalResult, error) {
+		done := make(chan struct{})
+		teaProgram.Send(askFlushBeforeApprovalMsg{Done: done})
+		<-done
+		teaProgram.ReleaseTerminal()
+		defer func() {
+			teaProgram.RestoreTerminal()
+			teaProgram.Send(askResumeFromExternalUIMsg{})
+		}()
+		return tools.RunWorkspaceApprovalUI(workspace)
 	}
 
 	start, end := tools.CreateTUIHooks(teaProgram, func() {

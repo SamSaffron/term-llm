@@ -183,6 +183,19 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 		if rows, _ := inserted.RowsAffected(); rows != 1 {
 			return ErrNotFound
 		}
+		// Workspace records are runtime settings, like cwd/tools/approval mode, so
+		// a branch inherits the source session's matching primary confirmation and
+		// durable additional capabilities. Legacy yolo rows are never authority and
+		// must not be copied into a child scope.
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO session_workspace_grants (
+				session_id, id, path, access, provenance, rationale, created_at, updated_at
+			)
+			SELECT ?, id, path, access, provenance, rationale, created_at, updated_at
+			FROM session_workspace_grants
+			WHERE session_id = ? AND LOWER(TRIM(provenance)) <> 'yolo'`, childID, sourceSessionID); err != nil {
+			return fmt.Errorf("copy branch workspace grants: %w", err)
+		}
 
 		if anchorSequence >= 0 {
 			compactionTailExpr := "FALSE"

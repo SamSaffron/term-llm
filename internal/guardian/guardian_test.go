@@ -40,6 +40,18 @@ func TestReviewerReportsUsageWhenDecisionIsInvalid(t *testing.T) {
 	}
 }
 
+func TestBuildPromptFramesWorkspaceRequest(t *testing.T) {
+	prompt := BuildPrompt(Request{
+		ToolName: "manage_workspace", Path: "/source/reference", IsDirectory: true,
+		WorkspaceAccess: "read", Reason: "compare with the user-named source",
+	})
+	for _, want := range []string{`"type": "workspace"`, `"tool": "manage_workspace"`, `"access": "read"`, `"scope": "session"`, `"reason": "compare with the user-named source"`, "never authorizes shell commands"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workspace prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptFramesReadRequest(t *testing.T) {
 	prompt := BuildPrompt(Request{
 		ToolName:   "read_file",

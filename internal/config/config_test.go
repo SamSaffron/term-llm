@@ -90,6 +90,31 @@ func TestApplyOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_GuardianClassifyAllShell(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configYAML := `guardian:
+  classify_all_shell: true
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Guardian.ClassifyAllShell {
+		t.Fatal("guardian.classify_all_shell = false, want true")
+	}
+}
+
 func TestLoad_ProviderUseWebSocket(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()
@@ -658,6 +683,7 @@ func TestCanonicalDefaultsCoverage(t *testing.T) {
 		"audio.elevenlabs.model":        DefaultAudioElevenLabsModel,
 		"audio.elevenlabs.voice":        DefaultAudioElevenLabsVoice,
 		"audio.elevenlabs.format":       DefaultAudioElevenLabsFormat,
+		"guardian.classify_all_shell":   false,
 		"music.provider":                DefaultMusicProvider,
 		"music.output_dir":              DefaultMusicOutputDir,
 		"music.venice.model":            DefaultMusicVeniceModel,

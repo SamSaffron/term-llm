@@ -53,13 +53,21 @@ type SessionSettings struct {
 	// BaseDir is the unified per-session working directory for all tools. It is
 	// threaded through ToolConfig and never applied with os.Chdir.
 	BaseDir string
+	// PrimaryWorkspace is non-empty only when a local launch or explicit
+	// session/request binding proposes a canonical primary workspace. It grants
+	// no file authority until the human confirms it on first access.
+	PrimaryWorkspace string
+
+	// RequireExplicitWorkingDir makes unbound remote runtimes reject relative
+	// tool paths and default process execution instead of using daemon CWD.
+	RequireExplicitWorkingDir bool
 
 	// Agent directory (for run_agent_script and custom tools)
 	AgentDir string
 
 	// ShellWorkingDir roots the shell tool's command execution (exec.Cmd.Dir) at
 	// a per-run directory without a process-wide os.Chdir. Empty preserves the
-	// default (the process working directory).
+	// process-CWD default for local/legacy callers; unbound remote runtimes reject it.
 	ShellWorkingDir string
 
 	// CustomTools holds script-backed custom tool definitions from agent.yaml
@@ -168,12 +176,10 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 // ResolveSettingsInDir resolves settings using runtimeDir for project-sensitive
 // template values and instruction discovery without changing process CWD.
 func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int, runtimeDir string) (SessionSettings, error) {
-	if strings.TrimSpace(runtimeDir) == "" {
-		var err error
-		runtimeDir, err = systemPromptCWDBaseDir()
-		if err != nil {
-			return SessionSettings{}, err
-		}
+	var err error
+	runtimeDir, err = canonicalRuntimeDir(runtimeDir)
+	if err != nil {
+		return SessionSettings{}, err
 	}
 	s := SessionSettings{}
 	if agent != nil {
@@ -341,6 +347,12 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 	}
 	s.SystemPrompt = injectInsightsMetadata(s.SystemPrompt, s.AgentName, s.InsightsExpansion, s.InsightsMaxTokens)
 
+	// Keep a canonical runtime directory for relative paths and shell cwd, but do
+	// not turn it into authority here. Local launchers and explicit request/session
+	// binders set PrimaryWorkspace deliberately; serve must not trust daemon CWD.
+	s.BaseDir = runtimeDir
+	s.ShellWorkingDir = runtimeDir
+
 	return s, nil
 }
 
@@ -421,6 +433,26 @@ func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext
 	return ctx
 }
 
+func canonicalRuntimeDir(runtimeDir string) (string, error) {
+	runtimeDir = strings.TrimSpace(runtimeDir)
+	if runtimeDir == "" {
+		var err error
+		runtimeDir, err = systemPromptCWDBaseDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	abs, err := filepath.Abs(runtimeDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve session working directory %q: %w", runtimeDir, err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve session working directory %q: %w", abs, err)
+	}
+	return filepath.Clean(resolved), nil
+}
+
 func systemPromptCWDBaseDir() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -482,10 +514,10 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	}
 	toolConfig.AgentDir = s.AgentDir
 	toolConfig.PlanGuidance = s.PlanGuidance
+	toolConfig.RequireExplicitWorkingDir = s.RequireExplicitWorkingDir
 	if strings.TrimSpace(s.BaseDir) != "" {
 		toolConfig.BaseDir = s.BaseDir
-		toolConfig.ReadDirs = append(toolConfig.ReadDirs, s.BaseDir)
-		toolConfig.WriteDirs = append(toolConfig.WriteDirs, s.BaseDir)
+		toolConfig.PrimaryWorkspace = strings.TrimSpace(s.PrimaryWorkspace)
 		if s.ShellWorkingDir == "" {
 			s.ShellWorkingDir = s.BaseDir
 		}

@@ -72,8 +72,13 @@ LLM jobs now persist a session trail to the normal sessions SQLite store **by de
 
 LLM jobs must also declare `runner_config.cwd`. The jobs server may run many jobs
 concurrently in one process, so LLM jobs never inherit the server process working
-directory and never use a process-wide `chdir`. Instead, `cwd` roots that run's
-file/shell tool access and is used as the shell tool's default `exec.Cmd.Dir`.
+directory and never use a process-wide `chdir`. Instead, `cwd` is the run's
+canonical **proposed** primary workspace and the shell tool's default `exec.Cmd.Dir`.
+It does not grant file authority. Because jobs are headless, first non-yolo file/path
+access inside that proposal fails closed unless the same persisted root session already
+has a matching human confirmation; use explicit `read_dir`/`write_dir` permissions for
+ordinary unattended jobs. Guardian cannot make the primary workspace decision. Explicit
+yolo bypasses confirmation for tool access without prompting or persisting authority.
 
 That means each LLM run gets a stable `session_id`, and long-running progressive jobs no longer keep their best-so-far state only in memory.
 

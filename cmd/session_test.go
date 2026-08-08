@@ -19,6 +19,169 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestServeSettingsDoNotGrantDaemonWorkingDirectory(t *testing.T) {
+	settings, err := ResolveSettings(&config.Config{}, nil, CLIFlags{Tools: tools.ReadFileToolName, Platform: "web"}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.PrimaryWorkspace != "" {
+		t.Fatalf("serve PrimaryWorkspace = %q, want empty", settings.PrimaryWorkspace)
+	}
+	manager, err := settings.SetupToolManager(&config.Config{}, llm.NewEngine(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilities := manager.ApprovalMgr.WorkspaceCapabilities(); len(capabilities) != 0 {
+		t.Fatalf("serve inherited daemon workspace: %#v", capabilities)
+	}
+}
+
+func TestPrimaryWorkspaceConfirmsOnlyActiveWorkspace(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	sibling := filepath.Join(root, "sibling")
+	for _, dir := range []string{workspace, sibling} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+	workspaceFile := filepath.Join(workspace, "inside.txt")
+	siblingFile := filepath.Join(sibling, "outside.txt")
+	for _, path := range []string{workspaceFile, siblingFile} {
+		if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	runtimeDir := workspace
+	workspaceLink := filepath.Join(root, "workspace-link")
+	if err := os.Symlink(workspace, workspaceLink); err == nil {
+		runtimeDir = workspaceLink
+	}
+
+	settings, err := ResolveSettingsInDir(&config.Config{}, nil, CLIFlags{
+		Tools: tools.ReadFileToolName + "," + tools.WriteFileToolName,
+	}, "", "", "", 0, 20, runtimeDir)
+	if err != nil {
+		t.Fatalf("ResolveSettingsInDir() error = %v", err)
+	}
+	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatalf("canonicalize workspace: %v", err)
+	}
+	if settings.BaseDir != canonicalWorkspace || settings.ShellWorkingDir != canonicalWorkspace {
+		t.Fatalf("BaseDir/ShellWorkingDir = %q/%q, want canonical workspace %q", settings.BaseDir, settings.ShellWorkingDir, canonicalWorkspace)
+	}
+	if len(settings.ReadDirs) != 0 || len(settings.WriteDirs) != 0 {
+		t.Fatalf("ReadDirs/WriteDirs = %#v/%#v, primary authority must not mutate static allowlists", settings.ReadDirs, settings.WriteDirs)
+	}
+	settings.PrimaryWorkspace = canonicalWorkspace
+	if len(settings.ShellAllow) != 0 {
+		t.Fatalf("ShellAllow = %#v, workspace binding must not approve shell commands", settings.ShellAllow)
+	}
+
+	toolMgr, err := settings.SetupToolManager(&config.Config{}, llm.NewEngine(nil, nil))
+	if err != nil {
+		t.Fatalf("SetupToolManager() error = %v", err)
+	}
+	toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
+	workspacePrompts := 0
+	toolMgr.ApprovalMgr.WorkspacePromptFunc = func(path string) (tools.WorkspaceApprovalResult, error) {
+		workspacePrompts++
+		if path != canonicalWorkspace {
+			t.Fatalf("workspace prompt = %q, want %q", path, canonicalWorkspace)
+		}
+		return tools.WorkspaceApprovalResult{Approved: true}, nil
+	}
+	prompts := 0
+	toolMgr.ApprovalMgr.PromptUIFunc = func(string, bool, bool, string) (tools.ApprovalResult, error) {
+		prompts++
+		return tools.ApprovalResult{Choice: tools.ApprovalChoiceDeny}, nil
+	}
+
+	for _, check := range []struct {
+		name       string
+		path       string
+		tool       string
+		isWrite    bool
+		want       tools.ConfirmOutcome
+		wantPrompt bool
+	}{
+		{name: "workspace read", path: workspaceFile, tool: tools.ReadFileToolName, want: tools.ProceedAlways},
+		{name: "workspace write", path: filepath.Join(workspace, "new.txt"), tool: tools.WriteFileToolName, isWrite: true, want: tools.ProceedAlways},
+		{name: "sibling read", path: siblingFile, tool: tools.ReadFileToolName, want: tools.Cancel, wantPrompt: true},
+		{name: "sibling write", path: filepath.Join(sibling, "new.txt"), tool: tools.WriteFileToolName, isWrite: true, want: tools.Cancel, wantPrompt: true},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			before := prompts
+			outcome, err := toolMgr.ApprovalMgr.CheckPathApproval(check.tool, check.path, check.path, check.isWrite)
+			if err != nil {
+				t.Fatalf("CheckPathApproval() error = %v", err)
+			}
+			if outcome != check.want {
+				t.Fatalf("CheckPathApproval() = %v, want %v", outcome, check.want)
+			}
+			if got := prompts > before; got != check.wantPrompt {
+				t.Fatalf("prompted = %v, want %v", got, check.wantPrompt)
+			}
+		})
+	}
+	if workspacePrompts != 1 {
+		t.Fatalf("workspace prompts = %d, want 1", workspacePrompts)
+	}
+}
+
+func TestResolveSettingsInDirKeepsExplicitDirsAdditiveWithoutWorkspaceDuplicates(t *testing.T) {
+	workspace := t.TempDir()
+	extraRead := t.TempDir()
+	extraWrite := t.TempDir()
+	extraReadFile := filepath.Join(extraRead, "fixture.txt")
+	if err := os.WriteFile(extraReadFile, []byte("fixture"), 0o644); err != nil {
+		t.Fatalf("write explicit read fixture: %v", err)
+	}
+
+	settings, err := ResolveSettingsInDir(&config.Config{}, nil, CLIFlags{
+		Tools:     tools.ReadFileToolName + "," + tools.WriteFileToolName,
+		ReadDirs:  []string{extraRead, workspace},
+		WriteDirs: []string{extraWrite, workspace},
+	}, "", "", "", 0, 20, workspace)
+	if err != nil {
+		t.Fatalf("ResolveSettingsInDir() error = %v", err)
+	}
+	if countString(settings.ReadDirs, workspace) != 1 || !sessionTestStringSliceContains(settings.ReadDirs, extraRead) {
+		t.Fatalf("ReadDirs = %#v, want explicit dir plus one workspace grant", settings.ReadDirs)
+	}
+	if countString(settings.WriteDirs, workspace) != 1 || !sessionTestStringSliceContains(settings.WriteDirs, extraWrite) {
+		t.Fatalf("WriteDirs = %#v, want explicit dir plus one workspace grant", settings.WriteDirs)
+	}
+
+	toolMgr, err := settings.SetupToolManager(&config.Config{}, llm.NewEngine(nil, nil))
+	if err != nil {
+		t.Fatalf("SetupToolManager() error = %v", err)
+	}
+	toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
+	toolMgr.ApprovalMgr.PromptUIFunc = func(string, bool, bool, string) (tools.ApprovalResult, error) {
+		t.Fatal("explicit directory access prompted for approval")
+		return tools.ApprovalResult{}, nil
+	}
+	if outcome, err := toolMgr.ApprovalMgr.CheckPathApproval(tools.ReadFileToolName, extraReadFile, extraReadFile, false); err != nil || outcome != tools.ProceedOnce {
+		t.Fatalf("explicit read approval = %v, %v; want deterministic approval", outcome, err)
+	}
+	extraWriteFile := filepath.Join(extraWrite, "new.txt")
+	if outcome, err := toolMgr.ApprovalMgr.CheckPathApproval(tools.WriteFileToolName, extraWriteFile, extraWriteFile, true); err != nil || outcome != tools.ProceedOnce {
+		t.Fatalf("explicit write approval = %v, %v; want deterministic approval", outcome, err)
+	}
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
+}
+
 func TestResolveSettingsEnablesPlanGuidanceOnlyForBuiltinDeveloper(t *testing.T) {
 	cfg := &config.Config{}
 	for _, tc := range []struct {

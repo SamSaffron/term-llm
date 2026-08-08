@@ -164,6 +164,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editTools != "" {
 		engine := newEngine(provider, cfg)
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
+		runtimeDir, err := canonicalRuntimeDir("")
+		if err != nil {
+			return err
+		}
+		toolConfig.BaseDir = runtimeDir
+		toolConfig.PrimaryWorkspace = runtimeDir
+		toolConfig.ShellWorkingDir = runtimeDir
 		// For edit command, exclude edit/write tools to avoid conflicts with the command's own editing
 		toolConfig.Enabled = filterOutTools(toolConfig.Enabled, "edit_file", "write_file")
 		if len(toolConfig.Enabled) == 0 {
@@ -197,6 +204,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
+		toolMgr.ApprovalMgr.WorkspacePromptFunc = tools.RunWorkspaceApprovalUI
 		toolMgr.SetupEngine(engine)
 
 		// Wire spawn_agent runner if enabled

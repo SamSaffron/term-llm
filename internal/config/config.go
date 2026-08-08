@@ -485,10 +485,11 @@ type ApprovalConfig struct {
 
 // GuardianConfig configures auto approval policy review.
 type GuardianConfig struct {
-	Provider       string `mapstructure:"provider" yaml:"provider,omitempty"`
-	Model          string `mapstructure:"model" yaml:"model,omitempty"`
-	PolicyPath     string `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
-	TimeoutSeconds int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+	Provider         string `mapstructure:"provider" yaml:"provider,omitempty"`
+	Model            string `mapstructure:"model" yaml:"model,omitempty"`
+	PolicyPath       string `mapstructure:"policy_path" yaml:"policy_path,omitempty"`
+	TimeoutSeconds   int    `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+	ClassifyAllShell bool   `mapstructure:"classify_all_shell" yaml:"classify_all_shell,omitempty"`
 }
 
 // ServeConfig holds configuration for the serve command platforms.

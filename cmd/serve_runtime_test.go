@@ -18,6 +18,26 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestServeRuntimeNewSessionDoesNotPersistDaemonCWD(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rt := &serveRuntime{store: store, provider: llm.NewMockProvider("mock"), defaultModel: "mock-model"}
+	if !rt.ensurePersistedSession(ctx, "serve-no-cwd", []llm.Message{llm.UserText("hello")}) {
+		t.Fatal("ensurePersistedSession failed")
+	}
+	sess, err := store.Get(ctx, "serve-no-cwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.CWD != "" || sess.WorktreeDir != "" || sess.Origin != session.OriginWeb {
+		t.Fatalf("serve session directory state = cwd %q worktree %q origin %q", sess.CWD, sess.WorktreeDir, sess.Origin)
+	}
+}
+
 func TestServeRuntimeSessionNumberConcurrentAccess(t *testing.T) {
 	rt := &serveRuntime{
 		sessionMeta: &session.Session{ID: "sess", Number: 1},

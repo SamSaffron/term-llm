@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+// These raw helpers exist only in tests. Production shell matching must flow
+// through ApprovalManager so auto-mode pattern filtering cannot be bypassed.
+func unfilteredConfiguredShellAllowedForTest(perms *ToolPermissions, command string) bool {
+	if perms.isExactScriptCommandAllowed(command) {
+		return true
+	}
+	_, _, patterns := perms.Snapshot()
+	return matchAnyShellPattern(patterns, strings.TrimSpace(command))
+}
+
+func unfilteredProjectShellAllowedForTest(approvals *ProjectApprovals, command string) bool {
+	return matchAnyShellPattern(approvals.shellPatternsSnapshot(), command)
+}
+
 func TestConfiguredShellPatternsUseShellAwareMatching(t *testing.T) {
 	perms := NewToolPermissions()
 	perms.ShellAllow = []string{"git *", "go test *"}
@@ -29,8 +43,8 @@ func TestConfiguredShellPatternsUseShellAwareMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := perms.IsShellCommandAllowed(tt.command); got != tt.want {
-				t.Errorf("IsShellCommandAllowed(%q) = %v, want %v", tt.command, got, tt.want)
+			if got := unfilteredConfiguredShellAllowedForTest(perms, tt.command); got != tt.want {
+				t.Errorf("unfiltered configured shell match for %q = %v, want %v", tt.command, got, tt.want)
 			}
 		})
 	}
@@ -56,13 +70,13 @@ func TestConfiguredShellPatternsCombineAcrossCompoundCommands(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.command, func(t *testing.T) {
-			configured := perms.IsShellCommandAllowed(tt.command)
+			configured := unfilteredConfiguredShellAllowedForTest(perms, tt.command)
 			sessionOrProject := matchAnyShellPattern(patterns, tt.command)
 			if configured != sessionOrProject {
 				t.Errorf("configured match = %v, session/project match = %v", configured, sessionOrProject)
 			}
 			if configured != tt.want {
-				t.Errorf("IsShellCommandAllowed(%q) = %v, want %v", tt.command, configured, tt.want)
+				t.Errorf("unfiltered configured shell match for %q = %v, want %v", tt.command, configured, tt.want)
 			}
 		})
 	}
@@ -124,7 +138,7 @@ func TestShellPatternValidation(t *testing.T) {
 
 			if !tt.valid {
 				perms.ShellAllow = []string{tt.pattern}
-				if perms.IsShellCommandAllowed(tt.pattern) {
+				if unfilteredConfiguredShellAllowedForTest(perms, tt.pattern) {
 					t.Errorf("invalid directly assigned pattern %q must not approve a command", tt.pattern)
 				}
 
@@ -235,7 +249,7 @@ func TestHandleShellApprovalResultFallsBackToSessionOnPersistenceError(t *testin
 	if outcome != ProceedAlways {
 		t.Fatalf("handleShellApprovalResult() outcome = %v, want ProceedAlways", outcome)
 	}
-	if project.IsShellPatternApproved("git status") {
+	if unfilteredProjectShellAllowedForTest(project, "git status") {
 		t.Fatal("failed persisted approval remained active in project memory")
 	}
 	if !matchAnyShellPattern(mgr.shellCache.GetPatterns(), "git status") {
@@ -248,7 +262,7 @@ func TestConfiguredShellPatternsTrimCommandWhitespace(t *testing.T) {
 	if err := perms.AddShellPattern("git status && git diff"); err != nil {
 		t.Fatalf("AddShellPattern() error = %v", err)
 	}
-	if !perms.IsShellCommandAllowed("  git status && git diff  ") {
+	if !unfilteredConfiguredShellAllowedForTest(perms, "  git status && git diff  ") {
 		t.Fatal("surrounding whitespace prevented exact configured approval")
 	}
 }
@@ -339,10 +353,10 @@ func TestConfiguredShellPatternRecursivePathEndToEnd(t *testing.T) {
 	if err := perms.AddShellPattern("cat src/**/*.go"); err != nil {
 		t.Fatalf("AddShellPattern() error = %v", err)
 	}
-	if !perms.IsShellCommandAllowed("cat src/pkg/main.go") {
+	if !unfilteredConfiguredShellAllowedForTest(perms, "cat src/pkg/main.go") {
 		t.Fatal("recursive path pattern did not match nested path")
 	}
-	if perms.IsShellCommandAllowed("cat test/pkg/main.go") {
+	if unfilteredConfiguredShellAllowedForTest(perms, "cat test/pkg/main.go") {
 		t.Fatal("recursive path pattern matched outside its prefix")
 	}
 }
@@ -367,10 +381,10 @@ func TestLoadedProjectApprovalsSkipInvalidPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadProjectApprovals() error = %v", err)
 	}
-	if project.IsShellPatternApproved("git [") {
+	if unfilteredProjectShellAllowedForTest(project, "git [") {
 		t.Fatal("loaded invalid pattern matched by exact equality")
 	}
-	if !project.IsShellPatternApproved("go test ./...") {
+	if !unfilteredProjectShellAllowedForTest(project, "go test ./...") {
 		t.Fatal("valid sibling pattern stopped matching")
 	}
 }

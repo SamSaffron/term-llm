@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -459,9 +458,6 @@ func (s *serveServer) persistSessionMCPSelectionLocked(ctx context.Context, sess
 			Tools:       rt.toolsSetting,
 			MCP:         mcpSetting,
 			Status:      session.StatusActive,
-		}
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			sess.CWD = cwd
 		}
 		if err := s.store.Create(ctx, sess); err != nil {
 			return fmt.Errorf("session Create failed while updating MCP for %s: %w", sessionID, err)
