@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,8 +14,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -25,7 +28,13 @@ var (
 	imageNoDisplay   bool
 	imageNoClipboard bool
 	imageNoSave      bool
+	imageNoSpinner   bool
 	imageDebug       bool
+)
+
+var (
+	imageIsTerminal = term.IsTerminal
+	openImageTTY    = os.OpenFile
 )
 
 var imageCmd = &cobra.Command{
@@ -62,6 +71,7 @@ func init() {
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
 	imageCmd.Flags().BoolVar(&imageNoClipboard, "no-clipboard", false, "Skip clipboard copy")
 	imageCmd.Flags().BoolVar(&imageNoSave, "no-save", false, "Don't save to default location (use with -o)")
+	imageCmd.Flags().BoolVar(&imageNoSpinner, "no-spinner", false, "Disable interactive progress display")
 	imageCmd.Flags().BoolVarP(&imageDebug, "debug", "d", false, "Show debug information")
 
 	imageCmd.RegisterFlagCompletionFunc("provider", ImageProviderFlagCompletion)
@@ -160,8 +170,8 @@ func runImage(cmd *cobra.Command, args []string) error {
 			})
 		}
 
-		result, err = runImageWithSpinner(ctx, provider, func() (*image.ImageResult, error) {
-			return provider.Edit(ctx, image.EditRequest{
+		result, err = runImageWithSpinner(ctx, provider, func(generateCtx context.Context) (*image.ImageResult, error) {
+			return provider.Edit(generateCtx, image.EditRequest{
 				Prompt:      prompt,
 				InputImages: inputImages,
 				Size:        imageSize,
@@ -170,12 +180,15 @@ func runImage(cmd *cobra.Command, args []string) error {
 			})
 		}, "Editing image")
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return fmt.Errorf("image editing failed: %w", err)
 		}
 	} else {
 		// Generate mode
-		result, err = runImageWithSpinner(ctx, provider, func() (*image.ImageResult, error) {
-			return provider.Generate(ctx, image.GenerateRequest{
+		result, err = runImageWithSpinner(ctx, provider, func(generateCtx context.Context) (*image.ImageResult, error) {
+			return provider.Generate(generateCtx, image.GenerateRequest{
 				Prompt:   prompt,
 				Size:     imageSize,
 				Debug:    imageDebug,
@@ -183,6 +196,9 @@ func runImage(cmd *cobra.Command, args []string) error {
 			})
 		}, "Generating image")
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return fmt.Errorf("image generation failed: %w", err)
 		}
 	}
@@ -208,13 +224,8 @@ func runImage(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Detect whether we have a controlling terminal
-	hasTTY := true
-	if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err != nil {
-		hasTTY = false
-	} else {
-		tty.Close()
-	}
+	// Display and clipboard integration are interactive terminal features.
+	hasTTY := hasInteractiveImageTTY()
 
 	if outputPath != "" {
 		fmt.Fprintf(os.Stderr, "Saved to: %s\n", outputPath)
@@ -258,7 +269,9 @@ type imageSpinnerModel struct {
 	done     bool
 	start    time.Time
 	provider image.ImageProvider
-	generate func() (*image.ImageResult, error)
+	generate func(context.Context) (*image.ImageResult, error)
+	ctx      context.Context
+	cancel   context.CancelFunc
 	styles   *ui.Styles
 }
 
@@ -271,7 +284,7 @@ func (m imageSpinnerModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := m.generate()
+			result, err := m.generate(m.ctx)
 			return imageResultMsg{result: result, err: err}
 		},
 	)
@@ -281,6 +294,7 @@ func (m imageSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
+			m.cancel()
 			return m, tea.Quit
 		}
 
@@ -336,7 +350,33 @@ func imageSpinnerEnvironment(environ []string) []string {
 	return filtered
 }
 
-func runImageWithSpinner(_ context.Context, provider image.ImageProvider, generate func() (*image.ImageResult, error), message string) (*image.ImageResult, error) {
+func hasInteractiveImageTTY() bool {
+	if !terminalpolicy.OutputInteractiveWith(os.Stderr, imageIsTerminal, os.Getenv) {
+		return false
+	}
+	tty, err := openImageTTY("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	_ = tty.Close()
+	return true
+}
+
+func shouldUseImageSpinner() bool {
+	if imageNoSpinner || terminalpolicy.EnvironmentEnabled(os.Getenv("TERM_LLM_NO_SPINNER")) {
+		return false
+	}
+	return terminalpolicy.InteractiveWith(os.Stdin, os.Stderr, imageIsTerminal, os.Getenv)
+}
+
+func runImageWithSpinner(ctx context.Context, provider image.ImageProvider, generate func(context.Context) (*image.ImageResult, error), message string) (*image.ImageResult, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if !shouldUseImageSpinner() {
+		return generate(ctx)
+	}
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -347,14 +387,16 @@ func runImageWithSpinner(_ context.Context, provider image.ImageProvider, genera
 		start:    time.Now(),
 		provider: provider,
 		generate: generate,
+		ctx:      ctx,
+		cancel:   cancel,
 		styles:   ui.DefaultStyles(),
 	}
 
-	// Try to open /dev/tty for terminal input
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	// Opening the controlling terminal can still fail after the stream checks.
+	tty, err := openImageTTY("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		// Fallback: run without spinner UI
-		return generate()
+		return generate(ctx)
 	}
 	defer tty.Close()
 
@@ -374,6 +416,9 @@ func runImageWithSpinner(_ context.Context, provider image.ImageProvider, genera
 		return nil, final.err
 	}
 	if final.result == nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("cancelled")
 	}
 	return final.result, nil

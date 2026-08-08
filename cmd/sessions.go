@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -80,7 +81,7 @@ var sessionsResetCmd = &cobra.Command{
 	Short: "Delete all sessions (requires confirmation)",
 	Long: `Delete the sessions database entirely. This cannot be undone.
 
-You must type 'yes' to confirm.`,
+You must type 'yes' to confirm, or pass --yes for non-interactive use.`,
 	RunE: runSessionsReset,
 }
 
@@ -170,6 +171,7 @@ var (
 	sessionsGistIncludeSystem         bool
 	sessionsGistIncludeReasoning      bool
 	sessionsGistIncludeRawReasoning   bool
+	sessionsResetYes                  bool
 )
 
 func init() {
@@ -187,6 +189,9 @@ func init() {
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeSystem, "include-system", false, "Include system prompt in export")
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeReasoning, "include-reasoning", false, "Include provider reasoning summaries in export")
 	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
+
+	// Reset flags
+	sessionsResetCmd.Flags().BoolVarP(&sessionsResetYes, "yes", "y", false, "Delete without interactive confirmation")
 
 	// Gist export flags
 	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistPublic, "public", false, "Create a public Gist (default: secret/unlisted, not private)")
@@ -624,6 +629,10 @@ func fallbackString(value, fallback string) string {
 }
 
 func runSessionsReset(cmd *cobra.Command, args []string) error {
+	if !sessionsResetYes && !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		return fmt.Errorf("sessions reset requires an interactive terminal; use --yes to confirm non-interactively")
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -649,18 +658,20 @@ func runSessionsReset(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Require confirmation
-	fmt.Printf("This will delete ALL sessions at:\n  %s\n\n", dbPath)
-	fmt.Print("Type 'yes' to confirm: ")
+	// Require confirmation unless explicitly supplied.
+	if !sessionsResetYes {
+		fmt.Printf("This will delete ALL sessions at:\n  %s\n\n", dbPath)
+		fmt.Print("Type 'yes' to confirm: ")
 
-	var response string
-	if _, err := fmt.Scanln(&response); err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
+		var response string
+		if _, err := fmt.Scanln(&response); err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
 
-	if response != "yes" {
-		fmt.Println("Aborted.")
-		return nil
+		if response != "yes" {
+			fmt.Println("Aborted.")
+			return nil
+		}
 	}
 
 	// Delete the database file and WAL files
@@ -831,6 +842,10 @@ func containsTag(tags []string, tag string) bool {
 }
 
 func runSessionsBrowse(cmd *cobra.Command, args []string) error {
+	if !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		return runSessionsList(cmd, args)
+	}
+
 	store, err := getSessionStore()
 	if err != nil {
 		return err

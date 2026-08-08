@@ -392,7 +392,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
-	procutil.ConfigureCommandProcessGroup(cmd)
+	procutil.ConfigureDetachedCommand(cmd)
 
 	if err := cmd.Start(); err != nil {
 		if ctx.Err() != nil {

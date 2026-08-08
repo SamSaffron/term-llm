@@ -13,6 +13,7 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"golang.org/x/term"
 )
 
@@ -188,10 +189,35 @@ func runWithSpinnerInternal(ctx context.Context, debug bool, progress <-chan Pro
 // It should set up approval hooks that call these functions.
 type ApprovalHookSetup func(pause, resume func())
 
+func drainProgressUpdates(ctx context.Context, progress <-chan ProgressUpdate) {
+	if progress == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case _, ok := <-progress:
+				if !ok {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
 func runWithSpinnerInternalWithHooks(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error), setupHooks ApprovalHookSetup) (any, error) {
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Debug and non-interactive executions run directly. A controlling TTY is
+	// not enough when the invoking streams are redirected or captured.
+	if debug || terminalpolicy.EnvironmentEnabled(os.Getenv("TERM_LLM_NO_SPINNER")) || !terminalpolicy.Interactive(os.Stdin, os.Stderr) {
+		drainProgressUpdates(ctx, progress)
+		return run(ctx)
+	}
 
 	// Get tty for proper rendering
 	tty, ttyErr := getTTY()
@@ -200,11 +226,6 @@ func runWithSpinnerInternalWithHooks(ctx context.Context, debug bool, progress <
 		return run(ctx)
 	}
 	defer tty.Close()
-
-	// In debug mode, skip spinner so output isn't garbled
-	if debug {
-		return run(ctx)
-	}
 
 	// Create and run spinner
 	model := newSpinnerModel(cancel, tty, progress)
@@ -485,17 +506,14 @@ func (m selectModel) View() tea.View {
 // allowNonTTY permits a non-interactive fallback when no TTY is available.
 func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *llm.Engine, allowNonTTY bool) (selected string, refinement string, err error) {
 	for {
+		if !terminalpolicy.Interactive(os.Stdin, os.Stderr) {
+			return selectCommandNonInteractive(suggestions, allowNonTTY)
+		}
+
 		// Get tty for proper rendering
 		tty, ttyErr := getTTY()
 		if ttyErr != nil {
-			if !allowNonTTY {
-				return "", "", fmt.Errorf("no TTY available (set TERM_LLM_ALLOW_NON_TTY=1 to allow non-interactive selection)")
-			}
-			// Fallback to simple first option if no TTY
-			if len(suggestions) > 0 {
-				return suggestions[0].Command, "", nil
-			}
-			return "", "", fmt.Errorf("no TTY available")
+			return selectCommandNonInteractive(suggestions, allowNonTTY)
 		}
 
 		model := newSelectModel(suggestions, tty)
@@ -527,6 +545,16 @@ func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *ll
 
 		return m.selected, m.refinement, nil
 	}
+}
+
+func selectCommandNonInteractive(suggestions []llm.CommandSuggestion, allow bool) (string, string, error) {
+	if !allow {
+		return "", "", fmt.Errorf("interactive command selection unavailable; use --print-only or --auto-pick")
+	}
+	if len(suggestions) == 0 {
+		return "", "", fmt.Errorf("no command suggestions available")
+	}
+	return suggestions[0].Command, "", nil
 }
 
 // GetRefinement prompts the user for additional guidance

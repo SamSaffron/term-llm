@@ -28,6 +28,7 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -89,6 +90,13 @@ var (
 		return llm.NewProvider(cfg)
 	}
 )
+
+func shouldUseAskRichRenderer() bool {
+	// The renderer owns keyboard input for cancellation as well as stdout. Do
+	// not let Bubble Tea recover input through a controlling TTY when stdin was
+	// deliberately redirected or captured.
+	return !askText && !debugRaw && terminalpolicy.Interactive(os.Stdin, os.Stdout)
+}
 
 var askCmd = &cobra.Command{
 	Use:   "ask [@agent] <question>",
@@ -544,8 +552,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		askText = true
 		askPorcelain = false
 	}
-	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	useRichRenderer := !askText && isTTY && !debugRaw
+	useRichRenderer := shouldUseAskRichRenderer()
 	var jsonEmit *jsonEmitter
 	if askJSON {
 		jsonEmit = newJSONEmitter(cmd.OutOrStdout())

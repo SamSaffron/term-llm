@@ -17,6 +17,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/samsaffron/term-llm/internal/pathutil"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 // shellNonceEnvVar is the environment variable name used to tag every process
@@ -69,7 +70,8 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		}
 	}
 
-	configureCommandProcessGroup(cmd)
+	procutil.ConfigureDetachedCommand(cmd)
+	configureToolWait(cmd)
 	nonce := tagCommandWithNonce(cmd)
 
 	cleanup := func() {
@@ -175,24 +177,19 @@ func findPidsWithEnv(needle []byte) []int {
 	return pids
 }
 
-// PrepareCommand configures a command for safe cancellation, including process-group teardown.
+// PrepareCommand configures a tool-owned command for safe, non-interactive
+// execution. The child starts a new session so it cannot open the caller's
+// controlling terminal, and cancellation tears down its process group.
 func PrepareCommand(cmd *exec.Cmd) (func(), error) {
 	return prepareToolCommand(cmd)
 }
 
-func configureCommandProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+func configureToolWait(cmd *exec.Cmd) {
 	// WaitDelay unblocks cmd.Wait() when the main process has exited but a
 	// backgrounded descendant still holds the stdout/stderr pipe open. After
 	// the delay Go closes the pipes and returns from Wait, preventing the
 	// tool from hanging indefinitely.
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
 }
 
 func splitShellWords(input string) ([]string, error) {

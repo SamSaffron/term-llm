@@ -19,6 +19,7 @@ import (
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -807,15 +808,17 @@ func isSchemaError(err error) bool {
 // promptForReset asks the user if they want to reset the session database.
 // Returns true if user confirms with 'y' or 'yes'.
 func promptForReset() bool {
-	// Try to open /dev/tty directly for interactive input
-	// This works even when stdin is redirected
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		return false
+	}
+
+	// Use /dev/tty directly; never consume redirected stdin for an implicit,
+	// destructive recovery prompt.
 	tty, err := os.Open("/dev/tty")
 	if err != nil {
-		// Fall back to stdin
-		tty = os.Stdin
-	} else {
-		defer tty.Close()
+		return false
 	}
+	defer tty.Close()
 
 	reader := bufio.NewReader(tty)
 	response, err := reader.ReadString('\n')

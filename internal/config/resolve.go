@@ -196,7 +196,7 @@ func runResolverCommand(name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = resolveExecWaitDelay
 
-	cleanup, prepErr := procutil.PrepareCommand(cmd)
+	cleanup, prepErr := procutil.PrepareCommandProcessGroup(cmd)
 	if prepErr != nil {
 		return "", fmt.Errorf("command setup failed: %w", prepErr)
 	}

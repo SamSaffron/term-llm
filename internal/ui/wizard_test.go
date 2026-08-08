@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+func TestHasTTYRejectsCI(t *testing.T) {
+	t.Setenv("CI", "1")
+	if HasTTY() {
+		t.Fatal("HasTTY() = true in CI, want false")
+	}
+}
+
 func TestDetectAvailableProvidersIncludesChatGPTCodexFirst(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 

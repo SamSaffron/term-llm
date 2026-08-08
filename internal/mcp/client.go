@@ -126,7 +126,7 @@ func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 
 	cmd := exec.CommandContext(processCtx, c.config.Command, c.config.Args...)
 	cmd.WaitDelay = mcpCommandWaitDelay
-	procutil.ConfigureCommandProcessGroup(cmd)
+	procutil.ConfigureDetachedCommand(cmd)
 	if len(c.config.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range c.config.Env {

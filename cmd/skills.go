@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	skillsTui "github.com/samsaffron/term-llm/internal/tui/skills"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -708,8 +709,8 @@ func runSkillsBrowse(cmd *cobra.Command, args []string) error {
 		query = strings.Join(args, " ")
 	}
 
-	// Use interactive TUI by default
-	if !skillsBrowseTUI {
+	// Use the interactive TUI only when the invoking streams support it.
+	if !skillsBrowseTUI && terminalpolicy.Interactive(os.Stdin, os.Stdout) {
 		return skillsTui.RunBrowser(query, skillsBrowseAI)
 	}
 
@@ -822,6 +823,9 @@ func runSkillsAdd(cmd *cobra.Command, args []string) error {
 	// Non-interactive mode
 	if skillsAddNoTUI || skillsAddAll {
 		return runSkillsAddCLI(*ref)
+	}
+	if !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		return fmt.Errorf("skills add requires an interactive terminal for selection; use --all to install all discovered skills")
 	}
 
 	// Interactive TUI mode

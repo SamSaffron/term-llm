@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
@@ -545,6 +546,9 @@ func getApprovalTTY() (*os.File, error) {
 
 // RunFileApprovalUI displays the approval UI for file access and returns the result.
 func RunFileApprovalUI(path string, isWrite bool) (ApprovalResult, error) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		return ApprovalResult{Choice: ApprovalChoiceCancelled, Cancelled: true}, fmt.Errorf("interactive approval unavailable")
+	}
 	tty, err := getApprovalTTY()
 	if err != nil {
 		return ApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available: %w", err)
@@ -614,6 +618,9 @@ func RunWorkspaceApprovalUI(workspace string) (WorkspaceApprovalResult, error) {
 
 // RunShellApprovalUI displays the approval UI for shell commands and returns the result.
 func RunShellApprovalUI(command, workDir string) (ApprovalResult, error) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		return ApprovalResult{Choice: ApprovalChoiceCancelled, Cancelled: true}, fmt.Errorf("interactive approval unavailable")
+	}
 	tty, err := getApprovalTTY()
 	if err != nil {
 		return ApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available: %w", err)

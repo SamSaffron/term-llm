@@ -9,6 +9,19 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func TestApprovalUIsFailClosedInCI(t *testing.T) {
+	t.Setenv("CI", "1")
+
+	fileResult, err := RunFileApprovalUI("test.txt", false)
+	if err == nil || !fileResult.Cancelled || fileResult.Choice != ApprovalChoiceCancelled {
+		t.Fatalf("RunFileApprovalUI() = (%+v, %v), want cancelled error", fileResult, err)
+	}
+	shellResult, err := RunShellApprovalUI("echo unsafe", "")
+	if err == nil || !shellResult.Cancelled || shellResult.Choice != ApprovalChoiceCancelled {
+		t.Fatalf("RunShellApprovalUI() = (%+v, %v), want cancelled error", shellResult, err)
+	}
+}
+
 func TestBuildFileOptions_InGitRepo(t *testing.T) {
 	repoRoot := "/home/user/myproject"
 	repoInfo := &GitRepoInfo{

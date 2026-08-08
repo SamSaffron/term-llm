@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"golang.org/x/term"
 )
 
@@ -119,10 +120,16 @@ func CreateTUIHooks(prog *tea.Program, flushAndWait func()) (start, end func()) 
 // TTYApprovalPrompt prompts the user for directory access approval via /dev/tty.
 // This allows prompting even when stdin is piped.
 func TTYApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		fmt.Fprintln(os.Stderr, "Approval denied: interactive terminal unavailable")
+		return Cancel, ""
+	}
+
 	// Open /dev/tty directly for both reading and writing
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		// No TTY available - deny access
+		fmt.Fprintln(os.Stderr, "Approval denied: controlling terminal unavailable")
 		return Cancel, ""
 	}
 	defer tty.Close()
@@ -188,6 +195,17 @@ func TTYApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 // HuhApprovalPrompt prompts the user for approval using a huh form.
 // This provides a nicer UI than the TTY-based prompt.
 func HuhApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		fmt.Fprintln(os.Stderr, "Approval denied: interactive terminal unavailable")
+		return Cancel, ""
+	}
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Approval denied: controlling terminal unavailable")
+		return Cancel, ""
+	}
+	defer tty.Close()
+
 	// Notify TUI to pause (e.g., stop spinner during approval)
 	approvalMu.Lock()
 	startHook := OnApprovalStart
@@ -207,9 +225,9 @@ func HuhApprovalPrompt(req *ApprovalRequest) (ConfirmOutcome, string) {
 				Negative("No").
 				WithButtonAlignment(lipgloss.Left),
 		),
-	).WithShowHelp(false).WithShowErrors(false)
+	).WithShowHelp(false).WithShowErrors(false).WithInput(tty).WithOutput(tty)
 
-	err := form.Run()
+	err = form.Run()
 
 	// Notify TUI to resume
 	if endHook != nil {

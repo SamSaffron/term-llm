@@ -10,6 +10,15 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestSamplingApprovalFailsClosedInCI(t *testing.T) {
+	t.Setenv("CI", "1")
+	h := NewSamplingHandler(nil, "")
+	choice, err := h.promptForApproval("server", &mcp.CreateMessageParams{})
+	if err == nil || choice != SamplingChoiceCancelled {
+		t.Fatalf("promptForApproval() = (%v, %v), want cancelled error", choice, err)
+	}
+}
+
 // mockProvider is a simple mock LLM provider for testing
 type mockProvider struct {
 	name      string

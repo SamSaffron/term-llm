@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
@@ -734,6 +735,9 @@ func getAskUserTTY() (*os.File, error) {
 
 // RunAskUser presents the questions to the user and returns their answers.
 func RunAskUser(questions []AskUserQuestion) ([]AskUserAnswer, error) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		return nil, fmt.Errorf("interactive ask_user prompt unavailable")
+	}
 	tty, err := getAskUserTTY()
 	if err != nil {
 		return nil, fmt.Errorf("no TTY available: %w", err)

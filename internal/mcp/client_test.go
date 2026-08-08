@@ -253,7 +253,7 @@ func TestHeaderTransportAddsHeadersWithoutMutatingRequest(t *testing.T) {
 	}
 }
 
-func TestCreateStdioTransport_ConfiguresProcessGroupCancellation(t *testing.T) {
+func TestCreateStdioTransport_ConfiguresDetachedProcessGroupCancellation(t *testing.T) {
 	client := &Client{
 		name: "test",
 		config: ServerConfig{
@@ -268,8 +268,8 @@ func TestCreateStdioTransport_ConfiguresProcessGroupCancellation(t *testing.T) {
 	if ct.Command.Cancel == nil {
 		t.Fatalf("expected subprocess cancel hook to be configured")
 	}
-	if ct.Command.SysProcAttr == nil || !ct.Command.SysProcAttr.Setpgid {
-		t.Fatalf("expected subprocess to run in its own process group")
+	if ct.Command.SysProcAttr == nil || !ct.Command.SysProcAttr.Setsid {
+		t.Fatalf("expected subprocess to run in a detached session")
 	}
 	if ct.Command.WaitDelay != time.Second {
 		t.Fatalf("WaitDelay = %v, want %v", ct.Command.WaitDelay, time.Second)

@@ -45,10 +45,7 @@ var (
 	execSkills string
 )
 
-const (
-	allowAutoRunEnv = "TERM_LLM_ALLOW_AUTORUN"
-	allowNonTTYEnv  = "TERM_LLM_ALLOW_NON_TTY"
-)
+const allowAutoRunEnv = "TERM_LLM_ALLOW_AUTORUN"
 
 var execCmd = &cobra.Command{
 	Use:   "exec <request>",
@@ -58,8 +55,8 @@ var execCmd = &cobra.Command{
 By default, shows an interactive selection UI. Use --auto-pick to
 automatically execute the highest-likelihood suggestion.
 
-Safety: auto-pick execution requires TERM_LLM_ALLOW_AUTORUN=1, and
-non-TTY selection requires TERM_LLM_ALLOW_NON_TTY=1 (unless --print-only).
+Safety: auto-pick execution requires TERM_LLM_ALLOW_AUTORUN=1. In
+non-interactive environments, use --print-only or --auto-pick explicitly.
 
 Examples:
   term-llm exec "list files by size"
@@ -307,9 +304,10 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return executeCommand(command, shell)
 		}
 
-		// Interactive mode: show selection UI (with help support via 'i' key)
-		allowNonTTY := execPrintOnly || envEnabled(allowNonTTYEnv)
-		selected, refinement, err := ui.SelectCommand(suggestions, shell, suggestionResult.engine, allowNonTTY)
+		// Interactive mode: show selection UI (with help support via 'i' key).
+		// Non-interactive execution requires an explicit mode: --print-only
+		// selects without running, while --auto-pick is handled above.
+		selected, refinement, err := ui.SelectCommand(suggestions, shell, suggestionResult.engine, execPrintOnly)
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil

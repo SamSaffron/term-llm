@@ -7,6 +7,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func TestRunAskUserFailsClosedInCI(t *testing.T) {
+	t.Setenv("CI", "1")
+	answers, err := RunAskUser(testAskQuestion("Question", false))
+	if err == nil || answers != nil {
+		t.Fatalf("RunAskUser() = (%v, %v), want nil answers and error", answers, err)
+	}
+}
+
 func testAskQuestion(header string, multiSelect bool) []AskUserQuestion {
 	return []AskUserQuestion{
 		{

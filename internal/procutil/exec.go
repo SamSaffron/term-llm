@@ -44,24 +44,50 @@ func (b *LimitedBuffer) Truncated() bool {
 	return b.total > int64(b.buf.Len())
 }
 
+// PrepareCommand configures a captured subprocess in a detached session so it
+// cannot bypass its configured streams through the caller's controlling TTY.
 func PrepareCommand(cmd *exec.Cmd) (func(), error) {
+	return prepareCommand(cmd, ConfigureDetachedCommand)
+}
+
+// PrepareCommandProcessGroup preserves controlling-terminal access while still
+// providing process-group cancellation. Use this only for explicitly
+// interactive helpers such as credential resolvers.
+func PrepareCommandProcessGroup(cmd *exec.Cmd) (func(), error) {
+	return prepareCommand(cmd, ConfigureCommandProcessGroup)
+}
+
+func prepareCommand(cmd *exec.Cmd, configure func(*exec.Cmd)) (func(), error) {
 	if cmd.Stdin == nil {
 		devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 		if err == nil {
 			cmd.Stdin = devNull
-			ConfigureCommandProcessGroup(cmd)
+			configure(cmd)
 			return func() {
 				_ = devNull.Close()
 			}, nil
 		}
 	}
 
-	ConfigureCommandProcessGroup(cmd)
+	configure(cmd)
 	return func() {}, nil
 }
 
+// ConfigureDetachedCommand starts cmd in a new session and configures
+// process-group cancellation.
+func ConfigureDetachedCommand(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureProcessGroupCancellation(cmd)
+}
+
+// ConfigureCommandProcessGroup starts cmd in its own process group without
+// removing access to the caller's controlling terminal.
 func ConfigureCommandProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroupCancellation(cmd)
+}
+
+func configureProcessGroupCancellation(cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil

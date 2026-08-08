@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
@@ -188,6 +189,10 @@ func init() {
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
+	if len(chatAutoSend) == 0 && !terminalpolicy.Interactive(os.Stdin, os.Stdout) {
+		return fmt.Errorf("chat requires an interactive terminal; use --auto-send for non-interactive execution")
+	}
+
 	// Extract @agent from args if present, and get remaining args as initial text
 	atAgent, filteredArgs := ExtractAgentFromArgs(args)
 	cliAgent := strings.TrimSpace(chatAgent)

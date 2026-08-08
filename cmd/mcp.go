@@ -14,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
 	"github.com/spf13/cobra"
 )
@@ -192,8 +193,8 @@ func mcpBrowse(cmd *cobra.Command, args []string) error {
 		query = args[0]
 	}
 
-	// Use interactive TUI by default
-	if !mcpBrowseTUI {
+	// Use the interactive TUI only when the invoking streams support it.
+	if !mcpBrowseTUI && terminalpolicy.Interactive(os.Stdin, os.Stdout) {
 		return mcpTui.RunBrowser(query)
 	}
 

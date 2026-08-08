@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
@@ -201,6 +202,9 @@ func convertSamplingMessages(msgs []*mcp.SamplingMessage) []llm.Message {
 
 // promptForApproval shows an interactive approval prompt for sampling requests.
 func (h *SamplingHandler) promptForApproval(serverName string, params *mcp.CreateMessageParams) (SamplingApprovalChoice, error) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		return SamplingChoiceCancelled, fmt.Errorf("interactive sampling approval unavailable")
+	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return SamplingChoiceCancelled, fmt.Errorf("no TTY available: %w", err)

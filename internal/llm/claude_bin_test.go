@@ -179,8 +179,8 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	if cmd.WaitDelay != claudeCommandWaitDelay {
 		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, claudeCommandWaitDelay)
 	}
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
-		t.Fatal("expected claude subprocess to run in its own process group")
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+		t.Fatal("expected claude subprocess to run in a detached session")
 	}
 	if cmd.Cancel == nil {
 		t.Fatal("expected claude subprocess to install process-group cancellation")

@@ -9,6 +9,7 @@ import (
 	"charm.land/huh/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 )
 
 // providerOption represents a provider choice in the setup wizard
@@ -228,8 +229,12 @@ func detectAvailableImageProviders() []imageProviderOption {
 	}
 }
 
-// HasTTY returns true if /dev/tty can be opened (interactive terminal available).
+// HasTTY reports whether the invoking process is interactive and a controlling
+// terminal can be opened.
 func HasTTY() bool {
+	if !terminalpolicy.Interactive(os.Stdin, os.Stderr) {
+		return false
+	}
 	f, err := getTTY()
 	if err != nil {
 		return false
@@ -299,6 +304,10 @@ func RunHeadlessSetup() (*config.Config, error) {
 
 // RunSetupWizard runs the first-time setup wizard and returns the config
 func RunSetupWizard() (*config.Config, error) {
+	if !terminalpolicy.Interactive(os.Stdin, os.Stderr) {
+		return nil, fmt.Errorf("setup wizard requires an interactive terminal")
+	}
+
 	// Use /dev/tty for output to bypass redirections
 	tty, ttyErr := getTTY()
 	if ttyErr == nil {
