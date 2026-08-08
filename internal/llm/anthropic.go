@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 
@@ -100,12 +101,17 @@ func parseModel1m(model string) (string, bool) {
 	return model, false
 }
 
-// NewAnthropicProvider creates a new Anthropic provider.
+// NewAnthropicProvider creates a new Anthropic provider using Anthropic's default API endpoint.
+func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
+	return NewAnthropicProviderWithBaseURL(apiKey, model, credentialMode, "")
+}
+
+// NewAnthropicProviderWithBaseURL creates a new Anthropic provider.
 // The credentialMode parameter controls which authentication method is used:
 //   - "" or "auto": try the cascade (api_key → env)
 //   - "api_key":    use only the explicit apiKey parameter
 //   - "env":        use only the ANTHROPIC_API_KEY environment variable
-func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
+func NewAnthropicProviderWithBaseURL(apiKey, model, credentialMode, baseURL string) (*AnthropicProvider, error) {
 	// Strip provider-aware reasoning effort first, then -thinking (may leave -1m), then -1m.
 	// This means claude-sonnet-4-6-1m-thinking works correctly:
 	//   step 1: strip effort   -> "claude-sonnet-4-6-1m-thinking"
@@ -121,6 +127,24 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 	// Normalize empty credential mode to "auto"
 	if credentialMode == "" {
 		credentialMode = AnthropicCredAuto
+	}
+
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL != "" {
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Anthropic base_url %q: %w", baseURL, err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("invalid Anthropic base_url %q: must include scheme and host", baseURL)
+		}
+	}
+	mkClient := func(key string) anthropic.Client {
+		opts := []option.RequestOption{option.WithAPIKey(key)}
+		if baseURL != "" {
+			opts = append(opts, option.WithBaseURL(baseURL))
+		}
+		return anthropic.NewClient(opts...)
 	}
 
 	mkProvider := func(client anthropic.Client, cred string) *AnthropicProvider {
@@ -141,14 +165,14 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 		if apiKey == "" {
 			return nil, fmt.Errorf("credentials mode %q requires an explicit api_key in provider config", credentialMode)
 		}
-		return mkProvider(anthropic.NewClient(option.WithAPIKey(apiKey)), "api_key"), nil
+		return mkProvider(mkClient(apiKey), "api_key"), nil
 
 	case AnthropicCredEnv:
 		envKey := os.Getenv("ANTHROPIC_API_KEY")
 		if envKey == "" {
 			return nil, fmt.Errorf("credentials mode %q requires ANTHROPIC_API_KEY environment variable", credentialMode)
 		}
-		return mkProvider(anthropic.NewClient(option.WithAPIKey(envKey)), "env"), nil
+		return mkProvider(mkClient(envKey), "env"), nil
 
 	case AnthropicCredAuto:
 		// Fall through to the cascade below.
@@ -161,12 +185,12 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 
 	// 1. Explicit API key provided (from config)
 	if apiKey != "" {
-		return mkProvider(anthropic.NewClient(option.WithAPIKey(apiKey)), "api_key"), nil
+		return mkProvider(mkClient(apiKey), "api_key"), nil
 	}
 
 	// 2. ANTHROPIC_API_KEY environment variable
 	if envKey := os.Getenv("ANTHROPIC_API_KEY"); envKey != "" {
-		return mkProvider(anthropic.NewClient(option.WithAPIKey(envKey)), "env"), nil
+		return mkProvider(mkClient(envKey), "env"), nil
 	}
 
 	return nil, fmt.Errorf("no Anthropic credentials found. Set ANTHROPIC_API_KEY or configure api_key in provider config")

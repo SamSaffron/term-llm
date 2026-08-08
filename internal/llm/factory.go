@@ -424,7 +424,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	switch providerType {
 	case config.ProviderTypeAnthropic:
-		return NewAnthropicProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials)
+		return NewAnthropicProviderWithBaseURL(cfg.ResolvedAPIKey, cfg.Model, cfg.Credentials, cfg.BaseURL)
 
 	case config.ProviderTypeOpenAI:
 		return NewOpenAIProviderWithOptions(cfg.ResolvedAPIKey, cfg.Model, OpenAIProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)}), nil

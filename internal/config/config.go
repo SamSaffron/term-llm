@@ -165,8 +165,10 @@ type ProviderConfig struct {
 	ContextWindow   int `mapstructure:"context_window"`
 	MaxOutputTokens int `mapstructure:"max_output_tokens"`
 
+	// Custom endpoint configuration
+	BaseURL string `mapstructure:"base_url"` // Base URL for Anthropic-compatible or OpenAI-compatible providers
+
 	// OpenAI-compatible specific
-	BaseURL           string `mapstructure:"base_url"`            // Base URL - /chat/completions is appended
 	URL               string `mapstructure:"url"`                 // Full URL - used as-is without appending endpoint
 	NoStreamOptions   bool   `mapstructure:"no_stream_options"`   // Don't send stream_options (for servers that reject it)
 	VLLMThinkingParam string `mapstructure:"vllm_thinking_param"` // vLLM chat_template_kwargs key: "enable_thinking" (Qwen) or "thinking" (DeepSeek)
@@ -198,7 +200,7 @@ type ProviderConfig struct {
 	ResolvedAPIKey string                              `mapstructure:"-"`
 	AccountID      string                              `mapstructure:"-"`
 	OAuthCreds     *credentials.GeminiOAuthCredentials `mapstructure:"-"`
-	ResolvedURL    string                              `mapstructure:"-"` // Resolved URL (after srv:// lookup)
+	ResolvedURL    string                              `mapstructure:"-"` // Resolved full `url` (after srv://, $(), etc.)
 
 	// Resolution tracking - provider credential discovery is deferred until needed,
 	// and expensive values are resolved lazily before inference.
@@ -1907,9 +1909,11 @@ func (cfg *ProviderConfig) ResolveForInference() error {
 
 	var err error
 
-	// Resolve URL fields
+	// Resolve URL fields. Keep a resolved base_url in BaseURL so every provider
+	// that consumes the shared field gets the same lazy endpoint support. ResolvedURL
+	// remains the resolved full `url`, whose routing semantics differ by provider.
 	if needsLazyResolve(cfg.BaseURL) {
-		cfg.ResolvedURL, err = ResolveValue(cfg.BaseURL)
+		cfg.BaseURL, err = ResolveValue(cfg.BaseURL)
 		if err != nil {
 			return fmt.Errorf("base_url: %w", err)
 		}

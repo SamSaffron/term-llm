@@ -20,6 +20,7 @@ var (
 	resolveExecTimeout           = 15 * time.Second
 	resolveExecOutputLimit int64 = 64 << 10
 	resolveExecWaitDelay         = time.Second
+	lookupSRV                    = net.LookupSRV
 )
 
 // ResolveValue handles magic URL schemes in config values:
@@ -94,7 +95,7 @@ func resolveSRV(srvURL string) (string, error) {
 	}
 
 	// Lookup SRV record
-	_, addrs, err := net.LookupSRV("", "", record)
+	_, addrs, err := lookupSRV("", "", record)
 	if err != nil {
 		return "", fmt.Errorf("SRV lookup failed for %s: %w", record, err)
 	}

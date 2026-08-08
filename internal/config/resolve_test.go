@@ -1,12 +1,38 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProviderBaseURLResolvesSRVInPlace(t *testing.T) {
+	// lookupSRV is package-global; keep this test sequential.
+	original := lookupSRV
+	t.Cleanup(func() { lookupSRV = original })
+	lookupSRV = func(service, proto, name string) (string, []*net.SRV, error) {
+		if service != "" || proto != "" || name != "_anthropic._tcp.example.test" {
+			t.Fatalf("LookupSRV(%q, %q, %q)", service, proto, name)
+		}
+		return "", []*net.SRV{{Target: "gateway.example.test.", Port: 8443}}, nil
+	}
+	cfg := &ProviderConfig{BaseURL: "srv://_anthropic._tcp.example.test/anthropic"}
+	if err := resolveProviderCredentials("custom", cfg); err != nil {
+		t.Fatalf("resolveProviderCredentials: %v", err)
+	}
+	if err := cfg.ResolveForInference(); err != nil {
+		t.Fatalf("ResolveForInference: %v", err)
+	}
+	if want := "https://gateway.example.test:8443/anthropic"; cfg.BaseURL != want {
+		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, want)
+	}
+	if cfg.ResolvedURL != "" {
+		t.Fatalf("ResolvedURL = %q, want empty for base_url", cfg.ResolvedURL)
+	}
+}
 
 func TestResolveCommand_TimesOutAndKillsProcessGroup(t *testing.T) {
 	origTimeout := resolveExecTimeout
