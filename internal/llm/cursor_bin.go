@@ -114,6 +114,11 @@ func cursorModelArgument(model, effort string, fast bool) string {
 	}
 	if model == "grok-4.5" {
 		model = "cursor-grok-4.5"
+		// Cursor no longer exposes an effort-less Grok 4.5 model ID. Keep the
+		// convenient base alias and map it to the catalog's default variant.
+		if effort == "" {
+			effort = "high"
+		}
 	}
 	if effort != "" {
 		model += "-" + effort

@@ -40,6 +40,8 @@ func TestParseCursorModel(t *testing.T) {
 func TestCursorModelArgument(t *testing.T) {
 	tests := map[string]string{
 		"auto-smart":              "auto",
+		"grok-4.5":                "cursor-grok-4.5-high",
+		"grok-4.5-fast":           "cursor-grok-4.5-high-fast",
 		"grok-4.5-low":            "cursor-grok-4.5-low",
 		"grok-4.5-high-fast":      "cursor-grok-4.5-high-fast",
 		"composer-2.5":            "composer-2.5",
