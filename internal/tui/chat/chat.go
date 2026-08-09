@@ -203,8 +203,16 @@ type Model struct {
 	newlineCompactor        *ui.StreamingNewlineCompactor
 
 	// External UI state
-	pausedForExternalUI      bool // True when paused for ask_user or approval prompts
-	externalProcessActive    bool // True while Bubble Tea is handing the terminal to /shell
+	pausedForExternalUI   bool // True when paused for ask_user or approval prompts
+	externalProcessActive bool // True while Bubble Tea is handing the terminal to /shell
+
+	// Direct shell mode (`! command`) streams a user-invoked process inside the
+	// managed TUI. It is separate from LLM streaming because it bypasses the
+	// engine/tool approval path and only starts a model turn after the process exits.
+	directShellEligible bool
+	directShellRun      *directShellRun
+	directShellGen      uint64
+
 	approvalMgr              *tools.ApprovalManager
 	requestedApprovalMode    tools.ApprovalMode
 	requestedApprovalChanged bool
@@ -2176,14 +2184,14 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if (m.streaming || m.sideQuestion.Running || m.branchContextInFlight()) && !m.pausedForExternalUI {
+		if (m.streaming || m.directShellRun != nil || m.sideQuestion.Running || m.branchContextInFlight()) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
 		}
 
 	case tickMsg:
-		if m.streaming {
+		if m.streaming || m.directShellRun != nil {
 			cmds = append(cmds, m.tickEvery())
 		}
 
@@ -2215,6 +2223,12 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if msg.seq == m.copyStatusSeq {
 			m.copyStatus = ""
 		}
+
+	case directShellOutputMsg:
+		return m.handleDirectShellOutput(msg)
+
+	case directShellDoneMsg:
+		return m.handleDirectShellDone(msg)
 
 	case shellExitedMsg:
 		m.setShellTerminalHandoff(false)

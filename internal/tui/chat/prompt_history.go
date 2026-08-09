@@ -281,6 +281,9 @@ func memoryPromptText(msg session.Message) (string, bool) {
 	if text == "" || llm.IsInternalCompactionSummaryText(text) {
 		return "", false
 	}
+	if command, ok := directShellCommandFromResult(msg.TextContent); ok {
+		return command, true
+	}
 	return msg.TextContent, true
 }
 
@@ -312,8 +315,12 @@ func (m *Model) applyMemoryPromptHistoryEntry(index int, text string, cursorAtEn
 }
 
 func (m *Model) applyPromptHistoryText(text string, cursorAtEnd bool) {
+	if command, ok := directShellCommandFromResult(text); ok {
+		text = command
+	}
 	m.promptHistory.recalledText = text
 	m.textarea.SetValue(text)
+	m.directShellEligible = strings.HasPrefix(text, "!")
 	if cursorAtEnd {
 		m.textarea.MoveToEnd()
 	} else {

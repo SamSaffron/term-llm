@@ -477,6 +477,9 @@ func (m *Model) ensureContextMessages() {
 }
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	if m.directShellRun != nil {
+		return m.showFooterWarning("Wait for the shell command to finish or press Esc to cancel it.")
+	}
 	// Delegation intent comes only from text deliberately visible in the composer.
 	// Collapsed paste payloads are expanded for the provider after this check, so
 	// hidden pasted prose cannot synthesize an @agent request.
@@ -621,7 +624,14 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 			fmt.Sprintf("[with: %s]", strings.Join(attachmentNames, ", "))))
 	}
 	// tea.Println adds newline, no need for extra
+	return m.beginUserResponse(content, userDisplay.String(), preSendCmds)
+}
 
+// beginUserResponse transitions from a committed user message to the normal
+// assistant stream. Keeping this separate lets direct shell mode persist its
+// own structured, literal command result without re-running composer semantics
+// such as @ mentions, pasted placeholders, or attachment expansion.
+func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea.Cmd) (tea.Model, tea.Cmd) {
 	// Clear input and attachments
 	m.resetPromptHistory()
 	m.setTextareaValue("")
@@ -672,9 +682,8 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.smoothTickPending = false
 	m.streamRenderTickPending = false
 
-	// Start the stream
-	// In alt screen mode, View() renders history including user message
-	// In inline mode, print user message to scrollback first
+	// Start the stream. In alt screen mode, View() renders history including the
+	// user message. Inline mode prints the prepared user turn to scrollback first.
 	if m.altScreen {
 		cmds := []tea.Cmd{
 			m.startStream(content),
@@ -686,7 +695,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	}
 	cmds := []tea.Cmd{
-		tea.Println(userDisplay.String()),
+		tea.Println(userDisplay),
 		m.startStream(content),
 		m.spinner.Tick,
 		m.tickEvery(),

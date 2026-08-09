@@ -117,8 +117,12 @@ func (m *Model) View() (view tea.View) {
 		renderedLines++
 	}
 
-	// Live response/child-agent stream and branch-context preparation.
-	if m.streaming || m.activeSkillRunCount() > 0 {
+	// Live direct-shell output, model/child-agent stream, or branch-context preparation.
+	if m.directShellRun != nil {
+		shellOutput := m.renderDirectShellInline()
+		b.WriteString(shellOutput)
+		renderedLines += lipgloss.Height(shellOutput)
+	} else if m.streaming || m.activeSkillRunCount() > 0 {
 		streaming := m.renderStreamingInline()
 		b.WriteString(streaming)
 		renderedLines += lipgloss.Height(streaming)
@@ -373,6 +377,9 @@ func (m *Model) viewAltScreen() string {
 			}
 		} else {
 			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
+			if m.directShellRun != nil {
+				contentStr += m.renderDirectShellInline()
+			}
 			if m.branchContextInFlight() {
 				contentStr += m.renderBranchPathNotesActivity()
 			}
@@ -419,7 +426,7 @@ func (m *Model) viewAltScreen() string {
 		if m.handoverPreview != nil && m.handoverPreview.editing {
 			m.scrollToBottom = true
 		}
-		if firstRender || ((m.streaming || m.activeSkillRunCount() > 0) && wasAtBottom) || m.scrollToBottom {
+		if firstRender || ((m.streaming || m.directShellRun != nil || m.activeSkillRunCount() > 0) && wasAtBottom) || m.scrollToBottom {
 			m.viewport.GotoBottom()
 			m.scrollToBottom = false
 			m.resizeReflowRestoreAnchor = false
@@ -759,6 +766,25 @@ func (m *Model) buildFooterLayout() footerLayout {
 		appendMetaRow(strings.Join(chips, " "))
 	}
 
+	shellAccent := m.directShellComposerActive() || m.directShellRun != nil
+	if m.directShellRun != nil {
+		appendMetaRow(lipgloss.NewStyle().Foreground(theme.Warning).Bold(true).Render("  ! shell command running · Esc cancels"))
+		m.textarea.Placeholder = "Shell command running…"
+	} else if m.directShellComposerActive() {
+		appendMetaRow(lipgloss.NewStyle().Foreground(theme.Warning).Bold(true).Render("  ! shell mode · runs directly without tool approval"))
+		m.textarea.Placeholder = "Type a shell command…"
+	} else {
+		m.textarea.Placeholder = "Type a message..."
+	}
+	textareaStyles := m.textarea.Styles()
+	promptColor := theme.Primary
+	if shellAccent {
+		promptColor = theme.Warning
+	}
+	textareaStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(promptColor).Bold(true)
+	textareaStyles.Blurred = textareaStyles.Focused
+	m.textarea.SetStyles(textareaStyles)
+
 	textareaView := m.textarea.View()
 	rows = append(rows, textareaView)
 	rows = append(rows, separator)
@@ -853,6 +879,41 @@ func (m *Model) renderMd(text string, width int) string {
 		return ""
 	}
 	return m.renderMarkdown(text)
+}
+
+func (m *Model) renderDirectShellInline() string {
+	run := m.directShellRun
+	if run == nil {
+		return ""
+	}
+	theme := m.styles.Theme()
+	commandStyle := lipgloss.NewStyle().Foreground(theme.Warning).Bold(true)
+	metaStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	outputStyle := lipgloss.NewStyle().Foreground(theme.Text)
+
+	width := max(20, m.width-2)
+	var b strings.Builder
+	b.WriteString(commandStyle.Render("! " + terminaltext.EscapeControlsPreserveLayout(run.command)))
+	b.WriteString("\n")
+	b.WriteString(metaStyle.Render("  in " + terminaltext.EscapeControlsPreserveLayout(run.dir)))
+	b.WriteString("\n")
+	output, _ := run.capture.text()
+	if output == "" {
+		b.WriteString(metaStyle.Render("  (waiting for output)"))
+	} else {
+		for _, line := range strings.Split(wordwrap.String(output, width), "\n") {
+			b.WriteString(outputStyle.Render("  " + line))
+			b.WriteString("\n")
+		}
+	}
+	if run.cancelRequested {
+		if output == "" {
+			b.WriteString("\n")
+		}
+		b.WriteString(metaStyle.Render("  cancelling…"))
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 func (m *Model) renderBranchPathNotesActivity() string {
@@ -1043,6 +1104,7 @@ func (m *Model) updateTextareaHeight() {
 // setTextareaValue sets the textarea value and updates its height for proper wrapping
 func (m *Model) setTextareaValue(s string) {
 	m.textarea.SetValue(s)
+	m.directShellEligible = strings.HasPrefix(s, "!")
 	m.updateTextareaHeight()
 }
 
@@ -1172,6 +1234,9 @@ func (m *Model) renderStatusLine() string {
 	}
 	if m.fastMode {
 		baseSegments = append(baseSegments, seg(successStyle.Render("fast"), 30, false))
+	}
+	if m.directShellComposerActive() {
+		baseSegments = append(baseSegments, seg(warningStyle.Render("shell mode"), 0, true))
 	}
 	if goalText, goalStatus := m.statusLineGoalPart(); goalText != "" {
 		style := mutedStyle
@@ -1457,6 +1522,12 @@ func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string 
 	started := time.Time{}
 	tokens := 0
 	switch {
+	case m.directShellRun != nil:
+		phase = "Running shell · Esc cancels"
+		if m.directShellRun.cancelRequested {
+			phase = "Cancelling shell"
+		}
+		started = m.directShellRun.startedAt
 	case m.streaming:
 		phase = m.phase
 		started = m.streamStartTime
