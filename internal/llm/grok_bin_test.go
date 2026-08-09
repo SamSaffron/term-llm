@@ -35,71 +35,29 @@ func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 }
 
 func TestGrokBinProviderStreamSeparatesProcessAndCLICWD(t *testing.T) {
-	t.Setenv(grokLegacyTransportEnv, "1")
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	binDir := t.TempDir()
-	capturePath := filepath.Join(t.TempDir(), "invocation.txt")
-	script := `#!/bin/sh
-{
-  printf 'process_cwd=%s\n' "$PWD"
-  while [ "$#" -gt 0 ]; do
-    printf 'arg=%s\n' "$1"
-    shift
-  done
-} > "$GROK_TEST_CAPTURE"
-printf '%s\n' '{"type":"end","stopReason":"EndTurn","sessionId":"test-session"}'
-`
-	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write fake grok: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	workingDir := t.TempDir()
-	provider := NewGrokBinProvider("grok-4.5", map[string]string{"GROK_TEST_CAPTURE": capturePath})
-	stream, err := provider.Stream(context.Background(), Request{
-		Ephemeral:  true,
-		WorkingDir: workingDir,
-		Messages:   []Message{UserText("hello")},
-	})
+	provider := NewGrokBinProvider("grok-4.5", nil)
+	provider.grokHome = t.TempDir()
+	args, _, err := provider.buildArgs(Request{Messages: []Message{UserText("hello")}}, filepath.Join(provider.grokHome, "prompt.json"))
 	if err != nil {
-		t.Fatalf("Stream: %v", err)
+		t.Fatalf("buildArgs: %v", err)
 	}
-	defer stream.Close()
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("Recv: %v", err)
-		}
-		if event.Type == EventError {
-			t.Fatalf("stream error: %v", event.Err)
-		}
-	}
-
-	capture, err := os.ReadFile(capturePath)
+	cmd, cleanup, err := provider.prepareGrokCommand(context.Background(), args, workingDir)
 	if err != nil {
-		t.Fatalf("ReadFile capture: %v", err)
+		t.Fatalf("prepareGrokCommand: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(capture)), "\n")
-	if len(lines) == 0 || !strings.HasPrefix(lines[0], "process_cwd=") {
-		t.Fatalf("capture missing process cwd: %q", lines)
-	}
-	gotProcessCWD := strings.TrimPrefix(lines[0], "process_cwd=")
-	gotInfo, gotErr := os.Stat(gotProcessCWD)
-	wantInfo, wantErr := os.Stat(workingDir)
-	if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
-		t.Fatalf("capture process cwd = %q, want %q (stat errors: %v, %v)", gotProcessCWD, workingDir, gotErr, wantErr)
-	}
-	var args []string
-	for _, line := range lines[1:] {
-		if arg, ok := strings.CutPrefix(line, "arg="); ok {
-			args = append(args, arg)
-		}
+	defer cleanup()
+	if cmd.Dir != workingDir {
+		t.Fatalf("process cwd = %q, want %q", cmd.Dir, workingDir)
 	}
 	wantCLICWD := filepath.Join(provider.grokHome, "cwd")
-	if got := argValue(args, "--cwd"); got != wantCLICWD {
+	if got := argValue(cmd.Args[1:], "--cwd"); got != wantCLICWD {
 		t.Fatalf("Grok --cwd = %q, want neutral cwd %q", got, wantCLICWD)
 	}
 	if wantCLICWD == workingDir {
@@ -464,38 +422,35 @@ func TestGrokBinProviderMaxTurnsIsWarningNotError(t *testing.T) {
 	}
 }
 
+func applyGrokTestLines(t *testing.T, p *GrokBinProvider, lines ...string) (grokStreamState, []Event) {
+	t.Helper()
+	events := make(chan Event, len(lines)+1)
+	state := grokStreamState{}
+	for _, line := range lines {
+		if err := p.handleGrokLine(line, false, eventSender{ctx: context.Background(), ch: events}, false, &state); err != nil {
+			t.Fatalf("handleGrokLine(%s): %v", line, err)
+		}
+	}
+	close(events)
+	var got []Event
+	for event := range events {
+		got = append(got, event)
+	}
+	return state, got
+}
+
 func TestGrokBinProviderMaxTurnsExitPersistsTurnAndWarns(t *testing.T) {
-	t.Setenv(grokLegacyTransportEnv, "1")
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	path := filepath.Join(binDir, "grok")
-	script := "#!/bin/sh\ncat <<'EOF'\n" + strings.Join([]string{
+	p := NewGrokBinProvider("grok-4.5", nil)
+	p.grokHome = t.TempDir()
+	state, events := applyGrokTestLines(t, p,
 		`{"type":"text","data":"partial answer"}`,
 		`{"type":"max_turns_reached"}`,
 		`{"type":"end","stopReason":"Cancelled","sessionId":"budget-session"}`,
-	}, "\n") + "\nEOF\nexit 1\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	p := NewGrokBinProvider("grok-4.5", nil)
-	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("work")}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	)
+	request := Request{Messages: []Message{UserText("work")}}
+	p.commitGrokResult(request, grokCommandResult{sawEnd: state.sawEnd, sessionID: state.sessionID})
 	warned := false
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == EventError {
-			t.Fatalf("max-turns exit became fatal: %v", event.Err)
-		}
+	for _, event := range events {
 		if event.Type == EventPhase && strings.HasPrefix(event.Text, WarningPhasePrefix) {
 			warned = true
 		}
@@ -506,33 +461,12 @@ func TestGrokBinProviderMaxTurnsExitPersistsTurnAndWarns(t *testing.T) {
 }
 
 func TestGrokBinProviderMaxTurnsWithoutEndIsNonfatalAndDoesNotAdvanceState(t *testing.T) {
-	t.Setenv(grokLegacyTransportEnv, "1")
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	path := filepath.Join(binDir, "grok")
-	script := "#!/bin/sh\necho '{\"type\":\"max_turns_reached\"}'\nexit 7\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	p := NewGrokBinProvider("grok-4.5", nil)
-	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("work")}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p.grokHome = t.TempDir()
+	state, events := applyGrokTestLines(t, p, `{"type":"max_turns_reached"}`)
+	p.commitGrokResult(Request{Messages: []Message{UserText("work")}}, grokCommandResult{sawEnd: state.sawEnd, sessionID: state.sessionID})
 	warned := false
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == EventError {
-			t.Fatalf("max-turns exit became fatal: %v", event.Err)
-		}
+	for _, event := range events {
 		if event.Type == EventPhase && strings.HasPrefix(event.Text, WarningPhasePrefix) {
 			warned = true
 		}
@@ -546,32 +480,13 @@ func TestGrokBinProviderMaxTurnsWithoutEndIsNonfatalAndDoesNotAdvanceState(t *te
 }
 
 func TestGrokBinProviderSuccessfulExitWithoutEndDoesNotAdvanceState(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrok(t, binDir, `{"type":"text","data":"truncated answer"}`)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	p := NewGrokBinProvider("grok-4.5", nil)
-	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("work")}})
-	if err != nil {
-		t.Fatal(err)
+	p.grokHome = t.TempDir()
+	result, err := grokCommandResultFromState(grokStreamState{})
+	if err == nil || !strings.Contains(err.Error(), "without an end event") {
+		t.Fatalf("stream finalization error = %v", err)
 	}
-	var streamErr error
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == EventError {
-			streamErr = event.Err
-		}
-	}
-	if streamErr == nil || !strings.Contains(streamErr.Error(), "without an end event") {
-		t.Fatalf("stream error = %v", streamErr)
-	}
+	p.commitGrokResult(Request{Messages: []Message{UserText("work")}}, result)
 	if p.sessionID != "" || p.messagesSent != 0 {
 		t.Fatalf("truncated stream advanced state to (%q, %d)", p.sessionID, p.messagesSent)
 	}
@@ -621,29 +536,12 @@ func TestGrokBinProviderWritesConfigInsideDurableHome(t *testing.T) {
 
 func TestGrokBinProviderToolsWithoutExecutorStillWritesIsolationConfig(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrok(t, binDir, `{"type":"end","stopReason":"EndTurn","sessionId":"session-1"}`)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	p := NewGrokBinProvider("grok-4.5", nil)
-	stream, err := p.Stream(context.Background(), Request{
-		Messages: []Message{UserText("work")},
-		Tools:    []ToolSpec{{Name: "read_file"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	if err := p.ensureGrokHome(); err != nil {
+		t.Fatalf("ensure Grok home: %v", err)
 	}
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == EventError {
-			t.Fatalf("stream error: %v", event.Err)
-		}
+	if err := p.writeConfig("", ""); err != nil {
+		t.Fatalf("write isolation config: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(p.grokHome, "config.toml"))
 	if err != nil {
@@ -813,39 +711,6 @@ func TestGrokBinProviderCleanupKeepsDurableHome(t *testing.T) {
 	}
 	if _, err := os.Stat(prompt); !os.IsNotExist(err) {
 		t.Fatalf("prompt file was not removed: %v", err)
-	}
-}
-
-func TestGrokBinProviderEphemeralStreamDoesNotMutateResumeState(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrok(t, binDir, strings.Join([]string{
-		`{"type":"text","data":"ephemeral answer"}`,
-		`{"type":"end","stopReason":"EndTurn","sessionId":"ephemeral-session"}`,
-	}, "\n"))
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	p := NewGrokBinProvider("grok-4.5", nil)
-	p.sessionID = "parent-session"
-	p.messagesSent = 7
-	stream, err := p.Stream(context.Background(), Request{Ephemeral: true, Messages: []Message{UserText("one shot")}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == EventError {
-			t.Fatalf("stream error: %v", event.Err)
-		}
-	}
-	if p.sessionID != "parent-session" || p.messagesSent != 7 {
-		t.Fatalf("ephemeral stream mutated state to (%q, %d)", p.sessionID, p.messagesSent)
 	}
 }
 

@@ -80,10 +80,8 @@ func worktreeTestGitEnv() []string {
 func newGitRepoForWorktreeTest(t *testing.T) string {
 	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repo")
-	cmd := exec.Command("git", "clone", "-q", worktreeTestRepoTemplate, repo)
-	cmd.Env = worktreeTestGitEnv()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("clone git test template: %v\n%s", err, strings.TrimSpace(string(out)))
+	if err := os.CopyFS(repo, os.DirFS(worktreeTestRepoTemplate)); err != nil {
+		t.Fatalf("copy git test template: %v", err)
 	}
 	return repo
 }
@@ -98,6 +96,15 @@ func runGitForWorktreeTest(t *testing.T, dir string, args ...string) string {
 		t.Skipf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
 	}
 	return string(out)
+}
+
+func cleanupWorktreeTest(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove worktree test directory: %v", err)
+		}
+	})
 }
 
 func TestCreateMovesRootChangesIntoNewWorktree(t *testing.T) {
@@ -124,7 +131,7 @@ func TestCreateMovesRootChangesIntoNewWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 
 	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); got != "" {
 		t.Fatalf("root status = %q, want clean", got)
@@ -195,7 +202,7 @@ func TestCreateRetainsRecoveryCopiesWhenRootRestoreFails(t *testing.T) {
 	if len(items) != 1 || items[0].Name != "move-restore-failure" {
 		t.Fatalf("managed worktrees = %+v, want failed worktree retained", items)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), items[0].Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, items[0].Dir)
 	gotMoved, readErr := os.ReadFile(filepath.Join(items[0].Dir, "file.txt"))
 	if readErr != nil {
 		t.Fatalf("ReadFile retained worktree: %v", readErr)
@@ -224,7 +231,7 @@ func TestCreateCopyFilesDoesNotOverwriteMovedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	got, err := os.ReadFile(filepath.Join(wt.Dir, "file.txt"))
 	if err != nil {
 		t.Fatalf("ReadFile moved file: %v", err)
@@ -276,28 +283,20 @@ func TestCreateRestoresUnrelatedStashDroppedByConcurrentChange(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("moved changes\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile tracked: %v", err)
 	}
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("LookPath git: %v", err)
+	injected := false
+	runGitTestHook = func(dir string, args []string) {
+		if injected || len(args) < 2 || args[0] != "stash" || args[1] != "drop" {
+			return
+		}
+		injected = true
+		if err := os.WriteFile(filepath.Join(dir, "concurrent.txt"), []byte("concurrent stash\n"), 0o644); err != nil {
+			t.Fatalf("write concurrent stash file: %v", err)
+		}
+		runGitForWorktreeTest(t, dir, "stash", "push", "--include-untracked", "--message", "concurrent")
 	}
-	wrapperDir := t.TempDir()
-	wrapper := filepath.Join(wrapperDir, "git")
-	marker := filepath.Join(wrapperDir, "injected")
-	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = stash ] && [ \"$2\" = drop ] && [ ! -e \"$TERM_LLM_INJECT_MARKER\" ]; then\n" +
-		"  : > \"$TERM_LLM_INJECT_MARKER\"\n" +
-		"  printf 'concurrent stash\\n' > concurrent.txt\n" +
-		"  \"$TERM_LLM_REAL_GIT\" stash push --include-untracked --message concurrent >/dev/null || exit $?\n" +
-		"fi\n" +
-		"exec \"$TERM_LLM_REAL_GIT\" \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatalf("write git wrapper: %v", err)
-	}
-	t.Setenv("TERM_LLM_REAL_GIT", realGit)
-	t.Setenv("TERM_LLM_INJECT_MARKER", marker)
-	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { runGitTestHook = nil })
 
-	_, err = Create(context.Background(), repo, CreateOptions{Name: "move-stash-race", MoveChanges: true})
+	_, err := Create(context.Background(), repo, CreateOptions{Name: "move-stash-race", MoveChanges: true})
 	if err == nil {
 		t.Fatal("Create succeeded after concurrent stash change, want safe abort")
 	}
@@ -379,7 +378,7 @@ func TestListKeepsDetachedBranchEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	runGitForWorktreeTest(t, wt.Dir, "checkout", "--detach", "-q")
 
 	items, err := List(repo)
@@ -427,7 +426,7 @@ func TestDiffIncludesUntrackedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 
 	if err := os.WriteFile(filepath.Join(wt.Dir, "new.txt"), []byte("hello from untracked\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile new.txt: %v", err)
@@ -449,7 +448,7 @@ func TestMergeBackStagesWorktreeChangesOnRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 
 	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile tracked: %v", err)
@@ -479,7 +478,7 @@ func TestMergeBackRefusesDirtyRootByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 
 	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("worktree change\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile worktree: %v", err)
@@ -587,7 +586,7 @@ func TestPromoteToRootRefusesDirtyRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	if err := os.WriteFile(filepath.Join(repo, "root-only.txt"), []byte("dirty root\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile root dirty: %v", err)
 	}
@@ -612,7 +611,7 @@ func TestPromoteToRootRejectsExistingBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	runGitForWorktreeTest(t, repo, "branch", "already-there")
 
 	_, err = PromoteToRoot(context.Background(), wt.Dir, "already-there", PromoteOptions{})
@@ -628,7 +627,7 @@ func TestPromoteToRootRollsBackAfterCheckoutFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	promoteToRootTestHook = func(stage string) error {
 		if stage == "after-checkout" {
 			return fmt.Errorf("forced promote failure")
@@ -660,7 +659,7 @@ func TestStartAssistedMergeNoChangesLeavesRootUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 
 	res, err := StartAssistedMerge(context.Background(), wt.Dir, AssistedMergeOptions{})
 	if err != nil {
@@ -683,7 +682,7 @@ func TestStartAssistedMergeRefusesDirtyRootWithoutChangingIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	if err := os.WriteFile(filepath.Join(wt.Dir, "source.txt"), []byte("source change\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile worktree: %v", err)
 	}
@@ -713,7 +712,7 @@ func TestStartAssistedMergeAppliesCleanlyOnCurrentRootBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _ = Remove(context.Background(), wt.Dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, wt.Dir)
 	if err := os.WriteFile(filepath.Join(wt.Dir, "assisted.txt"), []byte("applied to root\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile worktree: %v", err)
 	}

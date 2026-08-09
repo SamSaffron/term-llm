@@ -156,7 +156,7 @@ func TestHandleOffer_SetupTimeoutReleasesConnectionSlot(t *testing.T) {
 		},
 		handler:      http.NotFoundHandler(),
 		client:       signaling.Client(),
-		setupTimeout: 500 * time.Millisecond,
+		setupTimeout: 75 * time.Millisecond,
 	}
 
 	firstDone := make(chan struct{})

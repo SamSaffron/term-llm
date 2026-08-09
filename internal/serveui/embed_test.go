@@ -555,6 +555,15 @@ func TestAppRenderJS(t *testing.T) {
 }
 
 func TestAppStreamJS(t *testing.T) {
+	testAppStreamJSShard(t, "0")
+}
+
+func TestAppStreamJSShard2(t *testing.T) {
+	testAppStreamJSShard(t, "1")
+}
+
+func testAppStreamJSShard(t *testing.T, shard string) {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not found in PATH, skipping JS app-stream tests")
@@ -569,10 +578,12 @@ func TestAppStreamJS(t *testing.T) {
 		t.Fatalf("app_stream_test.js not found at %s: %v", script, err)
 	}
 
-	out, err := exec.Command(node, script).CombinedOutput()
+	cmd := exec.Command(node, script)
+	cmd.Env = append(os.Environ(), "TERM_LLM_APP_STREAM_TEST_SHARD="+shard)
+	out, err := cmd.CombinedOutput()
 	t.Log(string(out))
 	if err != nil {
-		t.Fatalf("app_stream_test.js failed: %v", err)
+		t.Fatalf("app_stream_test.js shard %s failed: %v", shard, err)
 	}
 }
 
@@ -599,6 +610,15 @@ func TestAppSidebarJS(t *testing.T) {
 }
 
 func TestAppSessionsJS(t *testing.T) {
+	testAppSessionsJSShard(t, "0")
+}
+
+func TestAppSessionsJSShard2(t *testing.T) {
+	testAppSessionsJSShard(t, "1")
+}
+
+func testAppSessionsJSShard(t *testing.T, shard string) {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not found in PATH, skipping JS app-sessions tests")
@@ -613,10 +633,12 @@ func TestAppSessionsJS(t *testing.T) {
 		t.Fatalf("app_sessions_test.js not found at %s: %v", script, err)
 	}
 
-	out, err := exec.Command(node, script).CombinedOutput()
+	cmd := exec.Command(node, script)
+	cmd.Env = append(os.Environ(), "TERM_LLM_APP_SESSIONS_TEST_SHARD="+shard)
+	out, err := cmd.CombinedOutput()
 	t.Log(string(out))
 	if err != nil {
-		t.Fatalf("app_sessions_test.js failed: %v", err)
+		t.Fatalf("app_sessions_test.js shard %s failed: %v", shard, err)
 	}
 }
 

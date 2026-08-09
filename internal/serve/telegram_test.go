@@ -3511,12 +3511,13 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 
 	provider := newAdmissionOrderProvider()
 	mgr := &telegramSessionMgr{
-		sessions:         make(map[int64]*telegramSession),
-		store:            store,
-		allowedUserIDs:   map[int64]struct{}{7: {}},
-		idleTimeout:      time.Hour,
-		interruptTimeout: time.Second,
-		tickerInterval:   5 * time.Millisecond,
+		sessions:             make(map[int64]*telegramSession),
+		store:                store,
+		allowedUserIDs:       map[int64]struct{}{7: {}},
+		idleTimeout:          time.Hour,
+		interruptTimeout:     time.Second,
+		interruptGracePeriod: 5 * time.Millisecond,
+		tickerInterval:       5 * time.Millisecond,
 		settings: Settings{
 			MaxTurns: 5,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
@@ -3659,11 +3660,12 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 func TestHandleMessage_CancelInterruptIsNotBlockedBySessionMutex(t *testing.T) {
 	provider := newInterruptSequenceProvider()
 	mgr := &telegramSessionMgr{
-		sessions:         make(map[int64]*telegramSession),
-		allowedUserIDs:   map[int64]struct{}{7: {}},
-		idleTimeout:      time.Hour,
-		interruptTimeout: time.Second,
-		tickerInterval:   5 * time.Millisecond,
+		sessions:             make(map[int64]*telegramSession),
+		allowedUserIDs:       map[int64]struct{}{7: {}},
+		idleTimeout:          time.Hour,
+		interruptTimeout:     time.Second,
+		interruptGracePeriod: 5 * time.Millisecond,
+		tickerInterval:       5 * time.Millisecond,
 		settings: Settings{
 			MaxTurns: 5,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
@@ -3723,11 +3725,12 @@ func TestHandleMessage_CancelInterruptIsNotBlockedBySessionMutex(t *testing.T) {
 func TestHandleMessage_PhotoInterruptCancelsAndPreservesImage(t *testing.T) {
 	provider := newInterruptSequenceProvider()
 	mgr := &telegramSessionMgr{
-		sessions:         make(map[int64]*telegramSession),
-		allowedUserIDs:   map[int64]struct{}{7: {}},
-		idleTimeout:      time.Hour,
-		interruptTimeout: time.Second,
-		tickerInterval:   5 * time.Millisecond,
+		sessions:             make(map[int64]*telegramSession),
+		allowedUserIDs:       map[int64]struct{}{7: {}},
+		idleTimeout:          time.Hour,
+		interruptTimeout:     time.Second,
+		interruptGracePeriod: 5 * time.Millisecond,
+		tickerInterval:       5 * time.Millisecond,
 		settings: Settings{
 			MaxTurns: 5,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {

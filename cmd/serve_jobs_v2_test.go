@@ -242,7 +242,7 @@ func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {
 
 	srv := &serveServer{jobsV2: mgr}
 
-	runAt := time.Now().Add(1 * time.Second).UTC().Format(time.RFC3339)
+	runAt := time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
 	body := `{
 		"name":"once-run",
 		"enabled":true,
@@ -297,7 +297,7 @@ func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for one-off job run")
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	jobReq := httptest.NewRequest(http.MethodGet, "/v2/jobs/"+created.ID, nil)

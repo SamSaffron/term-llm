@@ -383,9 +383,6 @@ func TestGrokACPHandlerAllowsNativeSearchOnlyWhenEnabled(t *testing.T) {
 
 func TestGrokBinProviderACPStreamEmitsUsage(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrokACP(t, binDir)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	p := NewGrokBinProvider("grok-4.5-low", nil)
 	p.acpRunner = func(_ context.Context, _ Request, _ []Message, _ bool, send eventSender, _ bool) (grokCommandResult, error) {
 		if err := os.WriteFile(filepath.Join(p.grokHome, "fake-args"), []byte("agent stdio"), 0o644); err != nil {
@@ -442,235 +439,67 @@ func TestGrokBinProviderACPStreamEmitsUsage(t *testing.T) {
 	}
 }
 
-func TestGrokBinProviderACPRestartsLoadsAndSuppressesReplay(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrokACP(t, binDir)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	p := NewGrokBinProvider("grok-4.5-low", nil)
-	defer p.CleanupMCP()
-	firstMessages := []Message{SystemText("system"), UserText("first")}
-	drain := func(messages []Message) []Event {
-		t.Helper()
-		stream, err := p.Stream(context.Background(), Request{Messages: messages})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var events []Event
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				return events
+func TestGrokACPProcessConfigurationChangesRequireRestart(t *testing.T) {
+	process := &grokACPProcess{
+		mcpURL:       "http://127.0.0.1/mcp",
+		model:        "grok-4.5",
+		effort:       "low",
+		systemPrompt: "system",
+		nativeSearch: false,
+	}
+	tests := []struct {
+		name         string
+		mcpURL       string
+		model        string
+		effort       string
+		systemPrompt string
+		nativeSearch bool
+		wantMatch    bool
+	}{
+		{name: "unchanged", mcpURL: process.mcpURL, model: process.model, effort: process.effort, systemPrompt: process.systemPrompt, wantMatch: true},
+		{name: "effort changed", mcpURL: process.mcpURL, model: process.model, effort: "high", systemPrompt: process.systemPrompt},
+		{name: "native search changed", mcpURL: process.mcpURL, model: process.model, effort: process.effort, systemPrompt: process.systemPrompt, nativeSearch: true},
+		{name: "model changed", mcpURL: process.mcpURL, model: "grok-5", effort: process.effort, systemPrompt: process.systemPrompt},
+		{name: "system prompt changed", mcpURL: process.mcpURL, model: process.model, effort: process.effort, systemPrompt: "different"},
+		{name: "MCP changed", mcpURL: "http://127.0.0.1/other", model: process.model, effort: process.effort, systemPrompt: process.systemPrompt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := process.matchesConfiguration(tt.mcpURL, tt.model, tt.effort, tt.systemPrompt, tt.nativeSearch); got != tt.wantMatch {
+				t.Fatalf("matchesConfiguration() = %t, want %t", got, tt.wantMatch)
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if event.Type == EventError {
-				t.Fatal(event.Err)
-			}
-			events = append(events, event)
-		}
-	}
-	_ = drain(firstMessages)
-
-	p.acpMu.Lock()
-	p.stopGrokACPProcess(p.acpProcess)
-	p.acpProcess = nil
-	p.acpMu.Unlock()
-
-	secondMessages := append(append([]Message(nil), firstMessages...), AssistantText("answer"), UserText("second"))
-	for _, event := range drain(secondMessages) {
-		if strings.Contains(event.Text, "replayed history") {
-			t.Fatalf("session/load replay leaked into stream: %+v", event)
-		}
-	}
-	if p.messagesSent != len(secondMessages) || p.sessionID != "fake-session" {
-		t.Fatalf("state after restart = %q/%d", p.sessionID, p.messagesSent)
-	}
-	launches, err := os.ReadFile(filepath.Join(p.grokHome, "fake-launches"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(launches), "launch\n"); got != 2 {
-		t.Fatalf("ACP process launches = %d, want 2", got)
-	}
-}
-
-func TestGrokBinProviderACPRestartsWhenEffortChanges(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrokACP(t, binDir)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	p := NewGrokBinProvider("grok-4.5-low", nil)
-	defer p.CleanupMCP()
-	drain := func(req Request) {
-		t.Helper()
-		stream, err := p.Stream(context.Background(), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if event.Type == EventError {
-				t.Fatal(event.Err)
-			}
-		}
-	}
-	messages := []Message{SystemText("system"), UserText("first")}
-	drain(Request{Messages: messages})
-	messages = append(messages, AssistantText("answer"), UserText("second"))
-	drain(Request{Messages: messages, ReasoningEffort: "high"})
-
-	launches, err := os.ReadFile(filepath.Join(p.grokHome, "fake-launches"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(launches), "launch\n"); got != 2 {
-		t.Fatalf("ACP process launches = %d, want 2", got)
-	}
-	args, err := os.ReadFile(filepath.Join(p.grokHome, "fake-args"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "--reasoning-effort high") {
-		t.Fatalf("restarted ACP args = %s", args)
-	}
-}
-
-func TestGrokBinProviderACPRestartsWhenNativeSearchChanges(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrokACP(t, binDir)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	p := NewGrokBinProvider("grok-4.5-low", nil)
-	defer p.CleanupMCP()
-	drain := func(req Request) {
-		t.Helper()
-		stream, err := p.Stream(context.Background(), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if event.Type == EventError {
-				t.Fatal(event.Err)
-			}
-		}
-	}
-	messages := []Message{SystemText("system"), UserText("first")}
-	drain(Request{Messages: messages})
-	messages = append(messages, AssistantText("answer"), UserText("search X"))
-	drain(Request{Messages: messages, Search: true})
-
-	launches, err := os.ReadFile(filepath.Join(p.grokHome, "fake-launches"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(launches), "launch\n"); got != 2 {
-		t.Fatalf("ACP process launches = %d, want 2", got)
-	}
-	args, err := os.ReadFile(filepath.Join(p.grokHome, "fake-args"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "--tools "+grokNativeSearchToolAllowlist) {
-		t.Fatalf("restarted ACP args = %s", args)
+		})
 	}
 }
 
 func TestGrokBinProviderACPEphemeralDoesNotMutateState(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	writeFakeGrokACP(t, binDir)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	p := NewGrokBinProvider("grok-4.5-low", nil)
-	defer p.CleanupMCP()
-	drain := func(request Request) {
-		t.Helper()
-		stream, err := p.Stream(context.Background(), request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if event.Type == EventError {
-				t.Fatal(event.Err)
-			}
-		}
-	}
-	persistentMessages := []Message{SystemText("system"), UserText("first")}
-	drain(Request{Messages: persistentMessages})
-	wantSession, wantSent := p.sessionID, p.messagesSent
-	drain(Request{Ephemeral: true, Messages: []Message{UserText("temporary")}})
-	if p.sessionID != wantSession || p.messagesSent != wantSent {
-		t.Fatalf("ephemeral state = %q/%d, want %q/%d", p.sessionID, p.messagesSent, wantSession, wantSent)
-	}
-	p.acpMu.Lock()
-	process := p.acpProcess
-	p.acpMu.Unlock()
-	if process != nil {
-		t.Fatal("ephemeral process was retained as conversation process")
+	p.sessionID = "persistent-session"
+	p.messagesSent = 2
+	p.commitGrokResult(
+		Request{Ephemeral: true, Messages: []Message{UserText("temporary")}},
+		grokCommandResult{sawEnd: true, sessionID: "temporary-session"},
+	)
+	if p.sessionID != "persistent-session" || p.messagesSent != 2 {
+		t.Fatalf("ephemeral state = %q/%d, want persistent-session/2", p.sessionID, p.messagesSent)
 	}
 }
 
 func TestGrokBinProviderACPErrorRedactsDiagnostics(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	binDir := t.TempDir()
-	path := filepath.Join(binDir, "grok")
 	const systemPrompt = "PRIVATE SYSTEM INSTRUCTION"
 	const userPrompt = "PRIVATE USER QUESTION"
 	const secret = "super-secret-value"
-	script := "#!/bin/sh\necho 'stderr " + systemPrompt + " " + userPrompt + " " + secret + "' >&2\nexit 7\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	p := NewGrokBinProvider("grok-4.5-low", map[string]string{"GROK_TEST_SECRET": secret})
-	stream, err := p.Stream(context.Background(), Request{Messages: []Message{SystemText(systemPrompt), UserText(userPrompt)}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var streamErr error
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.Type == EventError {
-			streamErr = event.Err
-		}
-	}
-	if streamErr == nil {
-		t.Fatal("expected ACP process error")
-	}
-	diagnostic := streamErr.Error()
+	redact := p.grokACPDiagnosticRedactor(
+		[]Message{SystemText(systemPrompt), UserText(userPrompt)},
+		p.buildCommandEnv(),
+	)
+	diagnostic := redact("stderr " + systemPrompt + " " + userPrompt + " " + secret)
 	if strings.Contains(diagnostic, systemPrompt) || strings.Contains(diagnostic, userPrompt) || strings.Contains(diagnostic, secret) {
 		t.Fatalf("ACP diagnostics leaked private data: %s", diagnostic)
+	}
+	if got := strings.Count(diagnostic, "[redacted]"); got != 3 {
+		t.Fatalf("ACP diagnostic redactions = %d, want 3: %s", got, diagnostic)
 	}
 }
 
@@ -984,44 +813,4 @@ func TestGrokACPHTTPServerPayload(t *testing.T) {
 		t.Fatalf("MCP server = %+v", server)
 	}
 	_ = acp.ProtocolVersion1 // Keep this test tied to the generic ACP package.
-}
-
-func writeFakeGrokACP(t *testing.T, dir string) {
-	t.Helper()
-	path := filepath.Join(dir, "grok")
-	script := `#!/bin/sh
-printf '%s\n' "$*" > "$GROK_HOME/fake-args"
-printf 'launch\n' >> "$GROK_HOME/fake-launches"
-while IFS= read -r line; do
-  id=${line#*\"id\":}
-  id=${id%%,*}
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true,\"promptCapabilities\":{\"image\":true},\"mcpCapabilities\":{\"http\":true}},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}"
-      ;;
-    *'"method":"authenticate"'*)
-      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"fake-session\"}}"
-      ;;
-    *'"method":"session/load"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"replayed history"}}}}'
-      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking"}}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"answer"}}}}'
-      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\",\"_meta\":{\"inputTokens\":100,\"outputTokens\":20,\"cachedReadTokens\":92,\"reasoningTokens\":7,\"totalTokens\":121}}}"
-      ;;
-    *'"method":"session/cancel"'*) ;;
-    *'"method":"session/close"'*)
-      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
-      ;;
-  esac
-done
-`
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
 }

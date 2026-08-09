@@ -17,10 +17,8 @@ import (
 func newGitRepoForBindingTest(t *testing.T) string {
 	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repo")
-	cmd := exec.Command("git", "clone", "-q", bindingTestRepoTemplate, repo)
-	cmd.Env = bindingTestGitEnv()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("clone git test template: %v\n%s", err, strings.TrimSpace(string(out)))
+	if err := os.CopyFS(repo, os.DirFS(bindingTestRepoTemplate)); err != nil {
+		t.Fatalf("copy git test template: %v", err)
 	}
 	return repo
 }

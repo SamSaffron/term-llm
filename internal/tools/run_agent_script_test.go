@@ -202,9 +202,17 @@ func TestRunAgentScriptTool_ScriptPathWithSpaces(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("mkdir agent dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(agentDir, "echo.sh"), []byte("#!/bin/sh\necho spaced\n"), 0755); err != nil {
+	scriptPath := filepath.Join(agentDir, "echo.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho spaced\n"), 0755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
+	var executedPath string
+	runAgentScriptCommand = func(_ context.Context, script string, _ []string, _ string, stdout, _ *limitedBuffer) error {
+		executedPath = script
+		_, _ = stdout.Write([]byte("spaced\n"))
+		return nil
+	}
+	t.Cleanup(func() { runAgentScriptCommand = executeAgentScriptCommand })
 
 	cfg := &ToolConfig{AgentDir: agentDir}
 	tool := NewRunAgentScriptTool(cfg, DefaultOutputLimits())
@@ -213,6 +221,9 @@ func TestRunAgentScriptTool_ScriptPathWithSpaces(t *testing.T) {
 	output, err := tool.Execute(context.Background(), args)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
+	}
+	if executedPath != scriptPath {
+		t.Fatalf("executed script path = %q, want %q", executedPath, scriptPath)
 	}
 	if !strings.Contains(output.Content, "spaced") {
 		t.Fatalf("expected script in spaced path to run, got: %s", output.Content)

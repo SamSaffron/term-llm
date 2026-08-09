@@ -3,7 +3,23 @@
 
 const { Element, assert, response, loadSource, vm } = require('../testdata/completions_harness.js');
 const source = loadSource('slash-commands.js');
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let nextTimerID = 1;
+const timers = new Map();
+const fakeSetTimeout = (callback) => {
+  const id = nextTimerID++;
+  timers.set(id, callback);
+  return id;
+};
+const fakeClearTimeout = (id) => timers.delete(id);
+const flushMicrotasks = async () => {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+};
+const runScheduledTimers = async () => {
+  const callbacks = [...timers.values()];
+  timers.clear();
+  callbacks.forEach((callback) => callback());
+  await flushMicrotasks();
+};
 
 async function main() {
   const promptInput = new Element();
@@ -29,7 +45,7 @@ async function main() {
   };
   const window = { TermLLMApp: app };
   vm.runInNewContext(source, {
-    window, document, console, setTimeout, clearTimeout, AbortController, fetch: () => {},
+    window, document, console, setTimeout: fakeSetTimeout, clearTimeout: fakeClearTimeout, AbortController, fetch: () => {},
   }, { filename: 'slash-commands.js' });
 
   fetchImpl = async (url, options) => {
@@ -50,7 +66,7 @@ async function main() {
   promptInput.selectionStart = 11;
   promptInput.selectionEnd = 11;
   promptInput.dispatch('input');
-  await wait(70);
+  await runScheduledTimers();
   assert(requests.length === 1, `expected one mention request, got ${requests.length}`);
   assert(requests[0].url === '/chat/v1/mentions/search', `unexpected mention URL: ${requests[0].url}`);
   const body = JSON.parse(requests[0].options.body);
@@ -68,7 +84,7 @@ async function main() {
   assert(up.defaultPrevented && up.immediatePropagationStopped, 'ArrowUp did not stay owned by the completion menu');
   assert(promptInput.focused, 'ArrowUp moved focus away from the composer');
   assert(promptInput.attributes['aria-activedescendant'] === 'composer-completion-1', 'ArrowUp did not wrap to the final result');
-  await wait(70);
+  await runScheduledTimers();
   assert(requests.length === requestCountBeforeNavigation, 'ArrowUp incorrectly restarted mention search');
   promptInput.dispatch('keydown', { key: 'ArrowDown' });
 
@@ -82,7 +98,7 @@ async function main() {
   promptInput.value = 'mail@example.com';
   promptInput.selectionStart = promptInput.value.length;
   promptInput.dispatch('input');
-  await wait(70);
+  await runScheduledTimers();
   assert(requests.length === 0 && slashCommandMenu.hidden, 'email address incorrectly triggered project mentions');
 
   fetchImpl = async (_url, options) => {
@@ -97,7 +113,7 @@ async function main() {
   promptInput.value = '@';
   promptInput.selectionStart = 1;
   promptInput.dispatch('input');
-  await wait(70);
+  await runScheduledTimers();
   const bareEnter = promptInput.dispatch('keydown', { key: 'Enter' });
   assert(!bareEnter.defaultPrevented && promptInput.value === '@', 'Enter on bare @ should submit instead of selecting a file');
   app.invalidateMentionCompletions();
@@ -107,7 +123,7 @@ async function main() {
   promptInput.value = '@a';
   promptInput.selectionStart = 2;
   promptInput.dispatch('input');
-  await wait(60);
+  await runScheduledTimers();
   assert(pending.length === 1, `expected initial controlled search, got ${pending.length}`);
   pending[0].resolve(response({
     active: true,
@@ -117,11 +133,11 @@ async function main() {
       { path: 'ancient.md', kind: 'file', insert_text: '@ancient.md', segments: [] },
     ],
   }));
-  await wait(0);
+  await flushMicrotasks();
   promptInput.value = '@ab';
   promptInput.selectionStart = 3;
   promptInput.dispatch('input');
-  await wait(60);
+  await runScheduledTimers();
   assert(pending.length === 2, `expected refresh search, got ${pending.length}`);
   const staleUp = promptInput.dispatch('keydown', { key: 'ArrowUp' });
   const staleTab = promptInput.dispatch('keydown', { key: 'Tab' });
@@ -132,29 +148,29 @@ async function main() {
     token: { start_utf16: 0, end_utf16: 3, query: 'ab', quoted: false },
     items: [{ path: 'about.md', kind: 'file', insert_text: '@about.md', segments: [] }],
   }));
-  await wait(0);
+  await flushMicrotasks();
 
   promptInput.value = '@abc';
   promptInput.selectionStart = 4;
   promptInput.dispatch('input');
-  await wait(60);
+  await runScheduledTimers();
   promptInput.value = '@abcd';
   promptInput.selectionStart = 5;
   promptInput.dispatch('input');
-  await wait(60);
+  await runScheduledTimers();
   assert(pending.length === 4, `expected two generation-controlled searches, got ${pending.length}`);
   pending[3].resolve(response({
     active: true,
     token: { start_utf16: 0, end_utf16: 5, query: 'abcd', quoted: false },
     items: [{ path: 'abcd.md', kind: 'file', insert_text: '@abcd.md', segments: [] }],
   }));
-  await wait(0);
+  await flushMicrotasks();
   pending[2].resolve(response({
     active: true,
     token: { start_utf16: 0, end_utf16: 4, query: 'abc', quoted: false },
     items: [{ path: 'ancient.md', kind: 'file', insert_text: '@ancient.md', segments: [] }],
   }));
-  await wait(0);
+  await flushMicrotasks();
   assert(slashCommandMenu.children[0].children[0].textContent === 'abcd.md', 'stale mention response replaced newer results');
 
   app.state.draftSessionActive = true;

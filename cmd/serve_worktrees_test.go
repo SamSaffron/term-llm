@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -256,7 +255,6 @@ func TestServeWorktreeMergeInUseReturnsCleanup(t *testing.T) {
 }
 
 func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
-	t.Parallel()
 
 	repo := newGitRepoForBindingTest(t)
 
@@ -359,7 +357,6 @@ func TestServeWorktreeMergeConflictReturnsRicherResult(t *testing.T) {
 }
 
 func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
-	t.Parallel()
 
 	repo := newGitRepoForBindingTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "promote-api"})
@@ -395,18 +392,12 @@ func TestServeWorktreePromoteReturnsRootResult(t *testing.T) {
 }
 
 func TestServeWorktreeHandlersRejectUnmanagedDir(t *testing.T) {
-	t.Parallel()
 
 	repo := newGitRepoForBindingTest(t)
 
 	externalDir := filepath.Join(t.TempDir(), "external-worktree")
 	runGitForBindingTest(t, repo, "worktree", "add", "--detach", externalDir, "HEAD")
-	t.Cleanup(func() {
-		cmd := exec.Command("git", "worktree", "remove", "--force", externalDir)
-		cmd.Dir = repo
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
-		_ = cmd.Run()
-	})
+	t.Cleanup(func() { _ = os.RemoveAll(externalDir) })
 
 	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 	tests := []struct {
@@ -450,7 +441,6 @@ func TestServeWorktreeHandlersRejectUnmanagedDir(t *testing.T) {
 }
 
 func TestServeWorktreeHandlersRejectForeignManagedDir(t *testing.T) {
-	t.Parallel()
 
 	repo := newGitRepoForBindingTest(t)
 	foreignRepo := newGitRepoForBindingTest(t)
@@ -458,9 +448,7 @@ func TestServeWorktreeHandlersRejectForeignManagedDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create foreign worktree: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = worktree.Remove(context.Background(), foreignWT.Dir, worktree.RemoveOptions{Force: true})
-	})
+	t.Cleanup(func() { _ = os.RemoveAll(foreignWT.Dir) })
 
 	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
 	req := httptest.NewRequest(http.MethodGet, "/v1/worktrees/diff?dir="+url.QueryEscape(foreignWT.Dir), nil)

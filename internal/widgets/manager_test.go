@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -21,8 +22,7 @@ import (
 )
 
 func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
-	t.Run("descendant process group", func(t *testing.T) {
-		t.Parallel()
+	t.Run("entire process group", func(t *testing.T) {
 		testWidgetStopProcessReapsChildProcessGroup(t)
 	})
 }
@@ -32,50 +32,48 @@ func testWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 		t.Skip("process groups are Unix-specific")
 	}
 
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "wrapper.sh")
-	script := "#!/bin/sh\n\"$1\" -test.run=TestWidgetChildHTTPServer -- \"$2\" >/dev/null 2>&1 &\nwait\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("write wrapper: %v", err)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep executable unavailable: %v", err)
 	}
+	leader := exec.Command(sleep, "60")
+	leader.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := leader.Start(); err != nil {
+		t.Fatalf("start process-group leader: %v", err)
+	}
+	leaderDone := make(chan struct{})
+	go func() {
+		_ = leader.Wait()
+		close(leaderDone)
+	}()
+
+	member := exec.Command(sleep, "60")
+	member.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: leader.Process.Pid}
+	if err := member.Start(); err != nil {
+		_ = leader.Process.Kill()
+		<-leaderDone
+		t.Fatalf("start process-group member: %v", err)
+	}
+	memberDone := make(chan struct{})
+	go func() {
+		_ = member.Wait()
+		close(memberDone)
+	}()
 
 	e := &widgetEntry{
-		manifest: &Manifest{
-			ID:      "test-widget",
-			Title:   "Test Widget",
-			Mount:   "test-widget",
-			Dir:     dir,
-			Command: []string{scriptPath, os.Args[0], "$PORT"},
-		},
-		state: stateStopped,
+		manifest: &Manifest{ID: "test-widget", Mount: "test-widget", Dir: t.TempDir()},
+		state:    stateRunning,
+		proc:     leader.Process,
+		procDone: leaderDone,
 	}
-
-	if err := e.startProcess(context.Background(), "/chat"); err != nil {
-		t.Fatalf("startProcess: %v", err)
-	}
-
-	e.mu.Lock()
-	port := e.port
-	e.mu.Unlock()
-	if port == 0 {
-		t.Fatal("widget did not record a port")
-	}
-
 	e.stopProcess()
 
-	client := &http.Client{Timeout: 200 * time.Millisecond}
-	url := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(url)
-		if err != nil {
-			return
-		}
-		resp.Body.Close()
-		time.Sleep(50 * time.Millisecond)
+	select {
+	case <-memberDone:
+	case <-time.After(100 * time.Millisecond):
+		_ = member.Process.Kill()
+		t.Fatal("widget process-group member survived stop")
 	}
-
-	t.Fatalf("widget child process still serving after stop on %s", url)
 }
 
 func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {

@@ -350,15 +350,20 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 				return err
 			}
 		}
-		if !req.Ephemeral && result.sawEnd {
-			if result.sessionID != "" {
-				p.sessionID = result.sessionID
-			}
-			p.messagesSent = len(req.Messages)
-			p.touchGrokHome()
-		}
+		p.commitGrokResult(req, result)
 		return send.Send(Event{Type: EventDone})
 	}), nil
+}
+
+func (p *GrokBinProvider) commitGrokResult(req Request, result grokCommandResult) {
+	if req.Ephemeral || !result.sawEnd {
+		return
+	}
+	if result.sessionID != "" {
+		p.sessionID = result.sessionID
+	}
+	p.messagesSent = len(req.Messages)
+	p.touchGrokHome()
 }
 
 func (p *GrokBinProvider) messagesForRequest(req Request) ([]Message, error) {
@@ -682,6 +687,10 @@ func (p *GrokBinProvider) runGrokCommand(
 			return grokCommandResult{}, p.userFacingGrokCommandError(commandErr)
 		}
 	}
+	return grokCommandResultFromState(state)
+}
+
+func grokCommandResultFromState(state grokStreamState) (grokCommandResult, error) {
 	if !state.sawEnd {
 		if state.maxTurnsReached {
 			return grokCommandResult{}, nil

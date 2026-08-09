@@ -625,6 +625,10 @@ promptComplete:
 	return grokCommandResult{sawEnd: true, sessionID: process.sessionID}, nil
 }
 
+func (p *grokACPProcess) matchesConfiguration(mcpURL, model, effort, systemPrompt string, nativeSearch bool) bool {
+	return p != nil && p.mcpURL == mcpURL && p.model == model && p.effort == effort && p.systemPrompt == systemPrompt && p.nativeSearch == nativeSearch
+}
+
 func (p *GrokBinProvider) ensureGrokACPProcess(ctx context.Context, req Request, debug bool) (*grokACPProcess, bool, error) {
 	if req.Ephemeral {
 		// Do not run two Grok processes against the same durable GROK_HOME.
@@ -650,7 +654,7 @@ func (p *GrokBinProvider) ensureGrokACPProcess(ctx context.Context, req Request,
 			p.stopGrokACPProcess(p.acpProcess)
 			p.acpProcess = nil
 		default:
-			if p.acpProcess.mcpURL == p.mcpURL && p.acpProcess.model == requestedModel && p.acpProcess.effort == requestedEffort && p.acpProcess.systemPrompt == requestedSystemPrompt && p.acpProcess.nativeSearch == req.Search {
+			if p.acpProcess.matchesConfiguration(p.mcpURL, requestedModel, requestedEffort, requestedSystemPrompt, req.Search) {
 				return p.acpProcess, false, nil
 			}
 			p.stopGrokACPProcess(p.acpProcess)

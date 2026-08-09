@@ -53,13 +53,24 @@ func TestInteractiveWith(t *testing.T) {
 }
 
 func TestOutputInteractiveWith(t *testing.T) {
-	isTerminal := func(fd int) bool { return fd == int(os.Stderr.Fd()) }
-	getenv := func(string) string { return "" }
-	if !OutputInteractiveWith(os.Stderr, isTerminal, getenv) {
-		t.Fatal("terminal stderr should be interactive output")
+	terminalOutput, err := os.CreateTemp(t.TempDir(), "terminal-output")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if OutputInteractiveWith(os.Stdout, isTerminal, getenv) {
-		t.Fatal("captured stdout should not be interactive output")
+	defer terminalOutput.Close()
+	capturedOutput, err := os.CreateTemp(t.TempDir(), "captured-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capturedOutput.Close()
+
+	isTerminal := func(fd int) bool { return fd == int(terminalOutput.Fd()) }
+	getenv := func(string) string { return "" }
+	if !OutputInteractiveWith(terminalOutput, isTerminal, getenv) {
+		t.Fatal("terminal output should be interactive")
+	}
+	if OutputInteractiveWith(capturedOutput, isTerminal, getenv) {
+		t.Fatal("captured output should not be interactive")
 	}
 	ciEnv := func(name string) string {
 		if name == "CI" {
@@ -67,7 +78,7 @@ func TestOutputInteractiveWith(t *testing.T) {
 		}
 		return ""
 	}
-	if OutputInteractiveWith(os.Stderr, isTerminal, ciEnv) {
+	if OutputInteractiveWith(terminalOutput, isTerminal, ciEnv) {
 		t.Fatal("CI output should not be interactive")
 	}
 }

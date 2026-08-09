@@ -47,6 +47,7 @@ const telegramBotAPIRequestTimeout = 30 * time.Second
 const telegramUpdateLongPollSeconds = 60
 const telegramBotAPILongPollTimeout = (telegramUpdateLongPollSeconds * time.Second) + 10*time.Second
 const telegramSessionShutdownFallbackTimeout = 5 * time.Second
+const telegramInterruptGracePeriod = 500 * time.Millisecond
 
 var telegramRunnerCleanupTimeout = runpkg.DefaultRunnerCleanupTimeout
 
@@ -636,16 +637,17 @@ type telegramSession struct {
 
 // telegramSessionMgr manages per-chat sessions.
 type telegramSessionMgr struct {
-	mu               sync.Mutex
-	sessions         map[int64]*telegramSession
-	cfg              *config.Config
-	settings         Settings
-	store            session.Store
-	idleTimeout      time.Duration
-	interruptTimeout time.Duration
-	allowedUserIDs   map[int64]struct{}
-	allowedUsernames map[string]struct{}
-	messageSlots     chan struct{}
+	mu                   sync.Mutex
+	sessions             map[int64]*telegramSession
+	cfg                  *config.Config
+	settings             Settings
+	store                session.Store
+	idleTimeout          time.Duration
+	interruptTimeout     time.Duration
+	interruptGracePeriod time.Duration
+	allowedUserIDs       map[int64]struct{}
+	allowedUsernames     map[string]struct{}
+	messageSlots         chan struct{}
 
 	admissionMu       sync.Mutex
 	messageAdmissions map[int64]chan struct{}
@@ -1022,6 +1024,13 @@ func closeTelegramSession(sess *telegramSession) {
 
 func (m *telegramSessionMgr) closeTelegramSession(sess *telegramSession) {
 	closeTelegramSessionWithTimeout(sess, m.sessionShutdownTimeout())
+}
+
+func (m *telegramSessionMgr) interruptGrace() time.Duration {
+	if m != nil && m.interruptGracePeriod > 0 {
+		return m.interruptGracePeriod
+	}
+	return telegramInterruptGracePeriod
 }
 
 func (m *telegramSessionMgr) sessionShutdownTimeout() time.Duration {
@@ -1488,7 +1497,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		select {
 		case <-doneCh:
 			// Stream finished naturally within the grace period.
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(m.interruptGrace()):
 			sess.cancelMu.Lock()
 			activity := llm.InterruptActivity{
 				CurrentTask: strings.TrimSpace(sess.currentTask),

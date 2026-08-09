@@ -69,7 +69,7 @@ func TestMergeBackAndCleanup(t *testing.T) {
 				t.Fatalf("Create: %v", err)
 			}
 			dir := wt.Dir
-			t.Cleanup(func() { _ = Remove(context.Background(), dir, RemoveOptions{Force: true}) })
+			cleanupWorktreeTest(t, dir)
 			if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("cleanup test\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile: %v", err)
 			}
@@ -128,7 +128,7 @@ func TestMergeBackAndCleanupConflictKeepsWorktree(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	dir := wt.Dir
-	t.Cleanup(func() { _ = Remove(context.Background(), dir, RemoveOptions{Force: true}) })
+	cleanupWorktreeTest(t, dir)
 
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root changed\n"), 0o644); err != nil {
 		t.Fatal(err)
