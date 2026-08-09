@@ -99,7 +99,8 @@ promptInput.value = '/';
 promptInput.dispatch('input');
 const streamingNames = slashCommandMenu.children.map((option) => option.children[0].textContent);
 assert(streamingNames.includes('/review [scope]'), `isolated skill missing while streaming: ${JSON.stringify(streamingNames)}`);
-assert(streamingNames.includes('/side'), `streaming-safe built-in missing: ${JSON.stringify(streamingNames)}`);
-assert(!streamingNames.includes('/explain') && !streamingNames.includes('/compact'), `unsafe entries shown while streaming: ${JSON.stringify(streamingNames)}`);
+assert(streamingNames.includes('/side'), `streaming-safe /side missing: ${JSON.stringify(streamingNames)}`);
+assert(streamingNames.includes('/tree'), `streaming-safe /tree missing: ${JSON.stringify(streamingNames)}`);
+assert(!streamingNames.includes('/explain') && !streamingNames.includes('/compact') && !streamingNames.includes('/undo'), `unsafe entries shown while streaming: ${JSON.stringify(streamingNames)}`);
 
 console.log('PASS: slash command discovery and keyboard completion');

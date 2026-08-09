@@ -7201,10 +7201,16 @@ async function testConversationBranchTreeOpensAndSwitchesPaths() {
 }
 
 async function testConversationBranchPendingSelectionUsesDurableBoundaries() {
-  const name = 'conversation branch creates and navigates to a child immediately';
+  const name = 'conversation branch detaches from an active source and preserves its run ownership';
+  let resumeCalls = 0;
   const { app, windowObj } = await createSessionsHarness({
-    appOverrides: { renderMessages() {}, refreshActiveSessionMessagesFromServer: async () => {} },
+    appOverrides: {
+      renderMessages() {},
+      refreshActiveSessionMessagesFromServer: async () => {},
+      resumeActiveResponse: async () => { resumeCalls += 1; },
+    },
   });
+  const activeResponseId = 'resp_branch_source_active';
   const session = {
     id: 'branch_pending_source',
     title: 'Branch pending',
@@ -7214,17 +7220,39 @@ async function testConversationBranchPendingSelectionUsesDurableBoundaries() {
       { id: 'tools1', role: 'tool-group', content: '', durable: true, durableSourceRowIds: [73] },
       { id: 'u2', role: 'user', content: 'edit me', durable: true, durableSourceRowIds: [74] },
     ],
-    lastResponseId: 'resp_msg_74',
-    activeResponseId: null,
+    lastResponseId: 'resp_msg_72',
+    activeResponseId,
+    lastSequenceNumber: 17,
   };
   session.transcript = new windowObj.TermLLMConversation.ConversationController(session.id);
   session.transcript.publishedMessages = session.messages.slice();
+  session.transcript.rev = 9;
   app.state.sessions = [session];
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
+  app.state.streaming = true;
+  app.state.currentStreamSessionId = session.id;
+  app.state.currentStreamResponseId = activeResponseId;
+  app.state.abortController = { abort() {} };
+  app.setSessionOptimisticBusy(session, true);
+  app.setSessionServerActiveRun(session, true);
+  app.detachResponseStream = () => {
+    app.state.abortController?.abort?.();
+    app.state.abortController = null;
+    app.state.currentStreamSessionId = '';
+    app.state.currentStreamResponseId = '';
+    app.state.streaming = false;
+  };
   app.elements.promptInput.value = 'unrelated draft';
-  app.apiFetch = async (url) => {
+  let branchRequestBody = null;
+  let pathNotesCalls = 0;
+  app.apiFetch = async (url, options = {}) => {
+    if (String(url).endsWith('/path-notes')) {
+      pathNotesCalls += 1;
+      return new Response('{}', { status: 200 });
+    }
     if (String(url).endsWith('/branches')) {
+      branchRequestBody = JSON.parse(String(options.body || '{}'));
       return new Response(JSON.stringify({
         session: { id: 'branch_child', number: 88, short_title: 'Branch pending', created_at: Date.now(), last_message_at: Date.now(), message_count: 2 },
         parent_session_id: session.id,
@@ -7232,25 +7260,105 @@ async function testConversationBranchPendingSelectionUsesDurableBoundaries() {
         copied_anchor_message_id: 172,
       }), { status: 201, headers: { 'Content-Type': 'application/json' } });
     }
+    if (String(url).includes(`/sessions/${session.id}/state`)) {
+      return new Response(JSON.stringify({
+        active_run: true,
+        active_response_id: activeResponseId,
+        transcript_rev: session.transcript.rev,
+        started_rev: 8,
+        run_epoch: 1,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
     if (String(url).endsWith('/tree')) return new Response(JSON.stringify({ path_count: 2, root_session_id: session.id, nodes: [] }), { status: 200 });
     return new Response('{}', { status: 200 });
   };
 
   if (!app.beginBranchPoint({
     message_id: 74, anchor_message_id: 72, sequence: 3, role: 'user',
-    preview: 'edit me', prefill: 'edit me', later_message_count: 0,
+    preview: 'edit me', prefill: 'edit me', later_message_count: 3,
   })) {
-    fail(name, 'tree branch point was rejected');
+    fail(name, 'tree branch point was rejected while the source was active');
     return;
   }
   await waitFor(() => app.state.activeSessionId === 'branch_child', 'child session was not adopted');
   const child = app.state.sessions.find((candidate) => candidate.id === 'branch_child');
-  if (!child || child.branchParentSessionId !== session.id || child.branchAnchorMessageId !== 172
+  const sourceProgress = app.state.sessionProgressById[session.id];
+  const childProgress = app.state.sessionProgressById[child?.id];
+  if (!branchRequestBody || Object.prototype.hasOwnProperty.call(branchRequestBody, 'expected_rev')) {
+    fail(name, 'active branch request sent a stale full-head revision', JSON.stringify(branchRequestBody));
+    return;
+  }
+  if (!sourceProgress?.optimisticBusy || !sourceProgress?.serverActiveRun || session.activeResponseId !== activeResponseId) {
+    fail(name, 'child adoption cleared source response ownership', JSON.stringify({ sourceProgress, activeResponseId: session.activeResponseId }));
+    return;
+  }
+  if (!child || child.activeResponseId || child.lastSequenceNumber !== 0 || childProgress
+      || app.sessionHasInProgressState(child) || app.state.streaming || child.branchContextStatus || pathNotesCalls !== 0) {
+    fail(name, 'child inherited source-only active run state', JSON.stringify({
+      childActiveResponseId: child?.activeResponseId,
+      childLastSequenceNumber: child?.lastSequenceNumber,
+      childProgress,
+      childBusy: child ? app.sessionHasInProgressState(child) : null,
+      branchContextStatus: child?.branchContextStatus,
+      pathNotesCalls,
+      streaming: app.state.streaming,
+    }));
+    return;
+  }
+  if (child.branchParentSessionId !== session.id || child.branchAnchorMessageId !== 172
       || app.elements.promptInput.value !== 'edit me' || !windowObj.location.pathname.includes('/88')) {
     fail(name, 'child navigation or editable prefill was incorrect', JSON.stringify({
       parent: child?.branchParentSessionId, anchor: child?.branchAnchorMessageId,
       prompt: app.elements.promptInput.value, pathname: windowObj.location.pathname,
     }));
+    return;
+  }
+
+  await app.switchToSession(session.id, { focusPrompt: false });
+  await waitFor(() => resumeCalls > 0, 'switching back did not resume the source response');
+  if (app.state.activeSessionId !== session.id || session.activeResponseId !== activeResponseId) {
+    fail(name, 'switching back lost source response identity');
+    return;
+  }
+  pass(name);
+}
+
+async function testIdleConversationBranchSendsExpectedRevision() {
+  const name = 'idle conversation branch keeps full-head revision validation';
+  const { app, windowObj } = await createSessionsHarness({
+    appOverrides: { renderMessages() {}, refreshActiveSessionMessagesFromServer: async () => {} },
+  });
+  const session = {
+    id: 'branch_idle_source', title: 'Idle branch', number: 1,
+    messages: [{ id: 'u1', role: 'user', content: 'edit me', durable: true, durableSourceRowIds: [11] }],
+    lastResponseId: null, activeResponseId: null,
+  };
+  session.transcript = new windowObj.TermLLMConversation.ConversationController(session.id);
+  session.transcript.publishedMessages = session.messages.slice();
+  session.transcript.rev = 7;
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  let branchRequestBody = null;
+  app.apiFetch = async (url, options = {}) => {
+    if (String(url).endsWith('/branches')) {
+      branchRequestBody = JSON.parse(String(options.body || '{}'));
+      return new Response(JSON.stringify({
+        session: { id: 'branch_idle_child', number: 89, short_title: 'Idle branch', created_at: Date.now(), last_message_at: Date.now(), message_count: 0 },
+        parent_session_id: session.id, fork_after_message_id: 0, copied_anchor_message_id: 0,
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (String(url).endsWith('/tree')) return new Response(JSON.stringify({ path_count: 2, root_session_id: session.id, nodes: [] }), { status: 200 });
+    return new Response('{}', { status: 200 });
+  };
+
+  if (!app.beginBranchPoint({ message_id: 11, anchor_message_id: 0, sequence: 0, role: 'user', preview: 'edit me', prefill: 'edit me', later_message_count: 0 })) {
+    fail(name, 'idle tree branch point was rejected');
+    return;
+  }
+  await waitFor(() => app.state.activeSessionId === 'branch_idle_child', 'idle child session was not adopted');
+  if (branchRequestBody?.expected_rev !== 7) {
+    fail(name, 'idle branch omitted its selected transcript revision', JSON.stringify(branchRequestBody));
     return;
   }
   pass(name);
@@ -7306,6 +7414,7 @@ const runAppSessionsTest = async (testCase) => {
 (async () => {
   await runAppSessionsTest(testConversationBranchTreeOpensAndSwitchesPaths);
   await runAppSessionsTest(testConversationBranchPendingSelectionUsesDurableBoundaries);
+  await runAppSessionsTest(testIdleConversationBranchSendsExpectedRevision);
   await runAppSessionsTest(testPendingBranchProjectionHidesVirtualTranscriptGaps);
   await runAppSessionsTest(testMarkedPathNoteConvertsToVisibleArtifact);
   await runAppSessionsTest(testSanitizeMessagePreservesSkillRunState);

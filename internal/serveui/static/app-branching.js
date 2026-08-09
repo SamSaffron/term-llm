@@ -30,10 +30,7 @@ const durableSourceTailID = (message) => {
 const beginBranchPoint = (point) => {
   const session = app.getActiveSession?.();
   if (!session || state.draftSessionActive || !point || point.role !== 'user') return false;
-  if (state.streaming || state.compressing || state.sideQuestion?.running || app.sessionHasInProgressState?.(session)) {
-    app.showToast?.('Cannot branch while work is active.', { id: 'conversation-branch', tone: 'warning' });
-    return false;
-  }
+  const sourceActiveAtSelection = Boolean(state.streaming || state.compressing || state.sideQuestion?.running || app.sessionHasInProgressState?.(session));
   const anchorMessageId = Math.max(0, Number(point.anchor_message_id) || 0);
   const messages = window.TermLLMConversation.sessionMessages(session);
   const selected = messages.find((message) => durableSourceTailID(message) === Number(point.message_id));
@@ -43,12 +40,13 @@ const beginBranchPoint = (point) => {
     anchorMessageId,
     previousResponseId: `resp_msg_${anchorMessageId}`,
     expectedRev: Math.max(0, Number(session.transcript?.rev) || 0),
+    sourceActiveAtSelection,
     idempotencyKey: app.generateId?.('branch') || `branch_${Date.now()}`,
     selectedMessageId: selected?.id || '',
     selectedMessageDurableId: Number(point.message_id) || 0,
     selectedRole: 'user',
     selectedText: String(point.prefill || ''),
-    hasLaterConversation: laterMessageCount > 0,
+    hasLaterConversation: laterMessageCount > 0 && !sourceActiveAtSelection,
     laterMessageCount,
     originalComposer: String(elements.promptInput.value || ''),
   });
@@ -212,26 +210,25 @@ const startBranchContextPreparation = async (session, mode, focus = '', sourceMe
 const createConversationBranch = async (draft, mode = 'clean', focus = '') => {
   const source = app.getActiveSession?.();
   if (!draft || !source || source.id !== draft.sourceSessionId) return false;
+  const sourceActive = Boolean(draft.sourceActiveAtSelection || app.sessionHasInProgressState?.(source)), effectiveMode = sourceActive ? 'clean' : mode;
   const creatingOperation = { sessionId: source.id, phase: 'creating' };
   state.branchContextOperation = creatingOperation;
-  state.pendingBranch = { ...draft, branchContextMode: mode, branchContextFocus: focus };
+  state.pendingBranch = { ...draft, branchContextMode: effectiveMode, branchContextFocus: focus };
   app.renderMessages?.(false);
   try {
+    const requestBody = { anchor_message_id: Number(draft.anchorMessageId) || 0, idempotency_key: String(draft.idempotencyKey || '').trim() };
+    if (!sourceActive) requestBody.expected_rev = Math.max(0, Number(draft.expectedRev) || 0);
     const response = await app.apiFetch(`${app.UI_PREFIX}/v1/sessions/${encodeURIComponent(source.id)}/branches`, {
       method: 'POST',
       headers: app.requestHeaders(source.id),
-      body: JSON.stringify({
-        anchor_message_id: Number(draft.anchorMessageId) || 0,
-        expected_rev: Math.max(0, Number(draft.expectedRev) || 0),
-        idempotency_key: String(draft.idempotencyKey || '').trim()
-      })
+      body: JSON.stringify(requestBody)
     }, { policy: app.API_FETCH_POLICY.idempotentMutation, retries: 0 });
     if (!response.ok) throw await app.normalizeError(response);
     const payload = await response.json();
     const childID = String(payload?.session?.id || '').trim();
     if (!childID || childID === source.id) throw new Error('Branch response did not identify a child session.');
     const copiedAnchorID = Number(payload.copied_anchor_message_id) || 0;
-    const child = adoptBranchedSessionOwnership(source, childID, [], copiedAnchorID ? `resp_msg_${copiedAnchorID}` : 'resp_msg_0');
+    const child = adoptBranchedSessionOwnership(source, childID, [], copiedAnchorID ? `resp_msg_${copiedAnchorID}` : 'resp_msg_0', { detachSourceStream: true, preserveSourceProgress: sourceActive });
     app.applyServerSessionSummary?.(child, payload.session || {});
     app.updateURL?.(app.sessionSlug?.(child) || childID);
     child.branchParentSessionId = String(payload.parent_session_id || source.id);
@@ -248,9 +245,9 @@ const createConversationBranch = async (draft, mode = 'clean', focus = '') => {
     elements.promptInput.value = String(draft.selectedText || '');
     app.autoGrowPrompt?.();
     app.renderMessages?.(true);
-    const preparesContext = mode === 'notes' || mode === 'focused';
+    const preparesContext = effectiveMode === 'notes' || effectiveMode === 'focused';
     if (preparesContext) {
-      void startBranchContextPreparation(child, mode, focus, draft.laterMessageCount || 0);
+      void startBranchContextPreparation(child, effectiveMode, focus, draft.laterMessageCount || 0);
     }
     try {
       await app.refreshActiveSessionMessagesFromServer?.(child, {
@@ -407,19 +404,22 @@ const openBranchTree = async () => {
   elements.branchTreeCard?.focus?.({ preventScroll: true });
 };
 
-const adoptBranchedSessionOwnership = (source, childSessionId, userMessages = [], copiedAnchorResponseId = '') => {
+const adoptBranchedSessionOwnership = (source, childSessionId, userMessages = [], copiedAnchorResponseId = '', options = {}) => {
   const childID = String(childSessionId || '').trim();
   if (!source || !childID || childID === source.id) return source;
   for (const message of userMessages) source.transcript?.removePendingIntent?.(message.clientMessageId || message.id);
   app.persistPendingIntents?.(source);
   app.refreshSessionMessagesFromTranscript?.(source);
-  app.setSessionOptimisticBusy?.(source, false);
+  if (options.detachSourceStream && (state.currentStreamSessionId === source.id || (state.activeSessionId === source.id && state.streaming))) app.detachResponseStream?.();
+  if (!options.preserveSourceProgress) app.setSessionOptimisticBusy?.(source, false);
 
   let child = state.sessions.find((candidate) => candidate.id === childID);
   if (!child) {
-    child = { ...source, id: childID, number: 0, title: source.title || 'Branched conversation', created: Date.now(), lastMessageAt: Date.now(), activeResponseId: null, messages: [], transcript: typeof window.ConversationController === 'function' ? new window.ConversationController(childID) : null, _serverOnly: false };
+    child = { ...source, id: childID, number: 0, title: source.title || 'Branched conversation', created: Date.now(), lastMessageAt: Date.now(), lastResponseId: null, activeResponseId: null, lastSequenceNumber: 0, messages: [], transcript: typeof window.ConversationController === 'function' ? new window.ConversationController(childID) : null, branchContextStatus: null, _serverOnly: false };
     state.sessions.unshift(child);
   }
+  child.activeResponseId = null; child.lastSequenceNumber = 0;
+  app.setSessionOptimisticBusy?.(child, false); app.setSessionServerActiveRun?.(child, false);
   const copiedAnchor = String(copiedAnchorResponseId || '').trim();
   child.lastResponseId = copiedAnchor || child.lastResponseId || null;
   for (const message of userMessages) app.trackPendingIntent?.(child, message);

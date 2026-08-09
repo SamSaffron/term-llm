@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -42,6 +43,177 @@ func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
 		if point.MessageID != wantIDs[i] || point.AnchorMessageID != wantAnchors[i] || point.Role != string(llm.RoleUser) || point.Prefill == "" {
 			t.Fatalf("branch point %d = %#v, want message %d anchored at %d", i, point, wantIDs[i], wantAnchors[i])
 		}
+	}
+}
+
+func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeInterjections(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "active-tree-source"
+		responseID = "resp-active-tree"
+	)
+	fallbackMessages := []session.Message{
+		{ID: 1, Role: llm.RoleAssistant},
+		{ID: 2, Role: llm.RoleUser},
+		{ID: 3, Role: llm.RoleUser},
+		{ID: 4, Role: llm.RoleAssistant, ResponseID: responseID},
+	}
+	if got := activeWebBranchAnchorRowID(fallbackMessages, responseID, 0); got != 2 {
+		t.Fatalf("fallback active anchor = %d, want initial user row 2", got)
+	}
+	if got := activeWebBranchAnchorRowID([]session.Message{{ID: 1, Role: llm.RoleAssistant, ResponseID: responseID}}, responseID, 0); got != -1 {
+		t.Fatalf("unbounded active anchor = %d, want fail-closed sentinel -1", got)
+	}
+	if points := webBranchTreePointsForActiveRun(fallbackMessages, 999); len(points) != 0 {
+		t.Fatalf("missing active anchor exposed branch points: %#v", points)
+	}
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	partialAssistant := *session.NewMessage(sourceID, llm.AssistantText("unfinished answer"), -1)
+	partialAssistant.ResponseID = responseID
+	partialTool := *session.NewMessage(sourceID, llm.ToolResultMessage("call-active", "read_file", "unfinished tool output", nil), -1)
+	partialTool.ResponseID = responseID
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, llm.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, llm.AssistantText("completed answer"), -1),
+		*session.NewMessage(sourceID, llm.UserText("active request"), -1),
+		partialAssistant,
+		partialTool,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.anchorRowID = messages[2].ID
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	srv := &serveServer{store: store, responseRuns: manager}
+
+	loadPoints := func() []webBranchTreePoint {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sourceID+"/tree?include_branch_points=1", nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("tree status/body = %d %s", rr.Code, rr.Body.String())
+		}
+		var response webBranchTreeResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response.BranchPoints
+	}
+
+	points := loadPoints()
+	if len(points) != 2 || points[1].MessageID != messages[2].ID || points[1].AnchorMessageID != messages[1].ID || points[1].Prefill != "active request" || points[1].LaterMessageCount != 0 {
+		t.Fatalf("active branch points = %#v, want active user anchored at completed answer with no partial suffix", points)
+	}
+
+	if err := store.AddMessage(ctx, sourceID, session.NewMessage(sourceID, llm.UserText("mid-run interjection"), -1)); err != nil {
+		t.Fatal(err)
+	}
+	points = loadPoints()
+	if len(points) != 2 || points[1].MessageID != messages[2].ID || points[1].LaterMessageCount != 0 {
+		t.Fatalf("interjection affected the safe active branch snapshot: %#v", points)
+	}
+}
+
+func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const (
+		sourceID   = "active-branch-source"
+		responseID = "resp-active-branch"
+	)
+	if err := store.Create(ctx, &session.Session{ID: sourceID, Name: "Active parent", Provider: "mock", ProviderKey: "mock", Model: "mock-model", Status: session.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	partial := *session.NewMessage(sourceID, llm.AssistantText("still streaming"), -1)
+	partial.ResponseID = responseID
+	if err := store.ReplaceMessages(ctx, sourceID, []session.Message{
+		*session.NewMessage(sourceID, llm.UserText("completed request"), -1),
+		*session.NewMessage(sourceID, llm.AssistantText("stable answer"), -1),
+		*session.NewMessage(sourceID, llm.UserText("active request"), -1),
+		partial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.GetMessages(ctx, sourceID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newServeResponseRunManager()
+	t.Cleanup(manager.Close)
+	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
+	run.anchorRowID = messages[2].ID
+	if err := manager.create(run); err != nil {
+		t.Fatal(err)
+	}
+	manager.setActiveRun(sourceID, responseID)
+	srv := &serveServer{store: store, responseRuns: manager}
+
+	// expected_rev is intentionally stale. Active output may advance the full
+	// transcript head, but it cannot mutate the completed anchor copied below.
+	body := fmt.Sprintf(`{"anchor_message_id":%d,"expected_rev":0,"idempotency_key":"active-stable-anchor"}`, messages[1].ID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("active branch status/body = %d %s", rr.Code, rr.Body.String())
+	}
+	var created createSessionBranchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	childMessages, err := store.GetMessages(ctx, created.Session.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 2 || childMessages[1].TextContent != "stable answer" {
+		t.Fatalf("active branch copied messages = %#v, want completed prefix only", childMessages)
+	}
+	if manager.activeRunID(sourceID) != responseID {
+		t.Fatalf("branch detached active response ownership: %q", manager.activeRunID(sourceID))
+	}
+
+	body = fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-partial-anchor"}`, messages[3].ID)
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
+		t.Fatalf("partial active anchor status/body = %d %s", rr.Code, rr.Body.String())
+	}
+
+	interjection := session.NewMessage(sourceID, llm.UserText("mid-run interjection"), -1)
+	if err := store.AddMessage(ctx, sourceID, interjection); err != nil {
+		t.Fatal(err)
+	}
+	body = fmt.Sprintf(`{"anchor_message_id":%d,"idempotency_key":"active-interjection-anchor"}`, interjection.ID)
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sourceID+"/branches", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "not stable") {
+		t.Fatalf("interjection anchor status/body = %d %s", rr.Code, rr.Body.String())
 	}
 }
 

@@ -34,10 +34,12 @@ const builtInCommands = [
   {
     name: '/side',
     description: 'Ask without interrupting the main response',
+    streamingSafe: true,
   },
   {
     name: '/tree',
     description: 'Browse conversation paths or branch from an earlier turn',
+    streamingSafe: true,
   },
   {
     name: '/undo',
@@ -331,7 +333,7 @@ const update = () => {
       && (
         !app.state?.streaming
         || command.skill?.execution === 'isolated'
-        || command.name === '/side'
+        || command.streamingSafe === true
       )
     )).map((command) => ({ type: 'slash', ...command }));
     selected = 0;

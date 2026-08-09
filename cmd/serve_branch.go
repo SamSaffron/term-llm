@@ -64,7 +64,104 @@ func branchContextSourceMessage(message session.Message) bool {
 	}
 }
 
-func webBranchTreePoints(messages []session.Message) []webBranchTreePoint {
+func activeWebBranchAnchorRowID(messages []session.Message, activeResponseID string, sampledAnchorRowID int64) int64 {
+	activeResponseID = strings.TrimSpace(activeResponseID)
+	if activeResponseID == "" {
+		return 0
+	}
+	if sampledAnchorRowID > 0 {
+		for _, message := range messages {
+			if message.ID != sampledAnchorRowID {
+				continue
+			}
+			if message.Role == llm.RoleUser || message.ResponseID != activeResponseID {
+				return sampledAnchorRowID
+			}
+			break
+		}
+	}
+	for i, message := range messages {
+		if message.Role == llm.RoleUser || message.ResponseID != activeResponseID {
+			continue
+		}
+		if i == 0 {
+			return -1
+		}
+		anchorRowID := messages[i-1].ID
+		for j := i - 1; j >= 0 && messages[j].Role == llm.RoleUser; j-- {
+			anchorRowID = messages[j].ID
+		}
+		return anchorRowID
+	}
+	return -1
+}
+
+func pruneActiveWebBranchOutput(messages []session.Message, activeResponseID string) []session.Message {
+	activeResponseID = strings.TrimSpace(activeResponseID)
+	if activeResponseID == "" {
+		return messages
+	}
+	filtered := make([]session.Message, 0, len(messages))
+	for _, message := range messages {
+		if message.Role != llm.RoleUser && message.ResponseID == activeResponseID {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	return filtered
+}
+
+func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID string, sampledAnchorRowID, requestedAnchorRowID int64) (bool, bool) {
+	if requestedAnchorRowID == 0 {
+		return true, true
+	}
+	var requested *session.Message
+	for i := range messages {
+		if messages[i].ID == requestedAnchorRowID {
+			requested = &messages[i]
+			break
+		}
+	}
+	if requested == nil {
+		return false, false
+	}
+	activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
+	if activeAnchorRowID <= 0 {
+		return false, true
+	}
+	var activeAnchor *session.Message
+	for i := range messages {
+		if messages[i].ID == activeAnchorRowID {
+			activeAnchor = &messages[i]
+			break
+		}
+	}
+	if activeAnchor == nil {
+		return false, true
+	}
+	if requested.Role != llm.RoleUser && requested.ResponseID == strings.TrimSpace(activeResponseID) {
+		return false, true
+	}
+	return requested.Sequence <= activeAnchor.Sequence, true
+}
+
+func webBranchTreePointsForActiveRun(messages []session.Message, activeAnchorRowID int64) []webBranchTreePoint {
+	if activeAnchorRowID < 0 {
+		return nil
+	}
+	if activeAnchorRowID > 0 {
+		activeAnchorIndex := -1
+		for i := range messages {
+			if messages[i].ID == activeAnchorRowID {
+				activeAnchorIndex = i
+				break
+			}
+		}
+		if activeAnchorIndex < 0 {
+			return nil
+		}
+		messages = messages[:activeAnchorIndex+1]
+	}
 	after := make(map[int64]int, len(messages))
 	contextCount := 0
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -106,6 +203,10 @@ func webBranchTreePoints(messages []session.Message) []webBranchTreePoint {
 	return points
 }
 
+func webBranchTreePoints(messages []session.Message) []webBranchTreePoint {
+	return webBranchTreePointsForActiveRun(messages, 0)
+}
+
 func (s *serveServer) handleSessionTree(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if s == nil || s.store == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
@@ -133,7 +234,13 @@ func (s *serveServer) handleSessionTree(w http.ResponseWriter, r *http.Request, 
 				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load conversation branch points")
 				return
 			}
-			response.BranchPoints = webBranchTreePoints(messages)
+			// Persistence and the response manager do not share a snapshot. Sample
+			// active ownership after reading rows so a run that finishes during this
+			// read can only make this tree temporarily conservative.
+			activeResponseID, _, _, _, activeAnchorRowID := s.activeTranscriptRun(sessionID)
+			activeAnchorRowID = activeWebBranchAnchorRowID(messages, activeResponseID, activeAnchorRowID)
+			messages = pruneActiveWebBranchOutput(messages, activeResponseID)
+			response.BranchPoints = webBranchTreePointsForActiveRun(messages, activeAnchorRowID)
 		}
 		writeJSON(w, http.StatusOK, response)
 	}
@@ -189,30 +296,56 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
+	activeResponseID, _, _, _, activeAnchorRowID := s.activeTranscriptRun(sourceSessionID)
+	activeSource := activeResponseID != ""
 	var expectedState *session.TranscriptMutationState
-	if req.ExpectedRev == nil {
-		mutationStore, ok := s.store.(session.TranscriptUndoRedoStore)
-		if !ok {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", "revision-safe conversation branching is unavailable")
+	expectedRev := req.ExpectedRev
+	unlock := func() {}
+	if activeSource {
+		messages, loadErr := s.store.GetMessages(r.Context(), sourceSessionID, 0, 0)
+		if loadErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to validate active conversation branch")
 			return
 		}
-		state, stateErr := mutationStore.TranscriptMutationState(r.Context(), sourceSessionID)
-		if stateErr != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to inspect conversation revision")
+		safe, found := activeWebBranchAnchorSafety(messages, activeResponseID, activeAnchorRowID, req.AnchorMessageID)
+		if !found {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
 			return
 		}
-		expectedState = &state
-	}
-	unlock, busy := s.lockBranchSourceRuntime(sourceSessionID)
-	if busy {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot branch while source work is active")
-		return
+		if !safe {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch point is not stable while source work is active")
+			return
+		}
+		// The selected stable prefix is validated above and resolved again inside
+		// CreateBranch's transaction. Full-head revisions are expected to advance
+		// while this response appends output after that immutable prefix.
+		expectedRev = nil
+	} else {
+		if expectedRev == nil {
+			mutationStore, ok := s.store.(session.TranscriptUndoRedoStore)
+			if !ok {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "revision-safe conversation branching is unavailable")
+				return
+			}
+			state, stateErr := mutationStore.TranscriptMutationState(r.Context(), sourceSessionID)
+			if stateErr != nil {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to inspect conversation revision")
+				return
+			}
+			expectedState = &state
+		}
+		var busy bool
+		unlock, busy = s.lockBranchSourceRuntime(sourceSessionID)
+		if busy {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot branch while source work is active")
+			return
+		}
 	}
 	defer unlock()
 	result, err := branchStore.CreateBranch(r.Context(), sourceSessionID, session.CreateBranchOptions{
 		AnchorMessageID: req.AnchorMessageID,
 		ExpectedState:   expectedState,
-		ExpectedRev:     req.ExpectedRev,
+		ExpectedRev:     expectedRev,
 		IdempotencyKey:  req.IdempotencyKey,
 	})
 	switch {
