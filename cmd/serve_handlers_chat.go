@@ -137,6 +137,10 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeOpenAIError(w, http.StatusRequestTimeout, "timeout_error", responseRunTimeoutMessage(s.responseTimeout()))
 			return
 		}
+		if errors.Is(err, errServeSessionPersistence) {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -284,6 +288,8 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			errType = "timeout_error"
 			errMessage = responseRunTimeoutMessage(s.responseTimeout())
+		} else if errors.Is(err, errServeSessionPersistence) {
+			errType = "server_error"
 		}
 		_ = writeChatStreamChunk(w, map[string]any{
 			"id":      respID,

@@ -158,6 +158,10 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			writeAnthropicError(w, http.StatusRequestTimeout, "timeout_error", responseRunTimeoutMessage(s.responseTimeout()))
 			return
 		}
+		if errors.Is(err, errServeSessionPersistence) {
+			writeAnthropicError(w, http.StatusInternalServerError, "api_error", err.Error())
+			return
+		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}

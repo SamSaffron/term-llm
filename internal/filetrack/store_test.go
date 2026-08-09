@@ -778,6 +778,75 @@ func TestGCEnforcesTotalBudget(t *testing.T) {
 	}
 }
 
+func TestRecordChangeEnforcesTotalBudget(t *testing.T) {
+	dir := t.TempDir()
+	const maxTotalBytes = 256 * 1024
+	store, err := Open(filepath.Join(dir, "file_history.db"), Options{MaxTotalBytes: maxTotalBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// Poorly compressible text makes each ordinary record materially grow the
+	// database without tripping the binary-content check.
+	noisy := func(seed byte) []byte {
+		content := make([]byte, 128*1024)
+		x := uint32(seed) + 1
+		for i := range content {
+			x = x*1664525 + 1013904223
+			content[i] = byte(32 + (x>>16)%95)
+		}
+		return content
+	}
+	// Use reverse-lexical IDs to prove insertion order, not session ID, decides
+	// recency when SQLite timestamps tie within the same second.
+	for i, sessionID := range []string{"z-oldest", "m-middle", "a-newest"} {
+		mustRecord(t, store, ChangeRecord{
+			SessionID: sessionID, Path: "/work/f.txt",
+			After: noisy(byte(i)), BeforeMissing: true,
+		})
+	}
+
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	size, err := databaseSize(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size > maxTotalBytes {
+		t.Fatalf("db size after ordinary records = %d, want <= %d", size, maxTotalBytes)
+	}
+	if paths, _ := store.SessionPaths(ctx, "a-newest"); len(paths) != 1 {
+		t.Fatal("newest session history must survive live budget pruning")
+	}
+	if paths, _ := store.SessionPaths(ctx, "m-middle"); len(paths) != 1 {
+		t.Fatal("live budget enforcement pruned more sessions than required")
+	}
+	if paths, _ := store.SessionPaths(ctx, "z-oldest"); len(paths) != 0 {
+		t.Fatal("oldest session history must be pruned by live budget enforcement")
+	}
+}
+
+func TestRecordChangeRejectsChangePrunedByTotalBudget(t *testing.T) {
+	store := openTestStore(t, Options{MaxTotalBytes: 1})
+	change, err := store.RecordChange(context.Background(), ChangeRecord{
+		SessionID: "current", Path: "/work/f.txt", After: []byte("content"), BeforeMissing: true,
+	})
+	if err == nil || change != nil {
+		t.Fatalf("RecordChange() = (%+v, %v), want nil change and budget error", change, err)
+	}
+	if store.uncheckedTotalBytes != 0 || store.uncheckedTotalRecordCount != 0 {
+		t.Fatalf("failed check counters = (%d bytes, %d records), want reset", store.uncheckedTotalBytes, store.uncheckedTotalRecordCount)
+	}
+	if paths, queryErr := store.SessionPaths(context.Background(), "current"); queryErr != nil || len(paths) != 0 {
+		t.Fatalf("rolled-back session paths = %v, %v; want none", paths, queryErr)
+	}
+}
+
 func TestRecorderSwallowsAndConverts(t *testing.T) {
 	store := openTestStore(t, Options{})
 	rec := NewRecorder(store)

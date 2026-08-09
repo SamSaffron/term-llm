@@ -213,6 +213,113 @@ func newServeRuntimeTestStore() *serveRuntimeTestStore {
 	}
 }
 
+type failingServeRuntimeSessionStore struct {
+	session.Store
+	err error
+}
+
+func (s *failingServeRuntimeSessionStore) Create(context.Context, *session.Session) error {
+	return s.err
+}
+
+func (s *failingServeRuntimeSessionStore) Get(context.Context, string) (*session.Session, error) {
+	return nil, s.err
+}
+
+func TestServeRuntimeStatefulRunRequiresSessionPersistence(t *testing.T) {
+	storeErr := errors.New("database unavailable")
+	store := &failingServeRuntimeSessionStore{
+		Store: newServeRuntimeTestStore(),
+		err:   storeErr,
+	}
+	provider := llm.NewMockProvider("mock").AddTextResponse("must not run")
+	rt := &serveRuntime{
+		store:        store,
+		provider:     provider,
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+	}
+
+	startCalls := 0
+	eventCalls := 0
+	_, err := rt.RunWithEventsAndStart(
+		context.Background(),
+		true,
+		false,
+		[]llm.Message{llm.UserText("hello")},
+		llm.Request{SessionID: "sess-persistence-failure"},
+		func() { startCalls++ },
+		func(llm.Event) error {
+			eventCalls++
+			return nil
+		},
+	)
+	if !errors.Is(err, errServeSessionPersistence) {
+		t.Fatalf("RunWithEventsAndStart() error = %v, want %v", err, errServeSessionPersistence)
+	}
+	if startCalls != 0 {
+		t.Fatalf("start callbacks = %d, want 0", startCalls)
+	}
+	if eventCalls != 0 {
+		t.Fatalf("event callbacks = %d, want 0", eventCalls)
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("provider requests = %d, want 0", len(provider.Requests))
+	}
+}
+
+func TestServeRuntimeNonPersistentRunsStillExecute(t *testing.T) {
+	storeErr := errors.New("database unavailable")
+	tests := []struct {
+		name     string
+		stateful bool
+		store    session.Store
+	}{
+		{
+			name:     "stateless with failing store",
+			stateful: false,
+			store: &failingServeRuntimeSessionStore{
+				Store: newServeRuntimeTestStore(),
+				err:   storeErr,
+			},
+		},
+		{
+			name:     "stateful with store disabled",
+			stateful: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+			rt := &serveRuntime{
+				store:        tc.store,
+				provider:     provider,
+				engine:       llm.NewEngine(provider, nil),
+				defaultModel: "mock-model",
+			}
+
+			result, err := rt.RunWithEvents(
+				context.Background(),
+				tc.stateful,
+				false,
+				[]llm.Message{llm.UserText("hello")},
+				llm.Request{SessionID: "sess-non-persistent"},
+				func(llm.Event) error { return nil },
+			)
+			if err != nil {
+				t.Fatalf("RunWithEvents() error = %v", err)
+			}
+			if got := result.Text.String(); got != "ok" {
+				t.Fatalf("result text = %q, want ok", got)
+			}
+			if len(provider.Requests) != 1 {
+				t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+			}
+		})
+	}
+}
+
 func (s *serveRuntimeTestStore) Create(ctx context.Context, sess *session.Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

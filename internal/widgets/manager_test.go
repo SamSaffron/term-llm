@@ -5,14 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -75,6 +78,120 @@ func testWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 	t.Fatalf("widget child process still serving after stop on %s", url)
 }
 
+func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups and Unix sockets are Unix-specific")
+	}
+
+	t.Setenv("TERM_LLM_WIDGET_TEST_CHILD", "1")
+	termMarker := filepath.Join(t.TempDir(), "term-received")
+	t.Setenv("TERM_LLM_WIDGET_TEST_TERM_DELAY", "750ms")
+	t.Setenv("TERM_LLM_WIDGET_TEST_TERM_MARKER", termMarker)
+
+	m := &Manager{
+		basePath: "/chat",
+		entries:  make(map[string]*widgetEntry),
+	}
+	e := &widgetEntry{
+		manifest: &Manifest{
+			ID:      "restart-widget",
+			Title:   "Restart Widget",
+			Mount:   "restart-widget",
+			Dir:     t.TempDir(),
+			Command: []string{os.Args[0], "-test.run=TestWidgetChildHTTPServer", "--", "$SOCKET"},
+		},
+		state:   stateStopped,
+		lastReq: time.Now(),
+	}
+	m.entries[e.manifest.Mount] = e
+
+	if err := m.ensureRunning(e); err != nil {
+		t.Fatalf("start initial widget: %v", err)
+	}
+	defer e.stopProcess()
+
+	e.mu.Lock()
+	oldProc := e.proc
+	e.mu.Unlock()
+	if oldProc == nil {
+		t.Fatal("initial widget did not record its process")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		e.stopProcess()
+		close(stopDone)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(termMarker); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat termination marker: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stopping widget did not receive SIGTERM")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- m.ensureRunning(e)
+	}()
+
+	select {
+	case err := <-startDone:
+		t.Fatalf("replacement start completed before old process exited: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopProcess did not finish")
+	}
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("start replacement widget: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement did not start after old process exited")
+	}
+
+	e.mu.Lock()
+	newProc := e.proc
+	state := e.state
+	proxy := e.proxy
+	e.mu.Unlock()
+	if state != stateRunning {
+		t.Fatalf("replacement state = %v, want running", state)
+	}
+	if newProc == nil || newProc.Pid == oldProc.Pid {
+		t.Fatalf("replacement process = %v, old PID = %d", newProc, oldProc.Pid)
+	}
+	if proxy == nil {
+		t.Fatal("replacement proxy was cleared by stale process cleanup")
+	}
+	if err := oldProc.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("old process is not reaped: signal error = %v", err)
+	}
+
+	socketPath := filepath.Join(socketRuntimeDir, e.manifest.ID+".sock")
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("replacement socket is unavailable: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/widgets/restart-widget/", nil)
+	m.Proxy(e.manifest.Mount, rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != "ok" {
+		t.Fatalf("replacement response = (%d, %q), want (200, %q)", rr.Code, rr.Body.String(), "ok")
+	}
+}
+
 func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups are Unix-specific")
@@ -111,7 +228,19 @@ func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 
-	m.CloseContext(context.Background())
+	closeDone := make(chan struct{})
+	go func() {
+		m.CloseContext(context.Background())
+		close(closeDone)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for !m.isShuttingDown() {
+		if time.Now().After(deadline) {
+			e.startMu.Unlock()
+			t.Fatal("shutdown did not begin")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	e.startMu.Unlock()
 
 	select {
@@ -123,6 +252,11 @@ func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		e.stopProcess()
 		t.Fatal("ensureRunning did not return after shutdown began")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CloseContext did not finish")
 	}
 
 	e.mu.Lock()
@@ -261,19 +395,49 @@ func TestManagerReapIdleKeepsActiveProxyRequest(t *testing.T) {
 }
 
 func TestWidgetChildHTTPServer(t *testing.T) {
-	var port string
+	var address string
 	for i, arg := range os.Args {
 		if arg == "--" && i+1 < len(os.Args) {
-			port = os.Args[i+1]
+			address = os.Args[i+1]
 			break
 		}
 	}
-	if port == "" {
+	if address == "" {
 		t.Skip("helper process")
+	}
+
+	if delayValue := os.Getenv("TERM_LLM_WIDGET_TEST_TERM_DELAY"); delayValue != "" {
+		delay, err := time.ParseDuration(delayValue)
+		if err != nil {
+			log.Fatalf("parse termination delay: %v", err)
+		}
+		termCh := make(chan os.Signal, 1)
+		signal.Notify(termCh, syscall.SIGTERM)
+		go func() {
+			<-termCh
+			if marker := os.Getenv("TERM_LLM_WIDGET_TEST_TERM_MARKER"); marker != "" {
+				if err := os.WriteFile(marker, nil, 0600); err != nil {
+					log.Printf("write termination marker: %v", err)
+				}
+			}
+			time.Sleep(delay)
+			os.Exit(0)
+		}()
+	}
+
+	network := "tcp"
+	if os.Getenv("TERM_LLM_WIDGET_SOCKET") != "" {
+		network = "unix"
+	} else {
+		address = "127.0.0.1:" + address
+	}
+	listener, err := net.Listen(network, address)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
-	log.Fatal(http.ListenAndServe("127.0.0.1:"+port, handler))
+	log.Fatal(http.Serve(listener, handler))
 }

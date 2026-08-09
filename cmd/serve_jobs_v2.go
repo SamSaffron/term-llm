@@ -2195,7 +2195,7 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 	if includeOutput {
 		columns = jobsV2RunFullColumns
 	}
-	query := "SELECT " + columns + " FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	query := "SELECT " + columns + " FROM job_runs_v2" + where + " ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := m.db.Query(query, args...)
 	if err != nil {

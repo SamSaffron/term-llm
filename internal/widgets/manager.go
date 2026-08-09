@@ -220,6 +220,7 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 	e.mu.Lock()
 	e.lastReq = time.Now()
 	proxy := e.proxy
+	widgetID := e.manifest.ID
 	if proxy != nil {
 		e.inFlight++
 	}
@@ -247,7 +248,7 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 		scheme = "https"
 	}
 	r2.Header.Set("X-Forwarded-Proto", scheme)
-	r2.Header.Set("X-Term-LLM-Widget", e.manifest.ID)
+	r2.Header.Set("X-Term-LLM-Widget", widgetID)
 
 	proxy.ServeHTTP(w, r2)
 }
@@ -304,7 +305,7 @@ func (m *Manager) ensureRunning(e *widgetEntry) error {
 		return err
 	}
 	if m.isShuttingDown() {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 	return nil
@@ -318,12 +319,11 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		return errWidgetManagerShuttingDown
 	}
 
-	mf := e.manifest
-	mode, _ := mf.PlaceholderMode()
-
 	e.mu.Lock()
+	mf := e.manifest
 	e.state = stateStarting
 	e.mu.Unlock()
+	mode, _ := mf.PlaceholderMode()
 
 	var (
 		transport  http.RoundTripper
@@ -418,7 +418,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		defer close(procDone)
 		_ = cmd.Wait()
 		e.mu.Lock()
-		if e.state == stateRunning || e.state == stateStarting {
+		if e.proc == cmd.Process && (e.state == stateRunning || e.state == stateStarting) {
 			e.state = stateStopped
 			e.proc = nil
 			e.procDone = nil
@@ -429,7 +429,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	}()
 
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 
@@ -439,7 +439,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
-			e.stopProcess()
+			e.stopProcessLocked()
 			return errWidgetManagerShuttingDown
 		}
 
@@ -464,7 +464,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 			break
 		}
 		if ctx.Err() != nil {
-			e.stopProcess()
+			e.stopProcessLocked()
 			return errWidgetManagerShuttingDown
 		}
 		lastErr = err
@@ -478,13 +478,13 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 				default:
 				}
 			}
-			e.stopProcess()
+			e.stopProcessLocked()
 			return errWidgetManagerShuttingDown
 		case <-t.C:
 		}
 	}
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 	if lastErr != nil {
@@ -502,7 +502,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	proxy.Transport = transport
 
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 
@@ -513,7 +513,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	e.mu.Unlock()
 
 	if ctx.Err() != nil {
-		e.stopProcess()
+		e.stopProcessLocked()
 		return errWidgetManagerShuttingDown
 	}
 
@@ -522,16 +522,25 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 }
 
 func (e *widgetEntry) stopProcess() {
+	e.startMu.Lock()
+	defer e.startMu.Unlock()
+	e.stopProcessLocked()
+}
+
+// stopProcessLocked requires startMu to be held.
+func (e *widgetEntry) stopProcessLocked() {
 	e.mu.Lock()
 	proc := e.proc
 	done := e.procDone
+	mode, _ := e.manifest.PlaceholderMode()
+	socketID := e.manifest.ID
 	e.state = stateStopped
 	e.proc = nil
 	e.procDone = nil
 	e.proxy = nil
 	e.port = 0
 	e.mu.Unlock()
-	defer e.removeSocketIfNeeded()
+	defer removeSocket(mode, socketID)
 
 	if proc == nil {
 		return
@@ -547,9 +556,9 @@ func (e *widgetEntry) stopProcess() {
 	}
 }
 
-func (e *widgetEntry) removeSocketIfNeeded() {
-	if mode, _ := e.manifest.PlaceholderMode(); mode == "socket" {
-		_ = os.Remove(filepath.Join(socketRuntimeDir, e.manifest.ID+".sock"))
+func removeSocket(mode, widgetID string) {
+	if mode == "socket" {
+		_ = os.Remove(filepath.Join(socketRuntimeDir, widgetID+".sock"))
 	}
 }
 
@@ -577,18 +586,22 @@ func (m *Manager) idleLoop() {
 
 func (m *Manager) reapIdle() {
 	m.mu.RLock()
-	var toStop []*widgetEntry
+	type idleWidget struct {
+		entry *widgetEntry
+		mount string
+	}
+	var toStop []idleWidget
 	for _, e := range m.entries {
 		e.mu.Lock()
 		if e.state == stateRunning && e.inFlight == 0 && time.Since(e.lastReq) > idleTimeout {
-			toStop = append(toStop, e)
+			toStop = append(toStop, idleWidget{entry: e, mount: e.manifest.Mount})
 		}
 		e.mu.Unlock()
 	}
 	m.mu.RUnlock()
-	for _, e := range toStop {
-		log.Printf("[widget] idle timeout, stopping %s", e.manifest.Mount)
-		e.stopProcess()
+	for _, widget := range toStop {
+		log.Printf("[widget] idle timeout, stopping %s", widget.mount)
+		widget.entry.stopProcess()
 	}
 }
 

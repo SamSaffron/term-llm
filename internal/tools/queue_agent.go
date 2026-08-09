@@ -19,12 +19,14 @@ import (
 )
 
 const (
-	defaultQueuedAgentTimeout        = 3600
-	defaultQueuedAgentPollInterval   = 5
-	defaultJobsServerBaseURL         = "http://127.0.0.1:8080"
-	QueueAgentEphemeralJobLabelKey   = "term_llm_queue_agent"
-	QueueAgentEphemeralJobLabelValue = "ephemeral"
-	QueueAgentEphemeralJobLabelsJSON = `{"term_llm_queue_agent":"ephemeral"}`
+	defaultQueuedAgentTimeout           = 3600
+	defaultQueuedAgentPollInterval      = 5
+	queuedAgentTriggerReconcileTimeout  = 2 * time.Second
+	queuedAgentTriggerReconcileInterval = 50 * time.Millisecond
+	defaultJobsServerBaseURL            = "http://127.0.0.1:8080"
+	QueueAgentEphemeralJobLabelKey      = "term_llm_queue_agent"
+	QueueAgentEphemeralJobLabelValue    = "ephemeral"
+	QueueAgentEphemeralJobLabelsJSON    = `{"term_llm_queue_agent":"ephemeral"}`
 )
 
 type QueueAgentArgs struct {
@@ -204,7 +206,17 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	}
 	run, err := t.client.triggerJob(ctx, job.ID)
 	if err != nil {
-		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
+		// TriggerJob commits the run before writing its response. If that response
+		// is lost, reconcile with server state instead of hiding an active run and
+		// encouraging the caller to queue a duplicate.
+		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), queuedAgentTriggerReconcileTimeout)
+		reconciledRun, found, reconcileErr := t.client.reconcileRunForJob(reconcileCtx, job.ID)
+		cancel()
+		if reconcileErr == nil && found && reconciledRun.ID != "" {
+			run = reconciledRun
+		} else {
+			return llm.TextOutput(formatQueuedAgentTriggerPartialResult(job.ID, agentName, err, reconcileErr)), nil
+		}
 	}
 
 	data, _ := json.Marshal(QueueAgentResult{JobID: job.ID, RunID: run.ID, AgentName: agentName})
@@ -480,6 +492,39 @@ func (c *jobsBackedAgentClient) waitForJob(ctx context.Context, jobID string, po
 	}
 }
 
+func (c *jobsBackedAgentClient) reconcileRunForJob(ctx context.Context, jobID string) (jobsV2AgentRunResponse, bool, error) {
+	interval := queuedAgentTriggerReconcileInterval
+	var lastLookupErr error
+	for {
+		run, found, err := c.latestRunForJob(ctx, jobID)
+		switch {
+		case err != nil:
+			lastLookupErr = err
+		case found && run.ID == "":
+			return jobsV2AgentRunResponse{}, false, fmt.Errorf("jobs server returned admitted run without id")
+		case found:
+			return run, true, nil
+		}
+
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if lastLookupErr != nil {
+				return jobsV2AgentRunResponse{}, false, fmt.Errorf("%w (last run lookup failed: %v)", ctx.Err(), lastLookupErr)
+			}
+			return jobsV2AgentRunResponse{}, false, ctx.Err()
+		case <-timer.C:
+		}
+		if interval < 400*time.Millisecond {
+			interval *= 2
+			if interval > 400*time.Millisecond {
+				interval = 400 * time.Millisecond
+			}
+		}
+	}
+}
+
 func (c *jobsBackedAgentClient) latestRunForJob(ctx context.Context, jobID string) (jobsV2AgentRunResponse, bool, error) {
 	var runs jobsV2AgentRunsListResponse
 	path := "/v2/runs?limit=1&offset=0&job_id=" + url.QueryEscape(jobID)
@@ -490,6 +535,9 @@ func (c *jobsBackedAgentClient) latestRunForJob(ctx context.Context, jobID strin
 		return jobsV2AgentRunResponse{}, false, nil
 	}
 	run := runs.Data[0]
+	if run.JobID != "" && run.JobID != jobID {
+		return jobsV2AgentRunResponse{}, false, fmt.Errorf("jobs server returned run %q for unexpected job %q", run.ID, run.JobID)
+	}
 	if run.JobID == "" {
 		run.JobID = jobID
 	}
@@ -653,6 +701,26 @@ func sanitizeJobNamePart(name string) string {
 		return "agent"
 	}
 	return result
+}
+
+func formatQueuedAgentTriggerPartialResult(jobID, agentName string, triggerErr, reconcileErr error) string {
+	message := fmt.Sprintf("trigger request failed: %v", triggerErr)
+	if reconcileErr != nil {
+		message += fmt.Sprintf("; checking for an admitted run also failed: %v", reconcileErr)
+	} else {
+		message += "; no admitted run was visible during reconciliation"
+	}
+	message += "; use wait_for_jobs with this job_id before retrying queue_agent"
+
+	data, _ := json.Marshal(map[string]any{
+		"job_id":     jobID,
+		"agent_name": agentName,
+		"error": map[string]any{
+			"type":    ErrExecutionFailed,
+			"message": message,
+		},
+	})
+	return string(data)
 }
 
 func formatQueuedAgentError(errType ToolErrorType, message string) string {

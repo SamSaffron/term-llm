@@ -623,7 +623,7 @@ type FileTrackingConfig struct {
 	Enabled         bool   `mapstructure:"enabled"`           // Opt-in: record before/after content of files agents modify
 	MaxFileBytes    int    `mapstructure:"max_file_bytes"`    // Per-file content cap; larger files recorded metadata-only (default 2 MiB)
 	MaxSessionBytes int    `mapstructure:"max_session_bytes"` // Retained-content budget per session (default 100 MiB)
-	MaxTotalBytes   int64  `mapstructure:"max_total_bytes"`   // Whole-database size cap; oldest sessions' history pruned on startup (default 1 GiB)
+	MaxTotalBytes   int64  `mapstructure:"max_total_bytes"`   // Whole-database size cap; oldest sessions' history pruned live and on startup (default 1 GiB)
 	Path            string `mapstructure:"path"`              // Optional SQLite DB path override
 }
 

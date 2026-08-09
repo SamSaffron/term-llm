@@ -2579,6 +2579,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 				errMessage = responseRunDeadlineMessage(runCtx, s.responseTimeout())
 			} else if errors.Is(err, errServeSessionBusy) {
 				errType = "conflict_error"
+			} else if errors.Is(err, errServeSessionPersistence) {
+				errType = "server_error"
 			}
 			if !errors.Is(err, context.Canceled) {
 				s.persistResponseRunErrorEvent(runCtx, runtime, sessionID, respID, errType, errMessage)

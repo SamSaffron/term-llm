@@ -390,6 +390,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
 			return true
 		}
+		if errors.Is(err, errServeSessionPersistence) {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return true
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return true
 	}

@@ -116,7 +116,7 @@ type FileDiffSide struct {
 type Options struct {
 	MaxFileBytes    int   // 0 = DefaultMaxFileBytes
 	MaxSessionBytes int   // 0 = DefaultMaxSessionBytes
-	MaxTotalBytes   int64 // 0 = DefaultMaxTotalBytes; whole-database size cap enforced by GC
+	MaxTotalBytes   int64 // 0 = DefaultMaxTotalBytes; whole-database size cap enforced live and by GC
 }
 
 // Store persists file-change history in a dedicated SQLite database.
@@ -128,13 +128,23 @@ type Store struct {
 
 	// recordMu serializes change inserts so per-session sequence allocation and
 	// retained-byte budget checks remain deterministic under parallel tool calls.
-	recordMu sync.Mutex
+	// It also protects the amortized total-budget counters.
+	recordMu                  sync.Mutex
+	uncheckedTotalBytes       int64
+	uncheckedTotalRecordCount int
 
 	mu           sync.Mutex
 	sessionBytes map[string]int64 // retained-bytes budget cache per session
 }
 
 const schemaVersion = 1
+
+const (
+	// Check after at most 8 MiB of retained input, or 64 metadata-only rows.
+	// Smaller configured caps use a proportional interval below.
+	maxUncheckedTotalBytes   = int64(8 * 1024 * 1024)
+	maxUncheckedTotalRecords = 64
+)
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -303,6 +313,18 @@ func normalizePath(path string) string {
 	return filepath.Clean(path)
 }
 
+func (s *Store) totalBudgetCheckDue(retainedBytes int64) bool {
+	byteInterval := s.maxTotalBytes / 16
+	if byteInterval < 1 {
+		byteInterval = 1
+	}
+	if byteInterval > maxUncheckedTotalBytes {
+		byteInterval = maxUncheckedTotalBytes
+	}
+	return s.uncheckedTotalBytes+retainedBytes >= byteInterval ||
+		s.uncheckedTotalRecordCount+1 >= maxUncheckedTotalRecords
+}
+
 // RecordChange records one file transition and returns metadata for event
 // emission. Returns (nil, nil) for no-ops (identical content, missing→missing,
 // or empty session ID).
@@ -399,6 +421,12 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		IsBinary:   isBinary,
 	}
 
+	retainedBytes := int64(0)
+	if retain {
+		retainedBytes = beforeSize + afterSize
+	}
+	checkTotalBudget := s.totalBudgetCheckDue(retainedBytes)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin file change transaction: %w", err)
@@ -440,16 +468,51 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		return nil, fmt.Errorf("insert file change: %w", err)
 	}
 
+	var totalBudgetPruned bool
+	if checkTotalBudget {
+		// This check has consumed the accumulated work even if the transaction
+		// later fails. Keeping the counters above threshold would make every
+		// subsequent metadata-only record repeat the same expensive sweep.
+		s.uncheckedTotalBytes = 0
+		s.uncheckedTotalRecordCount = 0
+
+		totalBudgetPruned, err = s.enforceTotalBudget(ctx, tx)
+		if err != nil {
+			return nil, fmt.Errorf("enforce total budget: %w", err)
+		}
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM file_changes WHERE session_id = ? AND seq = ?)",
+			rec.SessionID, change.Seq).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("verify recorded file change: %w", err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("file history database is over its total budget; change not retained")
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit file change: %w", err)
 	}
 
-	if retain {
+	if checkTotalBudget && totalBudgetPruned {
+		// Budget enforcement pruned at least one session, invalidating cached
+		// retained-byte totals. The next write will reload only what it needs.
 		s.mu.Lock()
-		if _, ok := s.sessionBytes[rec.SessionID]; ok {
-			s.sessionBytes[rec.SessionID] += beforeSize + afterSize
-		}
+		s.sessionBytes = make(map[string]int64)
 		s.mu.Unlock()
+	} else {
+		if !checkTotalBudget {
+			s.uncheckedTotalBytes += retainedBytes
+			s.uncheckedTotalRecordCount++
+		}
+		if retain {
+			s.mu.Lock()
+			if _, ok := s.sessionBytes[rec.SessionID]; ok {
+				s.sessionBytes[rec.SessionID] += retainedBytes
+			}
+			s.mu.Unlock()
+		}
 	}
 
 	return change, nil
@@ -841,7 +904,7 @@ func (s *Store) GC(ctx context.Context, sessionsDBPath string, maxAgeDays int) e
 		return fmt.Errorf("incremental vacuum: %w", err)
 	}
 
-	if err := s.enforceTotalBudget(ctx, conn); err != nil {
+	if _, err := s.enforceTotalBudget(ctx, conn); err != nil {
 		return fmt.Errorf("enforce total budget: %w", err)
 	}
 
@@ -858,52 +921,67 @@ const blobSweepSQL = `
 		SELECT after_hash FROM file_changes WHERE after_hash IS NOT NULL
 	)`
 
+type totalBudgetDB interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 // enforceTotalBudget prunes the least recently changed sessions' history until
 // the database fits maxTotalBytes. This is the cross-session backstop: the
 // per-session budget bounds one session, but many sessions could otherwise
 // grow the database without limit.
-func (s *Store) enforceTotalBudget(ctx context.Context, conn *sql.Conn) error {
+func (s *Store) enforceTotalBudget(ctx context.Context, db totalBudgetDB) (bool, error) {
+	pruned := false
+	var previousSize int64 = -1
 	for {
-		size, err := databaseSize(ctx, conn)
+		size, err := databaseSize(ctx, db)
 		if err != nil {
-			return err
+			return pruned, err
 		}
 		if size <= s.maxTotalBytes {
-			return nil
+			return pruned, nil
 		}
+		if previousSize >= 0 && size >= previousSize {
+			// Page reclamation may not become visible until a live transaction
+			// commits. Stop after making bounded progress rather than deleting
+			// every session while chasing an unchanged page count.
+			return pruned, nil
+		}
+		previousSize = size
 
 		var oldest string
-		err = conn.QueryRowContext(ctx, `
+		err = db.QueryRowContext(ctx, `
 			SELECT session_id FROM file_changes
 			GROUP BY session_id
-			ORDER BY MAX(created_at) ASC, session_id ASC
+			ORDER BY MAX(created_at) ASC, MAX(id) ASC, session_id ASC
 			LIMIT 1`).Scan(&oldest)
 		if err == sql.ErrNoRows {
-			return nil // nothing left to prune; remaining size is structural overhead
+			return pruned, nil // nothing left to prune; remaining size is structural overhead
 		}
 		if err != nil {
-			return err
+			return pruned, err
 		}
 
-		if _, err := conn.ExecContext(ctx, "DELETE FROM file_changes WHERE session_id = ?", oldest); err != nil {
-			return err
+		if _, err := db.ExecContext(ctx, "DELETE FROM file_changes WHERE session_id = ?", oldest); err != nil {
+			return pruned, err
 		}
-		if _, err := conn.ExecContext(ctx, blobSweepSQL); err != nil {
-			return err
+		pruned = true
+		if _, err := db.ExecContext(ctx, blobSweepSQL); err != nil {
+			return pruned, err
 		}
-		if _, err := conn.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
-			return err
+		if _, err := db.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
+			return pruned, err
 		}
 	}
 }
 
 // databaseSize returns the database file size in bytes (page count × page size).
-func databaseSize(ctx context.Context, conn *sql.Conn) (int64, error) {
+func databaseSize(ctx context.Context, db totalBudgetDB) (int64, error) {
 	var pageCount, pageSize int64
-	if err := conn.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
+	if err := db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
 		return 0, fmt.Errorf("page count: %w", err)
 	}
-	if err := conn.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
+	if err := db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
 		return 0, fmt.Errorf("page size: %w", err)
 	}
 	return pageCount * pageSize, nil
