@@ -17,12 +17,15 @@ import (
 )
 
 const (
-	primaryWorkspaceID                  = "primary"
-	primaryWorkspaceStatusProposed      = "proposed"
-	primaryWorkspaceStatusConfirmed     = "confirmed"
-	primaryWorkspaceProvenanceProposed  = "primary-proposed"
-	primaryWorkspaceProvenanceConfirmed = "human-confirmed-primary"
-	workspaceProvenanceYolo             = "yolo"
+	primaryWorkspaceID                      = "primary"
+	primaryWorkspaceStatusProposed          = "proposed"
+	primaryWorkspaceStatusConfirmed         = "confirmed"
+	primaryWorkspaceProvenanceProposed      = "primary-proposed"
+	primaryWorkspaceProvenanceConfirmed     = "human-confirmed-primary"
+	primaryWorkspaceProvenanceMainInherited = "main-worktree-inherited-primary"
+	workspaceProvenanceYolo                 = "yolo"
+
+	primaryWorkspaceRationaleInheritedMain = "inherited confirmation from the Git main worktree; shell commands remain separately controlled"
 )
 
 // WorkspaceCapability is the combined list view of the proposed/confirmed
@@ -67,54 +70,120 @@ func (m *ApprovalManager) SetPrimaryWorkspaceWithContext(ctx context.Context, pa
 		return err
 	}
 	root := m.root()
-	promptLock := root.PromptLock()
-	promptLock.Lock()
-	defer promptLock.Unlock()
+	const maxStateRetries = 3
+	for attempt := 0; attempt < maxStateRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		root.workspaceMu.RLock()
+		oldProposal := root.primaryWorkspace
+		loadedPrimary := root.primaryWorkspaceGrant
+		store := root.workspaceStore
+		sessionID := root.workspaceSessionID
+		version := root.workspaceVersion
+		root.workspaceMu.RUnlock()
+		if oldProposal == canonical {
+			return nil
+		}
 
-	root.workspaceMu.RLock()
-	oldProposal := root.primaryWorkspace
-	loadedPrimary := root.primaryWorkspaceGrant
-	store := root.workspaceStore
-	sessionID := root.workspaceSessionID
-	root.workspaceMu.RUnlock()
-	if oldProposal == canonical {
-		return nil
-	}
+		inheritable := loadedPrimary.ID == primaryWorkspaceID &&
+			loadedPrimary.Path == oldProposal &&
+			loadedPrimary.Access == session.WorkspaceAccessWrite &&
+			(loadedPrimary.Provenance == primaryWorkspaceProvenanceConfirmed || loadedPrimary.Provenance == primaryWorkspaceProvenanceMainInherited)
+		inheritedMainApproval := inheritable && inheritsRegisteredMainWorktreeApproval(ctx, oldProposal, canonical, loadedPrimary.Provenance)
 
-	// A store may be attached before an explicit serve/session binding is
-	// restored. Reuse only a matching persisted decision for that same binding.
-	if oldProposal == "" && loadedPrimary.Path == canonical {
+		// Git discovery deliberately happens before this lock so a slow repository
+		// cannot block unrelated human approval prompts. Revalidate the complete
+		// authority snapshot after acquiring it and again after persistence.
+		promptLock := root.PromptLock()
+		promptLock.Lock()
+		root.workspaceMu.RLock()
+		stable := root.workspaceVersion == version &&
+			root.primaryWorkspace == oldProposal &&
+			root.primaryWorkspaceGrant == loadedPrimary &&
+			root.workspaceSessionID == sessionID
+		root.workspaceMu.RUnlock()
+		if !stable {
+			promptLock.Unlock()
+			continue
+		}
+
+		// A store may be attached before an explicit serve/session binding is
+		// restored. Reuse only a matching persisted decision for that same binding.
+		if oldProposal == "" && loadedPrimary.Path == canonical {
+			root.workspaceMu.Lock()
+			if root.workspaceVersion != version || root.primaryWorkspace != oldProposal || root.primaryWorkspaceGrant != loadedPrimary || root.workspaceSessionID != sessionID {
+				root.workspaceMu.Unlock()
+				promptLock.Unlock()
+				continue
+			}
+			root.primaryWorkspace = canonical
+			root.primaryWorkspaceDenied = false
+			root.workspaceVersion++
+			root.workspaceMu.Unlock()
+			promptLock.Unlock()
+			return nil
+		}
+
+		now := time.Now()
+		decision := session.WorkspaceGrant{
+			ID: primaryWorkspaceID, Path: canonical, Access: session.WorkspaceAccessWrite,
+			Provenance: primaryWorkspaceProvenanceProposed,
+			Rationale:  "pending direct human confirmation for the session primary workspace",
+			CreatedAt:  now, UpdatedAt: now,
+		}
+		if inheritedMainApproval {
+			decision.Provenance = primaryWorkspaceProvenanceMainInherited
+			decision.Rationale = primaryWorkspaceRationaleInheritedMain
+		}
+		if loadedPrimary.ID == primaryWorkspaceID && !loadedPrimary.CreatedAt.IsZero() {
+			decision.CreatedAt = loadedPrimary.CreatedAt
+		}
+		persisted := store != nil && strings.TrimSpace(sessionID) != ""
+		if persisted {
+			if err := store.SaveWorkspaceGrant(ctx, sessionID, decision); err != nil {
+				promptLock.Unlock()
+				if inheritedMainApproval {
+					return fmt.Errorf("persist inherited primary workspace confirmation: %w", err)
+				}
+				return fmt.Errorf("persist proposed primary workspace: %w", err)
+			}
+		}
+
 		root.workspaceMu.Lock()
-		root.primaryWorkspace = canonical
-		root.primaryWorkspaceDenied = false
-		root.workspaceVersion++
+		stable = root.workspaceVersion == version &&
+			root.primaryWorkspace == oldProposal &&
+			root.primaryWorkspaceGrant == loadedPrimary &&
+			root.workspaceSessionID == sessionID
+		if stable {
+			root.primaryWorkspace = canonical
+			root.primaryWorkspaceGrant = decision
+			root.primaryWorkspaceDenied = false
+			root.workspaceVersion++
+		}
 		root.workspaceMu.Unlock()
-		return nil
-	}
-
-	now := time.Now()
-	proposed := session.WorkspaceGrant{
-		ID: primaryWorkspaceID, Path: canonical, Access: session.WorkspaceAccessWrite,
-		Provenance: primaryWorkspaceProvenanceProposed,
-		Rationale:  "pending direct human confirmation for the session primary workspace",
-		CreatedAt:  now, UpdatedAt: now,
-	}
-	if loadedPrimary.ID == primaryWorkspaceID && !loadedPrimary.CreatedAt.IsZero() {
-		proposed.CreatedAt = loadedPrimary.CreatedAt
-	}
-	if store != nil && strings.TrimSpace(sessionID) != "" {
-		if err := store.SaveWorkspaceGrant(ctx, sessionID, proposed); err != nil {
-			return fmt.Errorf("persist proposed primary workspace: %w", err)
+		promptLock.Unlock()
+		if stable {
+			return nil
+		}
+		if persisted {
+			restorePersistedPrimaryDecision(ctx, store, sessionID, loadedPrimary)
 		}
 	}
+	return fmt.Errorf("primary workspace authority changed repeatedly while rebinding to %s", canonical)
+}
 
-	root.workspaceMu.Lock()
-	root.primaryWorkspace = canonical
-	root.primaryWorkspaceGrant = proposed
-	root.primaryWorkspaceDenied = false
-	root.workspaceVersion++
-	root.workspaceMu.Unlock()
-	return nil
+func restorePersistedPrimaryDecision(ctx context.Context, store session.WorkspaceGrantStore, sessionID string, previous session.WorkspaceGrant) {
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	defer cancel()
+	if previous.ID == primaryWorkspaceID && previous.Path != "" {
+		_ = store.SaveWorkspaceGrant(restoreCtx, sessionID, previous)
+		return
+	}
+	_ = store.DeleteWorkspaceGrant(restoreCtx, sessionID, primaryWorkspaceID)
 }
 
 // ClearPrimaryWorkspace removes a proposal/confirmation without touching
@@ -208,7 +277,7 @@ func (m *ApprovalManager) ConfigureWorkspacePersistence(ctx context.Context, sto
 			continue
 		}
 		if grant.ID == primaryWorkspaceID {
-			if grant.Access == session.WorkspaceAccessWrite && (grant.Provenance == primaryWorkspaceProvenanceConfirmed || grant.Provenance == primaryWorkspaceProvenanceProposed) {
+			if grant.Access == session.WorkspaceAccessWrite && (grant.Provenance == primaryWorkspaceProvenanceConfirmed || grant.Provenance == primaryWorkspaceProvenanceMainInherited || grant.Provenance == primaryWorkspaceProvenanceProposed) {
 				persistedPrimary = grant
 			}
 			continue
@@ -233,7 +302,6 @@ func (m *ApprovalManager) ConfigureWorkspacePersistence(ctx context.Context, sto
 		if scopeChanged {
 			root.primaryWorkspaceDenied = false
 		}
-		root.workspaceVersion++
 	} else if scopeChanged {
 		// A reusable manager must never carry runtime-only authority into another
 		// session merely because that session store lacks the optional capability.
@@ -241,8 +309,10 @@ func (m *ApprovalManager) ConfigureWorkspacePersistence(ctx context.Context, sto
 		root.workspaceYoloGrants = make(map[string]session.WorkspaceGrant)
 		root.primaryWorkspaceGrant = session.WorkspaceGrant{}
 		root.primaryWorkspaceDenied = false
-		root.workspaceVersion++
 	}
+	// Every persistence reconfiguration invalidates authority decisions that may
+	// be in flight, even when the session ID happens to remain unchanged.
+	root.workspaceVersion++
 	root.workspaceMu.Unlock()
 	return nil
 }
@@ -264,11 +334,12 @@ func (m *ApprovalManager) clearYoloWorkspaceGrants() {
 
 func (m *ApprovalManager) primaryWorkspaceConfirmedLocked() bool {
 	root := m.root()
+	provenance := root.primaryWorkspaceGrant.Provenance
 	return root.primaryWorkspace != "" &&
 		root.primaryWorkspaceGrant.ID == primaryWorkspaceID &&
 		root.primaryWorkspaceGrant.Path == root.primaryWorkspace &&
 		root.primaryWorkspaceGrant.Access == session.WorkspaceAccessWrite &&
-		root.primaryWorkspaceGrant.Provenance == primaryWorkspaceProvenanceConfirmed
+		(provenance == primaryWorkspaceProvenanceConfirmed || provenance == primaryWorkspaceProvenanceMainInherited)
 }
 
 // ensurePrimaryWorkspaceAccess performs the authority-boundary confirmation
@@ -283,23 +354,6 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 	proposal := root.primaryWorkspace
 	confirmed := root.primaryWorkspaceConfirmedLocked()
 	denied := root.primaryWorkspaceDenied
-	root.workspaceMu.RUnlock()
-	if proposal == "" || !pathWithinWorkspace(canonicalPath, proposal) || confirmed {
-		return nil
-	}
-	if denied {
-		return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s was denied by the human; explicit workspace read/write confirmation is required", proposal)
-	}
-
-	promptLock := root.PromptLock()
-	promptLock.Lock()
-	defer promptLock.Unlock()
-
-	root.workspaceMu.RLock()
-	proposal = root.primaryWorkspace
-	confirmed = root.primaryWorkspaceConfirmedLocked()
-	denied = root.primaryWorkspaceDenied
-	version := root.workspaceVersion
 	trustStore := root.workspaceTrustStore
 	root.workspaceMu.RUnlock()
 	if proposal == "" || !pathWithinWorkspace(canonicalPath, proposal) || confirmed {
@@ -309,10 +363,12 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 		return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s was denied by the human; explicit workspace read/write confirmation is required", proposal)
 	}
 
+	// Remembered-workspace lookup may query Git. Keep it outside the shared
+	// prompt lock so repository I/O cannot block unrelated human approvals.
 	remembered := false
 	if trustStore != nil {
 		var err error
-		remembered, err = trustStore.IsTrusted(proposal)
+		remembered, err = trustStore.IsTrusted(ctx, proposal)
 		if err != nil {
 			// An unreadable ledger grants no authority, but it must not disable the
 			// existing direct-human confirmation path. Remember writes still fail
@@ -323,6 +379,29 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 			}
 		}
 	}
+
+	promptLock := root.PromptLock()
+	promptLock.Lock()
+	defer promptLock.Unlock()
+
+	lookedUpProposal := proposal
+	root.workspaceMu.RLock()
+	proposal = root.primaryWorkspace
+	confirmed = root.primaryWorkspaceConfirmedLocked()
+	denied = root.primaryWorkspaceDenied
+	version := root.workspaceVersion
+	trustStore = root.workspaceTrustStore
+	root.workspaceMu.RUnlock()
+	if proposal == "" || !pathWithinWorkspace(canonicalPath, proposal) || confirmed {
+		return nil
+	}
+	if denied {
+		return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s was denied by the human; explicit workspace read/write confirmation is required", proposal)
+	}
+	if proposal != lookedUpProposal {
+		return NewToolError(ErrPermissionDenied, "primary workspace changed during remembered approval lookup; access denied")
+	}
+
 	if !remembered {
 		prompt := m.lookupWorkspacePromptFunc()
 		if prompt == nil {
@@ -823,6 +902,7 @@ func (m *ApprovalManager) BindWorkspaceSessionID(sessionID string) {
 	root.workspaceMu.Lock()
 	if root.workspaceSessionID == "" {
 		root.workspaceSessionID = sessionID
+		root.workspaceVersion++
 	}
 	root.workspaceMu.Unlock()
 }

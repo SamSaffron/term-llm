@@ -23,7 +23,7 @@ type failingWorkspaceTrustStore struct {
 	rememberErr error
 }
 
-func (s failingWorkspaceTrustStore) IsTrusted(string) (bool, error) {
+func (s failingWorkspaceTrustStore) IsTrusted(context.Context, string) (bool, error) {
 	return false, s.checkErr
 }
 
@@ -46,6 +46,54 @@ func (s *legacyYoloDeleteFailureStore) SaveWorkspaceGrant(context.Context, strin
 
 func (s *legacyYoloDeleteFailureStore) DeleteWorkspaceGrant(context.Context, string, string) error {
 	return errors.New("delete unavailable")
+}
+
+type blockingInheritedWorkspaceStore struct {
+	session.Store
+	grants  session.WorkspaceGrantStore
+	entered chan struct{}
+	release chan struct{}
+	blocked atomic.Bool
+}
+
+func (s *blockingInheritedWorkspaceStore) ListWorkspaceGrants(ctx context.Context, sessionID string) ([]session.WorkspaceGrant, error) {
+	return s.grants.ListWorkspaceGrants(ctx, sessionID)
+}
+
+func (s *blockingInheritedWorkspaceStore) SaveWorkspaceGrant(ctx context.Context, sessionID string, grant session.WorkspaceGrant) error {
+	if grant.Provenance == primaryWorkspaceProvenanceMainInherited && s.blocked.CompareAndSwap(false, true) {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.grants.SaveWorkspaceGrant(ctx, sessionID, grant)
+}
+
+func (s *blockingInheritedWorkspaceStore) DeleteWorkspaceGrant(ctx context.Context, sessionID, grantID string) error {
+	return s.grants.DeleteWorkspaceGrant(ctx, sessionID, grantID)
+}
+
+type failingInheritedWorkspaceStore struct {
+	session.Store
+	grants session.WorkspaceGrantStore
+}
+
+func (s *failingInheritedWorkspaceStore) ListWorkspaceGrants(ctx context.Context, sessionID string) ([]session.WorkspaceGrant, error) {
+	return s.grants.ListWorkspaceGrants(ctx, sessionID)
+}
+
+func (s *failingInheritedWorkspaceStore) SaveWorkspaceGrant(ctx context.Context, sessionID string, grant session.WorkspaceGrant) error {
+	if grant.Provenance == primaryWorkspaceProvenanceMainInherited {
+		return errors.New("inherited save failed")
+	}
+	return s.grants.SaveWorkspaceGrant(ctx, sessionID, grant)
+}
+
+func (s *failingInheritedWorkspaceStore) DeleteWorkspaceGrant(ctx context.Context, sessionID, grantID string) error {
+	return s.grants.DeleteWorkspaceGrant(ctx, sessionID, grantID)
 }
 
 func TestPrimaryWorkspaceYoloBypassesConfirmationUntilModeChanges(t *testing.T) {
@@ -782,6 +830,241 @@ func TestRememberedPrimaryWorkspaceAppliesToFutureSessions(t *testing.T) {
 	}
 	if prompts != 1 {
 		t.Fatalf("session-only prompts = %d, want 1", prompts)
+	}
+}
+
+func TestApprovedMainWorktreeAutomaticallyConfirmsLinkedWorktrees(t *testing.T) {
+	main, linked, sibling := newWorkspaceTrustWorktrees(t)
+	mgr := NewApprovalManager(NewToolPermissions())
+	mgr.workspaceTrustStore = &fileWorkspaceTrustStore{path: filepath.Join(t.TempDir(), "empty.yaml")}
+	if err := mgr.SetPrimaryWorkspace(main); err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	mgr.WorkspacePromptFunc = func(workspace string) (WorkspaceApprovalResult, error) {
+		prompts++
+		if workspace != main {
+			t.Fatalf("unexpected workspace prompt for %q", workspace)
+		}
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	if outcome, err := mgr.CheckPathApproval(ReadFileToolName, filepath.Join(main, "README.md"), filepath.Join(main, "README.md"), false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("main worktree confirmation = %v, %v", outcome, err)
+	}
+
+	for _, workspace := range []string{linked, sibling, main} {
+		if err := mgr.SetPrimaryWorkspace(workspace); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(workspace, "README.md")
+		if !mgr.IsWorkspacePathAllowed(path, true) {
+			t.Fatalf("workspace %q did not inherit main worktree approval", workspace)
+		}
+		if outcome, err := mgr.CheckPathApproval(WriteFileToolName, path, path, true); err != nil || outcome != ProceedAlways {
+			t.Fatalf("inherited worktree confirmation for %q = %v, %v", workspace, outcome, err)
+		}
+	}
+	if prompts != 1 {
+		t.Fatalf("workspace prompts = %d, want only the main worktree prompt", prompts)
+	}
+}
+
+func TestUnapprovedMainWorktreeDoesNotConfirmLinkedWorktree(t *testing.T) {
+	main, linked, _ := newWorkspaceTrustWorktrees(t)
+	mgr := NewApprovalManager(NewToolPermissions())
+	mgr.workspaceTrustStore = &fileWorkspaceTrustStore{path: filepath.Join(t.TempDir(), "empty.yaml")}
+	if err := mgr.SetPrimaryWorkspace(main); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetPrimaryWorkspace(linked); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(linked, "README.md")
+	if mgr.IsWorkspacePathAllowed(path, false) {
+		t.Fatal("linked worktree inherited an unapproved main worktree proposal")
+	}
+	prompts := 0
+	mgr.WorkspacePromptFunc = func(workspace string) (WorkspaceApprovalResult, error) {
+		prompts++
+		if workspace != linked {
+			t.Fatalf("workspace prompt = %q, want %q", workspace, linked)
+		}
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	if outcome, err := mgr.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("linked worktree confirmation = %v, %v", outcome, err)
+	}
+	if prompts != 1 {
+		t.Fatalf("workspace prompts = %d, want 1", prompts)
+	}
+}
+
+func TestMainWorktreeApprovalDoesNotCrossWorkspaceBoundaries(t *testing.T) {
+	main, _, _ := newWorkspaceTrustWorktrees(t)
+	otherMain, otherLinked, _ := newWorkspaceTrustWorktrees(t)
+	plain := t.TempDir()
+
+	for _, candidate := range []string{otherMain, otherLinked, plain} {
+		mgr := NewApprovalManager(NewToolPermissions())
+		mgr.workspaceTrustStore = &fileWorkspaceTrustStore{path: filepath.Join(t.TempDir(), "empty.yaml")}
+		if err := mgr.SetPrimaryWorkspace(main); err != nil {
+			t.Fatal(err)
+		}
+		mgr.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+			return WorkspaceApprovalResult{Approved: true}, nil
+		}
+		mainPath := filepath.Join(main, "README.md")
+		if _, err := mgr.CheckPathApproval(ReadFileToolName, mainPath, mainPath, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.SetPrimaryWorkspace(candidate); err != nil {
+			t.Fatal(err)
+		}
+		candidatePath := filepath.Join(candidate, "README.md")
+		if candidate == plain {
+			candidatePath = filepath.Join(candidate, "file.txt")
+			if err := os.WriteFile(candidatePath, []byte("fixture"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if mgr.IsWorkspacePathAllowed(candidatePath, false) {
+			t.Fatalf("main worktree approval crossed into %q", candidate)
+		}
+	}
+}
+
+func TestInheritedMainWorktreeApprovalPersistsAndResumes(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &session.Session{ID: "inherited-resume", Provider: "mock", Model: "model", Mode: session.ModeChat, Origin: session.OriginTUI, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	main, linked, _ := newWorkspaceTrustWorktrees(t)
+	mgr := NewApprovalManager(NewToolPermissions())
+	if err := mgr.SetPrimaryWorkspace(main); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.ConfigureWorkspacePersistence(ctx, store, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	mgr.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	mainPath := filepath.Join(main, "README.md")
+	if _, err := mgr.CheckPathApproval(ReadFileToolName, mainPath, mainPath, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetPrimaryWorkspaceWithContext(ctx, linked); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := NewApprovalManager(NewToolPermissions())
+	if err := resumed.SetPrimaryWorkspace(linked); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumed.ConfigureWorkspacePersistence(ctx, store, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(linked, "README.md")
+	if !resumed.IsWorkspacePathAllowed(linkedPath, true) {
+		t.Fatal("persisted inherited worktree approval was not restored")
+	}
+	caps := resumed.WorkspaceCapabilities()
+	if len(caps) != 1 || caps[0].Status != primaryWorkspaceStatusConfirmed || caps[0].Provenance != primaryWorkspaceProvenanceMainInherited || caps[0].Rationale != primaryWorkspaceRationaleInheritedMain {
+		t.Fatalf("restored inherited capability = %#v", caps)
+	}
+}
+
+func TestInheritedMainWorktreePersistenceFailureInstallsNoAuthority(t *testing.T) {
+	ctx := context.Background()
+	sqliteStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	sess := &session.Session{ID: "inherited-failure", Provider: "mock", Model: "model", Mode: session.ModeChat, Origin: session.OriginTUI, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive}
+	if err := sqliteStore.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	store := &failingInheritedWorkspaceStore{Store: sqliteStore, grants: sqliteStore}
+	main, linked, _ := newWorkspaceTrustWorktrees(t)
+	mgr := NewApprovalManager(NewToolPermissions())
+	if err := mgr.SetPrimaryWorkspace(main); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.ConfigureWorkspacePersistence(ctx, store, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	mgr.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	mainPath := filepath.Join(main, "README.md")
+	if _, err := mgr.CheckPathApproval(ReadFileToolName, mainPath, mainPath, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SetPrimaryWorkspaceWithContext(ctx, linked); err == nil || !strings.Contains(err.Error(), "persist inherited primary workspace confirmation") {
+		t.Fatalf("inherited persistence error = %v", err)
+	}
+	if mgr.IsWorkspacePathAllowed(filepath.Join(linked, "README.md"), true) {
+		t.Fatal("failed inherited persistence installed write authority")
+	}
+	if !mgr.IsWorkspacePathAllowed(mainPath, true) {
+		t.Fatal("failed inherited persistence removed the existing main approval")
+	}
+}
+
+func TestPersistenceRescopeCannotInstallStaleInheritedAuthority(t *testing.T) {
+	ctx := context.Background()
+	sqliteStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	for _, id := range []string{"scope-one", "scope-two"} {
+		sess := &session.Session{ID: id, Provider: "mock", Model: "model", Mode: session.ModeChat, Origin: session.OriginTUI, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive}
+		if err := sqliteStore.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &blockingInheritedWorkspaceStore{Store: sqliteStore, grants: sqliteStore, entered: make(chan struct{}), release: make(chan struct{})}
+	main, linked, _ := newWorkspaceTrustWorktrees(t)
+	mgr := NewApprovalManager(NewToolPermissions())
+	if err := mgr.SetPrimaryWorkspace(main); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.ConfigureWorkspacePersistence(ctx, store, "scope-one"); err != nil {
+		t.Fatal(err)
+	}
+	mgr.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+	mainPath := filepath.Join(main, "README.md")
+	if _, err := mgr.CheckPathApproval(ReadFileToolName, mainPath, mainPath, false); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- mgr.SetPrimaryWorkspaceWithContext(ctx, linked) }()
+	<-store.entered
+	if err := mgr.ConfigureWorkspacePersistence(ctx, store, "scope-two"); err != nil {
+		t.Fatal(err)
+	}
+	close(store.release)
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(linked, "README.md")
+	if mgr.IsWorkspacePathAllowed(linkedPath, true) {
+		t.Fatal("stale approval from the previous session scope installed write authority")
+	}
+	grants, err := sqliteStore.ListWorkspaceGrants(ctx, "scope-two")
+	if err != nil || len(grants) != 1 || grants[0].Path != linked || grants[0].Provenance != primaryWorkspaceProvenanceProposed {
+		t.Fatalf("new scope grants = %#v, %v", grants, err)
 	}
 }
 

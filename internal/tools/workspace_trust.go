@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +18,7 @@ import (
 const rememberedWorkspacesVersion = 1
 
 type workspaceTrustStore interface {
-	IsTrusted(workspace string) (bool, error)
+	IsTrusted(context.Context, string) (bool, error)
 	Remember(workspace string) error
 }
 
@@ -39,6 +42,90 @@ func defaultWorkspaceTrustStore() workspaceTrustStore {
 	return &fileWorkspaceTrustStore{}
 }
 
+// registeredWorktrees returns canonical worktree roots in Git's authoritative
+// order. Git documents the first porcelain entry as the main worktree. The
+// command runs from an already-approved path and ignores ambient variables that
+// could redirect repository discovery.
+func registeredWorktrees(ctx context.Context, approvedWorkspace string) (string, map[string]struct{}, error) {
+	approved, err := canonicalWorkspaceDirectory(approvedWorkspace)
+	if err != nil {
+		return "", nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	execCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(execCtx, "git", "-C", approved, "worktree", "list", "--porcelain", "-z")
+	cmd.Env = scrubGitRepositoryEnvironment(os.Environ())
+	output, err := cmd.Output()
+	if err != nil {
+		return "", nil, fmt.Errorf("list registered Git worktrees: %w", err)
+	}
+
+	paths := make(map[string]struct{})
+	mainRoot := ""
+	seenWorktree := false
+	for _, field := range strings.Split(string(output), "\x00") {
+		if !strings.HasPrefix(field, "worktree ") {
+			continue
+		}
+		path, canonicalErr := canonicalWorkspaceDirectory(strings.TrimPrefix(field, "worktree "))
+		if !seenWorktree {
+			seenWorktree = true
+			if canonicalErr != nil {
+				return "", nil, fmt.Errorf("canonicalize Git main worktree: %w", canonicalErr)
+			}
+			mainRoot = path
+		}
+		if canonicalErr != nil {
+			continue
+		}
+		paths[path] = struct{}{}
+	}
+	if mainRoot == "" {
+		return "", nil, fmt.Errorf("list registered Git worktrees: main worktree was not reported")
+	}
+	if _, registered := paths[approved]; !registered {
+		return "", nil, fmt.Errorf("approved workspace %s is not a registered Git worktree", approved)
+	}
+	return mainRoot, paths, nil
+}
+
+func scrubGitRepositoryEnvironment(env []string) []string {
+	clean := make([]string, 0, len(env))
+	for _, entry := range env {
+		key := entry
+		if index := strings.IndexByte(entry, '='); index >= 0 {
+			key = entry[:index]
+		}
+		if strings.EqualFold(key, "GIT_DIR") || strings.EqualFold(key, "GIT_COMMON_DIR") || strings.EqualFold(key, "GIT_WORK_TREE") {
+			continue
+		}
+		clean = append(clean, entry)
+	}
+	return clean
+}
+
+// inheritsRegisteredMainWorktreeApproval verifies candidate from the approved
+// repository's worktree registry. A direct approval inherits only when it was
+// granted to the main worktree; inherited provenance can continue across
+// sibling worktrees and back to main.
+func inheritsRegisteredMainWorktreeApproval(ctx context.Context, approved, candidate, provenance string) bool {
+	mainRoot, worktrees, err := registeredWorktrees(ctx, approved)
+	if err != nil {
+		return false
+	}
+	if provenance == primaryWorkspaceProvenanceConfirmed && approved != mainRoot {
+		return false
+	}
+	if provenance != primaryWorkspaceProvenanceConfirmed && provenance != primaryWorkspaceProvenanceMainInherited {
+		return false
+	}
+	_, registered := worktrees[candidate]
+	return registered
+}
+
 func rememberedWorkspacesPath() (string, error) {
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
@@ -58,20 +145,28 @@ func (s *fileWorkspaceTrustStore) filePath() (string, error) {
 	return rememberedWorkspacesPath()
 }
 
-func (s *fileWorkspaceTrustStore) IsTrusted(workspace string) (bool, error) {
+func (s *fileWorkspaceTrustStore) IsTrusted(ctx context.Context, workspace string) (bool, error) {
 	canonical, err := canonicalWorkspaceDirectory(workspace)
 	if err != nil {
 		return false, fmt.Errorf("canonicalize workspace trust lookup: %w", err)
 	}
 	rememberedWorkspacesMu.Lock()
-	defer rememberedWorkspacesMu.Unlock()
-
 	ledger, _, err := s.loadLocked()
+	rememberedWorkspacesMu.Unlock()
 	if err != nil {
 		return false, err
 	}
 	for _, remembered := range ledger.Workspaces {
 		if remembered.Path == canonical {
+			return true, nil
+		}
+	}
+	for _, remembered := range ledger.Workspaces {
+		mainRoot, worktrees, gitErr := registeredWorktrees(ctx, remembered.Path)
+		if gitErr != nil || remembered.Path != mainRoot {
+			continue
+		}
+		if _, registered := worktrees[canonical]; registered {
 			return true, nil
 		}
 	}
