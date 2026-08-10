@@ -352,7 +352,7 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		if m.engine != nil {
 			_ = m.engine.DrainInterjection()
 		}
-		m.clearPendingInterjectionState()
+		m.clearPendingInterjection()
 		cmds = append(cmds, m.streamCancelTimeoutCmd())
 		cancelled = true
 	}
@@ -538,10 +538,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// While streaming, pending interjections form a cancellable stack. With an
-	// empty composer, up/down selects and delete/backspace cancels the selected
-	// not-yet-incorporated interjection.
-	if m.streaming && len(m.pendingInterjections) > 0 && strings.TrimSpace(m.textarea.Value()) == "" {
+	// Pending interjections form a cancellable stack. With an empty composer,
+	// up/down selects and delete/backspace cancels the selected not-yet-consumed
+	// entry, including one preserved after its run reached the final boundary.
+	if len(m.pendingInterjections) > 0 && strings.TrimSpace(m.textarea.Value()) == "" {
 		switch msg.String() {
 		case "up":
 			if m.selectedInterjection < 0 {
@@ -921,7 +921,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if residual := m.engine.DrainInterjection(); residual != "" {
 				m.setTextareaValue(residual)
 			}
-			m.clearPendingInterjectionState()
+			m.clearPendingInterjection()
 
 			m.textarea.Focus()
 			return m, tea.Batch(m.applyPendingStreamModelSwitch(), m.streamCancelTimeoutCmd())
@@ -1086,6 +1086,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.setTextareaValue(strings.TrimSuffix(raw, "\\") + "\n")
 				return m, nil
 			}
+			if action, ok := llm.ClassifyInterruptImmediate(raw); ok && action == llm.InterruptCancel {
+				m.applyInterruptActionWithParts(m.nextPendingInterjectionID(), raw, m.imagePartList(), action)
+				return m, nil
+			}
 			if strings.HasPrefix(raw, "/") {
 				if updated, cmd, handled := m.queueMainSkillDuringStream(raw); handled {
 					m.invalidateAltScreenStreamingViewportCache()
@@ -1110,7 +1114,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			content := m.expandedPastePlaceholders(raw)
 			parts := m.imagePartList()
-			hasImages := len(parts) > 0
 			if delegationContext != "" {
 				parts = append(parts, llm.Part{Type: llm.PartAgentMention, Text: delegationContext})
 			}
@@ -1124,16 +1127,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.pasteChunks = nil
 
 			interjectionID := m.nextPendingInterjectionID()
-			if action, ok := llm.ClassifyInterruptImmediate(content); ok && !hasImages {
-				m.applyInterruptActionWithParts(interjectionID, content, parts, action)
-				return m, nil
-			}
-			if m.fastProvider == nil {
-				m.applyInterruptActionWithParts(interjectionID, content, parts, llm.InterruptInterject)
-				return m, nil
-			}
-
-			return m, m.queueInterruptClassification(interjectionID, content, parts)
+			m.applyInterruptActionWithParts(interjectionID, content, parts, llm.InterruptInterject)
+			return m, nil
 		}
 		// Allow textarea to receive input
 		old := m.textarea.Value()
@@ -1662,7 +1657,6 @@ func (m *Model) syncLatestPendingInterjection() {
 	if len(m.pendingInterjections) == 0 {
 		m.pendingInterjectionID = ""
 		m.pendingInterjection = ""
-		m.pendingInterruptUI = ""
 		m.selectedInterjection = -1
 		return
 	}
@@ -1672,14 +1666,12 @@ func (m *Model) syncLatestPendingInterjection() {
 	latest := m.pendingInterjections[len(m.pendingInterjections)-1]
 	m.pendingInterjectionID = latest.ID
 	m.pendingInterjection = latest.Text
-	m.pendingInterruptUI = latest.UIState
 }
 
-func (m *Model) setPendingInterjection(interjectionID, content, uiState string) {
+func (m *Model) setPendingInterjection(interjectionID, content string) {
 	for i := range m.pendingInterjections {
 		if m.pendingInterjections[i].ID == interjectionID {
 			m.pendingInterjections[i].Text = content
-			m.pendingInterjections[i].UIState = uiState
 			if m.selectedInterjection < 0 {
 				m.selectedInterjection = i
 			}
@@ -1687,7 +1679,7 @@ func (m *Model) setPendingInterjection(interjectionID, content, uiState string) 
 			return
 		}
 	}
-	m.pendingInterjections = append(m.pendingInterjections, pendingInterjectionUI{ID: interjectionID, Text: content, UIState: uiState})
+	m.pendingInterjections = append(m.pendingInterjections, pendingInterjectionUI{ID: interjectionID, Text: content})
 	m.selectedInterjection = len(m.pendingInterjections) - 1
 	m.syncLatestPendingInterjection()
 }
@@ -1711,13 +1703,7 @@ func (m *Model) clearPendingInterjection() {
 	m.pendingInterjections = nil
 	m.pendingInterjectionID = ""
 	m.pendingInterjection = ""
-	m.pendingInterruptUI = ""
 	m.selectedInterjection = -1
-}
-
-func (m *Model) clearPendingInterjectionState() {
-	m.activeInterruptSeq = 0
-	m.clearPendingInterjection()
 }
 
 func (m *Model) cancelSelectedPendingInterjection() bool {
@@ -1729,12 +1715,8 @@ func (m *Model) cancelSelectedPendingInterjection() bool {
 		idx = len(m.pendingInterjections) - 1
 	}
 	entry := m.pendingInterjections[idx]
-	if entry.UIState == "interject" {
-		if !m.engine.CancelInterjection(entry.ID) {
-			return false
-		}
-	} else if entry.UIState == "deciding" && entry.ID == m.pendingInterjectionID {
-		m.activeInterruptSeq = 0
+	if !m.engine.CancelInterjection(entry.ID) {
+		return false
 	}
 	copy(m.pendingInterjections[idx:], m.pendingInterjections[idx+1:])
 	m.pendingInterjections = m.pendingInterjections[:len(m.pendingInterjections)-1]
@@ -1743,39 +1725,11 @@ func (m *Model) cancelSelectedPendingInterjection() bool {
 	return true
 }
 
-func (m *Model) queueInterruptClassification(interjectionID, content string, parts []llm.Part) tea.Cmd {
-	m.interruptRequestSeq++
-	requestID := m.interruptRequestSeq
-	activity := m.currentInterruptActivity()
-
-	m.activeInterruptSeq = requestID
-	m.setPendingInterjection(interjectionID, content, "deciding")
-	m.interruptNotice = ""
-	m.setTextareaValue("")
-
-	provider := m.fastProvider
-	classifyText := content
-	if classifyText == "" && len(parts) > 0 {
-		classifyText = llm.MessageAttachmentSummary(llm.Message{Role: llm.RoleUser, Parts: parts})
-	}
-	return func() tea.Msg {
-		action := llm.ClassifyInterrupt(context.Background(), provider, classifyText, activity)
-		return interruptClassifiedMsg{
-			RequestID:      requestID,
-			InterjectionID: interjectionID,
-			Content:        content,
-			Parts:          parts,
-			Action:         action,
-		}
-	}
-}
-
 func (m *Model) applyInterruptAction(interjectionID, content string, action llm.InterruptAction) {
 	m.applyInterruptActionWithParts(interjectionID, content, nil, action)
 }
 
 func (m *Model) applyInterruptActionWithParts(interjectionID, content string, parts []llm.Part, action llm.InterruptAction) {
-	m.activeInterruptSeq = 0
 	m.setTextareaValue("")
 
 	summary := content
@@ -1785,12 +1739,20 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 
 	switch action {
 	case llm.InterruptCancel:
+		if m.engine != nil {
+			m.engine.DiscardPendingInterjections()
+		}
 		m.clearPendingInterjection()
-		m.interruptNotice = "✕ cancelled current response — draft restored below"
 		m.phase = "Stopping..."
-		m.setTextareaValue(content)
-		// Restore image attachments when classification chose to cancel the run.
-		// The normal text draft is restored above; queued-interjection cancellation does not restore drafts.
+		if immediate, ok := llm.ClassifyInterruptImmediate(content); ok && immediate == llm.InterruptCancel {
+			m.interruptNotice = "✕ cancelled current response"
+			m.setTextareaValue("")
+		} else {
+			m.interruptNotice = "✕ cancelled current response — draft restored below"
+			m.setTextareaValue(content)
+		}
+		// Image attachments remain in the composer; explicit /stop and /cancel
+		// consume only their command text.
 		if len(parts) > 0 {
 			// Parts already came from current composer images, so leave m.images as-is if still present.
 		}
@@ -1799,7 +1761,6 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 			m.streamCancelFunc()
 		}
 	case llm.InterruptInterject:
-		m.setPendingInterjection(interjectionID, summary, "interject")
 		leadingImages := 0
 		for leadingImages < len(parts) && parts[leadingImages].Type == llm.PartImage {
 			leadingImages++
@@ -1813,26 +1774,20 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 		if len(msg.Parts) == 0 {
 			msg = llm.UserText(content)
 		}
-		m.engine.QueueInterjection(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: summary})
-		m.images = nil
-		m.selectedImage = -1
-	}
-}
-
-func (m *Model) handleInterruptClassified(msg interruptClassifiedMsg) (tea.Model, tea.Cmd) {
-	if msg.RequestID == 0 || msg.RequestID != m.activeInterruptSeq {
-		return m, nil
-	}
-	if !m.streaming {
-		m.clearPendingInterjectionState()
-		if strings.TrimSpace(m.textarea.Value()) == "" {
-			m.setTextareaValue(msg.Content)
+		_, queueStatus := m.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: summary})
+		switch queueStatus {
+		case llm.InterjectionQueueQueued, llm.InterjectionQueueAlreadyQueued:
+			m.setPendingInterjection(interjectionID, summary)
+			m.images = nil
+			m.selectedImage = -1
+		case llm.InterjectionQueueRunFinished:
+			m.interruptNotice = "response cannot consume steering — draft kept below"
+			m.setTextareaValue(content)
+		default:
+			m.interruptNotice = "steering was already handled — draft kept below"
+			m.setTextareaValue(content)
 		}
-		return m, nil
 	}
-
-	m.applyInterruptActionWithParts(msg.InterjectionID, msg.Content, msg.Parts, msg.Action)
-	return m, nil
 }
 
 func (m *Model) restorePendingInterjectionDraft() {
@@ -1873,7 +1828,7 @@ func (m *Model) restorePendingInterjectionDraft() {
 		m.setTextareaValue(strings.Join(textParts, "\n"))
 		return
 	}
-	if m.pendingInterjection != "" && (m.pendingInterruptUI == "interject" || m.pendingInterruptUI == "deciding") {
+	if m.pendingInterjection != "" {
 		m.setTextareaValue(m.pendingInterjection)
 	}
 }

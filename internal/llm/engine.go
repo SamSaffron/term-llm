@@ -148,6 +148,7 @@ type Engine struct {
 	claimedInterjectionOrder   []string
 	committedInterjectionIDs   map[string]struct{}
 	committedInterjectionOrder []string
+	interjectionRunState       interjectionRunState
 
 	// pendingRequestRuntime is a same-provider model/effort override requested
 	// while an agentic loop is active. It is drained at the next provider-turn
@@ -200,6 +201,15 @@ const (
 	InterjectionQueueAlreadyQueued InterjectionQueueStatus = "already_queued"
 	InterjectionQueueFollowUpOwned InterjectionQueueStatus = "follow_up_owned"
 	InterjectionQueueCommitted     InterjectionQueueStatus = "committed"
+	InterjectionQueueRunFinished   InterjectionQueueStatus = "run_finished"
+)
+
+type interjectionRunState uint8
+
+const (
+	interjectionRunIdle interjectionRunState = iota
+	interjectionRunAccepting
+	interjectionRunNonConsuming
 )
 
 type InterjectionClaimStatus string
@@ -214,11 +224,10 @@ const (
 // QueuedInterjection is a structured user message submitted while a run is active.
 // Queued entries are cancellable until the engine drains them into a provider turn.
 type QueuedInterjection struct {
-	ID           string
-	Message      Message
-	DisplayText  string
-	Status       InterjectionStatus
-	AutoContinue bool // If true, drain at a text-only turn boundary and continue the run.
+	ID          string
+	Message     Message
+	DisplayText string
+	Status      InterjectionStatus
 }
 
 type queuedInterjection = QueuedInterjection
@@ -350,6 +359,7 @@ func (e *Engine) ResetConversation() {
 	e.claimedInterjectionOrder = nil
 	e.committedInterjectionIDs = nil
 	e.committedInterjectionOrder = nil
+	e.interjectionRunState = interjectionRunIdle
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
 
@@ -815,7 +825,8 @@ func (e *Engine) QueueInterjection(entry QueuedInterjection) string {
 }
 
 // QueueInterjectionWithStatus reports whether the stable identity was newly
-// queued, already queued, transferred to a follow-up, or already committed.
+// queued for an accepting agentic run, rejected because the current/latest run
+// cannot consume it, already queued, transferred to a follow-up, or committed.
 func (e *Engine) QueueInterjectionWithStatus(entry QueuedInterjection) (string, InterjectionQueueStatus) {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
@@ -834,6 +845,9 @@ func (e *Engine) QueueInterjectionWithStatus(entry QueuedInterjection) (string, 
 		if e.pendingInterjections[i].ID == entry.ID {
 			return entry.ID, InterjectionQueueAlreadyQueued
 		}
+	}
+	if e.interjectionRunState == interjectionRunNonConsuming {
+		return entry.ID, InterjectionQueueRunFinished
 	}
 	entry.Message.Role = RoleUser
 	if strings.TrimSpace(entry.Message.ClientMessageID) == "" {
@@ -1094,7 +1108,20 @@ func (e *Engine) markInterjectionsCommittedLocked(entries []queuedInterjection) 
 func (e *Engine) drainInterjections() []queuedInterjection {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
+	return e.drainInterjectionsLocked()
+}
 
+func (e *Engine) drainInterjectionsForNextTurn(canAcceptMore bool) []queuedInterjection {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	out := e.drainInterjectionsLocked()
+	if !canAcceptMore {
+		e.interjectionRunState = interjectionRunNonConsuming
+	}
+	return out
+}
+
+func (e *Engine) drainInterjectionsLocked() []queuedInterjection {
 	if len(e.pendingInterjections) == 0 {
 		return nil
 	}
@@ -1105,34 +1132,42 @@ func (e *Engine) drainInterjections() []queuedInterjection {
 	return out
 }
 
-// drainAutoContinueInterjections atomically commits the queued interjection
-// prefix marked AutoContinue. It intentionally preserves FIFO order: a normal
-// pending user interjection blocks later auto-continue notifications from being
-// injected ahead of it.
-func (e *Engine) drainAutoContinueInterjections() []queuedInterjection {
+func (e *Engine) beginInterjectionRun(canConsume bool) {
+	e.callbackMu.Lock()
+	if canConsume {
+		e.interjectionRunState = interjectionRunAccepting
+	} else {
+		e.interjectionRunState = interjectionRunNonConsuming
+	}
+	e.callbackMu.Unlock()
+}
+
+func (e *Engine) markInterjectionRunNonConsuming() {
+	e.callbackMu.Lock()
+	e.interjectionRunState = interjectionRunNonConsuming
+	e.callbackMu.Unlock()
+}
+
+// drainBoundaryInterjections atomically either commits every pending steer for
+// another provider turn or closes this run's final agentic boundary. Explicit
+// error and cancellation exits are closed by runLoop's deferred teardown.
+func (e *Engine) drainBoundaryInterjections(canContinue, canAcceptMore bool) []queuedInterjection {
 	e.callbackMu.Lock()
 	defer e.callbackMu.Unlock()
 
-	if len(e.pendingInterjections) == 0 || !e.pendingInterjections[0].AutoContinue {
+	if !canContinue || len(e.pendingInterjections) == 0 {
+		e.interjectionRunState = interjectionRunNonConsuming
 		return nil
 	}
-	n := 0
-	for n < len(e.pendingInterjections) && e.pendingInterjections[n].AutoContinue {
-		n++
+	out := e.drainInterjectionsLocked()
+	if !canAcceptMore {
+		e.interjectionRunState = interjectionRunNonConsuming
 	}
-	out := make([]queuedInterjection, n)
-	copy(out, e.pendingInterjections[:n])
-	e.markInterjectionsCommittedLocked(out)
-	copy(e.pendingInterjections, e.pendingInterjections[n:])
-	for i := len(e.pendingInterjections) - n; i < len(e.pendingInterjections); i++ {
-		e.pendingInterjections[i] = queuedInterjection{}
-	}
-	e.pendingInterjections = e.pendingInterjections[:len(e.pendingInterjections)-n]
 	return out
 }
 
-func (e *Engine) continueWithAutoInterjections(ctx context.Context, send eventSender, req *Request, turnCallback TurnCompletedCallback, attempt int, finalMsg Message) (bool, error) {
-	interjections := e.drainAutoContinueInterjections()
+func (e *Engine) continueWithInterjections(ctx context.Context, send eventSender, req *Request, turnCallback TurnCompletedCallback, attempt int, finalMsg Message, canContinue, canAcceptMore bool) (bool, error) {
+	interjections := e.drainBoundaryInterjections(canContinue, canAcceptMore)
 	if len(interjections) == 0 {
 		return false, nil
 	}
@@ -1547,6 +1582,9 @@ func (e *Engine) prepareRequestContext(ctx context.Context, req *Request) {
 
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
+	// Until this request is proven agentic, it has no boundary at which it can
+	// consume steering. This also clears accepting state left by a prior run.
+	e.markInterjectionRunNonConsuming()
 	req.Messages = FilterConversationMessages(req.Messages)
 
 	caps := e.provider.Capabilities()
@@ -1614,6 +1652,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	useLoop := len(req.Tools) > 0 && caps.ToolCalls
 
 	if useLoop {
+		e.beginInterjectionRun(getMaxTurns(req) > 1)
 		if req.SessionID != "" {
 			// Tools read this for session-scoped concerns like file-change tracking.
 			ctx = ContextWithSessionID(ctx, req.SessionID)
@@ -2082,6 +2121,11 @@ func cloneProviderReplayParts(parts []Part) []Part {
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
+	defer e.markInterjectionRunNonConsuming()
+	sendDone := func() error {
+		e.markInterjectionRunNonConsuming()
+		return send.Send(Event{Type: EventDone})
+	}
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
 	originalTools := append([]ToolSpec(nil), req.Tools...)
@@ -2305,6 +2349,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
+		// The final provider turn has no later agentic boundary. Reject arrivals
+		// throughout that stream instead of accepting steering it cannot consume.
+		e.beginInterjectionRun(attempt < maxTurns-1)
 		// A model-activated skill can tighten the filter between turns. Remove
 		// now-disallowed definitions before the next provider request.
 		req.Tools = e.FilterAllowedToolSpecs(req.Tools)
@@ -2732,7 +2779,7 @@ turnLoop:
 				return false, err
 			}
 			if finishingToolExecuted {
-				if err := send.Send(Event{Type: EventDone}); err != nil {
+				if err := sendDone(); err != nil {
 					return false, err
 				}
 				recoveryCompleted = true
@@ -3205,23 +3252,17 @@ turnLoop:
 				attempt--
 				continue
 			}
-			// Auto-continue interjections are completion notices from background work.
-			// Unlike ordinary user interjections during prose, they should be handed to
-			// the provider immediately so the active web run can acknowledge them rather
-			// than leaving the session stopped with a pending notice.
-			if attempt < maxTurns-1 {
-				continued, err := e.continueWithAutoInterjections(ctx, send, &req, turnCallback, attempt, finalMsg)
-				if err != nil {
+			continued, err := e.continueWithInterjections(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)
+			if err != nil {
+				return err
+			}
+			if continued {
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
 					return err
 				}
-				if continued {
-					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-						return err
-					}
-					continue
-				}
+				continue
 			}
-			if err := send.Send(Event{Type: EventDone}); err != nil {
+			if err := sendDone(); err != nil {
 				return err
 			}
 			return nil
@@ -3270,8 +3311,24 @@ turnLoop:
 				cancel()
 			}
 
+			// These terminal paths cannot consume another steer. Close ownership before
+			// inspecting the queue so arrivals at or after the decision are rejected.
+			if finishingToolExecuted || inlineToolLoop {
+				if err := sendDone(); err != nil {
+					return err
+				}
+				return nil
+			}
+			if attempt == maxTurns-1 {
+				e.markInterjectionRunNonConsuming()
+				if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
+					return err
+				}
+				return &MaxTurnsExceededError{MaxTurns: maxTurns}
+			}
+
 			// Check for user interjections (MCP sync path)
-			if interjections := e.drainInterjections(); len(interjections) > 0 {
+			if interjections := e.drainInterjectionsForNextTurn(attempt < maxTurns-2); len(interjections) > 0 {
 				interjectionMsgs := make([]Message, 0, len(interjections))
 				for _, interjection := range interjections {
 					interjectionMsg := interjection.Message
@@ -3298,24 +3355,6 @@ turnLoop:
 						return err
 					}
 				}
-			}
-
-			// If a finishing tool was executed, we're done (agent completed its task)
-			if finishingToolExecuted {
-				if err := send.Send(Event{Type: EventDone}); err != nil {
-					return err
-				}
-				return nil
-			}
-
-			// Inline-loop providers have already consumed tool results and streamed
-			// their final answer in this invocation. Persisted interjections are
-			// intentionally delivered on the next user turn.
-			if inlineToolLoop {
-				if err := send.Send(Event{Type: EventDone}); err != nil {
-					return err
-				}
-				return nil
 			}
 
 			// Continue the loop - provider will receive updated messages on next turn
@@ -3373,17 +3412,24 @@ turnLoop:
 					cancel()
 				}
 			}
-			// Auto-continue interjections are completion notices from background work.
-			// Unlike ordinary user interjections during prose, they should be handed to
-			// the provider immediately so the active web run can acknowledge them rather
-			// than leaving the session stopped with a pending notice.
-			if err := send.Send(Event{Type: EventDone}); err != nil {
+			continued, err := e.continueWithInterjections(ctx, send, &req, turnCallback, attempt, finalMsg, attempt < maxTurns-1, attempt < maxTurns-2)
+			if err != nil {
+				return err
+			}
+			if continued {
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := sendDone(); err != nil {
 				return err
 			}
 			return nil
 		}
 
 		if attempt == maxTurns-1 {
+			e.markInterjectionRunNonConsuming()
 			if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
 				return err
 			}
@@ -3491,7 +3537,7 @@ turnLoop:
 		}
 
 		if finishingToolExecuted {
-			if err := send.Send(Event{Type: EventDone}); err != nil {
+			if err := sendDone(); err != nil {
 				return err
 			}
 			return nil
@@ -3499,7 +3545,7 @@ turnLoop:
 
 		// Check for user interjections queued during this turn.
 		// If present, inject them as FIFO user messages so the LLM sees them on the next turn.
-		if interjections := e.drainInterjections(); len(interjections) > 0 {
+		if interjections := e.drainInterjectionsForNextTurn(attempt < maxTurns-2); len(interjections) > 0 {
 			interjectionMsgs := make([]Message, 0, len(interjections))
 			for _, interjection := range interjections {
 				interjectionMsg := interjection.Message

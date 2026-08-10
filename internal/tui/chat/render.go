@@ -705,13 +705,6 @@ func (m *Model) buildFooterLayout() footerLayout {
 		selectedStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 		for i, pending := range m.pendingInterjections {
 			pendingText := pending.Text
-			label := "will incorporate"
-			switch pending.UIState {
-			case "deciding":
-				label = "deciding…"
-			case "interject":
-				label = "will incorporate"
-			}
 			// Truncate long messages before wrapping so very narrow widths remain stable.
 			maxLen := m.width - 26 // account for prefix/suffix
 			if maxLen > 0 && len(pendingText) > maxLen {
@@ -721,7 +714,7 @@ func (m *Model) buildFooterLayout() footerLayout {
 			if i == m.selectedInterjection {
 				prefix = "  ▸ "
 			}
-			line := prefix + pendingText + " (" + label + ")"
+			line := prefix + pendingText + " (will incorporate)"
 			if i == m.selectedInterjection {
 				line += "  [del cancels]"
 				appendMetaRow(selectedStyle.Render(line))
@@ -732,19 +725,12 @@ func (m *Model) buildFooterLayout() footerLayout {
 	} else if m.pendingInterjection != "" {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 		pendingText := m.pendingInterjection
-		label := "will incorporate"
-		switch m.pendingInterruptUI {
-		case "deciding":
-			label = "deciding…"
-		case "interject":
-			label = "will incorporate"
-		}
 		// Truncate long messages before wrapping so very narrow widths remain stable.
 		maxLen := m.width - 20 // account for prefix/suffix
 		if maxLen > 0 && len(pendingText) > maxLen {
 			pendingText = pendingText[:maxLen] + "…"
 		}
-		appendMetaRow(pendingStyle.Render("  ⏳ " + pendingText + " (" + label + ")"))
+		appendMetaRow(pendingStyle.Render("  ⏳ " + pendingText + " (will incorporate)"))
 	}
 
 	if len(m.files) > 0 {

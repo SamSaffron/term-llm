@@ -80,14 +80,12 @@ func classifyInterruptHeuristic(msg string) (InterruptAction, bool) {
 		return InterruptInterject, true
 	}
 
-	overrides := []string{"/stop", "/cancel", "/takeover", "stop", "cancel", "abort", "never mind", "nevermind", "forget it"}
-	for _, w := range overrides {
-		if normalized == w || strings.HasPrefix(normalized, w+" ") {
-			return InterruptCancel, true
-		}
+	switch normalized {
+	case "/stop", "/cancel":
+		return InterruptCancel, true
+	default:
+		return InterruptInterject, false
 	}
-
-	return InterruptInterject, false
 }
 
 // ClassifyInterrupt decides how to handle a new user message while a stream is active.

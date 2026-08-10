@@ -993,12 +993,12 @@ func TestResumeBrowserCloseReturnsToChatWithoutLosingDraft(t *testing.T) {
 	}
 }
 
-func TestHandleKeyMsg_StreamingCancelInterjectionRestoresComposerAndShowsStopping(t *testing.T) {
+func TestHandleKeyMsg_StreamingStopCommandCancelsAndShowsStopping(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Running shell sleep"
 	m.pendingInterjection = "old"
-	m.setTextareaValue("stop sleeping")
+	m.setTextareaValue("/stop")
 
 	cancelCalls := 0
 	m.streamCancelFunc = func() {
@@ -1010,8 +1010,8 @@ func TestHandleKeyMsg_StreamingCancelInterjectionRestoresComposerAndShowsStoppin
 	if cancelCalls != 1 {
 		t.Fatalf("expected stream cancel to be called once, got %d", cancelCalls)
 	}
-	if got := m.textarea.Value(); got != "stop sleeping" {
-		t.Fatalf("expected textarea draft restored after cancel interjection, got %q", got)
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("expected explicit stop command to be consumed, got %q", got)
 	}
 	if m.pendingInterjection != "" {
 		t.Fatalf("expected pendingInterjection to be cleared, got %q", m.pendingInterjection)
@@ -1067,89 +1067,70 @@ func TestHandleKeyMsg_CancelsSelectedPendingInterjection(t *testing.T) {
 	}
 }
 
-func TestHandleKeyMsg_StreamingAsyncClassificationFeelsImmediate(t *testing.T) {
+func TestHandleKeyMsg_StreamingEnterSteersImmediatelyWithoutFastProvider(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Thinking"
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
-	m.setTextareaValue("also check the schema")
+	fastProvider := llm.NewMockProvider("fast").AddTextResponse("cancel")
+	m.fastProvider = fastProvider
+	m.setTextareaValue("stop changing the schema; inspect it first")
 
 	_, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("expected async classification command")
+	if cmd != nil {
+		t.Fatal("normal streaming Enter should queue synchronously")
 	}
 	if got := m.textarea.Value(); got != "" {
 		t.Fatalf("expected textarea to clear immediately, got %q", got)
 	}
-	if got := m.pendingInterjection; got != "also check the schema" {
+	if got := m.pendingInterjection; got != "stop changing the schema; inspect it first" {
 		t.Fatalf("expected pending interjection to render immediately, got %q", got)
 	}
-	if got := m.pendingInterruptUI; got != "deciding" {
-		t.Fatalf("expected deciding state immediately, got %q", got)
+	if got := fastProvider.CurrentTurn(); got != 0 {
+		t.Fatalf("fast provider calls = %d, want zero", got)
 	}
-
-	msg := cmd()
-	if _, ok := msg.(interruptClassifiedMsg); !ok {
-		t.Fatalf("expected interruptClassifiedMsg, got %T", msg)
-	}
-	_, _ = m.handleInterruptClassified(msg.(interruptClassifiedMsg))
-
-	if got := m.pendingInterruptUI; got != "interject" {
-		t.Fatalf("expected interject state after classification, got %q", got)
-	}
-	if got := m.engine.DrainInterjection(); got != "also check the schema" {
+	if got := m.engine.DrainInterjection(); got != "stop changing the schema; inspect it first" {
 		t.Fatalf("expected engine interjection to be queued, got %q", got)
 	}
 }
 
-func TestHandleInterruptClassified_StreamAlreadyFinishedRestoresDraft(t *testing.T) {
+func TestHandleKeyMsg_SimpleStreamKeepsUnconsumableSteerAsDraft(t *testing.T) {
 	m := newTestChatModel(false)
-	m.activeInterruptSeq = 7
-	m.pendingInterjection = "keep sleeping"
-	m.pendingInterruptUI = "deciding"
+	provider := llm.NewMockProvider("simple").
+		WithCapabilities(llm.Capabilities{ToolCalls: false}).
+		AddTurn(llm.MockTurn{Text: "simple response", Delay: time.Second})
+	m.engine = llm.NewEngine(provider, nil)
+	stream, err := m.engine.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	m.streaming = true
+	m.setTextareaValue("also inspect the schema")
 
-	_, cmd := m.handleInterruptClassified(interruptClassifiedMsg{
-		RequestID: 7,
-		Content:   "keep sleeping",
-		Action:    llm.InterruptInterject,
-	})
+	_, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd != nil {
-		t.Fatal("expected no follow-up command when restoring draft")
+		t.Fatal("simple-stream steering should resolve synchronously")
 	}
-	if got := m.textarea.Value(); got != "keep sleeping" {
-		t.Fatalf("expected interjection text restored to composer, got %q", got)
+	if got := m.textarea.Value(); got != "also inspect the schema" {
+		t.Fatalf("composer = %q, want rejected steer kept as draft", got)
 	}
-	if m.streaming {
-		t.Fatal("expected stream to remain finished")
+	if len(m.pendingInterjections) != 0 || len(m.engine.ListPendingInterjections()) != 0 {
+		t.Fatalf("simple stream retained phantom steer: ui=%#v engine=%#v", m.pendingInterjections, m.engine.ListPendingInterjections())
 	}
-	if got := m.pendingInterjection; got != "" {
-		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
-	}
-	if got := m.pendingInterruptUI; got != "" {
-		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
-	}
-	if got := len(m.messages); got != 0 {
-		t.Fatalf("expected restored draft not to auto-send, got %d messages", got)
+	if !strings.Contains(m.interruptNotice, "cannot consume steering") {
+		t.Fatalf("interrupt notice = %q, want non-consuming explanation", m.interruptNotice)
 	}
 }
 
-func TestStreamEventInterjection_DoesNotDiscardNewerPendingClassification(t *testing.T) {
+func TestStreamEventInterjection_DoesNotDiscardNewerPendingSteer(t *testing.T) {
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.phase = "Thinking"
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
 
 	firstID := m.nextPendingInterjectionID()
 	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
 	secondID := m.nextPendingInterjectionID()
-	cmd := m.queueInterruptClassification(secondID, "second note", nil)
-	if cmd == nil {
-		t.Fatal("expected async interrupt classification command")
-	}
-	requestID := m.activeInterruptSeq
-	if requestID == 0 {
-		t.Fatal("expected active interrupt request id")
-	}
+	m.applyInterruptAction(secondID, "second note", llm.InterruptInterject)
 
 	_, _ = m.Update(streamEventMsg{event: ui.InterjectionEvent("first note", firstID)})
 
@@ -1159,28 +1140,8 @@ func TestStreamEventInterjection_DoesNotDiscardNewerPendingClassification(t *tes
 	if got := m.pendingInterjectionID; got != secondID {
 		t.Fatalf("pendingInterjectionID after first event = %q, want %q", got, secondID)
 	}
-	if got := m.pendingInterruptUI; got != "deciding" {
-		t.Fatalf("pendingInterruptUI after first event = %q, want deciding", got)
-	}
-	if got := m.activeInterruptSeq; got != requestID {
-		t.Fatalf("activeInterruptSeq after first event = %d, want %d", got, requestID)
-	}
 	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
 		t.Fatalf("pending stack after first event = %#v, want only second", m.pendingInterjections)
-	}
-
-	msg := cmd()
-	classified, ok := msg.(interruptClassifiedMsg)
-	if !ok {
-		t.Fatalf("expected interruptClassifiedMsg, got %T", msg)
-	}
-	if classified.InterjectionID != secondID {
-		t.Fatalf("classified interjection id = %q, want %q", classified.InterjectionID, secondID)
-	}
-	_, _ = m.handleInterruptClassified(classified)
-
-	if got := m.pendingInterruptUI; got != "interject" {
-		t.Fatalf("pendingInterruptUI after classification = %q, want interject", got)
 	}
 	if got := m.engine.DrainInterjection(); got != "first note\nsecond note" {
 		t.Fatalf("expected both FIFO interjections to remain queued, got %q", got)
@@ -1203,9 +1164,6 @@ func TestStreamEventInterjection_MatchesByIDNotText(t *testing.T) {
 	}
 	if got := m.pendingInterjection; got != "same text" {
 		t.Fatalf("pendingInterjection after stale event = %q, want same text", got)
-	}
-	if got := m.pendingInterruptUI; got != "interject" {
-		t.Fatalf("pendingInterruptUI after stale event = %q, want interject", got)
 	}
 	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != secondID {
 		t.Fatalf("pending stack after stale event = %#v, want only second", m.pendingInterjections)
@@ -1236,7 +1194,6 @@ func TestStreamDone_PendingInterjectRestoresDraftWithoutEngineResidual(t *testin
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.pendingInterjection = "keep sleeping"
-	m.pendingInterruptUI = "interject"
 
 	_, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
 	if cmd == nil {
@@ -1251,8 +1208,31 @@ func TestStreamDone_PendingInterjectRestoresDraftWithoutEngineResidual(t *testin
 	if got := m.pendingInterjection; got != "" {
 		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
 	}
-	if got := m.pendingInterruptUI; got != "" {
-		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
+}
+
+func TestStreamDone_OccupiedComposerKeepsQueuedSteerVisibleAndCancellable(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.setTextareaValue("unrelated draft")
+	m.engine.QueueInterjection(llm.QueuedInterjection{ID: "late-steer", Message: llm.UserText("keep sleeping"), DisplayText: "keep sleeping"})
+	m.setPendingInterjection("late-steer", "keep sleeping")
+
+	_, _ = m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+
+	if got := m.textarea.Value(); got != "unrelated draft" {
+		t.Fatalf("composer = %q, want existing draft preserved", got)
+	}
+	if len(m.pendingInterjections) != 1 || m.pendingInterjections[0].ID != "late-steer" {
+		t.Fatalf("pending UI = %#v, want late steer still visible", m.pendingInterjections)
+	}
+	if pending := m.engine.ListPendingInterjections(); len(pending) != 1 || pending[0].ID != "late-steer" {
+		t.Fatalf("engine pending = %#v, want late steer cancellable", pending)
+	}
+
+	m.setTextareaValue("")
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if len(m.pendingInterjections) != 0 || len(m.engine.ListPendingInterjections()) != 0 {
+		t.Fatalf("late steer was not cancellable after completion: ui=%#v engine=%#v", m.pendingInterjections, m.engine.ListPendingInterjections())
 	}
 }
 
@@ -1260,7 +1240,6 @@ func TestStreamError_PendingInterjectRestoresDraftWithoutEngineResidual(t *testi
 	m := newTestChatModel(false)
 	m.streaming = true
 	m.pendingInterjection = "keep sleeping"
-	m.pendingInterruptUI = "interject"
 
 	_, cmd := m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled)})
 	if cmd != nil {
@@ -1274,9 +1253,6 @@ func TestStreamError_PendingInterjectRestoresDraftWithoutEngineResidual(t *testi
 	}
 	if got := m.pendingInterjection; got != "" {
 		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
-	}
-	if got := m.pendingInterruptUI; got != "" {
-		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
 	}
 }
 
@@ -1576,29 +1552,27 @@ func TestPasteCollapse_StreamingInterjectionExpandsPlaceholderOnSend(t *testing.
 	}
 }
 
-func TestPasteCollapse_StreamingInterruptClassificationUsesExpandedPlaceholder(t *testing.T) {
+func TestPasteCollapse_StreamingSteerBypassesClassifierWithExpandedContent(t *testing.T) {
 	stubClipboard(t)
 	m := newTestChatModel(false)
 	m.streaming = true
-	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
+	fastProvider := llm.NewMockProvider("fast").AddTextResponse("cancel")
+	m.fastProvider = fastProvider
 	pasteText := strings.Repeat("async alpha ", 12) + "\n" + strings.Repeat("async beta ", 12)
 
 	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("expected interrupt classification command")
+	if cmd != nil {
+		t.Fatal("streaming steer should queue synchronously")
 	}
 	if len(m.pasteChunks) != 0 {
-		t.Fatalf("expected paste chunks cleared after queueing classification, got %d", len(m.pasteChunks))
+		t.Fatalf("expected paste chunks cleared after queueing steer, got %d", len(m.pasteChunks))
 	}
-
-	gotMsg := cmd()
-	msg, ok := gotMsg.(interruptClassifiedMsg)
-	if !ok {
-		t.Fatalf("expected interruptClassifiedMsg, got %T", gotMsg)
+	if got := fastProvider.CurrentTurn(); got != 0 {
+		t.Fatalf("fast provider calls = %d, want zero", got)
 	}
-	if msg.Content != pasteText {
-		t.Fatalf("classification content = %q, want expanded paste %q", msg.Content, pasteText)
+	if got := m.engine.DrainInterjection(); got != pasteText {
+		t.Fatalf("queued content = %q, want expanded paste %q", got, pasteText)
 	}
 }
 

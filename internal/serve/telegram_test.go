@@ -400,6 +400,39 @@ func TestSendStreamDone_OnlyFirstCompletionSends(t *testing.T) {
 	}
 }
 
+func TestTelegramInterruptClassificationPolicy(t *testing.T) {
+	t.Run("explicit commands bypass fast classifier", func(t *testing.T) {
+		fast := llm.NewMockProvider("fast").AddTextResponse("interject")
+		mgr := &telegramSessionMgr{fastProviderFactory: func() llm.Provider { return fast }}
+		for _, command := range []string{"/stop", "/cancel"} {
+			if got := mgr.classifyInterrupt(context.Background(), command, llm.InterruptActivity{}); got != llm.InterruptCancel {
+				t.Fatalf("classifyInterrupt(%q) = %v, want cancel", command, got)
+			}
+		}
+		if got := fast.CurrentTurn(); got != 0 {
+			t.Fatalf("fast classifier turns = %d, want zero for explicit commands", got)
+		}
+	})
+
+	t.Run("natural prose uses fast classifier", func(t *testing.T) {
+		fast := llm.NewMockProvider("fast").AddTextResponse("cancel")
+		mgr := &telegramSessionMgr{fastProviderFactory: func() llm.Provider { return fast }}
+		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", llm.InterruptActivity{}); got != llm.InterruptCancel {
+			t.Fatalf("classifyInterrupt(natural prose) = %v, want classifier cancel", got)
+		}
+		if got := fast.CurrentTurn(); got != 1 {
+			t.Fatalf("fast classifier turns = %d, want one", got)
+		}
+	})
+
+	t.Run("natural prose defaults to steering without fast classifier", func(t *testing.T) {
+		mgr := &telegramSessionMgr{}
+		if got := mgr.classifyInterrupt(context.Background(), "stop changing the schema and inspect it", llm.InterruptActivity{}); got != llm.InterruptInterject {
+			t.Fatalf("classifyInterrupt(natural prose) = %v, want fallback interject", got)
+		}
+	})
+}
+
 func TestTelegramSessionMgrNewFastProvider_ReturnsFreshProviderEachTime(t *testing.T) {
 	mgr := &telegramSessionMgr{
 		cfg: &config.Config{
@@ -3562,7 +3595,7 @@ func TestHandleMessage_PreservesArrivalOrderAcrossPhotoDownload(t *testing.T) {
 		MessageID: 2,
 		From:      &tgbotapi.User{ID: 7, UserName: "sam"},
 		Chat:      &tgbotapi.Chat{ID: 42},
-		Text:      "stop and use this clarification",
+		Text:      "/stop",
 	}
 	photoAdmission := mgr.admitMessage(photoMessage)
 	textAdmission := mgr.admitMessage(textMessage)
@@ -3699,7 +3732,7 @@ func TestHandleMessage_CancelInterruptIsNotBlockedBySessionMutex(t *testing.T) {
 
 	secondDone := make(chan struct{})
 	go func() {
-		mgr.handleMessage(context.Background(), bot, message("stop and switch to this"))
+		mgr.handleMessage(context.Background(), bot, message("/stop"))
 		close(secondDone)
 	}()
 	select {

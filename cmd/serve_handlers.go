@@ -1904,8 +1904,12 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	displayText := strings.TrimSpace(req.Message)
+	delivery, err := normalizeInterruptDelivery(req.Delivery)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	var msg llm.Message
-	var err error
 	if len(req.Content) > 0 && strings.TrimSpace(string(req.Content)) != "" && strings.TrimSpace(string(req.Content)) != "null" {
 		msg, err = parseUserMessageContent(req.Content)
 		if err != nil {
@@ -1938,15 +1942,19 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	s.augmentMessagesWithMentions(r.Context(), rt, sessionID, "", mentionMessages)
 	msg = mentionMessages[0]
 
-	fastProvider, fastErr := llm.NewFastProvider(s.cfgRef, rt.providerKey)
-	if fastErr != nil {
-		log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
+	var fastProvider llm.Provider
+	if delivery == interruptDeliveryAuto {
+		var fastErr error
+		fastProvider, fastErr = llm.NewFastProvider(s.cfgRef, rt.providerKey)
+		if fastErr != nil {
+			log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
+		}
 	}
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	if clientMessageID == "" {
 		clientMessageID = strings.TrimSpace(req.InterjectionID)
 	}
-	action, replayed, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, false)
+	action, replayed, interruptErr := rt.InterruptMessage(r.Context(), msg, displayText, clientMessageID, fastProvider, delivery)
 	if interruptErr != nil {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return

@@ -5725,14 +5725,65 @@ async function testPendingInterjectionsRenderAsCancellableStack() {
   pass(name);
 }
 
-async function testInterjectionClassificationPreservesStackOrder() {
-  const name = 'interjection classification is serialized in composer stack order';
+async function testFirstPartySteerSkipsDecidingPhaseAndSendsDelivery() {
+  const name = 'first-party steering sends delivery steer without a deciding phase';
+  let releaseInterrupt;
+  let markInterruptStarted;
+  let requestBody = null;
+  const interruptStarted = new Promise((resolve) => { markInterruptStarted = resolve; });
+  const interruptResponse = new Promise((resolve) => { releaseInterrupt = resolve; });
+  const harness = createHarness({
+    fetchImpl: async (url, requestOptions, { Response }) => {
+      if (!url.endsWith('/interrupt')) throw new Error(`unexpected fetch: ${url}`);
+      requestBody = JSON.parse(requestOptions.body || '{}');
+      markInterruptStarted();
+      await interruptResponse;
+      return new Response(JSON.stringify({ action: 'interject' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const { app, state, elements, cleanup } = harness;
+  const session = { id: 'session_immediate_steer', title: 'Immediate steer', messages: [], activeResponseId: 'resp_active' };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = 'stop changing the schema; inspect it first';
+
+  const sending = app.sendMessage();
+  await interruptStarted;
+  const pending = state.pendingInterjections[0];
+  if (requestBody?.delivery !== 'steer' || !pending || pending.action !== 'interject') {
+    fail(name, 'steer used classifier-shaped request or UI state', JSON.stringify({ requestBody, pending }));
+    releaseInterrupt();
+    await Promise.allSettled([sending]);
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterjections.some((entry) => entry.action === 'deciding')) {
+    fail(name, 'first-party steer entered deciding phase', JSON.stringify(state.pendingInterjections));
+    releaseInterrupt();
+    await Promise.allSettled([sending]);
+    await cleanup();
+    return;
+  }
+
+  releaseInterrupt();
+  await sending;
+  await cleanup();
+  pass(name);
+}
+
+async function testInterjectionDeliveryPreservesStackOrder() {
+  const name = 'interjection delivery is serialized in composer stack order';
   let releaseFirst;
   let interruptCalls = 0;
+  const requestBodies = [];
   const firstResponse = new Promise((resolve) => { releaseFirst = resolve; });
   const harness = createHarness({
-    fetchImpl: async (url, _requestOptions, { Response }) => {
+    fetchImpl: async (url, requestOptions, { Response }) => {
       if (!url.endsWith('/interrupt')) throw new Error(`unexpected fetch: ${url}`);
+      requestBodies.push(JSON.parse(requestOptions.body || '{}'));
       interruptCalls += 1;
       if (interruptCalls === 1) await firstResponse;
       return new Response(JSON.stringify({ action: 'interject' }), {
@@ -5761,8 +5812,8 @@ async function testInterjectionClassificationPreservesStackOrder() {
   }
   releaseFirst();
   await Promise.all([first, second]);
-  if (interruptCalls !== 2) {
-    fail(name, `interrupt request count = ${interruptCalls}, want 2`);
+  if (interruptCalls !== 2 || requestBodies.some((body) => body.delivery !== 'steer')) {
+    fail(name, `interrupt requests = ${interruptCalls}, want 2 steer deliveries`, JSON.stringify(requestBodies));
     await cleanup();
     return;
   }
@@ -8397,7 +8448,8 @@ const runAppStreamTest = async (testCase) => {
   await runAppStreamTest(testReplayedInterjectionUsesExactClientIdentity);
   await runAppStreamTest(testCommittedFollowUpConflictRefreshesWithoutRestoringPrompt);
   await runAppStreamTest(testPendingInterjectionsRenderAsCancellableStack);
-  await runAppStreamTest(testInterjectionClassificationPreservesStackOrder);
+  await runAppStreamTest(testFirstPartySteerSkipsDecidingPhaseAndSendsDelivery);
+  await runAppStreamTest(testInterjectionDeliveryPreservesStackOrder);
   await runAppStreamTest(testHistoricalReplayCommitsExactInterjectionBeforeFreshEvents);
   await runAppStreamTest(testHeartbeatTakeoverRetiresQueuedHistoricalReplay);
   await runAppStreamTest(testPendingInterjectionCanCancelWhileClassifying);

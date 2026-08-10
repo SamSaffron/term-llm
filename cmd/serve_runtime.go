@@ -388,8 +388,28 @@ func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
 	}
 }
 
+type interruptDelivery string
+
+// Rush is intentionally absent: it requires negotiated provider capability and
+// per-tool interruptibility rather than another unconditional delivery value.
+const (
+	interruptDeliveryAuto  interruptDelivery = "auto"
+	interruptDeliverySteer interruptDelivery = "steer"
+)
+
+func normalizeInterruptDelivery(delivery string) (interruptDelivery, error) {
+	switch strings.ToLower(strings.TrimSpace(delivery)) {
+	case "", string(interruptDeliveryAuto):
+		return interruptDeliveryAuto, nil
+	case string(interruptDeliverySteer):
+		return interruptDeliverySteer, nil
+	default:
+		return "", fmt.Errorf("unsupported interrupt delivery %q (supported values: auto, steer)", delivery)
+	}
+}
+
 func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
-	action, _, err := rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, false)
+	action, _, err := rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, interruptDeliveryAuto)
 	return action, err
 }
 
@@ -418,7 +438,7 @@ func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort strin
 	return nil
 }
 
-func interjectionFingerprint(msg llm.Message, displayText string, autoContinue bool) (string, error) {
+func interjectionFingerprint(msg llm.Message, displayText string, delivery interruptDelivery) (string, error) {
 	parts := append([]llm.Part(nil), msg.Parts...)
 	for i := range parts {
 		// Parsing inline attachments can materialize them at a fresh temporary path
@@ -427,10 +447,12 @@ func interjectionFingerprint(msg llm.Message, displayText string, autoContinue b
 		parts[i].FilePath = ""
 	}
 	payload, err := json.Marshal(struct {
-		Parts        []llm.Part `json:"parts"`
-		DisplayText  string     `json:"display_text"`
-		AutoContinue bool       `json:"auto_continue"`
-	}{parts, displayText, autoContinue})
+		Parts       []llm.Part `json:"parts"`
+		DisplayText string     `json:"display_text"`
+		// Delivery is part of idempotency semantics: retrying the same ID with a
+		// different ownership policy is a conflicting mutation, not a replay.
+		Delivery interruptDelivery `json:"delivery"`
+	}{parts, displayText, delivery})
 	if err != nil {
 		return "", fmt.Errorf("encode interjection idempotency payload: %w", err)
 	}
@@ -438,15 +460,21 @@ func interjectionFingerprint(msg llm.Message, displayText string, autoContinue b
 	return fmt.Sprintf("%x", sum), nil
 }
 
-func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, autoContinue bool) (llm.InterruptAction, bool, error) {
+func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, delivery interruptDelivery) (llm.InterruptAction, bool, error) {
 	interjectionID = strings.TrimSpace(interjectionID)
+	if delivery == "" {
+		delivery = interruptDeliveryAuto
+	}
+	if delivery != interruptDeliveryAuto && delivery != interruptDeliverySteer {
+		return llm.InterruptInterject, false, fmt.Errorf("unsupported interrupt delivery %q", delivery)
+	}
 	if interjectionID != "" && msg.Role == llm.RoleUser {
 		msg.ClientMessageID = interjectionID
 	}
 	fingerprint := ""
 	if interjectionID != "" {
 		var err error
-		fingerprint, err = interjectionFingerprint(msg, displayText, autoContinue)
+		fingerprint, err = interjectionFingerprint(msg, displayText, delivery)
 		if err != nil {
 			return llm.InterruptInterject, false, err
 		}
@@ -507,15 +535,18 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 		}
 		classifyText += summary
 	}
-	classifyCtx := ctx
-	classifyCancel := func() {}
-	if interjectionID != "" {
-		// Stay below the web client's 5-second mutation first-frame timeout so a
-		// healthy classifier normally responds before transport fallback begins.
-		classifyCtx, classifyCancel = context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
+	action := llm.InterruptInterject
+	if delivery == interruptDeliveryAuto {
+		classifyCtx := ctx
+		classifyCancel := func() {}
+		if interjectionID != "" {
+			// Stay below the web client's 5-second mutation first-frame timeout so a
+			// healthy classifier normally responds before transport fallback begins.
+			classifyCtx, classifyCancel = context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
+		}
+		action = llm.ClassifyInterrupt(classifyCtx, fastProvider, classifyText, activity)
+		classifyCancel()
 	}
-	action := llm.ClassifyInterrupt(classifyCtx, fastProvider, classifyText, activity)
-	classifyCancel()
 	var resultErr error
 	switch action {
 	case llm.InterruptCancel:
@@ -528,9 +559,12 @@ func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, d
 			cancel()
 		}
 	case llm.InterruptInterject:
-		_, queueStatus := rt.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText, AutoContinue: autoContinue})
-		if queueStatus == llm.InterjectionQueueFollowUpOwned || queueStatus == llm.InterjectionQueueCommitted {
+		_, queueStatus := rt.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: displayText})
+		switch queueStatus {
+		case llm.InterjectionQueueFollowUpOwned, llm.InterjectionQueueCommitted:
 			resultErr = fmt.Errorf("interjection %q is already %s", interjectionID, queueStatus)
+		case llm.InterjectionQueueRunFinished:
+			resultErr = fmt.Errorf("active run finished before interjection %q could be consumed", interjectionID)
 		}
 	}
 	if call != nil {
