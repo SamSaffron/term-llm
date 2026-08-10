@@ -384,7 +384,12 @@ func (m *Model) viewAltScreen() string {
 			if m.branchContextInFlight() {
 				contentStr += m.renderBranchPathNotesActivity()
 			}
-			if m.handoverPreview != nil {
+			switch {
+			case m.approvalModel != nil:
+				contentStr += "\n" + m.approvalModel.View().Content
+			case m.askUserModel != nil:
+				contentStr += "\n" + m.askUserModel.View().Content
+			case m.handoverPreview != nil:
 				contentStr += m.handoverPreview.View()
 			}
 			if m.err != nil {

@@ -317,9 +317,11 @@ function createHarness(options = {}) {
     askUserCancelBtn: { disabled: false, textContent: 'Dismiss' },
     approvalModal: makeNode(),
     approvalTitle: { textContent: '' },
+    approvalIntro: makeNode(),
     approvalPath: { textContent: '' },
     approvalError: { textContent: '' },
     approvalBody: makeNode(),
+    approvalNote: makeNode(),
     approvalApproveBtn: { disabled: false, textContent: 'Approve' },
     approvalDenyBtn: { disabled: false, textContent: 'Deny' },
   };
@@ -1571,28 +1573,52 @@ async function testInactiveSessionPromptEventsRemainActionable() {
   streamState = app.createResponseStreamState(sessionA);
   app.applyResponseStreamEvent(sessionA, streamState, 'response.approval.prompt', {
     approval_id: 'approval_1',
-    title: 'Primary Workspace Access Request',
+    title: 'Allow workspace access?',
     path: '/tmp/workspace',
     is_workspace: true,
     resume_auto_available: true,
     options: [
-      { index: 0, label: "Allow this session's canonical workspace read/write", description: 'Shell commands remain separately controlled.', choice: 'workspace' },
-      { index: 1, label: 'Allow and remember this canonical workspace', description: 'Allow now and in future sessions.', choice: 'workspace_remember' },
-      { index: 2, label: 'Deny', choice: 'deny' },
+      { index: 0, label: 'Always allow', description: 'Remember this workspace for future sessions.', choice: 'workspace_remember' },
+      { index: 1, label: 'Allow this session', description: 'Access ends with this session.', choice: 'workspace' },
+      { index: 2, label: 'Deny', description: 'Do not allow access.', choice: 'deny' },
     ],
     sequence_number: 8,
   });
 
   if (!state.approval || state.approval.sessionId !== sessionA.id || state.approval.approvalId !== 'approval_1'
     || !state.approval.isWorkspace || state.approval.path !== '/tmp/workspace'
-    || state.approval.options.length !== 3 || state.approval.options[1]?.choice !== 'workspace_remember'
+    || state.approval.options.length !== 3 || state.approval.options[0]?.choice !== 'workspace_remember'
     || !state.approval.resumeAutoAvailable || state.approval.resumeAuto) {
     fail(name, 'inactive workspace approval prompt did not create dedicated modal state', JSON.stringify(state.approval));
     await cleanup();
     return;
   }
-  if (elements.approvalApproveBtn.textContent !== 'Allow workspace') {
+  if (elements.approvalApproveBtn.textContent !== 'Always allow') {
     fail(name, `workspace approval button text = ${elements.approvalApproveBtn.textContent}`);
+    await cleanup();
+    return;
+  }
+  const sessionRadio = elements.approvalBody.children[0]?.children[1]?.children[0];
+  if (!sessionRadio) {
+    fail(name, 'workspace session radio was not rendered');
+    await cleanup();
+    return;
+  }
+  await sessionRadio.dispatchEvent({ type: 'change' });
+  if (elements.approvalApproveBtn.textContent !== 'Allow this session') {
+    fail(name, `workspace approval button did not follow selection: ${elements.approvalApproveBtn.textContent}`);
+    await cleanup();
+    return;
+  }
+  if (elements.approvalTitle.textContent !== 'Allow workspace access?'
+    || elements.approvalIntro.textContent !== 'term-llm wants to read and modify files in:'
+    || elements.approvalNote.textContent !== 'Shell commands still require separate approval.'
+    || elements.approvalIntro.classList.contains('hidden') || elements.approvalNote.classList.contains('hidden')) {
+    fail(name, 'workspace approval context was not rendered cleanly', JSON.stringify({
+      title: elements.approvalTitle.textContent,
+      intro: elements.approvalIntro.textContent,
+      note: elements.approvalNote.textContent,
+    }));
     await cleanup();
     return;
   }

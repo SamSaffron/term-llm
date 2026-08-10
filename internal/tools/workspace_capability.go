@@ -342,10 +342,36 @@ func (m *ApprovalManager) primaryWorkspaceConfirmedLocked() bool {
 		(provenance == primaryWorkspaceProvenanceConfirmed || provenance == primaryWorkspaceProvenanceMainInherited)
 }
 
+// ErrWorkspaceApprovalCancelled reports that a proactive workspace prompt was
+// dismissed without making an authority decision.
+var ErrWorkspaceApprovalCancelled = errors.New("workspace approval cancelled")
+
+// EnsurePrimaryWorkspaceAccess proactively confirms the proposed primary
+// workspace through the same direct-human boundary used by the first path tool
+// access. Remembered workspaces and already-confirmed sessions return without a
+// visible prompt; yolo remains an in-memory bypass and never persists trust.
+func (m *ApprovalManager) EnsurePrimaryWorkspaceAccess(ctx context.Context) error {
+	if m == nil || m.YoloEnabled() {
+		return nil
+	}
+	root := m.root()
+	if root == nil {
+		return nil
+	}
+	root.workspaceMu.RLock()
+	proposal := root.primaryWorkspace
+	root.workspaceMu.RUnlock()
+	if proposal == "" {
+		return nil
+	}
+	return m.ensurePrimaryWorkspaceAccess(ctx, proposal, false)
+}
+
 // ensurePrimaryWorkspaceAccess performs the authority-boundary confirmation
 // outside yolo and before every other approval mechanism. The shared root prompt
 // lock gives concurrent parent/child first accesses one human prompt and one result.
-func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, canonicalPath string) error {
+// Proactive prompts leave cancellation undecided so first access can ask again.
+func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, canonicalPath string, latchCancellation bool) error {
 	root := m.root()
 	if root == nil {
 		return nil
@@ -410,6 +436,9 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 		result, err := prompt(proposal)
 		if err != nil {
 			return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation: %v", proposal, err)
+		}
+		if result.Cancelled && !latchCancellation {
+			return ErrWorkspaceApprovalCancelled
 		}
 		if !result.Approved || result.Cancelled {
 			root.workspaceMu.Lock()

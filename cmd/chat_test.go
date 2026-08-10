@@ -16,6 +16,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestToolManagerHasPathCapableTools(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled []string
+		want    bool
+	}{
+		{name: "read file", enabled: []string{tools.ReadFileToolName}, want: true},
+		{name: "view image", enabled: []string{tools.ViewImageToolName}, want: true},
+		{name: "shell only", enabled: []string{tools.ShellToolName}, want: false},
+		{name: "ask user only", enabled: []string{tools.AskUserToolName}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, err := tools.NewToolManager(&tools.ToolConfig{Enabled: tt.enabled}, &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.ApprovalMgr.Close()
+			if got := toolManagerHasPathCapableTools(manager); got != tt.want {
+				t.Fatalf("toolManagerHasPathCapableTools() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if toolManagerHasPathCapableTools(nil) {
+		t.Fatal("nil tool manager reported path capability")
+	}
+}
+
 func TestSessionIsConversationBranchUsesDurableLineage(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})

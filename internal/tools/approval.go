@@ -1096,7 +1096,7 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	// A launch/current/worktree binding is only a proposal. Its first canonical
 	// path access outside yolo must cross the direct-human workspace boundary
 	// before Guardian, static allowlists, project approvals, or execution can apply.
-	if err := m.ensurePrimaryWorkspaceAccess(ctx, absPath); err != nil {
+	if err := m.ensurePrimaryWorkspaceAccess(ctx, absPath, true); err != nil {
 		return Cancel, err
 	}
 

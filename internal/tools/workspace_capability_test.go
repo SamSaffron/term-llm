@@ -96,6 +96,101 @@ func (s *failingInheritedWorkspaceStore) DeleteWorkspaceGrant(ctx context.Contex
 	return s.grants.DeleteWorkspaceGrant(ctx, sessionID, grantID)
 }
 
+func TestEnsurePrimaryWorkspaceAccessPromptsOnceUpFront(t *testing.T) {
+	workspace := t.TempDir()
+	manager := NewApprovalManager(NewToolPermissions())
+	if err := manager.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	manager.WorkspacePromptFunc = func(got string) (WorkspaceApprovalResult, error) {
+		prompts++
+		if got != workspace {
+			t.Fatalf("workspace prompt = %q, want %q", got, workspace)
+		}
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+
+	if err := manager.EnsurePrimaryWorkspaceAccess(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.EnsurePrimaryWorkspaceAccess(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if prompts != 1 {
+		t.Fatalf("workspace prompts = %d, want one", prompts)
+	}
+	if !manager.IsWorkspacePathAllowed(filepath.Join(workspace, "file.txt"), true) {
+		t.Fatal("proactive confirmation did not grant primary workspace access")
+	}
+}
+
+func TestEnsurePrimaryWorkspaceAccessCancellationDefersDecision(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "file.txt")
+	if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewApprovalManager(NewToolPermissions())
+	if err := manager.SetPrimaryWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	manager.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		prompts++
+		if prompts == 1 {
+			return WorkspaceApprovalResult{Cancelled: true}, nil
+		}
+		return WorkspaceApprovalResult{Approved: true}, nil
+	}
+
+	if err := manager.EnsurePrimaryWorkspaceAccess(context.Background()); !errors.Is(err, ErrWorkspaceApprovalCancelled) {
+		t.Fatalf("proactive cancellation error = %v, want cancellation sentinel", err)
+	}
+	if outcome, err := manager.CheckPathApproval(ReadFileToolName, path, path, false); err != nil || outcome != ProceedAlways {
+		t.Fatalf("first access after cancellation = %v, %v", outcome, err)
+	}
+	if prompts != 2 {
+		t.Fatalf("workspace prompts = %d, want startup plus first access", prompts)
+	}
+}
+
+func TestEnsurePrimaryWorkspaceAccessLatchesUpfrontDenial(t *testing.T) {
+	manager := NewApprovalManager(NewToolPermissions())
+	if err := manager.SetPrimaryWorkspace(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	manager.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		prompts++
+		return WorkspaceApprovalResult{}, nil
+	}
+	if err := manager.EnsurePrimaryWorkspaceAccess(context.Background()); err == nil {
+		t.Fatal("upfront workspace denial returned no error")
+	}
+	if err := manager.EnsurePrimaryWorkspaceAccess(context.Background()); err == nil {
+		t.Fatal("latched workspace denial returned no error")
+	}
+	if prompts != 1 {
+		t.Fatalf("workspace prompts after denial = %d, want one", prompts)
+	}
+}
+
+func TestEnsurePrimaryWorkspaceAccessSkipsYolo(t *testing.T) {
+	manager := NewApprovalManager(NewToolPermissions())
+	if err := manager.SetPrimaryWorkspace(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetApprovalMode(ModeYolo)
+	manager.WorkspacePromptFunc = func(string) (WorkspaceApprovalResult, error) {
+		t.Fatal("yolo proactively prompted for workspace access")
+		return WorkspaceApprovalResult{}, nil
+	}
+	if err := manager.EnsurePrimaryWorkspaceAccess(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPrimaryWorkspaceYoloBypassesConfirmationUntilModeChanges(t *testing.T) {
 	parent := t.TempDir()
 	workspace := filepath.Join(parent, "workspace")

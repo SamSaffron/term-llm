@@ -63,7 +63,9 @@ var (
 // It can be embedded in a parent TUI for inline rendering.
 type ApprovalModel struct {
 	title       string           // "Read Access Request" or "Write Access Request" or "Shell Command Request"
+	intro       string           // Optional explanatory text shown before the path
 	path        string           // The path or command being requested
+	note        string           // Optional shared note shown after the choices
 	workDir     string           // Working directory for shell commands (may be empty)
 	repoInfo    *GitRepoInfo     // Git repo info (nil if not in repo)
 	options     []ApprovalOption // Available choices
@@ -154,8 +156,10 @@ func NewEmbeddedShellApprovalModel(command, workDir string, width int) *Approval
 // directory, pattern, or project-persistent choices.
 func NewEmbeddedWorkspaceApprovalModel(workspace string, width int) *ApprovalModel {
 	return &ApprovalModel{
-		title:       "Primary Workspace Access Request",
+		title:       "Allow workspace access?",
+		intro:       "term-llm wants to read and modify files in:",
 		path:        workspace,
+		note:        "Shell commands still require separate approval.",
 		options:     BuildWorkspaceOptions(workspace),
 		cursor:      0,
 		width:       width,
@@ -305,20 +309,20 @@ func BuildFileOptions(path string, repoInfo *GitRepoInfo, isWrite bool) []Approv
 func BuildWorkspaceOptions(workspace string) []ApprovalOption {
 	return []ApprovalOption{
 		{
-			Label:       "Allow this session's canonical workspace read/write",
-			Description: "Allow read and write access to the entire workspace for this session. Shell commands remain separately controlled.",
-			Choice:      ApprovalChoiceWorkspace,
-			Path:        workspace,
-		},
-		{
-			Label:       "Allow and remember this canonical workspace",
-			Description: "Allow read and write access now and in future sessions. Shell commands remain separately controlled.",
+			Label:       "Always allow",
+			Description: "Remember this workspace for future sessions.",
 			Choice:      ApprovalChoiceWorkspaceRemember,
 			Path:        workspace,
 		},
 		{
+			Label:       "Allow this session",
+			Description: "Access ends with this session.",
+			Choice:      ApprovalChoiceWorkspace,
+			Path:        workspace,
+		},
+		{
 			Label:       "Deny",
-			Description: "Keep this proposed workspace untrusted and block this file/path access. Shell commands remain separately controlled.",
+			Description: "Do not allow access.",
 			Choice:      ApprovalChoiceDeny,
 		},
 	}
@@ -482,6 +486,11 @@ func (m *ApprovalModel) View() tea.View {
 	b.WriteString(titleStyle.Render(m.title))
 	b.WriteString("\n")
 
+	if m.intro != "" {
+		b.WriteString(repoStyle.Render(wordwrap.String(terminaltext.EscapeControls(m.intro), innerWidth)))
+		b.WriteString("\n")
+	}
+
 	// Path/command being requested. Render controls visibly here: this text is
 	// security-relevant, so deleting bytes could misrepresent what will execute.
 	b.WriteString(pathStyle.Render(wordwrap.String(terminaltext.EscapeControls(m.path), innerWidth)))
@@ -515,6 +524,12 @@ func (m *ApprovalModel) View() tea.View {
 
 		// Description (descStyle has PaddingLeft(3), so reduce wrap width)
 		b.WriteString(descStyle.Render(wordwrap.String(terminaltext.EscapeControls(opt.Description), innerWidth-3)))
+		b.WriteString("\n")
+	}
+
+	if m.note != "" {
+		b.WriteString("\n")
+		b.WriteString(repoStyle.Render(wordwrap.String(terminaltext.EscapeControls(m.note), innerWidth)))
 		b.WriteString("\n")
 	}
 
@@ -597,6 +612,9 @@ func RunFileApprovalUI(path string, isWrite bool) (ApprovalResult, error) {
 
 // RunWorkspaceApprovalUI displays the dedicated proposed-primary confirmation.
 func RunWorkspaceApprovalUI(workspace string) (WorkspaceApprovalResult, error) {
+	if !terminalpolicy.OutputInteractive(os.Stderr) {
+		return WorkspaceApprovalResult{Cancelled: true}, fmt.Errorf("interactive workspace approval unavailable")
+	}
 	tty, err := getApprovalTTY()
 	if err != nil {
 		return WorkspaceApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available for workspace confirmation: %w", err)

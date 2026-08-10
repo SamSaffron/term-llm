@@ -98,6 +98,8 @@ func (rt *serveRuntime) awaitAskUser(ctx context.Context, questions []tools.AskU
 		return nil, fmt.Errorf("ask_user missing tool call id")
 	}
 	pending, _ := rt.prepareAskUser(callID, questions)
+	resumeResponseTimeout := rt.pauseForInteractiveWait()
+	defer resumeResponseTimeout()
 	defer rt.removePendingAskUser(callID, pending)
 
 	select {

@@ -18,6 +18,65 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestStartupWorkspaceApprovalGatesInitialAutoSend(t *testing.T) {
+	m := newTestChatModel(false)
+	m.autoSendQueue = []string{"inspect workspace"}
+	called := false
+	m.SetStartupWorkspaceApproval(func() error {
+		called = true
+		return nil
+	})
+
+	approvalCmd := m.startupWorkspaceApprovalCmd()
+	if approvalCmd == nil {
+		t.Fatal("startup workspace approval was not scheduled")
+	}
+	if called {
+		t.Fatal("startup workspace approval ran synchronously before its command")
+	}
+	if len(m.autoSendQueue) != 1 || m.textarea.Value() != "" {
+		t.Fatalf("auto-send was consumed before approval: queue=%#v textarea=%q", m.autoSendQueue, m.textarea.Value())
+	}
+	if _, ok := approvalCmd().(startupWorkspaceApprovalMsg); !ok || !called {
+		t.Fatalf("startup approval command result/call = %v/%v", ok, called)
+	}
+
+	updated, cmd := m.Update(startupWorkspaceApprovalMsg{})
+	m = updated.(*Model)
+	if cmd == nil || len(m.autoSendQueue) != 0 || m.textarea.Value() != "inspect workspace" {
+		t.Fatalf("auto-send did not resume after approval: cmd=%v queue=%#v textarea=%q", cmd != nil, m.autoSendQueue, m.textarea.Value())
+	}
+	msg := cmd()
+	if _, ok := msg.(autoSendMsg); !ok {
+		t.Fatalf("post-approval command = %T, want autoSendMsg", msg)
+	}
+}
+
+func TestStartupWorkspaceApprovalFailurePreservesAutoSend(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantFooter string
+	}{
+		{name: "cancelled", err: tools.ErrWorkspaceApprovalCancelled, wantFooter: "decision deferred"},
+		{name: "denied", err: fmt.Errorf("workspace denied"), wantFooter: "message was not sent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.autoSendQueue = []string{"inspect workspace"}
+			updated, cmd := m.Update(startupWorkspaceApprovalMsg{err: tt.err})
+			m = updated.(*Model)
+			if len(m.autoSendQueue) != 1 || m.textarea.Value() != "" {
+				t.Fatalf("failed workspace decision consumed auto-send: queue=%#v textarea=%q", m.autoSendQueue, m.textarea.Value())
+			}
+			if cmd == nil || !strings.Contains(m.footerMessage, tt.wantFooter) {
+				t.Fatalf("workspace failure feedback = %q cmd=%v, want %q", m.footerMessage, cmd != nil, tt.wantFooter)
+			}
+		})
+	}
+}
+
 func TestWorkspaceApprovalPromptIsNotBypassedByYolo(t *testing.T) {
 	m := newTestChatModel(true)
 	m.yolo = true
@@ -33,7 +92,7 @@ func TestWorkspaceApprovalPromptIsNotBypassedByYolo(t *testing.T) {
 	default:
 	}
 	rendered := m.approvalModel.View().Content
-	if !strings.Contains(rendered, "Primary Workspace Access Request") || !strings.Contains(rendered, "Shell commands remain") || !strings.Contains(rendered, "separately controlled") {
+	if !strings.Contains(rendered, "Allow workspace access?") || !strings.Contains(rendered, "Always allow") || !strings.Contains(rendered, "Shell commands still require separate approval.") {
 		t.Fatalf("workspace prompt wording = %q", rendered)
 	}
 }

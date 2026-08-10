@@ -427,18 +427,28 @@ const submitAskUserModal = async (cancelled = false) => {
 };
 
 // ===== Approval modal =====
+const approvalPrimaryActionLabel = (approval) => {
+  if (!approval?.isWorkspace) return 'Approve';
+  const selected = approval.options.find((opt, i) => Number(opt.index != null ? opt.index : i) === approval.selectedIndex);
+  return selected?.label || 'Allow workspace';
+};
+
 const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, title, options, resumeAutoAvailable = false) => {
   state.approval = {
     sessionId, approvalId, path, isShell, isWorkspace, title, options, selectedIndex: 0,
     resumeAutoAvailable: Boolean(resumeAutoAvailable), resumeAuto: false
   };
 
-  elements.approvalTitle.textContent = title || (isWorkspace ? 'Primary Workspace Access Request' : 'Access Request');
+  elements.approvalTitle.textContent = title || (isWorkspace ? 'Allow workspace access?' : 'Access Request');
+  elements.approvalIntro.textContent = isWorkspace ? 'term-llm wants to read and modify files in:' : '';
+  elements.approvalIntro.classList.toggle('hidden', !isWorkspace);
   elements.approvalPath.textContent = path || '';
+  elements.approvalNote.textContent = isWorkspace ? 'Shell commands still require separate approval.' : '';
+  elements.approvalNote.classList.toggle('hidden', !isWorkspace);
   elements.approvalError.textContent = '';
   elements.approvalApproveBtn.disabled = false;
   elements.approvalDenyBtn.disabled = false;
-  elements.approvalApproveBtn.textContent = isWorkspace ? 'Allow workspace' : 'Approve';
+  elements.approvalApproveBtn.textContent = approvalPrimaryActionLabel(state.approval);
   elements.approvalDenyBtn.textContent = 'Deny';
 
   // Build radio options as a vertical list
@@ -455,7 +465,10 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, ti
     radio.name = 'approval_choice';
     radio.value = String(opt.index != null ? opt.index : i);
     if (i === 0) radio.checked = true;
-    radio.addEventListener('change', () => { state.approval.selectedIndex = Number(radio.value); });
+    radio.addEventListener('change', () => {
+      state.approval.selectedIndex = Number(radio.value);
+      elements.approvalApproveBtn.textContent = approvalPrimaryActionLabel(state.approval);
+    });
 
     const copy = document.createElement('div');
     copy.className = 'approval-option-copy';
@@ -511,7 +524,11 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, ti
 const closeApprovalModal = () => {
   state.approval = null;
   elements.approvalModal.classList.add('hidden');
+  elements.approvalIntro.textContent = '';
+  elements.approvalIntro.classList.add('hidden');
   elements.approvalBody.innerHTML = '';
+  elements.approvalNote.textContent = '';
+  elements.approvalNote.classList.add('hidden');
   elements.approvalError.textContent = '';
   elements.approvalApproveBtn.disabled = false;
   elements.approvalDenyBtn.disabled = false;
@@ -566,7 +583,7 @@ const submitApprovalModal = async (denied = false) => {
     }
     elements.approvalApproveBtn.disabled = false;
     elements.approvalDenyBtn.disabled = false;
-    elements.approvalApproveBtn.textContent = 'Approve';
+    elements.approvalApproveBtn.textContent = approvalPrimaryActionLabel(state.approval);
     elements.approvalDenyBtn.textContent = 'Deny';
   }
 };

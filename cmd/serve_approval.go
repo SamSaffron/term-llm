@@ -68,7 +68,7 @@ func (p *servePendingApproval) snapshot() serveApprovalPrompt {
 	title := "Access Request"
 	switch {
 	case p.IsWorkspace:
-		title = "Primary Workspace Access Request"
+		title = "Allow workspace access?"
 	case p.IsShell:
 		title = "Shell Command Request"
 	case p.IsWrite:
@@ -138,6 +138,7 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 
 	eventFunc := rt.approvalEventFunc
 	ctx := rt.approvalCtx
+	pauseResponseTimeout := rt.pauseResponseTimeout
 
 	// Fail fast if no approval transport is configured (e.g. synchronous
 	// /v1/responses or /v1/chat/completions paths that don't go through
@@ -168,6 +169,11 @@ func (rt *serveRuntime) awaitApprovalRequest(target string, isWrite bool, isShel
 	rt.pendingApprovals[approvalID] = pending
 	rt.approvalMu.Unlock()
 
+	resumeResponseTimeout := func() {}
+	if pauseResponseTimeout != nil {
+		resumeResponseTimeout = pauseResponseTimeout()
+	}
+	defer resumeResponseTimeout()
 	defer rt.removePendingApproval(approvalID, pending)
 
 	// Emit SSE event — if this fails the client never learns about the

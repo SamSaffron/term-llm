@@ -3942,6 +3942,13 @@
     .mcp-switch-input:disabled + .mcp-switch-track {
       opacity: 0.55;
     }
+    .approval-intro,
+    .approval-note {
+      color: var(--text-muted);
+      font-size: 0.88rem;
+    }
+    .approval-intro { margin-bottom: 0.45rem; }
+    .approval-note { margin-top: 0.75rem; }
     .approval-path {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       font-size: 0.88rem;

@@ -238,7 +238,7 @@ Relevant options include:
 - `--tools`, `--read-dir`, `--write-dir`, `--shell-allow`
 - `--base-path`
 - `--title` (overrides the web UI sidebar title; also configurable as `serve.title`)
-- `--response-timeout` (defaults to `30m`; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
+- `--response-timeout` (maximum active execution time, default `30m`; the clock pauses while waiting for approval or `ask_user`; also configurable as `serve.response_timeout` with Go durations like `45m` or `1h`)
 - `--cors-origin`
 - `--webrtc`, `--webrtc-signaling-url`, `--webrtc-token` (see [WebRTC direct routing](/guides/webrtc-direct-routing/))
 

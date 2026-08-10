@@ -20,6 +20,10 @@ func TestApprovalUIsFailClosedInCI(t *testing.T) {
 	if err == nil || !shellResult.Cancelled || shellResult.Choice != ApprovalChoiceCancelled {
 		t.Fatalf("RunShellApprovalUI() = (%+v, %v), want cancelled error", shellResult, err)
 	}
+	workspaceResult, err := RunWorkspaceApprovalUI(t.TempDir())
+	if err == nil || !workspaceResult.Cancelled {
+		t.Fatalf("RunWorkspaceApprovalUI() = (%+v, %v), want cancelled error", workspaceResult, err)
+	}
 }
 
 func TestBuildFileOptions_InGitRepo(t *testing.T) {
@@ -298,25 +302,20 @@ func TestBuildFileOptions_RelativePaths(t *testing.T) {
 	}
 }
 
-func TestWorkspaceApprovalOptionsOfferRememberedChoiceAndKeepShellExplicit(t *testing.T) {
+func TestWorkspaceApprovalOptionsDefaultToRememberAndKeepShellExplicit(t *testing.T) {
 	workspace := t.TempDir()
 	options := BuildWorkspaceOptions(workspace)
 	if len(options) != 3 {
 		t.Fatalf("workspace options = %#v", options)
 	}
-	if options[0].Choice != ApprovalChoiceWorkspace || options[0].Path != workspace || !strings.Contains(options[0].Label, "this session's canonical workspace read/write") {
-		t.Fatalf("session allow option = %#v", options[0])
+	if options[0].Choice != ApprovalChoiceWorkspaceRemember || options[0].Path != workspace || options[0].Label != "Always allow" || options[0].Description != "Remember this workspace for future sessions." {
+		t.Fatalf("default remembered option = %#v", options[0])
 	}
-	if options[1].Choice != ApprovalChoiceWorkspaceRemember || options[1].Path != workspace || !strings.Contains(options[1].Label, "remember") || !strings.Contains(options[1].Description, "future sessions") {
-		t.Fatalf("remember allow option = %#v", options[1])
+	if options[1].Choice != ApprovalChoiceWorkspace || options[1].Path != workspace || options[1].Label != "Allow this session" || options[1].Description != "Access ends with this session." {
+		t.Fatalf("session allow option = %#v", options[1])
 	}
-	if options[2].Choice != ApprovalChoiceDeny || options[2].SaveToRepo {
+	if options[2].Choice != ApprovalChoiceDeny || options[2].SaveToRepo || options[2].Description != "Do not allow access." {
 		t.Fatalf("deny option = %#v", options[2])
-	}
-	for _, option := range options {
-		if !strings.Contains(option.Description, "Shell commands remain separately controlled") {
-			t.Fatalf("option omits shell boundary: %#v", option)
-		}
 	}
 	width := 100
 	if pathWidth := len(workspace) + 10; pathWidth > width {
@@ -324,7 +323,7 @@ func TestWorkspaceApprovalOptionsOfferRememberedChoiceAndKeepShellExplicit(t *te
 	}
 	model := NewEmbeddedWorkspaceApprovalModel(workspace, width)
 	rendered := model.View().Content
-	for _, want := range []string{"Primary Workspace Access Request", workspace, "this session's canonical workspace read/write", "remember this canonical workspace", "future sessions", "Shell commands remain", "separately controlled"} {
+	for _, want := range []string{"Allow workspace access?", "term-llm wants to read and modify files in:", workspace, "Always allow", "Remember this workspace for future sessions.", "Allow this session", "Access ends with this session.", "Deny", "Do not allow access.", "Shell commands still require separate approval."} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("workspace UI missing %q: %s", want, rendered)
 		}

@@ -18,6 +18,79 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+func TestResponseRunTimerExcludesInteractiveWait(t *testing.T) {
+	ctx, timer := newResponseRunTimer(500 * time.Millisecond)
+	defer timer.stop()
+	resume := timer.pause()
+	time.Sleep(600 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed while paused: %v", err)
+	}
+	resume()
+	select {
+	case <-ctx.Done():
+		if !responseRunTimedOut(ctx) {
+			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timer did not resume after interactive wait")
+	}
+}
+
+func TestResponseRunTimerPauseExpiresExhaustedBudgetImmediately(t *testing.T) {
+	ctx, timer := newResponseRunTimer(time.Hour)
+	defer timer.stop()
+	timer.mu.Lock()
+	timer.activeAt = time.Now().Add(-2 * time.Hour)
+	timer.mu.Unlock()
+
+	resume := timer.pause()
+	resume()
+	select {
+	case <-ctx.Done():
+		if !responseRunTimedOut(ctx) {
+			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("exhausted timer remained alive after pause")
+	}
+}
+
+func TestResponseRunTimerNestedPausesAndResumeAreIdempotent(t *testing.T) {
+	ctx, timer := newResponseRunTimer(time.Hour)
+	defer timer.stop()
+	resumeFirst := timer.pause()
+	resumeSecond := timer.pause()
+	resumeFirst()
+	resumeFirst()
+
+	timer.mu.Lock()
+	pauses := timer.pauses
+	timer.mu.Unlock()
+	if pauses != 1 || ctx.Err() != nil {
+		t.Fatalf("after first resume: pauses=%d err=%v, want one active pause", pauses, ctx.Err())
+	}
+
+	resumeSecond()
+	timer.mu.Lock()
+	pauses = timer.pauses
+	timer.mu.Unlock()
+	if pauses != 0 || ctx.Err() != nil {
+		t.Fatalf("after final resume: pauses=%d err=%v, want active timer", pauses, ctx.Err())
+	}
+}
+
+func TestResponseRunTimerStopIsCancellationNotTimeout(t *testing.T) {
+	ctx, timer := newResponseRunTimer(time.Hour)
+	timer.stop()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("stop error = %v, want cancellation", ctx.Err())
+	}
+	if responseRunTimedOut(ctx) {
+		t.Fatalf("stop cause = %v, must not be classified as timeout", context.Cause(ctx))
+	}
+}
+
 func TestResponseRunCancelledSnapshotRetainsDurableContinuationID(t *testing.T) {
 	run := newResponseRun("resp-cancelled-run", "sess-cancelled-run", "", "test-model", time.Now().Unix(), nil)
 	run.finalRevReader = func() (int64, error) { return 4, nil }

@@ -608,6 +608,13 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			_ = failErr
 		}
 	}
+	failRunForError := func(err error) {
+		if responseRunTimedOut(runCtx) {
+			failRun("timeout_error", errors.New(responseRunTimeoutMessage(s.responseTimeout())))
+			return
+		}
+		failRun("invalid_request_error", err)
+	}
 
 	appendProgress("naive_start", exec.plan.startMessage(runtime))
 	visible := false
@@ -652,6 +659,11 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		return
 	}
 
+	if responseRunTimedOut(runCtx) {
+		exec.markRolledBack()
+		failRun("timeout_error", errors.New(responseRunTimeoutMessage(s.responseTimeout())))
+		return
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		exec.markRolledBack()
 		cancelled, _ := run.finishCancelled(map[string]any{
@@ -687,7 +699,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		exec.markRolledBack()
 		s.restoreModelSwapRollback(runCtx, sessionID, exec, runtime, "failed", "handover")
 		appendProgress("failed", fmt.Sprintf("Model swap failed; restored %s.", exec.plan.previousLabel()))
-		failRun("invalid_request_error", modelSwapCombinedError(err, handoverErr))
+		failRunForError(modelSwapCombinedError(err, handoverErr))
 		return
 	}
 
@@ -705,7 +717,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		exec.markRolledBack()
 		s.restoreModelSwapRollback(runCtx, sessionID, exec, runtime, "failed", "handover")
 		appendProgress("failed", fmt.Sprintf("Model swap failed; restored %s.", exec.plan.previousLabel()))
-		failRun("invalid_request_error", modelSwapCombinedError(err, retryErr))
+		failRunForError(modelSwapCombinedError(err, retryErr))
 		return
 	}
 	addRuntimeUsage(runtime, handover.Usage)

@@ -69,6 +69,7 @@ type serveRuntime struct {
 	pendingApprovals     map[string]*servePendingApproval
 	approvalEventFunc    func(event string, data map[string]any) error
 	approvalCtx          context.Context
+	pauseResponseTimeout func() func()
 	lastUIRunError       string
 	platform             string
 	platformMessages     agents.PlatformMessagesConfig
@@ -98,6 +99,16 @@ type runtimeInterjectionCall struct {
 }
 
 const runtimeInterjectionCallTTL = time.Minute
+
+func (rt *serveRuntime) pauseForInteractiveWait() func() {
+	rt.approvalMu.Lock()
+	pause := rt.pauseResponseTimeout
+	rt.approvalMu.Unlock()
+	if pause == nil {
+		return func() {}
+	}
+	return pause()
+}
 
 func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
 	message := strings.TrimSpace(event.Message)

@@ -19,6 +19,44 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestAltScreenRendersStartupWorkspaceApprovalBeforeStreaming(t *testing.T) {
+	m := newTestChatModel(true)
+	done := make(chan tools.ApprovalResult, 1)
+	updated, _ := m.Update(ApprovalRequestMsg{
+		Path:        "/tmp/new-workspace",
+		IsWorkspace: true,
+		DoneCh:      done,
+	})
+	m = updated.(*Model)
+
+	rendered := m.View().Content
+	for _, want := range []string{"Allow workspace access?", "/tmp/new-workspace", "Always allow"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("non-streaming startup view missing %q: %q", want, rendered)
+		}
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	select {
+	case result := <-done:
+		if result.Choice != tools.ApprovalChoiceWorkspaceRemember {
+			t.Fatalf("default workspace approval choice = %v, want remember", result.Choice)
+		}
+	default:
+		t.Fatal("completed startup workspace approval returned no result")
+	}
+	if m.approvalModel != nil || m.pausedForExternalUI {
+		t.Fatal("completed startup workspace approval remained active")
+	}
+	rendered = m.View().Content
+	for _, stale := range []string{"Allow workspace access?", "/tmp/new-workspace"} {
+		if strings.Contains(rendered, stale) {
+			t.Fatalf("completed startup view retained %q: %q", stale, rendered)
+		}
+	}
+}
+
 func TestRenderMarkdown_MatchesSharedRenderer_ForTabs(t *testing.T) {
 	content := "```\na\tb\n```"
 

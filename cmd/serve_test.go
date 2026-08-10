@@ -10111,6 +10111,71 @@ func TestStartResponseRunProviderDeadlineDoesNotClaimRunTimeout(t *testing.T) {
 	}
 }
 
+func TestStartResponseRunTimeoutPreservesDeferredUIError(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Delay: time.Second, Text: "too late"})
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+	srv := &serveServer{
+		cfg:          serveServerConfig{responseTimeout: timeout},
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("wait")}, llm.Request{
+		SessionID: "sess_ui_timeout",
+	}, "sess_ui_timeout", startResponseRunOptions{uiSession: true})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		return stringValue(run.snapshot()["status"]) == "failed"
+	}, "UI response run timeout")
+
+	want := responseRunTimeoutMessage(timeout)
+	if got := rt.consumeLastUIRunError(); got != want {
+		t.Fatalf("deferred UI timeout error = %q, want %q", got, want)
+	}
+}
+
+func TestStartResponseRunExplicitCancelClearsDeferredUIError(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTurn(llm.MockTurn{Delay: time.Second, Text: "too late"})
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+	srv := &serveServer{
+		cfg:          serveServerConfig{responseTimeout: time.Minute},
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("wait")}, llm.Request{
+		SessionID: "sess_ui_cancel",
+	}, "sess_ui_cancel", startResponseRunOptions{uiSession: true})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+	rt.setLastUIRunError("stale error")
+	if !run.cancelRun() {
+		t.Fatal("explicit response cancellation was not accepted")
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		return stringValue(run.snapshot()["status"]) == "cancelled"
+	}, "UI response cancellation")
+	if got := rt.consumeLastUIRunError(); got != "" {
+		t.Fatalf("explicit cancellation retained deferred UI error %q", got)
+	}
+}
+
 func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) {
 	const sessionID = "sess-cancel-preserves-tools"
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})

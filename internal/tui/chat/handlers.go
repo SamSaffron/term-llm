@@ -255,6 +255,7 @@ func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 		m.approvalDoneCh = nil
 		m.approvalIsWorkspace = false
 		m.pausedForExternalUI = false
+		m.bumpContentVersion()
 		cmds = append(cmds, m.spinner.Tick)
 	}
 
@@ -299,6 +300,7 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		m.approvalModel = nil
 		m.approvalIsWorkspace = false
 		m.pausedForExternalUI = false
+		m.bumpContentVersion()
 		cancelled = true
 	}
 
@@ -312,6 +314,7 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		m.askUserDoneCh = nil
 		m.askUserModel = nil
 		m.pausedForExternalUI = false
+		m.bumpContentVersion()
 		cancelled = true
 	}
 
@@ -461,6 +464,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.approvalDoneCh = nil
 			m.approvalIsWorkspace = false
 			m.pausedForExternalUI = false
+			m.bumpContentVersion()
 			return m, m.withTerminalTitleCmd(m.spinner.Tick)
 		}
 		return m, nil
@@ -483,6 +487,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.askUserModel = nil
 			m.askUserDoneCh = nil
 			m.pausedForExternalUI = false
+			m.bumpContentVersion()
 			return m, m.withTerminalTitleCmd(m.spinner.Tick)
 		}
 		if cmd != nil {
@@ -1425,6 +1430,7 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 			m.askUserModel = nil
 			m.askUserDoneCh = nil
 			m.pausedForExternalUI = false
+			m.bumpContentVersion()
 			return m, m.withTerminalTitleCmd(m.spinner.Tick)
 		}
 		return m, cmd

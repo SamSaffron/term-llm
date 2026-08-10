@@ -479,6 +479,9 @@ type Model struct {
 
 	// Auto-send mode (for benchmarking) - queue of messages to send
 	autoSendQueue []string
+	// startupWorkspaceApproval runs once after the event loop starts and before
+	// any startup auto-send so the user can decide workspace trust up front.
+	startupWorkspaceApproval func() error
 	// autoSendExitOnDone causes the TUI to quit when the queue is exhausted;
 	// when false the session continues in interactive mode after the queue drains.
 	autoSendExitOnDone bool
@@ -584,8 +587,9 @@ type (
 		done       <-chan struct{}
 		generation uint64
 	}
-	sessionSavedMsg  struct{}
-	sessionLoadedMsg struct {
+	startupWorkspaceApprovalMsg struct{ err error }
+	sessionSavedMsg             struct{}
+	sessionLoadedMsg            struct {
 		sess     *session.Session
 		messages []session.Message
 	}
@@ -1570,6 +1574,12 @@ func (m *Model) mergeUnpersistedInterruptedAssistant(result interruptedAssistant
 	}
 }
 
+// SetStartupWorkspaceApproval configures a one-time workspace trust decision
+// that runs after the event loop starts and before any startup auto-send.
+func (m *Model) SetStartupWorkspaceApproval(confirm func() error) {
+	m.startupWorkspaceApproval = confirm
+}
+
 // SetAgentResolver configures the function used to resolve agent names
 // during /handover. The function should match cmd.LoadAgent's signature.
 func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
@@ -1666,6 +1676,36 @@ func (m *Model) autoSendMessageStats() string {
 	return fmt.Sprintf("[Message %d] %.1fs", m.stats.LLMCallCount, elapsed.Seconds())
 }
 
+func (m *Model) startupWorkspaceApprovalCmd() tea.Cmd {
+	confirm := m.startupWorkspaceApproval
+	if confirm == nil {
+		return nil
+	}
+	m.startupWorkspaceApproval = nil
+	return func() tea.Msg {
+		return startupWorkspaceApprovalMsg{err: confirm()}
+	}
+}
+
+func (m *Model) initialAutoSendCmd() tea.Cmd {
+	// Handover auto-send: send the target agent's default prompt after restart.
+	if m.handoverAutoSend != "" {
+		m.textarea.SetValue(m.handoverAutoSend)
+		m.handoverAutoSend = ""
+		m.updateTextareaHeight()
+		return func() tea.Msg { return autoSendMsg{} }
+	}
+
+	// In auto-send mode, pop first message from queue and send it.
+	if len(m.autoSendQueue) > 0 {
+		m.textarea.SetValue(m.autoSendQueue[0])
+		m.autoSendQueue = m.autoSendQueue[1:]
+		m.updateTextareaHeight()
+		return func() tea.Msg { return autoSendMsg{} }
+	}
+	return nil
+}
+
 // Init initializes the model.
 func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
@@ -1711,27 +1751,14 @@ func (m *Model) Init() tea.Cmd {
 		baseCmds = append(baseCmds, cmd)
 	}
 
-	// Handover auto-send: send the target agent's default prompt after restart
-	if m.handoverAutoSend != "" {
-		m.textarea.SetValue(m.handoverAutoSend)
-		m.handoverAutoSend = ""
-		m.updateTextareaHeight()
-		cmds := append([]tea.Cmd{}, baseCmds...)
-		cmds = append(cmds, func() tea.Msg { return autoSendMsg{} })
-		return tea.Batch(cmds...)
+	if cmd := m.startupWorkspaceApprovalCmd(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+		return tea.Batch(baseCmds...)
 	}
 
-	// In auto-send mode, pop first message from queue and send it
-	if len(m.autoSendQueue) > 0 {
-		// Set textarea to first queued message
-		m.textarea.SetValue(m.autoSendQueue[0])
-		m.autoSendQueue = m.autoSendQueue[1:]
-		m.updateTextareaHeight()
-		cmds := append([]tea.Cmd{}, baseCmds...)
-		cmds = append(cmds, func() tea.Msg { return autoSendMsg{} })
-		return tea.Batch(cmds...)
+	if cmd := m.initialAutoSendCmd(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
 	}
-
 	return tea.Batch(baseCmds...)
 }
 
@@ -2512,6 +2539,18 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+
+	case startupWorkspaceApprovalMsg:
+		if m.rootContext().Err() != nil {
+			return m, nil
+		}
+		if errors.Is(msg.err, tools.ErrWorkspaceApprovalCancelled) {
+			return m.showFooterMuted("Workspace decision deferred; file tools will ask again when needed.")
+		}
+		if msg.err != nil {
+			return m.showFooterWarning("Workspace access was not granted; your message was not sent.")
+		}
+		return m, m.initialAutoSendCmd()
 
 	case autoSendMsg:
 		// Auto-send has no editable recovery loop. Fail fast and retain the queued

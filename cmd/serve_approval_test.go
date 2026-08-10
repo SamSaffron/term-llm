@@ -150,23 +150,23 @@ func TestAwaitWorkspaceApprovalUsesDedicatedWebPrompt(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for workspace approval event")
 	}
-	if payload["is_workspace"] != true || payload["title"] != "Primary Workspace Access Request" || payload["path"] != "/workspace" {
+	if payload["is_workspace"] != true || payload["title"] != "Allow workspace access?" || payload["path"] != "/workspace" {
 		t.Fatalf("workspace payload = %#v", payload)
 	}
 	prompts := rt.pendingApprovalPrompts()
 	if len(prompts) != 1 || !prompts[0].IsWorkspace || len(prompts[0].Options) != 3 {
 		t.Fatalf("workspace prompts = %#v", prompts)
 	}
-	if got := prompts[0].Options[0]; got.Choice != "workspace" || got.Label != "Allow this session's canonical workspace read/write" || got.Description != "Allow read and write access to the entire workspace for this session. Shell commands remain separately controlled." {
-		t.Fatalf("workspace session allow option = %#v", got)
+	if got := prompts[0].Options[0]; got.Choice != "workspace_remember" || got.Label != "Always allow" || got.Description != "Remember this workspace for future sessions." {
+		t.Fatalf("workspace remembered default option = %#v", got)
 	}
-	if got := prompts[0].Options[1]; got.Choice != "workspace_remember" || got.Label != "Allow and remember this canonical workspace" {
-		t.Fatalf("workspace remembered allow option = %#v", got)
+	if got := prompts[0].Options[1]; got.Choice != "workspace" || got.Label != "Allow this session" || got.Description != "Access ends with this session." {
+		t.Fatalf("workspace session option = %#v", got)
 	}
-	if got := prompts[0].Options[2]; got.Choice != "deny" {
+	if got := prompts[0].Options[2]; got.Choice != "deny" || got.Description != "Do not allow access." {
 		t.Fatalf("workspace deny option = %#v", got)
 	}
-	if err := rt.submitApproval(prompts[0].ApprovalID, 1, false, false); err != nil {
+	if err := rt.submitApproval(prompts[0].ApprovalID, 0, false, false); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -175,6 +175,56 @@ func TestAwaitWorkspaceApprovalUsesDedicatedWebPrompt(t *testing.T) {
 		t.Fatal("workspace approval did not complete")
 	}
 	if awaitErr != nil || !result.Approved || !result.Remember || result.Cancelled {
+		t.Fatalf("workspace result = %#v, %v", result, awaitErr)
+	}
+}
+
+func TestAwaitWorkspaceApprovalPausesResponseTimeoutWhileWaiting(t *testing.T) {
+	runCtx, runTimer := newResponseRunTimer(500 * time.Millisecond)
+	defer runTimer.stop()
+	eventFired := make(chan struct{}, 1)
+	rt := &serveRuntime{
+		approvalCtx:          runCtx,
+		pauseResponseTimeout: runTimer.pause,
+		approvalEventFunc: func(event string, data map[string]any) error {
+			if event != "response.approval.prompt" {
+				t.Fatalf("event = %q", event)
+			}
+			eventFired <- struct{}{}
+			return nil
+		},
+	}
+
+	done := make(chan struct{})
+	var result tools.WorkspaceApprovalResult
+	var awaitErr error
+	go func() {
+		result, awaitErr = rt.awaitWorkspaceApproval("/workspace")
+		close(done)
+	}()
+	select {
+	case <-eventFired:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for workspace approval event")
+	}
+
+	time.Sleep(600 * time.Millisecond)
+	if err := runCtx.Err(); err != nil {
+		t.Fatalf("response timeout elapsed during human wait: %v", err)
+	}
+	prompts := rt.pendingApprovalPrompts()
+	if len(prompts) != 1 {
+		t.Fatalf("pending workspace prompts = %#v", prompts)
+	}
+	if err := rt.submitApproval(prompts[0].ApprovalID, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("workspace approval did not complete")
+	}
+	if awaitErr != nil || !result.Approved || !result.Remember {
 		t.Fatalf("workspace result = %#v, %v", result, awaitErr)
 	}
 }

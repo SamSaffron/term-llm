@@ -1326,12 +1326,114 @@ const (
 	defaultServeRequestTimeout         = 30 * time.Minute
 )
 
+var errResponseRunTimeout = errors.New("response run timeout")
+
+// responseRunTimer bounds active execution time without charging time spent
+// waiting for a person to answer an interactive prompt.
+type responseRunTimer struct {
+	mu        sync.Mutex
+	cancel    context.CancelCauseFunc
+	timer     *time.Timer
+	remaining time.Duration
+	activeAt  time.Time
+	pauses    int
+	stopped   bool
+}
+
+func newResponseRunTimer(timeout time.Duration) (context.Context, *responseRunTimer) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t := &responseRunTimer{
+		cancel:    cancel,
+		remaining: timeout,
+		activeAt:  time.Now(),
+	}
+	t.timer = time.AfterFunc(timeout, func() { cancel(errResponseRunTimeout) })
+	return ctx, t
+}
+
+func (t *responseRunTimer) pause() func() {
+	if t == nil {
+		return func() {}
+	}
+	t.mu.Lock()
+	if t.stopped {
+		t.mu.Unlock()
+		return func() {}
+	}
+	t.pauses++
+	expired := false
+	if t.pauses == 1 {
+		if t.timer != nil {
+			t.timer.Stop()
+		}
+		t.remaining -= time.Since(t.activeAt)
+		if t.remaining <= 0 {
+			t.remaining = 0
+			t.pauses = 0
+			expired = true
+		}
+	}
+	t.mu.Unlock()
+	if expired {
+		t.cancel(errResponseRunTimeout)
+		return func() {}
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(t.resume)
+	}
+}
+
+func (t *responseRunTimer) resume() {
+	t.mu.Lock()
+	if t.stopped || t.pauses == 0 {
+		t.mu.Unlock()
+		return
+	}
+	t.pauses--
+	if t.pauses > 0 {
+		t.mu.Unlock()
+		return
+	}
+	remaining := t.remaining
+	t.activeAt = time.Now()
+	if remaining > 0 {
+		t.timer = time.AfterFunc(remaining, func() { t.cancel(errResponseRunTimeout) })
+	}
+	t.mu.Unlock()
+	if remaining <= 0 {
+		t.cancel(errResponseRunTimeout)
+	}
+}
+
+func (t *responseRunTimer) stop() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.stopped {
+		t.mu.Unlock()
+		return
+	}
+	t.stopped = true
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+	t.mu.Unlock()
+	t.cancel(nil)
+}
+
+func responseRunTimedOut(ctx context.Context) bool {
+	return ctx != nil && errors.Is(context.Cause(ctx), errResponseRunTimeout)
+}
+
 func responseRunTimeoutMessage(timeout time.Duration) string {
 	return fmt.Sprintf("Response run timed out after %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
 }
 
 func responseRunDeadlineMessage(runCtx context.Context, timeout time.Duration) string {
-	if runCtx != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+	if responseRunTimedOut(runCtx) || (runCtx != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded)) {
 		return responseRunTimeoutMessage(timeout)
 	}
 	return "The model provider request timed out before the response run deadline. Continue to retry from saved progress."
@@ -2453,8 +2555,10 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - Clients reconnect via GET /v1/responses/{id}/events?after=N and replay
 	//    events they missed, which only works if the run kept going.
 	//  - Explicit cancellation is available via POST /v1/responses/{id}/cancel.
-	//  - serve.response_timeout bounds orphan-run lifetime.
-	runCtx, cancel := context.WithTimeout(context.Background(), s.responseTimeout())
+	//  - serve.response_timeout bounds active execution, excluding time spent
+	//    waiting for a person to answer an interactive prompt.
+	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
+	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
 	for i := len(inputMessages) - 1; i >= 0; i-- {
 		if inputMessages[i].Role == llm.RoleUser && strings.TrimSpace(inputMessages[i].ClientMessageID) != "" {
@@ -2510,6 +2614,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 
 	if err := mgr.start(func() {
+		defer cancel()
 		if options.onDone != nil {
 			defer options.onDone()
 		}
@@ -2530,11 +2635,13 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			return run.appendEvent(event, data)
 		}
 		runtime.approvalCtx = runCtx
+		runtime.pauseResponseTimeout = runTimer.pause
 		runtime.approvalMu.Unlock()
 		defer func() {
 			runtime.approvalMu.Lock()
 			runtime.approvalEventFunc = nil
 			runtime.approvalCtx = nil
+			runtime.pauseResponseTimeout = nil
 			runtime.approvalMu.Unlock()
 		}()
 
@@ -2551,7 +2658,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			return s.appendResponseRunEvent(runtime, run, streamState, ev)
 		})
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			runTimedOut := responseRunTimedOut(runCtx)
+			if errors.Is(err, context.Canceled) && !runTimedOut {
 				continuationID := s.responseRunContinuationID(runCtx, runtime, sessionID, respID)
 				cancelled, cancelErr := run.finishCancelled(map[string]any{
 					"response": map[string]any{
@@ -2574,7 +2682,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			}
 			errType := "invalid_request_error"
 			errMessage := err.Error()
-			if errors.Is(err, context.DeadlineExceeded) {
+			if runTimedOut || errors.Is(err, context.DeadlineExceeded) {
 				errType = "timeout_error"
 				errMessage = responseRunDeadlineMessage(runCtx, s.responseTimeout())
 			} else if errors.Is(err, errServeSessionBusy) {
@@ -2582,7 +2690,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			} else if errors.Is(err, errServeSessionPersistence) {
 				errType = "server_error"
 			}
-			if !errors.Is(err, context.Canceled) {
+			if !errors.Is(err, context.Canceled) || runTimedOut {
 				s.persistResponseRunErrorEvent(runCtx, runtime, sessionID, respID, errType, errMessage)
 			}
 			continuationID := s.responseRunContinuationID(runCtx, runtime, sessionID, respID)
@@ -2603,7 +2711,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 				switch {
 				case hadSubscribers:
 					runtime.clearLastUIRunError()
-				case errors.Is(err, context.Canceled):
+				case errors.Is(err, context.Canceled) && !runTimedOut:
 					runtime.clearLastUIRunError()
 				default:
 					runtime.setLastUIRunError(errMessage)
@@ -2612,7 +2720,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			if failErr != nil {
 				log.Printf("response run %s failed to append terminal event: %v", respID, failErr)
 			}
-			if failErr != nil && options.uiSession && !errors.Is(err, context.Canceled) {
+			if failErr != nil && options.uiSession && (!errors.Is(err, context.Canceled) || runTimedOut) {
 				runtime.setLastUIRunError(errMessage)
 			}
 			return

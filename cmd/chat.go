@@ -306,6 +306,18 @@ func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettin
 	return tools.NewApprovalManager(perms), nil
 }
 
+func toolManagerHasPathCapableTools(manager *tools.ToolManager) bool {
+	if manager == nil {
+		return false
+	}
+	for _, spec := range manager.GetSpecs() {
+		if tools.IsPathCapableTool(spec.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff) (string, string, error) {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
@@ -821,6 +833,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 				p.Send(chat.ResumeFromExternalUIMsg{})
 			}()
 			return tools.RunWorkspaceApprovalUI(workspace)
+		}
+		if toolManagerHasPathCapableTools(toolMgr) {
+			model.SetStartupWorkspaceApproval(func() error {
+				return approvalMgr.EnsurePrimaryWorkspaceAccess(ctx)
+			})
 		}
 	}
 
