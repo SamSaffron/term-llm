@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -101,16 +100,16 @@ func sendWebPushAll(ctx context.Context, cfg *config.Config, message string, err
 	sent := 0
 	for _, sub := range subs {
 		status, err := sendWebPush(ctx, &sub, payload, opts)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("push to %s: %v", truncateEndpoint(sub.Endpoint), err))
-			continue
-		}
-		// Clean up stale subscriptions on 410 Gone or 404 Not Found
+		// Clean up stale subscriptions on 410 Gone or 404 Not Found. These
+		// statuses are returned with an error, so handle them first.
 		if status == http.StatusGone || status == http.StatusNotFound {
 			if delErr := store.DeletePushSubscription(ctx, sub.Endpoint); delErr != nil {
-				log.Printf("warning: cleanup stale subscription: %v", delErr)
+				errs = append(errs, fmt.Sprintf("remove stale subscription %s: %v", truncateEndpoint(sub.Endpoint), delErr))
 			}
-			errs = append(errs, fmt.Sprintf("removed stale subscription %s", truncateEndpoint(sub.Endpoint)))
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("push to %s: %v", truncateEndpoint(sub.Endpoint), err))
 			continue
 		}
 		sent++
