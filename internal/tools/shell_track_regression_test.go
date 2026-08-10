@@ -1,13 +1,16 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func executeTrackedShell(t *testing.T, recorder *fakeFileRecorder, dir, command string, affectedPaths ...string) {
@@ -117,6 +120,41 @@ func TestShellSnapshotChangesAroundContentReadCap(t *testing.T) {
 	beyondRecord := recorder.findRecord(t, beyondCap)
 	if !beyondRecord.BeforeUnknown || string(beyondRecord.After) != "beyond cap changed\n" {
 		t.Fatalf("beyond-cap record = %+v", beyondRecord)
+	}
+}
+
+func TestShellSnapshotByteComparesCapturedContentWithUnchangedStat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tracked.txt")
+	writeTestFile(t, path, "before\n")
+
+	recorder := &fakeFileRecorder{}
+	ctx := trackingContext()
+	snap := preShellSnapshot(ctx, recorder, dir, []string{"tracked.txt"})
+	entry := snap.files[path]
+	if entry == nil || entry.content == nil {
+		t.Fatalf("pre snapshot did not capture content: %+v", entry)
+	}
+
+	writeTestFile(t, path, "after!\n") // same byte length as "before\n"
+	if err := os.Chtimes(path, entry.modTime, entry.modTime); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != entry.size || !info.ModTime().Equal(entry.modTime) {
+		t.Fatalf("failed to emulate unchanged stat: size=%d/%d mtime=%v/%v", info.Size(), entry.size, info.ModTime(), entry.modTime)
+	}
+
+	changes := postShellChanges(ctx, recorder, snap)
+	if len(changes) != 1 {
+		t.Fatalf("changes = %+v, want captured same-stat edit", changes)
+	}
+	record := recorder.findRecord(t, path)
+	if string(record.Before) != "before\n" || string(record.After) != "after!\n" {
+		t.Fatalf("same-stat record = %q -> %q", record.Before, record.After)
 	}
 }
 
@@ -282,5 +320,303 @@ func TestShellBroadScopeUsesDeepestNestedRepoOwnership(t *testing.T) {
 	record := recorder.findRecord(t, filepath.Join(nested, "dirty.txt"))
 	if string(record.Before) != "base\n" || string(record.After) != "dirty\n" {
 		t.Fatalf("nested dirty record = %q -> %q", record.Before, record.After)
+	}
+}
+
+func TestShellGitFallbackRecordsDirtyToCleanRevertsWithoutSessionHistory(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "checkout", command: "git checkout -- tracked.txt"},
+		{name: "reset hard", command: "git reset --hard -q HEAD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tracked.txt")
+			initCommittedTestRepo(t, dir, map[string]string{"tracked.txt": "base\n"})
+			writeTestFile(t, path, "user dirty\n")
+
+			recorder := &fakeFileRecorder{}
+			executeTrackedShell(t, recorder, dir, tt.command)
+			record := recorder.findRecord(t, path)
+			if string(record.Before) != "user dirty\n" || string(record.After) != "base\n" {
+				t.Fatalf("dirty-to-clean record = %q -> %q", record.Before, record.After)
+			}
+		})
+	}
+}
+
+func TestShellGitCleanAtReturnDependsOnAffectedPathSpecificity(t *testing.T) {
+	tests := []struct {
+		name       string
+		affected   string
+		wantRecord bool
+	}{
+		{name: "glob discovery omitted", affected: "*.txt"},
+		{name: "exact literal preserved", affected: "tracked.txt", wantRecord: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tracked.txt")
+			initCommittedTestRepo(t, dir, map[string]string{"tracked.txt": "before\n"})
+			runTestGit(t, dir, "config", "user.name", "t")
+			runTestGit(t, dir, "config", "user.email", "t@t")
+
+			recorder := &fakeFileRecorder{}
+			executeTrackedShell(t, recorder, dir,
+				"printf 'committed\\n' > tracked.txt && git add tracked.txt && git commit -qm edit",
+				tt.affected)
+			if !tt.wantRecord {
+				if records := recorder.recorded(); len(records) != 0 {
+					t.Fatalf("Git-clean glob discovery recorded edit+commit: %+v", records)
+				}
+				return
+			}
+			record := recorder.findRecord(t, path)
+			if string(record.Before) != "before\n" || string(record.After) != "committed\n" {
+				t.Fatalf("literal edit+commit = %q -> %q", record.Before, record.After)
+			}
+		})
+	}
+}
+
+func TestGitShowIndexBatchSkipsOversizedBlobAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	initCommittedTestRepo(t, dir, map[string]string{
+		"big.txt":   strings.Repeat("x", 256),
+		"small.txt": "recoverable\n",
+	})
+	big := filepath.Join(dir, "big.txt")
+	small := filepath.Join(dir, "small.txt")
+
+	got := gitShowIndexBatch(context.Background(), dir, []string{big, small}, 64, 2, 1024)
+	if _, ok := got[big]; ok {
+		t.Fatal("oversized blob was retained")
+	}
+	if string(got[small]) != "recoverable\n" {
+		t.Fatalf("later blob = %q, want recoverable content", got[small])
+	}
+}
+
+func TestGitShowIndexBatchSkipsGitlinkAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	initCommittedTestRepo(t, dir, map[string]string{"normal.txt": "recoverable\n"})
+	head := runTestGit(t, dir, "rev-parse", "HEAD")
+	runTestGit(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+head+",gitlink")
+	gitlink := filepath.Join(dir, "gitlink")
+	normal := filepath.Join(dir, "normal.txt")
+
+	got := gitShowIndexBatch(context.Background(), dir, []string{gitlink, normal}, 1024, 2, 2048)
+	if _, ok := got[gitlink]; ok {
+		t.Fatal("non-blob gitlink was retained")
+	}
+	if string(got[normal]) != "recoverable\n" {
+		t.Fatalf("later blob = %q, want recoverable content", got[normal])
+	}
+}
+
+func TestShellGitStatusFailureSuppressesBroadCandidatesButPreservesLiterals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git wrapper")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		affected   string
+		wantRecord bool
+	}{
+		{name: "broad candidate suppressed", affected: "*.txt"},
+		{name: "literal baseline preserved", affected: "tracked.txt", wantRecord: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tracked.txt")
+			initCommittedTestRepo(t, dir, map[string]string{"tracked.txt": "before\n"})
+
+			wrapperDir := t.TempDir()
+			wrapperPath := filepath.Join(wrapperDir, "git")
+			wrapper := fmt.Sprintf(`#!/bin/sh
+cmd="$1"
+if [ "$1" = "-C" ]; then
+	cmd="$3"
+fi
+if [ "$cmd" = "status" ]; then
+	exit 2
+fi
+exec %q "$@"
+`, realGit)
+			if err := os.WriteFile(wrapperPath, []byte(wrapper), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			recorder := &fakeFileRecorder{}
+			executeTrackedShell(t, recorder, dir, "printf 'after\\n' > tracked.txt", tt.affected)
+			if !tt.wantRecord {
+				if records := recorder.recorded(); len(records) != 0 {
+					t.Fatalf("status failure emitted broad candidates: %+v", records)
+				}
+				return
+			}
+			record := recorder.findRecord(t, path)
+			if string(record.Before) != "before\n" || string(record.After) != "after\n" {
+				t.Fatalf("literal record = %q -> %q", record.Before, record.After)
+			}
+		})
+	}
+}
+
+func TestShellGitStatusFailurePreservesCapturedDirtyBaseline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git wrapper")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tracked.txt")
+	initCommittedTestRepo(t, dir, map[string]string{"tracked.txt": "base\n"})
+	writeTestFile(t, path, "user dirty\n")
+
+	wrapperDir := t.TempDir()
+	marker := filepath.Join(wrapperDir, "first-status")
+	wrapperPath := filepath.Join(wrapperDir, "git")
+	wrapper := fmt.Sprintf(`#!/bin/sh
+cmd="$1"
+if [ "$1" = "-C" ]; then
+	cmd="$3"
+fi
+if [ "$cmd" = "status" ]; then
+	if [ -e %q ]; then
+		exit 2
+	fi
+	: > %q
+fi
+exec %q "$@"
+`, marker, marker, realGit)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	recorder := &fakeFileRecorder{}
+	executeTrackedShell(t, recorder, dir, "git checkout -- tracked.txt")
+	record := recorder.findRecord(t, path)
+	if string(record.Before) != "user dirty\n" || string(record.After) != "base\n" {
+		t.Fatalf("dirty baseline after status failure = %q -> %q", record.Before, record.After)
+	}
+}
+
+func TestGitStatusHonorsParentDeadlineAndPipeWaitBound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git wrapper")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	dir := t.TempDir()
+	runTestGit(t, dir, "init", "-q")
+
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "git")
+	wrapper := fmt.Sprintf(`#!/bin/sh
+cmd="$1"
+if [ "$1" = "-C" ]; then
+	cmd="$3"
+fi
+if [ "$cmd" = "status" ]; then
+	sleep 3 &
+	sleep 3
+fi
+exec %q "$@"
+`, realGit)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if status := gitStatusPorcelain(ctx, dir); status != nil {
+		t.Fatalf("status = %#v, want timeout failure", status)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("git status ignored parent deadline or waited on inherited pipes: %v", elapsed)
+	}
+}
+
+func TestShellRepoResolverBoundsCandidateAncestorsToCommandScope(t *testing.T) {
+	scope := t.TempDir()
+	initCommittedTestRepo(t, scope, map[string]string{"root.txt": "root\n"})
+	workDir := filepath.Join(scope, "work")
+	unrelated := filepath.Join(scope, "unrelated", "file.txt")
+	writeTestFile(t, filepath.Join(workDir, "work.txt"), "work\n")
+	writeTestFile(t, unrelated, "unrelated\n")
+
+	resolver := newShellRepoResolver()
+	workRepo := resolver.owningRepo(workDir)
+	if canonicalTestPath(workRepo) != canonicalTestPath(scope) {
+		t.Fatalf("working repo = %q, want %q", workRepo, scope)
+	}
+	if got := resolver.owningRepoForCandidate(unrelated, workDir, workRepo); got != "" {
+		t.Fatalf("unrelated sibling inherited arbitrary ancestor repo %q", got)
+	}
+	if got := resolver.owningRepoForCandidate(filepath.Join(workDir, "work.txt"), workDir, workRepo); canonicalTestPath(got) != canonicalTestPath(scope) {
+		t.Fatalf("working-scope candidate repo = %q, want %q", got, scope)
+	}
+
+	nested := filepath.Join(scope, "unrelated", "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	initCommittedTestRepo(t, nested, map[string]string{"nested.txt": "nested\n"})
+	if got := resolver.owningRepoForCandidate(filepath.Join(nested, "nested.txt"), workDir, workRepo); canonicalTestPath(got) != canonicalTestPath(nested) {
+		t.Fatalf("absolute nested candidate repo = %q, want %q", got, nested)
+	}
+}
+
+func TestShellAbsoluteGlobDiscoversExternalNestedRepo(t *testing.T) {
+	scope := t.TempDir()
+	initCommittedTestRepo(t, scope, map[string]string{"root.txt": "root\n"})
+	workDir := filepath.Join(scope, "work")
+	writeTestFile(t, filepath.Join(workDir, "work.txt"), "work\n")
+	nested := filepath.Join(scope, "external", "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	initCommittedTestRepo(t, nested, map[string]string{"tracked.txt": "before\n"})
+	runTestGit(t, nested, "config", "user.name", "t")
+	runTestGit(t, nested, "config", "user.email", "t@t")
+
+	recorder := &fakeFileRecorder{}
+	command := fmt.Sprintf("printf 'after\\n' > %q && git -C %q add tracked.txt && git -C %q commit -qm edit", filepath.Join(nested, "tracked.txt"), nested, nested)
+	executeTrackedShell(t, recorder, workDir, command, filepath.Join(nested, "*.txt"))
+	if records := recorder.recorded(); len(records) != 0 {
+		t.Fatalf("absolute glob failed to treat external nested Git-clean edit as materialization: %+v", records)
+	}
+}
+
+func TestGitAdminComponentIsCaseFoldedButComponentExact(t *testing.T) {
+	if !hasGitAdminComponent(filepath.Join("root", ".GIT", "config")) {
+		t.Fatal("case-folded .GIT component was not excluded")
+	}
+	for _, path := range []string{
+		filepath.Join("root", ".github", "workflows", "ci.yml"),
+		filepath.Join("root", "archive.git"),
+	} {
+		if hasGitAdminComponent(path) {
+			t.Fatalf("non-administrative path %q was excluded", path)
+		}
 	}
 }

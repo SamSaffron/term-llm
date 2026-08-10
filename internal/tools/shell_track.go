@@ -24,11 +24,14 @@ import (
 // call, not correctness: files beyond the content-read budgets are still
 // detected via stat and recorded metadata-only (truncated).
 const (
-	maxShellGlobMatches   = 1000             // candidate paths per glob expansion
-	maxShellContentReads  = 200              // full-content snapshots per phase and shell call
-	maxShellSnapshotBytes = 64 * 1024 * 1024 // total content bytes read per phase and shell call
-	maxShellGitRepos      = 64               // distinct candidate repositories inspected post-command
-	gitCommandTimeout     = 5 * time.Second
+	maxShellGlobMatches    = 1000             // candidate paths per glob expansion
+	maxShellContentReads   = 200              // full-content snapshots per phase and shell call
+	maxShellSnapshotBytes  = 64 * 1024 * 1024 // total content bytes read per phase and shell call
+	maxShellGitRepos       = 64               // distinct candidate repositories inspected post-command
+	maxGitBatchHeaderBytes = 64 * 1024        // malformed cat-file headers abort without unbounded buffering
+	maxGitBatchDrainBytes  = 64 * 1024 * 1024 // total skipped object bytes drained per cat-file batch
+	gitCommandTimeout      = 5 * time.Second
+	gitCommandWaitDelay    = 100 * time.Millisecond
 )
 
 type shellCandidateSource uint8
@@ -248,7 +251,7 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 			delete(candidates, path)
 			continue
 		}
-		candidate.repoRoot = resolver.owningRepo(path)
+		candidate.repoRoot = resolver.owningRepoForCandidate(path, snap.workDir, snap.gitRoot)
 		if candidate.repoRoot == "" {
 			continue
 		}
@@ -264,8 +267,11 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 
 	statusRoots := sortedMapKeys(reposNeedingStatus)
 	for i, root := range statusRoots {
+		if ctx.Err() != nil {
+			break
+		}
 		if i >= maxShellGitRepos {
-			break // safely degrade to before/after comparison for excess repos
+			break // unavailable status suppresses broad candidates in excess repos below
 		}
 		status := gitStatusPorcelain(ctx, root)
 		repoStatuses[root] = shellRepoStatus{paths: status, available: status != nil}
@@ -277,6 +283,9 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 	ignoredLiterals := make(map[string]bool)
 	literalRoots := sortedMapKeys(literalPathsByRepo)
 	for i, root := range literalRoots {
+		if ctx.Err() != nil {
+			break
+		}
 		if i >= maxShellGitRepos {
 			break
 		}
@@ -292,12 +301,23 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 			continue
 		}
 		if candidate.repoRoot != "" {
-			if state, ok := repoStatuses[candidate.repoRoot]; ok && state.available {
+			state, statusLoaded := repoStatuses[candidate.repoRoot]
+			if statusLoaded && state.available {
 				candidate.postStatus = state.paths[path]
-				if !candidate.source.preservesCleanGitState() && candidate.postStatus == "" {
-					// Broad globs are discovery scopes. Inside Git, post-command clean
-					// materialization is the baseline, so only dirty tracked and
-					// untracked non-ignored paths survive.
+			}
+			_, wasDirty := snap.gitStatus[path]
+			knownDirtyBaseline := wasDirty && candidate.entry != nil && candidate.entry.existed
+			if !candidate.source.preservesCleanGitState() && !knownDirtyBaseline {
+				if !statusLoaded || !state.available {
+					// Repo caps and status failures fail closed for broad discovery:
+					// emitting every changed glob match would turn a clean clone or
+					// checkout into materialization noise. Exact literals, session
+					// paths, and captured pre-dirty baselines remain preserved.
+					continue
+				}
+				if candidate.postStatus == "" {
+					// Globs are discovery scopes, so a Git-clean path at return is
+					// intentionally omitted. Exact literals preserve edit+commit.
 					continue
 				}
 			}
@@ -330,6 +350,9 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 
 	var changes []llm.FileChange
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			break
+		}
 		rec := snap.buildChangeRecord(path, candidates[path])
 		if rec == nil {
 			continue
@@ -354,10 +377,10 @@ func (snap *shellSnapshot) buildChangeRecord(path string, candidate *shellPostCa
 		return nil // directories, sockets, etc.
 	}
 
-	// Stat is the universal unchanged fast path for every pre-existing file,
-	// including files whose content was captured. This prevents historical
-	// session paths beyond the content cap from becoming false modifications.
-	if prev != nil && prev.existed && existsNow && info.Size() == prev.size && info.ModTime().Equal(prev.modTime) {
+	// For metadata-only snapshots, equal size and mtime are the only bounded
+	// unchanged signal available. Captured content must still be byte-compared:
+	// callers can preserve mtime while replacing same-size bytes.
+	if prev != nil && prev.existed && prev.content == nil && existsNow && info.Size() == prev.size && info.ModTime().Equal(prev.modTime) {
 		return nil
 	}
 
@@ -502,7 +525,7 @@ func expandShellPatterns(workDir string, patterns []string) []shellExpandedCandi
 		fsys := shellGlobFS{FS: os.DirFS(baseDir)}
 		_ = doublestar.GlobWalk(fsys, rel, func(matchPath string, d fs.DirEntry) error {
 			if d.IsDir() {
-				if d.Name() == ".git" {
+				if isGitAdminName(d.Name()) {
 					return fs.SkipDir
 				}
 				return nil
@@ -531,6 +554,13 @@ func (fsys shellGlobFS) Open(name string) (fs.File, error) {
 	return fsys.FS.Open(name)
 }
 
+func (fsys shellGlobFS) Stat(name string) (fs.FileInfo, error) {
+	if hasGitAdminComponent(filepath.FromSlash(name)) {
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
+	}
+	return fs.Stat(fsys.FS, name)
+}
+
 func (fsys shellGlobFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	if hasGitAdminComponent(filepath.FromSlash(name)) {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrNotExist}
@@ -541,11 +571,17 @@ func (fsys shellGlobFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	filtered := entries[:0]
 	for _, entry := range entries {
-		if entry.Name() != ".git" {
+		if !isGitAdminName(entry.Name()) {
 			filtered = append(filtered, entry)
 		}
 	}
 	return filtered, nil
+}
+
+func isGitAdminName(name string) bool {
+	// EqualFold is deliberately limited to the complete component, so .github
+	// remains visible while case-insensitive filesystems cannot expose .GIT.
+	return strings.EqualFold(name, ".git")
 }
 
 func hasGitAdminComponent(path string) bool {
@@ -553,7 +589,7 @@ func hasGitAdminComponent(path string) bool {
 	volume := filepath.VolumeName(path)
 	path = strings.TrimPrefix(path, volume)
 	for _, component := range strings.Split(path, string(filepath.Separator)) {
-		if component == ".git" {
+		if isGitAdminName(component) {
 			return true
 		}
 	}
@@ -561,46 +597,100 @@ func hasGitAdminComponent(path string) bool {
 }
 
 type shellRepoResolver struct {
-	byDir map[string]string
+	markers map[string]bool
 }
 
 func newShellRepoResolver() *shellRepoResolver {
-	return &shellRepoResolver{byDir: make(map[string]string)}
+	return &shellRepoResolver{markers: make(map[string]bool)}
 }
 
-// owningRepo discovers the deepest repository containing path using only
-// filesystem markers. Both .git directories and worktree/submodule .git files
-// establish ownership.
+// owningRepo discovers the deepest repository containing path. The unbounded
+// form is used only for the shell working directory itself.
 func (resolver *shellRepoResolver) owningRepo(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = filepath.Clean(path)
+	return resolver.owningRepoWithin(path, "", true)
+}
+
+// owningRepoForCandidate bounds ancestor discovery to the command's relevant
+// filesystem scope. Paths under workDir may inherit its owning repository and
+// still discover deeper nested repos. Explicit absolute paths outside workDir
+// may discover their own repo before the common ancestor, but are not assigned
+// to an unrelated .git marker at that arbitrary common ancestor.
+func (resolver *shellRepoResolver) owningRepoForCandidate(path, workDir, workRepo string) string {
+	absPath := absoluteCleanPath(path)
+	absWorkDir := absoluteCleanPath(workDir)
+	if pathWithinRoot(absPath, absWorkDir) {
+		boundary := absWorkDir
+		if workRepo != "" {
+			boundary = absoluteCleanPath(workRepo)
+		}
+		return resolver.owningRepoWithin(absPath, boundary, true)
+	}
+	boundary := commonPathAncestor(absWorkDir, absPath)
+	return resolver.owningRepoWithin(absPath, boundary, false)
+}
+
+// owningRepoWithin discovers repositories from path up to boundary. Both .git
+// directories and worktree/submodule .git files establish ownership.
+func (resolver *shellRepoResolver) owningRepoWithin(path, boundary string, includeBoundary bool) string {
+	abs := absoluteCleanPath(path)
+	if boundary != "" {
+		boundary = absoluteCleanPath(boundary)
+		if !pathWithinRoot(abs, boundary) {
+			return ""
+		}
 	}
 	start := abs
 	if info, err := os.Stat(start); err != nil || !info.IsDir() {
 		start = filepath.Dir(start)
 	}
 
-	var visited []string
 	for dir := filepath.Clean(start); ; dir = filepath.Dir(dir) {
-		if root, ok := resolver.byDir[dir]; ok {
-			for _, item := range visited {
-				resolver.byDir[item] = root
-			}
-			return root
+		atBoundary := boundary != "" && dir == boundary
+		if atBoundary && !includeBoundary {
+			return ""
 		}
-		visited = append(visited, dir)
-		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-			for _, item := range visited {
-				resolver.byDir[item] = dir
-			}
+		marker, checked := resolver.markers[dir]
+		if !checked {
+			_, err := os.Lstat(filepath.Join(dir, ".git"))
+			marker = err == nil
+			resolver.markers[dir] = marker
+		}
+		if marker {
+			return dir
+		}
+		if atBoundary {
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+	}
+}
+
+func absoluteCleanPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
+}
+
+func pathWithinRoot(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func commonPathAncestor(first, second string) string {
+	for dir := filepath.Clean(first); ; dir = filepath.Dir(dir) {
+		if pathWithinRoot(second, dir) {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			for _, item := range visited {
-				resolver.byDir[item] = ""
-			}
 			return ""
 		}
 	}
@@ -613,6 +703,16 @@ func sortedMapKeys[T any](values map[string]T) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// boundedGitCommand applies gitCommandTimeout without detaching from a shorter
+// parent deadline. WaitDelay prevents descendants that inherited stdout/stderr
+// pipes from keeping a canceled best-effort Git probe alive indefinitely.
+func boundedGitCommand(ctx context.Context, root string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	commandCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+	cmd := exec.CommandContext(commandCtx, "git", append([]string{"-C", root}, args...)...)
+	cmd.WaitDelay = gitCommandWaitDelay
+	return cmd, cancel
 }
 
 // gitIgnoredCandidates returns the subset of paths ignored by Git. It uses
@@ -650,10 +750,8 @@ func gitIgnoredCandidates(ctx context.Context, root string, paths []string) map[
 		return ignored
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	cmd, cancel := boundedGitCommand(ctx, root, "check-ignore", "-z", "--stdin")
 	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-z", "--stdin")
 	cmd.Stdin = strings.NewReader(input.String())
 	out, err := cmd.Output()
 	if err != nil {
@@ -705,10 +803,8 @@ func canonicalPathForGitRel(path string) string {
 // gitStatusPorcelain returns the repo's dirty paths (absolute) mapped to their
 // porcelain XY status. Returns nil on any failure — git tracking is optional.
 func gitStatusPorcelain(ctx context.Context, root string) map[string]string {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	cmd, cancel := boundedGitCommand(ctx, root, "status", "--porcelain", "-z", "--untracked-files=all")
 	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain", "-z", "--untracked-files=all")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -742,8 +838,9 @@ func gitStatusPorcelain(ctx context.Context, root string) map[string]string {
 }
 
 // gitShowIndexBatch returns bounded index content for paths inside one repo.
-// One cat-file process serves the whole batch; failures or oversized blobs
-// safely degrade the remaining paths to unknown before-content.
+// One cat-file process serves the whole batch. Bounded oversized and non-blob
+// objects are drained and skipped so later blobs remain recoverable; malformed
+// or unreasonable responses abort the remaining best-effort batch.
 func gitShowIndexBatch(ctx context.Context, root string, absPaths []string, maxFileBytes, maxReads int, maxTotalBytes int64) map[string][]byte {
 	contentByPath := make(map[string][]byte)
 	if root == "" || maxFileBytes < 0 || maxReads <= 0 || maxTotalBytes < 0 || len(absPaths) == 0 {
@@ -766,14 +863,13 @@ func gitShowIndexBatch(ctx context.Context, root string, absPaths []string, maxF
 		return contentByPath
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	cmd, cancel := boundedGitCommand(ctx, root, "cat-file", "--batch")
 	defer cancel()
 	var input strings.Builder
 	for _, query := range queries {
 		input.WriteString(query.spec)
 		input.WriteByte('\n')
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "cat-file", "--batch")
 	cmd.Stdin = strings.NewReader(input.String())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -783,36 +879,58 @@ func gitShowIndexBatch(ctx context.Context, root string, absPaths []string, maxF
 		return contentByPath
 	}
 
-	reader := bufio.NewReader(stdout)
-	var totalBytes int64
+	reader := bufio.NewReaderSize(stdout, maxGitBatchHeaderBytes)
+	var totalBytes, drainedBytes int64
 	for _, query := range queries {
-		header, err := reader.ReadString('\n')
-		if err != nil {
+		if len(contentByPath) >= maxReads {
 			cancel()
 			break
 		}
-		header = strings.TrimSuffix(header, "\n")
+		headerBytes, err := reader.ReadSlice('\n')
+		if err != nil {
+			cancel() // includes ErrBufferFull for an unreasonably long header
+			break
+		}
+		header := strings.TrimSuffix(string(headerBytes), "\n")
 		if strings.HasSuffix(header, " missing") {
 			continue
 		}
 		fields := strings.Fields(header)
-		if len(fields) != 3 || fields[1] != "blob" {
+		if len(fields) != 3 {
 			cancel()
 			break
 		}
 		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil || size < 0 || size > int64(maxFileBytes) || len(contentByPath) >= maxReads || totalBytes+size > maxTotalBytes {
-			// Continuing would require draining an arbitrarily large blob. Stop
-			// this best-effort batch instead and preserve the per-file I/O bound.
+		if err != nil || size < 0 {
 			cancel()
 			break
 		}
+
+		retain := fields[1] == "blob" &&
+			size <= int64(maxFileBytes) &&
+			size <= maxTotalBytes-totalBytes
+		if !retain {
+			if size > maxGitBatchDrainBytes-drainedBytes {
+				// A malformed or unreasonably large object cannot be drained
+				// within the batch's bounded I/O policy, so abort the remainder.
+				cancel()
+				break
+			}
+			if !drainGitBatchObject(reader, size) {
+				cancel()
+				break
+			}
+			drainedBytes += size
+			continue
+		}
+
 		content := make([]byte, size)
 		if _, err := io.ReadFull(reader, content); err != nil {
 			cancel()
 			break
 		}
-		if _, err := reader.ReadByte(); err != nil { // cat-file separator newline
+		separator, err := reader.ReadByte()
+		if err != nil || separator != '\n' {
 			cancel()
 			break
 		}
@@ -821,4 +939,12 @@ func gitShowIndexBatch(ctx context.Context, root string, absPaths []string, maxF
 	}
 	_ = cmd.Wait()
 	return contentByPath
+}
+
+func drainGitBatchObject(reader *bufio.Reader, size int64) bool {
+	if _, err := io.CopyN(io.Discard, reader, size); err != nil {
+		return false
+	}
+	separator, err := reader.ReadByte()
+	return err == nil && separator == '\n'
 }
