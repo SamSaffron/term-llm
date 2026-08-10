@@ -135,7 +135,7 @@ func TestDetailsRendersMetadataSessionsAndDiffStates(t *testing.T) {
 	m := testModel()
 	_, _ = m.openDetails()
 	m.Update(inUseResultMsg{dir: "/repo/wt-2", generation: m.detailGeneration, sessions: []worktree.InUseSession{{Number: 7, Name: "chat", Status: "active"}}})
-	m.Update(diffResultMsg{dir: "/repo/wt-2", generation: m.detailGeneration, diff: "+changed"})
+	m.Update(diffResultMsg{dir: "/repo/wt-2", generation: m.detailGeneration, result: worktree.DiffResult{Diff: "+changed"}})
 	out := m.View().Content
 	for _, want := range []string{"Worktree Details", "Name: two", "#7 chat [active]", "+changed"} {
 		if !strings.Contains(out, want) {
@@ -143,13 +143,29 @@ func TestDetailsRendersMetadataSessionsAndDiffStates(t *testing.T) {
 		}
 	}
 
-	m.Update(diffResultMsg{dir: "/repo/wt-2", generation: m.detailGeneration, diff: ""})
+	m.Update(diffResultMsg{dir: "/repo/wt-2", generation: m.detailGeneration, result: worktree.DiffResult{}})
 	if !strings.Contains(m.View().Content, "Clean (no changes)") {
 		t.Fatal("clean detail state not rendered")
 	}
 	m.Update(diffResultMsg{dir: "/repo/wt-2", generation: m.detailGeneration, err: errors.New("diff failed")})
 	if !strings.Contains(m.View().Content, "diff failed") {
 		t.Fatal("diff error not rendered")
+	}
+}
+
+func TestLeavingDetailsCancelsDiff(t *testing.T) {
+	m := testModel()
+	m.mode = modeDetails
+	m.detail = &worktree.Worktree{Dir: "/repo/wt-2"}
+	canceled := false
+	m.detailCancel = func() { canceled = true }
+
+	press(m, 'q', "q")
+	if !canceled {
+		t.Fatal("leaving details did not cancel diff generation")
+	}
+	if m.detailCancel != nil || m.detail != nil || m.mode != modeBrowse {
+		t.Fatalf("details remained active after cancellation: mode=%v detail=%v cancel=%v", m.mode, m.detail, m.detailCancel != nil)
 	}
 }
 

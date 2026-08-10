@@ -214,12 +214,13 @@ func (s *serveServer) handleWorktreeDiff(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	diff, err := worktree.Diff(wt.Dir)
+	result, err := worktree.DiffContext(r.Context(), wt.Dir)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"diff": diff})
+	result.Diff = result.DisplayDiff()
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request) {

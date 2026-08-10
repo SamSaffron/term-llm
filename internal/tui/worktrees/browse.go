@@ -43,7 +43,7 @@ type listResultMsg struct {
 type diffResultMsg struct {
 	dir        string
 	generation uint64
-	diff       string
+	result     worktree.DiffResult
 	err        error
 }
 type inUseResultMsg struct {
@@ -87,6 +87,7 @@ type Model struct {
 	detailBusy       int
 	detailScroll     int
 	detailGeneration uint64
+	detailCancel     context.CancelFunc
 	deleteTarget     *worktree.Worktree
 	forceRisks       []string
 }
@@ -229,7 +230,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case diffResultMsg:
 		if m.detail != nil && msg.generation == m.detailGeneration && samePath(m.detail.Dir, msg.dir) {
-			m.detailDiff, m.diffErr = msg.diff, msg.err
+			m.detailDiff, m.diffErr = msg.result.DisplayDiff(), msg.err
+			m.detailCancel = nil
 			m.detailBusy--
 		}
 		return m, nil
@@ -265,6 +267,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case modeDetails:
 		switch key {
 		case "esc", "q":
+			if m.detailCancel != nil {
+				m.detailCancel()
+				m.detailCancel = nil
+			}
 			m.mode, m.detail = modeBrowse, nil
 		case "up", "k":
 			if m.detailScroll > 0 {
@@ -404,6 +410,11 @@ func (m *Model) openDetails() (tea.Model, tea.Cmd) {
 	if wt == nil {
 		return m, nil
 	}
+	if m.detailCancel != nil {
+		m.detailCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.detailCancel = cancel
 	target := *wt
 	m.mode, m.detail, m.detailScroll = modeDetails, &target, 0
 	m.detailGeneration++
@@ -413,8 +424,9 @@ func (m *Model) openDetails() (tea.Model, tea.Cmd) {
 	dir, store := target.Dir, m.store
 	return m, tea.Batch(
 		func() tea.Msg {
-			diff, err := worktree.Diff(dir)
-			return diffResultMsg{dir: dir, generation: generation, diff: diff, err: err}
+			defer cancel()
+			result, err := worktree.DiffContext(ctx, dir)
+			return diffResultMsg{dir: dir, generation: generation, result: result, err: err}
 		},
 		func() tea.Msg {
 			users, err := worktree.InUse(context.Background(), store, dir)
