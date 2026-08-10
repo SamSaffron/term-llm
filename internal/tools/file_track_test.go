@@ -727,25 +727,28 @@ func TestShellToolRecordsSessionTrackedGitIgnoredPath(t *testing.T) {
 func TestShellSnapshotBudgets(t *testing.T) {
 	snap := &shellSnapshot{maxFileBytes: 1024}
 
-	if !snap.canReadContent(512) {
-		t.Fatal("small file within all budgets must be readable")
+	if !snap.canCapturePreContent(512) {
+		t.Fatal("small file within all pre-snapshot budgets must be readable")
 	}
-	if snap.canReadContent(2048) {
+	if snap.canCapturePreContent(2048) {
 		t.Fatal("file above the per-file cap must be refused")
 	}
 
-	snap.contentBytes = maxShellSnapshotBytes - 100
-	if snap.canReadContent(512) {
-		t.Fatal("read exceeding the total-bytes budget must be refused")
+	snap.preContentBytes = maxShellSnapshotBytes - 100
+	if snap.canCapturePreContent(512) {
+		t.Fatal("read exceeding the pre-snapshot bytes budget must be refused")
 	}
-	if !snap.canReadContent(100) {
-		t.Fatal("read exactly filling the total-bytes budget is allowed")
+	if !snap.canCapturePreContent(100) {
+		t.Fatal("read exactly filling the pre-snapshot bytes budget is allowed")
 	}
 
-	snap.contentBytes = 0
-	snap.contentReads = maxShellContentReads
-	if snap.canReadContent(10) {
-		t.Fatal("read beyond the read-count cap must be refused")
+	snap.preContentBytes = 0
+	snap.preContentReads = maxShellContentReads
+	if snap.canCapturePreContent(10) {
+		t.Fatal("read beyond the pre-snapshot count cap must be refused")
+	}
+	if !snap.canReadPostContent(10) {
+		t.Fatal("exhausted pre-snapshot budget must not consume the post-comparison budget")
 	}
 }
 

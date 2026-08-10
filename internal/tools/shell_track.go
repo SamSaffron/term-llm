@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,18 +24,35 @@ import (
 // call, not correctness: files beyond the content-read budgets are still
 // detected via stat and recorded metadata-only (truncated).
 const (
-	maxShellGlobMatches   = 1000             // candidate paths per glob expansion
-	maxShellContentReads  = 200              // full-content snapshots per shell call
-	maxShellSnapshotBytes = 64 * 1024 * 1024 // total content bytes held per shell call (pre + post)
-	gitCommandTimeout     = 5 * time.Second
+	maxShellGlobMatches    = 1000             // candidate paths per glob expansion
+	maxShellContentReads   = 200              // full-content snapshots per phase and shell call
+	maxShellSnapshotBytes  = 64 * 1024 * 1024 // total content bytes read per phase and shell call
+	maxShellGitRepos       = 64               // distinct candidate repositories inspected post-command
+	maxGitBatchHeaderBytes = 64 * 1024        // malformed cat-file headers abort without unbounded buffering
+	maxGitBatchDrainBytes  = 64 * 1024 * 1024 // total skipped object bytes drained per cat-file batch
+	gitCommandTimeout      = 5 * time.Second
+	gitCommandWaitDelay    = 100 * time.Millisecond
 )
+
+type shellCandidateSource uint8
+
+const (
+	shellSourceLiteral shellCandidateSource = 1 << iota
+	shellSourceGlob
+	shellSourceSession
+	shellSourceGit
+)
+
+func (source shellCandidateSource) preservesCleanGitState() bool {
+	return source&(shellSourceLiteral|shellSourceSession) != 0
+}
 
 // shellSnapshotEntry captures one file's pre-exec state.
 type shellSnapshotEntry struct {
 	existed bool
 	size    int64
 	modTime time.Time
-	content []byte // nil when not read (oversized or beyond read budget)
+	content []byte // nil when not read (oversized or beyond the pre-snapshot budget)
 }
 
 // shellSnapshot holds the pre-exec state used to detect file changes made by
@@ -40,32 +60,44 @@ type shellSnapshotEntry struct {
 // scope. Without them, previously tracked session paths and Git status provide
 // broader best-effort fallback tracking.
 type shellSnapshot struct {
-	sessionID    string
-	workDir      string
-	patterns     []string
-	files        map[string]*shellSnapshotEntry
-	gitRoot      string
-	gitStatus    map[string]string // absolute path -> porcelain XY status
-	contentReads int
-	contentBytes int64
-	maxFileBytes int
+	sessionID string
+	workDir   string
+	patterns  []string
+	files     map[string]*shellSnapshotEntry
+	sources   map[string]shellCandidateSource
+	gitRoot   string
+	gitStatus map[string]string // absolute path -> pre-command porcelain XY status
+
+	preContentReads  int
+	preContentBytes  int64
+	postContentReads int
+	postContentBytes int64
+	maxFileBytes     int
 }
 
-// canReadContent reports whether a file of the given size may have its
-// content captured under the per-file cap, the read-count cap, and the
-// total-bytes budget. Pathological calls (many large files) degrade to
-// stat-only entries and truncated metadata records instead of holding
-// hundreds of megabytes in memory.
-func (snap *shellSnapshot) canReadContent(size int64) bool {
+// canCapturePreContent reports whether a file may be retained in the bounded
+// pre-command snapshot. Post-command comparison uses separate accounting so a
+// full pre snapshot cannot prevent deterministic comparison of captured files.
+func (snap *shellSnapshot) canCapturePreContent(size int64) bool {
 	return size <= int64(snap.maxFileBytes) &&
-		snap.contentReads < maxShellContentReads &&
-		snap.contentBytes+size <= maxShellSnapshotBytes
+		snap.preContentReads < maxShellContentReads &&
+		snap.preContentBytes+size <= maxShellSnapshotBytes
 }
 
-// noteContentRead accounts one captured content buffer against the budgets.
-func (snap *shellSnapshot) noteContentRead(content []byte) {
-	snap.contentReads++
-	snap.contentBytes += int64(len(content))
+func (snap *shellSnapshot) notePreContentRead(content []byte) {
+	snap.preContentReads++
+	snap.preContentBytes += int64(len(content))
+}
+
+func (snap *shellSnapshot) canReadPostContent(size int64) bool {
+	return size <= int64(snap.maxFileBytes) &&
+		snap.postContentReads < maxShellContentReads &&
+		snap.postContentBytes+size <= maxShellSnapshotBytes
+}
+
+func (snap *shellSnapshot) notePostContentRead(content []byte) {
+	snap.postContentReads++
+	snap.postContentBytes += int64(len(content))
 }
 
 // preShellSnapshot records the relevant filesystem state before a shell
@@ -85,12 +117,12 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		workDir:      workDir,
 		patterns:     patterns,
 		files:        make(map[string]*shellSnapshotEntry),
+		sources:      make(map[string]shellCandidateSource),
 		maxFileBytes: recorder.MaxFileBytes(),
 	}
 
-	if repo := DetectGitRepo(workDir); repo.IsRepo {
-		snap.gitRoot = repo.Root
-	}
+	resolver := newShellRepoResolver()
+	snap.gitRoot = resolver.owningRepo(workDir)
 
 	var sessionPaths []string
 	if len(patterns) == 0 {
@@ -104,34 +136,51 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 		snap.gitStatus = gitStatusPorcelain(ctx, snap.gitRoot)
 	}
 
-	candidates := expandShellPatterns(workDir, patterns)
-	if snap.gitRoot != "" {
-		// Affected-path entries can be intentionally broad (for example "**/*"),
-		// and literal entries can still name generated files. In a git repository,
-		// keep these hints aligned with Git's notion of source files: ignored
-		// build/cache artifacts should not enter the tracked file-change set just
-		// because an affected_paths entry happened to match them. When hints are
-		// omitted, session-tracked paths are appended below and intentionally
-		// bypass this filter as a per-session escape hatch.
-		candidates = filterGitIgnoredCandidates(ctx, snap.gitRoot, candidates)
+	for _, candidate := range expandShellPatterns(workDir, patterns) {
+		snap.sources[candidate.path] |= candidate.source
 	}
 	if snap.gitStatus != nil {
 		// Snapshot paths that were already dirty before the command. Otherwise a
 		// command that edits a dirty tracked file, or an existing untracked file,
 		// can leave porcelain status unchanged (e.g. " M" -> " M", "??" ->
-		// "??") and would be invisible in postShellChanges.
+		// "??") and would be invisible after the command.
 		for path := range snap.gitStatus {
-			candidates = append(candidates, path)
+			if !hasGitAdminComponent(path) {
+				snap.sources[path] |= shellSourceGit
+			}
 		}
 	}
-	candidates = append(candidates, sessionPaths...)
-	for _, path := range candidates {
-		if _, seen := snap.files[path]; seen {
-			continue
+	for _, path := range sessionPaths {
+		path = filepath.Clean(path)
+		if !hasGitAdminComponent(path) {
+			snap.sources[path] |= shellSourceSession
 		}
+	}
+
+	paths := make([]string, 0, len(snap.sources))
+	for path := range snap.sources {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
 		snap.files[path] = snap.statAndMaybeRead(path)
 	}
 	return snap
+}
+
+type shellPostCandidate struct {
+	entry           *shellSnapshotEntry
+	source          shellCandidateSource
+	postOnlyPattern bool
+	repoRoot        string
+	postStatus      string
+	gitBefore       []byte
+	gitBeforeOK     bool
+}
+
+type shellRepoStatus struct {
+	paths     map[string]string
+	available bool
 }
 
 // postShellChanges diffs the filesystem against a pre-exec snapshot and
@@ -147,42 +196,164 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fileRecordTimeout)
 	defer cancel()
 
-	type candidate struct {
-		entry        *shellSnapshotEntry // nil when not statted pre-exec (git-derived)
-		fromReexpand bool
-	}
-	candidates := make(map[string]candidate)
-
+	candidates := make(map[string]*shellPostCandidate, len(snap.files))
 	for path, entry := range snap.files {
-		candidates[path] = candidate{entry: entry}
+		candidates[path] = &shellPostCandidate{entry: entry, source: snap.sources[path]}
 	}
-	// Re-expanding the same patterns catches files created by the command.
-	// A path matched now but not pre-exec did not exist then.
-	reexpanded := expandShellPatterns(snap.workDir, snap.patterns)
-	if snap.gitRoot != "" {
-		reexpanded = filterGitIgnoredCandidates(ctx, snap.gitRoot, reexpanded)
+
+	// Re-expanding the same patterns catches files created by the command. A
+	// glob match seen only post-command is treated as a creation; exact literals
+	// were included in the pre snapshot even when missing.
+	for _, expanded := range expandShellPatterns(snap.workDir, snap.patterns) {
+		candidate, seen := candidates[expanded.path]
+		if !seen {
+			candidate = &shellPostCandidate{}
+			candidates[expanded.path] = candidate
+			candidate.postOnlyPattern = expanded.source&shellSourceGlob != 0
+		}
+		candidate.source |= expanded.source
 	}
-	for _, path := range reexpanded {
-		if _, seen := candidates[path]; !seen {
-			candidates[path] = candidate{fromReexpand: true}
+
+	// For the no-hints Git fallback, one post-command status supplies both the
+	// discovery set and the clean/dirty baseline for the owning repository.
+	repoStatuses := make(map[string]shellRepoStatus)
+	if snap.gitRoot != "" && snap.gitStatus != nil {
+		postStatus := gitStatusPorcelain(ctx, snap.gitRoot)
+		repoStatuses[snap.gitRoot] = shellRepoStatus{paths: postStatus, available: postStatus != nil}
+		for path := range postStatus {
+			if hasGitAdminComponent(path) {
+				continue
+			}
+			candidate := candidates[path]
+			if candidate == nil {
+				candidate = &shellPostCandidate{}
+				candidates[path] = candidate
+			}
+			candidate.source |= shellSourceGit
 		}
 	}
 
-	// Only diff post-status against Git when a pre-status snapshot was captured;
-	// otherwise every dirty path would look newly changed.
-	var postStatus map[string]string
-	if snap.gitRoot != "" && snap.gitStatus != nil {
-		postStatus = gitStatusPorcelain(ctx, snap.gitRoot)
-		for path := range gitChangedPaths(snap.gitStatus, postStatus) {
-			if _, seen := candidates[path]; !seen {
-				candidates[path] = candidate{}
+	paths := make([]string, 0, len(candidates))
+	for path := range candidates {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	// Resolve the deepest owning repository from post-command filesystem state.
+	// This catches repositories cloned or created by the command and handles
+	// nested repos/worktrees without invoking Git once per candidate.
+	resolver := newShellRepoResolver()
+	reposNeedingStatus := make(map[string]struct{})
+	literalPathsByRepo := make(map[string][]string)
+	for _, path := range paths {
+		candidate := candidates[path]
+		if hasGitAdminComponent(path) {
+			delete(candidates, path)
+			continue
+		}
+		candidate.repoRoot = resolver.owningRepoForCandidate(path, snap.workDir, snap.gitRoot)
+		if candidate.repoRoot == "" {
+			continue
+		}
+		if candidate.source&shellSourceLiteral != 0 && candidate.source&shellSourceSession == 0 {
+			literalPathsByRepo[candidate.repoRoot] = append(literalPathsByRepo[candidate.repoRoot], path)
+		}
+		if !candidate.source.preservesCleanGitState() {
+			if _, loaded := repoStatuses[candidate.repoRoot]; !loaded {
+				reposNeedingStatus[candidate.repoRoot] = struct{}{}
 			}
 		}
 	}
 
+	statusRoots := sortedMapKeys(reposNeedingStatus)
+	for i, root := range statusRoots {
+		if ctx.Err() != nil {
+			break
+		}
+		if i >= maxShellGitRepos {
+			break // unavailable status suppresses broad candidates in excess repos below
+		}
+		status := gitStatusPorcelain(ctx, root)
+		repoStatuses[root] = shellRepoStatus{paths: status, available: status != nil}
+	}
+
+	// Exact literal affected_paths are deliberate snapshots even when the
+	// command leaves Git clean, but ignored literals are still excluded. Batch
+	// check-ignore once per owning repo rather than shelling out per path.
+	ignoredLiterals := make(map[string]bool)
+	literalRoots := sortedMapKeys(literalPathsByRepo)
+	for i, root := range literalRoots {
+		if ctx.Err() != nil {
+			break
+		}
+		if i >= maxShellGitRepos {
+			break
+		}
+		for path := range gitIgnoredCandidates(ctx, root, literalPathsByRepo[root]) {
+			ignoredLiterals[path] = true
+		}
+	}
+
+	filteredPaths := paths[:0]
+	for _, path := range paths {
+		candidate := candidates[path]
+		if candidate == nil || ignoredLiterals[filepath.Clean(path)] {
+			continue
+		}
+		if candidate.repoRoot != "" {
+			state, statusLoaded := repoStatuses[candidate.repoRoot]
+			if statusLoaded && state.available {
+				candidate.postStatus = state.paths[path]
+			}
+			_, wasDirty := snap.gitStatus[path]
+			knownDirtyBaseline := wasDirty && candidate.entry != nil && candidate.entry.existed
+			if !candidate.source.preservesCleanGitState() && !knownDirtyBaseline {
+				if !statusLoaded || !state.available {
+					// Repo caps and status failures fail closed for broad discovery:
+					// emitting every changed glob match would turn a clean clone or
+					// checkout into materialization noise. Exact literals, session
+					// paths, and captured pre-dirty baselines remain preserved.
+					continue
+				}
+				if candidate.postStatus == "" {
+					// Globs are discovery scopes, so a Git-clean path at return is
+					// intentionally omitted. Exact literals preserve edit+commit.
+					continue
+				}
+			}
+		}
+		filteredPaths = append(filteredPaths, path)
+	}
+	paths = filteredPaths
+
+	// Clean tracked paths discovered only by the Git fallback were not statted
+	// pre-command. Recover their index content in one bounded Git process rather
+	// than invoking git show once per candidate.
+	var indexPaths []string
+	for _, path := range paths {
+		candidate := candidates[path]
+		_, wasDirty := snap.gitStatus[path]
+		indexUnchanged := len(candidate.postStatus) == 2 && candidate.postStatus[0] == ' '
+		if candidate.entry == nil && candidate.source&shellSourceGit != 0 &&
+			candidate.repoRoot == snap.gitRoot && !wasDirty && indexUnchanged {
+			indexPaths = append(indexPaths, path)
+		}
+	}
+	indexContent := gitShowIndexBatch(ctx, snap.gitRoot, indexPaths, snap.maxFileBytes,
+		maxShellContentReads-snap.postContentReads, maxShellSnapshotBytes-snap.postContentBytes)
+	for path, content := range indexContent {
+		candidate := candidates[path]
+		candidate.gitBefore = content
+		candidate.gitBeforeOK = true
+		snap.notePostContentRead(content)
+	}
+
 	var changes []llm.FileChange
-	for path, cand := range candidates {
-		rec := snap.buildChangeRecord(ctx, path, cand.entry, cand.fromReexpand)
+	for _, path := range paths {
+		if ctx.Err() != nil {
+			break
+		}
+		rec := snap.buildChangeRecord(path, candidates[path])
 		if rec == nil {
 			continue
 		}
@@ -198,11 +369,19 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 // buildChangeRecord compares one path's current state with its pre-exec state
 // and returns the change to record, or nil when nothing changed (or change
 // detection is impossible).
-func (snap *shellSnapshot) buildChangeRecord(ctx context.Context, path string, prev *shellSnapshotEntry, fromReexpand bool) *filetrack.ChangeRecord {
+func (snap *shellSnapshot) buildChangeRecord(path string, candidate *shellPostCandidate) *filetrack.ChangeRecord {
+	prev := candidate.entry
 	info, statErr := os.Stat(path)
 	existsNow := statErr == nil && info.Mode().IsRegular()
 	if statErr == nil && !info.Mode().IsRegular() {
 		return nil // directories, sockets, etc.
+	}
+
+	// For metadata-only snapshots, equal size and mtime are the only bounded
+	// unchanged signal available. Captured content must still be byte-compared:
+	// callers can preserve mtime while replacing same-size bytes.
+	if prev != nil && prev.existed && prev.content == nil && existsNow && info.Size() == prev.size && info.ModTime().Equal(prev.modTime) {
+		return nil
 	}
 
 	rec := &filetrack.ChangeRecord{SessionID: snap.sessionID, Path: path}
@@ -214,41 +393,16 @@ func (snap *shellSnapshot) buildChangeRecord(ctx context.Context, path string, p
 	case prev != nil && prev.content != nil:
 		rec.Before = prev.content
 	case prev != nil:
-		// Statted pre-exec but content not read (oversized / beyond budget):
-		// change detection falls back to size+mtime.
-		if existsNow && info.Size() == prev.size && info.ModTime().Equal(prev.modTime) {
-			return nil
-		}
 		rec.BeforeUnknown = true
 		rec.BeforeSizeHint = prev.size
-	case fromReexpand:
-		// Newly matched by the same pre-exec glob set → did not exist before.
+	case candidate.postOnlyPattern:
+		rec.BeforeMissing = true
+	case candidate.gitBeforeOK:
+		rec.Before = candidate.gitBefore
+	case candidate.source&shellSourceGit != 0 && (candidate.postStatus == "??" || strings.HasPrefix(candidate.postStatus, "A")):
 		rec.BeforeMissing = true
 	default:
-		// Git-derived candidate never statted pre-exec; classify via status.
-		preLine, wasDirty := snap.gitStatus[path]
-		switch {
-		case !wasDirty:
-			// Clean and tracked pre-exec: the index still holds the pre-exec
-			// content. Recovered content counts against the snapshot budget
-			// like any other read.
-			if snap.contentBytes < maxShellSnapshotBytes && snap.contentReads < maxShellContentReads {
-				if content, ok := gitShowIndex(ctx, snap.gitRoot, path, snap.maxFileBytes); ok {
-					snap.noteContentRead(content)
-					rec.Before = content
-				} else {
-					rec.BeforeUnknown = true
-				}
-			} else {
-				rec.BeforeUnknown = true
-			}
-		case strings.HasPrefix(preLine, "??"):
-			// Untracked pre-exec; content unrecoverable.
-			rec.BeforeUnknown = true
-		default:
-			// Dirty tracked file pre-exec; worktree content unrecoverable.
-			rec.BeforeUnknown = true
-		}
+		rec.BeforeUnknown = true
 	}
 
 	// Establish the "after" side.
@@ -259,22 +413,27 @@ func (snap *shellSnapshot) buildChangeRecord(ctx context.Context, path string, p
 		}
 		return rec
 	}
-	if !snap.canReadContent(info.Size()) {
+
+	// A captured pre buffer always gets a post read when the file remains under
+	// the per-file cap. These reads are transient and deliberately independent
+	// of the bounded pre-snapshot and discretionary post-read budgets.
+	mustCompareCaptured := prev != nil && prev.content != nil
+	if info.Size() > int64(snap.maxFileBytes) || (!mustCompareCaptured && !snap.canReadPostContent(info.Size())) {
 		rec.AfterUnknown = true
 		rec.AfterSizeHint = info.Size()
 		return rec
 	}
-	content, err := os.ReadFile(path)
-	if err != nil {
+	content, ok := readFileBounded(path, snap.maxFileBytes)
+	if !ok {
 		rec.AfterUnknown = true
 		rec.AfterSizeHint = info.Size()
 		return rec
 	}
-	snap.noteContentRead(content)
+	if !mustCompareCaptured {
+		snap.notePostContentRead(content)
+	}
 	rec.After = content
 
-	// Skip unchanged files (store would also drop them, but avoiding the
-	// round trip keeps the common no-op case cheap).
 	if rec.Before != nil && bytes.Equal(rec.Before, rec.After) {
 		return nil
 	}
@@ -282,21 +441,34 @@ func (snap *shellSnapshot) buildChangeRecord(ctx context.Context, path string, p
 }
 
 // statAndMaybeRead captures one file's current state, reading content when it
-// fits the per-file cap and the read budget.
+// fits the per-file cap and the bounded pre-snapshot budget.
 func (snap *shellSnapshot) statAndMaybeRead(path string) *shellSnapshotEntry {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return &shellSnapshotEntry{existed: false}
 	}
 	entry := &shellSnapshotEntry{existed: true, size: info.Size(), modTime: info.ModTime()}
-	if !snap.canReadContent(info.Size()) {
+	if !snap.canCapturePreContent(info.Size()) {
 		return entry
 	}
-	if content, err := os.ReadFile(path); err == nil {
-		snap.noteContentRead(content)
+	if content, ok := readFileBounded(path, snap.maxFileBytes); ok {
+		snap.notePreContentRead(content)
 		entry.content = content
 	}
 	return entry
+}
+
+func readFileBounded(path string, maxBytes int) ([]byte, bool) {
+	if maxBytes < 0 {
+		return nil, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, int64(maxBytes)+1))
+	return content, err == nil && len(content) <= maxBytes
 }
 
 // errShellGlobLimit terminates a glob walk once enough candidates are found.
@@ -312,13 +484,20 @@ func normalizeShellPatterns(patterns []string) []string {
 	return normalized
 }
 
+type shellExpandedCandidate struct {
+	path   string
+	source shellCandidateSource
+}
+
 // expandShellPatterns resolves affected_paths entries (files or globs,
 // relative to workDir or absolute) into absolute paths. Literal paths are
 // included even when missing so creations can be detected. GlobWalk (rather
-// than FilepathGlob) lets the walk stop at the match cap instead of
-// collecting every match from a pathological pattern like "**" first.
-func expandShellPatterns(workDir string, patterns []string) []string {
-	var paths []string
+// than FilepathGlob) lets the walk stop at the match cap instead of collecting
+// every match from a pathological pattern like "**" first. Its filesystem
+// wrapper hides .git directories from traversal so administrative files cannot
+// consume the candidate cap.
+func expandShellPatterns(workDir string, patterns []string) []shellExpandedCandidate {
+	var candidates []shellExpandedCandidate
 	for _, pattern := range patterns {
 		pattern = strings.TrimSpace(pattern)
 		if pattern == "" {
@@ -328,26 +507,212 @@ func expandShellPatterns(workDir string, patterns []string) []string {
 			pattern = filepath.Join(workDir, pattern)
 		}
 		if !strings.ContainsAny(pattern, "*?[{") {
-			paths = append(paths, filepath.Clean(pattern))
+			path := filepath.Clean(pattern)
+			if !hasGitAdminComponent(path) {
+				candidates = append(candidates, shellExpandedCandidate{path: path, source: shellSourceLiteral})
+			}
 			continue
 		}
-		if len(paths) >= maxShellGlobMatches {
-			return paths
+		if len(candidates) >= maxShellGlobMatches {
+			return candidates
 		}
 
 		base, rel := doublestar.SplitPattern(filepath.ToSlash(pattern))
-		baseDir := filepath.FromSlash(base)
-		_ = doublestar.GlobWalk(os.DirFS(baseDir), rel, func(matchPath string, d fs.DirEntry) error {
-			if !d.IsDir() || matchPath == "." {
-				paths = append(paths, filepath.Clean(filepath.Join(baseDir, filepath.FromSlash(matchPath))))
+		baseDir := filepath.Clean(filepath.FromSlash(base))
+		if hasGitAdminComponent(baseDir) {
+			continue
+		}
+		fsys := shellGlobFS{FS: os.DirFS(baseDir)}
+		_ = doublestar.GlobWalk(fsys, rel, func(matchPath string, d fs.DirEntry) error {
+			if d.IsDir() {
+				if isGitAdminName(d.Name()) {
+					return fs.SkipDir
+				}
+				return nil
 			}
-			if len(paths) >= maxShellGlobMatches {
+			path := filepath.Clean(filepath.Join(baseDir, filepath.FromSlash(matchPath)))
+			if !hasGitAdminComponent(path) {
+				candidates = append(candidates, shellExpandedCandidate{path: path, source: shellSourceGlob})
+			}
+			if len(candidates) >= maxShellGlobMatches {
 				return errShellGlobLimit
 			}
 			return nil
 		}, doublestar.WithNoFollow())
 	}
-	return paths
+	return candidates
+}
+
+type shellGlobFS struct {
+	fs.FS
+}
+
+func (fsys shellGlobFS) Open(name string) (fs.File, error) {
+	if hasGitAdminComponent(filepath.FromSlash(name)) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	return fsys.FS.Open(name)
+}
+
+func (fsys shellGlobFS) Stat(name string) (fs.FileInfo, error) {
+	if hasGitAdminComponent(filepath.FromSlash(name)) {
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
+	}
+	return fs.Stat(fsys.FS, name)
+}
+
+func (fsys shellGlobFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if hasGitAdminComponent(filepath.FromSlash(name)) {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrNotExist}
+	}
+	entries, err := fs.ReadDir(fsys.FS, name)
+	if err != nil {
+		return nil, err
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if !isGitAdminName(entry.Name()) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
+}
+
+func isGitAdminName(name string) bool {
+	// EqualFold is deliberately limited to the complete component, so .github
+	// remains visible while case-insensitive filesystems cannot expose .GIT.
+	return strings.EqualFold(name, ".git")
+}
+
+func hasGitAdminComponent(path string) bool {
+	path = filepath.Clean(path)
+	volume := filepath.VolumeName(path)
+	path = strings.TrimPrefix(path, volume)
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		if isGitAdminName(component) {
+			return true
+		}
+	}
+	return false
+}
+
+type shellRepoResolver struct {
+	markers map[string]bool
+}
+
+func newShellRepoResolver() *shellRepoResolver {
+	return &shellRepoResolver{markers: make(map[string]bool)}
+}
+
+// owningRepo discovers the deepest repository containing path. The unbounded
+// form is used only for the shell working directory itself.
+func (resolver *shellRepoResolver) owningRepo(path string) string {
+	return resolver.owningRepoWithin(path, "", true)
+}
+
+// owningRepoForCandidate bounds ancestor discovery to the command's relevant
+// filesystem scope. Paths under workDir may inherit its owning repository and
+// still discover deeper nested repos. Explicit absolute paths outside workDir
+// may discover their own repo before the common ancestor, but are not assigned
+// to an unrelated .git marker at that arbitrary common ancestor.
+func (resolver *shellRepoResolver) owningRepoForCandidate(path, workDir, workRepo string) string {
+	absPath := absoluteCleanPath(path)
+	absWorkDir := absoluteCleanPath(workDir)
+	if pathWithinRoot(absPath, absWorkDir) {
+		boundary := absWorkDir
+		if workRepo != "" {
+			boundary = absoluteCleanPath(workRepo)
+		}
+		return resolver.owningRepoWithin(absPath, boundary, true)
+	}
+	boundary := commonPathAncestor(absWorkDir, absPath)
+	return resolver.owningRepoWithin(absPath, boundary, false)
+}
+
+// owningRepoWithin discovers repositories from path up to boundary. Both .git
+// directories and worktree/submodule .git files establish ownership.
+func (resolver *shellRepoResolver) owningRepoWithin(path, boundary string, includeBoundary bool) string {
+	abs := absoluteCleanPath(path)
+	if boundary != "" {
+		boundary = absoluteCleanPath(boundary)
+		if !pathWithinRoot(abs, boundary) {
+			return ""
+		}
+	}
+	start := abs
+	if info, err := os.Stat(start); err != nil || !info.IsDir() {
+		start = filepath.Dir(start)
+	}
+
+	for dir := filepath.Clean(start); ; dir = filepath.Dir(dir) {
+		atBoundary := boundary != "" && dir == boundary
+		if atBoundary && !includeBoundary {
+			return ""
+		}
+		marker, checked := resolver.markers[dir]
+		if !checked {
+			_, err := os.Lstat(filepath.Join(dir, ".git"))
+			marker = err == nil
+			resolver.markers[dir] = marker
+		}
+		if marker {
+			return dir
+		}
+		if atBoundary {
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+	}
+}
+
+func absoluteCleanPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
+}
+
+func pathWithinRoot(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func commonPathAncestor(first, second string) string {
+	for dir := filepath.Clean(first); ; dir = filepath.Dir(dir) {
+		if pathWithinRoot(second, dir) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+	}
+}
+
+func sortedMapKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// boundedGitCommand applies gitCommandTimeout without detaching from a shorter
+// parent deadline. WaitDelay prevents descendants that inherited stdout/stderr
+// pipes from keeping a canceled best-effort Git probe alive indefinitely.
+func boundedGitCommand(ctx context.Context, root string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	commandCtx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+	cmd := exec.CommandContext(commandCtx, "git", append([]string{"-C", root}, args...)...)
+	cmd.WaitDelay = gitCommandWaitDelay
+	return cmd, cancel
 }
 
 // gitIgnoredCandidates returns the subset of paths ignored by Git. It uses
@@ -385,10 +750,8 @@ func gitIgnoredCandidates(ctx context.Context, root string, paths []string) map[
 		return ignored
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	cmd, cancel := boundedGitCommand(ctx, root, "check-ignore", "-z", "--stdin")
 	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-z", "--stdin")
 	cmd.Stdin = strings.NewReader(input.String())
 	out, err := cmd.Output()
 	if err != nil {
@@ -437,28 +800,11 @@ func canonicalPathForGitRel(path string) string {
 	}
 }
 
-func filterGitIgnoredCandidates(ctx context.Context, root string, paths []string) []string {
-	ignored := gitIgnoredCandidates(ctx, root, paths)
-	if len(ignored) == 0 {
-		return paths
-	}
-	filtered := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if ignored[filepath.Clean(path)] {
-			continue
-		}
-		filtered = append(filtered, path)
-	}
-	return filtered
-}
-
 // gitStatusPorcelain returns the repo's dirty paths (absolute) mapped to their
 // porcelain XY status. Returns nil on any failure — git tracking is optional.
 func gitStatusPorcelain(ctx context.Context, root string) map[string]string {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	cmd, cancel := boundedGitCommand(ctx, root, "status", "--porcelain", "-z", "--untracked-files=all")
 	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain", "-z", "--untracked-files=all")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -473,70 +819,132 @@ func gitStatusPorcelain(ctx context.Context, root string) map[string]string {
 		}
 		xy := entry[:2]
 		rel := entry[3:]
-		// Renames/copies carry the original path in the next token.
-		if xy[0] == 'R' || xy[0] == 'C' {
-			i++
+		abs := filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))
+		if !hasGitAdminComponent(abs) {
+			status[abs] = xy
 		}
-		abs := filepath.Join(root, filepath.FromSlash(rel))
-		status[abs] = xy
+		// Renames/copies carry the original path in the next token. Include
+		// both sides so broad discovery can retain the dirty deletion as well as
+		// the destination.
+		if (xy[0] == 'R' || xy[0] == 'C') && i+1 < len(tokens) {
+			i++
+			original := filepath.Clean(filepath.Join(root, filepath.FromSlash(tokens[i])))
+			if !hasGitAdminComponent(original) {
+				status[original] = xy
+			}
+		}
 	}
 	return status
 }
 
-// gitChangedPaths returns paths whose porcelain status differs between two
-// snapshots (including paths present in only one of them).
-func gitChangedPaths(pre, post map[string]string) map[string]struct{} {
-	changed := make(map[string]struct{})
-	for path, line := range post {
-		if pre[path] != line {
-			changed[path] = struct{}{}
-		}
-	}
-	for path := range pre {
-		if _, ok := post[path]; !ok {
-			changed[path] = struct{}{}
-		}
-	}
-	return changed
-}
-
-// gitShowIndex returns the index content for a path inside a repo. Used to
-// recover the before-content of files that were clean when the shell command
-// started. Returns ok=false when the file is untracked, too large, or git fails.
-func gitShowIndex(ctx context.Context, root, absPath string, maxBytes int) ([]byte, bool) {
-	if maxBytes < 0 {
-		return nil, false
-	}
-	rel := GetRelativePath(absPath, root)
-	if rel == absPath || strings.HasPrefix(rel, "..") {
-		return nil, false
+// gitShowIndexBatch returns bounded index content for paths inside one repo.
+// One cat-file process serves the whole batch. Bounded oversized and non-blob
+// objects are drained and skipped so later blobs remain recoverable; malformed
+// or unreasonable responses abort the remaining best-effort batch.
+func gitShowIndexBatch(ctx context.Context, root string, absPaths []string, maxFileBytes, maxReads int, maxTotalBytes int64) map[string][]byte {
+	contentByPath := make(map[string][]byte)
+	if root == "" || maxFileBytes < 0 || maxReads <= 0 || maxTotalBytes < 0 || len(absPaths) == 0 {
+		return contentByPath
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	type query struct {
+		path string
+		spec string
+	}
+	queries := make([]query, 0, len(absPaths))
+	for _, absPath := range absPaths {
+		rel := GetRelativePath(absPath, root)
+		if rel == absPath || strings.HasPrefix(rel, "..") || strings.ContainsAny(rel, "\r\n") {
+			continue
+		}
+		queries = append(queries, query{path: absPath, spec: ":" + filepath.ToSlash(rel)})
+	}
+	if len(queries) == 0 {
+		return contentByPath
+	}
+
+	cmd, cancel := boundedGitCommand(ctx, root, "cat-file", "--batch")
 	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "show", ":"+filepath.ToSlash(rel))
+	var input strings.Builder
+	for _, query := range queries {
+		input.WriteString(query.spec)
+		input.WriteByte('\n')
+	}
+	cmd.Stdin = strings.NewReader(input.String())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, false
+		return contentByPath
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, false
+		return contentByPath
 	}
 
-	out, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
-	if readErr != nil {
-		cancel()
-		_ = cmd.Wait()
-		return nil, false
+	reader := bufio.NewReaderSize(stdout, maxGitBatchHeaderBytes)
+	var totalBytes, drainedBytes int64
+	for _, query := range queries {
+		if len(contentByPath) >= maxReads {
+			cancel()
+			break
+		}
+		headerBytes, err := reader.ReadSlice('\n')
+		if err != nil {
+			cancel() // includes ErrBufferFull for an unreasonably long header
+			break
+		}
+		header := strings.TrimSuffix(string(headerBytes), "\n")
+		if strings.HasSuffix(header, " missing") {
+			continue
+		}
+		fields := strings.Fields(header)
+		if len(fields) != 3 {
+			cancel()
+			break
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || size < 0 {
+			cancel()
+			break
+		}
+
+		retain := fields[1] == "blob" &&
+			size <= int64(maxFileBytes) &&
+			size <= maxTotalBytes-totalBytes
+		if !retain {
+			if size > maxGitBatchDrainBytes-drainedBytes {
+				// A malformed or unreasonably large object cannot be drained
+				// within the batch's bounded I/O policy, so abort the remainder.
+				cancel()
+				break
+			}
+			if !drainGitBatchObject(reader, size) {
+				cancel()
+				break
+			}
+			drainedBytes += size
+			continue
+		}
+
+		content := make([]byte, size)
+		if _, err := io.ReadFull(reader, content); err != nil {
+			cancel()
+			break
+		}
+		separator, err := reader.ReadByte()
+		if err != nil || separator != '\n' {
+			cancel()
+			break
+		}
+		contentByPath[query.path] = content
+		totalBytes += size
 	}
-	if len(out) > maxBytes {
-		cancel()
-		_ = cmd.Wait()
-		return nil, false
+	_ = cmd.Wait()
+	return contentByPath
+}
+
+func drainGitBatchObject(reader *bufio.Reader, size int64) bool {
+	if _, err := io.CopyN(io.Discard, reader, size); err != nil {
+		return false
 	}
-	if err := cmd.Wait(); err != nil {
-		return nil, false
-	}
-	return out, true
+	separator, err := reader.ReadByte()
+	return err == nil && separator == '\n'
 }
