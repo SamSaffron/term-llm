@@ -1115,7 +1115,7 @@ func TestServeRuntimeInterruptCancelMarksResponseRunCancellationRequested(t *tes
 	}
 
 	rt.engine.QueueInterjection(llm.QueuedInterjection{ID: "msg-earlier-queued", Message: llm.UserText("earlier queued")})
-	action, _, err := rt.InterruptMessage(context.Background(), llm.UserText("stop right away"), "stop right away", "msg-stop", nil, false)
+	action, _, err := rt.InterruptMessage(context.Background(), llm.UserText("/stop"), "/stop", "msg-stop", nil, interruptDeliveryAuto)
 	if err != nil {
 		t.Fatalf("InterruptMessage: %v", err)
 	}

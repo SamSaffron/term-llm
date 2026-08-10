@@ -32,8 +32,24 @@ func TestClassifyTimeout(t *testing.T) {
 func TestClassifyInterruptExplicitCancel(t *testing.T) {
 	t.Parallel()
 
-	if got := ClassifyInterrupt(context.Background(), nil, "/cancel now", InterruptActivity{}); got != InterruptCancel {
-		t.Fatalf("ClassifyInterrupt(cancel) = %v, want InterruptCancel", got)
+	for _, command := range []string{"/stop", "/cancel"} {
+		if got := ClassifyInterrupt(context.Background(), nil, command, InterruptActivity{}); got != InterruptCancel {
+			t.Fatalf("ClassifyInterrupt(%q) = %v, want InterruptCancel", command, got)
+		}
+	}
+}
+
+func TestClassifyInterruptCancellationProseIsNotImmediate(t *testing.T) {
+	t.Parallel()
+
+	for _, prose := range []string{"stop changing direction", "cancel that assumption", "abort only the upload", "/stop after this step"} {
+		action, immediate := ClassifyInterruptImmediate(prose)
+		if immediate || action != InterruptInterject {
+			t.Fatalf("ClassifyInterruptImmediate(%q) = (%v, %v), want non-immediate interject", prose, action, immediate)
+		}
+		if got := ClassifyInterrupt(context.Background(), nil, prose, InterruptActivity{}); got != InterruptInterject {
+			t.Fatalf("ClassifyInterrupt(%q) = %v, want fallback interject", prose, got)
+		}
 	}
 }
 

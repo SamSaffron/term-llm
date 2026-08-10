@@ -354,7 +354,7 @@ const sendMessage = async (options = {}) => {
     }
     stageDraftMessage(prompt, session.id);
     app.trackPendingInterruptCommit(session.id, prompt, pendingMessageId, pendingAttachments);
-    app.trackPendingInterjection(session.id, prompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'deciding', pendingAttachments);
+    app.trackPendingInterjection(session.id, prompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'interject', pendingAttachments);
     persistAndRefreshShell();
     elements.promptInput.value = '';
     state.attachments = [];

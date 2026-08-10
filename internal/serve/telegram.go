@@ -658,9 +658,14 @@ type telegramSessionMgr struct {
 	// streamEventTimeout bounds how long the stream watchdog waits between events
 	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
 	streamEventTimeout time.Duration
+
+	fastProviderFactory func() llm.Provider // test seam; nil uses configured fast provider
 }
 
 func (m *telegramSessionMgr) newFastProvider() llm.Provider {
+	if m != nil && m.fastProviderFactory != nil {
+		return m.fastProviderFactory()
+	}
 	if m == nil || m.cfg == nil {
 		return nil
 	}
@@ -670,6 +675,10 @@ func (m *telegramSessionMgr) newFastProvider() llm.Provider {
 		return nil
 	}
 	return fastProvider
+}
+
+func (m *telegramSessionMgr) classifyInterrupt(ctx context.Context, text string, activity llm.InterruptActivity) llm.InterruptAction {
+	return llm.ClassifyInterrupt(ctx, m.newFastProvider(), text, activity)
 }
 
 func (m *telegramSessionMgr) isAllowed(userID int64, username string) bool {
@@ -1517,8 +1526,7 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 			// turns so the structured message remains available to the provider.
 			action := llm.InterruptCancel
 			if tempImagePath == "" {
-				fastProvider := m.newFastProvider()
-				action = llm.ClassifyInterrupt(ctx, fastProvider, newMsgText, activity)
+				action = m.classifyInterrupt(ctx, newMsgText, activity)
 			}
 			switch action {
 			case llm.InterruptCancel:
@@ -1550,28 +1558,23 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 					cancelFn()
 					return
 				}
-				select {
-				case <-doneCh:
-					log.Printf("[telegram] stream for chat %d finished before interjection could be queued; handling message as a new turn", chatID)
-					break activeWait
-				default:
-				}
-				interjectionID := activeEngine.QueueInterjection(llm.QueuedInterjection{
+				interjectionID, queueStatus := activeEngine.QueueInterjectionWithStatus(llm.QueuedInterjection{
 					Message:     llm.UserText(newMsgText),
 					DisplayText: newMsgText,
 				})
-				select {
-				case <-doneCh:
-					if activeEngine.CancelInterjection(interjectionID) {
-						log.Printf("[telegram] stream for chat %d finished before interjection %s was accepted; handling message as a new turn", chatID, interjectionID)
-						break activeWait
-					}
+				switch queueStatus {
+				case llm.InterjectionQueueQueued, llm.InterjectionQueueAlreadyQueued:
+					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
+					// Do not persist here: the engine persists the interjection exactly once
+					// when it drains it into the conversation via TurnCompletedCallback.
+					return
+				case llm.InterjectionQueueRunFinished:
+					log.Printf("[telegram] stream for chat %d reached its final boundary before interjection %s; handling message as a new turn", chatID, interjectionID)
+					break activeWait
 				default:
+					log.Printf("[telegram] interjection %s for chat %d is already %s; not resubmitting it", interjectionID, chatID, queueStatus)
+					return
 				}
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
-				// Do not persist here: the engine persists the interjection exactly once
-				// when it drains it into the conversation via TurnCompletedCallback.
-				return
 			}
 		case <-ctx.Done():
 			return

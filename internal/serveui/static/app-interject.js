@@ -265,13 +265,13 @@ const removePendingInterjectionById = (messageId, options = {}) => {
 
 const cancelPendingInterjection = async (entry) => {
   if (!entry?.sessionId || !entry?.messageId) return;
-  if (entry.action === 'deciding') {
-    if (!entry.transportStarted) {
-      removePendingInterjectionById(entry.messageId);
-      discardPendingInterruptCommit(entry.messageId);
-      state.queuedInterrupts = state.queuedInterrupts.filter((queued) => queued.messageId !== entry.messageId);
-      return;
-    }
+  if (!entry.transportStarted) {
+    removePendingInterjectionById(entry.messageId);
+    discardPendingInterruptCommit(entry.messageId);
+    state.queuedInterrupts = state.queuedInterrupts.filter((queued) => queued.messageId !== entry.messageId);
+    return;
+  }
+  if (entry.deliveryPending || entry.action === 'deciding') {
     entry.cancelRequested = true;
     entry.action = 'cancel';
     discardPendingInterruptCommit(entry.messageId);
@@ -318,8 +318,8 @@ const requeuePendingInterjections = (session) => {
 
 const interruptActiveRunNow = async (session, prompt, messageId, contentParts = null, attachments = []) => {
   const body = Array.isArray(contentParts) && contentParts.length > 0
-    ? { message: prompt, content: prompt ? [...contentParts, { type: 'input_text', text: prompt }] : contentParts, interjection_id: messageId, client_message_id: messageId }
-    : { message: prompt, interjection_id: messageId, client_message_id: messageId };
+    ? { message: prompt, content: prompt ? [...contentParts, { type: 'input_text', text: prompt }] : contentParts, interjection_id: messageId, client_message_id: messageId, delivery: 'steer' }
+    : { message: prompt, interjection_id: messageId, client_message_id: messageId, delivery: 'steer' };
   const headers = requestHeaders(session.id);
   headers['Idempotency-Key'] = `interrupt_${messageId}`;
   const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
@@ -374,9 +374,9 @@ const interruptActiveRunNow = async (session, prompt, messageId, contentParts = 
 
 const interruptMutationTails = new Map();
 
-// Serialize interrupt classification per session. The stack is updated
-// immediately, but server queue ownership follows the same FIFO order the user
-// sees above the composer.
+// Serialize interrupt delivery per session. The stack is updated immediately,
+// but server queue ownership follows the same FIFO order the user sees above
+// the composer.
 const interruptActiveRun = (session, prompt, messageId, contentParts = null, attachments = []) => {
   const sessionId = String(session?.id || '').trim();
   const previous = interruptMutationTails.get(sessionId) || Promise.resolve();
@@ -388,8 +388,13 @@ const interruptActiveRun = (session, prompt, messageId, contentParts = null, att
       state.queuedInterrupts = state.queuedInterrupts.filter((item) => item.messageId !== messageId);
       return 'discarded';
     }
-    if (entry) entry.transportStarted = true;
-    return interruptActiveRunNow(session, prompt, messageId, contentParts, attachments);
+    if (entry) {
+      entry.transportStarted = true;
+      entry.deliveryPending = true;
+    }
+    return interruptActiveRunNow(session, prompt, messageId, contentParts, attachments).finally(() => {
+      if (entry) entry.deliveryPending = false;
+    });
   });
   const tail = request.then(() => undefined, () => undefined).finally(() => {
     if (interruptMutationTails.get(sessionId) === tail) interruptMutationTails.delete(sessionId);

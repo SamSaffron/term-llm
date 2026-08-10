@@ -1767,8 +1767,8 @@ func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
 
 func TestRenderInputInline_ShowsPendingInterjectionStack(t *testing.T) {
 	m := newTestChatModel(false)
-	m.setPendingInterjection("one", "first", "interject")
-	m.setPendingInterjection("two", "second", "deciding")
+	m.setPendingInterjection("one", "first")
+	m.setPendingInterjection("two", "second")
 	m.width = 80
 
 	output := m.renderInputInline()
@@ -1777,8 +1777,8 @@ func TestRenderInputInline_ShowsPendingInterjectionStack(t *testing.T) {
 	if !strings.Contains(stripped, "first") || !strings.Contains(stripped, "second") {
 		t.Fatalf("expected both pending interjections in output, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "will incorporate") || !strings.Contains(stripped, "deciding") {
-		t.Fatalf("expected stack labels in output, got %q", stripped)
+	if strings.Count(stripped, "will incorporate") != 2 {
+		t.Fatalf("expected both pending labels in output, got %q", stripped)
 	}
 	if !strings.Contains(stripped, "[del cancels]") {
 		t.Fatalf("expected cancel affordance in output, got %q", stripped)

@@ -944,8 +944,8 @@ func TestInvalidStreamingAgentMentionPreservesDraftBeforeQueueMutation(t *testin
 	if m.textarea.Value() != content || len(m.images) != 1 || len(m.files) != 1 || len(m.pasteChunks) != 1 {
 		t.Fatalf("invalid interjection lost draft state: text=%q images=%d files=%d pastes=%d", m.textarea.Value(), len(m.images), len(m.files), len(m.pasteChunks))
 	}
-	if len(m.engine.ListPendingInterjections()) != 0 || len(m.pendingInterjections) != 0 || m.activeInterruptSeq != 0 {
-		t.Fatalf("invalid interjection mutated queue state: engine=%#v ui=%#v seq=%d", m.engine.ListPendingInterjections(), m.pendingInterjections, m.activeInterruptSeq)
+	if len(m.engine.ListPendingInterjections()) != 0 || len(m.pendingInterjections) != 0 {
+		t.Fatalf("invalid interjection mutated queue state: engine=%#v ui=%#v", m.engine.ListPendingInterjections(), m.pendingInterjections)
 	}
 	if !strings.Contains(m.footerMessage, "depth exhausted") {
 		t.Fatalf("footer = %q", m.footerMessage)

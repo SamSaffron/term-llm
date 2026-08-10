@@ -304,7 +304,7 @@ func TestEngineOrchestration_InlineSyncToolLoopWithoutOrderedEventsKeepsLegacyPe
 	}
 }
 
-func TestEngineOrchestration_InlineSyncToolLoopDrainsInterjectionsBeforeDone(t *testing.T) {
+func TestEngineOrchestration_InlineSyncToolLoopLeavesInterjectionsForFollowUp(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
 	provider := &inlineSyncToolProvider{inline: true}
@@ -325,6 +325,7 @@ func TestEngineOrchestration_InlineSyncToolLoopDrainsInterjectionsBeforeDone(t *
 	}
 	defer stream.Close()
 	interjectionIndex, doneIndex, index := -1, -1, 0
+	var lateStatus InterjectionQueueStatus
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -338,14 +339,22 @@ func TestEngineOrchestration_InlineSyncToolLoopDrainsInterjectionsBeforeDone(t *
 		}
 		if event.Type == EventDone {
 			doneIndex = index
+			_, lateStatus = engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "late-inline", Message: UserText("too late")})
 		}
 		index++
 	}
-	if interjectionIndex < 0 || doneIndex < 0 || interjectionIndex >= doneIndex {
-		t.Fatalf("interjection/done indexes = %d/%d", interjectionIndex, doneIndex)
+	if interjectionIndex != -1 || doneIndex < 0 {
+		t.Fatalf("interjection/done indexes = %d/%d, want no committed interjection before done", interjectionIndex, doneIndex)
 	}
-	if len(persisted) == 0 || persisted[len(persisted)-1].Role != RoleUser || MessageText(persisted[len(persisted)-1]) != "follow-up instruction" {
-		t.Fatalf("persisted messages did not end with interjection: %+v", persisted)
+	if lateStatus != InterjectionQueueRunFinished {
+		t.Fatalf("late inline status = %q, want %q", lateStatus, InterjectionQueueRunFinished)
+	}
+	if len(persisted) == 0 || persisted[len(persisted)-1].Role == RoleUser {
+		t.Fatalf("inline terminal path persisted interjection: %+v", persisted)
+	}
+	pending := engine.ListPendingInterjections()
+	if len(pending) != 1 || MessageText(pending[0].Message) != "follow-up instruction" {
+		t.Fatalf("pending interjections = %+v, want only pre-boundary follow-up", pending)
 	}
 	if provider.calls != 1 {
 		t.Fatalf("provider calls = %d, want 1", provider.calls)

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -277,6 +278,138 @@ func TestJobsV2NotifyWhenDoneContinuesLoadedIdleWebSession(t *testing.T) {
 	}
 	if provider.CurrentTurn() != 1 {
 		t.Fatalf("provider turns = %d, want 1", provider.CurrentTurn())
+	}
+}
+
+func TestNotifyQueuedAgentWeb_ActiveRunOwnsNotificationExactlyOnce(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	if err := store.Create(context.Background(), &session.Session{ID: "sess-active", Origin: session.OriginWeb, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	provider := llm.NewMockProvider("active").
+		AddTurn(llm.MockTurn{Text: "working", Delay: 100 * time.Millisecond}).
+		AddTextResponse("notification acknowledged")
+	engine := llm.NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("work")},
+		Tools:    []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "active", store: store}
+	state := &runtimeInterruptState{done: make(chan struct{}), cancel: func() {}}
+	rt.setActiveInterrupt(state)
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	putTestSession(mgr, "sess-active", rt)
+	srv := &serveServer{store: store, sessionMgr: mgr}
+	defer func() {
+		rt.clearActiveInterrupt(state)
+		_ = stream.Close()
+		mgr.Close()
+	}()
+
+	message := "Queued job job_123 (developer) succeeded: hello world"
+	if err := srv.notifyQueuedAgentWeb(context.Background(), "run-active", "sess-active", message); err != nil {
+		t.Fatalf("notifyQueuedAgentWeb: %v", err)
+	}
+	interjectionEvents := 0
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		if event.Type == llm.EventInterjection && event.InterjectionID == "job_notify_run-active" {
+			interjectionEvents++
+		}
+	}
+	if interjectionEvents != 1 {
+		t.Fatalf("job notification interjection events = %d, want exactly one", interjectionEvents)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("active run retained consumed notification: %#v", pending)
+	}
+	requests := provider.RecordedRequests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want initial plus notification continuation", len(requests))
+	}
+	notificationMessages := 0
+	for _, request := range requests {
+		for _, requestMessage := range request.Messages {
+			if requestMessage.ClientMessageID == "job_notify_run-active" && llm.MessageText(requestMessage) == message {
+				notificationMessages++
+			}
+		}
+	}
+	if notificationMessages != 1 {
+		t.Fatalf("provider notification messages = %d, want exactly one", notificationMessages)
+	}
+	store.mu.Lock()
+	persisted := append([]session.Message(nil), store.messages["sess-active"]...)
+	store.mu.Unlock()
+	if len(persisted) != 0 || len(rt.history) != 0 {
+		t.Fatalf("active-run notification also fell back: persisted=%#v history=%#v", persisted, rt.history)
+	}
+}
+
+func TestNotifyQueuedAgentWeb_RunFinishedTeardownFallsBackWithoutPhantom(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	if err := store.Create(context.Background(), &session.Session{ID: "sess-teardown", Origin: session.OriginWeb, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	provider := llm.NewMockProvider("teardown").AddTextResponse("finished")
+	engine := llm.NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("work")},
+		Tools:    []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+	}
+
+	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "teardown", store: store}
+	// Retain activeInterrupt to model the window after the engine closes its final
+	// boundary but before response-run teardown clears runtime ownership.
+	state := &runtimeInterruptState{done: make(chan struct{}), cancel: func() {}}
+	rt.setActiveInterrupt(state)
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	putTestSession(mgr, "sess-teardown", rt)
+	srv := &serveServer{store: store, sessionMgr: mgr}
+	defer func() {
+		rt.clearActiveInterrupt(state)
+		mgr.Close()
+	}()
+
+	message := "Queued job job_456 (developer) succeeded: complete"
+	if err := srv.notifyQueuedAgentWeb(context.Background(), "run-finished", "sess-teardown", message); err != nil {
+		t.Fatalf("notifyQueuedAgentWeb: %v", err)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("run-finished fallback retained phantom interjection: %#v", pending)
+	}
+	store.mu.Lock()
+	persisted := append([]session.Message(nil), store.messages["sess-teardown"]...)
+	store.mu.Unlock()
+	if len(persisted) != 1 || persisted[0].Role != llm.RoleAssistant || persisted[0].TextContent != message {
+		t.Fatalf("fallback notifications = %#v, want exactly one assistant notice", persisted)
+	}
+	if len(rt.history) != 1 || rt.history[0].Role != llm.RoleAssistant || llm.MessageText(rt.history[0]) != message {
+		t.Fatalf("runtime history = %#v, want one assistant notice", rt.history)
 	}
 }
 

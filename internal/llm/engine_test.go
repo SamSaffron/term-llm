@@ -1770,14 +1770,27 @@ func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
 	}
 	defer stream.Close()
 
+	var boundaryChecked bool
 	for {
-		_, err := stream.Recv()
+		event, err := stream.Recv()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			t.Fatalf("recv error: %v", err)
 		}
+		if event.Type == EventDone {
+			boundaryChecked = true
+			if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-finish", Message: UserText("too late")}); status != InterjectionQueueRunFinished {
+				t.Fatalf("finishing-tool boundary status = %q, want %q", status, InterjectionQueueRunFinished)
+			}
+			if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+				t.Fatalf("finishing-tool boundary retained phantom steer: %#v", pending)
+			}
+		}
+	}
+	if !boundaryChecked {
+		t.Fatal("finishing tool did not emit done boundary")
 	}
 
 	if len(provider.calls) != 1 {
@@ -4145,7 +4158,7 @@ func TestEngineInterjection_NoToolCalls(t *testing.T) {
 	}
 }
 
-func TestEngineInterjection_AutoContinueNoToolCalls(t *testing.T) {
+func TestEngineInterjection_OrdinarySteerContinuesNoToolCalls(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{
@@ -4181,7 +4194,7 @@ func TestEngineInterjection_AutoContinueNoToolCalls(t *testing.T) {
 	tool := &delayingTool{}
 	registry.Register(tool)
 	engine := NewEngine(provider, registry)
-	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done", AutoContinue: true})
+	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done"})
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
 	if err != nil {
 		t.Fatalf("stream error: %v", err)
@@ -4222,12 +4235,29 @@ func TestEngineInterjection_AutoContinueNoToolCalls(t *testing.T) {
 	}
 }
 
-func TestEngineInterjection_AutoContinuePreservesFIFOBehindUserInterjection(t *testing.T) {
+func TestEngineInterjection_OrdinarySteersPreserveFIFOAtTextBoundary(t *testing.T) {
 	t.Parallel()
 
 	provider := &fakeProvider{
 		script: func(call int, req Request) []Event {
-			return []Event{{Type: EventTextDelta, Text: "just text"}, {Type: EventDone}}
+			switch call {
+			case 0:
+				return []Event{{Type: EventTextDelta, Text: "first response"}, {Type: EventDone}}
+			case 1:
+				if len(req.Messages) < 4 {
+					t.Fatalf("second call messages = %#v, want original, assistant, then two steers", req.Messages)
+				}
+				got := req.Messages[len(req.Messages)-3:]
+				if got[0].Role != RoleAssistant || MessageText(got[0]) != "first response" ||
+					got[1].Role != RoleUser || MessageText(got[1]) != "user note" || got[1].ClientMessageID != "user-note" ||
+					got[2].Role != RoleUser || MessageText(got[2]) != "job done" || got[2].ClientMessageID != "job-notify" {
+					t.Fatalf("second call tail = %#v, want assistant then FIFO steers with stable IDs", got)
+				}
+				return []Event{{Type: EventTextDelta, Text: "follow up"}, {Type: EventDone}}
+			default:
+				t.Fatalf("unexpected provider call %d", call)
+				return nil
+			}
 		},
 	}
 	registry := NewToolRegistry()
@@ -4235,13 +4265,14 @@ func TestEngineInterjection_AutoContinuePreservesFIFOBehindUserInterjection(t *t
 	registry.Register(tool)
 	engine := NewEngine(provider, registry)
 	engine.QueueInterjection(QueuedInterjection{ID: "user-note", Message: UserText("user note"), DisplayText: "user note"})
-	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done", AutoContinue: true})
+	engine.QueueInterjection(QueuedInterjection{ID: "job-notify", Message: UserText("job done"), DisplayText: "job done"})
 
 	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
 	if err != nil {
 		t.Fatalf("stream error: %v", err)
 	}
 	defer stream.Close()
+	var interjectionIDs []string
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -4251,15 +4282,366 @@ func TestEngineInterjection_AutoContinuePreservesFIFOBehindUserInterjection(t *t
 			t.Fatalf("recv error: %v", err)
 		}
 		if event.Type == EventInterjection {
-			t.Fatalf("unexpected interjection event: %#v", event)
+			interjectionIDs = append(interjectionIDs, event.InterjectionID)
+			if event.InterjectionStatus != InterjectionCommitted {
+				t.Fatalf("interjection status = %q, want committed", event.InterjectionStatus)
+			}
 		}
 	}
-	if len(provider.calls) != 1 {
-		t.Fatalf("provider calls = %d, want 1", len(provider.calls))
+	if want := []string{"user-note", "job-notify"}; !reflect.DeepEqual(interjectionIDs, want) {
+		t.Fatalf("interjection event IDs = %#v, want %#v", interjectionIDs, want)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("pending interjections = %#v, want none", pending)
+	}
+}
+
+func TestEngineInterjection_TextBoundaryPreservesStructuredParts(t *testing.T) {
+	t.Parallel()
+
+	structured := Message{
+		Role: RoleUser,
+		Parts: []Part{
+			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/png", Base64: "aW1n"}},
+			{Type: PartFile, FileData: &ToolFileData{MediaType: "text/plain", Base64: "ZmlsZQ==", Filename: "notes.txt", SizeBytes: 4}},
+			{Type: PartAgentMention, Text: "@reviewer inspect the attachment"},
+		},
+	}
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		if call == 1 {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != RoleUser || last.ClientMessageID != "structured-steer" || len(last.Parts) != 3 {
+				t.Fatalf("provider steer = %#v, want stable structured user message", last)
+			}
+			if last.Parts[0].Type != PartImage || last.Parts[1].Type != PartFile || last.Parts[2].Type != PartText || last.Parts[2].Text != structured.Parts[2].Text {
+				t.Fatalf("provider-safe steer parts = %#v, want image, file, mention text", last.Parts)
+			}
+		}
+		return []Event{{Type: EventTextDelta, Text: fmt.Sprintf("response %d", call+1)}, {Type: EventDone}}
+	}}
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	var persisted []Message
+	engine.SetTurnCompletedCallback(func(_ context.Context, _ int, messages []Message, _ TurnMetrics) error {
+		persisted = append(persisted, messages...)
+		return nil
+	})
+	engine.QueueInterjection(QueuedInterjection{ID: "structured-steer", Message: structured, DisplayText: "inspect attachments"})
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 3})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var committed *Event
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		if event.Type == EventInterjection {
+			copy := event
+			committed = &copy
+		}
+	}
+	if committed == nil || committed.InterjectionID != "structured-steer" || committed.InterjectionStatus != InterjectionCommitted {
+		t.Fatalf("committed event = %#v", committed)
+	}
+	if !reflect.DeepEqual(committed.Message.Parts, structured.Parts) {
+		t.Fatalf("event parts = %#v, want %#v", committed.Message.Parts, structured.Parts)
+	}
+	var persistedSteer *Message
+	for i := range persisted {
+		if persisted[i].ClientMessageID == "structured-steer" {
+			persistedSteer = &persisted[i]
+			break
+		}
+	}
+	if persistedSteer == nil || !reflect.DeepEqual(persistedSteer.Parts, structured.Parts) {
+		t.Fatalf("persisted steer = %#v, want structured parts", persistedSteer)
+	}
+}
+
+func TestEngineInterjection_SimpleStreamRejectsFirstRunSteeringWhileActive(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: false},
+		script: func(_ int, _ Request) []Event {
+			close(started)
+			<-release
+			return []Event{{Type: EventTextDelta, Text: "simple"}, {Type: EventDone}}
+		},
+	}
+	engine := NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	<-started
+
+	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "during-simple", Message: UserText("steer")}); status != InterjectionQueueRunFinished {
+		t.Fatalf("simple-stream status = %q, want %q", status, InterjectionQueueRunFinished)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("simple stream retained unconsumable steer: %#v", pending)
+	}
+	close(release)
+	drainStream(t, stream)
+}
+
+func TestEngineInterjection_SimpleStreamClearsPriorAgenticOwnership(t *testing.T) {
+	t.Parallel()
+
+	simpleStarted := make(chan struct{})
+	simpleRelease := make(chan struct{})
+	provider := &fakeProvider{script: func(call int, _ Request) []Event {
+		if call == 1 {
+			close(simpleStarted)
+			<-simpleRelease
+		}
+		return []Event{{Type: EventTextDelta, Text: fmt.Sprintf("response %d", call+1)}, {Type: EventDone}}
+	}}
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+
+	agentic, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("agentic")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatalf("agentic Stream: %v", err)
+	}
+	drainStream(t, agentic)
+
+	simple, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("simple")}})
+	if err != nil {
+		t.Fatalf("simple Stream: %v", err)
+	}
+	defer simple.Close()
+	<-simpleStarted
+	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-agentic", Message: UserText("steer")}); status != InterjectionQueueRunFinished {
+		t.Fatalf("simple stream after agentic status = %q, want %q", status, InterjectionQueueRunFinished)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("simple stream retained stale-owned steer: %#v", pending)
+	}
+	close(simpleRelease)
+	drainStream(t, simple)
+}
+
+func TestEngineInterjection_FinalAgenticTurnRejectsSteeringWhileStreaming(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider := &fakeProvider{script: func(_ int, _ Request) []Event {
+		close(started)
+		<-release
+		return []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventDone}}
+	}}
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 1,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	<-started
+
+	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "during-final", Message: UserText("too late")}); status != InterjectionQueueRunFinished {
+		t.Fatalf("final-turn status = %q, want %q", status, InterjectionQueueRunFinished)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("final provider turn retained phantom steer: %#v", pending)
+	}
+	close(release)
+	drainStream(t, stream)
+}
+
+func TestEngineInterjection_MaxTurnsLeavesSteersPending(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeProvider{script: func(_ int, _ Request) []Event {
+		return []Event{{Type: EventTextDelta, Text: "final"}, {Type: EventDone}}
+	}}
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	engine.QueueInterjection(QueuedInterjection{ID: "before-final", Message: UserText("recover me")})
+
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 1})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		if event.Type == EventInterjection {
+			t.Fatalf("max-turn steer was committed: %#v", event)
+		}
+	}
+	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-final", Message: UserText("follow up")}); status != InterjectionQueueRunFinished {
+		t.Fatalf("post-boundary queue status = %q, want %q", status, InterjectionQueueRunFinished)
 	}
 	pending := engine.ListPendingInterjections()
-	if len(pending) != 2 || pending[0].ID != "user-note" || pending[1].ID != "job-notify" {
-		t.Fatalf("pending interjections = %#v, want FIFO user-note then job-notify", pending)
+	if len(pending) != 1 || pending[0].ID != "before-final" {
+		t.Fatalf("pending = %#v, want only the pre-boundary steer", pending)
+	}
+	if !engine.CancelInterjection("before-final") {
+		t.Fatal("pre-boundary max-turn steer should remain cancellable")
+	}
+	if engine.CancelInterjection("after-final") {
+		t.Fatal("run_finished steer must not leave a phantom queue entry")
+	}
+}
+
+func TestEngineInterjection_MaxTurnToolBoundaryRejectsLateSteer(t *testing.T) {
+	t.Parallel()
+
+	tool := &delayingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	provider := &fakeProvider{script: func(_ int, _ Request) []Event {
+		return []Event{
+			{Type: EventToolCall, Tool: &ToolCall{ID: "call-max", Name: tool.Spec().Name, Arguments: json.RawMessage(`{}`)}},
+			{Type: EventDone},
+		}
+	}}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use the tool")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 1,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawBoundary bool
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		if event.Type == EventError {
+			var maxErr *MaxTurnsExceededError
+			if !errors.As(event.Err, &maxErr) {
+				t.Fatalf("stream error: %v", event.Err)
+			}
+			break
+		}
+		if event.Type != EventPhase || event.Text != MaxTurnsExceededWarning(1) {
+			continue
+		}
+		sawBoundary = true
+		if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "after-max-tool", Message: UserText("too late")}); status != InterjectionQueueRunFinished {
+			t.Fatalf("max-turn tool boundary status = %q, want %q", status, InterjectionQueueRunFinished)
+		}
+		if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+			t.Fatalf("max-turn tool boundary retained phantom steer: %#v", pending)
+		}
+	}
+	if !sawBoundary {
+		t.Fatal("max-turn tool path did not emit boundary warning")
+	}
+}
+
+func TestEngineInterjection_RunFinishedStateResetsForNextRun(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeProvider{script: func(call int, _ Request) []Event {
+		return []Event{{Type: EventTextDelta, Text: fmt.Sprintf("response %d", call+1)}, {Type: EventDone}}
+	}}
+	registry := NewToolRegistry()
+	tool := &delayingTool{}
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	request := Request{Messages: []Message{UserText("hello")}, Tools: []ToolSpec{tool.Spec()}, MaxTurns: 2}
+
+	first, err := engine.Stream(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first Stream: %v", err)
+	}
+	for {
+		_, recvErr := first.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("first Recv: %v", recvErr)
+		}
+	}
+	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "too-late", Message: UserText("late")}); status != InterjectionQueueRunFinished {
+		t.Fatalf("late status = %q, want run_finished", status)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("late steer was retained after run_finished: %#v", pending)
+	}
+
+	secondStarted := make(chan struct{})
+	secondRelease := make(chan struct{})
+	provider.script = func(call int, _ Request) []Event {
+		if call == 1 {
+			close(secondStarted)
+			<-secondRelease
+		}
+		return []Event{{Type: EventTextDelta, Text: fmt.Sprintf("response %d", call+1)}, {Type: EventDone}}
+	}
+	second, err := engine.Stream(context.Background(), request)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	<-secondStarted
+	if _, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "next-run", Message: UserText("steer next")}); status != InterjectionQueueQueued {
+		t.Fatalf("new-run status = %q, want queued", status)
+	}
+	close(secondRelease)
+	var committed bool
+	for {
+		event, recvErr := second.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("second Recv: %v", recvErr)
+		}
+		if event.Type == EventInterjection && event.InterjectionID == "next-run" {
+			committed = true
+		}
+	}
+	if !committed {
+		t.Fatal("new run did not consume queued steer")
 	}
 }
 

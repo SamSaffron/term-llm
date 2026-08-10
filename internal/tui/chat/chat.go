@@ -41,9 +41,8 @@ import (
 
 // Model is the main chat TUI model
 type pendingInterjectionUI struct {
-	ID      string
-	Text    string
-	UIState string
+	ID   string
+	Text string
 }
 
 type pendingStreamModelSwitch struct {
@@ -314,9 +313,6 @@ type Model struct {
 	pendingInterjections    []pendingInterjectionUI
 	selectedInterjection    int       // Selected pending interjection; -1 means none
 	interjectionSeq         uint64    // Monotonic sequence for locally generated interjection IDs
-	interruptRequestSeq     uint64    // Monotonic sequence for async interrupt classification
-	activeInterruptSeq      uint64    // Currently active async interrupt classification request
-	pendingInterruptUI      string    // UI state of latest pending interjection: "", "deciding", "interject"
 	interruptNotice         string    // One-line UI notice for recent interrupt actions
 	ctrlCExitArmedUntil     time.Time // Second Ctrl+C before this time exits the TUI
 	promptHistory           promptHistoryState
@@ -597,13 +593,6 @@ type (
 	streamRenderTickMsg   struct{}
 	footerMessageClearMsg struct {
 		Seq uint64
-	}
-	interruptClassifiedMsg struct {
-		RequestID      uint64
-		InterjectionID string
-		Content        string
-		Parts          []llm.Part
-		Action         llm.InterruptAction
 	}
 	compactStartedMsg struct{}
 	compactDoneMsg    struct {
@@ -1947,7 +1936,6 @@ func isParentChatMessage(msg tea.Msg) bool {
 		footerMessageClearMsg,
 		copyResultMsg,
 		copyStatusClearMsg,
-		interruptClassifiedMsg,
 		compactStartedMsg,
 		compactDoneMsg,
 		handoverDoneMsg,
@@ -2311,9 +2299,6 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-
-	case interruptClassifiedMsg:
-		return m.handleInterruptClassified(msg)
 
 	case compactDoneMsg:
 		m.streaming = false
@@ -2692,7 +2677,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				// If the engine queue is already empty but we never rendered the
 				// interjection inline, fall back to the visible pending draft.
 				m.restorePendingInterjectionDraft()
-				m.clearPendingInterjectionState()
+				if m.engine == nil || len(m.engine.ListPendingInterjections()) == 0 {
+					m.clearPendingInterjection()
+				}
 
 				titleCmd := m.terminalTitleCmd()
 				if m.altScreen {
@@ -2988,7 +2975,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 				if !matchedPending && m.pendingInterjectionID == "" && strings.TrimSpace(ev.Text) == strings.TrimSpace(m.pendingInterjection) {
 					matchedPending = true
-					m.clearPendingInterjectionState()
+					m.clearPendingInterjection()
 				}
 			}
 			_ = matchedPending
@@ -3237,7 +3224,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// engine queue is already empty but the UI still shows a pending
 			// interjection, restore that draft rather than letting it vanish.
 			m.restorePendingInterjectionDraft()
-			if m.activeInterruptSeq == 0 {
+			if m.engine == nil || len(m.engine.ListPendingInterjections()) == 0 {
 				m.clearPendingInterjection()
 			}
 		}

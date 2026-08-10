@@ -2867,9 +2867,131 @@ func TestHandleSessionInterrupt_DeduplicatesRetriedImageInterjection(t *testing.
 		t.Fatalf("mismatched idempotency payload status = %d, want 409; body=%s", rr.Code, rr.Body.String())
 	}
 
+	deliveryMismatch := `{"message":"please inspect this image","interjection_id":"web-1","delivery":"steer","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8=","filename":"img.png"}]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-merge/interrupt", strings.NewReader(deliveryMismatch))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("mismatched idempotency delivery status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+
 	parts := entries[0].Message.Parts
 	if len(parts) != 2 || parts[0].Type != llm.PartImage || parts[1].Type != llm.PartText || parts[1].Text != "please inspect this image" {
 		t.Fatalf("queued parts = %#v, want image plus message text", parts)
+	}
+}
+
+func TestHandleSessionInterrupt_DeliveryDispatch(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	tests := []struct {
+		name       string
+		delivery   string
+		wantStatus int
+		wantAction string
+		wantCancel int
+		wantQueued int
+	}{
+		{name: "omitted auto dispatches explicit command", wantStatus: http.StatusOK, wantAction: "cancel", wantCancel: 1},
+		{name: "auto dispatches explicit command", delivery: `,"delivery":"auto"`, wantStatus: http.StatusOK, wantAction: "cancel", wantCancel: 1},
+		{name: "steer bypasses auto dispatch", delivery: `,"delivery":"steer"`, wantStatus: http.StatusOK, wantAction: "interject", wantQueued: 1},
+		{name: "unknown rejected", delivery: `,"delivery":"rush"`, wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := newServeSessionManager(time.Minute, 10, nil)
+			defer mgr.Close()
+			engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+			cancelCalls := 0
+			rt := &serveRuntime{engine: engine, providerKey: "mock"}
+			state := &runtimeInterruptState{cancel: func() { cancelCalls++ }, done: make(chan struct{})}
+			rt.setActiveInterrupt(state)
+			defer rt.clearActiveInterrupt(state)
+			putTestSession(mgr, "sess-delivery", rt)
+
+			srv := &serveServer{sessionMgr: mgr}
+			body := fmt.Sprintf(`{"message":"/stop","interjection_id":"delivery-1"%s}`, tt.delivery)
+			req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-delivery/interrupt", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if tt.wantAction != "" && !strings.Contains(rr.Body.String(), `"action":"`+tt.wantAction+`"`) {
+				t.Fatalf("body = %s, want action %q", rr.Body.String(), tt.wantAction)
+			}
+			if cancelCalls != tt.wantCancel {
+				t.Fatalf("cancel calls = %d, want %d", cancelCalls, tt.wantCancel)
+			}
+			if pending := engine.ListPendingInterjections(); len(pending) != tt.wantQueued {
+				t.Fatalf("pending = %#v, want %d entries", pending, tt.wantQueued)
+			}
+		})
+	}
+}
+
+func TestHandleSessionInterrupt_ValidatesDeliveryBeforeContentIO(t *testing.T) {
+	srv := &serveServer{}
+	body := `{"delivery":"rush","interjection_id":"delivery-early","content":[{"type":"input_file","filename":"bad.pdf","file_data":"%%%"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-delivery/interrupt", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleSessionInterrupt(rr, req, "sess-delivery")
+
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "unsupported interrupt delivery") {
+		t.Fatalf("status/body = %d %s, want delivery validation before content parsing", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "bad.pdf") {
+		t.Fatalf("content parsing ran before delivery validation: %s", rr.Body.String())
+	}
+}
+
+func TestInterruptMessage_DeliveryControlsFastClassifier(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		delivery      interruptDelivery
+		wantAction    llm.InterruptAction
+		wantFastTurns int
+		wantQueued    int
+	}{
+		{name: "auto invokes fast classifier", delivery: interruptDeliveryAuto, wantAction: llm.InterruptCancel, wantFastTurns: 1},
+		{name: "steer bypasses fast classifier", delivery: interruptDeliverySteer, wantAction: llm.InterruptInterject, wantQueued: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := llm.NewEngine(llm.NewMockProvider("engine"), nil)
+			fastProvider := llm.NewMockProvider("classifier").AddTextResponse("cancel")
+			rt := &serveRuntime{engine: engine}
+			state := &runtimeInterruptState{done: make(chan struct{}), cancel: func() {}}
+			rt.setActiveInterrupt(state)
+			defer rt.clearActiveInterrupt(state)
+
+			action, replayed, err := rt.InterruptMessage(
+				context.Background(),
+				llm.UserText("change course"),
+				"change course",
+				"delivery-direct-"+string(tt.delivery),
+				fastProvider,
+				tt.delivery,
+			)
+			if err != nil {
+				t.Fatalf("InterruptMessage: %v", err)
+			}
+			if replayed {
+				t.Fatal("first dispatch unexpectedly replayed")
+			}
+			if action != tt.wantAction {
+				t.Fatalf("action = %v, want %v", action, tt.wantAction)
+			}
+			if got := fastProvider.CurrentTurn(); got != tt.wantFastTurns {
+				t.Fatalf("fast provider turns = %d, want %d", got, tt.wantFastTurns)
+			}
+			if pending := engine.ListPendingInterjections(); len(pending) != tt.wantQueued {
+				t.Fatalf("pending = %#v, want %d", pending, tt.wantQueued)
+			}
+		})
 	}
 }
 
@@ -2895,7 +3017,7 @@ func TestInterruptMessage_DeduplicatesConcurrentRetry(t *testing.T) {
 			"please incorporate this",
 			"web-concurrent-1",
 			fastProvider,
-			false,
+			interruptDeliveryAuto,
 		)
 		results <- result{action: action, replayed: replayed, err: err}
 	}
@@ -3286,7 +3408,7 @@ func TestServeRuntimeRunClearsUnappliedRuntimeSwitch(t *testing.T) {
 	}
 }
 
-func TestServeRuntimeRun_LeavesPendingInterjectionAtEndOfSimpleStream(t *testing.T) {
+func TestServeRuntimeRun_RejectsInterjectionDuringSimpleStream(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -3320,11 +3442,14 @@ func TestServeRuntimeRun_LeavesPendingInterjectionAtEndOfSimpleStream(t *testing
 	}
 
 	action, err := rt.Interrupt(context.Background(), "also remember this", nil)
-	if err != nil {
-		t.Fatalf("Interrupt failed: %v", err)
-	}
 	if action != llm.InterruptInterject {
 		t.Fatalf("Interrupt action = %v, want %v", action, llm.InterruptInterject)
+	}
+	if err == nil || !strings.Contains(err.Error(), "active run finished") {
+		t.Fatalf("Interrupt error = %v, want non-consuming simple-stream error", err)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("simple stream retained phantom interjection: %#v", pending)
 	}
 
 	close(provider.releaseSecond)
@@ -3341,11 +3466,8 @@ func TestServeRuntimeRun_LeavesPendingInterjectionAtEndOfSimpleStream(t *testing
 	if len(rt.history) != 2 {
 		t.Fatalf("history len = %d, want 2", len(rt.history))
 	}
-	if got := engine.PeekInterjection(); got != "also remember this" {
-		t.Fatalf("pending interjection = %q, want %q", got, "also remember this")
-	}
-	if !engine.CancelInterjection(engine.ListPendingInterjections()[0].ID) {
-		t.Fatal("expected residual interjection to remain cancellable")
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("pending interjections = %#v, want none", pending)
 	}
 
 	msgs, err := store.GetMessages(context.Background(), "serve-interject-persist", 0, 0)
@@ -3857,8 +3979,14 @@ func TestHandleResponses_UIFollowUpRunFailureReleasesClaim(t *testing.T) {
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "event: response.failed") {
 		t.Fatalf("run failure response status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if _, status := engine.QueueInterjectionWithStatus(entry); status != llm.InterjectionQueueQueued {
+	if status := engine.ClaimInterjection(messageID); status != llm.InterjectionClaimNotFound {
 		t.Fatalf("claim was not released after run failure: %q", status)
+	}
+	if _, status := engine.QueueInterjectionWithStatus(entry); status != llm.InterjectionQueueRunFinished {
+		t.Fatalf("finished run unexpectedly reclaimed retry ownership: %q", status)
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("finished run retained retry as phantom interjection: %#v", pending)
 	}
 }
 
@@ -10222,7 +10350,7 @@ func TestClassifiedCancelPreservesCompletedToolContextForFollowUp(t *testing.T) 
 		t.Fatal("provider did not reach the post-tool turn")
 	}
 
-	action, _, err := runtime.InterruptMessage(context.Background(), llm.UserText("stop right away"), "stop right away", "msg-stop-now", nil, false)
+	action, _, err := runtime.InterruptMessage(context.Background(), llm.UserText("/stop"), "/stop", "msg-stop-now", nil, interruptDeliveryAuto)
 	if err != nil {
 		t.Fatalf("InterruptMessage: %v", err)
 	}

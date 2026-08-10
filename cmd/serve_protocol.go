@@ -28,6 +28,7 @@ type sessionInterruptRequest struct {
 	Content         json.RawMessage `json:"content"`
 	InterjectionID  string          `json:"interjection_id"`
 	ClientMessageID string          `json:"client_message_id,omitempty"`
+	Delivery        string          `json:"delivery,omitempty"`
 }
 
 type sessionRuntimeEffortRequest struct {
