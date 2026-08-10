@@ -1771,6 +1771,18 @@ const copyTextWithFeedback = async (button, text, idleLabel, timerKey) => {
   }
 };
 
+const ATTACHMENT_IMAGE_MAX_WIDTH = 360, ATTACHMENT_IMAGE_MAX_HEIGHT = 270;
+
+const applyAttachmentImageDimensions = (img, attachment) => {
+  const width = Number(attachment?.width), height = Number(attachment?.height);
+  if (!img || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+  const intrinsicWidth = Math.round(width), intrinsicHeight = Math.round(height);
+  img.setAttribute('width', String(intrinsicWidth)); img.setAttribute('height', String(intrinsicHeight));
+  img.style.width = `${Math.min(intrinsicWidth, ATTACHMENT_IMAGE_MAX_WIDTH, (ATTACHMENT_IMAGE_MAX_HEIGHT * intrinsicWidth) / intrinsicHeight)}px`;
+  img.style.height = 'auto';
+  img.style.aspectRatio = `${intrinsicWidth} / ${intrinsicHeight}`;
+};
+
 const createMessageNode = (message) => {
   if (message.role === 'transcript-gap') return createTranscriptGapNode(message);
   if (message.role === 'skill-run') return createSkillRunNode(message);
@@ -1802,6 +1814,7 @@ const createMessageNode = (message) => {
         const previewURL = rebaseAssetURL(rawPreviewURL);
         if (att.type && att.type.startsWith('image/') && previewURL) {
           const img = document.createElement('img');
+          applyAttachmentImageDimensions(img, att);
           img.src = previewURL;
           img.alt = att.name || 'Attached image';
           img.style.cursor = 'pointer';
@@ -2626,7 +2639,9 @@ const messageRenderKey = (message) => {
             name: attachment?.name || '',
             type: attachment?.type || '',
             previewURL: attachment?.previewURL || '',
-            dataURL: attachment?.dataURL || ''
+            dataURL: attachment?.dataURL || '',
+            width: Number(attachment?.width) || 0,
+            height: Number(attachment?.height) || 0
           }))
           : []
       });

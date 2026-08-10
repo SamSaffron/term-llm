@@ -482,11 +482,13 @@ const (
 	ToolContentPartImageData ToolContentPartType = "image_data"
 )
 
-// ToolImageData represents base64-encoded image data in tool output.
+// ToolImageData represents base64-encoded image data in user input or tool output.
 type ToolImageData struct {
 	MediaType string `json:"media_type,omitempty"`
 	Base64    string `json:"base64,omitempty"`
 	Detail    string `json:"detail,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
 }
 
 // ToolFileData represents base64-encoded file data in user input.

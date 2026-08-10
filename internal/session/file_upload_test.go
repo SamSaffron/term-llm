@@ -57,7 +57,7 @@ func TestMessagePreservesImageBase64ByDefault(t *testing.T) {
 	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
 		Type:      llm.PartImage,
 		ImagePath: "/tmp/upload.png",
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high"},
+		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high", Width: 1200, Height: 800},
 	}}}, 0)
 
 	partsJSON, err := msg.PartsJSON()
@@ -83,7 +83,7 @@ func TestMessageStripsImageBase64WhenStorageOptionEnabled(t *testing.T) {
 	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
 		Type:      llm.PartImage,
 		ImagePath: uploadPath,
-		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high"},
+		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: b64, Detail: "high", Width: 1200, Height: 800},
 	}}}, 0)
 
 	if msg.Parts[0].ImageData == nil || msg.Parts[0].ImageData.Base64 != b64 {
@@ -111,8 +111,8 @@ func TestMessageStripsImageBase64WhenStorageOptionEnabled(t *testing.T) {
 	if part.ImageData.Base64 != "" {
 		t.Fatalf("ImageData.Base64 = %q, want stripped", part.ImageData.Base64)
 	}
-	if part.ImageData.MediaType != "image/png" || part.ImageData.Detail != "high" {
-		t.Fatalf("ImageData metadata = %+v, want media type/detail preserved", part.ImageData)
+	if part.ImageData.MediaType != "image/png" || part.ImageData.Detail != "high" || part.ImageData.Width != 1200 || part.ImageData.Height != 800 {
+		t.Fatalf("ImageData metadata = %+v, want media type/detail/dimensions preserved", part.ImageData)
 	}
 }
 

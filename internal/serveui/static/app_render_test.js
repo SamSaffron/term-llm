@@ -600,20 +600,46 @@ async function run(name, fn) {
     assertEqual(sources[0]?.src, '/hub/node/alpha/files/movie.webm', 'video source src');
   });
 
-  await run('rebases user attachment image URLs before rendering', () => {
+  await run('rebases user attachment image URLs and reserves intrinsic geometry before rendering', () => {
     const { app } = createHarness({
-      rebaseHubAssetURL(url) { return String(url || '').replace('/ui/images/', '/hub/node/alpha/images/'); }
+      rebaseHubAssetURL(u) { return String(u || '').replace('/ui/images/', '/hub/node/alpha/images/'); }
     });
     const node = app.createMessageNode({
       id: 'u_img',
       role: 'user',
       content: 'see image',
       created: Date.now(),
-      attachments: [{ name: 'image', type: 'image/png', dataURL: '/ui/images/upload.png' }]
+      attachments: [{ name: 'image', type: 'image/png', dataURL: '/ui/images/upload.png', width: 800, height: 400 }]
     });
     const img = node.querySelector('img');
     assert(img, 'expected attachment img');
     assertEqual(img.src, '/hub/node/alpha/images/upload.png', 'attachment image src');
+    assertEqual(img.getAttribute('width'), '800', 'intrinsic image width');
+    assertEqual(img.getAttribute('height'), '400', 'intrinsic image height');
+    assertEqual(img.style.width, '360px', 'landscape reserved display width');
+    assertEqual(img.style.height, 'auto', 'responsive display height');
+    assertEqual(img.style.aspectRatio, '800 / 400', 'reserved aspect ratio');
+  });
+
+  await run('reserves portrait geometry and leaves unavailable dimensions unforced', () => {
+    const { app } = createHarness();
+    const node = app.createMessageNode({
+      id: 'u_portrait', role: 'user', content: '', created: Date.now(),
+      attachments: [
+        { name: 'portrait', type: 'image/jpeg', dataURL: '/portrait.jpg', width: 400, height: 800 },
+        { name: 'unknown', type: 'image/png', dataURL: '/unknown.png' }
+      ]
+    });
+    const images = node.querySelectorAll('img');
+    assertEqual(images.length, 2, 'rendered image count');
+    assertEqual(images[0].getAttribute('width'), '400', 'portrait intrinsic width');
+    assertEqual(images[0].getAttribute('height'), '800', 'portrait intrinsic height');
+    assertEqual(images[0].style.width, '135px', 'portrait height-capped display width');
+    assertEqual(images[0].style.height, 'auto', 'portrait responsive display height');
+    assertEqual(images[0].style.aspectRatio, '400 / 800', 'portrait reserved aspect ratio');
+    assertEqual(images[1].getAttribute('width'), null, 'unknown width omitted');
+    assertEqual(images[1].getAttribute('height'), null, 'unknown height omitted');
+    assertEqual(images[1].style.aspectRatio, undefined, 'unknown aspect ratio omitted');
   });
 
   await run('rebases tool artifact image URLs before rendering', () => {

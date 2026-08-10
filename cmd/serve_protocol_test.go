@@ -20,6 +20,30 @@ import (
 
 const onePixelPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg=="
 
+func makeOrientation6JPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatalf("jpeg.Encode() error = %v", err)
+	}
+	raw := encoded.Bytes()
+	exif := []byte{
+		'E', 'x', 'i', 'f', 0, 0,
+		'M', 'M', 0, 42, 0, 0, 0, 8,
+		0, 1,
+		0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0,
+		0, 0, 0, 0,
+	}
+	segmentLength := len(exif) + 2
+	withEXIF := make([]byte, 0, len(raw)+len(exif)+4)
+	withEXIF = append(withEXIF, raw[:2]...)
+	withEXIF = append(withEXIF, 0xff, 0xe1, byte(segmentLength>>8), byte(segmentLength))
+	withEXIF = append(withEXIF, exif...)
+	withEXIF = append(withEXIF, raw[2:]...)
+	return withEXIF
+}
+
 func TestNormalizeProviderModelEffort_ExplicitEffortWinsOverSuffix(t *testing.T) {
 	model, effort := normalizeProviderModelEffort("chatgpt", "gpt-5.5-medium", "xhigh")
 	if model != "gpt-5.5" || effort != "xhigh" {
@@ -138,6 +162,69 @@ func TestParseUserMessageContent_RejectsTooManyInlineImages(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("too many attachments (max %d)", maxAttachments)) {
 		t.Fatalf("parseUserMessageContent() error = %v, want attachment limit error", err)
+	}
+}
+
+func TestParseUserMessageContent_RejectsUntrustedImageDimensions(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 400, 200)), &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatalf("jpeg.Encode() error = %v", err)
+	}
+
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_image",
+		"image_url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes()),
+		"filename":  "landscape.jpg",
+		"width":     200,
+		"height":    400,
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent() error = %v", err)
+	}
+	if len(msg.Parts) != 1 || msg.Parts[0].ImageData == nil {
+		t.Fatalf("message parts = %#v, want one image", msg.Parts)
+	}
+	if got := msg.Parts[0].ImageData; got.Width != 400 || got.Height != 200 {
+		t.Fatalf("image dimensions = %dx%d, want decoded 400x200 rather than untrusted swapped values", got.Width, got.Height)
+	}
+}
+
+func TestParseUserMessageContent_PersistsEXIFOrientedImageDimensions(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	raw := makeOrientation6JPEG(t, 400, 200)
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("image.DecodeConfig() error = %v", err)
+	}
+	if cfg.Width != 400 || cfg.Height != 200 {
+		t.Fatalf("stored JPEG dimensions = %dx%d, want 400x200", cfg.Width, cfg.Height)
+	}
+
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_image",
+		"image_url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(raw),
+		"filename":  "rotated.jpg",
+		"width":     200,
+		"height":    400,
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent() error = %v", err)
+	}
+	if len(msg.Parts) != 1 || msg.Parts[0].ImageData == nil {
+		t.Fatalf("message parts = %#v, want one image", msg.Parts)
+	}
+	if got := msg.Parts[0].ImageData; got.Width != 200 || got.Height != 400 {
+		t.Fatalf("display dimensions = %dx%d, want EXIF-oriented 200x400", got.Width, got.Height)
 	}
 }
 

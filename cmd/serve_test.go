@@ -6553,7 +6553,8 @@ func TestHandleSessionMessages_OmitsCompactionMetadataWhenUncompacted(t *testing
 	}
 }
 
-func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
+func TestHandleSessionMessages_IncludesOrientationCorrectImageParts(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -6570,13 +6571,22 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	msg := session.NewMessage("sess-image", llm.Message{
-		Role: llm.RoleUser,
-		Parts: []llm.Part{
-			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
-			{Type: llm.PartText, Text: "describe this"},
+	rawImage := makeOrientation6JPEG(t, 400, 200)
+	content, err := json.Marshal([]map[string]any{
+		{
+			"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(rawImage),
+			"filename": "rotated.jpg", "width": 200, "height": 400,
 		},
-	}, -1)
+		{"type": "input_text", "text": "describe this"},
+	})
+	if err != nil {
+		t.Fatalf("marshal content: %v", err)
+	}
+	parsed, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent: %v", err)
+	}
+	msg := session.NewMessage("sess-image", parsed, -1)
 	if err := store.AddMessage(ctx, "sess-image", msg); err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
@@ -6600,6 +6610,8 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 				Text     string `json:"text"`
 				ImageURL string `json:"image_url"`
 				MimeType string `json:"mime_type"`
+				Width    int    `json:"width"`
+				Height   int    `json:"height"`
 			} `json:"parts"`
 		} `json:"messages"`
 	}
@@ -6620,11 +6632,14 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 	if m.Parts[0].Type != "image" {
 		t.Fatalf("part[0].type = %q, want image", m.Parts[0].Type)
 	}
-	if !strings.HasPrefix(m.Parts[0].ImageURL, "/images/history-") {
-		t.Fatalf("part[0].image_url = %q, want /images/history-*", m.Parts[0].ImageURL)
+	if !strings.HasPrefix(m.Parts[0].ImageURL, "/images/") {
+		t.Fatalf("part[0].image_url = %q, want /images/*", m.Parts[0].ImageURL)
 	}
-	if m.Parts[0].MimeType != "image/png" {
-		t.Fatalf("part[0].mime_type = %q, want image/png", m.Parts[0].MimeType)
+	if m.Parts[0].MimeType != "image/jpeg" {
+		t.Fatalf("part[0].mime_type = %q, want image/jpeg", m.Parts[0].MimeType)
+	}
+	if m.Parts[0].Width != 200 || m.Parts[0].Height != 400 {
+		t.Fatalf("part[0] dimensions = %dx%d, want EXIF-oriented 200x400", m.Parts[0].Width, m.Parts[0].Height)
 	}
 	if m.Parts[1].Type != "text" || m.Parts[1].Text != "describe this" {
 		t.Fatalf("part[1] = %+v, want trailing text part", m.Parts[1])
@@ -6636,8 +6651,29 @@ func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
 	if imgRR.Code != http.StatusOK {
 		t.Fatalf("image status = %d, want 200", imgRR.Code)
 	}
-	if got := imgRR.Body.String(); got != "hello" {
-		t.Fatalf("image body = %q, want %q", got, "hello")
+	if got := imgRR.Body.Bytes(); !bytes.Equal(got, rawImage) {
+		t.Fatalf("image body differs from persisted orientation-6 JPEG")
+	}
+}
+
+func TestSessionMessageImageDimensionsPrefersInlineBase64AndAppliesEXIF(t *testing.T) {
+	fallback, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(onePixelPNGDataURL, "data:image/png;base64,"))
+	if err != nil {
+		t.Fatalf("decode PNG fallback: %v", err)
+	}
+	fallbackPath := filepath.Join(t.TempDir(), "fallback.png")
+	if err := os.WriteFile(fallbackPath, fallback, 0o600); err != nil {
+		t.Fatalf("write PNG fallback: %v", err)
+	}
+	rotated := makeOrientation6JPEG(t, 400, 200)
+	part := llm.Part{
+		Type:      llm.PartImage,
+		ImagePath: filepath.Join(t.TempDir(), "untrusted-session-path.jpg"),
+		ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Base64: base64.StdEncoding.EncodeToString(rotated)},
+	}
+	width, height := sessionMessageImageDimensions(part, fallbackPath)
+	if width != 200 || height != 400 {
+		t.Fatalf("session image dimensions = %dx%d, want inline EXIF-oriented 200x400", width, height)
 	}
 }
 

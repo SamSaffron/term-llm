@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -106,6 +107,32 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 				t.Fatalf("pure lifecycle module %s accesses forbidden effect %q", name, forbidden)
 			}
 		}
+	}
+}
+
+func TestAttachmentImageSizeLimitsStayCoupled(t *testing.T) {
+	renderJS, err := StaticAsset("app-render.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := func(name, source, pattern string) string {
+		t.Helper()
+		match := regexp.MustCompile(pattern).FindStringSubmatch(source)
+		if len(match) != 2 {
+			t.Fatalf("%s limit not found", name)
+		}
+		return match[1]
+	}
+	jsWidth := capture("JavaScript width", string(renderJS), `ATTACHMENT_IMAGE_MAX_WIDTH\s*=\s*(\d+)`)
+	jsHeight := capture("JavaScript height", string(renderJS), `ATTACHMENT_IMAGE_MAX_HEIGHT\s*=\s*(\d+)`)
+	cssWidth := capture("CSS width", string(css), `(?s)\.message-attachments img\s*\{[^}]*max-width:\s*min\((\d+)px`)
+	cssHeight := capture("CSS height", string(css), `(?s)\.message-attachments img\s*\{[^}]*max-height:\s*(\d+)px`)
+	if jsWidth != cssWidth || jsHeight != cssHeight {
+		t.Fatalf("attachment image limits drifted: JavaScript=%sx%s CSS=%sx%s", jsWidth, jsHeight, cssWidth, cssHeight)
 	}
 }
 

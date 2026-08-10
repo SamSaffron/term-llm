@@ -3057,7 +3057,7 @@ async function testConvertServerMessagesRebasesHubImageURLs() {
       role: 'user',
       created_at: 1000,
       parts: [
-        { type: 'image', image_url: '/ui/images/upload.png', mime_type: 'image/png' },
+        { type: 'image', image_url: '/ui/images/upload.png', mime_type: 'image/png', width: 1200, height: 800 },
         { type: 'text', text: 'look at this' },
       ],
     },
@@ -3074,9 +3074,14 @@ async function testConvertServerMessagesRebasesHubImageURLs() {
   ]);
 
   const user = converted.find((message) => message.role === 'user');
-  const userImage = user?.attachments?.[0]?.dataURL;
+  const userAttachment = user?.attachments?.[0];
+  const userImage = userAttachment?.dataURL;
   if (userImage !== '/hub/node/alpha/images/upload.png') {
     fail(name, `user image URL = ${JSON.stringify(userImage)}`, JSON.stringify(converted));
+    return;
+  }
+  if (userAttachment?.width !== 1200 || userAttachment?.height !== 800) {
+    fail(name, 'server image dimensions were not preserved during conversion', JSON.stringify(converted));
     return;
   }
 
