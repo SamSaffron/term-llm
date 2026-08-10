@@ -101,9 +101,10 @@ Agent examples (use @agent shortcut or --agent flag):
 
 Keyboard shortcuts:
   Enter        - Send message
+  ! command    - Run directly in the session directory, then ask the model to respond
   Shift+Enter  - Insert newline
   Ctrl+/ Ctrl+H - Show help
-  Ctrl+C       - Copy selection; cancel active response/tool; press twice when idle to quit
+  Ctrl+C       - Copy selection; cancel active response/tool/shell; press twice when idle to quit
   Ctrl+K       - Clear conversation
   Ctrl+N       - New session
   Ctrl+L       - Switch model

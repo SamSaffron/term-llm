@@ -34,6 +34,52 @@ func TestMouseClickMovesCursorSingleLine(t *testing.T) {
 	}
 }
 
+func TestMouseClickMovesCursorInShellComposer(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setDirectShellComposerValue("! echo visual")
+	_ = m.View()
+
+	_, _ = m.Update(tea.MouseClickMsg{
+		X:      m.textareaLeftX + m.textareaPromptWidth + 5,
+		Y:      m.textareaTopY,
+		Button: tea.MouseLeft,
+	})
+
+	if !m.directShellComposerActive() {
+		t.Fatal("mouse click left shell mode")
+	}
+	if got := m.textarea.Value(); got != "echo visual" {
+		t.Fatalf("shell composer body = %q, want command without activation prefix", got)
+	}
+	if got := m.textarea.LineInfo().CharOffset; got != 5 {
+		t.Fatalf("char offset = %d, want 5", got)
+	}
+}
+
+func TestMouseClickMovesCursorOnWrappedShellCommand(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 12
+	m.textarea.SetWidth(12)
+	m.setDirectShellComposerValue("! abcdefghijk")
+	_ = m.View()
+
+	_, _ = m.Update(tea.MouseClickMsg{
+		X:      m.textareaLeftX + m.textareaPromptWidth + 2,
+		Y:      m.textareaTopY + 1,
+		Button: tea.MouseLeft,
+	})
+
+	if !m.directShellComposerActive() {
+		t.Fatal("wrapped click left shell mode")
+	}
+	if got := m.textarea.LineInfo().RowOffset; got != 1 {
+		t.Fatalf("row offset = %d, want 1 for wrapped shell command", got)
+	}
+	if got := m.textarea.LineInfo().CharOffset; got == 0 {
+		t.Fatal("wrapped shell click did not advance the cursor")
+	}
+}
+
 func TestMouseClickTextareaClearsImageSelection(t *testing.T) {
 	m := newTestChatModel(false)
 	m.setTextareaValue("hello world")

@@ -521,7 +521,7 @@ func (m *Model) sendQueuedBranchMessage() (tea.Model, tea.Cmd) {
 	// Preserve anything the user drafted after queuing the first message. The
 	// normal send path owns attachment expansion and stream startup, so temporarily
 	// swap in the queued attachment state and restore the newer draft afterwards.
-	draftText := m.textarea.Value()
+	draftComposer := m.captureComposerSnapshot()
 	draftFiles := m.files
 	draftImages := m.images
 	draftSelectedImage := m.selectedImage
@@ -532,7 +532,7 @@ func (m *Model) sendQueuedBranchMessage() (tea.Model, tea.Cmd) {
 	m.pasteChunks = queued.pasteChunks
 	updated, cmd := m.sendMessage(queued.content)
 	model := updated.(*Model)
-	model.setTextareaValue(draftText)
+	model.restoreComposerSnapshot(draftComposer)
 	model.files = draftFiles
 	model.images = draftImages
 	model.selectedImage = draftSelectedImage

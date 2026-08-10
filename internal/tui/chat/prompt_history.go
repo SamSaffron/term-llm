@@ -43,7 +43,7 @@ func (m *Model) handlePromptHistoryKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 
 	// Once a history entry is recalled, keep Up/Down bound to history traversal
 	// regardless of the cursor position we set for editing convenience.
-	if m.promptHistory.active && m.textarea.Value() == m.promptHistory.recalledText {
+	if m.promptHistory.active && m.directShellComposerValue() == m.promptHistory.recalledText {
 		if up {
 			return m.recallPreviousPrompt()
 		}
@@ -87,14 +87,15 @@ func (m *Model) tryMoveTextareaDown() bool {
 }
 
 func (m *Model) recallPreviousPrompt() (bool, tea.Cmd) {
-	current := m.textarea.Value()
+	current := m.directShellComposerValue()
 	if !m.promptHistory.active {
 		m.promptHistory = promptHistoryState{
-			active:      true,
-			draftText:   current,
-			draftFiles:  append([]FileAttachment(nil), m.files...),
-			draftImages: append([]ImageAttachment(nil), m.images...),
-			draftPastes: clonePasteChunks(m.pasteChunks),
+			active:         true,
+			draftText:      m.textarea.Value(),
+			draftShellMode: m.directShellComposerActive(),
+			draftFiles:     append([]FileAttachment(nil), m.files...),
+			draftImages:    append([]ImageAttachment(nil), m.images...),
+			draftPastes:    clonePasteChunks(m.pasteChunks),
 		}
 	} else if current != m.promptHistory.recalledText {
 		m.resetPromptHistory()
@@ -141,7 +142,7 @@ func (m *Model) recallNextPrompt() (bool, tea.Cmd) {
 		// consume it so it doesn't unexpectedly scroll the transcript.
 		return true, nil
 	}
-	if m.textarea.Value() != m.promptHistory.recalledText {
+	if m.directShellComposerValue() != m.promptHistory.recalledText {
 		m.resetPromptHistory()
 		return false, nil
 	}
@@ -281,6 +282,9 @@ func memoryPromptText(msg session.Message) (string, bool) {
 	if text == "" || llm.IsInternalCompactionSummaryText(text) {
 		return "", false
 	}
+	if _, ok := directShellCommandFromResult(msg.TextContent); ok {
+		return msg.TextContent, true
+	}
 	return msg.TextContent, true
 }
 
@@ -312,8 +316,12 @@ func (m *Model) applyMemoryPromptHistoryEntry(index int, text string, cursorAtEn
 }
 
 func (m *Model) applyPromptHistoryText(text string, cursorAtEnd bool) {
-	m.promptHistory.recalledText = text
-	m.textarea.SetValue(text)
+	if command, ok := directShellCommandFromResult(text); ok {
+		m.setDirectShellComposerValue(command)
+	} else {
+		m.setTextareaValue(text)
+	}
+	m.promptHistory.recalledText = m.directShellComposerValue()
 	if cursorAtEnd {
 		m.textarea.MoveToEnd()
 	} else {
@@ -331,11 +339,12 @@ func (m *Model) applyPromptHistoryText(text string, cursorAtEnd bool) {
 
 func (m *Model) restorePromptHistoryDraft(cursorAtEnd bool) {
 	draftText := m.promptHistory.draftText
+	draftShellMode := m.promptHistory.draftShellMode
 	draftFiles := append([]FileAttachment(nil), m.promptHistory.draftFiles...)
 	draftImages := append([]ImageAttachment(nil), m.promptHistory.draftImages...)
 	draftPastes := clonePasteChunks(m.promptHistory.draftPastes)
 	m.resetPromptHistory()
-	m.textarea.SetValue(draftText)
+	m.restoreComposerSnapshot(composerSnapshot{body: draftText, shellMode: draftShellMode})
 	if cursorAtEnd {
 		m.textarea.MoveToEnd()
 	} else {
@@ -349,7 +358,7 @@ func (m *Model) restorePromptHistoryDraft(cursorAtEnd bool) {
 }
 
 func (m *Model) resetPromptHistoryIfEdited() {
-	if m.promptHistory.active && m.textarea.Value() != m.promptHistory.recalledText {
+	if m.promptHistory.active && m.directShellComposerValue() != m.promptHistory.recalledText {
 		m.resetPromptHistory()
 	}
 }

@@ -349,7 +349,7 @@ func (m *Model) mentionQueryCurrent(root string, generation, request uint64, tok
 }
 
 func (m *Model) updateMentionQuery() tea.Cmd {
-	if m == nil || !m.mentionEnabled || strings.HasPrefix(m.textarea.Value(), "/") || m.dialog.IsOpen() {
+	if m == nil || !m.mentionEnabled || m.directShellComposerActive() || strings.HasPrefix(m.textarea.Value(), "/") || m.dialog.IsOpen() {
 		m.hideMentionPopup()
 		return nil
 	}

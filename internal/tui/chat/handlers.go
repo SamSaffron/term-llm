@@ -332,6 +332,13 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 		cancelled = true
 	}
 
+	if m.directShellRun != nil && !m.directShellRun.cancelRequested {
+		m.directShellRun.cancelRequested = true
+		m.directShellRun.cancel()
+		m.bumpContentVersion()
+		cancelled = true
+	}
+
 	if (m.streaming || m.streamCancelFunc != nil) && !m.isStreamCancelRequested() {
 		m.phase = "Stopping..."
 		if m.streamCancelFunc != nil {
@@ -362,7 +369,7 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 		m.dialog.Close()
 	}
 
-	hadActiveStream := m.streaming || m.streamCancelFunc != nil
+	hadActiveStream := m.streaming || m.streamCancelFunc != nil || m.directShellRun != nil
 	_, _ = m.cancelActiveForInterrupt()
 	m.setShellTerminalHandoff(false)
 	if m.program != nil {
@@ -384,7 +391,7 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 	if cancelled, cancelCmd := m.cancelActiveForInterrupt(); cancelled {
 		m.ctrlCExitArmedUntil = time.Time{}
-		_, footerCmd := m.showFooterWarning("Interrupted current response/tool/skill.")
+		_, footerCmd := m.showFooterWarning("Interrupted current response/tool/shell/skill.")
 		return m, tea.Batch(cancelCmd, footerCmd, m.terminalTitleCmd())
 	}
 
@@ -864,11 +871,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Shell-style prompt history: Up/Down first move within the composer, then
-	// recall cross-session persisted user prompts at the visual boundaries. This
-	// runs before viewport scrolling so the streaming interjection composer gets
-	// the same history behavior as the normal composer.
-	if handled, cmd := m.handlePromptHistoryKey(msg); handled {
-		return m, cmd
+	// recall cross-session persisted user prompts at the visual boundaries. A
+	// running direct command owns the composer, so history stays inert until it
+	// finishes.
+	if m.directShellRun == nil {
+		if handled, cmd := m.handlePromptHistoryKey(msg); handled {
+			return m, cmd
+		}
 	}
 
 	// Ctrl+Y copies the active rendered selection, or the latest assistant
@@ -882,8 +891,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.cmdCopy(nil)
 	}
 
-	// Handle cancel during streaming (takes priority over clearing selection)
+	// Handle cancel during streaming or a direct shell command (takes priority over clearing selection)
 	if key.Matches(msg, m.keyMap.Cancel) {
+		if m.directShellRun != nil {
+			return m.cancelDirectShell()
+		}
 		if m.branchOperationCancel != nil {
 			m.branchOperationCancel()
 			m.branchOperationCancel = nil
@@ -914,8 +926,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.selection = Selection{}
 			return m, nil
 		}
-		// Clear input if not empty
-		if m.textarea.Value() != "" {
+		// Leave shell mode or clear normal input.
+		if m.directShellComposerActive() || m.textarea.Value() != "" {
 			m.setTextareaValue("")
 			m.pasteChunks = nil
 			return m, nil
@@ -1002,7 +1014,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Arrow keys/j/k scroll viewport when:
 		// - Textarea is empty (normal vim mode), OR
 		// - Streaming is active (always allow scrolling during stream)
-		if m.textarea.Value() == "" || m.streaming {
+		if (!m.directShellComposerActive() && m.textarea.Value() == "") || m.streaming {
 			// Scroll faster during streaming when content is out of view
 			scrollAmount := 1
 			if m.streaming && !m.viewport.AtBottom() {
@@ -1018,6 +1030,18 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+	}
+
+	if m.directShellRun != nil {
+		// The managed command owns the composer until completion. Scrolling and
+		// cancellation were handled above; all other keys wait for the result.
+		return m, nil
+	}
+
+	if m.directShellComposerActive() && m.textarea.Value() == "" &&
+		key.Matches(msg, m.textarea.KeyMap.DeleteCharacterBackward) {
+		m.directShellEligible = false
+		return m, nil
 	}
 
 	// Newline insertion (ctrl+j, alt+enter, shift+enter) — works in both the
@@ -1050,6 +1074,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.streaming {
 		if key.Matches(msg, m.keyMap.Send) {
 			raw := strings.TrimSpace(m.textarea.Value())
+			if m.directShellComposerActive() {
+				return m.showFooterWarning("Wait for the current response to finish before running a shell command.")
+			}
 			if strings.HasSuffix(raw, "\\") {
 				m.setTextareaValue(strings.TrimSuffix(raw, "\\") + "\n")
 				return m, nil
@@ -1110,10 +1137,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		m.updateTextareaHeight()
 		newVal := m.textarea.Value()
+		m.updateDirectShellEligibilityAfterKey(old, newVal)
+		newVal = m.textarea.Value()
 		newCursor := textareaCursorByteOffset(newVal, m.textarea.Line(), m.textarea.Column())
 		if newVal != old {
 			m.resetPromptHistoryIfEdited()
-			if strings.HasPrefix(newVal, "/") {
+			if !m.directShellComposerActive() && strings.HasPrefix(newVal, "/") {
 				if !m.completions.IsVisible() {
 					m.completions.Show()
 				}
@@ -1169,6 +1198,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Handle clear
 	if key.Matches(msg, m.keyMap.Clear) {
 		return m.cmdClear()
+	}
+
+	// Shell history completion mirrors Claude Code: type a partial command after
+	// ! and press Tab to complete it from earlier shell-mode turns.
+	if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) && m.directShellComposerActive() {
+		if completion, ok := m.directShellHistoryCompletion(m.textarea.Value()); ok {
+			m.setDirectShellComposerBody(completion)
+			m.textarea.MoveToEnd()
+		}
+		return m, nil
 	}
 
 	// Handle tab completion for /mcp commands
@@ -1243,12 +1282,20 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Handle send
 	if key.Matches(msg, m.keyMap.Send) {
-		content := strings.TrimSpace(m.textarea.Value())
+		rawInput := m.textarea.Value()
+		content := strings.TrimSpace(rawInput)
 		if m.branchFocusCapture {
 			if content == "" {
 				return m.showFooterWarning("Describe what the new path should retain, or press Esc to cancel.")
 			}
 			return m.startConversationBranchWithNotes(content)
+		}
+
+		if m.directShellRun != nil {
+			return m.showFooterWarning("Wait for the shell command to finish or press Esc to cancel it.")
+		}
+		if m.directShellComposerActive() {
+			return m.startDirectShell(rawInput)
 		}
 
 		// Check for backslash continuation
@@ -1276,7 +1323,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle "/" at start of empty input to show completions
-	if msg.String() == "/" && m.textarea.Value() == "" {
+	if !m.directShellComposerActive() && msg.String() == "/" && m.textarea.Value() == "" {
 		m.setTextareaValue("/")
 		m.completions.Show()
 		return m, nil
@@ -1312,13 +1359,15 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Update textarea for other keys (skip during streaming - no text input needed)
-	if !m.streaming {
+	// Update textarea for other keys when no response or direct command owns it.
+	if !m.streaming && m.directShellRun == nil {
 		old := m.textarea.Value()
 		oldCursor := textareaCursorByteOffset(old, m.textarea.Line(), m.textarea.Column())
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		newVal := m.textarea.Value()
+		m.updateDirectShellEligibilityAfterKey(old, newVal)
+		newVal = m.textarea.Value()
 		newCursor := textareaCursorByteOffset(newVal, m.textarea.Line(), m.textarea.Column())
 		// Clear selection when user starts typing
 		if m.selection.Active && newVal != old {
@@ -1330,7 +1379,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.updateTextareaHeight()
 		// Show argument completions for commands that support them
 		// (e.g., /handover @<partial> triggers agent name completions)
-		if newVal != old && strings.HasPrefix(newVal, "/") && !m.completions.IsVisible() {
+		if newVal != old && !m.directShellComposerActive() && strings.HasPrefix(newVal, "/") && !m.completions.IsVisible() {
 			m.updateCompletions()
 		}
 		if newVal != old || newCursor != oldCursor {
@@ -1402,7 +1451,14 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	old := m.textarea.Value()
 	text := msg.Content
+	if !m.directShellComposerActive() && old == "" {
+		if body, active := directShellComposerBody(text); active {
+			m.directShellEligible = true
+			text = body
+		}
+	}
 	if shouldCollapsePaste(text) {
 		m.pasteSeq++
 		id := m.pasteSeq
@@ -1413,15 +1469,20 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		text = pastePlaceholder(id, text)
 	}
 
-	old := m.textarea.Value()
 	m.textarea.InsertString(text)
-	if m.selection.Active && m.textarea.Value() != old {
+	newValue := m.textarea.Value()
+	// Match Claude Code: pasting a leading ! into an empty composer enters shell
+	// mode just like typing it. Existing drafts cannot be converted into an
+	// executable command by inserting a bang at the beginning.
+	m.updateDirectShellEligibilityAfterKey(old, newValue)
+	newValue = m.textarea.Value()
+	if m.selection.Active && newValue != old {
 		m.selection = Selection{}
 	}
 	if newVal := m.textarea.Value(); newVal != old {
 		m.reflowTextarea()
 		newVal = m.textarea.Value()
-		if strings.HasPrefix(newVal, "/") {
+		if !m.directShellComposerActive() && strings.HasPrefix(newVal, "/") {
 			if !m.completions.IsVisible() {
 				m.completions.Show()
 			}

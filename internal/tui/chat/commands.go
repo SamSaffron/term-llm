@@ -719,10 +719,10 @@ func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) showHelpShortcut() (tea.Model, tea.Cmd) {
-	draft := m.textarea.Value()
+	draft := m.captureComposerSnapshot()
 	result, cmd := m.showHelpModal()
 	if rm, ok := result.(*Model); ok {
-		rm.setTextareaValue(draft)
+		rm.restoreComposerSnapshot(draft)
 		return rm, cmd
 	}
 	return result, cmd
@@ -931,8 +931,8 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 			title: "Global",
 			rows: [][2]string{
 				{"Ctrl+/ or Ctrl+H", "Show help"},
-				{"Ctrl+C", "Copy selection; cancel active response/tool; press twice when idle to quit"},
-				{"Esc", "Cancel streaming / close modal / clear selection or input"},
+				{"Ctrl+C", "Copy selection; cancel active response/tool/shell; press twice when idle to quit"},
+				{"Esc", "Cancel streaming or a running ! command / close modal / clear selection or input"},
 				{"Ctrl+P", "Command palette"},
 				{"Ctrl+K", "Clear conversation"},
 				{"Ctrl+N", "New session"},
@@ -949,6 +949,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 			title: "Composer",
 			rows: [][2]string{
 				{"Enter", "Send message; while streaming, queue interjection"},
+				{"! command", "Run directly in the session directory, then ask the model to respond"},
 				{"Ctrl+J / Alt+Enter / Shift+Enter", "Insert newline"},
 				{"\\ + Enter", "Turn trailing backslash into a newline"},
 				{"/", "Open slash-command completions from an empty composer"},
@@ -1603,7 +1604,7 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	draft := m.textarea.Value()
+	draft := m.captureComposerSnapshot()
 	if m.streaming {
 		resolved := m.resolveEffortSwitch(provider, model, []string{next})
 		if !resolved.ok {
@@ -1611,13 +1612,13 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 		}
 		m.queuePendingStreamModelSwitch(provider, resolved.targetModel)
 		_, cmd := m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply at the next model turn.", resolved.label))
-		m.setTextareaValue(draft)
+		m.restoreComposerSnapshot(draft)
 		return m, cmd
 	}
 
 	result, cmd := m.switchEffort(provider, model, []string{next}, true)
 	if rm, ok := result.(*Model); ok {
-		rm.setTextareaValue(draft)
+		rm.restoreComposerSnapshot(draft)
 		return rm, cmd
 	}
 	return result, cmd
@@ -3303,7 +3304,7 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 	// explicit slash commands. A queued in-stream effort switch is applied
 	// asynchronously, so preserve any draft the user typed while waiting for the
 	// current response to finish.
-	draft := m.textarea.Value()
+	draft := m.captureComposerSnapshot()
 	if m.config == nil {
 		m.config = &config.Config{}
 	}
@@ -3313,7 +3314,7 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 			m.engine.QueueInterjection(entry)
 		}
 	}
-	m.setTextareaValue(draft)
+	m.restoreComposerSnapshot(draft)
 	return cmd
 }
 

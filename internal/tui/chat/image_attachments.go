@@ -78,7 +78,7 @@ func (m *Model) handleImageAttachmentKeys(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return false, nil
 	}
 	if m.selectedImage < 0 {
-		if m.textarea.Value() == "" && msg.String() == "up" {
+		if !m.directShellComposerActive() && m.textarea.Value() == "" && msg.String() == "up" {
 			return m.selectFirstImageAttachment(), nil
 		}
 		return false, nil

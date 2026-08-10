@@ -63,8 +63,9 @@ See [Skills](/guides/skills/) for the full guide on creating, sharing, and exten
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
+| `! command` | Run a shell command directly in the session directory; stream output, then ask the model to respond |
 | `Ctrl+J` or `Alt+Enter` | Insert newline |
-| `Ctrl+C` | Quit |
+| `Ctrl+C` | Copy selection; cancel active response/tool/shell; press twice when idle to quit |
 | `Ctrl+K` | Clear conversation |
 | `Ctrl+S` | Toggle web search |
 | `Ctrl+P` | Command palette |
@@ -73,9 +74,13 @@ See [Skills](/guides/skills/) for the full guide on creating, sharing, and exten
 | `Ctrl+N` | New session |
 | `Ctrl+F` | Attach file |
 | `Ctrl+O` | Conversation inspector |
-| `Esc` | Cancel streaming |
+| `Esc` | Cancel streaming or a running `!` shell command |
 | `Left click` | Move cursor in chat input |
 | `Shift+drag` | Select/copy chat output text in terminal |
+
+Type `!` as the first composer character to enter shell mode, for example `! git status`. The remainder runs through your configured `$SHELL` in the session's effective directory (including a bound worktree) without tool approval, because it is an explicit direct user action. Combined stdout/stderr streams live; `Esc` or `Ctrl+C` cancels the process. term-llm keeps up to 64 KiB of output, records the command, directory, output, and exit status in the session, and automatically starts a model response even when the command fails. Pasting text that starts with `!` into an empty composer also enters shell mode. Type a partial earlier `!` command and press `Tab` to complete it from the current session; `Up`/`Down` history recalls shell commands without their captured output.
+
+`/shell` remains available when you want an interactive terminal handoff rather than a captured command turn.
 
 ### TUI attachments
 
