@@ -10,6 +10,121 @@ async function openUI(page) {
   return errors;
 }
 
+test('user image measurement propagates and reserves landscape and portrait geometry during delayed loads', async ({ page }) => {
+  const fixtures = {
+    landscape: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAyAAAAGQAQAAAAB+XjmZAAAAPklEQVR42u3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4NndAAAYtfwy0AAAAASUVORK5CYII=', 'base64'),
+    portrait: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAZAAAAMgAQAAAAAlkQk9AAAAPklEQVR42u3BgQAAAADDoPlTH+ECVQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMA3n2AAARZ+looAAAAASUVORK5CYII=', 'base64'),
+  };
+  await page.route('**/reserved-*.png', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.includes('missing')) {
+      await route.fulfill({ status: 404, contentType: 'image/png', body: 'missing' });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    await route.fulfill({
+      status: 200,
+      contentType: 'image/png',
+      body: pathname.includes('portrait') ? fixtures.portrait : fixtures.landscape,
+    });
+  });
+  const errors = await openUI(page);
+
+  const before = await page.evaluate(async ({ landscapeDataURL, portraitDataURL }) => {
+    const app = window.TermLLMApp;
+    const attachments = [
+      { id: 'pw-landscape', name: 'landscape.png', type: 'image/png', previewURL: '/reserved-preview-landscape.png', dataURL: landscapeDataURL },
+      { id: 'pw-portrait', name: 'portrait.png', type: 'image/png', previewURL: '/reserved-preview-portrait.png', dataURL: portraitDataURL },
+      { id: 'pw-missing', name: 'missing.png', type: 'image/png', previewURL: '/reserved-missing.png', dataURL: landscapeDataURL },
+    ];
+    const [landscapeParts, portraitParts, missingParts] = await Promise.all(
+      attachments.map((attachment) => app.buildAttachmentInputParts([attachment]))
+    );
+
+    const fixture = document.createElement('div');
+    fixture.id = 'pw-image-geometry';
+    fixture.style.cssText = 'position:fixed;left:-2000px;top:0;width:1000px';
+    document.body.appendChild(fixture);
+
+    const renderTransition = (attachment, imagePart, index) => {
+      const optimistic = app.createMessageNode({
+        id: `pw-optimistic-${index}`, role: 'user', content: '', created: Date.now(),
+        attachments: [app.cloneAttachmentForMessage(attachment)],
+      });
+      fixture.appendChild(optimistic);
+      const optimisticRect = optimistic.querySelector('img').getBoundingClientRect();
+      const [durableMessage] = app.convertServerMessages([{
+        id: index + 1, sequence: index + 1, role: 'user', created_at: Date.now(),
+        parts: [{
+          type: 'image', image_url: `/reserved-durable-${index === 0 ? 'landscape' : 'portrait'}.png`, mime_type: 'image/png',
+          width: imagePart.width, height: imagePart.height,
+        }],
+      }]);
+      const durable = app.createMessageNode(durableMessage);
+      durable.dataset.kind = 'durable';
+      durable.dataset.orientation = index === 0 ? 'landscape' : 'portrait';
+      optimistic.replaceWith(durable);
+      const durableImage = durable.querySelector('img');
+      const durableRect = durableImage.getBoundingClientRect();
+      return {
+        part: { width: imagePart.width, height: imagePart.height },
+        optimistic: { width: optimisticRect.width, height: optimisticRect.height },
+        durable: { width: durableRect.width, height: durableRect.height },
+        durableComplete: durableImage.complete,
+      };
+    };
+
+    const landscape = renderTransition(attachments[0], landscapeParts[0], 0);
+    const portrait = renderTransition(attachments[1], portraitParts[0], 1);
+    const unavailableNode = app.createMessageNode({
+      id: 'pw-unavailable', role: 'user', content: '', created: Date.now(),
+      attachments: [app.cloneAttachmentForMessage(attachments[2])],
+    });
+    fixture.appendChild(unavailableNode);
+    const unavailableImage = unavailableNode.querySelector('img');
+    return {
+      landscape,
+      portrait,
+      unavailable: {
+        partHasWidth: Object.prototype.hasOwnProperty.call(missingParts[0], 'width'),
+        partHasHeight: Object.prototype.hasOwnProperty.call(missingParts[0], 'height'),
+        widthAttribute: unavailableImage.getAttribute('width'),
+        heightAttribute: unavailableImage.getAttribute('height'),
+      },
+    };
+  }, {
+    landscapeDataURL: `data:image/png;base64,${fixtures.landscape.toString('base64')}`,
+    portraitDataURL: `data:image/png;base64,${fixtures.portrait.toString('base64')}`,
+  });
+
+  expect(before.landscape.part).toEqual({ width: 800, height: 400 });
+  expect(before.landscape.optimistic.width).toBeCloseTo(360, 1);
+  expect(before.landscape.optimistic.height).toBeCloseTo(180, 1);
+  expect(before.landscape.durable.width).toBeCloseTo(before.landscape.optimistic.width, 1);
+  expect(before.landscape.durable.height).toBeCloseTo(before.landscape.optimistic.height, 1);
+  expect(before.landscape.durableComplete).toBe(false);
+  expect(before.portrait.part).toEqual({ width: 400, height: 800 });
+  expect(before.portrait.optimistic.width).toBeCloseTo(135, 1);
+  expect(before.portrait.optimistic.height).toBeCloseTo(270, 1);
+  expect(before.portrait.durable.width).toBeCloseTo(before.portrait.optimistic.width, 1);
+  expect(before.portrait.durable.height).toBeCloseTo(before.portrait.optimistic.height, 1);
+  expect(before.portrait.durableComplete).toBe(false);
+  expect(before.unavailable).toEqual({ partHasWidth: false, partHasHeight: false, widthAttribute: null, heightAttribute: null });
+
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('#pw-image-geometry [data-kind="durable"] img')).every((image) => image.complete));
+  const after = await page.evaluate(() => Object.fromEntries(
+    Array.from(document.querySelectorAll('#pw-image-geometry [data-kind="durable"]')).map((node) => {
+      const rect = node.querySelector('img').getBoundingClientRect();
+      return [node.dataset.orientation, { width: rect.width, height: rect.height }];
+    })
+  ));
+  expect(after.landscape.width).toBeCloseTo(before.landscape.durable.width, 1);
+  expect(after.landscape.height).toBeCloseTo(before.landscape.durable.height, 1);
+  expect(after.portrait.width).toBeCloseTo(before.portrait.durable.width, 1);
+  expect(after.portrait.height).toBeCloseTo(before.portrait.durable.height, 1);
+  expect(errors).toEqual([]);
+});
+
 test('scroll gaps remain bounded and tail materializes', async ({ page }) => {
   const errors = await openUI(page);
   const state = await page.evaluate(async () => {

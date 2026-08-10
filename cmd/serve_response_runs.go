@@ -2166,10 +2166,15 @@ func interjectionAttachmentsForEvent(msg llm.Message) []map[string]any {
 		if part.ImageData != nil && part.ImageData.MediaType != "" {
 			mediaType = part.ImageData.MediaType
 		}
-		out = append(out, map[string]any{
+		attachment := map[string]any{
 			"name": fmt.Sprintf("image %d", imageCount),
 			"type": mediaType,
-		})
+		}
+		if part.ImageData != nil && part.ImageData.Width > 0 && part.ImageData.Height > 0 {
+			attachment["width"] = part.ImageData.Width
+			attachment["height"] = part.ImageData.Height
+		}
+		out = append(out, attachment)
 	}
 	return out
 }

@@ -1126,7 +1126,12 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "before"}); err != nil {
 		t.Fatalf("appendTextDeltaSegmentEvent before: %v", err)
 	}
-	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventInterjection, Text: "check X", InterjectionID: "client-check-x"}); err != nil {
+	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{
+		Type: llm.EventInterjection, Text: "check X", InterjectionID: "client-check-x",
+		Message: llm.Message{Parts: []llm.Part{{
+			Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/jpeg", Width: 200, Height: 400},
+		}}},
+	}); err != nil {
 		t.Fatalf("append interjection: %v", err)
 	}
 	if err := server.appendResponseRunEvent(nil, run, streamState, llm.Event{Type: llm.EventTextDelta, Text: "after"}); err != nil {
@@ -1158,6 +1163,10 @@ func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
 	}
 	if got := messages[1]["interruptState"]; got != "interject" {
 		t.Fatalf("messages[1].interruptState = %v, want interject", got)
+	}
+	interjectionAttachments, ok := messages[1]["attachments"].([]map[string]any)
+	if !ok || len(interjectionAttachments) != 1 || interjectionAttachments[0]["width"] != 200 || interjectionAttachments[0]["height"] != 400 {
+		t.Fatalf("messages[1].attachments = %#v, want orientation-correct 200x400 metadata", messages[1]["attachments"])
 	}
 	if got := messages[2]["content"]; got != "after" {
 		t.Fatalf("messages[2].content = %v, want after", got)

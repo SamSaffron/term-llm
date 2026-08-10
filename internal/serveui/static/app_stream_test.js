@@ -689,6 +689,7 @@ function createHarness(options = {}) {
     URL: urlAPI,
     URLSearchParams,
     Blob,
+    Image: options.Image,
     CSS: options.CSS,
     performance: { now: () => Date.now() },
     navigator: navigatorObj,
@@ -702,6 +703,7 @@ function createHarness(options = {}) {
   windowObj.navigator = navigatorObj;
   windowObj.localStorage = localStorage;
   windowObj.URL = urlAPI;
+  windowObj.Image = options.Image;
   windowObj.CSS = options.CSS;
   windowObj.fetch = async function fetch(url, requestOptions = {}) {
     fetchCalls.push({
@@ -5487,10 +5489,17 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   const harness = createHarness();
   const { app, state, cleanup } = harness;
 
+  const localAttachment = {
+    id: 'att_interject', name: 'rotated.jpg', type: 'image/jpeg', previewURL: 'blob:rotated-preview',
+    file: { name: 'rotated.jpg' },
+  };
   const session = {
     id: 'session_interject',
     title: 'Interject test',
-    messages: [{ id: 'msg_pending', clientMessageId: 'msg_pending', role: 'user', content: 'please also check X', created: 1, interruptState: 'pending_interject' }],
+    messages: [{
+      id: 'msg_pending', clientMessageId: 'msg_pending', role: 'user', content: 'please also check X', created: 1,
+      interruptState: 'pending_interject', attachments: [localAttachment],
+    }],
     lastResponseId: null,
     activeResponseId: 'resp_int',
     lastSequenceNumber: 0,
@@ -5500,10 +5509,10 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   state.activeSessionId = session.id;
 
   state.pendingInterjections = [
-    { sessionId: session.id, prompt: 'please also check X', messageId: 'msg_pending', action: 'interject' },
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'msg_pending', action: 'interject', attachments: [localAttachment] },
   ];
   state.pendingInterruptCommits = [
-    { sessionId: session.id, prompt: 'please also check X', messageId: 'msg_pending' },
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'msg_pending', attachments: [localAttachment] },
   ];
 
   const streamState = app.createResponseStreamState(session);
@@ -5518,6 +5527,7 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
     response_id: 'resp_int',
     client_message_id: 'msg_pending',
     text: 'please also check X',
+    attachments: [{ name: 'image 1', type: 'image/jpeg', width: 200, height: 400 }],
   });
 
   const userMessages = projectedMessages(session).filter((m) => m.role === 'user');
@@ -5533,6 +5543,17 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   }
   if (userMessages[0].interruptState !== 'interject') {
     fail(name, `interruptState = ${userMessages[0].interruptState}, want "interject"`);
+    await cleanup();
+    return;
+  }
+  const committedAttachment = userMessages[0].attachments?.[0];
+  if (committedAttachment?.previewURL !== 'blob:rotated-preview' || !committedAttachment?.file) {
+    fail(name, 'URL-less committed metadata replaced the local preview attachment', JSON.stringify(committedAttachment));
+    await cleanup();
+    return;
+  }
+  if (committedAttachment.width !== 200 || committedAttachment.height !== 400) {
+    fail(name, 'committed dimensions were not merged into the local preview attachment', JSON.stringify(committedAttachment));
     await cleanup();
     return;
   }
@@ -6861,8 +6882,26 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
     }
   }
 
+  class MockImage {
+    constructor() {
+      this.onload = null;
+      this.onerror = null;
+      this.naturalWidth = 0;
+      this.naturalHeight = 0;
+    }
+
+    set src(_value) {
+      setTimeout(() => {
+        this.naturalWidth = 800;
+        this.naturalHeight = 400;
+        if (this.onload) this.onload();
+      }, 0);
+    }
+  }
+
   const harness = createHarness({
     FileReader: MockFileReader,
+    Image: MockImage,
     onCreateMessageNode(message) {
       if (message?.role !== 'user') return;
       const previewURL = message?.attachments?.[0]?.previewURL || '';
@@ -6961,6 +7000,11 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
     await cleanup();
     return;
   }
+  if (storedAttachment.width !== 800 || storedAttachment.height !== 400) {
+    fail(name, 'optimistic attachment should retain intrinsic image dimensions', JSON.stringify(storedAttachment));
+    await cleanup();
+    return;
+  }
 
   const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (!postCall || !postCall.body) {
@@ -6985,7 +7029,46 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
     await cleanup();
     return;
   }
+  if (imagePart.width !== 800 || imagePart.height !== 400) {
+    fail(name, 'request body should propagate intrinsic image dimensions', JSON.stringify(imagePart));
+    await cleanup();
+    return;
+  }
 
+  await cleanup();
+  pass(name);
+}
+
+async function testUnavailableImageDimensionsDoNotBlockAttachmentSend() {
+  const name = 'unavailable image dimensions are omitted without blocking attachment send';
+  class MockFileReader {
+    readAsDataURL(file) {
+      this.result = file.mockDataURL;
+      setTimeout(() => this.onload?.(), 0);
+    }
+  }
+  class FailingImage {
+    set src(_value) {
+      setTimeout(() => this.onerror?.(new Error('decode failed')), 0);
+    }
+  }
+  const harness = createHarness({ FileReader: MockFileReader, Image: FailingImage });
+  const { app, cleanup } = harness;
+  const parts = await app.buildAttachmentInputParts([{
+    name: 'unknown.png', type: 'image/png', previewURL: 'blob:unknown.png',
+    file: { name: 'unknown.png', mockDataURL: 'data:image/png;base64,bm90LWEtcG5n' },
+  }]);
+  const imagePart = parts[0];
+  if (!imagePart || imagePart.type !== 'input_image') {
+    fail(name, 'image attachment was not materialized', JSON.stringify(parts));
+    await cleanup();
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(imagePart, 'width') || Object.prototype.hasOwnProperty.call(imagePart, 'height')) {
+    fail(name, 'unavailable dimensions should be omitted', JSON.stringify(imagePart));
+    await cleanup();
+    return;
+  }
   await cleanup();
   pass(name);
 }
@@ -8372,6 +8455,7 @@ const runAppStreamTest = async (testCase) => {
   await runAppStreamTest(testSendMessageConsumesPostStreamWhenAvailable);
   await runAppStreamTest(testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker);
   await runAppStreamTest(testSendMessageLazilyMaterializesAttachmentDataURLs);
+  await runAppStreamTest(testUnavailableImageDimensionsDoNotBlockAttachmentSend);
   await runAppStreamTest(testSendMessageKeepsComposerWhenAttachmentMaterializationFails);
   await runAppStreamTest(testWebSlashCommandsInvokeExistingControls);
   await runAppStreamTest(testUndoRedoCommandsUseOptimisticTranscriptAndRestoreComposer);

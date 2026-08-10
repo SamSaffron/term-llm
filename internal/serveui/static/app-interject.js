@@ -5,7 +5,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, state, elements, INTERJECTION_PHASE, saveSessions, persistAndRefreshShell, conversationDOMFor,
-  cloneAttachmentForMessage
+  cloneAttachmentForMessage, getAttachmentImageDimensions
 } = app;
 const {
   requestHeaders, normalizeError, isSessionVisible, sendMessage
@@ -125,6 +125,19 @@ const setInterjectionPhase = (_session, messageId, phase) => {
   }
 };
 
+const mergeCommittedInterjectionAttachments = (localAttachments, committedAttachments) => {
+  const local = Array.isArray(localAttachments) ? localAttachments : [];
+  const committed = Array.isArray(committedAttachments) ? committedAttachments : [];
+  return Array.from({ length: Math.max(local.length, committed.length) }, (_, index) => {
+    if (!local[index]) return cloneAttachmentForMessage(committed[index]);
+    const attachment = cloneAttachmentForMessage(local[index]), metadata = committed[index];
+    const dimensions = getAttachmentImageDimensions(metadata);
+    if (dimensions) Object.assign(attachment, dimensions);
+    for (const key of ['previewURL', 'dataURL']) if (metadata?.[key]) attachment[key] = String(metadata[key]);
+    return attachment;
+  });
+};
+
 const materializeCommittedInterjection = (session, messageId, committedMessage = null) => {
   const id = String(messageId || '').trim();
   if (!session || !id) return null;
@@ -133,7 +146,7 @@ const materializeCommittedInterjection = (session, messageId, committedMessage =
   if (existing) {
     existing.interruptState = 'interject';
     if (Array.isArray(committedMessage?.attachments) && committedMessage.attachments.length > 0) {
-      existing.attachments = committedMessage.attachments.map(cloneAttachmentForMessage);
+      existing.attachments = mergeCommittedInterjectionAttachments(existing.attachments, committedMessage.attachments);
     }
     return existing;
   }
@@ -149,12 +162,9 @@ const materializeCommittedInterjection = (session, messageId, committedMessage =
     created: Number(committedMessage?.created) || Date.now(),
     interruptState: 'interject'
   };
-  const attachments = Array.isArray(committedMessage?.attachments) && committedMessage.attachments.length > 0
-    ? committedMessage.attachments
-    : pending?.attachments;
-  if (Array.isArray(attachments) && attachments.length > 0) {
-    message.attachments = attachments.map(cloneAttachmentForMessage);
-  }
+  const committedAttachments = Array.isArray(committedMessage?.attachments) ? committedMessage.attachments : [], localAttachments = Array.isArray(pending?.attachments) ? pending.attachments : [];
+  const attachments = mergeCommittedInterjectionAttachments(localAttachments, committedAttachments);
+  if (attachments.length > 0) message.attachments = attachments;
   return app.trackPendingIntent?.(session, message) || message;
 };
 

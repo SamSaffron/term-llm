@@ -14,6 +14,31 @@ const refreshSendButtonState = () => {
 
 const getAttachmentPreviewURL = (att) => String(att?.previewURL || att?.dataURL || '');
 
+const getAttachmentImageDimensions = (att) => {
+  const width = Number(att?.width), height = Number(att?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width: Math.round(width), height: Math.round(height) };
+};
+const setAttachmentImageDimensions = (att, width, height) => {
+  const dimensions = getAttachmentImageDimensions({ width, height }); if (att && dimensions) Object.assign(att, dimensions); return dimensions;
+};
+
+const imageDimensionLoads = new WeakMap();
+const loadAttachmentImageDimensions = (att) => {
+  const existing = getAttachmentImageDimensions(att);
+  if (existing || !att || typeof att !== 'object' || !String(att.type || '').startsWith('image/')) return Promise.resolve(existing);
+  if (imageDimensionLoads.has(att)) return imageDimensionLoads.get(att);
+  const previewURL = getAttachmentPreviewURL(att), ImageCtor = window.Image || globalThis.Image;
+  if (!previewURL || typeof ImageCtor !== 'function') return Promise.resolve(null);
+  const load = new Promise((resolve) => {
+    const image = new ImageCtor();
+    image.onload = () => resolve(setAttachmentImageDimensions(att, image.naturalWidth, image.naturalHeight));
+    image.onerror = () => resolve(null); image.src = previewURL;
+  });
+  imageDimensionLoads.set(att, load);
+  return load.finally(() => imageDimensionLoads.delete(att));
+};
+
 const createAttachmentPreviewURL = (file) => {
   const urlAPI = window.URL || globalThis.URL;
   if (!urlAPI || typeof urlAPI.createObjectURL !== 'function') return '';
@@ -119,12 +144,14 @@ const materializeAttachmentDataURL = async (att, signal, options = {}) => {
 };
 
 const buildAttachmentInputParts = async (attachments, signal, options = {}) => {
-  const materialized = await Promise.all((attachments || []).map(att => materializeAttachmentDataURL(att, signal, options)));
-  return materialized.filter(Boolean).map(att => (
-    att.type.startsWith('image/')
-      ? { type: 'input_image', image_url: att.dataURL, filename: att.name }
-      : { type: 'input_file', file_data: att.dataURL, filename: att.name }
-  ));
+  const materialized = await Promise.all((attachments || []).map(async (att) => {
+    const [data] = await Promise.all([materializeAttachmentDataURL(att, signal, options), loadAttachmentImageDimensions(att)]);
+    return data ? { att, data } : null;
+  }));
+  return materialized.filter(Boolean).map(({ att, data }) => {
+    if (!data.type.startsWith('image/')) return { type: 'input_file', file_data: data.dataURL, filename: data.name };
+    return { type: 'input_image', image_url: data.dataURL, filename: data.name, ...(getAttachmentImageDimensions(att) || {}) };
+  });
 };
 
 const cloneAttachmentForMessage = (att) => {
@@ -136,6 +163,8 @@ const cloneAttachmentForMessage = (att) => {
   if (Number.isFinite(Number(att?.size))) {
     cloned.size = Number(att.size);
   }
+  const dimensions = getAttachmentImageDimensions(att);
+  if (dimensions) Object.assign(cloned, dimensions);
   const previewURL = String(att?.previewURL || '');
   if (previewURL) {
     cloned.previewURL = previewURL;
@@ -209,20 +238,23 @@ const handleFiles = (fileList) => {
       alert(`${file.name} exceeds the 20 MB file size limit.`);
       continue;
     }
-    state.attachments.push({
+    const attachment = {
       id: generateId('att'),
       name: file.name,
       type: file.type || 'application/octet-stream',
       size: file.size,
       file,
       previewURL: (file.type || '').startsWith('image/') ? createAttachmentPreviewURL(file) : ''
-    });
+    };
+    state.attachments.push(attachment);
     renderAttachments();
   }
 };
 
 Object.assign(app, {
   getAttachmentPreviewURL,
+  getAttachmentImageDimensions,
+  loadAttachmentImageDimensions,
   createAttachmentPreviewURL,
   revokeAttachmentPreviewURL,
   discardPendingAttachments,

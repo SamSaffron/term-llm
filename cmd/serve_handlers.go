@@ -875,6 +875,8 @@ type sessionMessagePartEntry struct {
 	Images          []string                       `json:"images,omitempty"`
 	ToolError       bool                           `json:"tool_error,omitempty"`
 	MimeType        string                         `json:"mime_type,omitempty"`
+	Width           int                            `json:"width,omitempty"`
+	Height          int                            `json:"height,omitempty"`
 }
 
 type sessionMessageEntry struct {
@@ -997,19 +999,50 @@ func (s *serveServer) materializeInlineSessionImage(mediaType, base64Data string
 	return destPath, true
 }
 
-func (s *serveServer) sessionMessageImageURL(part llm.Part) string {
+func imageDimensionsFromReader(reader io.Reader) (width, height int) {
+	metadata, err := io.ReadAll(io.LimitReader(reader, maxImageMetadataBytes))
+	if err != nil {
+		return 0, 0
+	}
+	return imageDisplayDimensions(metadata)
+}
+
+func sessionMessageImageDimensions(part llm.Part, serveablePath string) (width, height int) {
+	if part.ImageData != nil && part.ImageData.Width > 0 && part.ImageData.Height > 0 {
+		return part.ImageData.Width, part.ImageData.Height
+	}
+	if part.ImageData != nil && strings.TrimSpace(part.ImageData.Base64) != "" {
+		decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(part.ImageData.Base64))
+		if width, height := imageDimensionsFromReader(decoder); width > 0 && height > 0 {
+			return width, height
+		}
+	}
+	// The caller supplies only a canonical path already approved by
+	// ensureImageServeable; never inspect an arbitrary path from session data.
+	if strings.TrimSpace(serveablePath) == "" {
+		return 0, 0
+	}
+	f, err := os.Open(serveablePath)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	return imageDimensionsFromReader(f)
+}
+
+func (s *serveServer) sessionMessageImageURL(part llm.Part) (url, serveablePath string) {
 	if part.ImagePath != "" {
 		if served, ok := s.ensureImageServeable(part.ImagePath); ok {
-			return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served)
+			return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served), served
 		}
 	}
 	if part.ImageData == nil || strings.TrimSpace(part.ImageData.Base64) == "" {
-		return ""
+		return "", ""
 	}
 	if served, ok := s.materializeInlineSessionImage(part.ImageData.MediaType, part.ImageData.Base64); ok {
-		return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served)
+		return serveRoutePath(s.cfg.imagesRoute(), s.imageOutputDir(), served), served
 	}
-	return ""
+	return "", ""
 }
 
 func sessionSummaryProviderKey(cfg *config.Config, sess session.SessionSummary) string {
@@ -1477,15 +1510,18 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					})
 				}
 			case llm.PartImage:
-				if imageURL := s.sessionMessageImageURL(p); imageURL != "" {
+				if imageURL, serveablePath := s.sessionMessageImageURL(p); imageURL != "" {
 					mimeType := ""
 					if p.ImageData != nil {
 						mimeType = p.ImageData.MediaType
 					}
+					width, height := sessionMessageImageDimensions(p, serveablePath)
 					entry.Parts = append(entry.Parts, sessionMessagePartEntry{
 						Type:     "image",
 						ImageURL: imageURL,
 						MimeType: mimeType,
+						Width:    width,
+						Height:   height,
 					})
 				}
 			case llm.PartToolActivity:
