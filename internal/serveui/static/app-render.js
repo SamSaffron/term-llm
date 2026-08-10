@@ -1896,14 +1896,21 @@ const transcriptVisibleTools = (message) => (
   (Array.isArray(message?.tools) ? message.tools : []).filter((tool) => !isSuccessfulPlanUpdate(tool))
 );
 
+const isFinishedTool = (tool) => tool?.status === 'done' || tool?.status === 'error';
+
+const isToolGroupFinished = (message) => {
+  const tools = transcriptVisibleTools(message);
+  return message?.status === 'done' || (tools.length > 0 && tools.every(isFinishedTool));
+};
+
 const toolGroupSummaryText = (message) => {
   const tools = transcriptVisibleTools(message);
   const total = tools.length;
-  const done = tools.filter(t => t.status === 'done').length;
-  if (message.status === 'done' || done === total) {
+  const finished = tools.filter(isFinishedTool).length;
+  if (isToolGroupFinished(message)) {
     return `${total} tool call${total === 1 ? '' : 's'} completed`;
   }
-  return `Running ${total} tool${total === 1 ? '' : 's'}… (${done}/${total} done)`;
+  return `Running ${total} tool${total === 1 ? '' : 's'}… (${finished}/${total} done)`;
 };
 
 const toolImageArtifacts = (message) => {
@@ -1996,7 +2003,7 @@ const createToolGroupNode = (message) => {
 
   const statusBadge = document.createElement('span');
   statusBadge.className = 'tool-status';
-  if (message.status === 'done') {
+  if (isToolGroupFinished(message)) {
     statusBadge.style.display = 'none';
     statusBadge.textContent = '';
   } else {
@@ -2488,7 +2495,7 @@ const updateToolGroupNode = (message) => {
 
   const statusBadge = node.querySelector('.tool-status');
   if (statusBadge) {
-    if (message.status === 'done') {
+    if (isToolGroupFinished(message)) {
       statusBadge.style.display = 'none';
       statusBadge.textContent = '';
     } else {

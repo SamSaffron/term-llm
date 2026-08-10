@@ -1087,6 +1087,29 @@ async function run(name, fn) {
     assert(formatted.length === 2 && formatted.every((value) => value === created), 'formatters receive the normalized timestamp');
   });
 
+  await run('failed tools count as finished in tool group progress', () => {
+    const { app, messages } = createHarness();
+    const group = {
+      id: 'reloaded_tool_group',
+      role: 'tool-group',
+      status: 'running',
+      tools: [
+        { id: 'successful_tool', name: 'read_file', status: 'done', arguments: '{}' },
+        { id: 'failed_tool', name: 'shell', status: 'error', arguments: '{}' },
+      ],
+    };
+
+    const node = app.createToolGroupNode(group);
+    messages.appendChild(node);
+    assertEqual(node.querySelector('.tool-group-summary').textContent, '2 tool calls completed', 'terminal failures complete the group');
+    assertEqual(node.querySelector('.tool-status').style.display, 'none', 'stale group status does not show a running badge');
+
+    group.tools.push({ id: 'running_tool', name: 'grep', status: 'running', arguments: '{}' });
+    app.updateToolGroupNode(group);
+    assertEqual(node.querySelector('.tool-group-summary').textContent, 'Running 3 tools… (2/3 done)', 'failure remains included in partial progress');
+    assertEqual(node.querySelector('.tool-status').textContent, 'running…', 'an actually running tool restores the running badge');
+  });
+
   await run('expanded tool groups stay open when the row object is rebuilt', async () => {
     const { app, messages } = createHarness();
     const live = {
