@@ -520,6 +520,136 @@ func TestTelegramSessionMgrAcquireMessageSlot_RespectsContextCancel(t *testing.T
 	}
 }
 
+func TestTelegramVoiceTranscriptionTimeoutReleasesHandlerChain(t *testing.T) {
+	const transcriptionTimeout = 500 * time.Millisecond
+
+	transcriptionStarted := make(chan struct{})
+	transcriptionCanceled := make(chan struct{})
+	releaseTranscription := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/voice.ogg":
+			_, _ = w.Write([]byte("voice"))
+		case "/audio/transcriptions":
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			startedOnce.Do(func() { close(transcriptionStarted) })
+			select {
+			case <-r.Context().Done():
+				canceledOnce.Do(func() { close(transcriptionCanceled) })
+			case <-releaseTranscription:
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	defer close(releaseTranscription)
+
+	mgr := &telegramSessionMgr{
+		cfg: &config.Config{
+			Transcription: config.TranscriptionConfig{Provider: "openai"},
+			Providers: map[string]config.ProviderConfig{
+				"openai": {
+					Type:    config.ProviderTypeOpenAI,
+					APIKey:  "test-key",
+					BaseURL: ts.URL,
+				},
+			},
+		},
+		allowedUserIDs:       map[int64]struct{}{7: {}},
+		messageSlots:         make(chan struct{}, telegramMaxConcurrentHandlers),
+		transcriptionTimeout: transcriptionTimeout,
+	}
+	bot := &fakeBotSender{fileURL: ts.URL + "/voice.ogg"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runHandler := func(msg *tgbotapi.Message) <-chan struct{} {
+		t.Helper()
+		if !mgr.acquireMessageSlot(ctx) {
+			t.Fatal("failed to acquire Telegram handler slot")
+		}
+		admission := mgr.admitMessage(msg)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer mgr.releaseMessageSlot()
+			mgr.handleMessageWithAdmission(ctx, bot, msg, admission)
+		}()
+		return done
+	}
+
+	voiceMessage := &tgbotapi.Message{
+		From:  &tgbotapi.User{ID: 7},
+		Chat:  &tgbotapi.Chat{ID: 1},
+		Voice: &tgbotapi.Voice{FileID: "voice"},
+	}
+	voiceDone := runHandler(voiceMessage)
+	select {
+	case <-transcriptionStarted:
+	case <-time.After(time.Second):
+		t.Fatal("transcription request did not start")
+	}
+
+	queuedDone := make([]<-chan struct{}, 0, telegramMaxConcurrentHandlers-1)
+	for range telegramMaxConcurrentHandlers - 1 {
+		queuedDone = append(queuedDone, runHandler(&tgbotapi.Message{
+			From: &tgbotapi.User{ID: 7},
+			Chat: &tgbotapi.Chat{ID: 1},
+		}))
+	}
+
+	differentChatAcquired := make(chan struct{})
+	differentChatDone := make(chan struct{})
+	go func() {
+		defer close(differentChatDone)
+		if !mgr.acquireMessageSlot(ctx) {
+			return
+		}
+		close(differentChatAcquired)
+		defer mgr.releaseMessageSlot()
+		msg := &tgbotapi.Message{From: &tgbotapi.User{ID: 7}, Chat: &tgbotapi.Chat{ID: 2}}
+		mgr.handleMessageWithAdmission(ctx, bot, msg, mgr.admitMessage(msg))
+	}()
+
+	select {
+	case <-differentChatAcquired:
+		t.Fatal("different chat acquired a slot while stalled transcription and its same-chat queue held every slot")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	waitForHandler := func(name string, done <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for %s handler", name)
+		}
+	}
+	waitForHandler("voice", voiceDone)
+	for i, done := range queuedDone {
+		waitForHandler(fmt.Sprintf("queued same-chat %d", i+1), done)
+	}
+	waitForHandler("different-chat", differentChatDone)
+
+	select {
+	case <-transcriptionCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("transcription request context was not canceled")
+	}
+	if got := bot.lastText(); got != "Sorry, couldn't transcribe your voice message." {
+		t.Fatalf("transcription error reply = %q", got)
+	}
+	if got := len(mgr.messageSlots); got != 0 {
+		t.Fatalf("occupied Telegram handler slots = %d, want 0", got)
+	}
+}
+
 // --- TestBuildSegment ---
 
 func TestBuildSegment(t *testing.T) {
