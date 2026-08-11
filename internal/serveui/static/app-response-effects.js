@@ -213,7 +213,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     return { terminal: false };
   }
 
-  if (event === 'response.phase') {
+  if (event === 'response.phase' || event === 'response.compaction') {
     if (lifecycleResult?.changed) {
       app.refreshSessionMessagesFromTranscript?.(session);
       if (isSessionVisible(session)) app.renderMessages?.();

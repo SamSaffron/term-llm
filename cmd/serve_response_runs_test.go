@@ -457,6 +457,48 @@ func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
 	}
 }
 
+func TestAppendResponseRunEventCompactionSplitsRecoveryToolGroups(t *testing.T) {
+	run := newResponseRun("resp_compaction", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := &responseRunStreamState{}
+
+	for _, event := range []llm.Event{
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "before", Name: "shell"}},
+		{Type: llm.EventCompaction},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "after", Name: "shell"}},
+	} {
+		if err := server.appendResponseRunEvent(nil, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 7 {
+		t.Fatalf("events = %d, want 7", len(run.events))
+	}
+	if run.events[3].Event != "response.compaction" {
+		t.Fatalf("boundary event = %q, want response.compaction", run.events[3].Event)
+	}
+	if len(run.recoveryMessages) != 3 {
+		t.Fatalf("recovery messages = %#v, want tool/ref/tool", run.recoveryMessages)
+	}
+	if run.recoveryMessages[0].Role != "tool-group" || run.recoveryMessages[1].Role != "compaction-ref" || run.recoveryMessages[2].Role != "tool-group" {
+		t.Fatalf("recovery roles = %q, %q, %q", run.recoveryMessages[0].Role, run.recoveryMessages[1].Role, run.recoveryMessages[2].Role)
+	}
+	if run.recoveryMessages[1].CompactionSequence != run.events[3].Sequence {
+		t.Fatalf("recovery compaction sequence = %d, want %d", run.recoveryMessages[1].CompactionSequence, run.events[3].Sequence)
+	}
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("recovery payload messages = %#v", recovery["messages"])
+	}
+	if messages[1]["role"] != "compaction-ref" || messages[1]["compaction_sequence"] != run.events[3].Sequence {
+		t.Fatalf("recovery compaction payload = %#v", messages[1])
+	}
+}
+
 func TestAppendResponseRunEventEmitsRetry(t *testing.T) {
 	run := newResponseRun("resp_retry", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	server := &serveServer{}

@@ -549,7 +549,8 @@ const (
 	EventToolExecEnd    EventType = "tool_exec_end"   // Emitted when tool execution completes
 	EventHeartbeat      EventType = "heartbeat"       // Emitted while a long-running tool is still active
 	EventUsage          EventType = "usage"
-	EventPhase          EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
+	EventPhase          EventType = "phase"      // Emitted for high-level phase changes (Thinking, Searching, etc.)
+	EventCompaction     EventType = "compaction" // Emitted after context compaction has been applied by the owner.
 	EventDone           EventType = "done"
 	EventError          EventType = "error"
 	EventRetry          EventType = "retry"           // Emitted when retrying after rate limit or transport recovery

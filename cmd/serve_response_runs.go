@@ -51,6 +51,7 @@ type responseRunRecoveryMessage struct {
 	AssistantSegmentOrdinal int
 	SegmentStartSequence    int64
 	SegmentEndSequence      int64
+	CompactionSequence      int64
 }
 
 type responseRunRecoveryEvent struct {
@@ -863,6 +864,16 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 	case "response.output_text.new_segment":
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
+	case "response.compaction":
+		r.closeToolGroupLocked()
+		r.currentAssistant = -1
+		sequence := responseRunInt64Value(payload["sequence_number"], 0)
+		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
+			ID:                 fmt.Sprintf("%s_compaction_%d", r.id, sequence),
+			Role:               "compaction-ref",
+			Created:            time.Now().UnixMilli(),
+			CompactionSequence: sequence,
+		})
 	case "response.output_item.added":
 		item := mapValue(payload["item"])
 		if stringValue(item["type"]) != "function_call" {
@@ -1185,6 +1196,9 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 			if msg.SegmentEndSequence > 0 {
 				entry["segment_end_sequence"] = msg.SegmentEndSequence
 			}
+		}
+		if msg.Role == "compaction-ref" && msg.CompactionSequence > 0 {
+			entry["compaction_sequence"] = msg.CompactionSequence
 		}
 		if len(msg.Content) > 0 {
 			entry["content"] = string(msg.Content)
@@ -2074,6 +2088,8 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		return run.appendEvent("response.phase", map[string]any{
 			"text": ev.Text,
 		})
+	case llm.EventCompaction:
+		return run.appendEvent("response.compaction", nil)
 	case llm.EventRetry:
 		payload := map[string]any{
 			"attempt":      ev.RetryAttempt,

@@ -2225,6 +2225,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		e.lastTotalTokens = 0
 		e.lastMessageCount = 0
 		e.callbackMu.Unlock()
+		// This structural event is emitted only after the owner callback, if any,
+		// has synchronously applied the replacement context. Consumers can use its
+		// stream position as the exact boundary between pre- and post-compaction
+		// output.
+		if err := send.Send(Event{Type: EventCompaction}); err != nil {
+			slog.Debug("send compaction boundary failed", "error", err)
+		}
 		return true
 	}
 	resetSoftCheckpointState := func() {

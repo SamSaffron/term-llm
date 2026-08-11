@@ -208,6 +208,27 @@
         }
         break;
       }
+      case 'response.compaction': {
+        closeToolGroupsAtBoundary(run);
+        const eventSequence = validation.sequence;
+        const existing = [...run.projection].reverse().find((entry) => (
+          entry.role === 'compaction-ref' && !entry.eventSequence
+        ));
+        if (existing) {
+          const existingIndex = run.projection.indexOf(existing);
+          if (existingIndex >= 0) run.projection.splice(existingIndex, 1);
+          existing.eventSequence = eventSequence;
+          run.projection.push(existing);
+        } else {
+          const key = `${run.responseID}:compaction:event:${eventSequence}`;
+          run.projection.push({
+            key, id: key, role: 'compaction-ref', responseId: run.responseID,
+            eventSequence, pending: true, terminalPolicy: 'durable',
+          });
+        }
+        structural = true;
+        break;
+      }
       case 'response.phase':
       case 'response.model_swap.progress':
       case 'response.guardian.review': {
@@ -299,6 +320,14 @@
         const group = run.projection.slice(before).find((entry) => entry.role === 'tool-group') || run.projection.findLast((entry) => entry.role === 'tool-group');
         if (group) group.created = Number(message.created || message.created_at) || 0;
         if (group && message.status) group.status = String(message.status);
+      } else if (message.role === 'compaction-ref') {
+        closeToolGroupsAtBoundary(run);
+        const eventSequence = int(message.compaction_sequence ?? message.eventSequence);
+        const key = `${responseId}:compaction:event:${eventSequence || run.projection.length + 1}`;
+        run.projection.push({
+          key, id: key, role: 'compaction-ref', responseId,
+          eventSequence, pending: true, terminalPolicy: 'durable',
+        });
       } else if (message.role === 'user') {
         closeToolGroupsAtBoundary(run);
         const clientMessageId = String(message.client_message_id || message.clientMessageId || message.id || '').trim();
@@ -339,15 +368,35 @@
     return -1;
   };
   const recordCompactionRefs = (run, durable) => {
-    const anchor = run?.anchor ? anchorIndexForMessages(durable, run) : -1;
-    if (anchor < 0) return;
-    const recorded = new Set(run.projection.filter((entry) => entry.role === 'compaction-ref').map((entry) => entry.compactionId));
-    for (const message of durable.slice(anchor + 1)) {
+    if (!run) return;
+    const anchor = run.anchor ? anchorIndexForMessages(durable, run) : -1;
+    const refs = run.projection.filter((entry) => entry.role === 'compaction-ref');
+    const pendingCount = refs.filter((entry) => !String(entry.compactionId || '').trim()).length;
+    if (anchor < 0 && pendingCount === 0) return;
+    const recorded = new Set(refs.map((entry) => String(entry.compactionId || '').trim()).filter(Boolean));
+    let candidates = (anchor < 0 ? durable : durable.slice(anchor + 1)).filter((message) => (
+      message?.role === 'compaction' || message?.role === 'compaction-boundary'
+    ));
+    // If the anchor fell outside the transcript window, pair live boundaries
+    // with the newest unmatched durable markers. Older markers predate this run.
+    if (anchor < 0) {
+      candidates = candidates.filter((message) => !recorded.has(String(message?.id || '').trim())).slice(-pendingCount);
+    }
+    for (const message of candidates) {
       const id = String(message?.id || '').trim();
-      if (!id || recorded.has(id) || (message.role !== 'compaction' && message.role !== 'compaction-boundary')) continue;
+      if (!id || recorded.has(id)) continue;
+      const pending = refs.find((entry) => !String(entry.compactionId || '').trim());
+      if (pending) {
+        pending.compactionId = id;
+        pending.compactionSeq = int(message.compactionSeq ?? message.serverSeq, -1);
+        pending.pending = false;
+        recorded.add(id);
+        continue;
+      }
       const ref = { key: `${run.responseID}:compaction:${id}`, role: 'compaction-ref', compactionId: id, terminalPolicy: 'durable' };
       const created = Number(message.created || message.created_at), later = Number.isFinite(created) && created > 0 ? run.projection.findIndex((entry) => Number(entry.created) > created) : -1;
       run.projection.splice(later < 0 ? run.projection.length : later, 0, ref);
+      refs.push(ref);
       run.currentToolGroup = null; recorded.add(id);
     }
   };
@@ -355,6 +404,21 @@
     if (!source || !target) return;
     for (let index = 0; index < source.projection.length; index++) {
       const ref = source.projection[index]; if (ref.role !== 'compaction-ref') continue;
+      let existing = target.projection.find((entry) => entry.role === 'compaction-ref' && (
+        (ref.compactionId && entry.compactionId === ref.compactionId)
+        || (ref.eventSequence && entry.eventSequence === ref.eventSequence)
+      ));
+      if (!existing && ref.compactionId && !ref.eventSequence) {
+        existing = target.projection.find((entry) => entry.role === 'compaction-ref' && entry.eventSequence && !entry.compactionId);
+      }
+      if (existing) {
+        if (ref.compactionId && !existing.compactionId) {
+          existing.compactionId = ref.compactionId;
+          existing.compactionSeq = ref.compactionSeq;
+          existing.pending = false;
+        }
+        continue;
+      }
       const precedingKey = [...source.projection.slice(0, index)].reverse().find((entry) => entry.role !== 'compaction-ref')?.key;
       const targetIndex = precedingKey ? target.projection.findIndex((entry) => entry.key === precedingKey) : -1;
       target.projection.splice(targetIndex < 0 ? target.projection.length : targetIndex + 1, 0, clone(ref));

@@ -106,6 +106,9 @@
       throw error;
     }
     const result = activeResponse.reduceResponseEvent(conversation.active, event, payload);
+    if (event === 'response.compaction') {
+      activeResponse.recordCompactionRefs(conversation.active, durableMessages(conversation.durable));
+    }
     if (conversation.active.terminal?.durableHandoff === false) {
       conversation.protocolError = conversation.active.terminal.error || 'durable response handoff was rejected';
     }
@@ -192,7 +195,10 @@
       }
     }
     const durable = durableMessages(conversation.durable);
-    const compactionRefs = new Set(active?.projection.filter((entry) => entry.role === 'compaction-ref').map((entry) => entry.compactionId) || []);
+    const compactionRefs = new Set(active?.projection
+      .filter((entry) => entry.role === 'compaction-ref')
+      .map((entry) => String(entry.compactionId || '').trim())
+      .filter(Boolean) || []);
     const compactionsByID = new Map();
     const durableIntentByID = new Map();
     const durableAskUserByCallID = new Map();
@@ -235,6 +241,15 @@
       if (entry.role === 'compaction-ref') {
         const marker = compactionsByID.get(entry.compactionId);
         if (marker) activeProjection.push(marker);
+        else activeProjection.push({
+          id: entry.id || entry.key,
+          key: entry.key,
+          role: 'compaction-boundary',
+          content: 'Context compacted',
+          responseId: activeResponseID,
+          pending: true,
+          terminalPolicy: 'durable',
+        });
         continue;
       }
       if (entry.role === 'intent-ref') {

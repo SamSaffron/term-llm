@@ -577,13 +577,103 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
     { id: 2, durableRowId: 2, role: 'compaction-boundary', content: 'Context compacted', durable: true }
   ], 2));
   conversationAPI.applyDurable(conversation, conversation.durable);
+  conversationAPI.applyRunEvent(conversation, 'response.compaction', {
+    response_id: 'tool-run', run_epoch: 1, sequence_number: 2
+  });
   conversationAPI.applyRunEvent(conversation, 'response.output_item.added', {
-    response_id: 'tool-run', run_epoch: 1, sequence_number: 2,
+    response_id: 'tool-run', run_epoch: 1, sequence_number: 3,
     item: { type: 'function_call', call_id: 'after', name: 'shell' }
   });
   assert.deepEqual(conversationAPI.visibleMessages(conversation).map((message) => (
     message.role === 'tool-group' ? message.tools.map((tool) => tool.id).join(',') : message.content
   )), ['question', 'before', 'Context compacted', 'after'], 'compaction must split adjacent live tool groups');
+})();
+
+(() => {
+  const conversation = conversationAPI.createConversation({
+    sessionId: 'late-durable-compaction-tools',
+    durable: envelope([{ id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true }], 1)
+  });
+  conversationAPI.startActiveRun(conversation, { responseId: 'late-tool-run', runEpoch: 1, anchor: { durableRowId: 1 } });
+  conversationAPI.applyRunEvent(conversation, 'response.output_item.added', {
+    response_id: 'late-tool-run', run_epoch: 1, sequence_number: 1,
+    item: { type: 'function_call', call_id: 'before', name: 'shell' }
+  });
+  conversationAPI.applyRunEvent(conversation, 'response.compaction', {
+    response_id: 'late-tool-run', run_epoch: 1, sequence_number: 2
+  });
+  conversationAPI.applyRunEvent(conversation, 'response.output_item.added', {
+    response_id: 'late-tool-run', run_epoch: 1, sequence_number: 3,
+    item: { type: 'function_call', call_id: 'after', name: 'shell' }
+  });
+
+  const display = (message) => message.role === 'tool-group'
+    ? message.tools.map((tool) => tool.id).join(',')
+    : message.content;
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map(display), [
+    'question', 'before', 'Context compacted', 'after'
+  ], 'the ordered compaction event must split live tools before the durable marker arrives');
+
+  conversationAPI.applyDurable(conversation, envelope([
+    { id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true },
+    { id: 2, durableRowId: 2, role: 'compaction', content: 'Context compacted', durable: true, compactionSeq: 2 }
+  ], 2));
+  conversationAPI.applyDurable(conversation, conversation.durable);
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map(display), [
+    'question', 'before', 'Context compacted', 'after'
+  ], 'late durable compaction adoption must preserve the event position without duplication');
+})();
+
+(() => {
+  const conversation = conversationAPI.createConversation({
+    sessionId: 'multiple-live-compactions',
+    durable: envelope([{ id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true }], 1)
+  });
+  conversationAPI.startActiveRun(conversation, { responseId: 'multi-run', runEpoch: 1, anchor: { durableRowId: 1 } });
+  const event = (name, sequence, callId = '') => conversationAPI.applyRunEvent(conversation, name, {
+    response_id: 'multi-run', run_epoch: 1, sequence_number: sequence,
+    ...(callId ? { item: { type: 'function_call', call_id: callId, name: 'shell' } } : {})
+  });
+  event('response.output_item.added', 1, 'first');
+  event('response.compaction', 2);
+  event('response.output_item.added', 3, 'second');
+  event('response.compaction', 4);
+  event('response.output_item.added', 5, 'third');
+  conversationAPI.applyDurable(conversation, envelope([
+    { id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true },
+    { id: 2, durableRowId: 2, role: 'compaction', content: 'Context compacted', durable: true, compactionSeq: 2 },
+    { id: 3, durableRowId: 3, role: 'compaction', content: 'Context compacted', durable: true, compactionSeq: 3 }
+  ], 3));
+  const display = (message) => message.role === 'tool-group'
+    ? message.tools.map((tool) => tool.id).join(',')
+    : message.content;
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map(display), [
+    'question', 'first', 'Context compacted', 'second', 'Context compacted', 'third'
+  ], 'multiple live compactions must adopt durable markers in boundary order');
+})();
+
+(() => {
+  const conversation = conversationAPI.createConversation({
+    sessionId: 'recovered-live-compaction-tools',
+    durable: envelope([
+      { id: 1, durableRowId: 1, role: 'user', content: 'question', durable: true },
+      { id: 2, durableRowId: 2, role: 'compaction', content: 'Context compacted', durable: true, compactionSeq: 2 }
+    ], 2)
+  });
+  conversationAPI.replaceActiveFromSnapshot(conversation, {
+    id: 'recovered-tool-run', run_epoch: 1, status: 'in_progress', last_sequence_number: 3,
+    recovery: { messages: [
+      { role: 'tool-group', tools: [{ id: 'before', name: 'shell', status: 'done' }] },
+      { role: 'compaction-ref', compaction_sequence: 2 },
+      { role: 'tool-group', tools: [{ id: 'after', name: 'shell', status: 'running' }] }
+    ] }
+  }, { anchor: { durableRowId: 999 } });
+  const display = (message) => message.role === 'tool-group'
+    ? message.tools.map((tool) => tool.id).join(',')
+    : message.content;
+  assert.deepEqual(conversationAPI.visibleMessages(conversation).map(display), [
+    'question', 'before', 'Context compacted', 'after'
+  ], 'snapshot recovery must adopt one durable marker even when the run anchor is outside the window');
 })();
 
 (() => {

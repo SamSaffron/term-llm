@@ -2953,8 +2953,10 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 	e := NewEngine(provider, nil)
 	e.ConfigureContextManagement(provider, "fake", "compact-rush", true)
 	var compactionResult *CompactionResult
+	compactionPersisted := false
 	e.SetCompactionCallback(func(ctx context.Context, result *CompactionResult) error {
 		compactionResult = result
+		compactionPersisted = true
 		return nil
 	})
 	defer e.SetCompactionCallback(nil)
@@ -2984,6 +2986,7 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 	var phases []string
 	var text strings.Builder
 	var usageEvents []Usage
+	compactionEvents := 0
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -2998,6 +3001,11 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 		switch event.Type {
 		case EventPhase:
 			phases = append(phases, event.Text)
+		case EventCompaction:
+			if !compactionPersisted {
+				t.Fatal("compaction boundary arrived before the owner callback completed")
+			}
+			compactionEvents++
 		case EventTextDelta:
 			text.WriteString(event.Text)
 		case EventUsage:
@@ -3051,6 +3059,9 @@ func TestRunLoopSoftThresholdCheckpointsCompactsAndContinues(t *testing.T) {
 	}
 	if compactionResult == nil {
 		t.Fatal("compaction callback was not called")
+	}
+	if compactionEvents != 1 {
+		t.Fatalf("compaction boundary events = %d, want 1", compactionEvents)
 	}
 	if compactionResult.Model != "compact-rush" {
 		t.Fatalf("compaction model = %q, want compact-rush", compactionResult.Model)
