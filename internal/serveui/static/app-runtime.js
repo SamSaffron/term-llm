@@ -3,6 +3,7 @@
 (function initAppRuntime() {
 
 const app = window.TermLLMApp;
+const createEl = app.createEl;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, getActiveSession, updateSessionUsageDisplay, splitHeaderModelEffort,
   compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider
@@ -578,22 +579,17 @@ const openChipPopover = (selectEl, triggerEl) => {
 
   const currentValue = selectEl.value;
   options.forEach((opt) => {
-    const item = document.createElement('div');
-    item.className = 'chip-popover-item';
+    const item = createEl('div', 'chip-popover-item');
     item.setAttribute('role', 'option');
     item.tabIndex = -1;
     item.dataset.value = opt.value;
     const { primary, meta } = buildChipOptionLabel(opt);
     item.dataset.search = `${primary} ${meta} ${opt.value}`.toLowerCase();
     if (opt.value === currentValue) item.setAttribute('aria-selected', 'true');
-    const label = document.createElement('span');
-    label.className = 'chip-popover-item-label';
-    label.textContent = primary;
+    const label = createEl('span', 'chip-popover-item-label', primary);
     item.appendChild(label);
     if (meta) {
-      const metaEl = document.createElement('span');
-      metaEl.className = 'chip-popover-item-meta';
-      metaEl.textContent = meta;
+      const metaEl = createEl('span', 'chip-popover-item-meta', meta);
       item.appendChild(metaEl);
     }
     item.addEventListener('click', () => commitChipPopoverItem(item));
@@ -629,16 +625,12 @@ const copySelectOptions = (from, to, formatOption = null) => {
 };
 
 const runtimeField = ({ label, value, sourceSelect, onChange, formatOption = null }) => {
-  const field = document.createElement('label');
-  field.className = 'runtime-popover-field';
+  const field = createEl('label', 'runtime-popover-field');
 
-  const labelEl = document.createElement('span');
-  labelEl.className = 'runtime-popover-label';
-  labelEl.textContent = label;
+  const labelEl = createEl('span', 'runtime-popover-label', label);
   field.appendChild(labelEl);
 
-  const select = document.createElement('select');
-  select.className = 'runtime-popover-select';
+  const select = createEl('select', 'runtime-popover-select');
   copySelectOptions(sourceSelect, select, formatOption);
   select.value = value || '';
   select.addEventListener('change', async () => {
@@ -658,20 +650,14 @@ const renderRuntimePopoverContent = () => {
   if (!pop) return;
   pop.innerHTML = '';
 
-  const header = document.createElement('div');
-  header.className = 'runtime-popover-header';
-  const title = document.createElement('div');
-  title.className = 'runtime-popover-title';
-  title.textContent = 'Runtime';
-  const hint = document.createElement('div');
-  hint.className = 'runtime-popover-hint';
-  hint.textContent = 'Provider, model, and effort for the next reply';
+  const header = createEl('div', 'runtime-popover-header');
+  const title = createEl('div', 'runtime-popover-title', 'Runtime');
+  const hint = createEl('div', 'runtime-popover-hint', 'Provider, model, and effort for the next reply');
   header.appendChild(title);
   header.appendChild(hint);
   pop.appendChild(header);
 
-  const fields = document.createElement('div');
-  fields.className = 'runtime-popover-fields';
+  const fields = createEl('div', 'runtime-popover-fields');
   fields.appendChild(runtimeField({
     label: 'Provider',
     value: state.selectedProvider || '',

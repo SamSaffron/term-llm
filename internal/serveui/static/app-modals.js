@@ -1,6 +1,7 @@
 'use strict';
 (function initAppModals() {
 const app = window.TermLLMApp;
+const createEl = app.createEl;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, saveSessions,
   persistAndRefreshShell, setConnectionState, syncTokenCookie,
@@ -170,12 +171,10 @@ const renderAskUserModal = () => {
   elements.askUserError.textContent = '';
 
   if (total > 1) {
-    const steps = document.createElement('div');
-    steps.className = 'ask-user-steps';
+    const steps = createEl('div', 'ask-user-steps');
     for (let i = 0; i < total; i++) {
       if (i > 0) {
-        const line = document.createElement('div');
-        line.className = 'ask-user-step-line';
+        const line = createEl('div', 'ask-user-step-line');
         if (i <= activeTab) line.classList.add('done');
         steps.appendChild(line);
       }
@@ -192,47 +191,35 @@ const renderAskUserModal = () => {
   }
 
   prompt.questions.forEach((question, index) => {
-    const section = document.createElement('section');
-    section.className = 'ask-user-question';
+    const section = createEl('section', 'ask-user-question');
     section.dataset.questionIndex = index;
     if (index !== activeTab) section.style.display = 'none';
 
-    const headerEl = document.createElement('div');
-    headerEl.className = 'ask-user-question-header';
-    headerEl.textContent = question.header || `Question ${index + 1}`;
+    const headerEl = createEl('div', 'ask-user-question-header', question.header || `Question ${index + 1}`);
     section.appendChild(headerEl);
 
-    const textEl = document.createElement('p');
-    textEl.className = 'ask-user-question-text';
-    textEl.textContent = question.question || '';
+    const textEl = createEl('p', 'ask-user-question-text', question.question || '');
     section.appendChild(textEl);
 
-    const options = document.createElement('div');
-    options.className = 'ask-user-options';
+    const options = createEl('div', 'ask-user-options');
     const inputType = question.multi_select ? 'checkbox' : 'radio';
     const groupName = `ask_user_${index}`;
 
     (Array.isArray(question.options) ? question.options : []).forEach((option) => {
-      const label = document.createElement('label');
-      label.className = 'ask-user-option';
+      const label = createEl('label', 'ask-user-option');
 
       const input = document.createElement('input');
       input.type = inputType;
       input.name = groupName;
       input.value = option.label || '';
 
-      const copy = document.createElement('span');
-      copy.className = 'ask-user-option-copy';
+      const copy = createEl('span', 'ask-user-option-copy');
 
-      const titleEl = document.createElement('span');
-      titleEl.className = 'ask-user-option-title';
-      titleEl.textContent = option.label || 'Option';
+      const titleEl = createEl('span', 'ask-user-option-title', option.label || 'Option');
 
       copy.appendChild(titleEl);
       if (option.description) {
-        const desc = document.createElement('span');
-        desc.className = 'ask-user-option-desc';
-        desc.textContent = option.description;
+        const desc = createEl('span', 'ask-user-option-desc', option.description);
         copy.appendChild(desc);
       }
 
@@ -242,24 +229,18 @@ const renderAskUserModal = () => {
     });
 
     if (!question.multi_select) {
-      const customLabel = document.createElement('label');
-      customLabel.className = 'ask-user-option';
+      const customLabel = createEl('label', 'ask-user-option');
 
       const customRadio = document.createElement('input');
       customRadio.type = 'radio';
       customRadio.name = groupName;
       customRadio.value = '__custom__';
 
-      const customCopy = document.createElement('span');
-      customCopy.className = 'ask-user-option-copy';
+      const customCopy = createEl('span', 'ask-user-option-copy');
 
-      const customTitle = document.createElement('span');
-      customTitle.className = 'ask-user-option-title';
-      customTitle.textContent = 'Other';
+      const customTitle = createEl('span', 'ask-user-option-title', 'Other');
 
-      const customDesc = document.createElement('span');
-      customDesc.className = 'ask-user-option-desc';
-      customDesc.textContent = 'Type your own answer.';
+      const customDesc = createEl('span', 'ask-user-option-desc', 'Type your own answer.');
 
       customCopy.appendChild(customTitle);
       customCopy.appendChild(customDesc);
@@ -288,8 +269,7 @@ const renderAskUserModal = () => {
       section.appendChild(options);
     }
 
-    const note = document.createElement('div');
-    note.className = 'ask-user-note';
+    const note = createEl('div', 'ask-user-note');
     note.textContent = question.multi_select
       ? 'Choose one or more options to continue.'
       : 'Choose one option or provide a custom answer.';
@@ -454,11 +434,9 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, ti
   // Build radio options as a vertical list
   const body = elements.approvalBody;
   body.innerHTML = '';
-  const group = document.createElement('div');
-  group.className = 'approval-options';
+  const group = createEl('div', 'approval-options');
   options.forEach((opt, i) => {
-    const label = document.createElement('label');
-    label.className = 'approval-option';
+    const label = createEl('label', 'approval-option');
 
     const radio = document.createElement('input');
     radio.type = 'radio';
@@ -470,16 +448,11 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, ti
       elements.approvalApproveBtn.textContent = approvalPrimaryActionLabel(state.approval);
     });
 
-    const copy = document.createElement('div');
-    copy.className = 'approval-option-copy';
-    const titleEl = document.createElement('span');
-    titleEl.className = 'approval-option-title';
-    titleEl.textContent = opt.label || `Option ${i + 1}`;
+    const copy = createEl('div', 'approval-option-copy');
+    const titleEl = createEl('span', 'approval-option-title', opt.label || `Option ${i + 1}`);
     copy.appendChild(titleEl);
     if (opt.description) {
-      const desc = document.createElement('span');
-      desc.className = 'approval-option-desc';
-      desc.textContent = opt.description;
+      const desc = createEl('span', 'approval-option-desc', opt.description);
       copy.appendChild(desc);
     }
 
@@ -490,8 +463,7 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, ti
   body.appendChild(group);
 
   if (state.approval.resumeAutoAvailable) {
-    const resumeLabel = document.createElement('label');
-    resumeLabel.className = 'approval-option';
+    const resumeLabel = createEl('label', 'approval-option');
     const resumeCheckbox = document.createElement('input');
     resumeCheckbox.type = 'checkbox';
     resumeCheckbox.name = 'resume_auto';
@@ -499,14 +471,9 @@ const openApprovalModal = (sessionId, approvalId, path, isShell, isWorkspace, ti
     resumeCheckbox.addEventListener('change', () => {
       if (state.approval) state.approval.resumeAuto = Boolean(resumeCheckbox.checked);
     });
-    const resumeCopy = document.createElement('div');
-    resumeCopy.className = 'approval-option-copy';
-    const resumeTitle = document.createElement('span');
-    resumeTitle.className = 'approval-option-title';
-    resumeTitle.textContent = 'Resume Guardian auto after this decision';
-    const resumeDescription = document.createElement('span');
-    resumeDescription.className = 'approval-option-desc';
-    resumeDescription.textContent = 'Start a fresh automatic-review epoch. Leave unchecked to keep auto suspended.';
+    const resumeCopy = createEl('div', 'approval-option-copy');
+    const resumeTitle = createEl('span', 'approval-option-title', 'Resume Guardian auto after this decision');
+    const resumeDescription = createEl('span', 'approval-option-desc', 'Start a fresh automatic-review epoch. Leave unchecked to keep auto suspended.');
     resumeCopy.appendChild(resumeTitle);
     resumeCopy.appendChild(resumeDescription);
     resumeLabel.appendChild(resumeCheckbox);

@@ -2,6 +2,7 @@
 'use strict';
 
 const app = window.TermLLMApp;
+const createEl = app.createEl;
 const { UI_PREFIX, state, elements } = app;
 
 const SEARCH_DEBOUNCE_MS = 180;
@@ -14,17 +15,13 @@ const widgetMount = (widget) => String(widget?.mount || widget?.id || '').replac
 
 const buildWidgetLink = (widget) => {
   const mount = widgetMount(widget);
-  const link = document.createElement('a');
-  link.className = 'widget-link';
+  const link = createEl('a', 'widget-link');
   link.href = `${UI_PREFIX}/widgets/${encodeURIComponent(mount)}/`;
   link.title = widget.description || widgetTitle(widget);
 
-  const titleRow = document.createElement('div');
-  titleRow.className = 'widget-title-row';
+  const titleRow = createEl('div', 'widget-title-row');
 
-  const title = document.createElement('span');
-  title.className = 'widget-title';
-  title.textContent = widgetTitle(widget);
+  const title = createEl('span', 'widget-title', widgetTitle(widget));
 
   const normalizedStatus = String(widget.state || 'stopped').toLowerCase();
   const statusClass = normalizedStatus.replace(/[^a-z0-9_-]/g, '');
@@ -33,21 +30,16 @@ const buildWidgetLink = (widget) => {
 
   titleRow.appendChild(title);
   if (showRunningIndicator) {
-    const stateBadge = document.createElement('span');
-    stateBadge.className = `widget-state ${statusClass}`;
+    const stateBadge = createEl('span', `widget-state ${statusClass}`);
     stateBadge.title = 'Running';
     stateBadge.setAttribute('aria-label', 'Running');
     titleRow.appendChild(stateBadge);
   } else if (showTextBadge) {
-    const stateBadge = document.createElement('span');
-    stateBadge.className = `widget-state ${statusClass}`;
-    stateBadge.textContent = normalizedStatus;
+    const stateBadge = createEl('span', `widget-state ${statusClass}`, normalizedStatus);
     titleRow.appendChild(stateBadge);
   }
   link.appendChild(titleRow);
-  const meta = document.createElement('div');
-  meta.className = 'widget-meta';
-  meta.textContent = widget.description || mount;
+  const meta = createEl('div', 'widget-meta', widget.description || mount);
   link.appendChild(meta);
 
   return link;

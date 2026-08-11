@@ -125,6 +125,12 @@ function createHarness(options = {}) {
   };
   let renderSidebarCount = 0;
   const app = {
+    createEl(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    },
     UI_PREFIX: '/chat',
     state,
     elements,

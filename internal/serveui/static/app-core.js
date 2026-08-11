@@ -558,6 +558,9 @@ const setElementHidden = (element, hidden) => {
   else element.removeAttribute?.('hidden');
 };
 
+const createEl = (tag, className, text) => Object.assign(document.createElement(tag),
+  className ? { className } : {}, text !== undefined ? { textContent: text } : {});
+
 const nextFrame = (callback) => {
   const raf = window.requestAnimationFrame || globalThis.requestAnimationFrame;
   if (typeof raf === 'function') return raf.call(window, callback);
@@ -2562,6 +2565,7 @@ Object.assign(app, {
   syncTokenCookie,
   setAnimatedPanelOpen,
   setElementHidden,
+  createEl,
   panelSwipeSmoothedVelocity,
   panelSwipeProjectedDistance,
   panelSwipeReleaseDecision,

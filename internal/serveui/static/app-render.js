@@ -2,6 +2,7 @@
 'use strict';
 
 const app = window.TermLLMApp;
+const createEl = app.createEl;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, asTimestamp, relativeTime, fullDate,
   sessionBucket, toolIcon, formatUsage, saveSessions, findMessageElement, mountedConversationSessionId,
@@ -148,13 +149,10 @@ const createSessionMenuButton = (label, iconName, onClick) => {
   const button = document.createElement('button');
   button.type = 'button';
 
-  const icon = document.createElement('span');
-  icon.className = 'session-menu-icon';
+  const icon = createEl('span', 'session-menu-icon');
   icon.innerHTML = SESSION_MENU_ICONS[iconName] || '';
 
-  const text = document.createElement('span');
-  text.className = 'session-menu-label';
-  text.textContent = label;
+  const text = createEl('span', 'session-menu-label', label);
 
   button.appendChild(icon);
   button.appendChild(text);
@@ -227,10 +225,8 @@ const computeSidebarKey = (sorted) =>
 
 const getOrCreateGroupSection = (label) => {
   if (sidebarGroupCache.has(label)) return sidebarGroupCache.get(label);
-  const section = document.createElement('section');
-  section.className = 'session-group';
-  const h3 = document.createElement('h3');
-  h3.textContent = label;
+  const section = createEl('section', 'session-group');
+  const h3 = createEl('h3', '', label);
   section.appendChild(h3);
   sidebarGroupCache.set(label, section);
   return section;
@@ -253,28 +249,23 @@ const resolveSidebarSession = (sessionId) => state.sessions.find((s) => s.id ===
 
 const buildCachedSessionRow = (session) => {
   const sessionId = session.id;
-  const row = document.createElement('div');
-  row.className = 'session-row';
+  const row = createEl('div', 'session-row');
   row.dataset.sessionId = session.id;
   row.classList.toggle('is-active', sessionHasInProgressState(session));
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
   row.classList.toggle('is-branch', Boolean(session.branchParentSessionId));
   row.dataset.branchDepth = String(Math.max(0, Number(session.branchDepth) || 0));
 
-  const btn = document.createElement('button');
-  btn.className = 'session-btn';
+  const btn = createEl('button', 'session-btn');
   const tooltip = sidebarSessionTooltip(session);
   btn.title = tooltip;
   btn.setAttribute('aria-label', `Open session: ${sidebarSessionDisplayTitle(session)}`);
   if (session.id === state.activeSessionId) btn.classList.add('active');
 
-  const titleEl = document.createElement('div');
-  titleEl.className = 'session-title';
-  titleEl.textContent = sidebarSessionRowTitle(session);
+  const titleEl = createEl('div', 'session-title', sidebarSessionRowTitle(session));
   titleEl.title = tooltip;
 
-  const metaEl = document.createElement('div');
-  metaEl.className = 'session-meta';
+  const metaEl = createEl('div', 'session-meta');
   if (session.searchSnippet) {
     metaEl.textContent = session.searchSnippet;
     metaEl.title = session.searchSnippet;
@@ -301,11 +292,9 @@ const buildCachedSessionRow = (session) => {
     await app.switchToSession(sessionId);
   });
 
-  const menuWrap = document.createElement('div');
-  menuWrap.className = 'session-row-menu';
+  const menuWrap = createEl('div', 'session-row-menu');
 
-  const actionBtn = document.createElement('button');
-  actionBtn.className = 'session-menu-trigger';
+  const actionBtn = createEl('button', 'session-menu-trigger');
   actionBtn.type = 'button';
   actionBtn.textContent = '⋯';
   actionBtn.title = 'Session actions';
@@ -318,8 +307,7 @@ const buildCachedSessionRow = (session) => {
     row.classList.toggle('menu-open', willOpen);
   });
 
-  const menu = document.createElement('div');
-  menu.className = 'session-menu';
+  const menu = createEl('div', 'session-menu');
 
   const renameBtn = createSessionMenuButton('Rename', 'rename', async (event) => {
     event.preventDefault();
@@ -502,17 +490,14 @@ const createInterruptBadgeNode = (interruptState) => {
   const config = INTERRUPT_BADGE_META[stateName];
   if (!config) return null;
 
-  const badge = document.createElement('span');
-  badge.className = `interrupt-badge ${config.className}`;
+  const badge = createEl('span', `interrupt-badge ${config.className}`);
 
   if (stateName === 'evaluating') {
-    const spinner = document.createElement('span');
-    spinner.className = 'interrupt-spinner';
+    const spinner = createEl('span', 'interrupt-spinner');
     spinner.setAttribute('aria-hidden', 'true');
     badge.appendChild(spinner);
 
-    const text = document.createElement('span');
-    text.textContent = config.label;
+    const text = createEl('span', '', config.label);
     badge.appendChild(text);
   } else {
     badge.textContent = `${config.icon} ${config.label}`;
@@ -523,8 +508,7 @@ const createInterruptBadgeNode = (interruptState) => {
 
 const createMetaNode = (created, message = null) => {
   const timestamp = asTimestamp(created);
-  const meta = document.createElement('div');
-  meta.className = 'message-meta';
+  const meta = createEl('div', 'message-meta');
   if (message?.role === 'user') {
     const badge = createInterruptBadgeNode(message.interruptState);
     if (badge) {
@@ -542,8 +526,7 @@ const createMetaNode = (created, message = null) => {
 };
 
 const buildDeferredVideoNode = (video) => {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'deferred-video';
+  const wrapper = createEl('div', 'deferred-video');
 
   const button = document.createElement('button');
   button.type = 'button';
@@ -904,10 +887,8 @@ const STREAM_STABLE_HASH_B_OFFSET = 0x9747b28c;
 
 const createAssistantStreamContainers = (body) => {
   body.innerHTML = '';
-  const stableContainer = document.createElement('div');
-  stableContainer.className = 'markdown-stream-stable';
-  const tailContainer = document.createElement('div');
-  tailContainer.className = 'markdown-stream-tail';
+  const stableContainer = createEl('div', 'markdown-stream-stable');
+  const tailContainer = createEl('div', 'markdown-stream-tail');
   body.appendChild(stableContainer);
   body.appendChild(tailContainer);
   return { stableContainer, tailContainer };
@@ -1077,8 +1058,7 @@ const resetAssistantStableRender = (streamState) => {
 
 const appendAssistantStableMarkdown = (streamState, source) => {
   if (!streamState?.stableContainer || !source) return;
-  const piece = document.createElement('div');
-  piece.className = 'markdown-stream-piece';
+  const piece = createEl('div', 'markdown-stream-piece');
   renderAssistantMarkdown(piece, source, { streaming: true });
   streamState.stableContainer.appendChild(piece);
   streamState.stableLength = Math.max(0, Number(streamState.stableLength) || 0) + source.length;
@@ -1443,40 +1423,27 @@ const isSuccessfulPlanUpdate = (tool) => Boolean(
 );
 
 const createToolCard = (message) => {
-  const wrapper = document.createElement('article');
-  wrapper.className = 'message tool';
+  const wrapper = createEl('article', 'message tool');
   wrapper.dataset.messageId = message.id;
   wrapper.hidden = isSuccessfulPlanUpdate(message);
 
-  const card = document.createElement('div');
-  card.className = 'tool-card';
+  const card = createEl('div', 'tool-card');
 
-  const toggle = document.createElement('button');
-  toggle.className = 'tool-toggle';
+  const toggle = createEl('button', 'tool-toggle');
   toggle.type = 'button';
   toggle.setAttribute('aria-expanded', isToolExpanded(message) ? 'true' : 'false');
 
-  const arrow = document.createElement('span');
-  arrow.className = 'tool-arrow';
-  arrow.textContent = '▶';
+  const arrow = createEl('span', 'tool-arrow', '▶');
 
-  const name = document.createElement('span');
-  name.className = 'tool-name';
-  name.textContent = `${toolIcon(message.name)} ${message.name || 'tool'}`;
+  const name = createEl('span', 'tool-name', `${toolIcon(message.name)} ${message.name || 'tool'}`);
 
-  const status = document.createElement('span');
-  status.className = `tool-status${message.status === 'done' ? ' done' : ''}`;
-  status.textContent = message.status === 'done' ? '[done]' : '[running…]';
+  const status = createEl('span', `tool-status${message.status === 'done' ? ' done' : ''}`, message.status === 'done' ? '[done]' : '[running…]');
 
-  const details = document.createElement('div');
-  details.className = `tool-details${isToolExpanded(message) ? ' open' : ''}`;
+  const details = createEl('div', `tool-details${isToolExpanded(message) ? ' open' : ''}`);
 
-  const label = document.createElement('div');
-  label.className = 'tool-details-label';
-  label.textContent = 'Arguments:';
+  const label = createEl('div', 'tool-details-label', 'Arguments:');
 
-  const args = document.createElement('pre');
-  args.textContent = message.arguments || '(waiting for arguments…)';
+  const args = createEl('pre', '', message.arguments || '(waiting for arguments…)');
 
   details.appendChild(label);
   details.appendChild(args);
@@ -1502,13 +1469,10 @@ const createToolCard = (message) => {
 };
 
 const createModelSwapNode = (message) => {
-  const article = document.createElement('article');
-  article.className = 'message model-swap';
+  const article = createEl('article', 'message model-swap');
   article.dataset.messageId = message.id;
 
-  const body = document.createElement('div');
-  body.className = 'message-body model-swap-body';
-  body.textContent = message.content || '↔ Model switch';
+  const body = createEl('div', 'message-body model-swap-body', message.content || '↔ Model switch');
   article.appendChild(body);
   article.appendChild(createMetaNode(message.created, message));
   return article;
@@ -1549,33 +1513,24 @@ const compactionDetailText = (message) => {
 const appendCompactionRawPre = (body, message) => {
   const raw = String(message?.rawContent || '');
   if (!raw) return null;
-  const pre = document.createElement('pre');
-  pre.className = 'compaction-raw';
-  pre.textContent = raw;
+  const pre = createEl('pre', 'compaction-raw', raw);
   body.appendChild(pre);
   return pre;
 };
 
 const createCompactionNode = (message) => {
-  const article = document.createElement('article');
-  article.className = `message ${message.role}`;
+  const article = createEl('article', `message ${message.role}`);
   article.dataset.messageId = message.id;
 
-  const body = document.createElement('div');
-  body.className = 'message-body compaction-body';
+  const body = createEl('div', 'message-body compaction-body');
   if (message.activeBoundary) body.classList.add('active-boundary');
 
-  const row = document.createElement('div');
-  row.className = 'compaction-summary-row';
+  const row = createEl('div', 'compaction-summary-row');
 
-  const label = document.createElement('span');
-  label.className = 'compaction-label';
-  label.textContent = '↳ Context compacted';
+  const label = createEl('span', 'compaction-label', '↳ Context compacted');
   row.appendChild(label);
 
-  const detail = document.createElement('span');
-  detail.className = 'compaction-detail';
-  detail.textContent = compactionDetailText(message);
+  const detail = createEl('span', 'compaction-detail', compactionDetailText(message));
   row.appendChild(detail);
 
   if (message.role === 'compaction' && message.rawContent) {
@@ -1608,17 +1563,13 @@ const createCompactionNode = (message) => {
 };
 
 const createSkillRunNode = (message) => {
-  const article = document.createElement('article');
-  article.className = 'message skill-run';
+  const article = createEl('article', 'message skill-run');
   article.dataset.messageId = message.id;
   article.dataset.runId = message.runId || '';
 
-  const body = document.createElement('div');
-  body.className = 'message-body skill-run-body';
-  const header = document.createElement('div');
-  header.className = 'skill-run-header';
-  const title = document.createElement('strong');
-  title.textContent = `/${message.skill || 'skill'} · ${message.agent ? `@${message.agent} · ` : ''}${message.status || 'running'}`;
+  const body = createEl('div', 'message-body skill-run-body');
+  const header = createEl('div', 'skill-run-header');
+  const title = createEl('strong', '', `/${message.skill || 'skill'} · ${message.agent ? `@${message.agent} · ` : ''}${message.status || 'running'}`);
   header.appendChild(title);
 
   if (message.status === 'running' || message.status === 'cancelling') {
@@ -1632,8 +1583,7 @@ const createSkillRunNode = (message) => {
   }
   body.appendChild(header);
 
-  const detail = document.createElement('div');
-  detail.className = 'skill-run-detail';
+  const detail = createEl('div', 'skill-run-detail');
   const duration = Number(message.durationMs || 0);
   detail.textContent = [
     message.runId ? `run ${message.runId}` : '',
@@ -1643,20 +1593,15 @@ const createSkillRunNode = (message) => {
   if (detail.textContent) body.appendChild(detail);
 
   if (message.output) {
-    const output = document.createElement('pre');
-    output.className = 'skill-run-output';
-    output.textContent = message.output;
+    const output = createEl('pre', 'skill-run-output', message.output);
     body.appendChild(output);
   }
   if (message.error) {
-    const error = document.createElement('div');
-    error.className = 'skill-run-error';
-    error.textContent = message.error;
+    const error = createEl('div', 'skill-run-error', message.error);
     body.appendChild(error);
   }
   if (message.childSessionId) {
-    const link = document.createElement('a');
-    link.className = 'skill-run-action';
+    const link = createEl('a', 'skill-run-action');
     link.href = `${app.UI_PREFIX || '/ui'}/${encodeURIComponent(message.childSessionId)}`;
     link.textContent = 'Open child session';
     body.appendChild(link);
@@ -1728,8 +1673,7 @@ const observeTranscriptGap = (node, _message, sessionId) => {
 };
 
 const createTranscriptGapNode = (message) => {
-  const gap = document.createElement('div');
-  gap.className = 'transcript-gap';
+  const gap = createEl('div', 'transcript-gap');
   gap.dataset.messageId = message.id;
   gap.dataset.startOrdinal = String(message.startOrdinal);
   gap.dataset.endOrdinal = String(message.endOrdinal);
@@ -1739,8 +1683,7 @@ const createTranscriptGapNode = (message) => {
   gap.setAttribute('role', 'button');
   gap.setAttribute('tabindex', '0');
   gap.setAttribute('aria-label', `Load transcript rows ${Number(message.startOrdinal) + 1} through ${Number(message.endOrdinal) + 1}`);
-  const label = document.createElement('span');
-  label.textContent = 'Load earlier transcript';
+  const label = createEl('span', '', 'Load earlier transcript');
   gap.appendChild(label);
   return gap;
 };
@@ -1791,12 +1734,10 @@ const createMessageNode = (message) => {
   if (message.role === 'model-swap') return createModelSwapNode(message);
   if (message.role === 'path-note' && typeof app.createPathNoteNode === 'function') return app.createPathNoteNode(message);
   if (message.role === 'compaction' || message.role === 'compaction-boundary') return createCompactionNode(message);
-  const article = document.createElement('article');
-  article.className = `message ${message.role}`;
+  const article = createEl('article', `message ${message.role}`);
   article.dataset.messageId = message.id;
 
-  const body = document.createElement('div');
-  body.className = 'message-body';
+  const body = createEl('div', 'message-body');
   applyTextDirection(body, message.content || '');
 
   if (message.role === 'assistant') {
@@ -1807,8 +1748,7 @@ const createMessageNode = (message) => {
   } else {
     // User message: show attachments if present
     if (message.attachments && message.attachments.length > 0) {
-      const attDiv = document.createElement('div');
-      attDiv.className = 'message-attachments';
+      const attDiv = createEl('div', 'message-attachments');
       message.attachments.forEach(att => {
         const rawPreviewURL = att.previewURL || att.dataURL || '';
         const previewURL = rebaseAssetURL(rawPreviewURL);
@@ -1821,9 +1761,7 @@ const createMessageNode = (message) => {
           img.addEventListener('click', () => app.openLightbox(previewURL));
           attDiv.appendChild(img);
         } else {
-          const badge = document.createElement('span');
-          badge.className = 'att-file';
-          badge.textContent = att.name || 'file';
+          const badge = createEl('span', 'att-file', att.name || 'file');
           attDiv.appendChild(badge);
         }
       });
@@ -1838,9 +1776,7 @@ const createMessageNode = (message) => {
   article.appendChild(body);
 
   if (message.role === 'assistant' && message.usage) {
-    const usage = document.createElement('div');
-    usage.className = 'usage-line';
-    usage.textContent = formatUsage(message.usage);
+    const usage = createEl('div', 'usage-line', formatUsage(message.usage));
     article.appendChild(usage);
   }
 
@@ -1952,8 +1888,7 @@ const createToolArtifactsNode = (message) => {
   const artifacts = toolImageArtifacts(message);
   if (artifacts.length === 0) return null;
 
-  const wrapper = document.createElement('div');
-  wrapper.className = 'tool-artifacts';
+  const wrapper = createEl('div', 'tool-artifacts');
 
   artifacts.forEach((artifact, index) => {
     const img = document.createElement('img');
@@ -1993,29 +1928,21 @@ const syncToolArtifactsNode = (card, message) => {
 };
 
 const createToolGroupNode = (message) => {
-  const wrapper = document.createElement('article');
-  wrapper.className = 'message tool-group';
+  const wrapper = createEl('article', 'message tool-group');
   wrapper.dataset.messageId = message.id;
   wrapper.hidden = transcriptVisibleTools(message).length === 0;
 
-  const card = document.createElement('div');
-  card.className = 'tool-group-card';
+  const card = createEl('div', 'tool-group-card');
 
-  const toggle = document.createElement('button');
-  toggle.className = 'tool-group-toggle';
+  const toggle = createEl('button', 'tool-group-toggle');
   toggle.type = 'button';
   toggle.setAttribute('aria-expanded', isToolExpanded(message) ? 'true' : 'false');
 
-  const arrow = document.createElement('span');
-  arrow.className = 'tool-arrow';
-  arrow.textContent = '▶';
+  const arrow = createEl('span', 'tool-arrow', '▶');
 
-  const summary = document.createElement('span');
-  summary.className = 'tool-group-summary';
-  summary.textContent = toolGroupSummaryText(message);
+  const summary = createEl('span', 'tool-group-summary', toolGroupSummaryText(message));
 
-  const statusBadge = document.createElement('span');
-  statusBadge.className = 'tool-status';
+  const statusBadge = createEl('span', 'tool-status');
   if (isToolGroupFinished(message)) {
     statusBadge.style.display = 'none';
     statusBadge.textContent = '';
@@ -2142,20 +2069,14 @@ const buildArgsNode = (tool) => {
   const entries = formatToolArgs(tool);
   if (!entries || entries.length === 0) return null;
 
-  const argsDiv = document.createElement('div');
-  argsDiv.className = 'tool-entry-args';
+  const argsDiv = createEl('div', 'tool-entry-args');
 
   entries.forEach(([key, value]) => {
-    const line = document.createElement('div');
-    line.className = 'arg-line';
+    const line = createEl('div', 'arg-line');
 
-    const label = document.createElement('span');
-    label.className = 'arg-label';
-    label.textContent = key + ':';
+    const label = createEl('span', 'arg-label', key + ':');
 
-    const val = document.createElement('span');
-    val.className = 'arg-value';
-    val.textContent = typeof value === 'string' ? value : JSON.stringify(value);
+    const val = createEl('span', 'arg-value', typeof value === 'string' ? value : JSON.stringify(value));
 
     line.appendChild(label);
     line.appendChild(val);
@@ -2169,19 +2090,13 @@ const createToolEntryNode = (tool) => {
   const wrapper = document.createElement('div');
   wrapper.dataset.toolId = tool.id;
 
-  const entry = document.createElement('div');
-  entry.className = 'tool-group-entry';
+  const entry = createEl('div', 'tool-group-entry');
 
-  const icon = document.createElement('span');
-  icon.textContent = toolIcon(tool.name);
+  const icon = createEl('span', '', toolIcon(tool.name));
 
-  const name = document.createElement('span');
-  name.className = 'tool-entry-name';
-  name.textContent = tool.name || 'tool';
+  const name = createEl('span', 'tool-entry-name', tool.name || 'tool');
 
-  const status = document.createElement('span');
-  status.className = `tool-entry-status${tool.status === 'done' ? ' done' : (tool.status === 'error' ? ' error' : '')}`;
-  status.textContent = tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…');
+  const status = createEl('span', `tool-entry-status${tool.status === 'done' ? ' done' : (tool.status === 'error' ? ' error' : '')}`, tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…'));
 
   entry.appendChild(icon);
   entry.appendChild(name);
@@ -2374,8 +2289,7 @@ const getClipboardWriter = () => {
 };
 
 const createTurnActionPanel = (turn) => {
-  const panel = document.createElement('div');
-  panel.className = 'turn-action-panel';
+  const panel = createEl('div', 'turn-action-panel');
   panel.dataset.turnAssistantId = turn.lastAssistantId || '';
 
   const button = document.createElement('button');
@@ -2911,9 +2825,7 @@ const renderMessages = (forceScroll = false) => {
   if (!session || !messages.length) {
     elements.messages.innerHTML = '';
     if (!sessionHistoryLoading) {
-      const empty = document.createElement('div');
-      empty.className = 'empty-state';
-      empty.textContent = 'How can I help you today?';
+      const empty = createEl('div', 'empty-state', 'How can I help you today?');
       elements.messages.appendChild(empty);
     }
     _lastRenderedSessionId = sessionId;

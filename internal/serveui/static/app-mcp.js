@@ -3,6 +3,7 @@
 (function initAppMCP() {
 
 const app = window.TermLLMApp;
+const createEl = app.createEl;
 const {
   UI_PREFIX, state, elements, saveSessions, getActiveSession, createSession, ensureActiveSession, sessionSlug,
   updateURL, persistAndRefreshShell, updateMCPStatusDisplay, setElementHidden, handleAuthFailure, renderMessages,
@@ -184,14 +185,10 @@ const renderMCPModal = (session, { loading = false } = {}) => {
   elements.mcpModalBody.innerHTML = '';
 
   if (loading) {
-    const row = document.createElement('div');
-    row.className = 'mcp-server-loading';
-    row.textContent = 'Loading configured MCP servers…';
+    const row = createEl('div', 'mcp-server-loading', 'Loading configured MCP servers…');
     elements.mcpModalBody.appendChild(row);
   } else if (!Array.isArray(session?.mcpServers) || session.mcpServers.length === 0) {
-    const row = document.createElement('div');
-    row.className = 'mcp-server-empty';
-    row.textContent = 'No MCP servers are configured yet. Add servers to ~/.config/term-llm/mcp.json, then reopen this panel.';
+    const row = createEl('div', 'mcp-server-empty', 'No MCP servers are configured yet. Add servers to ~/.config/term-llm/mcp.json, then reopen this panel.');
     elements.mcpModalBody.appendChild(row);
   } else {
     const enabledSet = new Set(
@@ -200,29 +197,20 @@ const renderMCPModal = (session, { loading = false } = {}) => {
         : normalizeMCPEnabledNames(session.mcpEnabled || [])
     );
     session.mcpServers.forEach((server) => {
-      const row = document.createElement('label');
-      row.className = 'mcp-server-row';
+      const row = createEl('label', 'mcp-server-row');
 
-      const icon = document.createElement('span');
-      icon.className = 'mcp-server-icon';
+      const icon = createEl('span', 'mcp-server-icon');
       icon.setAttribute('aria-hidden', 'true');
       icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="5" height="5" rx="1.2"/><rect x="14" y="14" width="5" height="5" rx="1.2"/><path d="M10 7.5h2.5a4 4 0 0 1 4 4V14"/><path d="M14 16.5h-2.5a4 4 0 0 1-4-4V10"/></svg>';
 
-      const copy = document.createElement('span');
-      copy.className = 'mcp-server-copy';
-      const titleRow = document.createElement('span');
-      titleRow.className = 'mcp-server-title-row';
-      const name = document.createElement('span');
-      name.className = 'mcp-server-name';
-      name.textContent = server.name;
-      const status = document.createElement('span');
-      status.className = `mcp-server-status ${String(server.status || '').toLowerCase()}`;
-      status.textContent = server.status || 'stopped';
+      const copy = createEl('span', 'mcp-server-copy');
+      const titleRow = createEl('span', 'mcp-server-title-row');
+      const name = createEl('span', 'mcp-server-name', server.name);
+      const status = createEl('span', `mcp-server-status ${String(server.status || '').toLowerCase()}`, server.status || 'stopped');
       titleRow.appendChild(name);
       titleRow.appendChild(status);
 
-      const subtitle = document.createElement('span');
-      subtitle.className = 'mcp-server-subtitle';
+      const subtitle = createEl('span', 'mcp-server-subtitle');
       const toolCount = Number(server.tools || 0);
       if (String(server.status || '').toLowerCase() === 'ready') {
         subtitle.textContent = `${toolCount} tool${toolCount === 1 ? '' : 's'} available`;
@@ -237,25 +225,19 @@ const renderMCPModal = (session, { loading = false } = {}) => {
       copy.appendChild(titleRow);
       copy.appendChild(subtitle);
       if (server.error) {
-        const error = document.createElement('span');
-        error.className = 'mcp-server-error';
-        error.textContent = server.error;
+        const error = createEl('span', 'mcp-server-error', server.error);
         copy.appendChild(error);
       }
 
-      const switchWrap = document.createElement('span');
-      switchWrap.className = 'mcp-switch';
-      const input = document.createElement('input');
-      input.className = 'mcp-switch-input';
+      const switchWrap = createEl('span', 'mcp-switch');
+      const input = createEl('input', 'mcp-switch-input');
       input.type = 'checkbox';
       input.value = server.name;
       input.checked = enabledSet.has(server.name) || Boolean(server.enabled);
       input.disabled = disabled;
       input.dataset.mcpServer = server.name;
-      const track = document.createElement('span');
-      track.className = 'mcp-switch-track';
-      const thumb = document.createElement('span');
-      thumb.className = 'mcp-switch-thumb';
+      const track = createEl('span', 'mcp-switch-track');
+      const thumb = createEl('span', 'mcp-switch-thumb');
       track.appendChild(thumb);
       switchWrap.appendChild(input);
       switchWrap.appendChild(track);

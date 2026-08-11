@@ -183,6 +183,12 @@ function createHarness(options = {}) {
   };
 
   const app = {
+    createEl(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    },
     UI_PREFIX: '/chat',
     STORAGE_KEYS: { diffSidebarWidth: 'term_llm_diff_sidebar_width' },
     state,
