@@ -958,6 +958,26 @@ async function run(name, fn) {
     assertEqual(activeResets.length, 1, 'only latest reset timer remains active');
   });
 
+  await run('copy feedback resets failed code copies through the shared timer', async () => {
+    const { app, document, timers } = createHarness({
+      getClipboardWriter() {
+        return { async writeText() { throw new Error('denied'); } };
+      },
+    });
+    const target = new Element('div');
+    document.body.appendChild(target);
+    app.renderAssistantMarkdown(target, '```js\nthrow new Error();\n```');
+    const button = target.querySelector('.code-copy-btn');
+
+    await button.dispatchEvent({ type: 'click' });
+    assertEqual(button.title, 'Copy failed', 'failed state is visible');
+    assert(!button.classList.contains('copied'), 'failed copy does not retain copied state');
+    const reset = timers.find((timer) => timer.ms === 1500 && !timer.cleared);
+    assert(reset, 'failure uses the shared reset timer');
+    reset.callback();
+    assertEqual(button.title, 'Copy', 'idle title is restored');
+  });
+
   await run('math copy controls copy rendered TeX source as text', async () => {
     const { app, document, copied, timers } = createHarness();
     const root = document.createElement('div');

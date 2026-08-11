@@ -724,32 +724,16 @@ const decorateMathCopyControls = (target) => {
     btn.title = 'Copy math as text';
     btn.setAttribute('aria-label', 'Copy math as text');
     btn.textContent = 'Copy TeX';
-    btn.addEventListener('click', async (event) => {
+    btn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation?.();
-      const clipboard = getClipboardWriter();
-      if (!clipboard) return;
-      btn.disabled = true;
-      try {
-        await clipboard.writeText(text);
-        window.clearTimeout(btn._mathCopyResetTimer);
-        btn.classList.add('copied');
-        btn.textContent = 'Copied';
-        btn._mathCopyResetTimer = window.setTimeout(() => {
-          btn.classList.remove('copied');
-          btn.textContent = 'Copy TeX';
-          btn.disabled = !getClipboardWriter();
-        }, TURN_COPY_RESET_MS);
-      } catch (_err) {
-        btn.textContent = 'Failed';
-        window.setTimeout(() => {
-          btn.textContent = 'Copy TeX';
-          btn.disabled = !getClipboardWriter();
-        }, TURN_COPY_RESET_MS);
-      } finally {
-        if (!btn.classList.contains('copied')) btn.disabled = !getClipboardWriter();
-        else btn.disabled = false;
-      }
+      return copyTextWithFeedback(btn, text, {
+        timerKey: '_mathCopyResetTimer',
+        contentKey: 'textContent',
+        idleContent: 'Copy TeX',
+        copiedContent: 'Copied',
+        failedContent: 'Failed'
+      });
     });
     if (!getClipboardWriter()) btn.disabled = true;
     display.appendChild(btn);
@@ -800,34 +784,17 @@ const decorateAssistantFragment = (target, options = {}) => {
     btn.className = 'code-copy-btn';
     btn.title = 'Copy';
     btn.setAttribute('aria-label', 'Copy code');
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-    btn.addEventListener('click', async () => {
+    btn.innerHTML = TURN_COPY_ICON;
+    btn.addEventListener('click', () => {
       const code = pre.querySelector('code');
       const text = code ? code.textContent : pre.textContent;
-      const clipboard = getClipboardWriter();
-      if (!clipboard) return;
-      btn.disabled = true;
-      try {
-        await clipboard.writeText(text);
-        window.clearTimeout(btn._codeCopyResetTimer);
-        btn.classList.add('copied');
-        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-        btn._codeCopyResetTimer = window.setTimeout(() => {
-          btn.classList.remove('copied');
-          btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-          btn.disabled = !getClipboardWriter();
-        }, 1500);
-      } catch (_err) {
-        window.clearTimeout(btn._codeCopyResetTimer);
-        btn.title = 'Copy failed';
-        btn._codeCopyResetTimer = window.setTimeout(() => {
-          btn.title = 'Copy';
-          btn.disabled = !getClipboardWriter();
-        }, 1500);
-      } finally {
-        if (!btn.classList.contains('copied')) btn.disabled = !getClipboardWriter();
-        else btn.disabled = false;
-      }
+      return copyTextWithFeedback(btn, text, {
+        timerKey: '_codeCopyResetTimer',
+        idleContent: TURN_COPY_ICON,
+        copiedContent: TURN_COPIED_ICON,
+        idleTitle: 'Copy',
+        failedTitle: 'Copy failed'
+      });
     });
     if (!getClipboardWriter()) btn.disabled = true;
     pre.style.position = 'relative';
@@ -1688,30 +1655,35 @@ const createTranscriptGapNode = (message) => {
   return gap;
 };
 
-const copyTextWithFeedback = async (button, text, idleLabel, timerKey) => {
+const applyCopyButtonState = (button, contentKey, content, title, ariaLabel) => {
+  if (content !== undefined) button[contentKey] = content;
+  if (title !== undefined) button.title = title;
+  if (ariaLabel !== undefined) button.setAttribute('aria-label', ariaLabel);
+};
+
+const copyTextWithFeedback = async (btn, text, options = {}) => {
   const clipboard = getClipboardWriter();
   if (!clipboard || !text) return;
-  button.disabled = true;
+  const {
+    timerKey, contentKey = 'innerHTML', idleContent, copiedContent, failedContent,
+    idleTitle, copiedTitle, failedTitle, idleAria, copiedAria
+  } = options;
+  btn.disabled = true;
   try {
     await clipboard.writeText(text);
-    window.clearTimeout(button[timerKey]);
-    button.classList.add('copied');
-    button.innerHTML = TURN_COPIED_ICON;
-    button.title = 'Copied';
-    button.setAttribute('aria-label', 'Copied');
-    button[timerKey] = window.setTimeout(() => {
-      button.classList.remove('copied');
-      button.innerHTML = TURN_COPY_ICON;
-      button.title = idleLabel;
-      button.setAttribute('aria-label', idleLabel);
-      button.disabled = !getClipboardWriter();
-    }, TURN_COPY_RESET_MS);
+    btn.classList.add('copied');
+    applyCopyButtonState(btn, contentKey, copiedContent, copiedTitle, copiedAria);
   } catch (_err) {
-    button.title = 'Copy failed';
-    window.setTimeout(() => { button.title = idleLabel; }, TURN_COPY_RESET_MS);
-  } finally {
-    button.disabled = button.classList.contains('copied') ? false : !getClipboardWriter();
+    btn.classList.remove('copied');
+    applyCopyButtonState(btn, contentKey, failedContent ?? idleContent, failedTitle, idleAria);
   }
+  window.clearTimeout(btn[timerKey]);
+  btn.disabled = false;
+  btn[timerKey] = window.setTimeout(() => {
+    btn.classList.remove('copied');
+    applyCopyButtonState(btn, contentKey, idleContent, idleTitle, idleAria);
+    btn.disabled = !getClipboardWriter();
+  }, TURN_COPY_RESET_MS);
 };
 
 const ATTACHMENT_IMAGE_MAX_WIDTH = 360, ATTACHMENT_IMAGE_MAX_HEIGHT = 270;
@@ -2310,7 +2282,16 @@ const createTurnActionPanel = (turn) => {
     const assistantId = button.dataset.turnAssistantId || '';
     const currentTurn = getAssistantTurns(ensureActiveSession())
       .find((candidate) => candidate.lastAssistantId === assistantId);
-    return copyTextWithFeedback(button, buildTurnClipboardText(currentTurn), 'Copy response', '_turnCopyResetTimer');
+    return copyTextWithFeedback(button, buildTurnClipboardText(currentTurn), {
+      timerKey: '_turnCopyResetTimer',
+      idleContent: TURN_COPY_ICON,
+      copiedContent: TURN_COPIED_ICON,
+      idleTitle: 'Copy response',
+      copiedTitle: 'Copied',
+      failedTitle: 'Copy failed',
+      idleAria: 'Copy response',
+      copiedAria: 'Copied'
+    });
   });
 
   panel.appendChild(button);
