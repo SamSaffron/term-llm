@@ -18,9 +18,10 @@ type CloseMsg struct{}
 
 // Config holds optional configuration for the inspector
 type Config struct {
-	ProviderName string
-	ModelName    string
-	ToolSpecs    []llm.ToolSpec
+	ProviderName  string
+	ModelName     string
+	ToolSpecs     []llm.ToolSpec
+	ToolDiscovery *llm.ToolDiscoveryDiagnostics
 
 	// Compaction boundary metadata lets the inspector mark where the active
 	// compacted context begins while still showing the full preserved scrollback.
@@ -62,6 +63,7 @@ type Model struct {
 	providerName    string
 	modelName       string
 	toolSpecs       []llm.ToolSpec
+	toolDiscovery   *llm.ToolDiscoveryDiagnostics
 	reasoningConfig appconfig.ReasoningConfig
 
 	// Compaction boundary metadata for rendering debug markers in Ctrl+O.
@@ -104,6 +106,12 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 		m.providerName = cfg.ProviderName
 		m.modelName = cfg.ModelName
 		m.toolSpecs = cfg.ToolSpecs
+		if cfg.ToolDiscovery != nil {
+			diagnostics := *cfg.ToolDiscovery
+			diagnostics.Recent = append([]llm.ToolActivationDiagnostic(nil), cfg.ToolDiscovery.Recent...)
+			diagnostics.Servers = append([]llm.ToolDiscoveryServerDiagnostic(nil), cfg.ToolDiscovery.Servers...)
+			m.toolDiscovery = &diagnostics
+		}
 		m.reasoningConfig = cfg.ReasoningConfig
 		m.hasCompactionBoundary = cfg.HasCompactionBoundary
 		if cfg.HasCompactionBoundary {
@@ -123,6 +131,7 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 // renderContent renders all messages and splits into lines
 func (m *Model) renderContent() {
 	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store, m.providerName, m.modelName, m.toolSpecs, m.reasoningConfig) // -2 for padding
+	renderer.SetToolDiscovery(m.toolDiscovery)
 	renderer.SetCompactionBoundary(m.hasCompactionBoundary, m.compactionBoundaryIndex, m.compactionBoundarySeq, m.compactionCount)
 	content, items := renderer.RenderMessages(m.messages)
 	m.contentLines = strings.Split(content, "\n")

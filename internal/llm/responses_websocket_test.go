@@ -1099,9 +1099,11 @@ func TestResponsesClientWebSocketPreviousResponseRejectedRetriesFullState(t *tes
 	defer server.Close()
 
 	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true, WebSocketServerState: true, DisableServerState: true}
+	discoveryCall := ResponsesInputItem{Raw: json.RawMessage(`{"type":"tool_search_call","execution":"client","call_id":"search-1","status":"completed","arguments":{"query":"eta"}}`)}
+	discoveryOutput := ResponsesInputItem{Raw: json.RawMessage(`{"type":"tool_search_output","execution":"client","call_id":"search-1","status":"completed","tools":[{"type":"function","name":"eta","description":"eta","defer_loading":true,"parameters":{"type":"object"}}]}`)}
 	for _, input := range [][]ResponsesInputItem{
 		{{Type: "message", Role: "user", Content: "one"}},
-		{{Type: "message", Role: "user", Content: "one"}, {Type: "message", Role: "user", Content: "two"}},
+		{{Type: "message", Role: "user", Content: "one"}, discoveryCall, discoveryOutput, {Type: "message", Role: "user", Content: "two"}},
 	} {
 		stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: input, Stream: true}, false)
 		if err != nil {
@@ -1125,8 +1127,16 @@ func TestResponsesClientWebSocketPreviousResponseRejectedRetriesFullState(t *tes
 		t.Fatalf("full-state retry still had previous_response_id: %#v", secondRequest)
 	}
 	input, ok := secondRequest["input"].([]any)
-	if !ok || len(input) != 2 {
-		t.Fatalf("full-state retry input = %#v, want both input items", secondRequest["input"])
+	if !ok || len(input) != 4 {
+		t.Fatalf("full-state retry input = %#v, want message plus discovery call/output plus continuation", secondRequest["input"])
+	}
+	var types []string
+	for _, value := range input {
+		item, _ := value.(map[string]any)
+		types = append(types, fmt.Sprint(item["type"]))
+	}
+	if got := strings.Join(types, ","); got != "message,tool_search_call,tool_search_output,message" {
+		t.Fatalf("full-state retry item types = %s", got)
 	}
 }
 

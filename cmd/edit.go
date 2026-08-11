@@ -218,8 +218,9 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editMCP != "" {
 		engine := newEngine(provider, cfg)
 		mcpOpts := &MCPOptions{
-			Provider: provider,
-			YoloMode: resolvedYolo,
+			Provider:      provider,
+			YoloMode:      resolvedYolo,
+			ToolDiscovery: cfg.ToolDiscovery,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model

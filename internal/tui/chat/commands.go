@@ -2637,7 +2637,7 @@ func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
 		if m.mcpManager == nil || len(m.mcpManager.AvailableServers()) == 0 {
 			return m.showMCPQuickStart()
 		}
-		m.dialog.ShowMCPPicker(m.mcpManager)
+		m.showMCPPicker()
 		m.setTextareaValue("")
 		return m, nil
 	}
@@ -3038,6 +3038,15 @@ func (m *Model) newInspectorConfig() *inspector.Config {
 	if m.sess != nil {
 		cfg.CompactionBoundarySeq = m.sess.CompactionSeq
 		cfg.CompactionCount = m.sess.CompactionCount
+	}
+	if m.engine != nil {
+		sessionID := ""
+		if m.sess != nil {
+			sessionID = m.sess.ID
+		}
+		if diagnostics, ok := m.engine.ToolDiscoveryDiagnostics(sessionID); ok {
+			cfg.ToolDiscovery = &diagnostics
+		}
 	}
 	return cfg
 }

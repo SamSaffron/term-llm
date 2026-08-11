@@ -119,6 +119,10 @@ const (
 	DefaultToolsShellNonTTYEnv     = "TERM_LLM_ALLOW_NON_TTY"
 	DefaultToolsMaxToolOutputChars = 20000
 
+	DefaultToolDiscoveryMode      = "auto"
+	DefaultToolDiscoveryStrategy  = "auto"
+	DefaultToolDiscoveryThreshold = 24
+
 	DefaultSessionsEnabled          = true
 	DefaultSessionsMaxAgeDays       = 0
 	DefaultSessionsMaxCount         = 0
@@ -310,6 +314,10 @@ var keySpecs = []KeySpec{
 	def("tools.shell_non_tty_env", DefaultToolsShellNonTTYEnv),
 	optional("tools.image_provider"),
 	def("tools.max_tool_output_chars", DefaultToolsMaxToolOutputChars),
+
+	def("tool_discovery.mode", DefaultToolDiscoveryMode),
+	def("tool_discovery.strategy", DefaultToolDiscoveryStrategy),
+	def("tool_discovery.threshold", DefaultToolDiscoveryThreshold),
 
 	def("agents.use_builtin", true),
 	def("agents.search_paths", []string{}),

@@ -2,10 +2,13 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,10 +29,13 @@ var mcpStartupTimeout = 30 * time.Second
 
 // ServerState holds the state of a managed MCP server.
 type ServerState struct {
-	Name   string
-	Status ServerStatus
-	Error  error
-	Client *Client
+	Name            string
+	Status          ServerStatus
+	Error           error
+	RefreshError    error
+	LastToolRefresh time.Time
+	ToolCount       int
+	Client          *Client
 }
 
 // StatusUpdate is sent when a server's status changes.
@@ -47,11 +53,16 @@ type serverStartup struct {
 
 // Manager handles MCP server lifecycle and provides tools to LLM.
 type Manager struct {
-	config   *Config
-	clients  map[string]*Client
-	statuses map[string]*ServerState
-	startups map[string]*serverStartup
-	mu       sync.RWMutex
+	config     *Config
+	clients    map[string]*Client
+	statuses   map[string]*ServerState
+	startups   map[string]*serverStartup
+	catalogues map[string]*ToolSnapshot
+	mu         sync.RWMutex
+
+	aggregate           atomic.Pointer[CatalogueSnapshot]
+	aggregateGeneration uint64
+	catalogueHandler    func(CatalogueEvent)
 
 	// Channel for status updates (optional, for UI notifications)
 	statusChan chan StatusUpdate
@@ -62,11 +73,26 @@ type Manager struct {
 
 // NewManager creates a new MCP manager.
 func NewManager() *Manager {
-	return &Manager{
-		clients:  make(map[string]*Client),
-		statuses: make(map[string]*ServerState),
-		startups: make(map[string]*serverStartup),
+	manager := &Manager{
+		clients:    make(map[string]*Client),
+		statuses:   make(map[string]*ServerState),
+		startups:   make(map[string]*serverStartup),
+		catalogues: make(map[string]*ToolSnapshot),
 	}
+	manager.aggregate.Store(&CatalogueSnapshot{})
+	return manager
+}
+
+// NewManagerWithConfig creates a manager from an explicit configuration. It is
+// useful for isolated runtimes and deterministic evaluation without touching
+// the user's global mcp.json.
+func NewManagerWithConfig(cfg *Config) *Manager {
+	manager := NewManager()
+	if cfg == nil {
+		cfg = &Config{Servers: make(map[string]ServerConfig)}
+	}
+	manager.config = cfg
+	return manager
 }
 
 // LoadConfig loads the MCP configuration.
@@ -85,7 +111,95 @@ func (m *Manager) LoadConfig() error {
 func (m *Manager) Config() *Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.config
+	if m.config == nil {
+		return nil
+	}
+	copy := &Config{Servers: make(map[string]ServerConfig, len(m.config.Servers))}
+	for name, server := range m.config.Servers {
+		serverCopy := server
+		serverCopy.AlwaysLoad = append([]string(nil), server.AlwaysLoad...)
+		copy.Servers[name] = serverCopy
+	}
+	return copy
+}
+
+// SetCatalogueChangeHandler sets the callback invoked after aggregate immutable
+// publication. The callback is never invoked while Manager.mu is held.
+func (m *Manager) SetCatalogueChangeHandler(handler func(CatalogueEvent)) {
+	m.mu.Lock()
+	m.catalogueHandler = handler
+	m.mu.Unlock()
+}
+
+// CatalogueSnapshot returns the current immutable complete namespaced catalogue.
+// Callers must not mutate the returned snapshot or its schema maps.
+func (m *Manager) CatalogueSnapshot() *CatalogueSnapshot {
+	return m.aggregate.Load()
+}
+
+func (m *Manager) publishAggregateLocked() *CatalogueSnapshot {
+	m.aggregateGeneration++
+	tools := make([]CatalogTool, 0)
+	latest := time.Time{}
+	for server, snapshot := range m.catalogues {
+		if snapshot == nil {
+			continue
+		}
+		if snapshot.FetchedAt.After(latest) {
+			latest = snapshot.FetchedAt
+		}
+		for _, tool := range snapshot.Tools {
+			tools = append(tools, namespaceCatalogTool(server, tool))
+		}
+	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
+	hashes := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		hashes = append(hashes, tool.Name+":"+tool.SchemaHash)
+	}
+	data, _ := json.Marshal(hashes)
+	sum := sha256.Sum256(data)
+	snapshot := &CatalogueSnapshot{
+		Generation: m.aggregateGeneration,
+		FetchedAt:  latest,
+		Tools:      tools,
+		Hash:       hex.EncodeToString(sum[:]),
+	}
+	m.aggregate.Store(snapshot)
+	return snapshot
+}
+
+func (m *Manager) handleCatalogueChange(server string, client *Client, oldSnapshot, newSnapshot *ToolSnapshot, refreshErr error) {
+	m.mu.Lock()
+	if m.clients[server] != client {
+		m.mu.Unlock()
+		return
+	}
+	state := m.statuses[server]
+	if refreshErr != nil {
+		if state != nil {
+			state.RefreshError = refreshErr
+		}
+		handler := m.catalogueHandler
+		snapshot := copyCatalogueSnapshot(m.aggregate.Load())
+		m.mu.Unlock()
+		if handler != nil {
+			handler(CatalogueEvent{Server: server, Snapshot: snapshot, Err: refreshErr})
+		}
+		return
+	}
+	m.catalogues[server] = copyToolSnapshot(newSnapshot)
+	if state != nil {
+		state.RefreshError = nil
+		state.LastToolRefresh = newSnapshot.FetchedAt
+		state.ToolCount = len(newSnapshot.Tools)
+	}
+	snapshot := m.publishAggregateLocked()
+	handler := m.catalogueHandler
+	m.mu.Unlock()
+	if handler != nil {
+		handler(CatalogueEvent{Server: server, Snapshot: copyCatalogueSnapshot(snapshot)})
+	}
 }
 
 // SetStatusChannel sets a channel to receive status updates.
@@ -199,8 +313,11 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		}
 	}
 
-	// Create client and set status to starting
+	// Create client and set status to starting.
 	client := NewClient(name, serverCfg)
+	client.SetCatalogueChangeHandler(func(oldSnapshot, newSnapshot *ToolSnapshot, err error) {
+		m.handleCatalogueChange(name, client, oldSnapshot, newSnapshot, err)
+	})
 
 	// Set sampling handler if available
 	if m.samplingHandler != nil {
@@ -260,16 +377,29 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		}
 
 		status := StatusReady
+		var catalogueEvent *CatalogueEvent
+		var catalogueHandler func(CatalogueEvent)
 		if err != nil {
 			status = StatusFailed
 			state.Error = err
 		} else {
 			state.Error = nil
+			if snapshot := client.ToolSnapshot(); snapshot != nil {
+				m.catalogues[name] = snapshot
+				state.LastToolRefresh = snapshot.FetchedAt
+				state.ToolCount = len(snapshot.Tools)
+				aggregate := m.publishAggregateLocked()
+				catalogueEvent = &CatalogueEvent{Server: name, Snapshot: copyCatalogueSnapshot(aggregate)}
+				catalogueHandler = m.catalogueHandler
+			}
 		}
 		state.Status = status
 		m.mu.Unlock()
 
 		m.sendStatus(name, status, err)
+		if catalogueEvent != nil && catalogueHandler != nil {
+			catalogueHandler(*catalogueEvent)
+		}
 		if err == nil {
 			if session := client.currentSession(); session != nil {
 				go m.watchSession(name, client, session)
@@ -288,16 +418,31 @@ func (m *Manager) watchSession(name string, client *Client, session *sdkmcp.Clie
 		err = fmt.Errorf("MCP server %s session ended: %w", name, err)
 	}
 
-	m.mu.Lock()
+	m.mu.RLock()
 	state, ok := m.statuses[name]
-	if !ok || state.Status != StatusReady || state.Client != client || m.clients[name] != client || !client.clearTerminatedSession(session) {
+	current := ok && state.Status == StatusReady && state.Client == client && m.clients[name] == client
+	m.mu.RUnlock()
+	if !current || !client.clearTerminatedSession(session) {
+		return
+	}
+
+	m.mu.Lock()
+	state, ok = m.statuses[name]
+	if !ok || state.Client != client || m.clients[name] != client {
 		m.mu.Unlock()
 		return
 	}
+	delete(m.catalogues, name)
+	snapshot := m.publishAggregateLocked()
+	handler := m.catalogueHandler
 	state.Status = StatusFailed
 	state.Error = err
+	state.ToolCount = 0
 	m.sendStatusLocked(name, StatusFailed, err)
 	m.mu.Unlock()
+	if handler != nil {
+		handler(CatalogueEvent{Server: name, Snapshot: copyCatalogueSnapshot(snapshot)})
+	}
 }
 
 // Disable stops an MCP server.
@@ -314,14 +459,27 @@ func (m *Manager) Disable(name string) error {
 		return nil
 	}
 	delete(m.clients, name)
+	_, hadCatalogue := m.catalogues[name]
+	delete(m.catalogues, name)
+	var aggregate *CatalogueSnapshot
+	var catalogueHandler func(CatalogueEvent)
+	if hadCatalogue {
+		aggregate = m.publishAggregateLocked()
+		catalogueHandler = m.catalogueHandler
+	}
 	if state, ok := m.statuses[name]; ok {
 		state.Status = StatusStopped
 		state.Error = nil
+		state.RefreshError = nil
+		state.ToolCount = 0
 		state.Client = nil
 	}
 	m.mu.Unlock()
 
 	m.sendStatus(name, StatusStopped, nil)
+	if aggregate != nil && catalogueHandler != nil {
+		catalogueHandler(CatalogueEvent{Server: name, Snapshot: copyCatalogueSnapshot(aggregate)})
+	}
 
 	return client.Stop()
 }
@@ -348,33 +506,32 @@ func (m *Manager) StopAll() {
 	m.clients = make(map[string]*Client)
 	m.statuses = make(map[string]*ServerState)
 	m.startups = make(map[string]*serverStartup)
+	m.catalogues = make(map[string]*ToolSnapshot)
+	snapshot := m.publishAggregateLocked()
+	handler := m.catalogueHandler
 	m.mu.Unlock()
 
 	for _, c := range clients {
-		c.Stop()
+		_ = c.Stop()
+	}
+	if handler != nil {
+		handler(CatalogueEvent{Snapshot: copyCatalogueSnapshot(snapshot)})
 	}
 }
 
-// AllTools returns all tools from all running MCP servers.
-// Tool names are prefixed with server name to avoid collisions.
+// AllTools returns a copy-safe legacy projection of the complete namespaced catalogue.
 func (m *Manager) AllTools() []ToolSpec {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var allTools []ToolSpec
-	for name, state := range m.statuses {
-		if state.Status != StatusReady || state.Client == nil {
-			continue
-		}
-		for _, tool := range state.Client.Tools() {
-			// Prefix tool name with server name for uniqueness
-			prefixedTool := ToolSpec{
-				Name:        fmt.Sprintf("%s__%s", name, tool.Name),
-				Description: fmt.Sprintf("[%s] %s", name, tool.Description),
-				Schema:      tool.Schema,
-			}
-			allTools = append(allTools, prefixedTool)
-		}
+	snapshot := m.aggregate.Load()
+	if snapshot == nil {
+		return nil
+	}
+	allTools := make([]ToolSpec, 0, len(snapshot.Tools))
+	for _, tool := range snapshot.Tools {
+		allTools = append(allTools, ToolSpec{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Schema:      cloneMap(tool.InputSchema),
+		})
 	}
 	return allTools
 }
@@ -393,6 +550,15 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMe
 	if !ok || state.Status != StatusReady || state.Client == nil {
 		m.mu.RUnlock()
 		return llm.ToolOutput{}, fmt.Errorf("MCP server %s is not running", serverName)
+	}
+	snapshot := m.catalogues[serverName]
+	if snapshot == nil {
+		m.mu.RUnlock()
+		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is unavailable: server catalogue is not ready", fullName)
+	}
+	if _, ok := snapshot.ByOriginal[toolName]; !ok {
+		m.mu.RUnlock()
+		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is no longer available in the current catalogue", fullName)
 	}
 	client := state.Client
 	m.mu.RUnlock()
@@ -418,9 +584,12 @@ func (m *Manager) GetAllStates() []ServerState {
 	states := make([]ServerState, 0, len(m.statuses))
 	for _, state := range m.statuses {
 		states = append(states, ServerState{
-			Name:   state.Name,
-			Status: state.Status,
-			Error:  state.Error,
+			Name:            state.Name,
+			Status:          state.Status,
+			Error:           state.Error,
+			RefreshError:    state.RefreshError,
+			LastToolRefresh: state.LastToolRefresh,
+			ToolCount:       state.ToolCount,
 		})
 	}
 	return states

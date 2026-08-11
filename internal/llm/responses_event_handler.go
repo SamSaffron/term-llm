@@ -207,26 +207,38 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 
 	case "response.output_item.added":
 		var itemEvent struct {
-			Item        responsesOutputItem `json:"item"`
-			OutputIndex int                 `json:"output_index"`
+			Item        json.RawMessage `json:"item"`
+			OutputIndex int             `json:"output_index"`
 		}
 		if err := unmarshalEvent(&itemEvent); err != nil {
 			return false, err
 		}
-		if itemEvent.Item.Type == "function_call" {
-			h.toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
-		} else if itemEvent.Item.Type == "web_search_call" {
-			callID := responsesWebSearchCallID(itemEvent.Item.ID, itemEvent.OutputIndex)
+		var addedItem responsesOutputItem
+		var addedType struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(itemEvent.Item, &addedType); err != nil {
+			return false, fmt.Errorf("decode Responses API added output item type: %w", err)
+		}
+		if addedType.Type != "tool_search_call" {
+			if err := json.Unmarshal(itemEvent.Item, &addedItem); err != nil {
+				return false, fmt.Errorf("decode Responses API added output item: %w", err)
+			}
+		}
+		if addedType.Type == "function_call" {
+			h.toolState.StartCall(itemEvent.OutputIndex, addedItem.CallID, addedItem.Name)
+		} else if addedType.Type == "web_search_call" {
+			callID := responsesWebSearchCallID(addedItem.ID, itemEvent.OutputIndex)
 			if _, started := h.webSearchStarted[callID]; !started {
 				if err := sendEvent(Event{Type: EventToolExecStart, ToolCallID: callID, ToolName: WebSearchToolName}); err != nil {
 					return false, err
 				}
 				h.webSearchStarted[callID] = struct{}{}
 			}
-		} else if itemEvent.Item.Type == "reasoning" {
-			h.reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
-		} else if itemEvent.Item.Type == "message" {
-			agent := strings.TrimSpace(itemEvent.Item.Agent)
+		} else if addedType.Type == "reasoning" {
+			h.reasoningState.Start(itemEvent.OutputIndex, addedItem.ID, addedItem.EncryptedContent, addedItem.Summary)
+		} else if addedType.Type == "message" {
+			agent := strings.TrimSpace(addedItem.Agent)
 			h.visibleMessageByOutputIndex[itemEvent.OutputIndex] = agent == "" || agent == "/root"
 		}
 
@@ -247,6 +259,40 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		}
 		if err := unmarshalEvent(&doneEnvelope); err != nil {
 			return false, err
+		}
+		var itemType struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(doneEnvelope.Item, &itemType); err != nil {
+			return false, fmt.Errorf("decode Responses API output item type: %w", err)
+		}
+		if itemType.Type == "tool_search_call" {
+			var discovery struct {
+				Execution string          `json:"execution"`
+				CallID    string          `json:"call_id"`
+				Arguments json.RawMessage `json:"arguments"`
+			}
+			if err := json.Unmarshal(doneEnvelope.Item, &discovery); err != nil {
+				return false, fmt.Errorf("decode tool_search_call: %w", err)
+			}
+			if discovery.Execution != "client" || strings.TrimSpace(discovery.CallID) == "" {
+				return false, fmt.Errorf("invalid client tool_search_call execution=%q call_id=%q", discovery.Execution, discovery.CallID)
+			}
+			arguments := discovery.Arguments
+			if len(arguments) > 0 && arguments[0] == '"' {
+				var encoded string
+				if err := json.Unmarshal(arguments, &encoded); err != nil {
+					return false, fmt.Errorf("decode tool_search_call arguments string: %w", err)
+				}
+				arguments = json.RawMessage(encoded)
+			}
+			if !json.Valid(arguments) {
+				return false, fmt.Errorf("tool_search_call returned invalid arguments")
+			}
+			if err := sendEvent(Event{Type: EventDiscoveryCall, DiscoveryCall: &ToolDiscoveryCall{ID: discovery.CallID, Arguments: append(json.RawMessage(nil), arguments...)}}); err != nil {
+				return false, err
+			}
+			break
 		}
 		var doneEvent struct {
 			Item        responsesOutputItem

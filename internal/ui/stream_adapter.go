@@ -228,6 +228,44 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				return
 			}
 
+		case llm.EventDiscoveryCall:
+			if event.DiscoveryCall == nil {
+				continue
+			}
+			a.markAttemptCommitted()
+			callID := event.DiscoveryCall.ID
+			if callID != "" {
+				a.seenToolStarts[callID] = struct{}{}
+			}
+			if !emit(ToolStartEvent(callID, "tool_search", "(native client discovery)", event.DiscoveryCall.Arguments)) {
+				return
+			}
+			a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+
+		case llm.EventDiscoveryOutput:
+			if event.DiscoveryOutput == nil {
+				continue
+			}
+			callID := event.DiscoveryOutput.CallID
+			if callID != "" {
+				a.seenToolEnds[callID] = struct{}{}
+			}
+			names := make([]string, 0, len(event.DiscoveryOutput.Tools))
+			for _, selected := range event.DiscoveryOutput.Tools {
+				names = append(names, selected.Spec.Name)
+			}
+			infoRaw, _ := json.Marshal(map[string]any{
+				"execution":            "client",
+				"catalogue_generation": event.DiscoveryOutput.CatalogueGen,
+				"catalogue_hash":       event.DiscoveryOutput.CatalogueHash,
+				"tools":                names,
+			})
+			if !emit(ToolEndEvent(callID, "tool_search", string(infoRaw), true)) {
+				return
+			}
+			a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
+			a.resetAttemptUsage()
+
 		case llm.EventToolCall:
 			// A tool call is a durable boundary. Usage from the provider attempt that
 			// produced it must not be rolled back by a later provisional retry discard.

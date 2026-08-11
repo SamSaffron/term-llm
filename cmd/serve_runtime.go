@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -33,6 +34,7 @@ type serveRuntime struct {
 	engine               *llm.Engine
 	toolMgr              *tools.ToolManager
 	mcpManager           *mcp.Manager
+	toolDiscovery        config.ToolDiscoveryConfig
 	store                session.Store
 	goalStore            session.Store
 	syntheticUserCB      func(context.Context, llm.Message) error
@@ -1108,6 +1110,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			return serveRunResult{}, err
 		}
 	}
+	// Serve requests explicitly opt into the planner only when this runtime has
+	// an active MCP selection. Auxiliary requests sharing the engine stay out.
+	req.EnableToolDiscovery = req.EnableToolDiscovery || (rt.mcpManager != nil && strings.TrimSpace(rt.mcpSetting) != "")
 	restoreAllowedTools := rt.applyRequestAllowedTools(&req)
 	defer restoreAllowedTools()
 	rt.Touch()

@@ -33,6 +33,23 @@ func CallIDFromContext(ctx context.Context) string {
 // sessionIDKey is the context key for the current session ID.
 const sessionIDKey contextKey = "session_id"
 
+const toolRunIDKey contextKey = "tool_run_id"
+
+// ContextWithToolRunID binds dynamic schema activation to one engine run.
+func ContextWithToolRunID(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, toolRunIDKey, runID)
+}
+
+// ToolRunIDFromContext returns the active engine run identity.
+func ToolRunIDFromContext(ctx context.Context) string {
+	if v := ctx.Value(toolRunIDKey); v != nil {
+		if id, ok := v.(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
 const approvalTranscriptKey contextKey = "approval_transcript"
 
 // ContextWithApprovalTranscript returns a new context carrying the conversation
@@ -105,6 +122,21 @@ type Capabilities struct {
 	OrderedInlineToolEvents bool // Provider requires streamed text/tool/text order preserved in persisted assistant parts
 }
 
+// NativeToolDiscoverySupport describes a provider/model/transport combination
+// whose client-executed discovery protocol has been explicitly verified.
+type NativeToolDiscoverySupport struct {
+	Supported bool
+	Name      string
+	Reason    string
+}
+
+// NativeToolDiscoveryProvider is implemented only by providers that can
+// translate the provider-neutral discovery request and replay parts to their wire
+// protocol. Support must be exact rather than inferred from general tool calling.
+type NativeToolDiscoveryProvider interface {
+	NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport
+}
+
 // Stream yields events until io.EOF.
 type Stream interface {
 	Recv() (Event, error)
@@ -164,7 +196,14 @@ type Request struct {
 	Tools                          []ToolSpec
 	ToolChoice                     ToolChoice
 	LastTurnToolChoice             *ToolChoice // If set, force this tool choice on the last agentic turn
-	ParallelToolCalls              bool
+	// EnableToolDiscovery opts this request into an attached dynamic tool planner.
+	// It is internal orchestration state and is not provider metadata.
+	EnableToolDiscovery bool
+	// NativeToolDiscovery asks a capable provider adapter to expose its native
+	// client-executed discovery control tool. Deferred schemas remain in neutral
+	// discovery output parts, never in the ordinary top-level Tools slice.
+	NativeToolDiscovery *NativeToolDiscoveryRequest
+	ParallelToolCalls   bool
 	// AllowedToolsPresent applies an internal, request-scoped execution filter.
 	// It is consumed by runtimes before calling Engine.Stream and is not provider metadata.
 	// A present empty AllowedTools slice intentionally blocks every callable tool.
@@ -217,6 +256,8 @@ const (
 	PartToolResult      PartType = "tool_result"
 	PartToolActivity    PartType = "tool_activity"    // Persisted display-only provider-managed tool activity; never sent to providers.
 	PartProviderReplay  PartType = "provider_replay"  // Hidden provider protocol state; never rendered/exported.
+	PartDiscoveryCall   PartType = "discovery_call"   // Provider-neutral native discovery call, translated only by capable adapters.
+	PartDiscoveryOutput PartType = "discovery_output" // Trusted schemas selected by the local planner for a discovery call.
 	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
 	PartAgentMention    PartType = "agent_mention"    // Provider-visible delegation instruction; excluded from human-visible text surfaces.
 	PartPathNote        PartType = "path_note"        // Persisted branch-context provenance; adjacent text is sent as developer context.
@@ -333,6 +374,8 @@ type Part struct {
 	ToolResult                *ToolResult
 	ToolActivity              *ToolActivity
 	ProviderReplay            *ProviderReplayItem        // Opaque Responses output item used only for stateless continuation.
+	DiscoveryCall             *ToolDiscoveryCall         // Native discovery request emitted by a capable provider.
+	DiscoveryOutput           *ToolDiscoveryOutput       // Planner-selected trusted schemas paired to a discovery call.
 	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
 	PathNote                  *PathNoteProvenance        // Branch-context metadata; persisted but not sent to providers.
 }
@@ -401,6 +444,49 @@ func cloneToolActivity(activity *ToolActivity) *ToolActivity {
 // Raw is persisted for provider continuation but omitted from display and exports.
 type ProviderReplayItem struct {
 	Raw json.RawMessage `json:"raw"`
+}
+
+// NativeToolDiscoveryRequest is provider-neutral orchestration metadata. Search
+// is the planner-owned input contract; provider adapters translate it to their
+// native discovery tool only when NativeToolDiscoverySupport succeeds.
+type NativeToolDiscoveryRequest struct {
+	Search ToolSpec `json:"search"`
+}
+
+// ToolDiscoveryCall records a provider-native request for local catalogue search.
+type ToolDiscoveryCall struct {
+	ID        string          `json:"id"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// DiscoveredTool is a trusted catalogue schema selected by the local planner.
+// SchemaHash binds replay to the authorised catalogue generation that supplied it.
+type DiscoveredTool struct {
+	Spec       ToolSpec `json:"spec"`
+	SchemaHash string   `json:"schema_hash"`
+}
+
+// ToolDiscoveryOutput pairs trusted schemas with one native discovery call.
+type ToolDiscoveryOutput struct {
+	CallID        string           `json:"call_id"`
+	CatalogueHash string           `json:"catalogue_hash"`
+	CatalogueGen  uint64           `json:"catalogue_generation"`
+	Tools         []DiscoveredTool `json:"tools"`
+}
+
+func cloneToolDiscoveryOutput(output *ToolDiscoveryOutput) *ToolDiscoveryOutput {
+	if output == nil {
+		return nil
+	}
+	cloned := *output
+	cloned.Tools = make([]DiscoveredTool, len(output.Tools))
+	for i, selected := range output.Tools {
+		selected.Spec.Schema = deepCopyMap(selected.Spec.Schema)
+		selected.Spec.OutputSchema = deepCopyMap(selected.Spec.OutputSchema)
+		selected.Spec.AllowedCallers = append([]string(nil), selected.Spec.AllowedCallers...)
+		cloned.Tools[i] = selected
+	}
+	return &cloned
 }
 
 // ToolSpec describes a callable tool.
@@ -542,24 +628,26 @@ type ToolResult struct {
 type EventType string
 
 const (
-	EventTextDelta      EventType = "text_delta"
-	EventReasoningDelta EventType = "reasoning_delta" // For thinking models (OpenRouter reasoning_content)
-	EventToolCall       EventType = "tool_call"
-	EventToolExecStart  EventType = "tool_exec_start" // Emitted when tool execution begins
-	EventToolExecEnd    EventType = "tool_exec_end"   // Emitted when tool execution completes
-	EventHeartbeat      EventType = "heartbeat"       // Emitted while a long-running tool is still active
-	EventUsage          EventType = "usage"
-	EventPhase          EventType = "phase"      // Emitted for high-level phase changes (Thinking, Searching, etc.)
-	EventCompaction     EventType = "compaction" // Emitted after context compaction has been applied by the owner.
-	EventDone           EventType = "done"
-	EventError          EventType = "error"
-	EventRetry          EventType = "retry"           // Emitted when retrying after rate limit or transport recovery
-	EventAttemptDiscard EventType = "attempt_discard" // Discard provisional assistant output from the current streamed attempt
-	EventInterjection   EventType = "interjection"    // User interjected a message mid-stream
-	EventModelSwitch    EventType = "model_switch"    // Request model changed at a provider-turn boundary
-	EventImageGenerated EventType = "image_generated" // Emitted when a built-in image_generation tool returns an image
-	EventToolActivity   EventType = "tool_activity"   // Internal-only durable display state for provider-managed tools.
-	EventProviderReplay EventType = "provider_replay" // Internal-only opaque Responses output item.
+	EventTextDelta       EventType = "text_delta"
+	EventReasoningDelta  EventType = "reasoning_delta" // For thinking models (OpenRouter reasoning_content)
+	EventToolCall        EventType = "tool_call"
+	EventToolExecStart   EventType = "tool_exec_start" // Emitted when tool execution begins
+	EventToolExecEnd     EventType = "tool_exec_end"   // Emitted when tool execution completes
+	EventHeartbeat       EventType = "heartbeat"       // Emitted while a long-running tool is still active
+	EventUsage           EventType = "usage"
+	EventPhase           EventType = "phase"      // Emitted for high-level phase changes (Thinking, Searching, etc.)
+	EventCompaction      EventType = "compaction" // Emitted after context compaction has been applied by the owner.
+	EventDone            EventType = "done"
+	EventError           EventType = "error"
+	EventRetry           EventType = "retry"            // Emitted when retrying after rate limit or transport recovery
+	EventAttemptDiscard  EventType = "attempt_discard"  // Discard provisional assistant output from the current streamed attempt
+	EventInterjection    EventType = "interjection"     // User interjected a message mid-stream
+	EventModelSwitch     EventType = "model_switch"     // Request model changed at a provider-turn boundary
+	EventImageGenerated  EventType = "image_generated"  // Emitted when a built-in image_generation tool returns an image
+	EventToolActivity    EventType = "tool_activity"    // Internal-only durable display state for provider-managed tools.
+	EventProviderReplay  EventType = "provider_replay"  // Internal-only opaque Responses output item.
+	EventDiscoveryCall   EventType = "discovery_call"   // Provider-neutral native client-executed discovery request.
+	EventDiscoveryOutput EventType = "discovery_output" // Planner-selected schemas returned to native discovery.
 )
 
 // WarningPhasePrefix is the prefix for warning-level phase events.
@@ -608,9 +696,11 @@ type Event struct {
 	RetryWaitSecs    float64
 	// ToolResponse is set when a provider needs synchronous bridged tool execution.
 	// The engine will execute the tool and send the result back on this channel.
-	ToolResponse   chan<- ToolExecutionResponse
-	ToolActivity   *ToolActivity       // For EventToolActivity; persisted for display and never forwarded to providers.
-	ProviderReplay *ProviderReplayItem // For EventProviderReplay; never forwarded to UI consumers.
+	ToolResponse    chan<- ToolExecutionResponse
+	ToolActivity    *ToolActivity        // For EventToolActivity; persisted for display and never forwarded to providers.
+	ProviderReplay  *ProviderReplayItem  // For EventProviderReplay; never forwarded to UI consumers.
+	DiscoveryCall   *ToolDiscoveryCall   // For EventDiscoveryCall.
+	DiscoveryOutput *ToolDiscoveryOutput // For EventDiscoveryOutput.
 	// Image fields (for EventImageGenerated)
 	ImageData     []byte // Raw decoded image bytes
 	ImageMimeType string // e.g. "image/png"

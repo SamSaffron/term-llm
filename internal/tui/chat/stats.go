@@ -120,6 +120,33 @@ func (m *Model) renderStatsModal() string {
 		}
 	}
 
+	if m.engine != nil {
+		sessionID := ""
+		if m.sess != nil {
+			sessionID = m.sess.ID
+		}
+		if discovery, ok := m.engine.ToolDiscoveryDiagnostics(sessionID); ok {
+			b.WriteString("\nTool Discovery\n")
+			b.WriteString(fmt.Sprintf("Mode configured/resolved: %s / %s\n", discovery.ConfiguredMode, discovery.ResolvedMode))
+			b.WriteString(fmt.Sprintf("Strategy configured/resolved: %s / %s\n", discovery.ConfiguredStrategy, discovery.Strategy))
+			b.WriteString(fmt.Sprintf("Mode reason:          %s\n", discovery.Reason))
+			b.WriteString(fmt.Sprintf("Strategy reason:      %s\n", discovery.StrategyReason))
+			if discovery.FallbackCount > 0 {
+				b.WriteString(fmt.Sprintf("Native fallback:      %d (%s)\n", discovery.FallbackCount, discovery.FallbackReason))
+			}
+			b.WriteString(fmt.Sprintf("Pinned MCP:          %d tools, ~%s tokens\n", discovery.PinnedCount, ui.FormatTokenCount(discovery.PinnedTokens)))
+			b.WriteString(fmt.Sprintf("Active MCP:          %d tools, ~%s tokens\n", discovery.ActiveMCPCount, ui.FormatTokenCount(discovery.ActiveMCPTokens)))
+			b.WriteString(fmt.Sprintf("Deferred MCP:        %d tools, ~%s tokens avoided\n", discovery.DeferredCount, ui.FormatTokenCount(discovery.DeferredTokens)))
+			b.WriteString(fmt.Sprintf("Dynamic budget:      %d/%d tools\n", discovery.DynamicActive, discovery.DynamicLimit))
+			if len(discovery.Recent) > 0 {
+				b.WriteString("Recent activation:\n")
+				for _, activation := range discovery.Recent {
+					b.WriteString(fmt.Sprintf("  %s — %s\n", activation.Name, activation.Reason))
+				}
+			}
+		}
+	}
+
 	b.WriteString("\nCumulative Session Token Usage\n")
 	if m.stats != nil {
 		totalTokens := m.stats.InputTokens + m.stats.CachedInputTokens + m.stats.CacheWriteTokens + m.stats.OutputTokens

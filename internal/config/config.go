@@ -471,6 +471,7 @@ type Config struct {
 	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
+	ToolDiscovery   ToolDiscoveryConfig       `mapstructure:"tool_discovery" yaml:"tool_discovery,omitempty"`
 	Agents          AgentsConfig              `mapstructure:"agents"`
 	Skills          SkillsConfig              `mapstructure:"skills"`
 	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
@@ -582,6 +583,36 @@ type SkillsConfig struct {
 // AgentsMdConfig configures optional AGENTS.md loading
 type AgentsMdConfig struct {
 	Enabled bool `mapstructure:"enabled"` // Load AGENTS.md into system prompt
+}
+
+// ToolDiscoveryConfig controls provider-visible loading of authorised MCP tools.
+type ToolDiscoveryConfig struct {
+	Mode      string `mapstructure:"mode" yaml:"mode,omitempty"`
+	Strategy  string `mapstructure:"strategy" yaml:"strategy,omitempty"`
+	Threshold int    `mapstructure:"threshold" yaml:"threshold,omitempty"`
+}
+
+// ValidateToolDiscovery rejects invalid loading policy before any MCP server starts.
+func (c *Config) ValidateToolDiscovery() error {
+	if c == nil {
+		return nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.ToolDiscovery.Mode))
+	switch mode {
+	case "", "auto", "eager", "deferred":
+	default:
+		return fmt.Errorf("invalid tool_discovery.mode %q: expected auto, eager, or deferred", c.ToolDiscovery.Mode)
+	}
+	strategy := strings.ToLower(strings.TrimSpace(c.ToolDiscovery.Strategy))
+	switch strategy {
+	case "", "auto", "portable", "native":
+	default:
+		return fmt.Errorf("invalid tool_discovery.strategy %q: expected auto, portable, or native", c.ToolDiscovery.Strategy)
+	}
+	if c.ToolDiscovery.Threshold < 0 {
+		return fmt.Errorf("invalid tool_discovery.threshold %d: expected a non-negative integer", c.ToolDiscovery.Threshold)
+	}
+	return nil
 }
 
 // ToolsConfig configures the local tool system
@@ -986,6 +1017,9 @@ func Load() (*Config, error) {
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
 	if err := cfg.ValidateApprovalModes(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateToolDiscovery(); err != nil {
 		return nil, err
 	}
 

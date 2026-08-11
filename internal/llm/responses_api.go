@@ -100,6 +100,7 @@ type ResponsesRequest struct {
 	ServiceTier                     string                       `json:"service_tier,omitempty"`
 	SessionID                       string                       `json:"-"`
 	ForceHTTP                       bool                         `json:"-"` // Bypass WebSocket for request features that require HTTP/SSE.
+	ForceWebSocket                  bool                         `json:"-"` // Require WebSocket and never downgrade this request to HTTP/SSE.
 	ExtraHeaders                    map[string]string            `json:"-"` // Request-scoped headers (combined with client headers).
 	FileUploadPolicy                *FileUploadPolicy            `json:"-"`
 }
@@ -119,6 +120,15 @@ func (r ResponsesRequest) suppressReasoningSummaryDeltas() bool {
 // ResponsesWebSearchTool represents the web search tool for OpenAI
 type ResponsesWebSearchTool struct {
 	Type string `json:"type"` // "web_search_preview"
+}
+
+// ResponsesToolSearchTool is the provider wire shape for native
+// client-executed tool discovery. It is deliberately not represented in ToolSpec.
+type ResponsesToolSearchTool struct {
+	Type        string                 `json:"type"`
+	Execution   string                 `json:"execution"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters"`
 }
 
 // ResponsesImageGenerationTool represents the built-in image_generation tool.
@@ -936,6 +946,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		}
 		if len(req.Messages) > 0 {
 			continuationInput = buildResponsesContinuationInputWithFilePolicy(req.Messages, req.FileUploadPolicy, req.IncludeDeveloperInContinuation)
+			continuationInput = trimResponsesContinuationToDiscoveryOutput(continuationInput)
 		} else {
 			continuationInput = filterToNewInput(buildFullInput())
 		}
@@ -995,16 +1006,18 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					},
 				})
 			}
-			fallbacks = append(fallbacks, responsesWebSocketFallback{
-				open: func() (Stream, error) {
-					c.websocketDisabled = true
-					c.closeWebSocket()
-					if debugRaw {
-						DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
-					}
-					return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
-				},
-			})
+			if !req.ForceWebSocket {
+				fallbacks = append(fallbacks, responsesWebSocketFallback{
+					open: func() (Stream, error) {
+						c.websocketDisabled = true
+						c.closeWebSocket()
+						if debugRaw {
+							DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
+						}
+						return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
+					},
+				})
+			}
 			return fallbacks
 		}
 
@@ -1039,6 +1052,12 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		if debugRaw {
 			DebugRawSection(debugRaw, "Responses WebSocket Fallback", lastErr.Error())
 		}
+		if req.ForceWebSocket {
+			return nil, fmt.Errorf("required Responses WebSocket failed: %w", lastErr)
+		}
+	}
+	if req.ForceWebSocket {
+		return nil, fmt.Errorf("required Responses WebSocket transport is unavailable")
 	}
 
 	return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, responseStateGeneration, debugRaw)
@@ -1429,6 +1448,25 @@ func (c *ResponsesClient) ResetConversation() {
 
 func (c *ResponsesClient) websocketServerStateEnabled() bool {
 	return c.WebSocketServerState || !c.DisableServerState
+}
+
+func trimResponsesContinuationToDiscoveryOutput(input []ResponsesInputItem) []ResponsesInputItem {
+	lastOutput := -1
+	for i, item := range input {
+		if len(item.Raw) == 0 {
+			continue
+		}
+		var ref struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(item.Raw, &ref) == nil && ref.Type == "tool_search_output" {
+			lastOutput = i
+		}
+	}
+	if lastOutput >= 0 {
+		return input[lastOutput:]
+	}
+	return input
 }
 
 // filterToNewInput returns only the new input items for a server-state continuation.

@@ -314,6 +314,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		providerKey:         cfg.DefaultProvider,
 		engine:              engine,
 		toolMgr:             toolMgr,
+		toolDiscovery:       cfg.ToolDiscovery,
 		store:               runtimeStore,
 		goalStore:           store,
 		systemPrompt:        settings.SystemPrompt,
@@ -356,7 +357,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	if settings.MCP != "" && !borrowedEngine {
-		mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: yoloMode}
+		mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery}
 		mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, r.errWriter(), mcpOpts)
 		if err != nil {
 			return nil, err
@@ -397,6 +398,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		Tools:                    toolSpecs,
 		ToolChoice:               toolChoice,
 		LastTurnToolChoice:       lastTurnToolChoice,
+		EnableToolDiscovery:      strings.TrimSpace(settings.MCP) != "",
 		ParallelToolCalls:        true,
 		Search:                   settings.Search,
 		ForceExternalSearch:      forceExternalSearch,

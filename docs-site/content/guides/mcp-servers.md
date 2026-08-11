@@ -132,6 +132,55 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
 }
 ```
 
+### Deferred tool discovery
+
+term-llm keeps small MCP catalogues simple and eagerly sends all schemas. When the complete authorised MCP catalogue exceeds 24 tools, it defers the long tail and lets the model search for the few schemas needed for the task.
+
+Configure the policy in the main `config.yaml`:
+
+```yaml
+tool_discovery:
+  mode: auto
+  strategy: auto
+  threshold: 24
+```
+
+`mode` controls whether tools are deferred:
+
+| Mode | Behaviour |
+|---|---|
+| `auto` | Eager at or below `threshold`; deferred above it |
+| `eager` | Always send all authorised MCP schemas |
+| `deferred` | Always defer eligible MCP schemas |
+
+`strategy` controls how deferred schemas reach the model:
+
+| Strategy | Behaviour |
+|---|---|
+| `auto` | Use an exactly supported provider-native path; otherwise use portable search |
+| `portable` | Use term-llm's ordinary cross-provider `tool_search` tool |
+| `native` | Require provider-native loading and fail clearly when unsupported |
+
+ChatGPT OAuth `gpt-5.6-luna` supports native client-executed search. Qwen/Ollama and conventional providers use portable search. Native loading keeps selected schemas in provider discovery output rather than rebuilding the ordinary top-level tool array.
+
+Pin frequent tools so they remain immediately visible when the catalogue is deferred. `always_load` uses the original server tool name:
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "github-mcp-server",
+      "always_load": [
+        "get_pull_request",
+        "search_issues"
+      ]
+    }
+  }
+}
+```
+
+Discovery changes schema visibility only. MCP server enablement and the engine's allowed-tools policy remain authoritative for execution.
+
 ### Transport Types
 
 | Type | Config | Description |

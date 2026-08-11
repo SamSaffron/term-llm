@@ -3,3 +3,5 @@ term-llm
 .cache/*
 .gocache/*
 *.lock
+__pycache__/
+*.pyc

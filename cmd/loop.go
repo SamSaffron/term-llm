@@ -351,8 +351,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	var mcpManager *mcp.Manager
 	if settings.MCP != "" {
 		mcpOpts := &MCPOptions{
-			Provider: provider,
-			YoloMode: resolvedYolo,
+			Provider:      provider,
+			YoloMode:      resolvedYolo,
+			ToolDiscovery: cfg.ToolDiscovery,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
@@ -427,6 +428,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			Messages:                messages,
 			Tools:                   toolSpecs,
 			ToolChoice:              llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			EnableToolDiscovery:     mcpManager != nil,
 			ParallelToolCalls:       true,
 			Search:                  settings.Search,
 			ForceExternalSearch:     forceExternalSearch,

@@ -10,24 +10,46 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 )
 
 const serveMCPStartupTimeout = 30 * time.Second
 
 type serveMCPServerView struct {
-	Name       string `json:"name"`
-	Configured bool   `json:"configured"`
-	Enabled    bool   `json:"enabled"`
-	Status     string `json:"status"`
-	Error      string `json:"error"`
-	Tools      int    `json:"tools"`
+	Name           string    `json:"name"`
+	Configured     bool      `json:"configured"`
+	Enabled        bool      `json:"enabled"`
+	Status         string    `json:"status"`
+	Error          string    `json:"error"`
+	RefreshWarning string    `json:"refresh_warning,omitempty"`
+	Tools          int       `json:"tools"`
+	Active         int       `json:"active,omitempty"`
+	Deferred       int       `json:"deferred,omitempty"`
+	LoadingMode    string    `json:"loading_mode,omitempty"`
+	LastRefresh    time.Time `json:"last_refresh,omitempty"`
+}
+
+type serveMCPDiscoveryView struct {
+	ConfiguredMode string `json:"configured_mode"`
+	ResolvedMode   string `json:"resolved_mode"`
+	Strategy       string `json:"strategy"`
+	Reason         string `json:"reason"`
+	Pinned         int    `json:"pinned"`
+	Active         int    `json:"active"`
+	Deferred       int    `json:"deferred"`
+	ActiveTokens   int    `json:"active_tokens"`
+	DeferredTokens int    `json:"deferred_tokens"`
+	DynamicActive  int    `json:"dynamic_active"`
+	DynamicLimit   int    `json:"dynamic_limit"`
 }
 
 type serveMCPSessionResponse struct {
-	Servers []serveMCPServerView `json:"servers"`
-	Enabled []string             `json:"enabled"`
+	Servers   []serveMCPServerView   `json:"servers"`
+	Enabled   []string               `json:"enabled"`
+	Discovery *serveMCPDiscoveryView `json:"tool_discovery,omitempty"`
 }
 
 type serveMCPSelectionRequest struct {
@@ -109,6 +131,13 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 		if err := mgr.LoadConfig(); err != nil {
 			return fmt.Errorf("failed to load MCP config: %w", err)
 		}
+		if rt.engine != nil {
+			if _, err := tooldiscovery.NewPlanner(rt.toolDiscovery, mgr, rt.engine); err != nil {
+				return fmt.Errorf("configure MCP tool discovery: %w", err)
+			}
+		}
+		// Publish the manager only after planner construction succeeds. Otherwise a
+		// later retry would skip setup and leave all deferred wrappers invisible.
 		rt.mcpManager = mgr
 	}
 	if rt.provider != nil {
@@ -130,11 +159,29 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 	availableSet := stringSet(available)
 	enabled := normalizeMCPSelection(append(rt.mcpManager.EnabledServers(), parseServerList(rt.mcpSetting)...))
 	enabledSet := stringSet(enabled)
+	states := make(map[string]mcp.ServerState)
+	for _, state := range rt.mcpManager.GetAllStates() {
+		states[state.Name] = state
+	}
 	toolCounts := make(map[string]int)
 	for _, tool := range rt.mcpManager.AllTools() {
 		server := mcpServerNameFromToolName(tool.Name)
 		if server != "" {
 			toolCounts[server]++
+		}
+	}
+	var discovery *llm.ToolDiscoveryDiagnostics
+	discoveryServers := make(map[string]llm.ToolDiscoveryServerDiagnostic)
+	if rt.engine != nil {
+		sessionID := ""
+		if rt.sessionMeta != nil {
+			sessionID = rt.sessionMeta.ID
+		}
+		if diagnostics, ok := rt.engine.ToolDiscoveryDiagnostics(sessionID); ok {
+			discovery = &diagnostics
+			for _, server := range diagnostics.Servers {
+				discoveryServers[server.Name] = server
+			}
 		}
 	}
 
@@ -151,6 +198,17 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 		if err != nil {
 			view.Error = err.Error()
 		}
+		if state, ok := states[name]; ok {
+			view.LastRefresh = state.LastToolRefresh
+			if state.RefreshError != nil {
+				view.RefreshWarning = state.RefreshError.Error()
+			}
+		}
+		if server, ok := discoveryServers[name]; ok {
+			view.Active = server.Pinned + server.Active
+			view.Deferred = server.Deferred
+			view.LoadingMode = server.ResolvedMode
+		}
 		resp.Servers = append(resp.Servers, view)
 	}
 	for _, name := range parseServerList(rt.mcpSetting) {
@@ -165,6 +223,21 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 			Error:      "MCP server is not configured",
 		})
 	}
+	if discovery != nil {
+		resp.Discovery = &serveMCPDiscoveryView{
+			ConfiguredMode: discovery.ConfiguredMode,
+			ResolvedMode:   discovery.ResolvedMode,
+			Strategy:       discovery.Strategy,
+			Reason:         discovery.Reason,
+			Pinned:         discovery.PinnedCount,
+			Active:         discovery.ActiveMCPCount,
+			Deferred:       discovery.DeferredCount,
+			ActiveTokens:   discovery.PinnedTokens + discovery.ActiveMCPTokens,
+			DeferredTokens: discovery.DeferredTokens,
+			DynamicActive:  discovery.DynamicActive,
+			DynamicLimit:   discovery.DynamicLimit,
+		}
+	}
 	return resp
 }
 
@@ -173,7 +246,7 @@ func (rt *serveRuntime) unregisterMCPServerToolsLocked(serverName string) {
 		return
 	}
 	prefix := serverName + "__"
-	for _, spec := range rt.engine.Tools().AllSpecs() {
+	for _, spec := range rt.engine.Tools().AllSpecsIncludingDeferred() {
 		if strings.HasPrefix(spec.Name, prefix) {
 			rt.engine.UnregisterTool(spec.Name)
 		}
@@ -185,12 +258,15 @@ func (rt *serveRuntime) registerMCPToolsForServersLocked(serverNames []string) {
 		return
 	}
 	requested := stringSet(serverNames)
-	for _, spec := range rt.mcpManager.AllTools() {
-		server := mcpServerNameFromToolName(spec.Name)
-		if server == "" || !requested[server] {
+	snapshot := rt.mcpManager.CatalogueSnapshot()
+	if snapshot == nil {
+		return
+	}
+	for _, tool := range snapshot.Tools {
+		if !requested[tool.Server] {
 			continue
 		}
-		rt.engine.Tools().Register(mcp.NewMCPTool(rt.mcpManager, spec))
+		rt.engine.Tools().RegisterDeferred(mcp.NewCatalogMCPTool(rt.mcpManager, tool))
 	}
 }
 

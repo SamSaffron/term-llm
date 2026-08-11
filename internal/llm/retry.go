@@ -109,6 +109,13 @@ func (r *RetryProvider) Capabilities() Capabilities {
 	return r.inner.Capabilities()
 }
 
+func (r *RetryProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
+	if provider, ok := r.inner.(NativeToolDiscoveryProvider); ok {
+		return provider.NativeToolDiscoverySupport(model)
+	}
+	return NativeToolDiscoverySupport{Reason: fmt.Sprintf("provider %q has no native tool discovery adapter", r.inner.Name())}
+}
+
 func (r *RetryProvider) isolateHelperConversation() Provider {
 	return &RetryProvider{inner: isolatedConversationProvider(r.inner), config: r.config}
 }

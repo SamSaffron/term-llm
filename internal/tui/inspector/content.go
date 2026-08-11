@@ -36,6 +36,7 @@ type ContentRenderer struct {
 	providerName    string
 	modelName       string
 	toolSpecs       []llm.ToolSpec
+	toolDiscovery   *llm.ToolDiscoveryDiagnostics
 	reasoningConfig appconfig.ReasoningConfig
 
 	hasCompactionBoundary   bool
@@ -59,6 +60,12 @@ func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]boo
 		toolSpecs:       toolSpecs,
 		reasoningConfig: reasoningCfg,
 	}
+}
+
+// SetToolDiscovery configures the provider-neutral discovery diagnostics shown
+// in the inspector header.
+func (r *ContentRenderer) SetToolDiscovery(diagnostics *llm.ToolDiscoveryDiagnostics) {
+	r.toolDiscovery = diagnostics
 }
 
 // SetCompactionBoundary configures an optional marker for the latest active
@@ -99,6 +106,43 @@ func (r *ContentRenderer) renderHeader(messages []session.Message) (string, []Co
 			b.WriteString(valueStyle.Render(r.modelName))
 			b.WriteString("\n")
 			currentLine++
+		}
+		b.WriteString("\n")
+		currentLine++
+	}
+
+	if discovery := r.toolDiscovery; discovery != nil {
+		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Secondary)
+		labelStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+		valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
+		writeField := func(label, value string) {
+			b.WriteString(labelStyle.Render("  " + label + ": "))
+			b.WriteString(valueStyle.Render(value))
+			b.WriteString("\n")
+			currentLine++
+		}
+		b.WriteString(headerStyle.Render("Tool Discovery"))
+		b.WriteString("\n")
+		currentLine++
+		writeField("Mode configured/resolved", fmt.Sprintf("%s / %s", discovery.ConfiguredMode, discovery.ResolvedMode))
+		writeField("Strategy configured/resolved", fmt.Sprintf("%s / %s", discovery.ConfiguredStrategy, discovery.Strategy))
+		writeField("Mode reason", discovery.Reason)
+		writeField("Strategy reason", discovery.StrategyReason)
+		if discovery.FallbackCount > 0 {
+			writeField("Native fallback", fmt.Sprintf("%d (%s)", discovery.FallbackCount, discovery.FallbackReason))
+		}
+		writeField("Pinned MCP", fmt.Sprintf("%d tools, ~%d tokens", discovery.PinnedCount, discovery.PinnedTokens))
+		writeField("Active MCP", fmt.Sprintf("%d tools, ~%d tokens", discovery.ActiveMCPCount, discovery.ActiveMCPTokens))
+		writeField("Deferred MCP", fmt.Sprintf("%d tools, ~%d tokens avoided", discovery.DeferredCount, discovery.DeferredTokens))
+		writeField("Dynamic budget", fmt.Sprintf("%d/%d tools", discovery.DynamicActive, discovery.DynamicLimit))
+		if len(discovery.Recent) > 0 {
+			b.WriteString(labelStyle.Render("  Recent activation:\n"))
+			currentLine++
+			for _, activation := range discovery.Recent {
+				b.WriteString(valueStyle.Render(fmt.Sprintf("    %s — %s", activation.Name, activation.Reason)))
+				b.WriteString("\n")
+				currentLine++
+			}
 		}
 		b.WriteString("\n")
 		currentLine++
