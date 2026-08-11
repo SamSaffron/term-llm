@@ -14,6 +14,7 @@ const {
   elements,
   STORAGE_KEYS,
   UI_PREFIX,
+  createEl,
   setAnimatedPanelOpen: setPanelOpen,
   setElementHidden: setPanelHidden,
   initPanelSwipeToClose
@@ -469,13 +470,6 @@ const fetchFileDiff = (sessionId, path) => {
 };
 
 // ===== Rendering =====
-
-const createEl = (tag, className, text) => {
-  const el = document.createElement(tag);
-  if (className) el.className = className;
-  if (text !== undefined) el.textContent = text;
-  return el;
-};
 
 const fileBaseName = (path) => {
   const idx = path.lastIndexOf('/');

@@ -184,6 +184,21 @@ function loadAppCore() {
 
 const app = loadAppCore();
 
+(function testCreateElInitializesOptionalProperties() {
+  const name = 'createEl initializes only supplied class and text';
+  const complete = app.createEl('span', 'status', 'ready');
+  const bare = app.createEl('div');
+  if (complete.className !== 'status' || complete.textContent !== 'ready') {
+    fail(name, 'supplied properties were not assigned');
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(bare, 'className') || bare.textContent !== '') {
+    fail(name, 'omitted properties should retain element defaults');
+    return;
+  }
+  pass(name);
+})();
+
 (function testConversationMountGuardsAndScopedMessageLookup() {
   const name = 'conversation DOM helpers require mounted session ownership';
   const messages = makeNode();

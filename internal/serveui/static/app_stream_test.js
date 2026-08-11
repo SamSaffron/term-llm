@@ -390,6 +390,12 @@ function createHarness(options = {}) {
   let providerRetryStatus = null;
   let modelSwapUpdateCount = 0;
   const app = {
+    createEl(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    },
     UI_PREFIX: '/ui',
     STORAGE_KEYS: {
       selectedProvider: 'selectedProvider',
