@@ -23,8 +23,14 @@ func TestToolDiscoveryReplayPartsRoundTripForSessionResume(t *testing.T) {
 		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"query":"eta"}`)}},
 		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: &llm.ToolDiscoveryOutput{
 			CallID: "search-1", CatalogueHash: "catalogue", CatalogueGen: 7,
-			Tools: []llm.DiscoveredTool{{Spec: llm.ToolSpec{Name: "federation__eta", Description: "ETA", Schema: map[string]any{"type": "object"}}, SchemaHash: "schema"}},
+			Tools: []llm.DiscoveredTool{{Spec: llm.ToolSpec{
+				Name:        "federation__eta",
+				Description: "ETA",
+				Schema:      map[string]any{"type": "object"},
+				Namespace:   &llm.ToolNamespaceIdentity{Name: "federation", ChildName: "eta", Description: "Federation tools."},
+			}, SchemaHash: "schema"}},
 		}},
+		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "federation__eta", Namespace: "federation", ChildName: "eta", Arguments: json.RawMessage(`{"id":"42"}`)}},
 	}}, 0)
 	if err := store.AddMessage(ctx, sess.ID, message); err != nil {
 		t.Fatal(err)
@@ -33,7 +39,7 @@ func TestToolDiscoveryReplayPartsRoundTripForSessionResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+	if len(messages) != 1 || len(messages[0].Parts) != 3 {
 		t.Fatalf("messages = %#v", messages)
 	}
 	call := messages[0].Parts[0].DiscoveryCall
@@ -44,7 +50,26 @@ func TestToolDiscoveryReplayPartsRoundTripForSessionResume(t *testing.T) {
 	if output == nil || output.CatalogueGen != 7 || len(output.Tools) != 1 || output.Tools[0].SchemaHash != "schema" || output.Tools[0].Spec.Name != "federation__eta" {
 		t.Fatalf("output = %#v", output)
 	}
+	identity := output.Tools[0].Spec.Namespace
+	if identity == nil || identity.Name != "federation" || identity.ChildName != "eta" || identity.Description != "Federation tools." {
+		t.Fatalf("namespace identity = %#v", identity)
+	}
+	routedCall := messages[0].Parts[2].ToolCall
+	if routedCall == nil || routedCall.Name != "federation__eta" || routedCall.Namespace != "federation" || routedCall.ChildName != "eta" {
+		t.Fatalf("routed call = %#v", routedCall)
+	}
 	if messages[0].TextContent != "" {
 		t.Fatalf("discovery replay leaked into visible text: %q", messages[0].TextContent)
+	}
+}
+
+func TestPersistedDiscoverySpecWithoutNamespaceMetadataRemainsReadable(t *testing.T) {
+	var output llm.ToolDiscoveryOutput
+	legacy := []byte(`{"call_id":"search-old","tools":[{"spec":{"Name":"legacy__eta","Description":"ETA","Schema":{"type":"object"}},"schema_hash":"old"}]}`)
+	if err := json.Unmarshal(legacy, &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Tools) != 1 || output.Tools[0].Spec.Name != "legacy__eta" || output.Tools[0].Spec.Namespace != nil {
+		t.Fatalf("legacy discovery output = %#v", output)
 	}
 }

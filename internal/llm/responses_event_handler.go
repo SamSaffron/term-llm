@@ -226,7 +226,7 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 			}
 		}
 		if addedType.Type == "function_call" {
-			h.toolState.StartCall(itemEvent.OutputIndex, addedItem.CallID, addedItem.Name)
+			h.toolState.StartCall(itemEvent.OutputIndex, addedItem.CallID, addedItem.Namespace, addedItem.Name)
 		} else if addedType.Type == "web_search_call" {
 			callID := responsesWebSearchCallID(addedItem.ID, itemEvent.OutputIndex)
 			if _, started := h.webSearchStarted[callID]; !started {
@@ -307,7 +307,7 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		}
 		if doneEvent.Item.Type == "function_call" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
-			h.toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
+			h.toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Namespace, doneEvent.Item.Name, doneEvent.Item.Arguments)
 			h.toolState.SetCaller(doneEvent.OutputIndex, doneEvent.Item.Caller)
 		} else if doneEvent.Item.Type == "web_search_call" {
 			action, err := decodeResponsesWebSearchAction(doneEvent.Item.Action)
@@ -636,7 +636,7 @@ func responsesOutputItemToInputItem(item responsesOutputItem) []ResponsesInputIt
 		if args == "" {
 			args = "{}"
 		}
-		return []ResponsesInputItem{{Type: "function_call", CallID: callID, Name: item.Name, Arguments: args, Caller: item.Caller}}
+		return []ResponsesInputItem{{Type: "function_call", CallID: callID, Name: item.Name, Namespace: item.Namespace, Arguments: args, Caller: item.Caller}}
 	case "reasoning":
 		summary := responsesReasoningSummary(item.Summary)
 		return []ResponsesInputItem{{Type: "reasoning", ID: item.ID, EncryptedContent: item.EncryptedContent, Summary: &summary}}

@@ -459,6 +459,16 @@ type ToolDiscoveryCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// ToolNamespaceIdentity carries an explicit provider-neutral namespace route for
+// a callable tool. Name and ChildName are model-visible native identities;
+// ToolSpec.Name remains the canonical flattened executable name used by the
+// registry and function-only providers.
+type ToolNamespaceIdentity struct {
+	Name        string `json:"name"`
+	ChildName   string `json:"child_name"`
+	Description string `json:"description,omitempty"`
+}
+
 // DiscoveredTool is a trusted catalogue schema selected by the local planner.
 // SchemaHash binds replay to the authorised catalogue generation that supplied it.
 type DiscoveredTool struct {
@@ -484,6 +494,10 @@ func cloneToolDiscoveryOutput(output *ToolDiscoveryOutput) *ToolDiscoveryOutput 
 		selected.Spec.Schema = deepCopyMap(selected.Spec.Schema)
 		selected.Spec.OutputSchema = deepCopyMap(selected.Spec.OutputSchema)
 		selected.Spec.AllowedCallers = append([]string(nil), selected.Spec.AllowedCallers...)
+		if selected.Spec.Namespace != nil {
+			namespace := *selected.Spec.Namespace
+			selected.Spec.Namespace = &namespace
+		}
 		cloned.Tools[i] = selected
 	}
 	return &cloned
@@ -498,6 +512,10 @@ type ToolSpec struct {
 	Name        string
 	Description string
 	Schema      map[string]interface{}
+	// Namespace is optional provider-neutral identity metadata. Portable and
+	// function-only providers continue to use Name; native namespace-capable
+	// adapters may expose ChildName under the explicit namespace.
+	Namespace *ToolNamespaceIdentity `json:",omitempty"`
 	// Strict opts this tool into OpenAI strict function-parameter schemas.
 	// Default is false to match Codex/OpenAI flagship behavior for broad MCP
 	// schemas. When enabled, all object properties are required and free-form maps
@@ -525,8 +543,12 @@ type ToolChoice struct {
 
 // ToolCall is a model-requested tool invocation.
 type ToolCall struct {
-	ID         string
-	Name       string
+	ID   string
+	Name string // Canonical executable name after engine routing.
+	// Namespace and ChildName preserve an explicit native provider identity.
+	// They are never reconstructed by splitting Name.
+	Namespace  string `json:",omitempty"`
+	ChildName  string `json:",omitempty"`
 	Arguments  json.RawMessage
 	Caller     string `json:",omitempty"` // PTC caller provenance; copied to function_call_output.
 	ToolInfo   string `json:",omitempty"` // Persisted display text for TUI/history (already formatted, e.g. "(main.go)")

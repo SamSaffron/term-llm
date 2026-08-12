@@ -45,7 +45,9 @@ class OracleSummaryTest(unittest.TestCase):
         stderr = section({"tools": [native_tool], "input": [{"type": "message"}]}) + section({
             "tools": [native_tool], "previous_response_id": "resp_1",
             "input": [{"type": "tool_search_output", "tools": [
-                {"type": "function", "name": "eta", "defer_loading": True}
+                {"type": "namespace", "name": "shipping", "description": "Shipping tools", "tools": [
+                    {"type": "function", "name": "eta", "defer_loading": True}
+                ]}
             ]}],
         })
         audit = MODULE.analyze_debug_protocol(stderr)

@@ -1044,14 +1044,14 @@ func TestResponsesToolState_TrackByOutputIndex(t *testing.T) {
 
 	// Simulate events with output_index=1
 	// In real Copilot usage, the item_id differs between events, but output_index is stable
-	state.StartCall(1, "call_abc123", "web_search")
+	state.StartCall(1, "call_abc123", "", "web_search")
 
 	// Append arguments using output_index (not item_id which would differ)
 	state.AppendArguments(1, `{"query":`)
 	state.AppendArguments(1, `"hello"}`)
 
 	// Finish the call
-	state.FinishCall(1, "call_abc123", "web_search", "")
+	state.FinishCall(1, "call_abc123", "", "web_search", "")
 
 	calls := state.Calls()
 	if len(calls) != 1 {
@@ -1526,11 +1526,11 @@ func TestResponsesToolState_FinishCallWithFinalArgs(t *testing.T) {
 	// Test that FinishCall can override streamed args with final args from done event
 	state := newResponsesToolState()
 
-	state.StartCall(1, "call_abc", "test_func")
+	state.StartCall(1, "call_abc", "", "test_func")
 	state.AppendArguments(1, `{"partial`)
 
 	// Done event provides complete final arguments
-	state.FinishCall(1, "call_abc", "test_func", `{"complete":"args"}`)
+	state.FinishCall(1, "call_abc", "", "test_func", `{"complete":"args"}`)
 
 	calls := state.Calls()
 	if len(calls) != 1 {
@@ -1549,7 +1549,7 @@ func TestResponsesToolState_FinishCallCreatesNewEntry(t *testing.T) {
 	state := newResponsesToolState()
 
 	// Only call FinishCall without prior StartCall (simulates missing added event)
-	state.FinishCall(1, "call_xyz", "search", `{"query":"test"}`)
+	state.FinishCall(1, "call_xyz", "", "search", `{"query":"test"}`)
 
 	calls := state.Calls()
 	if len(calls) != 1 {
@@ -1573,16 +1573,16 @@ func TestResponsesToolState_MultipleToolCalls(t *testing.T) {
 	state := newResponsesToolState()
 
 	// Start two tool calls
-	state.StartCall(1, "call_1", "search")
-	state.StartCall(2, "call_2", "read")
+	state.StartCall(1, "call_1", "", "search")
+	state.StartCall(2, "call_2", "", "read")
 
 	// Arguments come interleaved (as they might in parallel tool calls)
 	state.AppendArguments(1, `{"q":"a"}`)
 	state.AppendArguments(2, `{"url":"b"}`)
 
 	// Finish both
-	state.FinishCall(1, "call_1", "search", "")
-	state.FinishCall(2, "call_2", "read", "")
+	state.FinishCall(1, "call_1", "", "search", "")
+	state.FinishCall(2, "call_2", "", "read", "")
 
 	calls := state.Calls()
 	if len(calls) != 2 {

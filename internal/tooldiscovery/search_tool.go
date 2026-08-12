@@ -263,7 +263,12 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 			ActivatedAt: timeNowUTC(),
 			LastUsed:    state.lastUsed,
 		}
-		state.recent = append(state.recent, llm.ToolActivationDiagnostic{Name: name, Reason: activationReason(input)})
+		state.recent = append(state.recent, llm.ToolActivationDiagnostic{
+			Name:      name,
+			Namespace: tool.Namespace,
+			ChildName: tool.ChildName,
+			Reason:    activationReason(input),
+		})
 		if len(state.recent) > maxRecentEvents {
 			state.recent = append([]llm.ToolActivationDiagnostic(nil), state.recent[len(state.recent)-maxRecentEvents:]...)
 		}

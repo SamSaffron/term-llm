@@ -149,9 +149,10 @@ func (m *Manager) publishAggregateLocked() *CatalogueSnapshot {
 			latest = snapshot.FetchedAt
 		}
 		for _, tool := range snapshot.Tools {
-			tools = append(tools, namespaceCatalogTool(server, tool))
+			tools = append(tools, namespaceCatalogTool(server, snapshot.NamespaceDescription, tool))
 		}
 	}
+	tools = normalizeCatalogueIdentities(tools)
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	hashes := make([]string, 0, len(tools))
 	for _, tool := range tools {
@@ -536,15 +537,35 @@ func (m *Manager) AllTools() []ToolSpec {
 	return allTools
 }
 
-// CallTool routes a tool call to the appropriate MCP server.
-// Tool names should be prefixed with "servername__".
+// CallTool routes a canonical flattened tool name. Exact catalogue identity is
+// preferred so collision-safe names never depend on delimiter parsing; the
+// historical parser remains as a compatibility fallback for legacy callers.
 func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMessage) (llm.ToolOutput, error) {
-	// Parse server name from tool name
+	if snapshot := m.aggregate.Load(); snapshot != nil {
+		for _, tool := range snapshot.Tools {
+			if tool.Name == fullName {
+				return m.callCatalogTool(ctx, tool.Server, tool.OriginalName, fullName, args)
+			}
+		}
+	}
 	serverName, toolName := parseToolName(fullName)
 	if serverName == "" {
 		return llm.ToolOutput{}, fmt.Errorf("invalid MCP tool name: %s (expected servername__toolname)", fullName)
 	}
+	return m.callCatalogTool(ctx, serverName, toolName, fullName, args)
+}
 
+// CallCatalogTool routes an explicitly identified catalogue entry. It is used by
+// catalogue wrappers and native namespace calls so server/child identity is never
+// inferred from the flattened executable name.
+func (m *Manager) CallCatalogTool(ctx context.Context, serverName, toolName, executableName string, args json.RawMessage) (llm.ToolOutput, error) {
+	if serverName == "" || toolName == "" {
+		return llm.ToolOutput{}, fmt.Errorf("invalid MCP catalogue identity %q/%q", serverName, toolName)
+	}
+	return m.callCatalogTool(ctx, serverName, toolName, executableName, args)
+}
+
+func (m *Manager) callCatalogTool(ctx context.Context, serverName, toolName, displayName string, args json.RawMessage) (llm.ToolOutput, error) {
 	m.mu.RLock()
 	state, ok := m.statuses[serverName]
 	if !ok || state.Status != StatusReady || state.Client == nil {
@@ -554,11 +575,11 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, args json.RawMe
 	snapshot := m.catalogues[serverName]
 	if snapshot == nil {
 		m.mu.RUnlock()
-		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is unavailable: server catalogue is not ready", fullName)
+		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is unavailable: server catalogue is not ready", displayName)
 	}
 	if _, ok := snapshot.ByOriginal[toolName]; !ok {
 		m.mu.RUnlock()
-		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is no longer available in the current catalogue", fullName)
+		return llm.ToolOutput{}, fmt.Errorf("MCP tool %s is no longer available in the current catalogue", displayName)
 	}
 	client := state.Client
 	m.mu.RUnlock()

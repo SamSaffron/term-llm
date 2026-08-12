@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -103,5 +105,89 @@ func TestClientDoesNotPublishRefreshForStoppedSession(t *testing.T) {
 	}
 	if snapshot := client.snapshot.Load(); snapshot != nil {
 		t.Fatalf("stopped session resurrected snapshot: %#v", snapshot)
+	}
+}
+
+func TestNormalizeCatalogueIdentitiesPreservesCommonFlatteningAndSeparatesCollisions(t *testing.T) {
+	tools := normalizeCatalogueIdentities([]CatalogTool{
+		{Server: "alpha", OriginalName: "lookup", Name: "alpha__lookup", InputSchema: map[string]any{}},
+		{Server: "beta", OriginalName: "lookup", Name: "beta__lookup", InputSchema: map[string]any{}},
+		{Server: "a", OriginalName: "b__c", Name: "a__b__c", InputSchema: map[string]any{}},
+		{Server: "a__b", OriginalName: "c", Name: "a__b__c", InputSchema: map[string]any{}},
+	})
+	byIdentity := make(map[string]CatalogTool, len(tools))
+	seenNames := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		byIdentity[catalogIdentity(tool)] = tool
+		if seenNames[tool.Name] {
+			t.Fatalf("duplicate executable name %q", tool.Name)
+		}
+		seenNames[tool.Name] = true
+	}
+	alpha := byIdentity["alpha\x00lookup"]
+	beta := byIdentity["beta\x00lookup"]
+	if alpha.Name != "alpha__lookup" || beta.Name != "beta__lookup" {
+		t.Fatalf("common flattened names changed: alpha=%q beta=%q", alpha.Name, beta.Name)
+	}
+	if alpha.ChildName != "lookup" || beta.ChildName != "lookup" || alpha.Namespace == beta.Namespace {
+		t.Fatalf("same child across namespaces not represented explicitly: alpha=%+v beta=%+v", alpha, beta)
+	}
+	first := byIdentity["a\x00b__c"]
+	second := byIdentity["a__b\x00c"]
+	if first.Name == second.Name || first.Name == "a__b__c" || second.Name == "a__b__c" {
+		t.Fatalf("delimiter collision was not resolved symmetrically: %q %q", first.Name, second.Name)
+	}
+}
+
+func TestNormalizeCatalogueIdentitiesResolvesSanitizationCollisionsDeterministically(t *testing.T) {
+	input := []CatalogTool{
+		{Server: "sales force", OriginalName: "find.issue", Name: "sales force__find.issue", InputSchema: map[string]any{}},
+		{Server: "sales@force", OriginalName: "find@issue", Name: "sales@force__find@issue", InputSchema: map[string]any{}},
+		{Server: "sales@force", OriginalName: "find.issue", Name: "sales@force__find.issue", InputSchema: map[string]any{}},
+	}
+	first := normalizeCatalogueIdentities(append([]CatalogTool(nil), input...))
+	second := normalizeCatalogueIdentities([]CatalogTool{input[2], input[0], input[1]})
+	project := func(tools []CatalogTool) map[string]string {
+		out := make(map[string]string, len(tools))
+		for _, tool := range tools {
+			if len(tool.Namespace) > maxNativeIdentityBytes || len(tool.ChildName) > maxNativeIdentityBytes {
+				t.Fatalf("native identity exceeds cap: %+v", tool)
+			}
+			out[catalogIdentity(tool)] = tool.Namespace + "/" + tool.ChildName
+		}
+		return out
+	}
+	if !reflect.DeepEqual(project(first), project(second)) {
+		t.Fatalf("identity normalization depends on input order: first=%v second=%v", project(first), project(second))
+	}
+	if first[0].Namespace == first[1].Namespace {
+		t.Fatalf("sanitized namespace collision survived: %+v", first)
+	}
+	if first[1].ChildName == first[2].ChildName {
+		t.Fatalf("sanitized child collision survived: %+v", first)
+	}
+}
+
+func TestNamespaceDescriptionUsesMetadataAndSmallUTF8SafeCap(t *testing.T) {
+	description := strings.Repeat("é", MaxNamespaceDescriptionBytes)
+	snapshot, err := buildToolSnapshotWithDescription("demo", 1, description, []*sdkmcp.Tool{{Name: "lookup", InputSchema: map[string]any{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := normalizeCatalogueIdentities([]CatalogTool{namespaceCatalogTool("demo", snapshot.NamespaceDescription, snapshot.Tools[0])})[0]
+	if len(tool.NamespaceDescription) != MaxNamespaceDescriptionBytes || !utf8.ValidString(tool.NamespaceDescription) {
+		t.Fatalf("description bytes=%d valid=%v", len(tool.NamespaceDescription), utf8.ValidString(tool.NamespaceDescription))
+	}
+	if tool.ToolSpec().Namespace == nil || tool.ToolSpec().Namespace.Description != tool.NamespaceDescription {
+		t.Fatalf("namespace description missing from provider-neutral spec: %#v", tool.ToolSpec())
+	}
+}
+
+func TestMCPNamespaceDescriptionPrefersInstructionsThenServerMetadata(t *testing.T) {
+	if got := mcpNamespaceDescription(&sdkmcp.InitializeResult{Instructions: "  Use issue keys.  ", ServerInfo: &sdkmcp.Implementation{Name: "fallback"}}); got != "Use issue keys." {
+		t.Fatalf("instructions description = %q", got)
+	}
+	if got := mcpNamespaceDescription(&sdkmcp.InitializeResult{ServerInfo: &sdkmcp.Implementation{Name: "machine", Title: "Issue Tracker"}}); got != "Tools provided by Issue Tracker." {
+		t.Fatalf("metadata description = %q", got)
 	}
 }

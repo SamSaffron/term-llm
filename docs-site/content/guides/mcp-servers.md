@@ -161,7 +161,9 @@ tool_discovery:
 | `portable` | Use term-llm's ordinary cross-provider `tool_search` tool |
 | `native` | Require provider-native loading and fail clearly when unsupported |
 
-ChatGPT OAuth `gpt-5.6-luna` supports native client-executed search. Qwen/Ollama and conventional providers use portable search. Native loading keeps selected schemas in provider discovery output rather than rebuilding the ordinary top-level tool array.
+ChatGPT OAuth `gpt-5.6-luna` supports native client-executed search. Qwen/Ollama and conventional providers use portable search. Native loading keeps selected schemas in provider discovery output rather than rebuilding the ordinary top-level tool array. Selected MCP tools are grouped under their server namespace on the ChatGPT wire, but discovery, authorization, and execution remain child-granular: selecting one child never loads its siblings. Namespace descriptions use bounded MCP server instructions/metadata when available.
+
+The provider-neutral catalogue still retains each tool's flattened executable name (`server__tool`) alongside explicit namespace and child identity. Portable discovery and function-only providers continue using the flattened name, so sessions can move across providers. Native namespace calls are routed through the explicit identity metadata and must match a currently loaded, authorised child; term-llm does not infer authorization by splitting a name or by accepting a namespace alone.
 
 Pin frequent tools so they remain immediately visible when the catalogue is deferred. `always_load` uses the original server tool name:
 

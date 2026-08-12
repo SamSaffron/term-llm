@@ -377,7 +377,27 @@ func (c *Client) acquireToolSnapshot(ctx context.Context, session *mcp.ClientSes
 	if previous != nil {
 		generation = previous.Generation + 1
 	}
-	return buildToolSnapshot(c.name, generation, tools)
+	return buildToolSnapshotWithDescription(c.name, generation, mcpNamespaceDescription(session.InitializeResult()), tools)
+}
+
+func mcpNamespaceDescription(result *mcp.InitializeResult) string {
+	if result == nil {
+		return ""
+	}
+	if instructions := strings.TrimSpace(result.Instructions); instructions != "" {
+		return instructions
+	}
+	if result.ServerInfo == nil {
+		return ""
+	}
+	name := strings.TrimSpace(result.ServerInfo.Title)
+	if name == "" {
+		name = strings.TrimSpace(result.ServerInfo.Name)
+	}
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("Tools provided by %s.", name)
 }
 
 func (c *Client) publishRefresh(session *mcp.ClientSession, candidate *ToolSnapshot) bool {

@@ -489,8 +489,10 @@ def analyze_debug_protocol(stderr: str) -> dict[str, Any]:
             requests.append(payload)
     signatures = [json.dumps(request.get("tools", []), sort_keys=True, separators=(",", ":"))
                   for request in requests]
-    loaded_names: set[str] = set()
+    loaded_function_names: set[str] = set()
+    loaded_namespace_children: set[tuple[str, str]] = set()
     top_level_function_names: set[str] = set()
+    top_level_namespace_children: set[tuple[str, str]] = set()
     request_summaries: list[dict[str, Any]] = []
     for request in requests:
         tools = request.get("tools", []) if isinstance(request.get("tools"), list) else []
@@ -504,6 +506,12 @@ def analyze_debug_protocol(stderr: str) -> dict[str, Any]:
                 name = str(tool["name"])
                 top_names.append(name)
                 top_level_function_names.add(name)
+            elif tool.get("type") == "namespace" and tool.get("name"):
+                namespace = str(tool["name"])
+                top_names.append(namespace)
+                for child in tool.get("tools", []):
+                    if isinstance(child, dict) and child.get("name"):
+                        top_level_namespace_children.add((namespace, str(child["name"])))
         input_items = request.get("input", []) if isinstance(request.get("input"), list) else []
         input_types: list[str] = []
         for item in input_items:
@@ -512,8 +520,15 @@ def analyze_debug_protocol(stderr: str) -> dict[str, Any]:
             input_types.append(str(item.get("type", "")))
             if item.get("type") == "tool_search_output":
                 for tool in item.get("tools", []):
-                    if isinstance(tool, dict) and tool.get("name"):
-                        loaded_names.add(str(tool["name"]))
+                    if not isinstance(tool, dict):
+                        continue
+                    if tool.get("type") == "function" and tool.get("name"):
+                        loaded_function_names.add(str(tool["name"]))
+                    elif tool.get("type") == "namespace" and tool.get("name"):
+                        namespace = str(tool["name"])
+                        for child in tool.get("tools", []):
+                            if isinstance(child, dict) and child.get("name"):
+                                loaded_namespace_children.add((namespace, str(child["name"])))
         request_summaries.append({
             "previous_response_id": bool(request.get("previous_response_id")),
             "top_level_tool_types": top_types,
@@ -525,7 +540,10 @@ def analyze_debug_protocol(stderr: str) -> dict[str, Any]:
         "request_count": len(requests),
         "top_level_tools_stable": stable,
         "top_level_tool_signatures": [hashlib.sha256(value.encode()).hexdigest() for value in signatures],
-        "loaded_schemas_in_top_level_tools": bool(loaded_names & top_level_function_names),
+        "loaded_schemas_in_top_level_tools": bool(
+            (loaded_function_names & top_level_function_names)
+            or (loaded_namespace_children & top_level_namespace_children)
+        ),
         "previous_response_requests": sum(1 for request in requests if request.get("previous_response_id")),
         "requests": request_summaries,
     }
@@ -614,6 +632,8 @@ def validate_single_server_catalogue(mcp_json: pathlib.Path, catalogue: dict[str
         raise SystemExit("aggregate catalogue contains a non-federation server")
     names = {tool["name"] for tool in tools}
     for tool in tools:
+        if tool.get("namespace") != "federation" or tool.get("child_name") != tool.get("original_name"):
+            raise SystemExit(f"tool {tool['name']} lacks canonical namespace/child identity")
         properties = tool.get("output_schema", {}).get("properties", {})
         required = tool.get("output_schema", {}).get("required", [])
         if "oracle" not in properties or "oracle" not in required:

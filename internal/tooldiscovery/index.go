@@ -66,7 +66,7 @@ func buildIndexSnapshot(tools []mcp.CatalogTool, generation uint64) *indexSnapsh
 			Server:      strings.ToLower(tool.Server),
 			NameTerms:   tokenize(tool.Name + " " + tool.OriginalName),
 			TitleTerms:  tokenize(tool.Title),
-			DescTerms:   tokenize(tool.Description),
+			DescTerms:   tokenize(tool.Description + " " + tool.NamespaceDescription),
 			ParamTerms:  schemaTerms(tool.InputSchema, schemaTraversalDepth),
 			OutputTerms: schemaTerms(tool.OutputSchema, schemaTraversalDepth),
 			Hints:       annotationTerms(tool.Annotations),

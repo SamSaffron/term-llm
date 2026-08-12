@@ -9,8 +9,10 @@ import (
 
 // MCPTool wraps an MCP server tool as an llm.Tool.
 type MCPTool struct {
-	manager  *Manager
-	toolSpec llm.ToolSpec
+	manager      *Manager
+	toolSpec     llm.ToolSpec
+	server       string
+	originalName string
 }
 
 // NewMCPTool creates a new MCP tool wrapper from the legacy projected shape.
@@ -27,7 +29,12 @@ func NewMCPTool(manager *Manager, spec ToolSpec) *MCPTool {
 
 // NewCatalogMCPTool creates a wrapper retaining structured output metadata.
 func NewCatalogMCPTool(manager *Manager, tool CatalogTool) *MCPTool {
-	return &MCPTool{manager: manager, toolSpec: tool.ToolSpec()}
+	return &MCPTool{
+		manager:      manager,
+		toolSpec:     tool.ToolSpec(),
+		server:       tool.Server,
+		originalName: tool.OriginalName,
+	}
 }
 
 // Spec returns the tool specification for the LLM.
@@ -42,6 +49,9 @@ func (t *MCPTool) Preview(args json.RawMessage) string {
 
 // Execute invokes the tool on the MCP server.
 func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	if t.server != "" && t.originalName != "" {
+		return t.manager.CallCatalogTool(ctx, t.server, t.originalName, t.toolSpec.Name, args)
+	}
 	return t.manager.CallTool(ctx, t.toolSpec.Name, args)
 }
 

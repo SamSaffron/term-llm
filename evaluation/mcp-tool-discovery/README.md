@@ -22,6 +22,8 @@ The federation provides:
 
 `run_oracle_evaluation.py` is the reproducible real-world experiment requested for the aggregate server. Its default, explicitly anecdotal pilot predeclares the same three confusable/boundary-spanning oracle tasks, `mode: auto`, threshold 24, ChatGPT `portable` versus `native`, a Qwen `portable` regression, and three repetitions: 18 measured ChatGPT runs plus 9 Qwen runs. Every strategy receives the same seeded task/repetition order.
 
+For ChatGPT native runs, selected MCP children are emitted as Responses namespace objects and coalesced only with other selected children from the same namespace; unselected siblings remain absent. Portable runs retain flattened `server__tool` functions. The protocol audit understands both shapes and continues to require a stable native top-level tool array.
+
 ```sh
 python3 evaluation/mcp-tool-discovery/run_oracle_evaluation.py
 ```

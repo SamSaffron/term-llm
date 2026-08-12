@@ -12,6 +12,7 @@ type ToolSurfacePlanner interface {
 	ToolExecuted(sessionID, name string)
 	CanActivateDeferredTool(name string) bool
 	AllowsPlannerTool(runID, name string) bool
+	ResolveProviderToolCall(runID string, call ToolCall) (ToolCall, error)
 }
 
 // NativeToolDiscoveryPlanner is the provider-neutral engine contract for native
@@ -72,8 +73,10 @@ type ToolDiscoveryServerDiagnostic struct {
 
 // ToolActivationDiagnostic records a recent model-driven activation.
 type ToolActivationDiagnostic struct {
-	Name   string
-	Reason string
+	Name      string
+	Namespace string
+	ChildName string
+	Reason    string
 }
 
 // ToolDiscoveryDiagnoser is implemented by planners that expose inspect data.

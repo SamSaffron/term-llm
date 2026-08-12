@@ -157,6 +157,7 @@ type ResponsesInputItem struct {
 	// For function_call type
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	// For function_call_output type
 	Output string `json:"output,omitempty"`
@@ -203,6 +204,26 @@ type ResponsesTool struct {
 	OutputSchema   map[string]interface{} `json:"output_schema,omitempty"`
 }
 
+// ResponsesNamespace is the native Responses namespace shape returned from a
+// client-executed tool_search. Only individually selected children are included.
+type ResponsesNamespace struct {
+	Type        string                           `json:"type"`
+	Name        string                           `json:"name"`
+	Description string                           `json:"description,omitempty"`
+	Tools       []ResponsesNamespaceFunctionTool `json:"tools"`
+}
+
+type ResponsesNamespaceFunctionTool struct {
+	Type           string                 `json:"type"`
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description,omitempty"`
+	Parameters     map[string]interface{} `json:"parameters"`
+	Strict         bool                   `json:"strict,omitempty"`
+	AllowedCallers []string               `json:"allowed_callers,omitempty"`
+	OutputSchema   map[string]interface{} `json:"output_schema,omitempty"`
+	DeferLoading   bool                   `json:"defer_loading"`
+}
+
 // ResponsesReasoning configures GPT-5.6 reasoning execution.
 type ResponsesReasoning struct {
 	Effort  string `json:"effort,omitempty"`
@@ -240,6 +261,7 @@ type responsesOutputItem struct {
 	ID            string `json:"id,omitempty"`
 	CallID        string `json:"call_id,omitempty"`
 	Name          string `json:"name,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
 	Arguments     string `json:"arguments,omitempty"`
 	Caller        string `json:"caller,omitempty"`
 	Phase         string `json:"phase,omitempty"`
@@ -587,7 +609,11 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 			if args == "" {
 				args = "{}"
 			}
-			items = append(items, ResponsesInputItem{Type: "function_call", CallID: callID, Name: part.ToolCall.Name, Arguments: args})
+			name := part.ToolCall.Name
+			if part.ToolCall.ChildName != "" {
+				name = part.ToolCall.ChildName
+			}
+			items = append(items, ResponsesInputItem{Type: "function_call", CallID: callID, Name: name, Namespace: part.ToolCall.Namespace, Arguments: args})
 		}
 	}
 	flushText()
@@ -686,10 +712,15 @@ func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
 			if args == "" {
 				args = "{}"
 			}
+			name := part.ToolCall.Name
+			if part.ToolCall.ChildName != "" {
+				name = part.ToolCall.ChildName
+			}
 			items = append(items, ResponsesInputItem{
 				Type:      "function_call",
 				CallID:    callID,
-				Name:      part.ToolCall.Name,
+				Name:      name,
+				Namespace: part.ToolCall.Namespace,
 				Arguments: args,
 			})
 		}
@@ -1516,6 +1547,7 @@ type responsesToolCallState struct {
 	outputIndex int    // Output index - stable across added/delta/done events
 	callID      string // Actual call ID (call_xxx) - used in tool results
 	name        string
+	namespace   string
 	caller      string
 	args        strings.Builder
 	finished    bool
@@ -1527,11 +1559,11 @@ func newResponsesToolState() *responsesToolState {
 
 // StartCall starts tracking a new tool call.
 // outputIndex is the stable index across events, callID is the actual call ID (call_xxx).
-func (s *responsesToolState) StartCall(outputIndex int, callID, name string) {
+func (s *responsesToolState) StartCall(outputIndex int, callID, namespace, name string) {
 	if _, exists := s.calls[outputIndex]; exists {
 		return
 	}
-	s.calls[outputIndex] = &responsesToolCallState{outputIndex: outputIndex, callID: callID, name: name}
+	s.calls[outputIndex] = &responsesToolCallState{outputIndex: outputIndex, callID: callID, name: name, namespace: namespace}
 	s.order = append(s.order, outputIndex)
 }
 
@@ -1541,11 +1573,11 @@ func (s *responsesToolState) AppendArguments(outputIndex int, args string) {
 	}
 }
 
-func (s *responsesToolState) FinishCall(outputIndex int, callID, name, finalArgs string) {
+func (s *responsesToolState) FinishCall(outputIndex int, callID, namespace, name, finalArgs string) {
 	state, ok := s.calls[outputIndex]
 	if !ok {
 		// Tool call not found by output_index - create it now (handles edge cases)
-		s.calls[outputIndex] = &responsesToolCallState{outputIndex: outputIndex, callID: callID, name: name}
+		s.calls[outputIndex] = &responsesToolCallState{outputIndex: outputIndex, callID: callID, name: name, namespace: namespace}
 		s.order = append(s.order, outputIndex)
 		state = s.calls[outputIndex]
 	}
@@ -1558,9 +1590,12 @@ func (s *responsesToolState) FinishCall(outputIndex int, callID, name, finalArgs
 	if callID != "" {
 		state.callID = callID
 	}
-	// Update name if provided and current name is empty
+	// Update name and namespace if provided and current values are empty.
 	if name != "" && state.name == "" {
 		state.name = name
+	}
+	if namespace != "" && state.namespace == "" {
+		state.namespace = namespace
 	}
 	state.finished = true
 }
@@ -1615,12 +1650,18 @@ func (s *responsesToolState) Calls() []ToolCall {
 			// Fallback: generate a placeholder ID (shouldn't happen in practice)
 			id = fmt.Sprintf("call_%d", outputIndex)
 		}
-		calls = append(calls, ToolCall{
+		call := ToolCall{
 			ID:        id,
 			Name:      state.name,
 			Arguments: json.RawMessage(args),
 			Caller:    state.caller,
-		})
+		}
+		if strings.TrimSpace(state.namespace) != "" {
+			call.Namespace = state.namespace
+			call.ChildName = state.name
+			call.Name = ""
+		}
+		calls = append(calls, call)
 	}
 	return calls
 }

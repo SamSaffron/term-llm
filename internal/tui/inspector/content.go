@@ -139,7 +139,11 @@ func (r *ContentRenderer) renderHeader(messages []session.Message) (string, []Co
 			b.WriteString(labelStyle.Render("  Recent activation:\n"))
 			currentLine++
 			for _, activation := range discovery.Recent {
-				b.WriteString(valueStyle.Render(fmt.Sprintf("    %s — %s", activation.Name, activation.Reason)))
+				identity := activation.Name
+				if activation.Namespace != "" && activation.ChildName != "" {
+					identity = fmt.Sprintf("%s/%s (%s)", activation.Namespace, activation.ChildName, activation.Name)
+				}
+				b.WriteString(valueStyle.Render(fmt.Sprintf("    %s — %s", identity, activation.Reason)))
 				b.WriteString("\n")
 				currentLine++
 			}

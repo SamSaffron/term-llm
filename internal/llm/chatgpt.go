@@ -460,21 +460,62 @@ func buildResponsesDiscoveryCallItem(call ToolDiscoveryCall) (json.RawMessage, e
 
 func buildResponsesDiscoveryOutputItem(output ToolDiscoveryOutput) (json.RawMessage, error) {
 	tools := make([]any, 0, len(output.Tools))
+	namespaceIndexes := make(map[string]int)
+	namespaceRoutes := make(map[string]string)
 	for _, selected := range output.Tools {
-		built := BuildResponsesTools([]ToolSpec{selected.Spec})
-		if len(built) != 1 {
-			return nil, fmt.Errorf("build discovered tool %q", selected.Spec.Name)
+		identity := selected.Spec.Namespace
+		if identity == nil || strings.TrimSpace(identity.Name) == "" || strings.TrimSpace(identity.ChildName) == "" {
+			built := BuildResponsesTools([]ToolSpec{selected.Spec})
+			if len(built) != 1 {
+				return nil, fmt.Errorf("build discovered tool %q", selected.Spec.Name)
+			}
+			raw, err := json.Marshal(built[0])
+			if err != nil {
+				return nil, fmt.Errorf("encode discovered tool %q: %w", selected.Spec.Name, err)
+			}
+			var tool map[string]any
+			if err := json.Unmarshal(raw, &tool); err != nil {
+				return nil, fmt.Errorf("decode discovered tool %q: %w", selected.Spec.Name, err)
+			}
+			tool["defer_loading"] = true
+			tools = append(tools, tool)
+			continue
 		}
-		raw, err := json.Marshal(built[0])
-		if err != nil {
-			return nil, fmt.Errorf("encode discovered tool %q: %w", selected.Spec.Name, err)
+
+		routeKey := identity.Name + "\x00" + identity.ChildName
+		if prior, exists := namespaceRoutes[routeKey]; exists {
+			if prior != selected.Spec.Name {
+				return nil, fmt.Errorf("native namespace route %q/%q collides for %q and %q", identity.Name, identity.ChildName, prior, selected.Spec.Name)
+			}
+			continue
 		}
-		var tool map[string]any
-		if err := json.Unmarshal(raw, &tool); err != nil {
-			return nil, fmt.Errorf("decode discovered tool %q: %w", selected.Spec.Name, err)
+		namespaceRoutes[routeKey] = selected.Spec.Name
+		child := ResponsesNamespaceFunctionTool{
+			Type:           "function",
+			Name:           identity.ChildName,
+			Description:    selected.Spec.Description,
+			Parameters:     openAIParametersFromToolSchema(selected.Spec.Schema, selected.Spec.Strict),
+			Strict:         selected.Spec.Strict,
+			AllowedCallers: append([]string(nil), selected.Spec.AllowedCallers...),
+			OutputSchema:   deepCopyMap(selected.Spec.OutputSchema),
+			DeferLoading:   true,
 		}
-		tool["defer_loading"] = true
-		tools = append(tools, tool)
+		if index, exists := namespaceIndexes[identity.Name]; exists {
+			namespace := tools[index].(ResponsesNamespace)
+			namespace.Tools = append(namespace.Tools, child)
+			if namespace.Description == "" && identity.Description != "" {
+				namespace.Description = identity.Description
+			}
+			tools[index] = namespace
+			continue
+		}
+		namespaceIndexes[identity.Name] = len(tools)
+		tools = append(tools, ResponsesNamespace{
+			Type:        "namespace",
+			Name:        identity.Name,
+			Description: identity.Description,
+			Tools:       []ResponsesNamespaceFunctionTool{child},
+		})
 	}
 	return json.Marshal(struct {
 		Type      string `json:"type"`

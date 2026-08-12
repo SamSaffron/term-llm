@@ -862,6 +862,55 @@ func (p *Planner) EndRun(runID string) {
 	p.mu.Unlock()
 }
 
+// ResolveProviderToolCall maps an explicit native namespace/child identity to
+// the existing flattened executable name. Only the exact child previously
+// loaded (or explicitly pinned) in this run's authorised state can resolve.
+func (p *Planner) ResolveProviderToolCall(runID string, call llm.ToolCall) (llm.ToolCall, error) {
+	if strings.TrimSpace(call.Namespace) == "" {
+		return call, nil
+	}
+	if strings.TrimSpace(call.ChildName) == "" {
+		return call, fmt.Errorf("native namespace call %q is missing a child name", call.Namespace)
+	}
+	p.mu.Lock()
+	key := p.runs[runID]
+	strategy := p.runStrategies[runID]
+	state := p.sessions[key]
+	active := make(map[string]activeToolState)
+	if state != nil {
+		for name, item := range state.active {
+			active[name] = item
+		}
+	}
+	p.mu.Unlock()
+	if key == "" || strategy != StrategyNative || state == nil {
+		return call, fmt.Errorf("native namespace call %q/%q is not active for run %q", call.Namespace, call.ChildName, runID)
+	}
+	engine := p.currentEngine()
+	if engine == nil {
+		return call, fmt.Errorf("native namespace call %q/%q has no execution engine", call.Namespace, call.ChildName)
+	}
+	snapshot := p.manager.CatalogueSnapshot()
+	if snapshot == nil {
+		return call, fmt.Errorf("native namespace call %q/%q has no MCP catalogue", call.Namespace, call.ChildName)
+	}
+	for _, tool := range snapshot.Tools {
+		if tool.Namespace != call.Namespace || tool.ChildName != call.ChildName {
+			continue
+		}
+		loaded, ok := active[tool.Name]
+		if !ok || loaded.SchemaHash != tool.SchemaHash || !engine.IsToolAllowed(tool.Name) {
+			return call, fmt.Errorf("native namespace child %q/%q is not loaded and authorised", call.Namespace, call.ChildName)
+		}
+		if _, ok := engine.Tools().Get(tool.Name); !ok {
+			return call, fmt.Errorf("native namespace child %q/%q has no executable wrapper", call.Namespace, call.ChildName)
+		}
+		call.Name = tool.Name
+		return call, nil
+	}
+	return call, fmt.Errorf("native namespace child %q/%q is not present in the current catalogue", call.Namespace, call.ChildName)
+}
+
 // CanActivateDeferredTool reports whether the exact forced name is a current,
 // authorised MCP catalogue entry with an executable wrapper on the owned engine.
 func (p *Planner) CanActivateDeferredTool(name string) bool {
@@ -939,25 +988,36 @@ func (p *Planner) alwaysLoadSet(snapshot *mcp.CatalogueSnapshot) map[string]bool
 		return result
 	}
 	available := make(map[string]bool)
+	byServerOriginal := make(map[string]string)
 	generation := uint64(0)
 	if snapshot != nil {
 		generation = snapshot.Generation
 		for _, tool := range snapshot.Tools {
 			available[tool.Name] = true
+			byServerOriginal[tool.Server+"\x00"+tool.OriginalName] = tool.Name
 		}
 	}
 	for server, serverCfg := range cfg.Servers {
 		for _, original := range serverCfg.AlwaysLoad {
-			name := server + "__" + original
-			if available[name] {
+			name := byServerOriginal[server+"\x00"+original]
+			if name == "" {
+				// Compatibility for synthetic/legacy snapshots that predate explicit
+				// server and original-name identity metadata.
+				legacyName := server + "__" + original
+				if available[legacyName] {
+					name = legacyName
+				}
+			}
+			if name != "" && available[name] {
 				result[name] = true
 				continue
 			}
+			warningKey := server + "\x00" + original
 			p.mu.Lock()
-			warnedGeneration, warned := p.warnedAlways[name]
+			warnedGeneration, warned := p.warnedAlways[warningKey]
 			warn := !warned || warnedGeneration != generation
 			if warn {
-				p.warnedAlways[name] = generation
+				p.warnedAlways[warningKey] = generation
 			}
 			p.mu.Unlock()
 			if warn {

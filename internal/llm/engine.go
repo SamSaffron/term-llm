@@ -3357,6 +3357,17 @@ turnLoop:
 				continue
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
+				if event.Tool.Namespace != "" {
+					if planner == nil {
+						return fmt.Errorf("provider emitted namespace tool call %q/%q without an active discovery planner", event.Tool.Namespace, event.Tool.ChildName)
+					}
+					resolved, err := planner.ResolveProviderToolCall(runID, *event.Tool)
+					if err != nil {
+						return fmt.Errorf("resolve provider namespace tool call: %w", err)
+					}
+					event.Tool = &resolved
+					event.ToolName = resolved.Name
+				}
 				if err := flushScratchpad(); err != nil {
 					return err
 				}

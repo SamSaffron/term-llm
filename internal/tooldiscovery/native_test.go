@@ -78,7 +78,7 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	defer manager.StopAll()
 	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
 		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
-		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Name: "federation__special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
+		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "external-1", Namespace: "federation", ChildName: "special_action", Arguments: json.RawMessage(`{"project_id":"P-42"}`)}}}},
 		{events: []llm.Event{{Type: llm.EventTextDelta, Text: "done"}}},
 	}}
 	engine := llm.NewEngine(provider, nil)
@@ -128,9 +128,64 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	if !callSeen || !outputSeen {
 		t.Fatalf("native replay parts call=%v output=%v", callSeen, outputSeen)
 	}
+	var routedCall *llm.ToolCall
+	for _, message := range provider.requests[2].Messages {
+		for _, part := range message.Parts {
+			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "external-1" {
+				routedCall = part.ToolCall
+			}
+		}
+	}
+	if routedCall == nil || routedCall.Name != "federation__special_action" || routedCall.Namespace != "federation" || routedCall.ChildName != "special_action" {
+		t.Fatalf("persisted native route = %#v", routedCall)
+	}
 	diagnostics, _ := engine.ToolDiscoveryDiagnostics("native")
 	if diagnostics.Strategy != string(StrategyNative) || diagnostics.DynamicActive != 1 || diagnostics.FallbackCount != 0 {
 		t.Fatalf("native diagnostics = %+v", diagnostics)
+	}
+}
+
+func TestNativeNamespaceCallRejectsUnselectedSibling(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := &nativeScriptProvider{supported: true, turns: []nativeScriptTurn{
+		{events: []llm.Event{{Type: llm.EventDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-1", Arguments: json.RawMessage(`{"tool_names":["special_action"]}`)}}}},
+		{events: []llm.Event{{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "sibling-1", Namespace: "federation", ChildName: "realistic_operation_00", Arguments: json.RawMessage(`{}`)}}}},
+	}}
+	engine := llm.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native"}, manager, engine); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		EnableToolDiscovery: true,
+		SessionID:           "unselected-sibling",
+		Model:               "native-model",
+		Messages:            []llm.Message{llm.UserText("act")},
+		MaxTurns:            3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var gotErr error
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			if !errors.Is(recvErr, io.EOF) {
+				gotErr = recvErr
+			}
+			break
+		}
+		if event.Type == llm.EventError {
+			gotErr = event.Err
+			break
+		}
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "not loaded and authorised") {
+		t.Fatalf("unselected sibling error = %v", gotErr)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("provider continued after rejected sibling: %d requests", len(provider.requests))
 	}
 }
 
