@@ -13,7 +13,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -728,20 +727,9 @@ func (m *Model) startStream(content string) tea.Cmd {
 		messages := m.buildMessagesForStream()
 		m.setStreamingContextMessages(messages)
 
-		// Collect MCP tools if available and register them with the engine
+		// The discovery planner registers MCP wrappers for execution and owns
+		// provider visibility. Start with non-MCP request tools only.
 		var reqTools []llm.ToolSpec
-		if m.mcpManager != nil {
-			mcpTools := m.mcpManager.AllTools()
-			for _, t := range mcpTools {
-				reqTools = append(reqTools, llm.ToolSpec{
-					Name:        t.Name,
-					Description: t.Description,
-					Schema:      t.Schema,
-				})
-				// Register MCP tool with engine for execution
-				m.engine.RegisterTool(mcp.NewMCPTool(m.mcpManager, t))
-			}
-		}
 
 		// Add local tools (read_file, write_file, shell, etc.) if enabled
 		// These are already registered in the engine, we just need their specs
@@ -781,6 +769,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 			Model:                   strings.TrimSpace(m.modelName),
 			Messages:                messages,
 			Tools:                   reqTools,
+			EnableToolDiscovery:     m.discoveryPlanner != nil,
 			Search:                  m.searchEnabled,
 			ForceExternalSearch:     m.forceExternalSearch,
 			DisableExternalWebFetch: m.disableExternalWebFetch,

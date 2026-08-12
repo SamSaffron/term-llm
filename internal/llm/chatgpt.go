@@ -210,6 +210,20 @@ func (p *ChatGPTProvider) Capabilities() Capabilities {
 	}
 }
 
+// NativeToolDiscoverySupport is intentionally narrower than the public API's
+// general model family support. It records only the exact ChatGPT OAuth
+// Responses WebSocket combination verified by this integration.
+func (p *ChatGPTProvider) NativeToolDiscoverySupport(model string) NativeToolDiscoverySupport {
+	if p == nil || !p.useWebSocket {
+		return NativeToolDiscoverySupport{Reason: "ChatGPT native tool discovery requires Responses WebSocket transport"}
+	}
+	actualModel, _ := parseModelEffortForProvider("chatgpt", chooseModel(model, p.model))
+	if actualModel != "gpt-5.6-luna" {
+		return NativeToolDiscoverySupport{Reason: fmt.Sprintf("ChatGPT native tool discovery is verified only for gpt-5.6-luna, not %s", actualModel)}
+	}
+	return NativeToolDiscoverySupport{Supported: true, Name: "chatgpt-oauth-responses-websocket/tool_search", Reason: "exact verified gpt-5.6-luna WebSocket path"}
+}
+
 func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	// Check and refresh token if needed
 	if p.creds.IsExpired() {
@@ -250,19 +264,41 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	// Build tools. Public-API Pro and advanced Responses controls are not
 	// synthesized for the ChatGPT Codex backend.
 	tools := BuildResponsesTools(req.Tools)
+	if req.NativeToolDiscovery != nil {
+		support := p.NativeToolDiscoverySupport(model)
+		if !support.Supported {
+			return nil, fmt.Errorf("native tool discovery unsupported: %s", support.Reason)
+		}
+		search := req.NativeToolDiscovery.Search
+		tools = append(tools, ResponsesToolSearchTool{
+			Type:        "tool_search",
+			Execution:   "client",
+			Description: search.Description,
+			Parameters:  deepCopyMap(search.Schema),
+		})
+	}
 	if req.Search {
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
 	}
 
 	// Send system messages via the instructions field but leave the transcript in
 	// raw message form so the Responses client can lazily build a continuation-only
-	// suffix on follow-up WebSocket turns.
-	instructions := collectRoleText(req.Messages, RoleSystem)
+	// suffix on follow-up WebSocket turns. Native discovery replay is translated
+	// here, at the exact capable adapter boundary, rather than in ToolSpec.
+	messages := req.Messages
+	if req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(messages) {
+		var err error
+		messages, err = translateChatGPTDiscoveryMessages(messages)
+		if err != nil {
+			return nil, fmt.Errorf("translate native tool discovery replay: %w", err)
+		}
+	}
+	instructions := collectRoleText(messages, RoleSystem)
 
 	responsesReq := ResponsesRequest{
 		Model:                           model,
 		Instructions:                    instructions,
-		Messages:                        req.Messages,
+		Messages:                        messages,
 		IncludeDeveloperInContinuation:  req.IncludeDeveloperInContinuation,
 		FileUploadPolicy:                p.effectiveFileUploadPolicy(),
 		ExtractInstructionsFromMessages: true,
@@ -271,9 +307,10 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		// The ChatGPT Codex backend's implicit prefix caching regresses for long
 		// prompts when prompt_cache_key is present. Keep session_id for routing and
 		// WebSocket continuation, but let the backend choose its cache route.
-		Store:     boolPtr(false),
-		Stream:    true,
-		SessionID: req.SessionID,
+		Store:          boolPtr(false),
+		Stream:         true,
+		SessionID:      req.SessionID,
+		ForceWebSocket: req.NativeToolDiscovery != nil || messagesContainDiscoveryParts(req.Messages),
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
@@ -286,7 +323,11 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 	}
 
 	if req.ToolChoice.Mode != "" {
-		responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
+		if req.ToolChoice.Mode == ToolChoiceName && req.ToolChoice.Name == "tool_search" && req.NativeToolDiscovery != nil {
+			responsesReq.ToolChoice = map[string]any{"type": "tool_search"}
+		} else {
+			responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
+		}
 	}
 	if req.ParallelToolCalls {
 		responsesReq.ParallelToolCalls = boolPtr(true)
@@ -357,6 +398,132 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 			return nil
 		},
 	}
+}
+
+func messagesContainDiscoveryParts(messages []Message) bool {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Type == PartDiscoveryCall || part.Type == PartDiscoveryOutput {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func translateChatGPTDiscoveryMessages(messages []Message) ([]Message, error) {
+	translated := make([]Message, len(messages))
+	for i, message := range messages {
+		translated[i] = message
+		translated[i].Parts = make([]Part, 0, len(message.Parts))
+		for _, part := range message.Parts {
+			switch part.Type {
+			case PartDiscoveryCall:
+				if part.DiscoveryCall == nil {
+					continue
+				}
+				raw, err := buildResponsesDiscoveryCallItem(*part.DiscoveryCall)
+				if err != nil {
+					return nil, err
+				}
+				translated[i].Parts = append(translated[i].Parts, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: raw}})
+			case PartDiscoveryOutput:
+				if part.DiscoveryOutput == nil {
+					continue
+				}
+				raw, err := buildResponsesDiscoveryOutputItem(*part.DiscoveryOutput)
+				if err != nil {
+					return nil, err
+				}
+				translated[i].Parts = append(translated[i].Parts, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: raw}})
+			default:
+				translated[i].Parts = append(translated[i].Parts, part)
+			}
+		}
+	}
+	return translated, nil
+}
+
+func buildResponsesDiscoveryCallItem(call ToolDiscoveryCall) (json.RawMessage, error) {
+	arguments := call.Arguments
+	if len(arguments) == 0 {
+		arguments = json.RawMessage(`{}`)
+	}
+	return json.Marshal(struct {
+		Type      string          `json:"type"`
+		Execution string          `json:"execution"`
+		CallID    string          `json:"call_id"`
+		Status    string          `json:"status"`
+		Arguments json.RawMessage `json:"arguments"`
+	}{Type: "tool_search_call", Execution: "client", CallID: call.ID, Status: "completed", Arguments: arguments})
+}
+
+func buildResponsesDiscoveryOutputItem(output ToolDiscoveryOutput) (json.RawMessage, error) {
+	tools := make([]any, 0, len(output.Tools))
+	namespaceIndexes := make(map[string]int)
+	namespaceRoutes := make(map[string]string)
+	for _, selected := range output.Tools {
+		identity := selected.Spec.Namespace
+		if identity == nil || strings.TrimSpace(identity.Name) == "" || strings.TrimSpace(identity.ChildName) == "" {
+			built := BuildResponsesTools([]ToolSpec{selected.Spec})
+			if len(built) != 1 {
+				return nil, fmt.Errorf("build discovered tool %q", selected.Spec.Name)
+			}
+			raw, err := json.Marshal(built[0])
+			if err != nil {
+				return nil, fmt.Errorf("encode discovered tool %q: %w", selected.Spec.Name, err)
+			}
+			var tool map[string]any
+			if err := json.Unmarshal(raw, &tool); err != nil {
+				return nil, fmt.Errorf("decode discovered tool %q: %w", selected.Spec.Name, err)
+			}
+			tool["defer_loading"] = true
+			tools = append(tools, tool)
+			continue
+		}
+
+		routeKey := identity.Name + "\x00" + identity.ChildName
+		if prior, exists := namespaceRoutes[routeKey]; exists {
+			if prior != selected.Spec.Name {
+				return nil, fmt.Errorf("native namespace route %q/%q collides for %q and %q", identity.Name, identity.ChildName, prior, selected.Spec.Name)
+			}
+			continue
+		}
+		namespaceRoutes[routeKey] = selected.Spec.Name
+		child := ResponsesNamespaceFunctionTool{
+			Type:           "function",
+			Name:           identity.ChildName,
+			Description:    selected.Spec.Description,
+			Parameters:     openAIParametersFromToolSchema(selected.Spec.Schema, selected.Spec.Strict),
+			Strict:         selected.Spec.Strict,
+			AllowedCallers: append([]string(nil), selected.Spec.AllowedCallers...),
+			OutputSchema:   deepCopyMap(selected.Spec.OutputSchema),
+			DeferLoading:   true,
+		}
+		if index, exists := namespaceIndexes[identity.Name]; exists {
+			namespace := tools[index].(ResponsesNamespace)
+			namespace.Tools = append(namespace.Tools, child)
+			if namespace.Description == "" && identity.Description != "" {
+				namespace.Description = identity.Description
+			}
+			tools[index] = namespace
+			continue
+		}
+		namespaceIndexes[identity.Name] = len(tools)
+		tools = append(tools, ResponsesNamespace{
+			Type:        "namespace",
+			Name:        identity.Name,
+			Description: identity.Description,
+			Tools:       []ResponsesNamespaceFunctionTool{child},
+		})
+	}
+	return json.Marshal(struct {
+		Type      string `json:"type"`
+		Execution string `json:"execution"`
+		CallID    string `json:"call_id"`
+		Status    string `json:"status"`
+		Tools     []any  `json:"tools"`
+	}{Type: "tool_search_output", Execution: "client", CallID: output.CallID, Status: "completed", Tools: tools})
 }
 
 // chatGPTRateLimitResponse represents the error response from ChatGPT rate limits

@@ -58,21 +58,47 @@ type FinishingTool interface {
 type ToolRegistry struct {
 	mu         sync.RWMutex
 	tools      map[string]Tool
+	visible    map[string]bool
 	specsCache []ToolSpec
 	specsDirty bool
 }
 
 func NewToolRegistry() *ToolRegistry {
-	return &ToolRegistry{tools: make(map[string]Tool), specsDirty: true}
+	return &ToolRegistry{tools: make(map[string]Tool), visible: make(map[string]bool), specsDirty: true}
 }
 
+// Register makes a tool executable and provider-visible.
 func (r *ToolRegistry) Register(tool Tool) {
+	r.register(tool, true)
+}
+
+// RegisterDeferred makes a tool executable without exposing its schema through AllSpecs.
+func (r *ToolRegistry) RegisterDeferred(tool Tool) {
+	r.register(tool, false)
+}
+
+func (r *ToolRegistry) register(tool Tool, visible bool) {
 	spec := tool.Spec()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[spec.Name] = tool
+	r.visible[spec.Name] = visible
 	r.specsDirty = true
+}
+
+// SetVisibility changes provider visibility without affecting execution lookup.
+func (r *ToolRegistry) SetVisibility(name string, visible bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.tools[name]; !ok {
+		return false
+	}
+	if r.visible[name] != visible {
+		r.visible[name] = visible
+		r.specsDirty = true
+	}
+	return true
 }
 
 func (r *ToolRegistry) Get(name string) (Tool, bool) {
@@ -101,6 +127,7 @@ func (r *ToolRegistry) Unregister(name string) {
 	defer r.mu.Unlock()
 	if _, ok := r.tools[name]; ok {
 		delete(r.tools, name)
+		delete(r.visible, name)
 		r.specsDirty = true
 	}
 }
@@ -120,7 +147,9 @@ func (r *ToolRegistry) AllSpecs() []ToolSpec {
 	if r.specsDirty {
 		names := make([]string, 0, len(r.tools))
 		for name := range r.tools {
-			names = append(names, name)
+			if r.visible[name] {
+				names = append(names, name)
+			}
 		}
 		sort.Strings(names)
 
@@ -132,6 +161,30 @@ func (r *ToolRegistry) AllSpecs() []ToolSpec {
 		r.specsDirty = false
 	}
 	return copyToolSpecs(r.specsCache)
+}
+
+// AllSpecsIncludingDeferred returns every executable tool spec for diagnostics
+// and discovery planning, regardless of provider visibility.
+func (r *ToolRegistry) AllSpecsIncludingDeferred() []ToolSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	specs := make([]ToolSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, r.tools[name].Spec())
+	}
+	return specs
+}
+
+// IsVisible reports whether a registered tool is included by AllSpecs.
+func (r *ToolRegistry) IsVisible(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.visible[name]
 }
 
 // copyToolSpecs protects callers from mutating the cached slice or top-level

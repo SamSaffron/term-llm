@@ -775,6 +775,39 @@ func TestDefaultReasoningConfigMatchesSchemaDefaults(t *testing.T) {
 	}
 }
 
+func TestToolDiscoveryDefaultsAndValidation(t *testing.T) {
+	if got, ok := DefaultForKey("tool_discovery.mode"); !ok || got != "auto" {
+		t.Fatalf("tool_discovery.mode default = %#v, %v", got, ok)
+	}
+	if got, ok := DefaultForKey("tool_discovery.strategy"); !ok || got != "auto" {
+		t.Fatalf("tool_discovery.strategy default = %#v, %v", got, ok)
+	}
+	if got, ok := DefaultForKey("tool_discovery.threshold"); !ok || got != 24 {
+		t.Fatalf("tool_discovery.threshold default = %#v, %v", got, ok)
+	}
+	for _, mode := range []string{"", "auto", "eager", "deferred"} {
+		cfg := &Config{ToolDiscovery: ToolDiscoveryConfig{Mode: mode, Threshold: 0}}
+		if err := cfg.ValidateToolDiscovery(); err != nil {
+			t.Errorf("mode %q rejected: %v", mode, err)
+		}
+	}
+	for _, strategy := range []string{"", "auto", "portable", "native"} {
+		cfg := &Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "auto", Strategy: strategy, Threshold: 24}}
+		if err := cfg.ValidateToolDiscovery(); err != nil {
+			t.Errorf("strategy %q rejected: %v", strategy, err)
+		}
+	}
+	if err := (&Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "auto", Strategy: "magic", Threshold: 24}}).ValidateToolDiscovery(); err == nil || !strings.Contains(err.Error(), "auto, portable, or native") {
+		t.Fatalf("invalid strategy error = %v", err)
+	}
+	if err := (&Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "sometimes", Threshold: 24}}).ValidateToolDiscovery(); err == nil || !strings.Contains(err.Error(), "auto, eager, or deferred") {
+		t.Fatalf("invalid mode error = %v", err)
+	}
+	if err := (&Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "auto", Threshold: -1}}).ValidateToolDiscovery(); err == nil || !strings.Contains(err.Error(), "non-negative") {
+		t.Fatalf("negative threshold error = %v", err)
+	}
+}
+
 func TestNoViperSetDefaultOutsideConfigPackage(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	pattern := "viper." + "SetDefault("

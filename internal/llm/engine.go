@@ -160,10 +160,15 @@ type Engine struct {
 	// replayable stream failure at the next provider receive boundary.
 	chaosFailNext atomic.Bool
 
-	// pendingToolSpecs holds tool specs registered mid-loop (e.g. via skill activation)
-	// that should be injected into req.Tools at the start of the next loop iteration.
-	pendingToolSpecs []ToolSpec
+	// pendingToolSpecs is a run-scoped delivery queue for tools activated between
+	// provider turns. It is never authoritative session state.
+	pendingToolSpecs map[string]map[string]ToolSpec
+	activeToolRunID  string
 	pendingToolsMu   sync.Mutex
+	toolRunCounter   atomic.Uint64
+
+	toolPlannerMu sync.RWMutex
+	toolPlanner   ToolSurfacePlanner
 }
 
 // ToolExecutorSetter is an optional interface for providers that need
@@ -245,8 +250,9 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 		tools = NewToolRegistry()
 	}
 	e := &Engine{
-		provider: provider,
-		tools:    tools,
+		provider:         provider,
+		tools:            tools,
+		pendingToolSpecs: make(map[string]map[string]ToolSpec),
 	}
 
 	// Wire up tool executors for providers that expose term-llm tools over an external bridge.
@@ -304,26 +310,114 @@ func (e *Engine) RegisterTool(tool Tool) {
 	e.tools.Register(tool)
 }
 
-// AddDynamicTool registers a tool and queues its spec to be injected into
-// the active agentic loop's tool list at the start of the next iteration.
-// Use this instead of engine.Tools().Register() when activating skill tools
-// mid-conversation so the LLM sees them immediately on the next turn.
+// SetToolSurfacePlanner installs the planner that owns dynamic provider visibility.
+func (e *Engine) SetToolSurfacePlanner(planner ToolSurfacePlanner) {
+	e.toolPlannerMu.Lock()
+	e.toolPlanner = planner
+	e.toolPlannerMu.Unlock()
+}
+
+// ClearToolSurfacePlanner removes planner only when it still owns this engine.
+// This prevents an old planner from detaching a newer replacement.
+func (e *Engine) ClearToolSurfacePlanner(planner ToolSurfacePlanner) bool {
+	if e == nil || planner == nil {
+		return false
+	}
+	e.toolPlannerMu.Lock()
+	defer e.toolPlannerMu.Unlock()
+	if e.toolPlanner != planner {
+		return false
+	}
+	e.toolPlanner = nil
+	return true
+}
+
+func (e *Engine) currentToolPlanner() ToolSurfacePlanner {
+	e.toolPlannerMu.RLock()
+	defer e.toolPlannerMu.RUnlock()
+	return e.toolPlanner
+}
+
+// ToolDiscoveryDiagnostics returns current planner diagnostics when available.
+func (e *Engine) ToolDiscoveryDiagnostics(sessionID string) (ToolDiscoveryDiagnostics, bool) {
+	planner := e.currentToolPlanner()
+	diagnoser, ok := planner.(ToolDiscoveryDiagnoser)
+	if !ok {
+		return ToolDiscoveryDiagnostics{}, false
+	}
+	return diagnoser.Diagnostics(sessionID), true
+}
+
+// AddDynamicTool registers a tool and queues it for the currently active run.
+// Calls outside a run only register the tool; durable activation belongs to the planner/tool.
 func (e *Engine) AddDynamicTool(tool Tool) {
 	e.tools.Register(tool)
 	e.pendingToolsMu.Lock()
-	e.pendingToolSpecs = append(e.pendingToolSpecs, tool.Spec())
+	runID := e.activeToolRunID
+	e.pendingToolsMu.Unlock()
+	if runID != "" {
+		e.AddDynamicToolForRun(runID, tool)
+	}
+}
+
+// AddDynamicToolForRun queues a provider schema only for the matching active run.
+func (e *Engine) AddDynamicToolForRun(runID string, tool Tool) bool {
+	if tool == nil || runID == "" {
+		return false
+	}
+	spec := tool.Spec()
+	e.pendingToolsMu.Lock()
+	defer e.pendingToolsMu.Unlock()
+	if e.activeToolRunID != runID {
+		return false
+	}
+	pending := e.pendingToolSpecs[runID]
+	if pending == nil {
+		pending = make(map[string]ToolSpec)
+		e.pendingToolSpecs[runID] = pending
+	}
+	pending[spec.Name] = spec
+	return true
+}
+
+func (e *Engine) beginToolRun() string {
+	runID := fmt.Sprintf("toolrun_%d", e.toolRunCounter.Add(1))
+	e.pendingToolsMu.Lock()
+	// An engine runs one provider stream at a time. Clear abandoned delivery
+	// queues so cancellation cannot leak activation into a later run.
+	e.pendingToolSpecs = make(map[string]map[string]ToolSpec)
+	e.activeToolRunID = runID
+	e.pendingToolsMu.Unlock()
+	return runID
+}
+
+func (e *Engine) endToolRun(runID string) {
+	e.pendingToolsMu.Lock()
+	delete(e.pendingToolSpecs, runID)
+	if e.activeToolRunID == runID {
+		e.activeToolRunID = ""
+	}
 	e.pendingToolsMu.Unlock()
 }
 
-// drainPendingToolSpecs returns any queued tool specs and clears the queue.
-func (e *Engine) drainPendingToolSpecs() []ToolSpec {
+// drainPendingToolSpecs returns queued specs for one run and clears that queue.
+func (e *Engine) drainPendingToolSpecs(runID string) []ToolSpec {
 	e.pendingToolsMu.Lock()
 	defer e.pendingToolsMu.Unlock()
-	if len(e.pendingToolSpecs) == 0 {
+	pending := e.pendingToolSpecs[runID]
+	delete(e.pendingToolSpecs, runID)
+	if len(pending) == 0 {
 		return nil
 	}
-	specs := e.pendingToolSpecs
-	e.pendingToolSpecs = nil
+	names := make([]string, 0, len(pending))
+	for name := range pending {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	specs := make([]ToolSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, pending[name])
+	}
 	return specs
 }
 
@@ -363,6 +457,11 @@ func (e *Engine) ResetConversation() {
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
 
+	e.pendingToolsMu.Lock()
+	e.pendingToolSpecs = make(map[string]map[string]ToolSpec)
+	e.activeToolRunID = ""
+	e.pendingToolsMu.Unlock()
+
 	// Reset provider-side conversation state if supported
 	resetProviderConversation(e.provider)
 }
@@ -374,7 +473,10 @@ func (e *Engine) ResetSessionState(sessionID string) {
 		return
 	}
 	e.ResetConversation()
-	for _, spec := range e.tools.AllSpecs() {
+	if planner := e.currentToolPlanner(); planner != nil {
+		planner.ResetSession(sessionID)
+	}
+	for _, spec := range e.tools.AllSpecsIncludingDeferred() {
 		tool, ok := e.tools.Get(spec.Name)
 		if !ok {
 			continue
@@ -393,7 +495,7 @@ func (e *Engine) SetDebugLogger(logger *DebugLogger) {
 // SetAllowedTools sets the list of tools that can be executed.
 // When set, only tools in this list can run; all others are blocked.
 // Pass nil or empty slice to allow all tools.
-// The list is intersected with registered tools (can't allow unregistered tools).
+// Late-bound names are retained, but execution still requires registration.
 func (e *Engine) SetAllowedTools(tools []string) {
 	e.allowedMu.Lock()
 	defer e.allowedMu.Unlock()
@@ -405,10 +507,10 @@ func (e *Engine) SetAllowedTools(tools []string) {
 
 	e.allowedTools = make(map[string]bool, len(tools))
 	for _, name := range tools {
-		// Only add if tool is registered (intersection with available tools)
-		if _, ok := e.tools.Get(name); ok {
-			e.allowedTools[name] = true
-		}
+		// Preserve explicit names for tools registered later (notably MCP catalogue
+		// entries and dynamically activated skills). Execution still requires a
+		// registered wrapper, so this grants no authority to a nonexistent tool.
+		e.allowedTools[name] = true
 	}
 }
 
@@ -423,10 +525,8 @@ func (e *Engine) SetAllowedToolsFilter(tools []string) {
 func (e *Engine) intersectAllowedTools(tools []string) map[string]bool {
 	allowed := make(map[string]bool, len(tools))
 	for _, name := range tools {
-		// Only add if tool is registered (intersection with available tools).
-		if _, ok := e.tools.Get(name); ok {
-			allowed[name] = true
-		}
+		// Keep late-bound names; registry lookup remains mandatory at execution.
+		allowed[name] = true
 	}
 	return allowed
 }
@@ -452,13 +552,18 @@ func (e *Engine) AllowedToolsFilter() (tools []string, present bool) {
 // filter returns an empty non-nil slice.
 func (e *Engine) FilterAllowedToolSpecs(specs []ToolSpec) []ToolSpec {
 	e.allowedMu.RLock()
-	defer e.allowedMu.RUnlock()
 	if e.allowedTools == nil {
+		e.allowedMu.RUnlock()
 		return specs
 	}
+	allowed := make(map[string]bool, len(e.allowedTools))
+	for name, value := range e.allowedTools {
+		allowed[name] = value
+	}
+	e.allowedMu.RUnlock()
 	filtered := make([]ToolSpec, 0, len(specs))
 	for _, spec := range specs {
-		if e.allowedTools[spec.Name] {
+		if allowed[spec.Name] {
 			filtered = append(filtered, spec)
 		}
 	}
@@ -1247,12 +1352,7 @@ func nonSystemMessages(messages []Message) []Message {
 func (e *Engine) IsToolAllowed(name string) bool {
 	e.allowedMu.RLock()
 	defer e.allowedMu.RUnlock()
-
-	// No filter means all tools are allowed
-	if e.allowedTools == nil {
-		return true
-	}
-	return e.allowedTools[name]
+	return e.allowedTools == nil || e.allowedTools[name]
 }
 
 const indirectVisionInstruction = "Uploaded images are represented as local file-path references for this text-only model. When visual content matters, call the view_image tool with the referenced file_path and, if useful, a focused question. Do not claim to have inspected an image unless you have called view_image or the user-provided text is sufficient."
@@ -1628,11 +1728,32 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// matters for explicit-empty skill filters and for restrictions activated
 	// between agentic turns.
 	req.Tools = e.FilterAllowedToolSpecs(req.Tools)
-	if len(req.Tools) == 0 {
+	var planner ToolSurfacePlanner
+	if req.EnableToolDiscovery {
+		planner = e.currentToolPlanner()
+	}
+	validateNamedChoice := func(choice ToolChoice) error {
+		if choice.Mode != ToolChoiceName || hasToolNamed(req.Tools, choice.Name) {
+			return nil
+		}
+		// The only missing forced name a planner may defer validation for is the
+		// exact authorised MCP wrapper it can make visible at BeginRun.
+		if planner != nil && planner.CanActivateDeferredTool(choice.Name) {
+			return nil
+		}
+		return fmt.Errorf("selected tool %q is not allowed by the active tool filter", choice.Name)
+	}
+	if err := validateNamedChoice(req.ToolChoice); err != nil {
+		return nil, err
+	}
+	if req.LastTurnToolChoice != nil {
+		if err := validateNamedChoice(*req.LastTurnToolChoice); err != nil {
+			return nil, err
+		}
+	}
+	if len(req.Tools) == 0 && planner == nil {
 		req.ToolChoice = ToolChoice{}
 		req.LastTurnToolChoice = nil
-	} else if req.ToolChoice.Mode == ToolChoiceName && !hasToolNamed(req.Tools, req.ToolChoice.Name) {
-		return nil, fmt.Errorf("selected tool %q is not allowed by the active tool filter", req.ToolChoice.Name)
 	}
 
 	// Restorable session context is capability-gated by the final filtered specs
@@ -1648,8 +1769,9 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	}
 
 	// 2. Decide if we use the agentic loop
-	// We use it if request has tools AND provider supports tool calls
-	useLoop := len(req.Tools) > 0 && caps.ToolCalls
+	// We use it if request has tools, or this request opted into a discovery
+	// planner that may add authorised MCP tools, and the provider supports calls.
+	useLoop := caps.ToolCalls && (len(req.Tools) > 0 || planner != nil)
 
 	if useLoop {
 		e.beginInterjectionRun(getMaxTurns(req) > 1)
@@ -2112,16 +2234,92 @@ func cloneProviderReplayParts(parts []Part) []Part {
 	}
 	out := make([]Part, 0, len(parts))
 	for _, part := range parts {
-		if part.Type != PartProviderReplay || part.ProviderReplay == nil || len(part.ProviderReplay.Raw) == 0 {
-			continue
+		switch part.Type {
+		case PartProviderReplay:
+			if part.ProviderReplay != nil && len(part.ProviderReplay.Raw) > 0 {
+				out = append(out, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)}})
+			}
+		case PartDiscoveryCall:
+			if part.DiscoveryCall != nil {
+				call := *part.DiscoveryCall
+				call.Arguments = append(json.RawMessage(nil), part.DiscoveryCall.Arguments...)
+				out = append(out, Part{Type: PartDiscoveryCall, DiscoveryCall: &call})
+			}
+		case PartDiscoveryOutput:
+			if part.DiscoveryOutput != nil {
+				out = append(out, Part{Type: PartDiscoveryOutput, DiscoveryOutput: cloneToolDiscoveryOutput(part.DiscoveryOutput)})
+			}
 		}
-		out = append(out, Part{Type: PartProviderReplay, ProviderReplay: &ProviderReplayItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)}})
 	}
 	return out
 }
 
+func collectToolDiscoveryReplay(messages []Message) []Part {
+	var replay []Part
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Type != PartDiscoveryCall && part.Type != PartDiscoveryOutput {
+				continue
+			}
+			if cloned, ok := clonePart(part); ok {
+				replay = append(replay, cloned)
+			}
+		}
+	}
+	return replay
+}
+
+func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
+	if len(replay) == 0 {
+		return messages
+	}
+	cleaned := make([]Message, 0, len(messages)+1)
+	for _, message := range messages {
+		copyMessage := message
+		copyMessage.Parts = copyMessage.Parts[:0]
+		for _, part := range message.Parts {
+			if part.Type != PartDiscoveryCall && part.Type != PartDiscoveryOutput {
+				copyMessage.Parts = append(copyMessage.Parts, part)
+			}
+		}
+		if len(copyMessage.Parts) > 0 {
+			cleaned = append(cleaned, copyMessage)
+		}
+	}
+	insertAt := len(cleaned)
+	for i := len(cleaned) - 1; i >= 0; i-- {
+		if cleaned[i].Role == RoleUser {
+			insertAt = i
+			break
+		}
+	}
+	replayMessage := Message{Role: RoleAssistant, Parts: cloneParts(replay)}
+	cleaned = append(cleaned, Message{})
+	copy(cleaned[insertAt+1:], cleaned[insertAt:])
+	cleaned[insertAt] = replayMessage
+	return cleaned
+}
+
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
 	defer e.markInterjectionRunNonConsuming()
+	runID := e.beginToolRun()
+	defer e.endToolRun(runID)
+	ctx = ContextWithToolRunID(ctx, runID)
+	var planner ToolSurfacePlanner
+	if req.EnableToolDiscovery {
+		planner = e.currentToolPlanner()
+	}
+	if planner != nil {
+		defer planner.EndRun(runID)
+		resetReason, err := planner.BeginRun(ctx, e.provider, &req, runID)
+		if err != nil {
+			return fmt.Errorf("prepare tool discovery: %w", err)
+		}
+		if resetReason != "" {
+			resetProviderConversation(e.provider)
+			slog.Debug("reset provider conversation for tool-surface change", "reason", resetReason, "session_id", req.SessionID)
+		}
+	}
 	sendDone := func() error {
 		e.markInterjectionRunNonConsuming()
 		return send.Send(Event{Type: EventDone})
@@ -2202,6 +2400,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		return len(nonSystem) > 1
 	}
 	applyCompaction := func(result *CompactionResult) bool {
+		if result != nil {
+			result.NewMessages = restoreToolDiscoveryReplay(result.NewMessages, collectToolDiscoveryReplay(req.Messages))
+		}
 		if err := e.PrepareCompactionContext(ctx, req.SessionID, req.Tools, result); err != nil {
 			// Plan restoration is optional context enhancement. Never discard an
 			// already-generated compaction result or wedge a session at its limit
@@ -2354,25 +2555,54 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		}
 		return nil
 	}
+	requestNativeFallback := func(cause error, committed bool) (bool, string) {
+		if req.NativeToolDiscovery == nil || cause == nil || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) || isContextOverflowError(cause) {
+			return false, ""
+		}
+		nativePlanner, ok := planner.(NativeToolDiscoveryPlanner)
+		if !ok {
+			return false, ""
+		}
+		fallback, reason := nativePlanner.FallbackNativeToolDiscovery(runID, cause, committed)
+		if fallback {
+			resetProviderConversation(e.provider)
+			slog.Warn("native tool discovery fell back to portable", "reason", reason, "session_id", req.SessionID)
+		}
+		return fallback, reason
+	}
 turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// The final provider turn has no later agentic boundary. Reject arrivals
 		// throughout that stream instead of accepting steering it cannot consume.
 		e.beginInterjectionRun(attempt < maxTurns-1)
 		// A model-activated skill can tighten the filter between turns. Remove
-		// now-disallowed definitions before the next provider request.
+		// now-disallowed ordinary definitions before the planner adds its narrowly
+		// owned control surface for this exact run.
 		req.Tools = e.FilterAllowedToolSpecs(req.Tools)
-		if len(req.Tools) == 0 {
+		if planner != nil {
+			resetReason, err := planner.PrepareTurn(ctx, e.provider, &req, runID, attempt, maxTurns)
+			if err != nil {
+				return fmt.Errorf("prepare tool discovery turn: %w", err)
+			}
+			if resetReason != "" {
+				resetProviderConversation(e.provider)
+				slog.Debug("reset provider conversation for tool-surface change", "reason", resetReason, "session_id", req.SessionID, "turn", attempt)
+			}
+		}
+		if len(req.Tools) == 0 && req.NativeToolDiscovery == nil {
 			req.ToolChoice = ToolChoice{}
 			req.LastTurnToolChoice = nil
 		}
 
-		// Inject any tool specs registered mid-loop (e.g. via skill activation)
-		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
+		// Inject any tool specs registered mid-loop (e.g. via skill activation).
+		if pending := e.drainPendingToolSpecs(runID); len(pending) > 0 {
 			pending = e.FilterAllowedToolSpecs(pending)
 			for _, spec := range pending {
 				if !hasToolNamed(req.Tools, spec.Name) {
 					req.Tools = append(req.Tools, spec)
+				}
+				if !hasToolNamed(originalTools, spec.Name) {
+					originalTools = append(originalTools, spec)
 				}
 			}
 		}
@@ -2482,6 +2712,13 @@ turnLoop:
 				if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}); err != nil {
 					return err
 				}
+			}
+			if fallback, reason := requestNativeFallback(err, false); fallback {
+				if sendErr := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + reason}); sendErr != nil {
+					return sendErr
+				}
+				attempt--
+				continue
 			}
 			return err
 		}
@@ -2831,6 +3068,18 @@ turnLoop:
 		for {
 			if chaosErr := e.consumeChaosFailure(); chaosErr != nil {
 				stream.Close()
+				if fallback, reason := requestNativeFallback(chaosErr, scratchpadCommitted || len(toolCalls) > 0 || syncToolsExecuted); fallback {
+					if scratchpadHasDiscardableOutput {
+						if sendErr := send.Send(Event{Type: EventAttemptDiscard}); sendErr != nil {
+							return sendErr
+						}
+					}
+					if sendErr := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + reason}); sendErr != nil {
+						return sendErr
+					}
+					attempt--
+					continue turnLoop
+				}
 				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
 					return chaosErr
 				}
@@ -2876,6 +3125,18 @@ turnLoop:
 				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
 					return err
 				}
+				if fallback, reason := requestNativeFallback(err, scratchpadCommitted || len(toolCalls) > 0 || syncToolsExecuted); fallback {
+					if scratchpadHasDiscardableOutput {
+						if sendErr := send.Send(Event{Type: EventAttemptDiscard}); sendErr != nil {
+							return sendErr
+						}
+					}
+					if sendErr := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + reason}); sendErr != nil {
+						return sendErr
+					}
+					attempt--
+					continue turnLoop
+				}
 				if retried, retryErr := retryUncommittedAttempt(err); retryErr != nil {
 					return retryErr
 				} else if retried {
@@ -2916,6 +3177,18 @@ turnLoop:
 				}
 				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
 					return event.Err
+				}
+				if fallback, reason := requestNativeFallback(event.Err, scratchpadCommitted || len(toolCalls) > 0 || syncToolsExecuted); fallback {
+					if scratchpadHasDiscardableOutput {
+						if sendErr := send.Send(Event{Type: EventAttemptDiscard}); sendErr != nil {
+							return sendErr
+						}
+					}
+					if sendErr := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + reason}); sendErr != nil {
+						return sendErr
+					}
+					attempt--
+					continue turnLoop
 				}
 				if retried, retryErr := retryUncommittedAttempt(event.Err); retryErr != nil {
 					return retryErr
@@ -2969,6 +3242,35 @@ turnLoop:
 					replay := &ProviderReplayItem{Raw: append(json.RawMessage(nil), event.ProviderReplay.Raw...)}
 					providerReplayParts = append(providerReplayParts, Part{Type: PartProviderReplay, ProviderReplay: replay})
 				}
+				continue
+			}
+			if event.Type == EventDiscoveryCall && event.DiscoveryCall != nil {
+				if softCheckpointInProgress {
+					return fmt.Errorf("provider emitted native tool discovery during internal compaction")
+				}
+				nativePlanner, ok := planner.(NativeToolDiscoveryPlanner)
+				if !ok || req.NativeToolDiscovery == nil {
+					return fmt.Errorf("provider emitted native tool discovery without active planner support")
+				}
+				if err := flushScratchpad(); err != nil {
+					return err
+				}
+				call := ToolDiscoveryCall{ID: event.DiscoveryCall.ID, Arguments: append(json.RawMessage(nil), event.DiscoveryCall.Arguments...)}
+				output, err := nativePlanner.ResolveNativeToolDiscovery(ctx, runID, call)
+				if err != nil {
+					return fmt.Errorf("resolve native tool discovery: %w", err)
+				}
+				providerReplayParts = append(providerReplayParts,
+					Part{Type: PartDiscoveryCall, DiscoveryCall: &call},
+					Part{Type: PartDiscoveryOutput, DiscoveryOutput: cloneToolDiscoveryOutput(&output)},
+				)
+				if err := send.Send(Event{Type: EventDiscoveryCall, DiscoveryCall: &call}); err != nil {
+					return err
+				}
+				if err := send.Send(Event{Type: EventDiscoveryOutput, DiscoveryOutput: cloneToolDiscoveryOutput(&output)}); err != nil {
+					return err
+				}
+				fireSnapshot(toolCalls)
 				continue
 			}
 			// Track usage metrics
@@ -3055,6 +3357,17 @@ turnLoop:
 				continue
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
+				if event.Tool.Namespace != "" {
+					if planner == nil {
+						return fmt.Errorf("provider emitted namespace tool call %q/%q without an active discovery planner", event.Tool.Namespace, event.Tool.ChildName)
+					}
+					resolved, err := planner.ResolveProviderToolCall(runID, *event.Tool)
+					if err != nil {
+						return fmt.Errorf("resolve provider namespace tool call: %w", err)
+					}
+					event.Tool = &resolved
+					event.ToolName = resolved.Name
+				}
 				if err := flushScratchpad(); err != nil {
 					return err
 				}
@@ -3929,8 +4242,16 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
-	// Check if tool is allowed under current skill restrictions
-	if !e.IsToolAllowed(call.Name) {
+	// Check ordinary execution policy first. A planner may separately authorise
+	// only its exact control tool for this active run; this does not change the
+	// public IsToolAllowed result or grant authority to any self-asserted tool.
+	allowed := e.IsToolAllowed(call.Name)
+	if !allowed {
+		if planner := e.currentToolPlanner(); planner != nil {
+			allowed = planner.AllowsPlannerTool(ToolRunIDFromContext(ctx), call.Name)
+		}
+	}
+	if !allowed {
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		send.TrySend(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
@@ -3944,6 +4265,9 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	defer stopHeartbeat()
 
 	output, err, panicValue := executeToolWithCancellation(toolCtx, tool, call.Arguments)
+	if planner := e.currentToolPlanner(); planner != nil {
+		planner.ToolExecuted(SessionIDFromContext(ctx), call.Name)
+	}
 	if panicValue != nil {
 		panic(panicValue)
 	}

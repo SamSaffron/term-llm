@@ -1,0 +1,765 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "single-source-pr",
+      "category": "single",
+      "prompt": "Read pull request 42 in repository acme/app.",
+      "required_tools": [
+        "source_control__get_pull_request"
+      ],
+      "forbidden_tools": [
+        "source_control__list_pull_requests",
+        "source_control__merge_pull_request"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "source_control__get_pull_request"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-issue-search",
+      "category": "single",
+      "prompt": "Search open payment issues mentioning duplicate charge.",
+      "required_tools": [
+        "issue_tracker__search_issues"
+      ],
+      "forbidden_tools": [
+        "observability__search_errors",
+        "issue_tracker__get_issue"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "issue_tracker__search_issues"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-chat-thread",
+      "category": "single",
+      "prompt": "Read the complete chat thread with id TH-7.",
+      "required_tools": [
+        "team_chat__get_thread"
+      ],
+      "forbidden_tools": [
+        "team_chat__search_messages",
+        "team_chat__reply_thread"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "team_chat__get_thread"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-doc-read",
+      "category": "single",
+      "prompt": "Read document DOC-19 without changing it.",
+      "required_tools": [
+        "docs_drive__read_document"
+      ],
+      "forbidden_tools": [
+        "docs_drive__update_document",
+        "docs_drive__get_file_metadata"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "docs_drive__read_document"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-log-query",
+      "category": "single",
+      "prompt": "Query application logs for request REQ-9.",
+      "required_tools": [
+        "observability__query_logs"
+      ],
+      "forbidden_tools": [
+        "cloud_infra__get_logs",
+        "observability__query_metrics"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "observability__query_logs"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-table-describe",
+      "category": "single",
+      "prompt": "Describe the columns and types of the orders table.",
+      "required_tools": [
+        "sql_analytics__describe_table"
+      ],
+      "forbidden_tools": [
+        "sql_analytics__list_tables",
+        "sql_analytics__execute_statement"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "sql_analytics__describe_table"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-deployment",
+      "category": "single",
+      "prompt": "Get deployment DEP-44 for checkout-service.",
+      "required_tools": [
+        "cloud_infra__get_deployment"
+      ],
+      "forbidden_tools": [
+        "cloud_infra__list_deployments",
+        "cloud_infra__deploy_service"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "cloud_infra__get_deployment"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-browser-snapshot",
+      "category": "single",
+      "prompt": "Capture an accessibility snapshot of the current page.",
+      "required_tools": [
+        "browser_web__snapshot"
+      ],
+      "forbidden_tools": [
+        "browser_web__take_screenshot",
+        "browser_web__get_text"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "browser_web__snapshot"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-order",
+      "category": "single",
+      "prompt": "Read order ORD-77.",
+      "required_tools": [
+        "commerce_crm__get_order"
+      ],
+      "forbidden_tools": [
+        "commerce_crm__list_orders",
+        "commerce_crm__cancel_order"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "commerce_crm__get_order"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "single-mail",
+      "category": "single",
+      "prompt": "Read email message MSG-12.",
+      "required_tools": [
+        "calendar_mail__read_message"
+      ],
+      "forbidden_tools": [
+        "calendar_mail__search_mail",
+        "calendar_mail__reply_message"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "calendar_mail__read_message"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "sequence-merge-pr",
+      "category": "sequence",
+      "prompt": "Read PR 42 metadata, check its reviews and checks, then merge only if both are ready.",
+      "required_tools": [
+        "source_control__get_pull_request",
+        "source_control__get_reviews",
+        "source_control__get_check_runs",
+        "source_control__merge_pull_request"
+      ],
+      "forbidden_tools": [
+        "source_control__create_pull_request",
+        "source_control__close_pull_request"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "source_control__get_pull_request",
+        "source_control__get_reviews",
+        "source_control__get_check_runs",
+        "source_control__merge_pull_request"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "source_control__get_pull_request",
+        "source_control__get_reviews",
+        "source_control__get_check_runs",
+        "source_control__merge_pull_request"
+      ]
+    },
+    {
+      "id": "sequence-triage-issue",
+      "category": "sequence",
+      "prompt": "Find issue about timeout, read it, assign it, and add a triage comment.",
+      "required_tools": [
+        "issue_tracker__search_issues",
+        "issue_tracker__get_issue",
+        "issue_tracker__assign_issue",
+        "issue_tracker__add_issue_comment"
+      ],
+      "forbidden_tools": [
+        "issue_tracker__close_issue"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "issue_tracker__search_issues",
+        "issue_tracker__get_issue",
+        "issue_tracker__assign_issue",
+        "issue_tracker__add_issue_comment"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "issue_tracker__search_issues",
+        "issue_tracker__get_issue",
+        "issue_tracker__assign_issue",
+        "issue_tracker__add_issue_comment"
+      ]
+    },
+    {
+      "id": "sequence-chat-reply",
+      "category": "sequence",
+      "prompt": "Find the incident discussion, read its thread, then reply with the status.",
+      "required_tools": [
+        "team_chat__search_messages",
+        "team_chat__get_thread",
+        "team_chat__reply_thread"
+      ],
+      "forbidden_tools": [
+        "team_chat__send_direct_message"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "team_chat__search_messages",
+        "team_chat__get_thread",
+        "team_chat__reply_thread"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "team_chat__search_messages",
+        "team_chat__get_thread",
+        "team_chat__reply_thread"
+      ]
+    },
+    {
+      "id": "sequence-doc-revision",
+      "category": "sequence",
+      "prompt": "Read DOC-8, list revisions, then restore revision 3.",
+      "required_tools": [
+        "docs_drive__read_document",
+        "docs_drive__list_revisions",
+        "docs_drive__restore_revision"
+      ],
+      "forbidden_tools": [
+        "docs_drive__delete_document"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "docs_drive__read_document",
+        "docs_drive__list_revisions",
+        "docs_drive__restore_revision"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "docs_drive__read_document",
+        "docs_drive__list_revisions",
+        "docs_drive__restore_revision"
+      ]
+    },
+    {
+      "id": "sequence-incident",
+      "category": "sequence",
+      "prompt": "Search unresolved errors, inspect the issue, create an incident, and resolve the issue.",
+      "required_tools": [
+        "observability__search_errors",
+        "observability__get_issue_details",
+        "observability__create_incident",
+        "observability__resolve_issue"
+      ],
+      "forbidden_tools": [
+        "observability__resolve_incident"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "observability__search_errors",
+        "observability__get_issue_details",
+        "observability__create_incident",
+        "observability__resolve_issue"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "observability__search_errors",
+        "observability__get_issue_details",
+        "observability__create_incident",
+        "observability__resolve_issue"
+      ]
+    },
+    {
+      "id": "sequence-query-plan",
+      "category": "sequence",
+      "prompt": "Describe events, explain the slow select, then run it read-only.",
+      "required_tools": [
+        "sql_analytics__describe_table",
+        "sql_analytics__explain_query",
+        "sql_analytics__query_readonly"
+      ],
+      "forbidden_tools": [
+        "sql_analytics__execute_statement"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "sql_analytics__describe_table",
+        "sql_analytics__explain_query",
+        "sql_analytics__query_readonly"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "sql_analytics__describe_table",
+        "sql_analytics__explain_query",
+        "sql_analytics__query_readonly"
+      ]
+    },
+    {
+      "id": "sequence-deploy",
+      "category": "sequence",
+      "prompt": "Get checkout-service, inspect its latest deployment, deploy it, then read service logs.",
+      "required_tools": [
+        "cloud_infra__get_service",
+        "cloud_infra__get_deployment",
+        "cloud_infra__deploy_service",
+        "cloud_infra__get_logs"
+      ],
+      "forbidden_tools": [
+        "cloud_infra__delete_service"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "cloud_infra__get_service",
+        "cloud_infra__get_deployment",
+        "cloud_infra__deploy_service",
+        "cloud_infra__get_logs"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "cloud_infra__get_service",
+        "cloud_infra__get_deployment",
+        "cloud_infra__deploy_service",
+        "cloud_infra__get_logs"
+      ]
+    },
+    {
+      "id": "sequence-browser-form",
+      "category": "sequence",
+      "prompt": "Navigate to the local admin page, fill plan=pro, click save, and read the confirmation text.",
+      "required_tools": [
+        "browser_web__navigate",
+        "browser_web__fill",
+        "browser_web__click",
+        "browser_web__get_text"
+      ],
+      "forbidden_tools": [
+        "browser_web__evaluate"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "browser_web__navigate",
+        "browser_web__fill",
+        "browser_web__click",
+        "browser_web__get_text"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "browser_web__navigate",
+        "browser_web__fill",
+        "browser_web__click",
+        "browser_web__get_text"
+      ]
+    },
+    {
+      "id": "sequence-refund",
+      "category": "sequence",
+      "prompt": "Find Alex Chen, list orders, inspect the newest order, and refund it if unfulfilled.",
+      "required_tools": [
+        "commerce_crm__search_customers",
+        "commerce_crm__list_orders",
+        "commerce_crm__get_order",
+        "commerce_crm__issue_refund"
+      ],
+      "forbidden_tools": [
+        "commerce_crm__cancel_order"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "commerce_crm__search_customers",
+        "commerce_crm__list_orders",
+        "commerce_crm__get_order",
+        "commerce_crm__issue_refund"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "commerce_crm__search_customers",
+        "commerce_crm__list_orders",
+        "commerce_crm__get_order",
+        "commerce_crm__issue_refund"
+      ]
+    },
+    {
+      "id": "sequence-reschedule",
+      "category": "sequence",
+      "prompt": "List tomorrow's events, inspect EVT-2, check availability, then reschedule it.",
+      "required_tools": [
+        "calendar_mail__list_events",
+        "calendar_mail__get_event",
+        "calendar_mail__check_availability",
+        "calendar_mail__reschedule_event"
+      ],
+      "forbidden_tools": [
+        "calendar_mail__cancel_event"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "calendar_mail__list_events",
+        "calendar_mail__get_event",
+        "calendar_mail__check_availability",
+        "calendar_mail__reschedule_event"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "calendar_mail__list_events",
+        "calendar_mail__get_event",
+        "calendar_mail__check_availability",
+        "calendar_mail__reschedule_event"
+      ]
+    },
+    {
+      "id": "cross-pr-chat",
+      "category": "cross",
+      "prompt": "Read PR 42 and post its current status in channel release-room.",
+      "required_tools": [
+        "source_control__get_pull_request",
+        "team_chat__send_channel_message"
+      ],
+      "forbidden_tools": [
+        "source_control__merge_pull_request",
+        "team_chat__send_direct_message"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "source_control__get_pull_request",
+        "team_chat__send_channel_message"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "source_control__get_pull_request",
+        "team_chat__send_channel_message"
+      ]
+    },
+    {
+      "id": "cross-error-customer",
+      "category": "cross",
+      "prompt": "Find unresolved payment errors affecting customer C-104 and read the customer record.",
+      "required_tools": [
+        "observability__search_errors",
+        "commerce_crm__get_customer"
+      ],
+      "forbidden_tools": [
+        "issue_tracker__search_issues",
+        "commerce_crm__update_customer"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "observability__search_errors",
+        "commerce_crm__get_customer"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "observability__search_errors",
+        "commerce_crm__get_customer"
+      ]
+    },
+    {
+      "id": "cross-incident-thread",
+      "category": "cross",
+      "prompt": "Find the support thread for incident INC-7 and add its URL to the incident.",
+      "required_tools": [
+        "team_chat__search_messages",
+        "observability__get_incident",
+        "observability__update_incident"
+      ],
+      "forbidden_tools": [
+        "issue_tracker__update_issue"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "team_chat__search_messages",
+        "observability__get_incident",
+        "observability__update_incident"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "team_chat__search_messages",
+        "observability__get_incident",
+        "observability__update_incident"
+      ]
+    },
+    {
+      "id": "cross-doc-mail",
+      "category": "cross",
+      "prompt": "Read DOC-5 and email its summary to fixture@example.test.",
+      "required_tools": [
+        "docs_drive__read_document",
+        "calendar_mail__send_message"
+      ],
+      "forbidden_tools": [
+        "docs_drive__share_document",
+        "calendar_mail__create_draft"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "docs_drive__read_document",
+        "calendar_mail__send_message"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "docs_drive__read_document",
+        "calendar_mail__send_message"
+      ]
+    },
+    {
+      "id": "cross-deploy-browser",
+      "category": "cross",
+      "prompt": "Deploy checkout-service, open its fixture URL, and verify the ready banner.",
+      "required_tools": [
+        "cloud_infra__deploy_service",
+        "browser_web__navigate",
+        "browser_web__get_text"
+      ],
+      "forbidden_tools": [
+        "cloud_infra__restart_service",
+        "browser_web__evaluate"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "cloud_infra__deploy_service",
+        "browser_web__navigate",
+        "browser_web__get_text"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent",
+      "required_sequence": [
+        "cloud_infra__deploy_service",
+        "browser_web__navigate",
+        "browser_web__get_text"
+      ]
+    },
+    {
+      "id": "adversarial-issue-vs-error",
+      "category": "adversarial",
+      "prompt": "Search application error events, not project tickets.",
+      "required_tools": [
+        "observability__search_errors"
+      ],
+      "forbidden_tools": [
+        "issue_tracker__search_issues"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "observability__search_errors"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "adversarial-logs",
+      "category": "adversarial",
+      "prompt": "Read runtime logs for cloud service api, not indexed observability logs.",
+      "required_tools": [
+        "cloud_infra__get_logs"
+      ],
+      "forbidden_tools": [
+        "observability__query_logs",
+        "observability__get_log_context"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "cloud_infra__get_logs"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "adversarial-upload",
+      "category": "adversarial",
+      "prompt": "Upload a file into the shared drive, not into a browser form or chat.",
+      "required_tools": [
+        "docs_drive__upload_file"
+      ],
+      "forbidden_tools": [
+        "browser_web__upload_file",
+        "team_chat__upload_attachment"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "docs_drive__upload_file"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "adversarial-message",
+      "category": "adversarial",
+      "prompt": "Send an email to alex@example.test, not a direct chat message.",
+      "required_tools": [
+        "calendar_mail__send_message"
+      ],
+      "forbidden_tools": [
+        "team_chat__send_direct_message",
+        "team_chat__send_channel_message"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "calendar_mail__send_message"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "adversarial-safe-sql",
+      "category": "adversarial",
+      "prompt": "Explain why SELECT * FROM events is slow without executing or changing SQL.",
+      "required_tools": [
+        "sql_analytics__explain_query"
+      ],
+      "forbidden_tools": [
+        "sql_analytics__execute_statement",
+        "sql_analytics__analyze_query"
+      ],
+      "mutation": false,
+      "permitted_expected_tools": [
+        "sql_analytics__explain_query"
+      ],
+      "expected_final_state": {
+        "mutation_logged": false
+      },
+      "success_checker": "required_calls_present_and_forbidden_calls_absent"
+    },
+    {
+      "id": "sequence-catalogue-refresh",
+      "category": "sequence",
+      "prompt": "Create release v2.0.0 for repository acme/app, then confirm the release operation completed. This disposable fixture intentionally publishes an updated tool catalogue after the call.",
+      "required_tools": [
+        "source_control__create_release"
+      ],
+      "required_sequence": [
+        "source_control__create_release"
+      ],
+      "forbidden_tools": [
+        "source_control__create_branch",
+        "source_control__create_pull_request"
+      ],
+      "mutation": true,
+      "permitted_expected_tools": [
+        "source_control__create_release"
+      ],
+      "expected_final_state": {
+        "mutation_logged": true,
+        "catalogue_refresh_emitted": true
+      },
+      "success_checker": "required_sequence_present_forbidden_absent_mutation_matches"
+    }
+  ]
+}

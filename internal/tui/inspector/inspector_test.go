@@ -54,6 +54,23 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestInspectorRendersToolDiscoveryDiagnostics(t *testing.T) {
+	diagnostics := &llm.ToolDiscoveryDiagnostics{
+		ConfiguredMode: "auto", ResolvedMode: "deferred", ConfiguredStrategy: "auto", Strategy: "native",
+		Reason: "42 MCP tools exceed configured threshold 24", StrategyReason: "exact verified support", PinnedCount: 2, ActiveMCPCount: 3,
+		DeferredCount: 37, PinnedTokens: 100, ActiveMCPTokens: 200, DeferredTokens: 9000,
+		DynamicActive: 3, DynamicLimit: 16,
+		Recent: []llm.ToolActivationDiagnostic{{Name: "github__merge_pull_request", Reason: "search: merge pull request"}},
+	}
+	m := NewWithConfig([]session.Message{{Role: llm.RoleUser, TextContent: "hello"}}, 100, 40, ui.DefaultStyles(), nil, &Config{ToolDiscovery: diagnostics})
+	content := strings.Join(m.contentLines, "\n")
+	for _, want := range []string{"Tool Discovery", "auto / deferred", "auto / native", "exact verified support", "42 MCP tools exceed configured threshold 24", "37 tools, ~9000 tokens avoided", "github__merge_pull_request"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("inspector diagnostics missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestScrolling(t *testing.T) {
 	// Create a message that will result in many lines
 	longText := ""

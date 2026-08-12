@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 )
 
 const runMCPManagerTestServerEnv = "TERM_LLM_MCP_MANAGER_TEST_SERVER"
+const runMCPLargeTestServerEnv = "TERM_LLM_MCP_LARGE_TEST_SERVER"
 
 type managerTestGreetingParams struct {
 	Name string `json:"name"`
@@ -33,11 +36,28 @@ func TestMain(m *testing.M) {
 		runMCPManagerTestServer()
 		return
 	}
+	if os.Getenv(runMCPLargeTestServerEnv) != "" {
+		runMCPLargeTestServer()
+		return
+	}
 	os.Exit(m.Run())
 }
 
+func runMCPLargeTestServer() {
+	server := mcpSDK.NewServer(&mcpSDK.Implementation{Name: "large-test", Version: "v0.0.1"}, &mcpSDK.ServerOptions{PageSize: 250})
+	for i := 0; i <= MaxToolsPerServer; i++ {
+		name := fmt.Sprintf("tool_%05d", i)
+		mcpSDK.AddTool(server, &mcpSDK.Tool{Name: name}, func(context.Context, *mcpSDK.CallToolRequest, struct{}) (*mcpSDK.CallToolResult, any, error) {
+			return &mcpSDK.CallToolResult{}, nil, nil
+		})
+	}
+	if err := server.Run(context.Background(), &mcpSDK.StdioTransport{}); err != nil {
+		log.Fatal(err)
+	}
+}
+
 func runMCPManagerTestServer() {
-	server := mcpSDK.NewServer(&mcpSDK.Implementation{Name: "manager-test", Version: "v0.0.1"}, nil)
+	server := mcpSDK.NewServer(&mcpSDK.Implementation{Name: "manager-test", Version: "v0.0.1"}, &mcpSDK.ServerOptions{PageSize: 2})
 	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "greet", Description: "say hi"}, func(ctx context.Context, req *mcpSDK.CallToolRequest, args managerTestGreetingParams) (*mcpSDK.CallToolResult, any, error) {
 		return &mcpSDK.CallToolResult{
 			Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: "hi " + args.Name}},
@@ -71,6 +91,18 @@ func runMCPManagerTestServer() {
 		}
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
+	})
+	var addDynamic sync.Once
+	mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "add_dynamic", Description: "add a dynamic tool"}, func(context.Context, *mcpSDK.CallToolRequest, struct{}) (*mcpSDK.CallToolResult, any, error) {
+		addDynamic.Do(func() {
+			for version := 1; version <= 20; version++ {
+				description := fmt.Sprintf("newly published tool generation %d", version)
+				mcpSDK.AddTool(server, &mcpSDK.Tool{Name: "dynamic", Description: description}, func(context.Context, *mcpSDK.CallToolRequest, struct{}) (*mcpSDK.CallToolResult, any, error) {
+					return &mcpSDK.CallToolResult{Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: "dynamic result"}}}, nil, nil
+				})
+			}
+		})
+		return &mcpSDK.CallToolResult{Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: "added"}}}, nil, nil
 	})
 	if err := server.Run(context.Background(), &mcpSDK.StdioTransport{}); err != nil {
 		log.Fatal(err)
@@ -193,6 +225,9 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 	if err == nil || !strings.Contains(err.Error(), "invalid tool arguments") {
 		t.Fatalf("malformed arguments error = %v, want invalid tool arguments", err)
 	}
+	if _, err := manager.CallTool(context.Background(), "greeter__removed_tool", nil); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("removed catalogue tool error = %v", err)
+	}
 }
 
 func TestManagerExitedServerBecomesFailedAndCanRestart(t *testing.T) {
@@ -265,6 +300,81 @@ func TestManagerExitedServerBecomesFailedAndCanRestart(t *testing.T) {
 	if !strings.Contains(got.Content, "hi Grace") {
 		t.Fatalf("CallTool result after restart = %q, want greeting", got.Content)
 	}
+}
+
+func TestManagerRejectsCatalogueOverDefensiveMaximum(t *testing.T) {
+	manager := NewManagerWithConfig(&Config{Servers: map[string]ServerConfig{
+		"large": {Command: os.Args[0], Env: map[string]string{runMCPLargeTestServerEnv: "1"}},
+	}})
+	defer manager.StopAll()
+	if err := manager.Enable(context.Background(), "large"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := waitForServerStatus(t, manager, "large", StatusFailed, 15*time.Second)
+	if status != StatusFailed || err == nil || !strings.Contains(err.Error(), "maximum catalogue size") {
+		t.Fatalf("large catalogue status=%s err=%v", status, err)
+	}
+	if got := len(manager.AllTools()); got != 0 {
+		t.Fatalf("partial large catalogue published %d tools", got)
+	}
+}
+
+func TestManagerCompletePaginationAndListChangedRefresh(t *testing.T) {
+	manager := NewManager()
+	manager.config = &Config{Servers: map[string]ServerConfig{
+		"catalogue": {Command: os.Args[0], Env: map[string]string{runMCPManagerTestServerEnv: "1"}},
+	}}
+	callbacks := make(chan int, 4)
+	manager.SetCatalogueChangeHandler(func(CatalogueEvent) {
+		select {
+		case callbacks <- len(manager.AllTools()):
+		default:
+		}
+	})
+	defer manager.StopAll()
+	if err := manager.Enable(context.Background(), "catalogue"); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := waitForServerStatus(t, manager, "catalogue", StatusReady, 3*time.Second); status != StatusReady || err != nil {
+		t.Fatalf("status = %s, %v", status, err)
+	}
+	// The helper server page size is two and exposes seven initial tools.
+	if got := len(manager.AllTools()); got != 7 {
+		t.Fatalf("complete paginated catalogue has %d tools, want 7", got)
+	}
+	select {
+	case got := <-callbacks:
+		if got != 7 {
+			t.Fatalf("initial callback observed %d tools, want 7", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("catalogue callback deadlocked while reading Manager.AllTools")
+	}
+	before := manager.CatalogueSnapshot()
+	if _, err := manager.CallTool(context.Background(), "catalogue__add_dynamic", nil); err != nil {
+		t.Fatalf("add_dynamic: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		after := manager.CatalogueSnapshot()
+		finalGeneration := false
+		for _, tool := range after.Tools {
+			if tool.Name == "catalogue__dynamic" && strings.Contains(tool.Description, "generation 20") {
+				finalGeneration = true
+			}
+		}
+		if len(after.Tools) == 8 && finalGeneration {
+			if after.Generation <= before.Generation {
+				t.Fatalf("generation did not advance: before=%d after=%d", before.Generation, after.Generation)
+			}
+			if status, err := manager.ServerStatus("catalogue"); status != StatusReady || err != nil {
+				t.Fatalf("status after refresh = %s, %v", status, err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("list_changed did not publish complete replacement: %d tools", len(manager.AllTools()))
 }
 
 func TestManagerDisableDoesNotReportSessionTerminationAsFailure(t *testing.T) {

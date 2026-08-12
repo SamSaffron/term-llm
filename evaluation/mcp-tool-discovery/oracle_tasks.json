@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "server_mode": "single-aggregate-200",
+  "tasks": [
+    {
+      "id": "oracle-pr-metadata",
+      "domain": "source_control",
+      "pilot": true,
+      "prompt": "Use the connected external systems to read pull request 42 in repository acme/app. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__source_control__get_pull_request",
+      "forbidden_tools": ["federation__source_control__list_pull_requests", "federation__source_control__merge_pull_request"],
+      "expected_oracle": "oracle:v1:source_control:get_pull_request:4ccf8421f63a"
+    },
+    {
+      "id": "oracle-issue-search",
+      "domain": "issue_tracker",
+      "pilot": false,
+      "prompt": "Use the connected external systems to search open project tickets mentioning a duplicate payment charge. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__issue_tracker__search_issues",
+      "forbidden_tools": ["federation__observability__search_errors", "federation__issue_tracker__get_issue"],
+      "expected_oracle": "oracle:v1:issue_tracker:search_issues:270cebb190cb"
+    },
+    {
+      "id": "oracle-chat-thread",
+      "domain": "team_chat",
+      "pilot": false,
+      "prompt": "Use the connected external systems to read the complete team conversation thread TH-7 and all its replies. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__team_chat__get_thread",
+      "forbidden_tools": ["federation__team_chat__search_messages", "federation__team_chat__reply_thread"],
+      "expected_oracle": "oracle:v1:team_chat:get_thread:a6bf95ba67ba"
+    },
+    {
+      "id": "oracle-document-read",
+      "domain": "docs_drive",
+      "pilot": false,
+      "prompt": "Use the connected external systems to read the complete contents of shared document DOC-19 without changing it. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__docs_drive__read_document",
+      "forbidden_tools": ["federation__docs_drive__get_file_metadata", "federation__docs_drive__update_document"],
+      "expected_oracle": "oracle:v1:docs_drive:read_document:2c4f8c4e2e63"
+    },
+    {
+      "id": "oracle-application-logs",
+      "domain": "observability",
+      "pilot": true,
+      "prompt": "Use the connected external systems to query indexed application observability logs for request REQ-9. Do not fetch direct deployment runtime logs. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__observability__query_logs",
+      "forbidden_tools": ["federation__cloud_infra__get_logs", "federation__observability__query_metrics"],
+      "expected_oracle": "oracle:v1:observability:query_logs:25c6ef789bfc"
+    },
+    {
+      "id": "oracle-table-description",
+      "domain": "sql_analytics",
+      "pilot": false,
+      "prompt": "Use the connected external systems to describe the columns and data types of the analytics orders table without running a statement. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__sql_analytics__describe_table",
+      "forbidden_tools": ["federation__sql_analytics__list_tables", "federation__sql_analytics__execute_statement"],
+      "expected_oracle": "oracle:v1:sql_analytics:describe_table:62a44eb432a9"
+    },
+    {
+      "id": "oracle-deployment",
+      "domain": "cloud_infra",
+      "pilot": false,
+      "prompt": "Use the connected external systems to inspect deployment DEP-44 for checkout-service without deploying anything. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__cloud_infra__get_deployment",
+      "forbidden_tools": ["federation__cloud_infra__list_deployments", "federation__cloud_infra__deploy_service"],
+      "expected_oracle": "oracle:v1:cloud_infra:get_deployment:6c764eb2b074"
+    },
+    {
+      "id": "oracle-accessibility-snapshot",
+      "domain": "browser_web",
+      "pilot": false,
+      "prompt": "Use the connected external systems to capture a structured accessibility and DOM snapshot of the current browser page, not a visual image. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__browser_web__snapshot",
+      "forbidden_tools": ["federation__browser_web__take_screenshot", "federation__browser_web__get_text"],
+      "expected_oracle": "oracle:v1:browser_web:snapshot:e3067de87128"
+    },
+    {
+      "id": "oracle-order",
+      "domain": "commerce_crm",
+      "pilot": false,
+      "prompt": "Use the connected external systems to read commerce order ORD-77, including payment and fulfillment status, without changing it. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__commerce_crm__get_order",
+      "forbidden_tools": ["federation__commerce_crm__list_orders", "federation__commerce_crm__cancel_order"],
+      "expected_oracle": "oracle:v1:commerce_crm:get_order:3d735a48428b"
+    },
+    {
+      "id": "oracle-calendar-availability",
+      "domain": "calendar_mail",
+      "pilot": true,
+      "prompt": "Use the connected external systems to check whether sam@example.test and noa@example.test are both free tomorrow between 14:00 and 15:00 UTC. Do not create an event. After the call, reply with only the exact oracle string returned by that capability, with no explanation or formatting.",
+      "required_tool": "federation__calendar_mail__check_availability",
+      "forbidden_tools": ["federation__calendar_mail__list_events", "federation__calendar_mail__create_event"],
+      "expected_oracle": "oracle:v1:calendar_mail:check_availability:d5dfb49a3815"
+    }
+  ]
+}

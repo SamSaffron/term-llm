@@ -15,6 +15,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -545,5 +546,40 @@ func TestHandleSessionMCPPatchDoesNotSkipPersistedHistoryLoad(t *testing.T) {
 	}
 	if len(provider.Requests) != 1 || len(provider.Requests[0].Messages) != 3 {
 		t.Fatalf("provider requests = %#v, want one request with persisted history", provider.Requests)
+	}
+}
+
+func TestEnsureMCPManagerRetriesPlannerSetupAfterFailure(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	provider := llm.NewMockProvider("serve-planner-order")
+	rt := &serveRuntime{
+		provider:      provider,
+		engine:        llm.NewEngine(provider, nil),
+		toolDiscovery: config.ToolDiscoveryConfig{Mode: "invalid"},
+	}
+
+	rt.mu.Lock()
+	err := rt.ensureMCPManagerLocked()
+	rt.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "invalid tool discovery mode") {
+		t.Fatalf("first setup error = %v, want invalid planner mode", err)
+	}
+	if rt.mcpManager != nil {
+		t.Fatal("failed planner setup permanently published an unplanned MCP manager")
+	}
+
+	rt.toolDiscovery = config.ToolDiscoveryConfig{Mode: "deferred"}
+	rt.mu.Lock()
+	err = rt.ensureMCPManagerLocked()
+	rt.mu.Unlock()
+	if err != nil {
+		t.Fatalf("retry setup failed: %v", err)
+	}
+	if rt.mcpManager == nil {
+		t.Fatal("successful retry did not publish MCP manager")
+	}
+	if _, ok := rt.engine.ToolDiscoveryDiagnostics("serve"); !ok {
+		t.Fatal("successful retry did not attach the discovery planner")
 	}
 }

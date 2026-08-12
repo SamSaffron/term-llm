@@ -1191,7 +1191,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.mcpManager.AvailableServers()) == 0 {
 			return m.showMCPQuickStart()
 		}
-		m.dialog.ShowMCPPicker(m.mcpManager)
+		m.showMCPPicker()
 		return m, nil
 	}
 

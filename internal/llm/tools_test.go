@@ -24,7 +24,63 @@ func (t *namedTestTool) Preview(args json.RawMessage) string { return t.name }
 
 func (t *finishingNamedTestTool) IsFinishingTool() bool { return true }
 
-func TestToolRegistryAllSpecsSortedByName(t *testing.T) {
+func TestToolRegistryDeferredVisibility(t *testing.T) {
+	registry := NewToolRegistry()
+	visible := &namedTestTool{name: "visible"}
+	deferred := &namedTestTool{name: "deferred"}
+	registry.Register(visible)
+	registry.RegisterDeferred(deferred)
+
+	if specs := registry.AllSpecs(); len(specs) != 1 || specs[0].Name != "visible" {
+		t.Fatalf("AllSpecs() = %#v, want visible only", specs)
+	}
+	if specs := registry.AllSpecsIncludingDeferred(); len(specs) != 2 || specs[0].Name != "deferred" || specs[1].Name != "visible" {
+		t.Fatalf("AllSpecsIncludingDeferred() = %#v, want deferred,visible", specs)
+	}
+	if !registry.SetVisibility("deferred", true) {
+		t.Fatal("SetVisibility(deferred) = false")
+	}
+	if specs := registry.AllSpecs(); len(specs) != 2 {
+		t.Fatalf("visible AllSpecs() len = %d, want 2", len(specs))
+	}
+	if !registry.SetVisibility("deferred", false) {
+		t.Fatal("SetVisibility(deferred,false) = false")
+	}
+	if _, ok := registry.Get("deferred"); !ok {
+		t.Fatal("deferred tool stopped being executable")
+	}
+}
+
+func TestDynamicToolQueueIsRunScopedAndDeduplicated(t *testing.T) {
+	engine := NewEngine(NewMockProvider("dynamic"), nil)
+	tool := &namedTestTool{name: "late_tool"}
+	runOne := engine.beginToolRun()
+	if !engine.AddDynamicToolForRun(runOne, tool) || !engine.AddDynamicToolForRun(runOne, tool) {
+		t.Fatal("active run rejected dynamic tool")
+	}
+	pending := engine.drainPendingToolSpecs(runOne)
+	if len(pending) != 1 || pending[0].Name != "late_tool" {
+		t.Fatalf("deduplicated pending specs = %#v", pending)
+	}
+	if pending := engine.drainPendingToolSpecs(runOne); len(pending) != 0 {
+		t.Fatalf("drained queue retained specs: %#v", pending)
+	}
+	if !engine.AddDynamicToolForRun(runOne, tool) {
+		t.Fatal("active run rejected requeued tool")
+	}
+	engine.endToolRun(runOne)
+
+	runTwo := engine.beginToolRun()
+	defer engine.endToolRun(runTwo)
+	if pending := engine.drainPendingToolSpecs(runTwo); len(pending) != 0 {
+		t.Fatalf("cancelled/ended run leaked into later run: %#v", pending)
+	}
+	if engine.AddDynamicToolForRun(runOne, tool) {
+		t.Fatal("ended run accepted a late activation")
+	}
+}
+
+func TestToolRegistryAllSpecsSorted(t *testing.T) {
 	t.Parallel()
 
 	registry := NewToolRegistry()

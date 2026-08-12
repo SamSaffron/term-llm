@@ -28,7 +28,8 @@ type ServerConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 
 	// Shared fields
-	Env map[string]string `json:"env,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	AlwaysLoad []string          `json:"always_load,omitempty"`
 
 	// Sampling configuration
 	Sampling *SamplingConfig `json:"sampling,omitempty"`

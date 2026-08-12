@@ -29,6 +29,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
+	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -426,8 +427,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var mcpManager *mcp.Manager
 	if settings.MCP != "" {
 		mcpOpts := &MCPOptions{
-			Provider: provider,
-			YoloMode: resolvedYolo,
+			Provider:      provider,
+			YoloMode:      resolvedYolo,
+			ToolDiscovery: cfg.ToolDiscovery,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
@@ -523,6 +525,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		SessionID:               sessionID,
 		WorkingDir:              settings.BaseDir,
 		Messages:                messages,
+		EnableToolDiscovery:     mcpManager != nil,
 		Search:                  settings.Search,
 		ForceExternalSearch:     resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
 		DisableExternalWebFetch: askNoWebFetch,
@@ -546,9 +549,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		askText = true
 	}
 	if askJSON {
-		if debugRaw {
-			return fmt.Errorf("--json is incompatible with --debug-raw (both write to stdout)")
-		}
 		askText = true
 		askPorcelain = false
 	}
@@ -2847,9 +2847,10 @@ func runAskStreamProgram(ctx context.Context, p *tea.Program) error {
 
 // MCPOptions contains options for enabling MCP servers.
 type MCPOptions struct {
-	Provider llm.Provider
-	Model    string
-	YoloMode bool
+	Provider      llm.Provider
+	Model         string
+	YoloMode      bool
+	ToolDiscovery config.ToolDiscoveryConfig
 }
 
 // enableMCPServersWithFeedback initializes MCP servers with user feedback.
@@ -2948,8 +2949,16 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		return nil, fmt.Errorf("MCP servers failed to start: %s", strings.Join(failedServers, "; "))
 	}
 
-	// Register MCP tools
-	mcp.RegisterMCPTools(mcpManager, engine.Tools())
+	// Register every authorised wrapper for execution while the planner owns
+	// provider visibility and durable session activation.
+	discoveryCfg := config.ToolDiscoveryConfig{}
+	if opts != nil {
+		discoveryCfg = opts.ToolDiscovery
+	}
+	if _, err := tooldiscovery.NewPlanner(discoveryCfg, mcpManager, engine); err != nil {
+		mcpManager.StopAll()
+		return nil, fmt.Errorf("configure MCP tool discovery: %w", err)
+	}
 	tools := mcpManager.AllTools()
 
 	// Show result

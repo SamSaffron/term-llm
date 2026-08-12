@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -293,6 +294,26 @@ func clonePart(part Part) (Part, bool) {
 			return Part{}, false
 		}
 		cloned.ToolActivity = cloneToolActivity(part.ToolActivity)
+
+	case PartProviderReplay:
+		if part.ProviderReplay == nil || len(part.ProviderReplay.Raw) == 0 {
+			return Part{}, false
+		}
+		cloned.ProviderReplay = &ProviderReplayItem{Raw: append(json.RawMessage(nil), part.ProviderReplay.Raw...)}
+
+	case PartDiscoveryCall:
+		if part.DiscoveryCall == nil {
+			return Part{}, false
+		}
+		call := *part.DiscoveryCall
+		call.Arguments = append(json.RawMessage(nil), part.DiscoveryCall.Arguments...)
+		cloned.DiscoveryCall = &call
+
+	case PartDiscoveryOutput:
+		if part.DiscoveryOutput == nil {
+			return Part{}, false
+		}
+		cloned.DiscoveryOutput = cloneToolDiscoveryOutput(part.DiscoveryOutput)
 
 	case PartToolResult:
 		if part.ToolResult == nil {

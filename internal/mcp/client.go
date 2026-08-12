@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,22 +33,28 @@ type ToolSpec struct {
 
 // Client wraps an MCP server connection.
 type Client struct {
-	name            string
-	config          ServerConfig
-	client          *mcp.Client
-	session         *mcp.ClientSession
-	tools           []ToolSpec
-	samplingHandler *SamplingHandler
-	processCancel   context.CancelFunc
-	mu              sync.RWMutex
-	running         bool
+	name              string
+	config            ServerConfig
+	client            *mcp.Client
+	session           *mcp.ClientSession
+	samplingHandler   *SamplingHandler
+	processCancel     context.CancelFunc
+	refreshCancel     context.CancelFunc
+	refreshDone       chan struct{}
+	toolRefreshSignal chan struct{}
+	onCatalogueChange func(oldSnapshot, newSnapshot *ToolSnapshot, err error)
+	snapshot          atomic.Pointer[ToolSnapshot]
+	lifecycleMu       sync.Mutex
+	mu                sync.RWMutex
+	running           bool
 }
 
 // NewClient creates a new MCP client for the given server configuration.
 func NewClient(name string, config ServerConfig) *Client {
 	return &Client{
-		name:   name,
-		config: config,
+		name:              name,
+		config:            config,
+		toolRefreshSignal: make(chan struct{}, 1),
 	}
 }
 
@@ -55,6 +63,14 @@ func (c *Client) SetSamplingHandler(handler *SamplingHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.samplingHandler = handler
+}
+
+// SetCatalogueChangeHandler installs the callback used after complete snapshot
+// publication. The callback is always invoked without a client lock held.
+func (c *Client) SetCatalogueChangeHandler(handler func(oldSnapshot, newSnapshot *ToolSnapshot, err error)) {
+	c.mu.Lock()
+	c.onCatalogueChange = handler
+	c.mu.Unlock()
 }
 
 // Name returns the server name.
@@ -68,31 +84,43 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) start(ctx, processCtx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
 
+	c.mu.RLock()
 	if c.running {
+		c.mu.RUnlock()
 		return nil
 	}
+	samplingHandler := c.samplingHandler
+	c.mu.RUnlock()
+	select {
+	case <-c.toolRefreshSignal:
+	default:
+	}
 
-	// Build client options with sampling handler if available
-	var clientOpts *mcp.ClientOptions
-	if c.samplingHandler != nil {
+	// Notification handlers are serialized by the SDK, so this callback only
+	// signals a worker and never performs remote I/O.
+	clientOpts := &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			select {
+			case c.toolRefreshSignal <- struct{}{}:
+			default:
+			}
+		},
+	}
+	if samplingHandler != nil {
 		clientName := c.name
-		clientOpts = &mcp.ClientOptions{
-			CreateMessageHandler: func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
-				return c.samplingHandler.Handle(ctx, clientName, req)
-			},
+		clientOpts.CreateMessageHandler = func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+			return samplingHandler.Handle(ctx, clientName, req)
 		}
 	}
 
-	// Create the MCP client with options
-	c.client = mcp.NewClient(&mcp.Implementation{
+	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "term-llm",
 		Version: "1.0.0",
 	}, clientOpts)
 
-	// Create transport based on config type
 	var transport mcp.Transport
 	if c.config.TransportType() == "http" {
 		transport = c.createHTTPTransport()
@@ -100,29 +128,44 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 		transport = c.createStdioTransport(processCtx)
 	}
 
-	session, err := c.client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		c.mu.Lock()
 		c.cancelStdioProcessLocked()
+		c.mu.Unlock()
 		return fmt.Errorf("connect to MCP server %s: %w", c.name, err)
 	}
-	c.session = session
 
-	// Fetch available tools
-	if err := c.refreshTools(ctx); err != nil {
+	candidate, err := c.acquireToolSnapshot(ctx, session)
+	if err != nil {
+		c.mu.Lock()
 		c.cancelStdioProcessLocked()
-		c.session.Close()
-		c.session = nil
+		c.mu.Unlock()
+		_ = session.Close()
 		return fmt.Errorf("list tools from %s: %w", c.name, err)
 	}
 
+	refreshCtx, refreshCancel := context.WithCancel(processCtx)
+	refreshDone := make(chan struct{})
+	c.mu.Lock()
+	c.client = client
+	c.session = session
+	c.refreshCancel = refreshCancel
+	c.refreshDone = refreshDone
 	c.running = true
+	c.mu.Unlock()
+	c.snapshot.Store(candidate)
+	slog.Debug("MCP tool catalogue initial snapshot published", "server", c.name, "generation", candidate.Generation, "tools", len(candidate.Tools), "hash", candidate.Hash)
+	go c.refreshWorker(refreshCtx, session, refreshDone)
 	return nil
 }
 
 // createStdioTransport creates a stdio transport for command-based servers.
 func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 	processCtx, processCancel := context.WithCancel(ctx)
+	c.mu.Lock()
 	c.processCancel = processCancel
+	c.mu.Unlock()
 
 	cmd := exec.CommandContext(processCtx, c.config.Command, c.config.Args...)
 	cmd.WaitDelay = mcpCommandWaitDelay
@@ -194,40 +237,63 @@ func (c *Client) currentSession() *mcp.ClientSession {
 // clearTerminatedSession clears only the exact active session observed by its
 // watcher. An old watcher therefore cannot disrupt a replacement session.
 func (c *Client) clearTerminatedSession(session *mcp.ClientSession) bool {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
 	if c.session != session || !c.running {
 		c.mu.Unlock()
 		return false
 	}
 	processCancel := c.processCancel
+	refreshCancel := c.refreshCancel
+	refreshDone := c.refreshDone
 	c.session = nil
 	c.processCancel = nil
+	c.refreshCancel = nil
+	c.refreshDone = nil
 	c.running = false
-	c.tools = nil
 	c.mu.Unlock()
+	c.snapshot.Store(nil)
 
+	if refreshCancel != nil {
+		refreshCancel()
+	}
 	if processCancel != nil {
 		processCancel()
+	}
+	if refreshDone != nil {
+		<-refreshDone
 	}
 	return true
 }
 
 // Stop closes the MCP server connection.
 func (c *Client) Stop() error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+
 	c.mu.Lock()
-	if !c.running {
+	if !c.running && c.session == nil {
 		c.mu.Unlock()
 		return nil
 	}
 
 	session := c.session
 	processCancel := c.processCancel
+	refreshCancel := c.refreshCancel
+	refreshDone := c.refreshDone
 	c.session = nil
 	c.processCancel = nil
+	c.refreshCancel = nil
+	c.refreshDone = nil
 	c.running = false
-	c.tools = nil
 	c.mu.Unlock()
+	c.snapshot.Store(nil)
 
+	if refreshCancel != nil {
+		refreshCancel()
+	}
 	if processCancel != nil {
 		processCancel()
 	}
@@ -235,6 +301,9 @@ func (c *Client) Stop() error {
 	var err error
 	if session != nil {
 		err = session.Close()
+	}
+	if refreshDone != nil {
+		<-refreshDone
 	}
 	if processCancel != nil && isExpectedStdioStopError(err) {
 		return nil
@@ -267,35 +336,122 @@ func (c *Client) IsRunning() bool {
 	return c.running
 }
 
-// Tools returns the available tools from this server.
+// Tools returns a copy-safe legacy projection of the current complete snapshot.
 func (c *Client) Tools() []ToolSpec {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.tools
-}
-
-// refreshTools fetches the tool list from the server.
-func (c *Client) refreshTools(ctx context.Context) error {
-	result, err := c.session.ListTools(ctx, nil)
-	if err != nil {
-		return err
+	snapshot := c.snapshot.Load()
+	if snapshot == nil {
+		return nil
 	}
-
-	c.tools = make([]ToolSpec, 0, len(result.Tools))
-	for _, t := range result.Tools {
-		schema := make(map[string]any)
-		if t.InputSchema != nil {
-			if m, ok := t.InputSchema.(map[string]any); ok {
-				schema = m
-			}
-		}
-		c.tools = append(c.tools, ToolSpec{
-			Name:        t.Name,
-			Description: t.Description,
-			Schema:      schema,
+	tools := make([]ToolSpec, 0, len(snapshot.Tools))
+	for _, tool := range snapshot.Tools {
+		tools = append(tools, ToolSpec{
+			Name:        tool.OriginalName,
+			Description: tool.Description,
+			Schema:      cloneMap(tool.InputSchema),
 		})
 	}
-	return nil
+	return tools
+}
+
+// ToolSnapshot returns a copy-safe view of the immutable current snapshot.
+func (c *Client) ToolSnapshot() *ToolSnapshot {
+	return copyToolSnapshot(c.snapshot.Load())
+}
+
+func (c *Client) acquireToolSnapshot(ctx context.Context, session *mcp.ClientSession) (*ToolSnapshot, error) {
+	if session == nil {
+		return nil, fmt.Errorf("MCP server %s has no active session", c.name)
+	}
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
+		if len(tools) >= MaxToolsPerServer {
+			return nil, fmt.Errorf("MCP server %s exceeds maximum catalogue size of %d tools", c.name, MaxToolsPerServer)
+		}
+		tools = append(tools, tool)
+	}
+	previous := c.snapshot.Load()
+	generation := uint64(1)
+	if previous != nil {
+		generation = previous.Generation + 1
+	}
+	return buildToolSnapshotWithDescription(c.name, generation, mcpNamespaceDescription(session.InitializeResult()), tools)
+}
+
+func mcpNamespaceDescription(result *mcp.InitializeResult) string {
+	if result == nil {
+		return ""
+	}
+	if instructions := strings.TrimSpace(result.Instructions); instructions != "" {
+		return instructions
+	}
+	if result.ServerInfo == nil {
+		return ""
+	}
+	name := strings.TrimSpace(result.ServerInfo.Title)
+	if name == "" {
+		name = strings.TrimSpace(result.ServerInfo.Name)
+	}
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("Tools provided by %s.", name)
+}
+
+func (c *Client) publishRefresh(session *mcp.ClientSession, candidate *ToolSnapshot) bool {
+	c.mu.Lock()
+	if !c.running || c.session != session {
+		c.mu.Unlock()
+		return false
+	}
+	old := c.snapshot.Swap(candidate)
+	handler := c.onCatalogueChange
+	c.mu.Unlock()
+
+	slog.Debug("MCP tool catalogue refresh published", "server", c.name, "generation", candidate.Generation, "tools", len(candidate.Tools), "hash", candidate.Hash)
+	if handler != nil {
+		handler(copyToolSnapshot(old), copyToolSnapshot(candidate), nil)
+	}
+	return true
+}
+
+func (c *Client) reportRefreshError(err error) {
+	c.mu.RLock()
+	handler := c.onCatalogueChange
+	c.mu.RUnlock()
+	if handler != nil {
+		snapshot := copyToolSnapshot(c.snapshot.Load())
+		handler(snapshot, snapshot, err)
+		return
+	}
+	slog.Warn("MCP tool catalogue refresh failed; retaining previous snapshot", "server", c.name, "error", err)
+}
+
+func (c *Client) refreshWorker(ctx context.Context, session *mcp.ClientSession, done chan struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.toolRefreshSignal:
+		}
+
+		refreshCtx, cancel := context.WithTimeout(ctx, mcpStartupTimeout)
+		candidate, err := c.acquireToolSnapshot(refreshCtx, session)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			c.reportRefreshError(err)
+			continue
+		}
+		if !c.publishRefresh(session, candidate) {
+			return
+		}
+	}
 }
 
 // CallTool invokes a tool on the MCP server.

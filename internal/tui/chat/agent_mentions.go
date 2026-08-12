@@ -40,6 +40,9 @@ func (m *Model) CurrentAgentMentionEngine() *llm.Engine {
 func (m *Model) replaceEngine(engine *llm.Engine) {
 	m.engine = engine
 	m.agentMentionEngine.Store(engine)
+	if m.discoveryPlanner != nil {
+		m.discoveryPlanner.AttachEngine(engine)
+	}
 }
 
 func (m *Model) agentMentionDelegationContext(content string) (string, error) {

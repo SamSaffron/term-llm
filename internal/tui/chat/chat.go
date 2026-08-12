@@ -31,6 +31,7 @@ import (
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
 	"github.com/samsaffron/term-llm/internal/termimage"
+	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
@@ -318,9 +319,10 @@ type Model struct {
 	promptHistory           promptHistoryState
 	promptHistoryLookupSeq  uint64
 	// MCP (Model Context Protocol)
-	mcpManager    *mcp.Manager
-	mcpStatusChan chan mcp.StatusUpdate
-	maxTurns      int
+	mcpManager       *mcp.Manager
+	discoveryPlanner *tooldiscovery.Planner
+	mcpStatusChan    chan mcp.StatusUpdate
+	maxTurns         int
 
 	// Directory approval
 	approvedDirs    *ApprovedDirs
@@ -793,6 +795,14 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 // NewWithFastProviderAndApproval preserves requested policy independently from
 // the approval manager's actual mode after an interactive Guardian fallback.
 func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, requestedApprovalMode tools.ApprovalMode, toolMgrs ...*tools.ToolManager) *Model {
+	var discoveryPlanner *tooldiscovery.Planner
+	if cfg != nil && engine != nil && mcpManager != nil {
+		var err error
+		discoveryPlanner, err = tooldiscovery.NewPlanner(cfg.ToolDiscovery, mcpManager, engine)
+		if err != nil {
+			slog.Warn("failed to configure MCP tool discovery", "error", err)
+		}
+	}
 	// Get terminal size
 	width := 80
 	height := 24
@@ -1011,6 +1021,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		dialog:                   dialog,
 		approvedDirs:             approvedDirs,
 		mcpManager:               mcpManager,
+		discoveryPlanner:         discoveryPlanner,
 		mcpStatusChan:            mcpStatusChan,
 		maxTurns:                 maxTurns,
 		forceExternalSearch:      forceExternalSearch,
@@ -1080,13 +1091,30 @@ func sessionMessageForInterjection(sessionID, visibleText string, message llm.Me
 	return userMessage
 }
 
+func (m *Model) showMCPPicker() {
+	if m == nil || m.dialog == nil || m.mcpManager == nil {
+		return
+	}
+	sessionID := ""
+	if m.sess != nil {
+		sessionID = m.sess.ID
+	}
+	if m.engine != nil {
+		if diagnostics, ok := m.engine.ToolDiscoveryDiagnostics(sessionID); ok {
+			m.dialog.ShowMCPPicker(m.mcpManager, diagnostics)
+			return
+		}
+	}
+	m.dialog.ShowMCPPicker(m.mcpManager)
+}
+
 func (m *Model) refreshMCPPickerIfOpen() {
 	if m == nil || m.dialog == nil || m.mcpManager == nil || m.dialog.Type() != DialogMCPPicker {
 		return
 	}
 	query := m.dialog.Query()
 	cursor := m.dialog.Cursor()
-	m.dialog.ShowMCPPicker(m.mcpManager)
+	m.showMCPPicker()
 	m.dialog.SetQuery(query)
 	m.dialog.SetCursor(cursor)
 }

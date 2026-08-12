@@ -132,6 +132,57 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
 }
 ```
 
+### Deferred tool discovery
+
+term-llm keeps small MCP catalogues simple and eagerly sends all schemas. When the complete authorised MCP catalogue exceeds 24 tools, it defers the long tail and lets the model search for the few schemas needed for the task.
+
+Configure the policy in the main `config.yaml`:
+
+```yaml
+tool_discovery:
+  mode: auto
+  strategy: auto
+  threshold: 24
+```
+
+`mode` controls whether tools are deferred:
+
+| Mode | Behaviour |
+|---|---|
+| `auto` | Eager at or below `threshold`; deferred above it |
+| `eager` | Always send all authorised MCP schemas |
+| `deferred` | Always defer eligible MCP schemas |
+
+`strategy` controls how deferred schemas reach the model:
+
+| Strategy | Behaviour |
+|---|---|
+| `auto` | Use an exactly supported provider-native path; otherwise use portable search |
+| `portable` | Use term-llm's ordinary cross-provider `tool_search` tool |
+| `native` | Require provider-native loading and fail clearly when unsupported |
+
+ChatGPT OAuth `gpt-5.6-luna` supports native client-executed search. Qwen/Ollama and conventional providers use portable search. Native loading keeps selected schemas in provider discovery output rather than rebuilding the ordinary top-level tool array. Selected MCP tools are grouped under their server namespace on the ChatGPT wire, but discovery, authorization, and execution remain child-granular: selecting one child never loads its siblings. Namespace descriptions use bounded MCP server instructions/metadata when available.
+
+The provider-neutral catalogue still retains each tool's flattened executable name (`server__tool`) alongside explicit namespace and child identity. Portable discovery and function-only providers continue using the flattened name, so sessions can move across providers. Native namespace calls are routed through the explicit identity metadata and must match a currently loaded, authorised child; term-llm does not infer authorization by splitting a name or by accepting a namespace alone.
+
+Pin frequent tools so they remain immediately visible when the catalogue is deferred. `always_load` uses the original server tool name:
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "github-mcp-server",
+      "always_load": [
+        "get_pull_request",
+        "search_issues"
+      ]
+    }
+  }
+}
+```
+
+Discovery changes schema visibility only. MCP server enablement and the engine's allowed-tools policy remain authoritative for execution.
+
 ### Transport Types
 
 | Type | Config | Description |

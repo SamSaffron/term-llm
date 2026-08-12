@@ -302,8 +302,8 @@ func (d *DialogModel) ShowShareChoice() {
 	d.filtered = d.items
 }
 
-// ShowMCPPicker opens the MCP server picker dialog
-func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager) {
+// ShowMCPPicker opens the MCP server picker dialog.
+func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...llm.ToolDiscoveryDiagnostics) {
 	d.dialogType = DialogMCPPicker
 	d.title = "MCP Servers"
 	d.cursor = 0
@@ -312,24 +312,44 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager) {
 
 	available := mcpManager.AvailableServers()
 	states := mcpManager.GetAllStates()
+	discoveryServers := make(map[string]llm.ToolDiscoveryServerDiagnostic)
+	if len(discovery) > 0 {
+		for _, server := range discovery[0].Servers {
+			discoveryServers[server.Name] = server
+		}
+	}
 
-	// Build status map
-	statusMap := make(map[string]string)
+	// Build status map.
+	stateMap := make(map[string]mcp.ServerState)
 	for _, state := range states {
-		statusMap[state.Name] = string(state.Status)
+		stateMap[state.Name] = state
 	}
 
 	for _, name := range available {
-		status := statusMap[name]
+		state := stateMap[name]
+		status := string(state.Status)
 		if status == "" {
 			status = "stopped"
 		}
 		isRunning := status == "ready" || status == "starting"
+		description := status
+		if state.ToolCount > 0 {
+			description += fmt.Sprintf(" · %d tools", state.ToolCount)
+		}
+		if server, ok := discoveryServers[name]; ok {
+			description += fmt.Sprintf(" · %s (%d active, %d deferred)", server.ResolvedMode, server.Pinned+server.Active, server.Deferred)
+		}
+		if !state.LastToolRefresh.IsZero() {
+			description += " · refreshed " + state.LastToolRefresh.Local().Format("15:04:05")
+		}
+		if state.RefreshError != nil {
+			description += " · refresh warning: " + state.RefreshError.Error()
+		}
 
 		d.items = append(d.items, DialogItem{
 			ID:          name,
 			Label:       name,
-			Description: status,
+			Description: description,
 			Selected:    isRunning,
 		})
 	}

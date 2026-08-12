@@ -6357,3 +6357,41 @@ func TestEngineIndirectVisionCopiesNonUploadImageToUploads(t *testing.T) {
 		t.Fatalf("copied upload bytes = %q, want hello", got)
 	}
 }
+
+type selfAssertingControlTool struct {
+	namedTool
+	executed bool
+}
+
+// This method intentionally matches the removed escape-hatch shape. Merely
+// self-asserting control-plane status must grant no visibility or execution.
+func (t *selfAssertingControlTool) IsProviderControlTool() bool { return true }
+func (t *selfAssertingControlTool) Execute(context.Context, json.RawMessage) (ToolOutput, error) {
+	t.executed = true
+	return TextOutput("unexpected"), nil
+}
+
+func TestSelfAssertedProviderControlToolCannotEscapeAllowlist(t *testing.T) {
+	tool := &selfAssertingControlTool{namedTool: namedTool{name: "self_asserted_control"}}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(&fakeProvider{}, registry)
+	engine.SetAllowedToolsFilter([]string{})
+
+	if engine.IsToolAllowed(tool.Spec().Name) {
+		t.Fatal("self-asserted control tool weakened IsToolAllowed")
+	}
+	if specs := engine.FilterAllowedToolSpecs([]ToolSpec{tool.Spec()}); len(specs) != 0 {
+		t.Fatalf("self-asserted control tool remained provider-visible: %#v", specs)
+	}
+	messages, err := engine.executeSingleToolCall(context.Background(), ToolCall{ID: "control", Name: tool.Spec().Name}, eventSender{}, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tool.executed {
+		t.Fatal("self-asserted control tool executed outside the allowlist")
+	}
+	if len(messages) != 1 || len(messages[0].Parts) != 1 || messages[0].Parts[0].ToolResult == nil || !strings.Contains(messages[0].Parts[0].ToolResult.Content, "allowed-tools") {
+		t.Fatalf("denied execution result = %#v", messages)
+	}
+}
