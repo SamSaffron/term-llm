@@ -112,13 +112,15 @@ func cursorModelArgument(model, effort string, fast bool) string {
 	if model == "" || model == "auto-smart" {
 		return "auto"
 	}
-	if model == "grok-4.5" {
-		model = "cursor-grok-4.5"
+	if model == "grok-4.5" && effort == "" {
 		// Cursor no longer exposes an effort-less Grok 4.5 model ID. Keep the
 		// convenient base alias and map it to the catalog's default variant.
-		if effort == "" {
-			effort = "high"
-		}
+		effort = "high"
+	}
+	if strings.HasPrefix(model, "grok-") && effort != "" {
+		// Model discovery removes Cursor's wire-only prefix from Grok IDs. Add
+		// it back when selecting a concrete effort variant.
+		model = "cursor-" + model
 	}
 	if effort != "" {
 		model += "-" + effort

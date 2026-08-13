@@ -44,6 +44,10 @@ func TestCursorModelArgument(t *testing.T) {
 		"grok-4.5-fast":           "cursor-grok-4.5-high-fast",
 		"grok-4.5-low":            "cursor-grok-4.5-low",
 		"grok-4.5-high-fast":      "cursor-grok-4.5-high-fast",
+		"grok-4.6":                "grok-4.6",
+		"grok-4.6-fast":           "grok-4.6-fast",
+		"grok-4.6-high":           "cursor-grok-4.6-high",
+		"grok-4.6-high-fast":      "cursor-grok-4.6-high-fast",
 		"composer-2.5":            "composer-2.5",
 		"composer-2.5-extra-high": "composer-2.5-extra-high",
 	}
