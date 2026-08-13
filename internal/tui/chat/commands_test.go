@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -3055,6 +3056,37 @@ func TestExecuteHandover_AddMessageErrorUsesFooterMessage(t *testing.T) {
 	}
 	if rm.pendingHandover == nil {
 		t.Fatal("expected pending handover to remain available for retry")
+	}
+}
+
+func TestMCPFailedStatusUpdateShowsDetailedError(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	startupErr := errors.New("connection closed\nMCP server stderr:\nmissing DISCOURSE_API_KEY")
+
+	result, cmd := m.Update(mcpStatusUpdateMsg{update: mcp.StatusUpdate{
+		Name:   "discourse_local",
+		Status: mcp.StatusFailed,
+		Error:  startupErr,
+	}})
+	m = result.(*Model)
+
+	for _, want := range []string{"MCP server discourse_local failed", "missing DISCOURSE_API_KEY"} {
+		if !strings.Contains(m.footerMessage, want) {
+			t.Fatalf("failure footer %q does not contain %q", m.footerMessage, want)
+		}
+	}
+	if m.footerMessageTone != "error" {
+		t.Fatalf("failure footer tone = %q, want error", m.footerMessageTone)
+	}
+	if cmd == nil {
+		t.Fatal("failed status update did not return commands for durable details and footer expiry")
+	}
+
+	detail := formatMCPFailureMessage(mcp.StatusUpdate{Name: "discourse_local", Status: mcp.StatusFailed, Error: startupErr})
+	for _, want := range []string{"## MCP server failed", "missing DISCOURSE_API_KEY", "/mcp", "term-llm mcp info discourse_local"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("failure detail %q does not contain %q", detail, want)
+		}
 	}
 }
 

@@ -24,6 +24,48 @@ import (
 
 var mcpCommandWaitDelay = time.Second
 
+const mcpStderrLimit = 64 * 1024
+
+type synchronizedLimitedBuffer struct {
+	mu        sync.Mutex
+	data      []byte
+	limit     int
+	truncated bool
+}
+
+func newSynchronizedLimitedBuffer(limit int) *synchronizedLimitedBuffer {
+	return &synchronizedLimitedBuffer{limit: limit}
+}
+
+func (b *synchronizedLimitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	written := len(p)
+	remaining := b.limit - len(b.data)
+	if remaining <= 0 {
+		b.truncated = b.truncated || written > 0
+		return written, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		b.truncated = true
+	}
+	b.data = append(b.data, p...)
+	return written, nil
+}
+
+func (b *synchronizedLimitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	output := strings.TrimSpace(string(b.data))
+	if output != "" && b.truncated {
+		output += "\n[stderr truncated]"
+	}
+	return output
+}
+
 // ToolSpec describes a tool available from an MCP server.
 type ToolSpec struct {
 	Name        string
@@ -42,6 +84,7 @@ type Client struct {
 	refreshCancel     context.CancelFunc
 	refreshDone       chan struct{}
 	toolRefreshSignal chan struct{}
+	stdioStderr       *synchronizedLimitedBuffer
 	onCatalogueChange func(oldSnapshot, newSnapshot *ToolSnapshot, err error)
 	snapshot          atomic.Pointer[ToolSnapshot]
 	lifecycleMu       sync.Mutex
@@ -133,7 +176,7 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 		c.mu.Lock()
 		c.cancelStdioProcessLocked()
 		c.mu.Unlock()
-		return fmt.Errorf("connect to MCP server %s: %w", c.name, err)
+		return fmt.Errorf("connect to MCP server %s: %w", c.name, c.withStdioStderr(err))
 	}
 
 	candidate, err := c.acquireToolSnapshot(ctx, session)
@@ -142,7 +185,7 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 		c.cancelStdioProcessLocked()
 		c.mu.Unlock()
 		_ = session.Close()
-		return fmt.Errorf("list tools from %s: %w", c.name, err)
+		return fmt.Errorf("list tools from %s: %w", c.name, c.withStdioStderr(err))
 	}
 
 	refreshCtx, refreshCancel := context.WithCancel(processCtx)
@@ -170,6 +213,11 @@ func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 	cmd := exec.CommandContext(processCtx, c.config.Command, c.config.Args...)
 	cmd.WaitDelay = mcpCommandWaitDelay
 	procutil.ConfigureDetachedCommand(cmd)
+	stderr := newSynchronizedLimitedBuffer(mcpStderrLimit)
+	cmd.Stderr = stderr
+	c.mu.Lock()
+	c.stdioStderr = stderr
+	c.mu.Unlock()
 	if len(c.config.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range c.config.Env {
@@ -177,6 +225,23 @@ func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 		}
 	}
 	return &mcp.CommandTransport{Command: cmd}
+}
+
+func (c *Client) withStdioStderr(err error) error {
+	if err == nil || c.config.TransportType() == "http" {
+		return err
+	}
+	c.mu.RLock()
+	stderr := c.stdioStderr
+	c.mu.RUnlock()
+	if stderr == nil {
+		return err
+	}
+	output := stderr.String()
+	if output == "" {
+		return err
+	}
+	return fmt.Errorf("%w\n\nMCP server stderr:\n%s", err, output)
 }
 
 // createHTTPTransport creates an HTTP transport for URL-based servers.

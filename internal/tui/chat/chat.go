@@ -2308,6 +2308,16 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()
 		cmds = append(cmds, m.listenForMCPStatusUpdates())
+		if msg.update.Status == mcp.StatusFailed {
+			failureMessage := formatMCPFailureMessage(msg.update)
+			cmds = append(cmds, tea.Println(m.renderMarkdown(failureMessage)+"\n"))
+			footer := fmt.Sprintf("MCP server %s failed", msg.update.Name)
+			if msg.update.Error != nil {
+				footer += ": " + strings.Join(strings.Fields(msg.update.Error.Error()), " ")
+			}
+			_, footerCmd := m.showFooterMessageWithToneFor(footer, "error", mcpFailureFooterDuration)
+			cmds = append(cmds, footerCmd)
+		}
 
 	case GuardianReviewMsg:
 		m.recordGuardianUsage(context.Background(), msg.Event.Model, msg.Event.Usage)

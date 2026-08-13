@@ -345,6 +345,9 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager, discovery ...llm.To
 		if state.RefreshError != nil {
 			description += " · refresh warning: " + state.RefreshError.Error()
 		}
+		if state.Status == mcp.StatusFailed && state.Error != nil {
+			description += " · error: " + state.Error.Error()
+		}
 
 		d.items = append(d.items, DialogItem{
 			ID:          name,

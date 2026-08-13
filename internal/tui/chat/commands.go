@@ -605,7 +605,10 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 
 // Command implementations
 
-const transientFooterMessageDuration = 3 * time.Second
+const (
+	transientFooterMessageDuration = 3 * time.Second
+	mcpFailureFooterDuration       = 15 * time.Second
+)
 
 var footerMessageSanitizer = strings.NewReplacer(
 	"**", "",
@@ -2783,6 +2786,21 @@ func (m *Model) mcpStopServer(query string) (tea.Model, tea.Cmd) {
 	}
 	m.setTextareaValue("")
 	return m.showFooterSuccess(fmt.Sprintf("Stopped %s.", name))
+}
+
+func formatMCPFailureMessage(update mcp.StatusUpdate) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## MCP server failed\n\n`%s` failed.\n", update.Name)
+	if update.Error != nil {
+		detail := strings.TrimSpace(update.Error.Error())
+		if detail != "" {
+			b.WriteString("\n**Error:**\n\n> ")
+			b.WriteString(strings.ReplaceAll(detail, "\n", "\n> "))
+			b.WriteString("\n")
+		}
+	}
+	fmt.Fprintf(&b, "\nThe error remains available in `/mcp`. To retry outside chat, run `term-llm mcp info %s`.\n", update.Name)
+	return b.String()
 }
 
 func (m *Model) mcpShowStatus() (tea.Model, tea.Cmd) {

@@ -112,6 +112,28 @@ func TestCreateStdioTransport_EmptyEnvNil(t *testing.T) {
 	}
 }
 
+func TestClientStartIncludesServerStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires sh")
+	}
+	client := NewClient("broken", ServerConfig{
+		Command: "sh",
+		Args:    []string{"-c", "echo 'missing DISCOURSE_API_KEY' >&2; exit 23"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := client.Start(ctx)
+	if err == nil {
+		t.Fatal("Start unexpectedly succeeded")
+	}
+	for _, want := range []string{"connect to MCP server broken", "MCP server stderr", "missing DISCOURSE_API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Start error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	// Set a known env var, then override it
 	os.Setenv("TEST_MCP_VAR", "original")
