@@ -18,6 +18,8 @@ type fakeWorkerController struct {
 	err      error
 }
 
+func (c *fakeWorkerController) OwnerID() string { return "owner-test" }
+
 func (c *fakeWorkerController) StartWorker(_ context.Context, req WorkerStartRequest) (WorkerStartResult, error) {
 	c.requests = append(c.requests, req)
 	if c.err != nil {
@@ -26,10 +28,12 @@ func (c *fakeWorkerController) StartWorker(_ context.Context, req WorkerStartReq
 	return WorkerStartResult{JobID: "job-1", RunID: "run-1"}, nil
 }
 
-func (c *fakeWorkerController) CancelWorker(_ context.Context, runID string) error {
-	c.cancel = append(c.cancel, runID)
+func (c *fakeWorkerController) CancelWorker(_ context.Context, req WorkerCancelRequest) error {
+	c.cancel = append(c.cancel, req.RunID)
 	return c.err
 }
+
+func (c *fakeWorkerController) ReconcileWorkers(context.Context, string) error { return c.err }
 
 func newWorkerChatTest(t *testing.T) (*Model, *session.SQLiteStore, *fakeWorkerController) {
 	t.Helper()
@@ -149,6 +153,132 @@ func TestTreeSupervisesWorkerReportsAndExplicitImportIsUser(t *testing.T) {
 
 func fmtInt64(value int64) string {
 	return fmt.Sprintf("%d", value)
+}
+
+func TestCompactedCoordinatorImportAppendsAfterBoundary(t *testing.T) {
+	m, store, _ := newWorkerChatTest(t)
+	ctx := context.Background()
+	if err := store.AddMessage(ctx, m.sess.ID, session.NewMessage(m.sess.ID, llm.UserText("old prompt"), -1)); err != nil {
+		t.Fatal(err)
+	}
+	summary := session.NewMessage(m.sess.ID, llm.UserText("[Context Compaction]\nsummary"), -1)
+	ack := session.NewMessage(m.sess.ID, llm.AssistantText("Compacted context loaded."), -1)
+	ack.CompactionTail = true
+	if err := store.CompactMessages(ctx, m.sess.ID, []session.Message{*summary, *ack}); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := store.Get(ctx, m.sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.sess = refreshed
+	m.messages, m.compactionIdx, err = loadSessionMessagesForScrollback(ctx, store, refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBoundary := m.sess.CompactionSeq
+
+	edge, err := store.CreateWorker(ctx, m.sess.ID, "compacted mailbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.AddWorkerReport(ctx, session.WorkerReport{
+		ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+		DestinationSessionID: edge.CoordinatorSessionID, Kind: session.WorkerReportResult,
+		Title: "Fresh result", Body: "post-compaction evidence",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pendingWorkerReport = &report
+	updated, _ := m.importPendingWorkerReport()
+	m = updated.(*Model)
+	if len(m.messages) == 0 || !strings.Contains(m.messages[len(m.messages)-1].TextContent, report.Body) {
+		t.Fatalf("UI compacted transcript missing imported tail: %#v", m.messages)
+	}
+	after, err := store.Get(ctx, m.sess.ID)
+	if err != nil || after.CompactionSeq != beforeBoundary {
+		t.Fatalf("compaction boundary changed: before=%d after=%#v err=%v", beforeBoundary, after, err)
+	}
+	active, err := session.LoadActiveMessages(ctx, store, after)
+	if err != nil || len(active) == 0 || !strings.Contains(active[len(active)-1].TextContent, report.Body) {
+		t.Fatalf("active compacted context missing report: %#v, %v", active, err)
+	}
+}
+
+func TestThreadAndReportImportWaitForTranscriptMutationBoundary(t *testing.T) {
+	for _, state := range []struct {
+		name  string
+		apply func(*Model)
+	}{
+		{name: "streaming", apply: func(m *Model) { m.streaming = true }},
+		{name: "mutation", apply: func(m *Model) { m.transcriptMutationInFlight = true }},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			m, store, controller := newWorkerChatTest(t)
+			state.apply(m)
+			updated, _ := m.ExecuteCommand("/thread must wait")
+			m = updated.(*Model)
+			if len(controller.requests) != 0 {
+				t.Fatalf("busy /thread started worker: %#v", controller.requests)
+			}
+			workers, err := store.ListWorkers(context.Background(), m.sess.ID)
+			if err != nil || len(workers) != 0 {
+				t.Fatalf("busy /thread created edge: %#v, %v", workers, err)
+			}
+			if !strings.Contains(m.footerMessage, "conversation work is active") {
+				t.Fatalf("busy /thread footer = %q", m.footerMessage)
+			}
+
+			// Build a mailbox report without going through /thread, then verify the
+			// same boundary protects the transcript append and in-memory ordering.
+			edge, err := store.CreateWorker(context.Background(), m.sess.ID, "report fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := store.AddWorkerReport(context.Background(), session.WorkerReport{
+				ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+				DestinationSessionID: edge.CoordinatorSessionID, Kind: session.WorkerReportResult,
+				Title: "Deferred", Body: "Do not interleave me.",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.pendingWorkerReport = &report
+			before := len(m.messages)
+			updated, _ = m.importPendingWorkerReport()
+			m = updated.(*Model)
+			if m.pendingWorkerReport == nil || len(m.messages) != before {
+				t.Fatalf("busy import changed UI transcript: pending=%#v messages=%d", m.pendingWorkerReport, len(m.messages))
+			}
+			messages, err := store.GetMessages(context.Background(), m.sess.ID, 0, 0)
+			if err != nil || len(messages) != 0 {
+				t.Fatalf("busy import changed durable transcript: %#v, %v", messages, err)
+			}
+			if !strings.Contains(m.footerMessage, "Cannot import") {
+				t.Fatalf("busy import footer = %q", m.footerMessage)
+			}
+		})
+	}
+}
+
+func TestActiveWorkerAlwaysOffersSafeCancelOrReconcileAction(t *testing.T) {
+	m, store, _ := newWorkerChatTest(t)
+	edge, err := store.CreateWorker(context.Background(), m.sess.ID, "stale queued edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := m.openWorkerReports(edge.ChildSessionID)
+	m = updated.(*Model)
+	found := false
+	for _, item := range m.dialog.items {
+		if item.ID == "worker-cancel:"+edge.ChildSessionID {
+			found = strings.Contains(item.Label, "reconcile") && strings.Contains(item.Description, "stale")
+		}
+	}
+	if !found {
+		t.Fatalf("active edge without run has no safe action: %#v", m.dialog.items)
+	}
 }
 
 func TestMainReturnsWorkerToCoordinatorAndActiveChildIsReadOnly(t *testing.T) {

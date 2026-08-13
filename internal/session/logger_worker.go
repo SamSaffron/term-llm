@@ -22,6 +22,18 @@ func (s *LoggingStore) CreateWorker(ctx context.Context, coordinatorSessionID, t
 	return edge, err
 }
 
+func (s *LoggingStore) CreateWorkerOwned(ctx context.Context, coordinatorSessionID, ownerID, task string) (WorkerEdge, error) {
+	store, err := s.workerStore()
+	if err != nil {
+		return WorkerEdge{}, err
+	}
+	edge, err := store.CreateWorkerOwned(ctx, coordinatorSessionID, ownerID, task)
+	if err != nil {
+		s.logOnce("CreateWorkerOwned", err)
+	}
+	return edge, err
+}
+
 func (s *LoggingStore) SetWorkerExecution(ctx context.Context, childSessionID, jobID, runID string) error {
 	store, err := s.workerStore()
 	if err == nil {
@@ -33,6 +45,18 @@ func (s *LoggingStore) SetWorkerExecution(ctx context.Context, childSessionID, j
 	return err
 }
 
+func (s *LoggingStore) SetWorkerOwner(ctx context.Context, childSessionID, oldOwnerID, newOwnerID string) (bool, error) {
+	store, err := s.workerStore()
+	if err != nil {
+		return false, err
+	}
+	changed, err := store.SetWorkerOwner(ctx, childSessionID, oldOwnerID, newOwnerID)
+	if err != nil {
+		s.logOnce("SetWorkerOwner", err)
+	}
+	return changed, err
+}
+
 func (s *LoggingStore) UpdateWorkerStatus(ctx context.Context, childSessionID string, status WorkerStatus) error {
 	store, err := s.workerStore()
 	if err == nil {
@@ -40,6 +64,17 @@ func (s *LoggingStore) UpdateWorkerStatus(ctx context.Context, childSessionID st
 	}
 	if err != nil {
 		s.logOnce("UpdateWorkerStatus", err)
+	}
+	return err
+}
+
+func (s *LoggingStore) FinishWorker(ctx context.Context, childSessionID string, status WorkerStatus, report WorkerReport) error {
+	store, err := s.workerStore()
+	if err == nil {
+		err = store.FinishWorker(ctx, childSessionID, status, report)
+	}
+	if err != nil {
+		s.logOnce("FinishWorker", err)
 	}
 	return err
 }
@@ -109,12 +144,4 @@ func (s *LoggingStore) CountUnreadWorkerReports(ctx context.Context, coordinator
 		return 0, err
 	}
 	return store.CountUnreadWorkerReports(ctx, coordinatorSessionID)
-}
-
-func (s *LoggingStore) HasWorkerReportKind(ctx context.Context, childSessionID string, kind WorkerReportKind) (bool, error) {
-	store, err := s.workerStore()
-	if err != nil {
-		return false, err
-	}
-	return store.HasWorkerReportKind(ctx, childSessionID, kind)
 }

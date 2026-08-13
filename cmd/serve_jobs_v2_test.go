@@ -1658,8 +1658,8 @@ func TestJobsV2TriggerJobRespectsMaxConcurrentRuns(t *testing.T) {
 
 	now := time.Now().UTC()
 	for _, runID := range []string{"run_existing_1", "run_existing_2"} {
-		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
-			runID, job.ID, now, jobsV2RunRunning, now, now)
+		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, worker_id, lease_expires_at, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, 'live-worker', ?, ?, ?)`,
+			runID, job.ID, now, jobsV2RunRunning, now.Add(jobsV2LeaseDuration).UnixMilli(), now, now)
 		if err != nil {
 			t.Fatalf("insert active run %s: %v", runID, err)
 		}
@@ -1809,8 +1809,8 @@ func TestJobsV2ScheduleOneRespectsMaxConcurrentRuns(t *testing.T) {
 
 	now := time.Now().UTC()
 	for _, runID := range []string{"run_existing_1", "run_existing_2"} {
-		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'schedule', ?, ?, ?, ?)`,
-			runID, job.ID, now, jobsV2RunRunning, now, now)
+		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, worker_id, lease_expires_at, created_at, updated_at) VALUES (?, ?, 1, 'schedule', ?, ?, 'live-worker', ?, ?, ?)`,
+			runID, job.ID, now, jobsV2RunRunning, now.Add(jobsV2LeaseDuration).UnixMilli(), now, now)
 		if err != nil {
 			t.Fatalf("insert active run %s: %v", runID, err)
 		}

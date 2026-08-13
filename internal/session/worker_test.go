@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,16 +31,18 @@ func newWorkerStoreTest(t *testing.T) (*SQLiteStore, *Session) {
 	return store, coordinator
 }
 
-func TestWorkerMigration47CreatesSeparateEdgesAndMailbox(t *testing.T) {
-	if schemaVersion != 47 {
-		t.Fatalf("schemaVersion = %d, want 47", schemaVersion)
+func TestWorkerMigrationsCreateSeparateEdgesMailboxAndOwnership(t *testing.T) {
+	if schemaVersion != 48 {
+		t.Fatalf("schemaVersion = %d, want 48", schemaVersion)
 	}
-	found := false
+	found47 := false
+	found48 := false
 	for _, migration := range migrations {
-		found = found || migration.version == 47
+		found47 = found47 || migration.version == 47
+		found48 = found48 || migration.version == 48
 	}
-	if !found {
-		t.Fatal("migration 47 missing")
+	if !found47 || !found48 {
+		t.Fatalf("worker migrations missing: v47=%v v48=%v", found47, found48)
 	}
 
 	path := filepath.Join(t.TempDir(), "legacy.db")
@@ -65,6 +70,47 @@ func TestWorkerMigration47CreatesSeparateEdgesAndMailbox(t *testing.T) {
 		if err := upgraded.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
 			t.Fatalf("table %s missing: %v", table, err)
 		}
+	}
+	var ownerColumn string
+	if err := upgraded.db.QueryRow(`SELECT name FROM pragma_table_info('session_workers') WHERE name = 'owner_id'`).Scan(&ownerColumn); err != nil {
+		t.Fatalf("worker owner column missing: %v", err)
+	}
+}
+
+func TestWorkerMigration48AddsOwnerToVersion47Table(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version47.db")
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE session_worker_reports`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE session_workers`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TABLE session_workers (
+		child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+		coordinator_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+		task TEXT NOT NULL, status TEXT NOT NULL, job_id TEXT, run_id TEXT,
+		created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, finished_at TIMESTAMP
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE schema_version SET version = 47`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := NewSQLiteStore(Config{Enabled: true, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var ownerColumn string
+	if err := upgraded.db.QueryRow(`SELECT name FROM pragma_table_info('session_workers') WHERE name = 'owner_id'`).Scan(&ownerColumn); err != nil {
+		t.Fatalf("migration 48 owner column missing: %v", err)
 	}
 }
 
@@ -115,6 +161,39 @@ func TestWorkerPreventsConflictingActiveSharedCWD(t *testing.T) {
 		t.Fatalf("shared-workspace worker error = %v", err)
 	}
 
+	linkedRoot := t.TempDir()
+	linkedCWD := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(linkedRoot, linkedCWD); err == nil {
+		linked := sameWorkspace
+		linked.ID = "linked-workspace"
+		linked.Name = "linked workspace"
+		linked.CWD = linkedCWD
+		linked.CreatedAt = time.Now()
+		linked.UpdatedAt = linked.CreatedAt
+		if err := store.Create(context.Background(), &linked); err != nil {
+			t.Fatal(err)
+		}
+		real := sameWorkspace
+		real.ID = "real-linked-workspace"
+		real.Name = "real linked workspace"
+		real.CWD = linkedRoot
+		real.CreatedAt = time.Now()
+		real.UpdatedAt = real.CreatedAt
+		if err := store.Create(context.Background(), &real); err != nil {
+			t.Fatal(err)
+		}
+		linkedEdge, err := store.CreateWorker(context.Background(), linked.ID, "linked owner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpdateWorkerStatus(context.Background(), linkedEdge.ChildSessionID, WorkerRunning); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CreateWorker(context.Background(), real.ID, "canonical conflict"); err == nil || !strings.Contains(err.Error(), "workspace") {
+			t.Fatalf("symlink-equivalent workspace error = %v", err)
+		}
+	}
+
 	isolated := sameWorkspace
 	isolated.ID = "isolated-workspace"
 	isolated.Name = "isolated workspace"
@@ -145,6 +224,18 @@ func TestWorkerReportsAreBoundedImmutableAndImportedAsUser(t *testing.T) {
 	}
 	if report.Sequence != 0 || report.ID == 0 {
 		t.Fatalf("report identity = %#v", report)
+	}
+	duplicate, err := store.AddWorkerReport(context.Background(), WorkerReport{
+		ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+		DestinationSessionID: coordinator.ID, Kind: WorkerReportResult,
+		Title: "Duplicate terminal", Body: "must not be appended",
+	})
+	if err != nil || duplicate.ID != report.ID {
+		t.Fatalf("duplicate terminal result = %#v, %v", duplicate, err)
+	}
+	terminalReports, err := store.ListWorkerReports(context.Background(), edge.ChildSessionID)
+	if err != nil || len(terminalReports) != 1 {
+		t.Fatalf("terminal result cardinality = %#v, %v", terminalReports, err)
 	}
 	if unread, err := store.CountUnreadWorkerReports(context.Background(), coordinator.ID); err != nil || unread != 1 {
 		t.Fatalf("unread = %d, %v", unread, err)
@@ -190,6 +281,103 @@ func TestWorkerReportsAreBoundedImmutableAndImportedAsUser(t *testing.T) {
 	messages, _ = store.GetMessages(context.Background(), coordinator.ID, 0, 0)
 	if len(messages) != 0 {
 		t.Fatalf("reimport after deletion duplicated transcript: %#v", messages)
+	}
+}
+
+func TestWorkerReportImportJoinsCompactedCoordinatorActiveContext(t *testing.T) {
+	ctx := context.Background()
+	store, coordinator := newWorkerStoreTest(t)
+	if err := store.AddMessage(ctx, coordinator.ID, NewMessage(coordinator.ID, llm.UserText("old question"), -1)); err != nil {
+		t.Fatal(err)
+	}
+	summary := NewMessage(coordinator.ID, llm.UserText("[Context Compaction]\nsummary"), -1)
+	ack := NewMessage(coordinator.ID, llm.AssistantText("I have the compacted context."), -1)
+	ack.CompactionTail = true
+	if err := store.CompactMessages(ctx, coordinator.ID, []Message{*summary, *ack}); err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := store.Get(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary := compacted.CompactionSeq
+
+	edge, err := store.CreateWorker(ctx, coordinator.ID, "compacted report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.AddWorkerReport(ctx, WorkerReport{
+		ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+		DestinationSessionID: coordinator.ID, Kind: WorkerReportResult,
+		Title: "After compaction", Body: "new worker evidence",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := store.ImportWorkerReport(ctx, report.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := store.Get(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.CompactionSeq != boundary || imported.Sequence < boundary {
+		t.Fatalf("import changed compaction boundary: boundary=%d session=%d import=%d", boundary, refreshed.CompactionSeq, imported.Sequence)
+	}
+	active, err := LoadActiveMessages(ctx, store, refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) == 0 || active[len(active)-1].ID != imported.ID || !strings.Contains(active[len(active)-1].TextContent, report.Body) {
+		t.Fatalf("compacted active context missing import: %#v", active)
+	}
+}
+
+func TestWorkerConcurrentTerminalResultsCollapseAndTerminalStateDoesNotReopen(t *testing.T) {
+	store, coordinator := newWorkerStoreTest(t)
+	edge, err := store.CreateWorker(context.Background(), coordinator.ID, "concurrent terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := store.AddWorkerReport(context.Background(), WorkerReport{
+				ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+				DestinationSessionID: coordinator.ID, Kind: WorkerReportResult,
+				Title: fmt.Sprintf("Result %d", i), Body: "terminal",
+			})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	reports, err := store.ListWorkerReports(context.Background(), edge.ChildSessionID)
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("terminal reports = %#v, %v", reports, err)
+	}
+	if err := store.UpdateWorkerStatus(context.Background(), edge.ChildSessionID, WorkerCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateWorkerStatus(context.Background(), edge.ChildSessionID, WorkerRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateWorkerStatus(context.Background(), edge.ChildSessionID, WorkerFailed); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.GetWorker(context.Background(), edge.ChildSessionID)
+	if err != nil || loaded.Status != WorkerCancelled {
+		t.Fatalf("terminal worker reopened/changed = %#v, %v", loaded, err)
 	}
 }
 

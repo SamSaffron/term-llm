@@ -234,17 +234,19 @@ var (
 )
 
 const (
-	jobsV2SchedulerMinDelay    = 100 * time.Millisecond
-	jobsV2SchedulerIdleDelay   = time.Minute
-	jobsV2SchedulerErrorDelay  = 200 * time.Millisecond
-	jobsV2WorkerMinDelay       = 100 * time.Millisecond
-	jobsV2WorkerIdleDelay      = time.Minute
-	jobsV2WorkerErrorDelay     = 200 * time.Millisecond
-	jobsV2FinishRunRetryWindow = 30 * time.Second
-	jobsV2FinishRunRetryDelay  = 50 * time.Millisecond
-	jobsV2FinishRunMaxDelay    = time.Second
-	jobsV2LeaseDuration        = 30 * time.Second
-	jobsV2HeartbeatInterval    = 5 * time.Second
+	jobsV2SchedulerMinDelay      = 100 * time.Millisecond
+	jobsV2SchedulerIdleDelay     = time.Minute
+	jobsV2SchedulerErrorDelay    = 200 * time.Millisecond
+	jobsV2WorkerMinDelay         = 100 * time.Millisecond
+	jobsV2WorkerIdleDelay        = time.Minute
+	jobsV2WorkerErrorDelay       = 200 * time.Millisecond
+	jobsV2FinishRunRetryWindow   = 30 * time.Second
+	jobsV2FinishRunRetryDelay    = 50 * time.Millisecond
+	jobsV2FinishRunMaxDelay      = time.Second
+	jobsV2LeaseDuration          = 30 * time.Second
+	jobsV2HeartbeatInterval      = 5 * time.Second
+	threadOwnerLeaseDuration     = 15 * time.Second
+	threadOwnerHeartbeatInterval = 3 * time.Second
 )
 
 type jobsV2ProgramConfig = jobs.ProgramConfig
@@ -593,6 +595,12 @@ CREATE TABLE IF NOT EXISTS job_run_events_v2 (
 
 CREATE INDEX IF NOT EXISTS idx_job_run_events_v2_run_id_id ON job_run_events_v2(run_id, id);
 DROP INDEX IF EXISTS idx_job_run_events_v2_run_id;
+
+CREATE TABLE IF NOT EXISTS thread_worker_owners_v1 (
+	owner_id TEXT PRIMARY KEY,
+	lease_expires_at INTEGER NOT NULL,
+	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*jobsV2Manager, error) {
@@ -698,6 +706,13 @@ func newJobsV2ManagerConfigured(dbPath string, workers int, llmExec serveJobsExe
 		notifyCtx:     notifyCtx,
 		notifyCancel:  notifyCancel,
 	}
+	if claimThreadWorkers {
+		if err := mgr.refreshThreadOwnerLease(); err != nil {
+			notifyCancel()
+			_ = db.Close()
+			return nil, fmt.Errorf("register thread worker owner: %w", err)
+		}
+	}
 
 	if err := mgr.recoverRuns(); err != nil {
 		notifyCancel()
@@ -714,6 +729,10 @@ func newJobsV2ManagerConfigured(dbPath string, workers int, llmExec serveJobsExe
 		mgr.wg.Add(1)
 		go mgr.schedulerLoop()
 	}
+	if claimThreadWorkers {
+		mgr.wg.Add(1)
+		go mgr.threadOwnerHeartbeatLoop()
+	}
 	for i := 0; i < mgr.workers; i++ {
 		mgr.wg.Add(1)
 		go mgr.workerLoop()
@@ -722,13 +741,19 @@ func newJobsV2ManagerConfigured(dbPath string, workers int, llmExec serveJobsExe
 	return mgr, nil
 }
 
-// newThreadWorkerJobsV2Manager reuses the jobs-v2 manager and database while
-// partitioning claims to durable /thread jobs. Ordinary serve managers exclude
-// that label, so neither runner can steal work requiring different approval and
-// mailbox wiring.
+// newThreadWorkerJobsV2Manager uses a dedicated database. This is a protocol
+// boundary, not just a claim convention: pre-upgrade serve-jobs processes that
+// have the ordinary jobs_v2.db open cannot claim or blanket-fail chat workers.
 func newThreadWorkerJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
 	if workers <= 0 {
 		workers = 1
+	}
+	if strings.TrimSpace(dbPath) == "" {
+		dataDir, err := session.GetDataDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve thread jobs data dir: %w", err)
+		}
+		dbPath = filepath.Join(dataDir, "thread_jobs_v2.db")
 	}
 	return newJobsV2ManagerConfigured(dbPath, workers, llmExec, notifyDone, true, false)
 }
@@ -747,13 +772,57 @@ func execJobsV2Schema(db *sql.DB) error {
 	return nil
 }
 
+func (m *jobsV2Manager) refreshThreadOwnerLease() error {
+	if m == nil || !m.claimThreadWorkers {
+		return nil
+	}
+	_, err := m.db.Exec(`
+		INSERT INTO thread_worker_owners_v1 (owner_id, lease_expires_at, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(owner_id) DO UPDATE SET lease_expires_at = excluded.lease_expires_at, updated_at = CURRENT_TIMESTAMP`,
+		m.workerID, time.Now().UTC().Add(threadOwnerLeaseDuration).UnixMilli())
+	return err
+}
+
+func (m *jobsV2Manager) threadOwnerHeartbeatLoop() {
+	defer m.wg.Done()
+	ticker := time.NewTicker(threadOwnerHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.doneChan():
+			return
+		case <-ticker.C:
+			if err := m.refreshThreadOwnerLease(); err != nil {
+				log.Printf("jobs v2: refresh thread owner lease: %v", err)
+			}
+		}
+	}
+}
+
+func (m *jobsV2Manager) threadOwnerLive(ownerID string) (bool, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return false, nil
+	}
+	var expires int64
+	err := m.db.QueryRow(`SELECT lease_expires_at FROM thread_worker_owners_v1 WHERE owner_id = ?`, ownerID).Scan(&expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return expires > time.Now().UTC().UnixMilli(), nil
+}
+
 func (m *jobsV2Manager) recoverRuns() error {
 	now := time.Now().UTC()
 	leaseCutoff := now.UnixMilli()
 	predicate, predicateArgs := m.threadWorkerClaimPredicate("j")
-	queryArgs := []any{jobsV2RunClaimed, jobsV2RunRunning, leaseCutoff}
+	queryArgs := []any{jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested, leaseCutoff}
 	queryArgs = append(queryArgs, predicateArgs...)
-	rows, err := m.db.Query(`SELECT r.id, r.job_id, r.attempt, r.trigger, r.scheduled_for, r.status, r.worker_id, r.session_id, r.started_at, r.finished_at, r.exit_code, r.error, r.stdout, r.stderr, r.thinking, r.response, r.exit_reason, r.truncated, r.turn_count, r.input_tokens, r.output_tokens, r.created_at, r.updated_at FROM job_runs_v2 r JOIN jobs_v2 j ON j.id = r.job_id WHERE r.status IN (?, ?) AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= ?) AND `+predicate+` ORDER BY r.created_at ASC`, queryArgs...)
+	rows, err := m.db.Query(`SELECT r.id, r.job_id, r.attempt, r.trigger, r.scheduled_for, r.status, r.worker_id, r.session_id, r.started_at, r.finished_at, r.exit_code, r.error, r.stdout, r.stderr, r.thinking, r.response, r.exit_reason, r.truncated, r.turn_count, r.input_tokens, r.output_tokens, r.created_at, r.updated_at FROM job_runs_v2 r JOIN jobs_v2 j ON j.id = r.job_id WHERE r.status IN (?, ?, ?) AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= ?) AND `+predicate+` ORDER BY r.created_at ASC`, queryArgs...)
 	if err != nil {
 		return fmt.Errorf("load expired interrupted runs: %w", err)
 	}
@@ -775,26 +844,12 @@ func (m *jobsV2Manager) recoverRuns() error {
 		return fmt.Errorf("close interrupted runs query: %w", err)
 	}
 
-	cancelArgs := []any{jobsV2RunCancelled, exitReasonCancelled, jobsV2RunCancelRequested, leaseCutoff}
-	cancelArgs = append(cancelArgs, predicateArgs...)
-	if _, err := m.db.Exec(`
-		UPDATE job_runs_v2
-		SET status = ?,
-			finished_at = CURRENT_TIMESTAMP,
-			exit_reason = ?,
-			lease_expires_at = NULL,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-		  AND job_id IN (SELECT j.id FROM jobs_v2 j WHERE `+predicate+`)`, cancelArgs...); err != nil {
-		return fmt.Errorf("recover expired cancel requested runs: %w", err)
-	}
-
 	for _, run := range interrupted {
-		// Claim recovery ownership with a compare-and-swap. A live manager keeps
-		// extending its lease, so another manager starting on the same database
-		// cannot fail or steal that run.
-		res, err := m.db.Exec(`UPDATE job_runs_v2 SET worker_id = ?, lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?) AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
-			m.workerID, now.Add(jobsV2LeaseDuration).UnixMilli(), run.ID, jobsV2RunClaimed, jobsV2RunRunning, leaseCutoff)
+		// Recovery never re-executes a claimed/running run: its side effects may
+		// already have happened. It only claims terminalization ownership.
+		res, err := m.db.Exec(`UPDATE job_runs_v2 SET worker_id = ?, lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?) AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+			m.workerID, now.Add(jobsV2LeaseDuration).UnixMilli(), run.ID,
+			jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested, leaseCutoff)
 		if err != nil {
 			return fmt.Errorf("claim interrupted run %s for recovery: %w", run.ID, err)
 		}
@@ -806,19 +861,20 @@ func (m *jobsV2Manager) recoverRuns() error {
 			exitCode = *run.ExitCode
 		}
 		result := jobsV2RunResult{
-			ExitCode:     exitCode,
-			Stdout:       run.Stdout,
-			Stderr:       run.Stderr,
-			Thinking:     run.Thinking,
-			Response:     run.Response,
-			SessionID:    run.SessionID,
-			ExitReason:   exitReasonWorkerLost,
-			Truncated:    run.Truncated,
-			TurnCount:    run.TurnCount,
-			InputTokens:  run.InputTokens,
-			OutputTokens: run.OutputTokens,
+			ExitCode: exitCode, Stdout: run.Stdout, Stderr: run.Stderr,
+			Thinking: run.Thinking, Response: run.Response, SessionID: run.SessionID,
+			Truncated: run.Truncated, TurnCount: run.TurnCount,
+			InputTokens: run.InputTokens, OutputTokens: run.OutputTokens,
 		}
-		if err := m.finishRun(run.ID, jobsV2RunFailed, result, errors.New("worker lost before run could finish"), run.Attempt); err != nil {
+		status := jobsV2RunFailed
+		runErr := errors.New("worker lost before run could finish")
+		result.ExitReason = exitReasonWorkerLost
+		if run.Status == jobsV2RunCancelRequested {
+			status = jobsV2RunCancelled
+			runErr = context.Canceled
+			result.ExitReason = exitReasonCancelled
+		}
+		if err := m.finishRun(run.ID, status, result, runErr, run.Attempt); err != nil {
 			return fmt.Errorf("recover interrupted run %s: %w", run.ID, err)
 		}
 	}
@@ -962,6 +1018,9 @@ func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
 	case <-waitDone:
 		if m.notifyCancel != nil {
 			m.notifyCancel()
+		}
+		if m.claimThreadWorkers {
+			_, _ = m.db.Exec(`DELETE FROM thread_worker_owners_v1 WHERE owner_id = ?`, m.workerID)
 		}
 		return m.db.Close()
 	case <-ctx.Done():
@@ -1206,6 +1265,12 @@ func (m *jobsV2Manager) workerLoop() {
 		default:
 		}
 
+		if err := m.recoverRuns(); err != nil {
+			if !m.waitForWorkerWake(jobsV2WorkerErrorDelay) {
+				return
+			}
+			continue
+		}
 		run, ok, err := m.claimNextRun()
 		if err != nil {
 			if !m.waitForWorkerWake(jobsV2WorkerErrorDelay) {
@@ -1254,7 +1319,11 @@ func (m *jobsV2Manager) threadWorkerClaimPredicate(jobAlias string) (string, []a
 	}
 	expr := fmt.Sprintf("CASE WHEN json_valid(%[1]slabels) THEN COALESCE(json_extract(%[1]slabels, ?), '') ELSE '' END", jobAlias)
 	if m.claimThreadWorkers {
-		return expr + " = ?", []any{"$." + threadWorkerLabelKey, threadWorkerLabelValue}
+		ownerExpr := fmt.Sprintf("CASE WHEN json_valid(%[1]slabels) THEN COALESCE(json_extract(%[1]slabels, ?), '') ELSE '' END", jobAlias)
+		return expr + " = ? AND " + ownerExpr + " = ?", []any{
+			"$." + threadWorkerLabelKey, threadWorkerLabelValue,
+			"$." + threadWorkerOwnerLabelKey, m.workerID,
+		}
 	}
 	// Ordinary serve managers claim every non-thread job, including legacy rows
 	// whose labels column is NULL.
@@ -1278,6 +1347,18 @@ func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, 
 	}
 	if err == nil && nextRun.Valid {
 		delay = minDuration(delay, nextRun.Time.UTC().Sub(now.UTC()))
+	}
+
+	leaseArgs := []any{jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested}
+	leaseArgs = append(leaseArgs, predicateArgs...)
+	var nextLease sql.NullInt64
+	err = m.db.QueryRow(`SELECT MIN(r.lease_expires_at) FROM job_runs_v2 r JOIN jobs_v2 j ON j.id = r.job_id WHERE r.status IN (?, ?, ?) AND r.lease_expires_at IS NOT NULL AND `+predicate, leaseArgs...).Scan(&nextLease)
+	if err != nil {
+		return 0, err
+	}
+	if nextLease.Valid {
+		leaseTime := time.UnixMilli(nextLease.Int64).UTC()
+		delay = minDuration(delay, leaseTime.Sub(now.UTC()))
 	}
 
 	return clampJobsV2Delay(delay, jobsV2WorkerMinDelay, idleDelay), nil

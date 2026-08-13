@@ -188,7 +188,10 @@ func TestJobsV2ClaimPartitionKeepsThreadWorkersOnWorkerRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	threadLabels, _ := json.Marshal(map[string]string{threadWorkerLabelKey: threadWorkerLabelValue})
+	threadLabels, _ := json.Marshal(map[string]string{
+		threadWorkerLabelKey:      threadWorkerLabelValue,
+		threadWorkerOwnerLabelKey: mgr.workerID,
+	})
 	thread, err := mgr.CreateJob(jobsV2Job{
 		Name: "thread", Enabled: true, RunnerType: jobsV2RunnerProgram,
 		RunnerConfig: json.RawMessage(`{"command":"echo"}`), TriggerType: jobsV2TriggerManual, TriggerConfig: json.RawMessage(`{}`), Labels: threadLabels,

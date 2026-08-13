@@ -32,11 +32,19 @@ type WorkerStartResult struct {
 	RunID string
 }
 
+type WorkerCancelRequest struct {
+	ChildSessionID       string
+	CoordinatorSessionID string
+	RunID                string
+}
+
 // WorkerController is implemented by cmd so the TUI does not depend on the
 // jobs-v2 HTTP/server package.
 type WorkerController interface {
+	OwnerID() string
 	StartWorker(context.Context, WorkerStartRequest) (WorkerStartResult, error)
-	CancelWorker(context.Context, string) error
+	CancelWorker(context.Context, WorkerCancelRequest) error
+	ReconcileWorkers(context.Context, string) error
 }
 
 type workerMailboxPollMsg struct {
@@ -88,9 +96,17 @@ func (m *Model) workerMailboxPollCmd() tea.Cmd {
 		return nil
 	}
 	sessionID := m.sess.ID
+	controller := m.workerController
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {
 		edge, edgeErr := workerStore.GetWorker(context.Background(), sessionID)
 		coordinatorID := sessionID
+		if edgeErr == nil {
+			coordinatorID = edge.CoordinatorSessionID
+		}
+		if controller != nil {
+			_ = controller.ReconcileWorkers(context.Background(), coordinatorID)
+			edge, edgeErr = workerStore.GetWorker(context.Background(), sessionID)
+		}
 		var edgePtr *session.WorkerEdge
 		if edgeErr == nil {
 			edgeCopy := edge
@@ -111,15 +127,11 @@ func (m *Model) handleWorkerMailboxPoll(msg workerMailboxPollMsg) tea.Cmd {
 
 func recordWorkerStartFailure(workerStore session.WorkerStore, edge session.WorkerEdge, title string, startErr error) {
 	ctx := context.Background()
-	_ = workerStore.UpdateWorkerStatus(ctx, edge.ChildSessionID, session.WorkerFailed)
-	if hasResult, err := workerStore.HasWorkerReportKind(ctx, edge.ChildSessionID, session.WorkerReportResult); err == nil && hasResult {
-		return
-	}
 	body := "Worker execution could not be started."
 	if startErr != nil {
 		body = startErr.Error()
 	}
-	_, _ = workerStore.AddWorkerReport(ctx, session.WorkerReport{
+	_ = workerStore.FinishWorker(ctx, edge.ChildSessionID, session.WorkerFailed, session.WorkerReport{
 		ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
 		DestinationSessionID: edge.CoordinatorSessionID, Kind: session.WorkerReportResult,
 		Title: title, Body: body, Origin: "terminal_synthesis",
@@ -138,6 +150,9 @@ func (m *Model) cmdThread(task string) (tea.Model, tea.Cmd) {
 	if m.store == nil || m.sess == nil {
 		return m.showFooterError("A stored coordinator session is required.")
 	}
+	if m.transcriptMutationBusy() {
+		return m.showFooterWarning("Cannot start a worker while conversation work is active.")
+	}
 	workerStore, ok := session.AsWorkerStore(m.store)
 	if !ok {
 		return m.showFooterError("Session storage does not support durable workers.")
@@ -148,7 +163,7 @@ func (m *Model) cmdThread(task string) (tea.Model, tea.Cmd) {
 		return m.showFooterError(fmt.Sprintf("Check worker identity: %v", err))
 	}
 
-	edge, err := workerStore.CreateWorker(m.rootContext(), m.sess.ID, task)
+	edge, err := workerStore.CreateWorkerOwned(m.rootContext(), m.sess.ID, m.workerController.OwnerID(), task)
 	if err != nil {
 		return m.showFooterWarning(fmt.Sprintf("Start worker: %v", err))
 	}
@@ -167,7 +182,9 @@ func (m *Model) cmdThread(task string) (tea.Model, tea.Cmd) {
 		return m.showFooterError(fmt.Sprintf("Start worker execution: %v", err))
 	}
 	if err := workerStore.SetWorkerExecution(context.Background(), edge.ChildSessionID, result.JobID, result.RunID); err != nil {
-		_ = m.workerController.CancelWorker(context.Background(), result.RunID)
+		_ = m.workerController.CancelWorker(context.Background(), WorkerCancelRequest{
+			ChildSessionID: edge.ChildSessionID, CoordinatorSessionID: edge.CoordinatorSessionID, RunID: result.RunID,
+		})
 		recordWorkerStartFailure(workerStore, edge, "Worker execution could not be saved", err)
 		return m.showFooterError(fmt.Sprintf("Save worker execution: %v", err))
 	}
@@ -247,8 +264,8 @@ func (m *Model) openWorkerReports(childSessionID string) (tea.Model, tea.Cmd) {
 	m.workerTreeSelection = &edge
 	m.workerReportChoices = make(map[int64]session.WorkerReport, len(reports))
 	items := []DialogItem{{ID: "worker-open:" + childSessionID, Label: "Open worker session", Description: "Running workers open read-only"}}
-	if edge.Status.Active() && edge.RunID != "" {
-		items = append(items, DialogItem{ID: "worker-cancel:" + childSessionID, Label: "Cancel worker", Description: "Request jobs-v2 cancellation"})
+	if edge.Status.Active() {
+		items = append(items, DialogItem{ID: "worker-cancel:" + childSessionID, Label: "Cancel or reconcile worker", Description: "Safely cancel execution or clear a stale active edge"})
 	}
 	for i := len(reports) - 1; i >= 0; i-- {
 		report := reports[i]
@@ -277,7 +294,11 @@ func (m *Model) handleWorkerReportsSelection(id string) (tea.Model, tea.Cmd) {
 		if m.workerTreeSelection == nil || m.workerController == nil {
 			return m.showFooterError("Worker cancellation is unavailable.")
 		}
-		if err := m.workerController.CancelWorker(m.rootContext(), m.workerTreeSelection.RunID); err != nil {
+		if err := m.workerController.CancelWorker(m.rootContext(), WorkerCancelRequest{
+			ChildSessionID:       m.workerTreeSelection.ChildSessionID,
+			CoordinatorSessionID: m.workerTreeSelection.CoordinatorSessionID,
+			RunID:                m.workerTreeSelection.RunID,
+		}); err != nil {
 			return m.showFooterError(fmt.Sprintf("Cancel worker: %v", err))
 		}
 		return m.showFooterMuted("Worker cancellation requested.")
@@ -306,6 +327,9 @@ func (m *Model) handleWorkerReportsSelection(id string) (tea.Model, tea.Cmd) {
 func (m *Model) importPendingWorkerReport() (tea.Model, tea.Cmd) {
 	if m.pendingWorkerReport == nil {
 		return m, nil
+	}
+	if m.transcriptMutationBusy() {
+		return m.showFooterWarning("Cannot import a worker report while conversation work is active.")
 	}
 	workerStore, ok := session.AsWorkerStore(m.store)
 	if !ok {

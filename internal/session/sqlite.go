@@ -191,6 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_session_branches_parent
 CREATE TABLE IF NOT EXISTS session_workers (
     child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     coordinator_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL DEFAULT '',
     task TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'done', 'failed', 'cancelled')),
     job_id TEXT,
@@ -423,7 +424,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 47
+const schemaVersion = 48
 
 // migration represents a schema migration.
 type migration struct {
@@ -1391,6 +1392,33 @@ var migrations = []migration{
 				}
 			}
 			return nil
+		},
+	},
+	{
+		version:     48,
+		description: "add durable worker runtime ownership",
+		up: func(db schemaExecutor) error {
+			rows, err := db.Query(`PRAGMA table_info(session_workers)`)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var cid, notNull, primaryKey int
+				var name, columnType string
+				var defaultValue any
+				if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+					return err
+				}
+				if name == "owner_id" {
+					return nil
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			_, err = db.Exec(`ALTER TABLE session_workers ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`)
+			return err
 		},
 	},
 }

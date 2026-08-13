@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +24,27 @@ func (s *SQLiteStore) requireWorkers() error {
 // edge in one immediate transaction. Runtime settings and non-yolo workspace
 // grants are inherited, but no transcript or provider state is copied.
 func (s *SQLiteStore) CreateWorker(ctx context.Context, coordinatorSessionID, task string) (WorkerEdge, error) {
+	return s.CreateWorkerOwned(ctx, coordinatorSessionID, "", task)
+}
+
+func canonicalWorkerCWD(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return filepath.Clean(path)
+}
+
+// CreateWorkerOwned records the embedded chat runtime that owns the worker so
+// another live chat cannot claim or clear it. A later runtime may explicitly
+// adopt the edge after the owner's durable lease expires.
+func (s *SQLiteStore) CreateWorkerOwned(ctx context.Context, coordinatorSessionID, ownerID, task string) (WorkerEdge, error) {
 	if err := s.requireWorkers(); err != nil {
 		return WorkerEdge{}, err
 	}
@@ -50,25 +72,40 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, coordinatorSessionID, ta
 			_ = conn.Close()
 		}()
 
-		var active int
-		if err := conn.QueryRowContext(ctx, `
-			SELECT COUNT(1)
+		var coordinatorCWD string
+		if err := conn.QueryRowContext(ctx, `SELECT COALESCE(cwd, '') FROM sessions WHERE id = ?`, coordinatorSessionID).Scan(&coordinatorCWD); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("load coordinator workspace: %w", err)
+		}
+		coordinatorCWD = canonicalWorkerCWD(coordinatorCWD)
+		rows, err := conn.QueryContext(ctx, `
+			SELECT w.coordinator_session_id, COALESCE(child.cwd, '')
 			FROM session_workers w
 			JOIN sessions child ON child.id = w.child_session_id
-			WHERE w.status IN (?, ?, ?)
-			  AND (
-				w.coordinator_session_id = ?
-				OR (
-					NULLIF(TRIM(child.cwd), '') IS NOT NULL
-					AND NULLIF(TRIM(child.cwd), '') = (
-						SELECT NULLIF(TRIM(cwd), '') FROM sessions WHERE id = ?
-					)
-				)
-			  )`,
-			WorkerQueued, WorkerRunning, WorkerBlocked, coordinatorSessionID, coordinatorSessionID).Scan(&active); err != nil {
+			WHERE w.status IN (?, ?, ?)`, WorkerQueued, WorkerRunning, WorkerBlocked)
+		if err != nil {
 			return fmt.Errorf("check active workers: %w", err)
 		}
-		if active > 0 {
+		conflict := false
+		for rows.Next() {
+			var activeCoordinator, activeCWD string
+			if err := rows.Scan(&activeCoordinator, &activeCWD); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan active worker: %w", err)
+			}
+			conflict = conflict || activeCoordinator == coordinatorSessionID ||
+				(coordinatorCWD != "" && canonicalWorkerCWD(activeCWD) == coordinatorCWD)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan active workers: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close active workers: %w", err)
+		}
+		if conflict {
 			return fmt.Errorf("a worker is already active for this coordinator or workspace; wait, cancel it in /tree, or use an isolated worktree")
 		}
 
@@ -104,8 +141,8 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, coordinatorSessionID, ta
 		}
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO session_workers (
-				child_session_id, coordinator_session_id, task, status, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?)`, childID, coordinatorSessionID, task, WorkerQueued, now, now); err != nil {
+				child_session_id, coordinator_session_id, owner_id, task, status, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?)`, childID, coordinatorSessionID, strings.TrimSpace(ownerID), task, WorkerQueued, now, now); err != nil {
 			return fmt.Errorf("create worker edge: %w", err)
 		}
 		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -113,7 +150,7 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, coordinatorSessionID, ta
 		}
 		committed = true
 		edge = WorkerEdge{
-			ChildSessionID: childID, CoordinatorSessionID: coordinatorSessionID,
+			ChildSessionID: childID, CoordinatorSessionID: coordinatorSessionID, OwnerID: strings.TrimSpace(ownerID),
 			Task: task, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now,
 		}
 		return nil
@@ -137,6 +174,21 @@ func (s *SQLiteStore) SetWorkerExecution(ctx context.Context, childSessionID, jo
 	return nil
 }
 
+func (s *SQLiteStore) SetWorkerOwner(ctx context.Context, childSessionID, oldOwnerID, newOwnerID string) (bool, error) {
+	if err := s.requireWorkers(); err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE session_workers SET owner_id = ?
+		WHERE child_session_id = ? AND owner_id = ?`, strings.TrimSpace(newOwnerID),
+		strings.TrimSpace(childSessionID), strings.TrimSpace(oldOwnerID))
+	if err != nil {
+		return false, fmt.Errorf("set worker owner: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
+}
+
 func (s *SQLiteStore) UpdateWorkerStatus(ctx context.Context, childSessionID string, status WorkerStatus) error {
 	if err := s.requireWorkers(); err != nil {
 		return err
@@ -154,18 +206,42 @@ func (s *SQLiteStore) UpdateWorkerStatus(ctx context.Context, childSessionID str
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE session_workers SET status = ?, updated_at = ?,
 			finished_at = CASE WHEN ? IS NULL THEN finished_at ELSE ? END
-		WHERE child_session_id = ?`, status, now, finished, finished, strings.TrimSpace(childSessionID))
+		WHERE child_session_id = ? AND status NOT IN (?, ?, ?)`, status, now, finished, finished,
+		strings.TrimSpace(childSessionID), WorkerDone, WorkerFailed, WorkerCancelled)
 	if err != nil {
 		return fmt.Errorf("update worker status: %w", err)
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
-		return ErrNotFound
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM session_workers WHERE child_session_id = ?`, strings.TrimSpace(childSessionID)).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return fmt.Errorf("check worker status target: %w", err)
+		}
 	}
 	return nil
 }
 
+// FinishWorker is idempotent: result insertion collapses concurrent terminal
+// synthesis to one immutable result, then the edge advances to a terminal state.
+func (s *SQLiteStore) FinishWorker(ctx context.Context, childSessionID string, status WorkerStatus, report WorkerReport) error {
+	if !status.Terminal() {
+		return fmt.Errorf("worker finish status %q is not terminal", status)
+	}
+	if strings.TrimSpace(report.ChildSessionID) == "" {
+		report.ChildSessionID = strings.TrimSpace(childSessionID)
+	}
+	if report.Kind != WorkerReportResult {
+		return fmt.Errorf("worker finish report must be a result")
+	}
+	if _, err := s.AddWorkerReport(ctx, report); err != nil {
+		return err
+	}
+	return s.UpdateWorkerStatus(ctx, childSessionID, status)
+}
+
 const workerEdgeSelect = `
-	SELECT w.child_session_id, w.coordinator_session_id, w.task, w.status,
+	SELECT w.child_session_id, w.coordinator_session_id, COALESCE(w.owner_id, ''), w.task, w.status,
 	       COALESCE(w.job_id, ''), COALESCE(w.run_id, ''),
 	       (SELECT COUNT(1) FROM session_worker_reports r
 	        WHERE r.child_session_id = w.child_session_id AND r.read_at IS NULL),
@@ -176,7 +252,7 @@ func scanWorkerEdge(scanner interface{ Scan(...any) error }) (WorkerEdge, error)
 	var edge WorkerEdge
 	var status string
 	var finished sql.NullTime
-	if err := scanner.Scan(&edge.ChildSessionID, &edge.CoordinatorSessionID, &edge.Task, &status,
+	if err := scanner.Scan(&edge.ChildSessionID, &edge.CoordinatorSessionID, &edge.OwnerID, &edge.Task, &status,
 		&edge.JobID, &edge.RunID, &edge.UnreadReports, &edge.CreatedAt, &edge.UpdatedAt, &finished); err != nil {
 		return WorkerEdge{}, err
 	}
@@ -252,6 +328,20 @@ func (s *SQLiteStore) AddWorkerReport(ctx context.Context, report WorkerReport) 
 		}
 		if report.SourceSessionID != report.ChildSessionID || report.DestinationSessionID != coordinator {
 			return fmt.Errorf("worker report route does not match durable worker edge")
+		}
+		if report.Kind == WorkerReportResult {
+			existing, err := scanWorkerReport(conn.QueryRowContext(ctx, workerReportSelect+` WHERE child_session_id = ? AND kind = ? ORDER BY sequence, id LIMIT 1`, report.ChildSessionID, WorkerReportResult))
+			if err == nil {
+				report = existing
+				if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+					return err
+				}
+				committed = true
+				return nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("check existing worker result: %w", err)
+			}
 		}
 		if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), -1) + 1 FROM session_worker_reports WHERE child_session_id = ?`, report.ChildSessionID).Scan(&report.Sequence); err != nil {
 			return fmt.Errorf("allocate worker report sequence: %w", err)
@@ -445,13 +535,4 @@ func (s *SQLiteStore) CountUnreadWorkerReports(ctx context.Context, coordinatorS
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM session_worker_reports WHERE destination_session_id = ? AND read_at IS NULL`, strings.TrimSpace(coordinatorSessionID)).Scan(&count)
 	return count, err
-}
-
-func (s *SQLiteStore) HasWorkerReportKind(ctx context.Context, childSessionID string, kind WorkerReportKind) (bool, error) {
-	if err := s.requireWorkers(); err != nil {
-		return false, err
-	}
-	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM session_worker_reports WHERE child_session_id = ? AND kind = ?`, strings.TrimSpace(childSessionID), kind).Scan(&count)
-	return count > 0, err
 }

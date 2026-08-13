@@ -683,7 +683,10 @@ func TestJobsV2ThreadCloseAllowsTerminalNotification(t *testing.T) {
 		<-ctx.Done()
 		return jobsV2RunResult{}, ctx.Err()
 	})
-	labels, _ := json.Marshal(map[string]string{threadWorkerLabelKey: threadWorkerLabelValue})
+	labels, _ := json.Marshal(map[string]string{
+		threadWorkerLabelKey:      threadWorkerLabelValue,
+		threadWorkerOwnerLabelKey: mgr.workerID,
+	})
 	job, err := mgr.CreateJob(jobsV2Job{
 		Name: "thread-notify-on-close", Enabled: true, RunnerType: jobsV2RunnerProgram,
 		RunnerConfig: json.RawMessage(`{"command":"ignored"}`), TriggerType: jobsV2TriggerManual,

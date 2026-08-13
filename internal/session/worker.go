@@ -57,6 +57,7 @@ var ErrWorkersUnsupported = errors.New("session: workers unsupported")
 type WorkerEdge struct {
 	ChildSessionID       string       `json:"child_session_id"`
 	CoordinatorSessionID string       `json:"coordinator_session_id"`
+	OwnerID              string       `json:"owner_id,omitempty"`
 	Task                 string       `json:"task"`
 	Status               WorkerStatus `json:"status"`
 	JobID                string       `json:"job_id,omitempty"`
@@ -89,8 +90,11 @@ type WorkerReport struct {
 // WorkerStore is the optional durable worker/mailbox capability.
 type WorkerStore interface {
 	CreateWorker(ctx context.Context, coordinatorSessionID, task string) (WorkerEdge, error)
+	CreateWorkerOwned(ctx context.Context, coordinatorSessionID, ownerID, task string) (WorkerEdge, error)
 	SetWorkerExecution(ctx context.Context, childSessionID, jobID, runID string) error
+	SetWorkerOwner(ctx context.Context, childSessionID, oldOwnerID, newOwnerID string) (bool, error)
 	UpdateWorkerStatus(ctx context.Context, childSessionID string, status WorkerStatus) error
+	FinishWorker(ctx context.Context, childSessionID string, status WorkerStatus, report WorkerReport) error
 	GetWorker(ctx context.Context, childSessionID string) (WorkerEdge, error)
 	ListWorkers(ctx context.Context, coordinatorSessionID string) ([]WorkerEdge, error)
 	AddWorkerReport(ctx context.Context, report WorkerReport) (WorkerReport, error)
@@ -98,7 +102,6 @@ type WorkerStore interface {
 	MarkWorkerReportRead(ctx context.Context, reportID int64) error
 	ImportWorkerReport(ctx context.Context, reportID int64) (*Message, error)
 	CountUnreadWorkerReports(ctx context.Context, coordinatorSessionID string) (int, error)
-	HasWorkerReportKind(ctx context.Context, childSessionID string, kind WorkerReportKind) (bool, error)
 }
 
 // AsWorkerStore resolves worker capability through the logging decorator.
