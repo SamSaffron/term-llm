@@ -293,6 +293,21 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
 }
 
+// NewProviderByNameNoRetry creates the same provider as NewProviderByName but
+// returns the underlying adapter without the production retry wrapper. It is
+// intended for controlled callers such as benchmarks where an implicit retry
+// would hide attempt boundaries and could reuse a now-cacheable payload.
+func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (Provider, error) {
+	provider, err := NewProviderByName(cfg, name, model)
+	if err != nil {
+		return nil, err
+	}
+	if retryProvider, ok := provider.(*RetryProvider); ok {
+		return retryProvider.inner, nil
+	}
+	return provider, nil
+}
+
 // NewFastProvider creates a lightweight provider instance for the specified provider key.
 // Resolution order:
 // 1. providers.<name>.fast_provider + fast_model

@@ -78,7 +78,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 			if !errors.Is(refreshErr, oauth.ErrChatGPTRefreshTokenInvalid) {
 				return nil, fmt.Errorf("token refresh failed: %w", refreshErr)
 			}
-			fmt.Println("Token refresh failed. Re-authentication required.")
+			fmt.Fprintln(os.Stderr, "Token refresh failed. Re-authentication required.")
 			creds, err = PromptForChatGPTAuth()
 			if err != nil {
 				return nil, err
@@ -131,7 +131,7 @@ func PromptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
 			"Run 'term-llm auth login chatgpt' interactively first to authenticate")
 	}
 
-	fmt.Println("ChatGPT provider requires authentication.")
+	fmt.Fprintln(os.Stderr, "ChatGPT provider requires authentication.")
 
 	// Wire Ctrl-C through to the full auth wait (device-code poll OR
 	// browser callback). The 15-minute cap matches the server-side
@@ -143,7 +143,7 @@ func PromptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
 
 	oauthCreds, err := runChatGPTDeviceCodeFlow(ctx)
 	if errors.Is(err, oauth.ErrChatGPTDeviceCodeNotEnabled) {
-		fmt.Println("(device-code login unavailable — falling back to browser flow)")
+		fmt.Fprintln(os.Stderr, "(device-code login unavailable — falling back to browser flow)")
 		oauthCreds, err = runChatGPTBrowserFlow(ctx)
 	}
 	if err != nil {
@@ -160,7 +160,7 @@ func PromptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
 		return nil, fmt.Errorf("failed to save credentials: %w", err)
 	}
 
-	fmt.Println("Authentication successful!")
+	fmt.Fprintln(os.Stderr, "Authentication successful!")
 	return creds, nil
 }
 
@@ -169,22 +169,22 @@ func runChatGPTDeviceCodeFlow(ctx context.Context) (*oauth.ChatGPTCredentials, e
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("\nTo sign in with ChatGPT:\n")
-	fmt.Printf("  1. Open this URL in any browser: %s\n", dc.VerificationURL)
-	fmt.Printf("  2. Enter this one-time code:     %s\n\n", dc.UserCode)
-	fmt.Print("Waiting for approval (Ctrl-C to cancel)...")
+	fmt.Fprint(os.Stderr, "\nTo sign in with ChatGPT:\n")
+	fmt.Fprintf(os.Stderr, "  1. Open this URL in any browser: %s\n", dc.VerificationURL)
+	fmt.Fprintf(os.Stderr, "  2. Enter this one-time code:     %s\n\n", dc.UserCode)
+	fmt.Fprint(os.Stderr, "Waiting for approval (Ctrl-C to cancel)...")
 
 	creds, err := oauth.AuthenticateChatGPTDevice(ctx, dc)
 	if err != nil {
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 		return nil, err
 	}
-	fmt.Println(" done!")
+	fmt.Fprintln(os.Stderr, " done!")
 	return creds, nil
 }
 
 func runChatGPTBrowserFlow(ctx context.Context) (*oauth.ChatGPTCredentials, error) {
-	fmt.Print("Press Enter to open browser and sign in with your ChatGPT account...")
+	fmt.Fprint(os.Stderr, "Press Enter to open browser and sign in with your ChatGPT account...")
 	if err := waitForEnterOrInterrupt(); err != nil {
 		return nil, err
 	}

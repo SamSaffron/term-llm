@@ -263,3 +263,21 @@ func TestOpenAICompatReasoningParserOptionsReadsExplicitConfig(t *testing.T) {
 		t.Fatalf("thinkingParam = %q, want custom_thinking", thinkingParam)
 	}
 }
+
+func TestNewProviderByNameNoRetryReturnsUnderlyingAdapter(t *testing.T) {
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{}}
+	provider, err := NewProviderByNameNoRetry(cfg, "ollama", "qwen:7b")
+	if err != nil {
+		t.Fatalf("NewProviderByNameNoRetry: %v", err)
+	}
+	if _, ok := provider.(*OllamaProvider); !ok {
+		t.Fatalf("provider type = %T, want *OllamaProvider", provider)
+	}
+	wrapped, err := NewProviderByName(cfg, "ollama", "qwen:7b")
+	if err != nil {
+		t.Fatalf("NewProviderByName: %v", err)
+	}
+	if _, ok := wrapped.(*RetryProvider); !ok {
+		t.Fatalf("production provider type = %T, want *RetryProvider", wrapped)
+	}
+}

@@ -1197,6 +1197,32 @@ func TestClaudeBinProvider_EphemeralSystemLineDoesNotReplaceSession(t *testing.T
 	}
 }
 
+func TestClaudeBinProviderParsesCacheCreationInputTokens(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	var usage *Usage
+	sawText := false
+	fallback := ""
+	handled := false
+	events := make(chan Event, 1)
+	err := provider.handleClaudeLine(
+		context.Background(),
+		`{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":12,"output_tokens":3,"cache_read_input_tokens":5,"cache_creation_input_tokens":127000}}`,
+		false,
+		eventSender{ctx: context.Background(), ch: events},
+		&usage,
+		&sawText,
+		&fallback,
+		&handled,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage == nil || usage.InputTokens != 12 || usage.CachedInputTokens != 5 || usage.CacheWriteTokens != 127_000 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
 func TestClaudeBinProvider_ResetConversationClearsResumeState(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	p.sessionID = "resume-abc"

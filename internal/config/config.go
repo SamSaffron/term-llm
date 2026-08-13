@@ -1190,6 +1190,21 @@ func ModelConfigForProviderModel(cfg *Config, providerName, modelName string) (P
 	return ProviderModelConfig{}, false
 }
 
+// UpstreamModelForProviderModel returns the provider-facing model ID for a
+// configured alias while preserving a declared reasoning-effort suffix.
+// Unconfigured model names are returned unchanged.
+func UpstreamModelForProviderModel(cfg *Config, providerName, modelName string) string {
+	modelName = strings.TrimSpace(modelName)
+	entry, ok := ModelConfigForProviderModel(cfg, providerName, modelName)
+	if !ok || strings.TrimSpace(entry.ID) == "" {
+		return modelName
+	}
+	if effort := providerModelConfigMatchedEffort(entry, modelName); effort != "" {
+		return strings.TrimSpace(entry.ID) + "-" + effort
+	}
+	return strings.TrimSpace(entry.ID)
+}
+
 // DisplayModelForProviderModel returns the user-facing name for a configured model.
 // When a models[] object defines an alias, the alias takes display precedence even
 // if callers track the upstream model id internally. Configured reasoning-effort
