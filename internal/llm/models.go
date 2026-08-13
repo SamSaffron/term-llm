@@ -153,6 +153,11 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "haiku"},
 	},
 	"grok-bin": {
+		{ID: "grok-4.6", ReasoningEfforts: grokBinEffortVariants},
+		{ID: "grok-4.6-low"},
+		{ID: "grok-4.6-medium"},
+		{ID: "grok-4.6-high"},
+		{ID: "grok-4.6-xhigh"},
 		{ID: "grok-4.5", ReasoningEfforts: grokBinEffortVariants},
 		{ID: "grok-4.5-low"},
 		{ID: "grok-4.5-medium"},
@@ -294,8 +299,9 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 }
 
 // ProviderModelIDs returns model IDs for a built-in provider.
-// Copilot and cursor-bin prefer the latest live model-list cache when present;
-// cursor-bin falls back to its curated starter list when the cache is empty.
+// Copilot, cursor-bin, and grok-bin prefer the latest live model-list cache
+// when present; cursor-bin and grok-bin fall back to their curated starter
+// lists when the cache is empty.
 // For callers that might receive a custom alias name, use ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
 	switch resolveProviderType(provider) {
@@ -305,6 +311,10 @@ func ProviderModelIDs(provider string) []string {
 		return GetCachedOpenCodeGoModels()
 	case "cursor-bin":
 		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
+			return ids
+		}
+	case "grok-bin":
+		if ids := GetCachedGrokBinModels(); len(ids) > 0 {
 			return ids
 		}
 	}
@@ -930,6 +940,12 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			} else if !isImage && providerType == "venice" {
 				apiKey := resolvedProviderAPIKey(cfg, provider)
 				models = GetCachedVeniceModels(apiKey)
+				if len(models) == 0 && configModel != "" {
+					models = []string{configModel}
+				}
+			} else if !isImage && providerType == "opencode-go" {
+				apiKey := resolvedProviderAPIKey(cfg, provider)
+				models = GetCachedOpenCodeGoModelsForAPIKey(apiKey)
 				if len(models) == 0 && configModel != "" {
 					models = []string{configModel}
 				}

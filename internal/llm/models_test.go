@@ -7,8 +7,9 @@ import (
 )
 
 func TestProviderModelsIncludeGrokBin(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	ids := ProviderModelIDs("grok-bin")
-	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.5-xhigh", "grok-composer-2.5-fast"} {
+	for _, want := range []string{"grok-4.6", "grok-4.6-low", "grok-4.6-medium", "grok-4.6-high", "grok-4.6-xhigh", "grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.5-xhigh", "grok-composer-2.5-fast"} {
 		if !containsModelID(ids, want) {
 			t.Fatalf("grok-bin models missing %q: %v", want, ids)
 		}
@@ -17,11 +18,11 @@ func TestProviderModelsIncludeGrokBin(t *testing.T) {
 		t.Fatal("GetBuiltInProviderNames missing grok-bin")
 	}
 	wantEfforts := []string{"low", "medium", "high", "xhigh"}
-	if got := ReasoningEffortsForProviderModel("grok-bin", "grok-4.5-high"); !equalSlice(got, wantEfforts) {
+	if got := ReasoningEffortsForProviderModel("grok-bin", "grok-4.6-high"); !equalSlice(got, wantEfforts) {
 		t.Fatalf("grok-bin efforts = %v, want %v", got, wantEfforts)
 	}
-	base, effort := BaseModelAndEffortForProvider("grok-bin", "grok-4.5-xhigh")
-	if base != "grok-4.5" || effort != "xhigh" {
+	base, effort := BaseModelAndEffortForProvider("grok-bin", "grok-4.6-xhigh")
+	if base != "grok-4.6" || effort != "xhigh" {
 		t.Fatalf("grok-bin base/effort = (%q, %q)", base, effort)
 	}
 }
@@ -161,7 +162,7 @@ func TestProviderModelIDsMatchEntries(t *testing.T) {
 	for provider, entries := range ProviderModels {
 		// These providers intentionally prefer account-scoped live caches over
 		// their static starter entries.
-		if provider == "copilot" || provider == "cursor-bin" || provider == "opencode-go" {
+		if provider == "copilot" || provider == "cursor-bin" || provider == "grok-bin" || provider == "opencode-go" {
 			continue
 		}
 		ids := ProviderModelIDs(provider)
@@ -196,6 +197,7 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		"fable": true, "fable-low": true, "fable-medium": true, "fable-high": true, "fable-xhigh": true, "fable-max": true,
 		"haiku": true,
 		// grok-bin CLI aliases have subscription-dependent context limits.
+		"grok-4.6": true, "grok-4.6-low": true, "grok-4.6-medium": true, "grok-4.6-high": true, "grok-4.6-xhigh": true,
 		"grok-4.5": true, "grok-4.5-low": true, "grok-4.5-medium": true, "grok-4.5-high": true, "grok-4.5-xhigh": true,
 		"grok-composer-2.5-fast": true,
 		// cursor-bin models are account-dependent and Cursor manages context itself.

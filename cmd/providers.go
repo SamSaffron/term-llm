@@ -154,7 +154,7 @@ var builtinProviderMeta = map[string]struct {
 		credential:         "oauth",
 		envVar:             "",
 		requiresKey:        false,
-		supportsListModels: false,
+		supportsListModels: true,
 		description:        "Grok Build CLI via local grok.com OAuth login",
 	},
 	"cursor-bin": {

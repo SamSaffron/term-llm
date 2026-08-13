@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -11,10 +13,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Keep completion refreshes short: stale cached or curated models remain
+// available when the local CLI or its remote catalog is slow.
+const grokBinCompletionRefreshTimeout = 5 * time.Second
+
+var refreshGrokBinModelsForCompletion = llm.RefreshGrokBinModelsIfStale
+
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
 func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Try to load config for custom provider completions; nil is OK if it fails
 	cfg, _ := config.Load()
+	refreshGrokBinCompletionCache(toComplete, cfg)
 	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 
 	// A bare provider may still be extended with ":model", so suppress the
@@ -23,6 +32,28 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 		return completions, providerFlagCompletionDirective(cfg, toComplete)
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+func refreshGrokBinCompletionCache(toComplete string, cfg *config.Config) {
+	provider, _, completingModel := strings.Cut(toComplete, ":")
+	if !completingModel {
+		return
+	}
+
+	var providerCfg config.ProviderConfig
+	if cfg != nil {
+		providerCfg = cfg.Providers[provider]
+		if len(providerCfg.Models) > 0 {
+			return
+		}
+	}
+	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeGrokBin {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), grokBinCompletionRefreshTimeout)
+	defer cancel()
+	_ = refreshGrokBinModelsForCompletion(ctx, providerCfg.Model, providerCfg.Env)
 }
 
 func providerFlagCompletionDirective(cfg *config.Config, toComplete string) cobra.ShellCompDirective {

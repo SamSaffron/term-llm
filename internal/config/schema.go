@@ -483,7 +483,7 @@ var providerSpecs = []ProviderSpec{
 	},
 	{
 		Name: "grok-bin", Type: ProviderTypeGrokBin,
-		Defaults: []DefaultField{{"model", "grok-4.5"}, {"fast_model", "grok-composer-2.5-fast"}},
+		Defaults: []DefaultField{{"model", "grok-4.6"}, {"fast_model", "grok-composer-2.5-fast"}},
 	},
 	{
 		Name: "cursor-bin", Type: ProviderTypeCursorBin,

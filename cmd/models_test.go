@@ -1,10 +1,23 @@
 package cmd
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
+
+func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
+	got := supportedModelListProviderTypes()
+	for _, want := range []string{"cursor-bin", "grok-bin"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("supported provider types %v missing %q", got, want)
+		}
+	}
+	if !slices.IsSorted(got) {
+		t.Fatalf("supported provider types are not sorted: %v", got)
+	}
+}
 
 func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
 	if !modelListSupportedTypes[config.ProviderTypeSambaNova] {
@@ -23,8 +36,14 @@ func TestBuiltinProviderMetaGrokBin(t *testing.T) {
 	if !ok {
 		t.Fatal("grok-bin provider metadata missing")
 	}
-	if meta.requiresKey || meta.credential != "oauth" {
-		t.Fatalf("grok-bin metadata = %+v, want OAuth without required API key", meta)
+	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
+		t.Fatalf("grok-bin metadata = %+v, want OAuth listing without required API key", meta)
+	}
+}
+
+func TestModelListSupportedTypesIncludesGrokBin(t *testing.T) {
+	if !modelListSupportedTypes[config.ProviderTypeGrokBin] {
+		t.Fatal("grok-bin should be wired for dynamic model listing")
 	}
 }
 

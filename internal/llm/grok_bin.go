@@ -37,6 +37,7 @@ const (
 	// only when Request.Search selects provider-native search.
 	grokDisallowedNativeTools     = "run_terminal_cmd,bash,grep,grep_search,read_file,search_replace,list_dir,web_search,web_fetch,x_search,todo_write,task,kill_task,get_task_output,memory_search,memory_get,lsp,image_gen,image_edit"
 	grokNativeSearchToolAllowlist = "search_tool,use_tool,web_search,web_fetch,x_search"
+	grokBinDefaultModel           = "grok-4.6"
 )
 
 func grokDisallowedTools(nativeSearch bool) string {
@@ -59,7 +60,7 @@ var grokToolDrainGrace = loadCLIToolLineDrainGrace(grokToolLineGraceEnv, grokToo
 
 // grokEffortLevels is deliberately broader than grokBinEffortVariants: Grok
 // accepts user-defined model names, which may support effort levels outside the
-// curated grok-4.5 choices advertised by term-llm.
+// curated grok-4* choices advertised by term-llm.
 var grokEffortLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 // GrokBinProvider uses the locally installed Grok Build CLI as an authenticated
@@ -148,7 +149,7 @@ func parseGrokEffort(model string) (string, string) {
 func ValidateGrokBinModel(model string) error {
 	for _, effort := range grokEffortLevels {
 		if model == effort {
-			return fmt.Errorf("grok-bin model %q is an effort level, not a model; did you mean \"grok-bin:grok-4.5-%s\"?", model, model)
+			return fmt.Errorf("grok-bin model %q is an effort level, not a model; did you mean \"grok-bin:%s-%s\"?", model, grokBinDefaultModel, model)
 		}
 	}
 	return nil
@@ -169,7 +170,7 @@ func NewGrokBinProvider(model string, env map[string]string) *GrokBinProvider {
 func (p *GrokBinProvider) Name() string {
 	model := p.model
 	if model == "" {
-		model = "grok-4.5"
+		model = grokBinDefaultModel
 	}
 	if p.effort != "" {
 		return fmt.Sprintf("Grok CLI (%s, effort=%s)", model, p.effort)
@@ -495,6 +496,10 @@ func redactGrokSystemPrompt(text, systemPrompt string) string {
 }
 
 func (p *GrokBinProvider) buildCommandEnv() []string {
+	return p.buildCommandEnvForHome(p.grokHome)
+}
+
+func (p *GrokBinProvider) buildCommandEnvForHome(grokHome string) []string {
 	authPath := strings.TrimSpace(p.extraEnv["GROK_AUTH_PATH"])
 	if authPath == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -503,7 +508,7 @@ func (p *GrokBinProvider) buildCommandEnv() []string {
 	}
 
 	forced := map[string]string{
-		"GROK_HOME":                p.grokHome,
+		"GROK_HOME":                grokHome,
 		"GROK_DISABLE_AUTOUPDATER": "1",
 		"GROK_AUTH_PATH":           authPath,
 	}

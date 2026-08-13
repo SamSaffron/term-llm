@@ -71,6 +71,8 @@ func TestParseGrokEffort(t *testing.T) {
 		wantModel  string
 		wantEffort string
 	}{
+		{model: "grok-4.6-high", wantModel: "grok-4.6", wantEffort: "high"},
+		{model: "grok-4.6-xhigh", wantModel: "grok-4.6", wantEffort: "xhigh"},
 		{model: "grok-4.5-high", wantModel: "grok-4.5", wantEffort: "high"},
 		{model: "grok-4.5-xhigh", wantModel: "grok-4.5", wantEffort: "xhigh"},
 		{model: "custom-model-max", wantModel: "custom-model", wantEffort: "max"},
@@ -93,7 +95,7 @@ func TestValidateGrokBinModel(t *testing.T) {
 			t.Fatalf("ValidateGrokBinModel(%q) returned nil", model)
 		}
 	}
-	for _, model := range []string{"", "grok-4.5", "grok-4.5-high", "subscription-custom-model"} {
+	for _, model := range []string{"", "grok-4.6", "grok-4.6-high", "grok-4.5", "grok-4.5-high", "subscription-custom-model"} {
 		if err := ValidateGrokBinModel(model); err != nil {
 			t.Fatalf("ValidateGrokBinModel(%q): %v", model, err)
 		}

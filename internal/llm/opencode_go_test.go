@@ -267,6 +267,31 @@ func TestOpenCodeGoCatalogIsScopedByCredential(t *testing.T) {
 	}
 }
 
+func TestGetCachedOpenCodeGoModelsForAPIKeyReadsDiskCache(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	cacheKey := openCodeGoCatalogScope("fresh-key", opencodeGoBaseURL)
+	models := []opencodeGoModel{
+		{ModelInfo: ModelInfo{ID: "active-model"}},
+		{ModelInfo: ModelInfo{ID: "retired-model"}, Deprecated: true},
+		{ModelInfo: ModelInfo{ID: ""}},
+	}
+	if err := writeCachedOpenCodeGoModels(cacheKey, models); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	// No provider has been constructed, so the in-memory catalog is unset for
+	// this scope; completion must still read the on-disk cache.
+	got := GetCachedOpenCodeGoModelsForAPIKey("fresh-key")
+	if strings.Join(got, ",") != "active-model" {
+		t.Fatalf("GetCachedOpenCodeGoModelsForAPIKey(fresh-key) = %v, want [active-model]", got)
+	}
+
+	if got := GetCachedOpenCodeGoModelsForAPIKey("other-key"); got != nil {
+		t.Fatalf("GetCachedOpenCodeGoModelsForAPIKey(other-key) = %v, want nil", got)
+	}
+}
+
 func TestOpenCodeGoListModelsReturnsDefensiveCopies(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	server, _ := newOpenCodeGoTestServer(t)

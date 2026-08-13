@@ -585,9 +585,27 @@ func CachedOpenCodeGoModels() ([]ModelInfo, bool, error) {
 // GetCachedOpenCodeGoModels returns active model IDs from the last successful
 // merged OpenCode Go catalog refresh without performing network access.
 func GetCachedOpenCodeGoModels() []string {
-	models := sortedOpenCodeGoModels(cachedOpenCodeGoModelMap())
-	ids := make([]string, 0, len(models))
-	for _, model := range models {
+	return activeOpenCodeGoModelIDs(cachedOpenCodeGoModelMap())
+}
+
+// GetCachedOpenCodeGoModelsForAPIKey returns active model IDs from the on-disk
+// OpenCode Go catalog cache for the given API key. Unlike GetCachedOpenCodeGoModels,
+// it does not require an in-memory catalog instance, so shell completion (which
+// runs in a fresh process where no provider has been constructed) can read the
+// cache directly.
+func GetCachedOpenCodeGoModelsForAPIKey(apiKey string) []string {
+	cacheKey := openCodeGoCatalogScope(apiKey, opencodeGoBaseURL)
+	cached, err := readCachedOpenCodeGoModels(cacheKey)
+	if err != nil || len(cached.models) == 0 {
+		return nil
+	}
+	return activeOpenCodeGoModelIDs(cached.models)
+}
+
+func activeOpenCodeGoModelIDs(models map[string]opencodeGoModel) []string {
+	sorted := sortedOpenCodeGoModels(models)
+	ids := make([]string, 0, len(sorted))
+	for _, model := range sorted {
 		if !model.Deprecated && model.ID != "" {
 			ids = append(ids, model.ID)
 		}

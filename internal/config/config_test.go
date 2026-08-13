@@ -581,8 +581,8 @@ func TestDescribeCredentialSource_GrokBin(t *testing.T) {
 }
 
 func TestGrokBinSchemaDefaults(t *testing.T) {
-	if got := DefaultProviderModel("grok-bin"); got != "grok-4.5" {
-		t.Fatalf("DefaultProviderModel(grok-bin) = %q, want grok-4.5", got)
+	if got := DefaultProviderModel("grok-bin"); got != "grok-4.6" {
+		t.Fatalf("DefaultProviderModel(grok-bin) = %q, want grok-4.6", got)
 	}
 	if got := DefaultProviderFastModels()["grok-bin"]; got != "grok-composer-2.5-fast" {
 		t.Fatalf("grok-bin fast model = %q, want grok-composer-2.5-fast", got)

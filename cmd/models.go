@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ Examples:
   term-llm models --provider sambanova  # list models from SambaNova
   term-llm models --provider venice     # list models from Venice
   term-llm models --provider cursor-bin # list/cache Cursor Agent models
+  term-llm models --provider grok-bin   # list/cache Grok Build CLI models
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
   term-llm models --json                # output as JSON`,
@@ -40,7 +42,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, nearai, sambanova, venice, xai, zen, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from ("+strings.Join(supportedModelListProviderTypes(), ", ")+")")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
@@ -64,6 +66,18 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeNearAI:       true,
 	config.ProviderTypeSambaNova:    true,
 	config.ProviderTypeCursorBin:    true,
+	config.ProviderTypeGrokBin:      true,
+}
+
+func supportedModelListProviderTypes() []string {
+	types := make([]string, 0, len(modelListSupportedTypes))
+	for providerType, supported := range modelListSupportedTypes {
+		if supported {
+			types = append(types, string(providerType))
+		}
+	}
+	sort.Strings(types)
+	return types
 }
 
 func runModels(cmd *cobra.Command, args []string) error {
@@ -116,7 +130,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return printStaticModels(providerName, staticModels)
 		}
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openai, openrouter, nearai, sambanova, xai, venice, zen, copilot, and openai_compatible providers", providerName, providerType)
+			"Model listing is supported for: %s", providerName, providerType, strings.Join(supportedModelListProviderTypes(), ", "))
 	}
 
 	// Create provider to query models
@@ -150,6 +164,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 		lister = provider
 	case config.ProviderTypeCursorBin:
 		lister = llm.NewCursorBinProvider(providerCfg.Model, providerCfg.Env)
+	case config.ProviderTypeGrokBin:
+		lister = llm.NewGrokBinProvider(providerCfg.Model, providerCfg.Env)
 	case config.ProviderTypeOpenRouter:
 		apiKey := providerCfg.ResolvedAPIKey
 		if apiKey == "" {
@@ -213,7 +229,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	timeout := 10 * time.Second
 	if providerType == config.ProviderTypeCopilot {
 		timeout = 6 * time.Minute
-	} else if providerType == config.ProviderTypeCursorBin {
+	} else if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin {
 		timeout = 45 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -225,6 +241,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 	if err == nil && providerType == config.ProviderTypeCursorBin {
 		llm.RefreshCursorBinCacheSync(models)
+	}
+	if err == nil && providerType == config.ProviderTypeGrokBin {
+		llm.RefreshGrokBinCacheSync(models)
 	}
 	if err != nil {
 		// Provide helpful error messages for common issues
