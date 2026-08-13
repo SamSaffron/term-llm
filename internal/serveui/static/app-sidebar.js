@@ -172,6 +172,206 @@ const applyBackToHubLink = () => {
   link.classList.remove('hidden');
 };
 
+const HUB_AGENT_LINKS_REFRESH_MS = 60000;
+const HUB_AGENT_LINKS_FETCH_TIMEOUT_MS = 10000;
+let hubAgentLinksLastFetchAt = null;
+let hubAgentLinksFetchPromise = null;
+let hubAgentLinksRefreshTimer = null;
+let hubAgentLinksHasValidRender = false;
+
+const compareCodeUnits = (left, right) => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
+
+const safeHubPath = (value) => (
+  typeof value === 'string' && /^\/(?![\\/])/.test(value) ? value : ''
+);
+
+const appendHubQuery = (path, query) => {
+  const hashIndex = path.indexOf('#');
+  const base = hashIndex === -1 ? path : path.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : path.slice(hashIndex);
+  const separator = base.includes('?')
+    ? (base.endsWith('?') || base.endsWith('&') ? '' : '&')
+    : '?';
+  return `${base}${separator}${query}${hash}`;
+};
+
+const hubAgentTarget = (node) => {
+  const sessions = node?.sessions;
+  const resumePath = safeHubPath(sessions?.resume_path);
+  if (resumePath) return resumePath;
+
+  const activePath = safeHubPath(Array.isArray(sessions?.active) ? sessions.active[0]?.resume_path : '');
+  if (activePath) return activePath;
+
+  const recentPath = safeHubPath(Array.isArray(sessions?.recent) ? sessions.recent[0]?.resume_path : '');
+  if (recentPath) return recentPath;
+
+  const newSessionPath = safeHubPath(node?.new_session_path);
+  if (newSessionPath) return newSessionPath;
+
+  const proxyPath = safeHubPath(node?.proxy_path);
+  return proxyPath ? appendHubQuery(proxyPath, 'new=1') : '';
+};
+
+const hubAgentLinksContext = () => {
+  if (!elements.hubAgentLinks) return null;
+  const hub = window.TERM_LLM_HUB;
+  const rawURL = hub && typeof hub.url === 'string' ? hub.url : '';
+  const origin = typeof window.location?.origin === 'string' ? window.location.origin : '';
+  if (!rawURL || !origin) return null;
+
+  try {
+    const parsed = new URL(rawURL, `${origin}/`);
+    if (parsed.origin !== origin) return null;
+    const hubPath = parsed.pathname.replace(/\/+$/, '');
+    return {
+      apiURL: `${hubPath}/api/nodes`,
+      nodeId: String(hub.nodeId || ''),
+    };
+  } catch (_) {
+    return null;
+  }
+};
+
+const clearHubAgentLinks = () => {
+  elements.hubAgentLinks?.replaceChildren();
+  elements.hubAgentLinks?.classList.add('hidden');
+};
+
+const renderHubAgentLinks = (nodes, context) => {
+  const candidates = nodes
+    .filter((node) => node?.status?.reachable === true)
+    .map((node) => {
+      const id = String(node.id || '');
+      const rawName = String(node.name || '');
+      return {
+        node,
+        id,
+        rawName,
+        displayName: rawName || id,
+        target: hubAgentTarget(node),
+      };
+    })
+    .filter((entry) => entry.displayName && entry.target)
+    .sort((left, right) => (
+      compareCodeUnits(left.displayName.toLowerCase(), right.displayName.toLowerCase())
+      || compareCodeUnits(left.rawName, right.rawName)
+      || compareCodeUnits(left.id, right.id)
+    ));
+
+  const rows = candidates.map(({ node, id, displayName, target }) => {
+    const link = createEl('a', 'hub-agent-link');
+    link.href = target;
+    if (id && id === context.nodeId) link.setAttribute('aria-current', 'true');
+
+    const sessions = node.sessions;
+    const active = Number(sessions?.active_count) > 0
+      || (Array.isArray(sessions?.active) && sessions.active.length > 0);
+    if (active) {
+      const dot = createEl('span', 'hub-agent-active');
+      dot.title = 'Active session';
+      dot.setAttribute('aria-hidden', 'true');
+      link.appendChild(dot);
+      link.appendChild(createEl('span', 'visually-hidden', 'Active session'));
+    }
+    link.appendChild(createEl('span', 'hub-agent-name', displayName));
+    return link;
+  });
+
+  elements.hubAgentLinks.replaceChildren(...rows);
+  elements.hubAgentLinks.classList.toggle('hidden', rows.length === 0);
+};
+
+const fetchHubAgentLinks = () => {
+  const context = hubAgentLinksContext();
+  if (!context || document.visibilityState === 'hidden') {
+    if (!context) clearHubAgentLinks();
+    return Promise.resolve(false);
+  }
+  if (hubAgentLinksFetchPromise) return hubAgentLinksFetchPromise;
+
+  hubAgentLinksLastFetchAt = Date.now();
+  const request = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), HUB_AGENT_LINKS_FETCH_TIMEOUT_MS);
+    try {
+      // Hub auth is a same-origin cookie. Do not use node API auth helpers here.
+      const response = await fetch(context.apiURL, { signal: controller.signal });
+      if (response.status >= 400 && response.status < 500) {
+        clearHubAgentLinks();
+        hubAgentLinksHasValidRender = false;
+        return false;
+      }
+      if (!response.ok) throw new Error(`Hub nodes request failed (${response.status})`);
+      const data = await response.json();
+      if (!Array.isArray(data?.nodes)) throw new Error('Hub nodes response is invalid');
+      renderHubAgentLinks(data.nodes, context);
+      hubAgentLinksHasValidRender = true;
+      return true;
+    } catch (_) {
+      if (!hubAgentLinksHasValidRender) clearHubAgentLinks();
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+
+  const trackedRequest = request.finally(() => {
+    if (hubAgentLinksFetchPromise === trackedRequest) hubAgentLinksFetchPromise = null;
+  });
+  hubAgentLinksFetchPromise = trackedRequest;
+  return trackedRequest;
+};
+
+const clearHubAgentLinksRefreshTimer = () => {
+  if (hubAgentLinksRefreshTimer === null) return;
+  clearTimeout(hubAgentLinksRefreshTimer);
+  hubAgentLinksRefreshTimer = null;
+};
+
+const refreshHubAgentLinks = () => {
+  const context = hubAgentLinksContext();
+  if (!context) {
+    clearHubAgentLinksRefreshTimer();
+    clearHubAgentLinks();
+    return Promise.resolve(false);
+  }
+  if (document.visibilityState === 'hidden') return Promise.resolve(false);
+  if (hubAgentLinksFetchPromise) return hubAgentLinksFetchPromise;
+
+  const elapsed = hubAgentLinksLastFetchAt === null
+    ? HUB_AGENT_LINKS_REFRESH_MS
+    : Date.now() - hubAgentLinksLastFetchAt;
+  if (elapsed >= HUB_AGENT_LINKS_REFRESH_MS) {
+    clearHubAgentLinksRefreshTimer();
+    return fetchHubAgentLinks();
+  }
+
+  if (hubAgentLinksRefreshTimer === null) {
+    hubAgentLinksRefreshTimer = setTimeout(() => {
+      hubAgentLinksRefreshTimer = null;
+      if (document.visibilityState !== 'hidden') void fetchHubAgentLinks();
+    }, HUB_AGENT_LINKS_REFRESH_MS - Math.max(0, elapsed));
+  }
+  return Promise.resolve(false);
+};
+
+const handleHubAgentLinksVisibility = () => {
+  if (document.visibilityState === 'hidden') {
+    clearHubAgentLinksRefreshTimer();
+    return;
+  }
+  void refreshHubAgentLinks();
+};
+
+const handleHubAgentLinksFocus = () => {
+  if (document.visibilityState !== 'hidden') void refreshHubAgentLinks();
+};
+
 if (elements.widgetsOpenBtn) elements.widgetsOpenBtn.addEventListener('click', openWidgetsModal);
 if (elements.widgetsModalCloseBtn) elements.widgetsModalCloseBtn.addEventListener('click', closeWidgetsModal);
 if (elements.widgetsModal) {
@@ -201,6 +401,8 @@ document.addEventListener('keydown', (event) => {
   }
 });
 if (elements.sidebarSearchInput) elements.sidebarSearchInput.addEventListener('input', scheduleSidebarSearch);
+document.addEventListener('visibilitychange', handleHubAgentLinksVisibility);
+window.addEventListener('focus', handleHubAgentLinksFocus);
 
 // ===== Sidebar status polling =====
 const SIDEBAR_POLL_ACTIVE = 2000;
@@ -427,8 +629,11 @@ const handleFetchTransportFallback = () => {
 };
 
 applyBackToHubLink();
+void refreshHubAgentLinks();
 
 Object.assign(app, {
+  HUB_AGENT_LINKS_REFRESH_MS,
+  HUB_AGENT_LINKS_FETCH_TIMEOUT_MS,
   SIDEBAR_POLL_ACTIVE,
   SIDEBAR_POLL_VISIBLE_ACTIVE,
   SIDEBAR_POLL_IDLE,
@@ -456,6 +661,9 @@ Object.assign(app, {
   handleFetchTransportFallback,
   renderWidgetSidebar,
   applyBackToHubLink,
+  renderHubAgentLinks,
+  fetchHubAgentLinks,
+  refreshHubAgentLinks,
   scheduleSidebarSearch
 });
 })();

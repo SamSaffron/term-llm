@@ -337,6 +337,8 @@ async function createSessionsHarness(options = {}) {
 
   const elementMap = new Map();
   const getElement = (id) => {
+    // Session lifecycle tests do not model the Hub agent navigation fixture.
+    if (id === 'hubAgentLinks') return null;
     if (!elementMap.has(id)) elementMap.set(id, makeNode());
     return elementMap.get(id);
   };
@@ -4279,7 +4281,8 @@ async function testPreConnectedVisibilityDoesNotStartSidebarStatusPoll() {
       });
     },
     onInitializeStarted({ windowObj }) {
-      visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0] || null;
+      const handlers = windowObj.document.listeners.visibilitychange || [];
+      visibilityHandler = handlers[handlers.length - 1] || null;
       if (!visibilityHandler) return;
       windowObj.document.visibilityState = 'hidden';
       void visibilityHandler({ type: 'visibilitychange' });
@@ -4343,7 +4346,8 @@ async function testHealthyVisibilityDoesNotAbortActiveStream() {
   controller._heartbeatAbort = false;
   app.state.abortController = controller;
 
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const visibilityHandlers = windowObj.document.listeners.visibilitychange || [];
+  const visibilityHandler = visibilityHandlers[visibilityHandlers.length - 1];
   windowObj.document.visibilityState = 'visible';
   await visibilityHandler({ type: 'visibilitychange' });
   if (controller.signal.aborted || controller._heartbeatAbort) {
@@ -4387,7 +4391,8 @@ async function testVisibilityResumeRestoresPreBackgroundTailOwnership() {
   appRef = app;
   await app.stopSidebarStatusPoll();
   autoScrollAtStatus.length = 0;
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const visibilityHandlers = windowObj.document.listeners.visibilitychange || [];
+  const visibilityHandler = visibilityHandlers[visibilityHandlers.length - 1];
   if (!visibilityHandler) {
     fail(name, 'expected visibilitychange listener');
     return;
@@ -4548,7 +4553,8 @@ async function testSidebarStatusPollRecoversIdempotentlyAfterPageShow() {
   app.state.activeSessionId = session.id;
   app.state.draftSessionActive = false;
 
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const visibilityHandlers = windowObj.document.listeners.visibilitychange || [];
+  const visibilityHandler = visibilityHandlers[visibilityHandlers.length - 1];
   const pageshowHandlers = windowObj.listeners.pageshow || [];
   const pageshowHandler = pageshowHandlers[pageshowHandlers.length - 1];
   if (!visibilityHandler || !pageshowHandler) {
@@ -4656,7 +4662,8 @@ async function testHiddenInFlightSidebarPollCannotRescheduleOrApplyStaleStatus()
     fail(name, 'expected a status request to remain in flight');
     return;
   }
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const visibilityHandlers = windowObj.document.listeners.visibilitychange || [];
+  const visibilityHandler = visibilityHandlers[visibilityHandlers.length - 1];
   windowObj.document.visibilityState = 'hidden';
   await visibilityHandler({ type: 'visibilitychange' });
   resolveStatus();
@@ -4723,7 +4730,8 @@ async function testReconnectBackoffWakeSignalsReuseExistingLoop() {
   app.state.draftSessionActive = false;
   app.state.abortController = null;
 
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const visibilityHandlers = windowObj.document.listeners.visibilitychange || [];
+  const visibilityHandler = visibilityHandlers[visibilityHandlers.length - 1];
   const onlineHandler = (windowObj.listeners.online || [])[0];
   const pageshowHandlers = windowObj.listeners.pageshow || [];
   const pageshowHandler = pageshowHandlers[pageshowHandlers.length - 1];
@@ -6951,7 +6959,8 @@ async function testBottomPinnedTranscriptSyncKeepsFollowingTail() {
   app.state.draftSessionActive = false;
   app.state.autoScroll = true;
   await app.stopSidebarStatusPoll();
-  const visibilityHandler = (windowObj.document.listeners.visibilitychange || [])[0];
+  const visibilityHandlers = windowObj.document.listeners.visibilitychange || [];
+  const visibilityHandler = visibilityHandlers[visibilityHandlers.length - 1];
   if (!visibilityHandler) {
     fail(name, 'expected visibilitychange listener');
     return;

@@ -111,8 +111,10 @@ function createHarness(options = {}) {
     widgetsModalCloseBtn: new Element('button'),
     sidebarSearchInput: new Element('input'),
     backToHubLink: new Element('a'),
+    hubAgentLinks: new Element('nav'),
   };
   elements.backToHubLink.classList.add('back-to-hub-link', 'hidden');
+  elements.hubAgentLinks.classList.add('hub-agent-links', 'hidden');
   const state = {
     widgets: [],
     widgetsLoaded: false,
@@ -139,23 +141,62 @@ function createHarness(options = {}) {
   };
   const document = new Element('document');
   document.createElement = (tag) => new Element(tag);
+  document.visibilityState = options.visibilityState || 'visible';
   const navigator = { platform: options.platform || 'Linux x86_64' };
+  const origin = options.origin || 'https://node.example.test';
+  const windowObj = new Element('window');
+  windowObj.TermLLMApp = app;
+  windowObj.TERM_LLM_HUB = options.hub;
+  windowObj.location = {
+    origin,
+    pathname: options.pathname || '/chat/',
+    protocol: `${new URL(origin).protocol}`,
+    host: new URL(origin).host,
+  };
+  const nativeFetchRequests = [];
+  const apiFetchRequests = [];
+  const nativeFetchImpl = options.nativeFetch || (async () => nodesResponse([]));
+  const apiFetchImpl = options.apiFetch || options.fetch || (async () => new Response(JSON.stringify({ sessions: [] }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+  const trackedNativeFetch = (...args) => {
+    nativeFetchRequests.push(args);
+    return nativeFetchImpl(...args);
+  };
+  const DateImpl = options.now
+    ? class extends Date { static now() { return options.now(); } }
+    : Date;
   const context = {
-    window: { TermLLMApp: app, TERM_LLM_HUB: options.hub },
+    window: windowObj,
     document,
     navigator,
+    URL,
     URLSearchParams,
+    Date: DateImpl,
     console,
-    clearTimeout,
-    setTimeout: options.setTimeout || ((fn) => { fn(); return 1; }),
-    fetch: options.fetch || (async () => new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+    clearTimeout: options.clearTimeout || clearTimeout,
+    setTimeout: options.setTimeout || setTimeout,
+    fetch: trackedNativeFetch,
     Response,
     AbortController,
   };
   context.globalThis = context;
-  app.apiFetch = (...args) => context.fetch(...args);
+  app.apiFetch = (...args) => {
+    apiFetchRequests.push(args);
+    return apiFetchImpl(...args);
+  };
   vm.runInNewContext(source, context, { filename: 'app-sidebar.js' });
-  return { app, elements, state, document, get renderSidebarCount() { return renderSidebarCount; } };
+  return {
+    app,
+    elements,
+    state,
+    document,
+    window: windowObj,
+    nativeFetchRequests,
+    apiFetchRequests,
+    get renderSidebarCount() { return renderSidebarCount; },
+  };
 }
 
 function keydownEvent(overrides = {}) {
@@ -180,6 +221,42 @@ async function run(name, fn) {
   } catch (err) {
     fail(name, err.message, err.stack);
   }
+}
+
+const flushAsync = async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+};
+
+const nodesResponse = (nodes, status = 200) => new Response(JSON.stringify({ nodes }), {
+  status,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+function createFakeTimers() {
+  let nextId = 1;
+  const timers = [];
+  return {
+    timers,
+    setTimeout(fn, delay) {
+      const timer = { id: nextId, fn, delay, cleared: false, fired: false };
+      nextId += 1;
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout(id) {
+      const timer = timers.find((entry) => entry.id === id);
+      if (timer) timer.cleared = true;
+    },
+    active(delay) {
+      return timers.filter((timer) => !timer.cleared && !timer.fired
+        && (delay === undefined || timer.delay === delay));
+    },
+    fire(timer) {
+      timer.fired = true;
+      timer.fn();
+    },
+  };
 }
 
 (async () => {
@@ -216,9 +293,13 @@ async function run(name, fn) {
     assertEqual(elements.widgetsModalList.children.length, 0, 'modal list is cleared');
   });
 
-  await run('back to hub link stays hidden without hub context', () => {
-    const { elements } = createHarness();
+  await run('back to hub link stays hidden without hub context and makes no Hub request', async () => {
+    const { elements, nativeFetchRequests, apiFetchRequests } = createHarness();
+    await flushAsync();
     assert(elements.backToHubLink.classList.contains('hidden'), 'link is hidden without TERM_LLM_HUB');
+    assert(elements.hubAgentLinks.classList.contains('hidden'), 'agent links are hidden without TERM_LLM_HUB');
+    assertEqual(nativeFetchRequests.length, 0, 'no native request is made without Hub context');
+    assertEqual(apiFetchRequests.length, 0, 'no app API request is made without Hub context');
   });
 
   await run('back to hub link renders from hub context', () => {
@@ -233,9 +314,303 @@ async function run(name, fn) {
     assert(elements.backToHubLink.classList.contains('hidden'), 'link stays hidden when hub context has no url');
   });
 
+  await run('cross-origin Hub context keeps agent links hidden and makes zero requests', async () => {
+    const { elements, nativeFetchRequests, apiFetchRequests } = createHarness({
+      origin: 'https://node.example.test',
+      hub: { url: 'https://hub.example.test/hub/', nodeId: 'alpha' },
+    });
+    await flushAsync();
+
+    assert(elements.hubAgentLinks.classList.contains('hidden'), 'cross-origin agent links stay hidden');
+    assertEqual(elements.hubAgentLinks.children.length, 0, 'cross-origin list stays empty');
+    assertEqual(nativeFetchRequests.length, 0, 'cross-origin Hub performs no native fetches');
+    assertEqual(apiFetchRequests.length, 0, 'cross-origin Hub performs no app API fetches');
+  });
+
+  await run('Hub agents use native fetch at the mounted API URL with reachable stable order', async () => {
+    const { elements, nativeFetchRequests, apiFetchRequests } = createHarness({
+      hub: { url: '/hub/', nodeId: 'alpha-a' },
+      nativeFetch: async () => nodesResponse([
+        { id: 'beta', name: 'Beta', status: { reachable: true }, new_session_path: '/hub/node/beta/?new=1' },
+        { id: 'alpha-b', name: 'Alpha', status: { reachable: true }, new_session_path: '/hub/node/alpha-b/?new=1' },
+        { id: 'down', name: 'Aardvark', status: { reachable: false }, new_session_path: '/hub/node/down/?new=1' },
+        { id: 'alpha-z', name: 'alpha', status: { reachable: true }, new_session_path: '/hub/node/alpha-z/?new=1' },
+        { id: 'alpha-a', name: 'Alpha', status: { reachable: true }, new_session_path: '/hub/node/alpha-a/?new=1' },
+      ]),
+    });
+    await flushAsync();
+
+    assertEqual(String(nativeFetchRequests[0][0]), '/hub/api/nodes', 'mounted Hub API URL is exact');
+    assertEqual(nativeFetchRequests[0].length, 2, 'Hub request passes only native fetch options');
+    assert(nativeFetchRequests[0][1].signal instanceof AbortSignal, 'Hub request has an abort signal');
+    assertEqual(apiFetchRequests.length, 0, 'Hub request never uses app.apiFetch');
+    const links = elements.hubAgentLinks.querySelectorAll('.hub-agent-link');
+    assertEqual(links.length, 4, 'only reachable nodes with safe targets render');
+    assertEqual(links.map((link) => link.href).join(','), [
+      '/hub/node/alpha-a/?new=1',
+      '/hub/node/alpha-b/?new=1',
+      '/hub/node/alpha-z/?new=1',
+      '/hub/node/beta/?new=1',
+    ].join(','), 'agents sort by folded display name, raw name, then ID');
+    assert(!elements.hubAgentLinks.classList.contains('hidden'), 'valid agent list is visible');
+  });
+
+  await run('hidden Hub startup waits for visibility before fetching', async () => {
+    const { document, elements, nativeFetchRequests } = createHarness({
+      visibilityState: 'hidden',
+      hub: { url: '/hub/', nodeId: 'alpha' },
+      nativeFetch: async () => nodesResponse([
+        { id: 'alpha', name: 'Alpha', status: { reachable: true }, new_session_path: '/hub/node/alpha/?new=1' },
+      ]),
+    });
+    await flushAsync();
+    assertEqual(nativeFetchRequests.length, 0, 'hidden startup makes no Hub request');
+    assert(elements.hubAgentLinks.classList.contains('hidden'), 'hidden startup keeps the list hidden');
+
+    document.visibilityState = 'visible';
+    await document.dispatchEvent({ type: 'visibilitychange' });
+    await flushAsync();
+
+    assertEqual(nativeFetchRequests.length, 1, 'becoming visible fetches Hub agents');
+    assert(!elements.hubAgentLinks.classList.contains('hidden'), 'visible successful fetch reveals the list');
+  });
+
+  await run('empty Hub nodes response clears and hides the list', async () => {
+    const { elements } = createHarness({
+      hub: { url: '/hub/', nodeId: 'alpha' },
+      nativeFetch: async () => nodesResponse([]),
+    });
+    elements.hubAgentLinks.appendChild(new Element('a'));
+    elements.hubAgentLinks.classList.remove('hidden');
+    await flushAsync();
+
+    assert(elements.hubAgentLinks.classList.contains('hidden'), 'empty nodes hides the list');
+    assertEqual(elements.hubAgentLinks.children.length, 0, 'empty nodes clears stale rows');
+  });
+
+  await run('Hub agent targets follow resume, active, recent, new, and proxy precedence', async () => {
+    const { elements } = createHarness({
+      hub: { url: '/', nodeId: 'resume' },
+      nativeFetch: async () => nodesResponse([
+        {
+          id: 'resume', name: 'Direct', status: { reachable: true },
+          sessions: {
+            resume_path: '/node/resume/direct',
+            active: [{ resume_path: '/node/resume/active' }],
+            recent: [{ resume_path: '/node/resume/recent' }],
+          },
+          new_session_path: '/node/resume/?new=1', proxy_path: '/node/resume/',
+        },
+        {
+          id: 'active', name: 'From active', status: { reachable: true },
+          sessions: { active: [{ resume_path: '/node/active/session' }], recent: [{ resume_path: '/node/active/recent' }] },
+          new_session_path: '/node/active/?new=1',
+        },
+        {
+          id: 'recent', name: 'From recent', status: { reachable: true },
+          sessions: { resume_path: 'https://unsafe.test/session', recent: [{ resume_path: '/node/recent/session' }] },
+          new_session_path: '/node/recent/?new=1',
+        },
+        { id: 'new', name: 'New fallback', status: { reachable: true }, new_session_path: '/node/new/?new=1', proxy_path: '/node/new/' },
+        { id: 'proxy', name: 'Proxy fallback', status: { reachable: true }, new_session_path: 'javascript:bad', proxy_path: '/node/proxy/?source=hub#sessions' },
+        { id: 'unsafe', name: 'Unsafe', status: { reachable: true }, new_session_path: '//evil.test/', proxy_path: 'https://evil.test/' },
+        { id: 'unsafe-backslash', name: 'Unsafe backslash', status: { reachable: true }, new_session_path: '/\\evil.test/', proxy_path: '/\\\\evil.test/' },
+      ]),
+    });
+    await flushAsync();
+
+    const targetsByName = new Map(elements.hubAgentLinks.querySelectorAll('.hub-agent-link').map((link) => [
+      link.querySelector('.hub-agent-name').textContent,
+      link.href,
+    ]));
+    assertEqual(targetsByName.get('Direct'), '/node/resume/direct', 'sessions.resume_path wins');
+    assertEqual(targetsByName.get('From active'), '/node/active/session', 'first active resume path is used');
+    assertEqual(targetsByName.get('From recent'), '/node/recent/session', 'first recent resume path is used');
+    assertEqual(targetsByName.get('New fallback'), '/node/new/?new=1', 'new session path is used');
+    assertEqual(targetsByName.get('Proxy fallback'), '/node/proxy/?source=hub&new=1#sessions', 'proxy fallback safely appends the new query');
+    assert(!targetsByName.has('Unsafe'), 'node without a root-relative target is skipped');
+    assert(!targetsByName.has('Unsafe backslash'), 'backslash authority escapes are skipped');
+  });
+
+  await run('Hub agent activity dots and current-node state are accessible', async () => {
+    const { elements } = createHarness({
+      hub: { url: '/', nodeId: 'array-active' },
+      nativeFetch: async () => nodesResponse([
+        { id: 'count-active', name: 'Count active', status: { reachable: true }, sessions: { active_count: '2' }, new_session_path: '/node/count/' },
+        { id: 'array-active', name: 'Array active', status: { reachable: true }, sessions: { active: [{ resume_path: '/node/array/session' }] }, new_session_path: '/node/array/' },
+        { id: 'idle', name: 'Idle', status: { reachable: true }, sessions: { active_count: 0, active: [] }, new_session_path: '/node/idle/' },
+      ]),
+    });
+    await flushAsync();
+
+    const links = elements.hubAgentLinks.querySelectorAll('.hub-agent-link');
+    const current = links.find((link) => link.querySelector('.hub-agent-name').textContent === 'Array active');
+    assertEqual(current.getAttribute('aria-current'), 'true', 'current node is marked without claiming the current page');
+    const dots = elements.hubAgentLinks.querySelectorAll('.hub-agent-active');
+    assertEqual(dots.length, 2, 'active count and compatibility active array each render a dot');
+    dots.forEach((dot) => {
+      assertEqual(dot.title, 'Active session', 'active dot has a title');
+      assertEqual(dot.getAttribute('aria-hidden'), 'true', 'active dot is hidden from assistive technology');
+      assertEqual(dot.getAttribute('aria-label'), null, 'generic active dot has no aria-label');
+    });
+    const activeText = elements.hubAgentLinks.querySelectorAll('.visually-hidden');
+    assertEqual(activeText.length, 2, 'each active link contains accessible status text');
+    activeText.forEach((text) => assertEqual(text.textContent, 'Active session', 'active status text is explicit'));
+  });
+
+  await run('initial Hub 401 hides and clears agent links', async () => {
+    const { elements } = createHarness({
+      hub: { url: '/hub/', nodeId: 'alpha' },
+      nativeFetch: async () => new Response('unauthorized', { status: 401 }),
+    });
+    elements.hubAgentLinks.appendChild(new Element('a'));
+    elements.hubAgentLinks.classList.remove('hidden');
+    await flushAsync();
+
+    assert(elements.hubAgentLinks.classList.contains('hidden'), 'initial 401 hides the list');
+    assertEqual(elements.hubAgentLinks.children.length, 0, 'initial 401 clears stale rows');
+  });
+
+  await run('Hub 401 after success authoritatively clears the valid render', async () => {
+    let now = 1000;
+    let call = 0;
+    const { elements, nativeFetchRequests, window } = createHarness({
+      now: () => now,
+      hub: { url: '/hub/', nodeId: 'alpha' },
+      nativeFetch: async () => {
+        call += 1;
+        if (call === 1) return nodesResponse([
+          { id: 'alpha', name: 'Alpha', status: { reachable: true }, new_session_path: '/hub/node/alpha/?new=1' },
+        ]);
+        return new Response('unauthorized', { status: 401 });
+      },
+    });
+    await flushAsync();
+    assert(!elements.hubAgentLinks.classList.contains('hidden'), 'successful render starts visible');
+
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+
+    assertEqual(nativeFetchRequests.length, 2, 'focus performs the authoritative auth refresh');
+    assert(elements.hubAgentLinks.classList.contains('hidden'), '401 after success hides the list');
+    assertEqual(elements.hubAgentLinks.children.length, 0, '401 after success clears valid rows');
+  });
+
+  await run('transient Hub refresh failure preserves the last valid render', async () => {
+    let now = 1000;
+    let call = 0;
+    const { elements, nativeFetchRequests, window } = createHarness({
+      now: () => now,
+      hub: { url: '/hub/', nodeId: 'alpha' },
+      nativeFetch: async () => {
+        call += 1;
+        if (call === 1) return nodesResponse([
+          { id: 'alpha', name: 'Alpha', status: { reachable: true }, new_session_path: '/hub/node/alpha/?new=1' },
+        ]);
+        return new Response('temporary failure', { status: 503 });
+      },
+    });
+    await flushAsync();
+    const initialLink = elements.hubAgentLinks.querySelector('.hub-agent-link');
+
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+
+    assertEqual(nativeFetchRequests.length, 2, 'focus refreshes after the minimum interval');
+    assert(!elements.hubAgentLinks.classList.contains('hidden'), 'transient failure leaves the valid list visible');
+    assertEqual(elements.hubAgentLinks.querySelector('.hub-agent-link'), initialLink, 'transient failure preserves rendered rows');
+  });
+
+  await run('Hub focus and visibility refreshes share a 60 second throttle', async () => {
+    let now = 1000;
+    const clock = createFakeTimers();
+    const { app, document, nativeFetchRequests, window } = createHarness({
+      now: () => now,
+      hub: { url: '/', nodeId: 'alpha' },
+      nativeFetch: async () => nodesResponse([]),
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    await flushAsync();
+
+    now += 1000;
+    await window.dispatchEvent({ type: 'focus' });
+    await document.dispatchEvent({ type: 'visibilitychange' });
+    assertEqual(nativeFetchRequests.length, 1, 'focus and visibility do not fetch inside the throttle window');
+    const refreshTimers = clock.active(59000);
+    assertEqual(refreshTimers.length, 1, 'return events share one trailing refresh timer');
+    assertEqual(refreshTimers[0].delay, 59000, 'trailing refresh waits for the remaining throttle interval');
+
+    clock.fire(refreshTimers[0]);
+    await flushAsync();
+    assertEqual(nativeFetchRequests.length, 2, 'trailing refresh fetches once');
+    assertEqual(clock.active(app.HUB_AGENT_LINKS_FETCH_TIMEOUT_MS).length, 0, 'completed fetch clears its timeout');
+  });
+
+  await run('Hub agent refresh stays single-flight', async () => {
+    let now = 1000;
+    let releaseFetch;
+    const pendingResponse = new Promise((resolve) => { releaseFetch = resolve; });
+    const { nativeFetchRequests, window } = createHarness({
+      now: () => now,
+      hub: { url: '/', nodeId: 'alpha' },
+      nativeFetch: async () => pendingResponse,
+    });
+    assertEqual(nativeFetchRequests.length, 1, 'startup begins one Hub request');
+
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    assertEqual(nativeFetchRequests.length, 1, 'focus reuses the startup request while it is in flight');
+
+    releaseFetch(nodesResponse([]));
+    await flushAsync();
+  });
+
+  await run('hung Hub fetch aborts and releases single-flight for a later refresh', async () => {
+    let now = 1000;
+    let firstSignal = null;
+    let call = 0;
+    const clock = createFakeTimers();
+    const { app, nativeFetchRequests, window } = createHarness({
+      now: () => now,
+      hub: { url: '/', nodeId: 'alpha' },
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      nativeFetch: async (_url, options) => {
+        call += 1;
+        if (call > 1) return nodesResponse([]);
+        firstSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          if (options.signal.aborted) {
+            reject(new Error('aborted'));
+            return;
+          }
+          options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      },
+    });
+    await flushAsync();
+    assertEqual(nativeFetchRequests.length, 1, 'startup begins the hung request');
+    const timeout = clock.active(app.HUB_AGENT_LINKS_FETCH_TIMEOUT_MS)[0];
+    assert(timeout, 'hung request has a bounded timeout');
+
+    clock.fire(timeout);
+    await flushAsync();
+    assert(firstSignal.aborted, 'timeout aborts the native fetch signal');
+    assert(timeout.cleared, 'fetch cleanup clears the timeout in finally');
+
+    now += app.HUB_AGENT_LINKS_REFRESH_MS;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+    assertEqual(nativeFetchRequests.length, 2, 'later refresh starts after timed-out single-flight clears');
+  });
+
   await run('sidebar search fetches server results', async () => {
     let requested = '';
     const { elements, state } = createHarness({
+      setTimeout(fn) { fn(); return 1; },
       fetch: async (url) => {
         requested = String(url);
         return new Response(JSON.stringify({ sessions: [{ id: 's1', short_title: 'Linux', snippet: 'match' }] }), {

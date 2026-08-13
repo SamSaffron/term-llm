@@ -331,6 +331,7 @@ const elements = {
   newChatBtn: document.getElementById('newChatBtn'),
   widgetsOpenBtn: document.getElementById('widgetsOpenBtn'),
   backToHubLink: document.getElementById('backToHubLink'),
+  hubAgentLinks: document.getElementById('hubAgentLinks'),
   widgetsModal: document.getElementById('widgetsModal'),
   widgetsModalList: document.getElementById('widgetsModalList'),
   widgetsModalCloseBtn: document.getElementById('widgetsModalCloseBtn'),
