@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/benchmark"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +39,6 @@ type benchmarkFlags struct {
 	json                   bool
 	jsonl                  string
 	dryRun                 bool
-	yes                    bool
 	includeManagedProvider bool
 }
 
@@ -91,7 +89,6 @@ metrics remain explicitly unavailable rather than being inferred from stream chu
 	cmd.Flags().BoolVar(&flags.json, "json", false, "Emit one complete JSON report")
 	cmd.Flags().StringVar(&flags.jsonl, "jsonl", "", "Append each raw request record to this JSONL file as it completes")
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Resolve and list every benchmark target without dispatching inference requests")
-	cmd.Flags().BoolVarP(&flags.yes, "yes", "y", false, "Approve expensive token budgets without prompting")
 	cmd.Flags().BoolVar(&flags.includeManagedProvider, "include-managed-provider", false, "Allow subprocess/CLI providers and label timing subprocess-inclusive")
 	return cmd
 }
@@ -206,11 +203,7 @@ func runBenchmark(cmd *cobra.Command, flags benchmarkFlags) error {
 	if flags.dryRun {
 		return writeBenchmarkDryRun(cmd.OutOrStdout(), flags.json, plans, budget)
 	}
-	if benchmarkNeedsApproval(flags.mode, budget) {
-		if err := approveBenchmark(cmd, flags.yes, flags.json); err != nil {
-			return err
-		}
-	}
+	fmt.Fprintln(budgetWriter)
 
 	var jsonlFile *os.File
 	var jsonlEncoder *json.Encoder
@@ -240,16 +233,38 @@ func runBenchmark(cmd *cobra.Command, flags benchmarkFlags) error {
 		AssumedContextLimit: assumedContextLimit,
 		TermLLMVersion:      versionString(),
 	}
+	progressCh := make(chan ui.ProgressUpdate, 1)
+	progressCh <- ui.ProgressUpdate{Phase: "Benchmarking", Status: "starting"}
+	opts.OnProgress = func(progress benchmark.Progress) {
+		update := benchmarkProgressUpdate(progress)
+		select {
+		case progressCh <- update:
+		case <-cmd.Context().Done():
+		}
+	}
 	if jsonlEncoder != nil {
 		opts.OnRecord = func(record benchmark.RunRecord) error {
 			return jsonlEncoder.Encode(record)
 		}
 	}
 
-	targets, allRecords, err := executeBenchmarkPlans(cmd.Context(), cfg, plans, opts, flags.includeManagedProvider)
+	type executionResult struct {
+		targets []benchmark.Target
+		records []benchmark.RunRecord
+	}
+	value, err := ui.RunWithSpinnerProgress(cmd.Context(), false, progressCh, func(ctx context.Context) (any, error) {
+		defer close(progressCh)
+		targets, records, runErr := executeBenchmarkPlans(ctx, cfg, plans, opts, flags.includeManagedProvider)
+		return executionResult{targets: targets, records: records}, runErr
+	})
 	if err != nil {
 		return err
 	}
+	result, ok := value.(executionResult)
+	if !ok {
+		return fmt.Errorf("benchmark execution returned unexpected result %T", value)
+	}
+	targets, allRecords := result.targets, result.records
 
 	report := benchmark.NewReport(opts, budget, targets, allRecords)
 	if flags.json {
@@ -259,6 +274,28 @@ func runBenchmark(cmd *cobra.Command, flags benchmarkFlags) error {
 	}
 	benchmark.WriteHuman(cmd.OutOrStdout(), report)
 	return nil
+}
+
+func benchmarkProgressUpdate(progress benchmark.Progress) ui.ProgressUpdate {
+	phase := progress.Phase
+	switch progress.Phase {
+	case "calibration":
+		if progress.Attempt == 2 {
+			phase = "validation"
+		}
+	case "warmup":
+		phase = fmt.Sprintf("warmup %d", progress.Run)
+	case "measured":
+		phase = fmt.Sprintf("run %d", progress.Run)
+		if progress.Attempt > 1 {
+			phase += fmt.Sprintf(" retry %d", progress.Attempt-1)
+		}
+	}
+	return ui.ProgressUpdate{
+		Phase: "Benchmarking",
+		Status: fmt.Sprintf("%s · %s · %s in / %s out",
+			phase, progress.Workload, ui.FormatTokenCount(progress.InputTokens), ui.FormatTokenCount(progress.OutputTokens)),
+	}
 }
 
 func openBenchmarkJSONL(path string) (*os.File, error) {
@@ -336,7 +373,7 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 	}
 	capabilities, ok := benchmarkAdapterCapabilities(providerType, localOllama)
 	if !ok {
-		return nil, nil, fmt.Errorf("provider %q (type %s) is not supported by benchmark schema version 1; supported adapters: local Ollama (native or OpenAI-compatible), chatgpt, claude-bin", providerKey, providerType)
+		return nil, nil, fmt.Errorf("provider %q (type %s) is not supported by benchmark schema version 1; supported adapters: local Ollama (native or OpenAI-compatible), vLLM, chatgpt, claude-bin", providerKey, providerType)
 	}
 	if capabilities.ManagedContext && !includeManaged {
 		return nil, nil, fmt.Errorf("provider %q manages its own context; use --include-managed-provider to opt into subprocess-inclusive timing", providerKey)
@@ -555,6 +592,20 @@ func benchmarkAdapterCapabilities(providerType config.ProviderType, localOllama 
 		}, true
 	}
 	switch providerType {
+	case config.ProviderTypeVLLM:
+		return benchmark.AdapterCapabilities{
+			ReportsCacheReads:       true,
+			ReportsCacheWrites:      false,
+			ReportsReasoningTokens:  false,
+			SupportsOutputLimit:     true,
+			SupportsTemperature:     true,
+			SupportsReasoningEffort: true,
+			MinimumOutputTokens:     1,
+			IncrementalStream:       true,
+			MeasurementScope:        "direct_http",
+			CacheTelemetryNote:      "OpenAI-compatible prompt_tokens_details.cached_tokens reports prefix-cache reads",
+			OutputLimitSupportNote:  "OpenAI-compatible max_tokens",
+		}, true
 	case config.ProviderTypeChatGPT:
 		return benchmark.AdapterCapabilities{
 			ReportsCacheReads:       true,
@@ -672,36 +723,4 @@ func addBenchmarkBudget(total *benchmark.Budget, part benchmark.Budget) {
 	total.IncludesWarmups = total.IncludesWarmups || part.IncludesWarmups
 	total.IncludesRetryAllowance = total.IncludesRetryAllowance || part.IncludesRetryAllowance
 	total.CacheWriteBillingRisk = total.CacheWriteBillingRisk || part.CacheWriteBillingRisk
-}
-
-func benchmarkNeedsApproval(mode string, budget benchmark.Budget) bool {
-	return mode == "balanced" || mode == "prefill" || mode == "long-context" || budget.MaximumTotalInput > 250_000
-}
-
-func benchmarkInteractive(in io.Reader, out io.Writer) bool {
-	input, inputOK := in.(*os.File)
-	output, outputOK := out.(*os.File)
-	return inputOK && outputOK && terminalpolicy.Interactive(input, output)
-}
-
-func approveBenchmark(cmd *cobra.Command, yes, jsonOutput bool) error {
-	if yes {
-		return nil
-	}
-	out := cmd.OutOrStdout()
-	if jsonOutput {
-		out = cmd.ErrOrStderr()
-	}
-	if !benchmarkInteractive(cmd.InOrStdin(), out) {
-		return fmt.Errorf("benchmark token budget requires explicit approval in non-interactive mode; use --yes")
-	}
-	fmt.Fprint(out, "Run this benchmark token budget? Type 'yes' to continue: ")
-	response, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("read benchmark approval: %w", err)
-	}
-	if !strings.EqualFold(strings.TrimSpace(response), "yes") {
-		return fmt.Errorf("benchmark cancelled")
-	}
-	return nil
 }

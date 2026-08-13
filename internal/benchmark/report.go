@@ -12,6 +12,7 @@ func DefaultProfile(mode string) ([]Scenario, int, int, error) {
 	case "balanced":
 		return []Scenario{
 			{InputTokens: 2_000, OutputTokens: 128, Workload: "decode"},
+			{InputTokens: 4_000, OutputTokens: 16, Workload: "prefill"},
 			{InputTokens: 16_000, OutputTokens: 16, Workload: "prefill"},
 			{InputTokens: 64_000, OutputTokens: 16, Workload: "prefill"},
 		}, 3, 1, nil
@@ -173,103 +174,66 @@ func NewReport(opts Options, budget Budget, targets []Target, records []RunRecor
 }
 
 func WriteBudget(w io.Writer, mode string, budget Budget) {
-	fmt.Fprintf(w, "Benchmark token budget (%s):\n", mode)
-	fmt.Fprintf(w, "  maximum requests: %d\n", budget.MaximumRequests)
-	fmt.Fprintf(w, "  maximum request: %d input + %d requested output tokens\n", budget.MaximumRequestInput, budget.MaximumRequestOutput)
-	fmt.Fprintf(w, "  maximum total: %d input + %d requested output tokens\n", budget.MaximumTotalInput, budget.MaximumTotalOutput)
+	fmt.Fprintf(w, "Token budget (%s) - requested ceilings, not billing estimates\n", mode)
+	fmt.Fprintf(w, "  Requests     up to %s\n", formatInteger(int64(budget.MaximumRequests)))
+	fmt.Fprintf(w, "  Per request  %s input + %s output tokens\n",
+		formatInteger(int64(budget.MaximumRequestInput)), formatInteger(int64(budget.MaximumRequestOutput)))
+	fmt.Fprintf(w, "  Total        %s input + %s output tokens\n",
+		formatInteger(budget.MaximumTotalInput), formatInteger(budget.MaximumTotalOutput))
 	if budget.IncludesCalibration {
-		fmt.Fprintln(w, "  includes calibration plus validation, warmups, and one fresh-payload cache-contamination retry per measured request")
+		fmt.Fprintln(w, "  Includes     calibration, validation, warmups, and retry allowance")
 	} else {
-		fmt.Fprintln(w, "  includes warmups and one fresh-payload cache-contamination retry per measured request; provider-total calibration is disabled for generated-payload targets")
+		fmt.Fprintln(w, "  Includes     warmups and retry allowance; calibration disabled")
 	}
-	fmt.Fprintln(w, "  cache writes count as computed input and may have provider-specific billing")
 	if budget.OutputBudgetIsRequested {
-		fmt.Fprintln(w, "  warning: at least one adapter cannot enforce the requested output ceiling")
+		writeWrappedBullet(w, "At least one adapter cannot enforce the requested output ceiling.", 78)
 	}
 }
 
 func WriteHuman(w io.Writer, report Report) {
-	fmt.Fprintf(w, "\nMode: %s | cache: %s | concurrency: %d\n", report.Benchmark.Mode, report.Benchmark.Cache, report.Benchmark.Concurrency)
-	fmt.Fprintf(w, "Runs: %d warmup + %d measured per scenario | seed: %d\n", report.Benchmark.Warmups, report.Benchmark.Runs, report.Benchmark.Seed)
-	fmt.Fprintln(w, "Timing: client-observed at llm.Provider.Stream boundary")
+	fmt.Fprintln(w, "\nBenchmark results")
+	fmt.Fprintf(w, "  %s mode | %s cache | %d warmup + %d measured | seed %d\n",
+		report.Benchmark.Mode, report.Benchmark.Cache, report.Benchmark.Warmups, report.Benchmark.Runs, report.Benchmark.Seed)
+	fmt.Fprintln(w, "  Client-observed timing at the llm.Provider.Stream boundary")
 	if report.Benchmark.AssumedContextLimit > 0 {
-		fmt.Fprintf(w, "WARNING: %s\n", AssumedContextLimitLimitation(report.Benchmark.AssumedContextLimit))
+		writeWrappedLine(w, "WARNING: "+AssumedContextLimitLimitation(report.Benchmark.AssumedContextLimit), "", 78)
 	}
 
 	for _, target := range report.Targets {
-		fmt.Fprintf(w, "\nProvider: %s (%s)\nModel: %s\n", target.ProviderName, target.ProviderKey, target.RequestedModel)
+		fmt.Fprintln(w)
+		writeWrappedLine(w, target.ProviderKey, "  ", 78)
+		writeWrappedLine(w, "  Model     "+target.RequestedModel, "            ", 78)
+		fmt.Fprintf(w, "  Adapter   %s | credential %s\n", target.ProviderType, target.CredentialType)
 		if target.Error != "" {
-			fmt.Fprintf(w, "Status: failed — %s\n", target.Error)
+			writeWrappedLine(w, "  Status    failed - "+target.Error, "            ", 78)
 			continue
 		}
 		if target.AssumedContextLimit > 0 {
-			fmt.Fprintf(w, "Assumed context limit: %d tokens (eligibility only; server num_ctx unchanged)\n", target.AssumedContextLimit)
-		}
-		fmt.Fprintf(w, "Cache telemetry: %s", yesNo(target.Capabilities.ReportsCacheReads))
-		if target.Capabilities.CacheTelemetryNote != "" {
-			fmt.Fprintf(w, " — %s", target.Capabilities.CacheTelemetryNote)
-		}
-		fmt.Fprintln(w)
-		if target.Capabilities.ManagedContext {
-			fmt.Fprintln(w, "Measurement scope: subprocess-inclusive (managed provider opt-in)")
-		}
-		if !target.Capabilities.IncrementalStream {
-			fmt.Fprintln(w, "Decode throughput: unavailable (adapter delivery is non-incremental or bursty; use provider output usage and E2E timing for separate analysis)")
-		}
-		if target.InputTargetMeaning == "generated_user_payload" {
-			fmt.Fprintln(w, "Input target: generated user payload; provider total is reported but not calibrated or target-gated")
-		}
-		if !target.Capabilities.SupportsOutputLimit {
-			fmt.Fprintln(w, "Output limit: unsupported by adapter; actual provider output tokens are reported")
+			writeWrappedLine(w,
+				fmt.Sprintf("  Assumed context limit: %d tokens (eligibility only; server num_ctx unchanged)", target.AssumedContextLimit),
+				"    ", 78)
 		}
 		successes, failures, timeouts, retryEvents, discarded := targetRunCounts(report.Runs, target.ProviderKey, target.RequestedModel)
-		fmt.Fprintf(w, "Raw measured attempts: %d success, %d failure (%d timeout), %d provider retry events, %d attempt discards\n", successes, failures, timeouts, retryEvents, discarded)
-		fmt.Fprintln(w, "Workload  Input target  Provider input  Computed  Cache read/write  Output  Activity TTFT min/med/max  Visible TTFT min/med/max  Effective input tok/s  Decode tok/s  TPOT ms  E2E min/med/max  Latency/Fit")
+		fmt.Fprintf(w, "  Attempts  %d succeeded | %d failed (%d timeout) | %d retries | %d discards\n",
+			successes, failures, timeouts, retryEvents, discarded)
+		measurementScope := target.Capabilities.MeasurementScope
+		if measurementScope == "" {
+			measurementScope = "unspecified scope"
+		}
+		fmt.Fprintf(w, "  Features  cache reads %s | output limit %s | %s\n",
+			reportedLabel(target.Capabilities.ReportsCacheReads), supportedLabel(target.Capabilities.SupportsOutputLimit), measurementScope)
+		if target.Capabilities.CacheTelemetryNote != "" {
+			writeWrappedLine(w, "  Cache     "+target.Capabilities.CacheTelemetryNote, "            ", 78)
+		}
+
 		for _, aggregate := range report.Aggregates {
 			if aggregate.Provider != target.ProviderKey || aggregate.RequestedModel != target.RequestedModel {
 				continue
 			}
-			decode := formatMedian(aggregate.DecodeTokensPerSecond)
-			if aggregate.DecodeTokensPerSecond.Median == nil {
-				decode = formatMedian(aggregate.VisibleTokensPerSecond)
-				if aggregate.VisibleTokensPerSecond.Median != nil {
-					decode += " visible"
-				}
-			}
-			fmt.Fprintf(w, "%-8s  %11d  %14s  %8s  %8s/%-8s  %6s  %25s  %24s  %21s  %12s  %7s  %15s  %d/%d | %d/%d\n",
-				aggregate.Workload,
-				aggregate.RequestedInput,
-				formatNumber(aggregate.TotalInputTokens),
-				formatNumber(aggregate.ComputedInputTokens),
-				formatNumber(aggregate.CachedInputTokens),
-				formatNumber(aggregate.CacheWriteTokens),
-				formatNumber(aggregate.OutputTokens),
-				formatDurationDistribution(aggregate.ActivityTTFTMS),
-				formatDurationDistribution(aggregate.VisibleTTFTMS),
-				formatMedian(aggregate.EffectiveInputTokensRate),
-				decode,
-				formatMedian(aggregate.TPOTMS),
-				formatDurationDistribution(aggregate.EndToEndMS),
-				aggregate.LatencyValidRuns,
-				aggregate.MeasuredRuns,
-				aggregate.FitValidRuns,
-				aggregate.MeasuredRuns,
-			)
-			if aggregate.CacheState == "unknown" {
-				fmt.Fprintln(w, "                      cache state: unknown (zero cached tokens is not treated as a cache miss)")
-			}
+			writeHumanAggregate(w, target, aggregate)
 		}
+		writeHumanFits(w, report.Fits, target)
 	}
-
-	if len(report.Fits) > 0 {
-		fmt.Fprintln(w, "\nLocal client-observed effective prefill slopes:")
-		for _, fit := range report.Fits {
-			fmt.Fprintf(w, "  %s:%s %s: %.0f tok/s (%d lengths, %d valid runs)\n", fit.Provider, fit.RequestedModel, fit.Range, fit.EffectiveTokensPerSec, fit.DistinctLengths, fit.ValidRuns)
-		}
-	} else {
-		fmt.Fprintln(w, "\nLocal client-observed effective prefill slopes: unavailable (requires at least three distinct valid lengths in a range; unknown cache telemetry also requires --allow-unknown-cache)")
-	}
-	fmt.Fprintln(w, "\nThese are client-observed measurements, not server phase timings.")
 }
 
 func targetRunCounts(records []RunRecord, provider, model string) (successes, failures, timeouts, retryEvents, discards int) {
@@ -291,32 +255,144 @@ func targetRunCounts(records []RunRecord, provider, model string) (successes, fa
 	return successes, failures, timeouts, retryEvents, discards
 }
 
-func formatDurationDistribution(distribution Distribution) string {
-	if distribution.Min == nil || distribution.Median == nil || distribution.Max == nil {
-		return "-"
+func writeHumanAggregate(w io.Writer, target TargetMetadata, aggregate Aggregate) {
+	heading := fmt.Sprintf("  %s | %s input -> %s requested output",
+		aggregate.Workload, formatInteger(int64(aggregate.RequestedInput)), formatInteger(int64(aggregate.RequestedOutput)))
+	if target.InputTargetMeaning == "generated_user_payload" {
+		heading += " (payload target)"
 	}
-	return fmt.Sprintf("%.2f/%.2f/%.2fs", *distribution.Min/1000, *distribution.Median/1000, *distribution.Max/1000)
+	fmt.Fprintf(w, "\n%s\n", heading)
+	fmt.Fprintf(w, "    Activity TTFT  %s\n", formatDurationSummary(aggregate.ActivityTTFTMS))
+	fmt.Fprintf(w, "    Visible TTFT   %s\n", formatDurationSummary(aggregate.VisibleTTFTMS))
+	fmt.Fprintf(w, "    End to end     %s\n", formatDurationSummary(aggregate.EndToEndMS))
+
+	decodeLabel, decode := "Decode rate", formatRateSummary(aggregate.DecodeTokensPerSecond, "tok/s")
+	if aggregate.DecodeTokensPerSecond.Median == nil && aggregate.VisibleTokensPerSecond.Median != nil {
+		decodeLabel, decode = "Visible rate", formatRateSummary(aggregate.VisibleTokensPerSecond, "tok/s")
+	}
+	fmt.Fprintf(w, "    %-15s%s", decodeLabel, decode)
+	if aggregate.TPOTMS.Median != nil {
+		fmt.Fprintf(w, " | TPOT %s", formatRateSummary(aggregate.TPOTMS, "ms"))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "    Effective input %s\n", formatRateSummary(aggregate.EffectiveInputTokensRate, "tok/s"))
+
+	providerInput := formatNumber(aggregate.TotalInputTokens)
+	if target.InputTargetMeaning == "generated_user_payload" {
+		providerInput += " (reported, not target-gated)"
+	}
+	fmt.Fprintf(w, "    Input tokens    provider %s | computed %s\n", providerInput, formatNumber(aggregate.ComputedInputTokens))
+	fmt.Fprintf(w, "    Cache tokens    read %s | write %s | state %s\n",
+		formatNumber(aggregate.CachedInputTokens), formatNumber(aggregate.CacheWriteTokens), aggregate.CacheState)
+	fmt.Fprintf(w, "    Output tokens   %s actual | %s requested\n",
+		formatNumber(aggregate.OutputTokens), formatInteger(int64(aggregate.RequestedOutput)))
+	fmt.Fprintf(w, "    Valid runs      latency %d/%d | fit %d/%d | decode %d/%d\n",
+		aggregate.LatencyValidRuns, aggregate.MeasuredRuns,
+		aggregate.FitValidRuns, aggregate.MeasuredRuns,
+		aggregate.DecodeValidRuns, aggregate.MeasuredRuns)
+	if aggregate.ErrorRuns > 0 {
+		fmt.Fprintf(w, "    Errors          %d measured run(s) failed\n", aggregate.ErrorRuns)
+	}
 }
 
-func formatMedian(distribution Distribution) string {
-	if distribution.Median == nil {
-		return "-"
+func writeHumanFits(w io.Writer, fits []Fit, target TargetMetadata) {
+	var targetFits []Fit
+	for _, fit := range fits {
+		if fit.Provider == target.ProviderKey && fit.RequestedModel == target.RequestedModel {
+			targetFits = append(targetFits, fit)
+		}
 	}
-	return fmt.Sprintf("%.1f", *distribution.Median)
+	fmt.Fprintln(w, "\n  Effective prefill fit")
+	if len(targetFits) == 0 {
+		fmt.Fprintln(w, "    unavailable - needs at least 3 distinct fit-valid input lengths")
+		return
+	}
+	for _, fit := range targetFits {
+		fmt.Fprintf(w, "    %s  %.0f tok/s | %d lengths | %d valid runs\n",
+			fit.Range, fit.EffectiveTokensPerSec, fit.DistinctLengths, fit.ValidRuns)
+	}
+}
+
+func formatDurationSummary(distribution Distribution) string {
+	if distribution.Median == nil {
+		return "n/a"
+	}
+	result := fmt.Sprintf("%.2fs", *distribution.Median/1000)
+	if distribution.Min != nil && distribution.Max != nil {
+		result += fmt.Sprintf(" (%.2f-%.2fs", *distribution.Min/1000, *distribution.Max/1000)
+		if distribution.P95 != nil {
+			result += fmt.Sprintf(", p95 %.2fs", *distribution.P95/1000)
+		}
+		result += ")"
+	}
+	return result
+}
+
+func formatRateSummary(distribution Distribution, unit string) string {
+	if distribution.Median == nil {
+		return "n/a"
+	}
+	result := fmt.Sprintf("%.1f %s", *distribution.Median, unit)
+	if distribution.Min != nil && distribution.Max != nil && *distribution.Min != *distribution.Max {
+		result += fmt.Sprintf(" (%.1f-%.1f)", *distribution.Min, *distribution.Max)
+	}
+	return result
 }
 
 func formatNumber(value *float64) string {
 	if value == nil {
-		return "-"
+		return "n/a"
 	}
-	return fmt.Sprintf("%.0f", *value)
+	return formatInteger(int64(*value + 0.5))
 }
 
-func yesNo(value bool) string {
+func formatInteger(value int64) string {
+	sign := ""
+	if value < 0 {
+		sign = "-"
+		value = -value
+	}
+	digits := fmt.Sprintf("%d", value)
+	for i := len(digits) - 3; i > 0; i -= 3 {
+		digits = digits[:i] + "," + digits[i:]
+	}
+	return sign + digits
+}
+
+func reportedLabel(value bool) string {
 	if value {
 		return "reported"
 	}
 	return "not reported"
+}
+
+func supportedLabel(value bool) string {
+	if value {
+		return "enforced"
+	}
+	return "not enforced"
+}
+
+func writeWrappedBullet(w io.Writer, text string, width int) {
+	writeWrappedLine(w, "  - "+text, "    ", width)
+}
+
+func writeWrappedLine(w io.Writer, text, continuation string, width int) {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		fmt.Fprintln(w)
+		return
+	}
+	line := words[0]
+	for _, word := range words[1:] {
+		if len(line)+1+len(word) <= width {
+			line += " " + word
+			continue
+		}
+		fmt.Fprintln(w, line)
+		line = continuation + word
+	}
+	fmt.Fprintln(w, line)
 }
 
 func deduplicate(values []string) []string {

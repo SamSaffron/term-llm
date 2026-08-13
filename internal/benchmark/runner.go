@@ -42,6 +42,21 @@ func (r Runner) runTarget(ctx context.Context, target Target, opts Options) ([]R
 		}
 		return nil
 	}
+	measure := func(spec measureSpec) RunRecord {
+		if opts.OnProgress != nil {
+			opts.OnProgress(Progress{
+				ProviderKey:    target.ProviderKey,
+				RequestedModel: target.RequestedModel,
+				Phase:          spec.phase,
+				Workload:       spec.workload,
+				Run:            spec.run,
+				Attempt:        spec.attempt,
+				InputTokens:    spec.inputTarget,
+				OutputTokens:   spec.outputTarget,
+			})
+		}
+		return r.measure(ctx, target, opts, spec)
+	}
 
 	// Calibrate each distinct scenario with provider-reported input usage, then
 	// validate the adjusted payload before any warmup or measured request. The
@@ -56,7 +71,7 @@ func (r Runner) runTarget(ctx context.Context, target Target, opts Options) ([]R
 		if !generatedPayloadTarget {
 			order++
 			seed := DeriveSeed(opts.Seed, target.ProviderKey, target.RequestedModel, "calibration", i, 1, order)
-			record := r.measure(ctx, target, opts, measureSpec{
+			record := measure(measureSpec{
 				phase:          "calibration",
 				workload:       scenario.Workload,
 				attempt:        1,
@@ -83,7 +98,7 @@ func (r Runner) runTarget(ctx context.Context, target Target, opts Options) ([]R
 
 			order++
 			seed = DeriveSeed(opts.Seed, target.ProviderKey, target.RequestedModel, "calibration", i, 2, order)
-			record = r.measure(ctx, target, opts, measureSpec{
+			record = measure(measureSpec{
 				phase:          "calibration",
 				workload:       scenario.Workload,
 				attempt:        2,
@@ -107,7 +122,7 @@ func (r Runner) runTarget(ctx context.Context, target Target, opts Options) ([]R
 		for warmup := 0; warmup < opts.Warmups; warmup++ {
 			order++
 			seed := DeriveSeed(opts.Seed, target.ProviderKey, target.RequestedModel, "warmup", i, warmup, order)
-			record := r.measure(ctx, target, opts, measureSpec{
+			record := measure(measureSpec{
 				phase:          "warmup",
 				workload:       scenario.Workload,
 				run:            warmup + 1,
@@ -143,7 +158,7 @@ func (r Runner) runTarget(ctx context.Context, target Target, opts Options) ([]R
 		for attempt := 1; attempt <= 2; attempt++ {
 			order++
 			seed := DeriveSeed(opts.Seed, target.ProviderKey, target.RequestedModel, "measured", scheduled.scenario, scheduled.run, attempt, order)
-			record := r.measure(ctx, target, opts, measureSpec{
+			record := measure(measureSpec{
 				phase:          "measured",
 				workload:       scenario.Workload,
 				run:            scheduled.run,

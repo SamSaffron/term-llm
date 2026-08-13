@@ -67,6 +67,17 @@ func inputTargetMeaning(target Target, mode string) string {
 	return "provider_total_calibrated"
 }
 
+type Progress struct {
+	ProviderKey    string
+	RequestedModel string
+	Phase          string
+	Workload       string
+	Run            int
+	Attempt        int
+	InputTokens    int
+	OutputTokens   int
+}
+
 type Options struct {
 	Mode                string
 	Cache               string
@@ -84,6 +95,7 @@ type Options struct {
 	AllowUnknownCache   bool
 	AssumedContextLimit int
 	TermLLMVersion      string
+	OnProgress          func(Progress)
 	OnRecord            func(RunRecord) error
 }
 

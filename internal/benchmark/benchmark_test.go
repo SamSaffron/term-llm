@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -500,6 +501,35 @@ func TestRunnerRetriesCacheContaminationOnceWithFreshPayload(t *testing.T) {
 	}
 }
 
+func TestDefaultBalancedProfileSupportsPrefillEstimate(t *testing.T) {
+	scenarios, runs, warmups, err := DefaultProfile("balanced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 3 || warmups != 1 || len(scenarios) != 4 {
+		t.Fatalf("balanced profile = scenarios=%v runs=%d warmups=%d", scenarios, runs, warmups)
+	}
+	var prefillInputs []int
+	for _, scenario := range scenarios {
+		if scenario.Workload == "prefill" {
+			prefillInputs = append(prefillInputs, scenario.InputTokens)
+		}
+	}
+	if !slices.Equal(prefillInputs, []int{4_000, 16_000, 64_000}) {
+		t.Fatalf("balanced prefill inputs = %v", prefillInputs)
+	}
+}
+
+func TestBalancedPrefillPointsProduceObservedSpanFit(t *testing.T) {
+	record := func(input int, ttft float64) RunRecord {
+		return RunRecord{Provider: "p", RequestedModel: "m", Phase: "measured", Workload: "prefill", Run: 1, Attempt: 1, RequestedInput: input, RequestedOutput: 16, FitEligible: true, Usage: UsageRecord{ComputedInputTokens: input}, Timing: TimingRecord{ActivityTTFTMS: floatPtr(ttft)}}
+	}
+	fits := ComputeFits([]RunRecord{record(4_000, 400), record(16_000, 1_600), record(64_000, 6_400)})
+	if len(fits) != 1 || fits[0].Range != "observed span" || fits[0].DistinctLengths != 3 || math.Abs(fits[0].EffectiveTokensPerSec-10_000) > 0.001 {
+		t.Fatalf("balanced fits = %#v", fits)
+	}
+}
+
 func TestSmallSampleSummaryAndFitMinimums(t *testing.T) {
 	small := summarize([]float64{1, 2, 3, 100})
 	if small.P95 != nil || small.Label != "min_median_max" || small.Median == nil || *small.Median != 2.5 {
@@ -587,6 +617,75 @@ func TestWarmupsExcludedAndJSONHasNullMetricsWithoutPayload(t *testing.T) {
 	}
 	if !strings.Contains(text, `"decode_tokens_per_second":null`) {
 		t.Fatalf("unavailable metric was not JSON null: %s", text)
+	}
+}
+
+func TestWriteHumanUsesReadableScenarioCards(t *testing.T) {
+	value := func(v float64) *float64 { return &v }
+	report := Report{
+		Benchmark: BenchmarkMetadata{Mode: "balanced", Cache: "cold", Runs: 3, Warmups: 1, Seed: 42},
+		Targets: []TargetMetadata{{
+			ProviderKey: "cdck_deepseek", ProviderType: "vllm", ProviderName: "Cdck_deepseek",
+			CredentialType: "api_key", RequestedModel: "deepseek-v4",
+			Capabilities: AdapterCapabilities{ReportsCacheReads: true, SupportsOutputLimit: true, MeasurementScope: "direct_http"},
+		}},
+		Aggregates: []Aggregate{{
+			Provider: "cdck_deepseek", RequestedModel: "deepseek-v4", Workload: "decode",
+			RequestedInput: 2_000, RequestedOutput: 128, MeasuredRuns: 3, SuccessfulRuns: 3,
+			LatencyValidRuns: 3, FitValidRuns: 3, DecodeValidRuns: 3, CacheState: "miss",
+			TotalInputTokens: value(2_025), ComputedInputTokens: value(2_025), CachedInputTokens: value(0),
+			OutputTokens:             value(128),
+			ActivityTTFTMS:           Distribution{Min: value(490), Median: value(550), Max: value(750)},
+			VisibleTTFTMS:            Distribution{Min: value(940), Median: value(1_030), Max: value(1_120)},
+			EndToEndMS:               Distribution{Min: value(1_590), Median: value(1_650), Max: value(1_850)},
+			DecodeTokensPerSecond:    Distribution{Min: value(110), Median: value(115.2), Max: value(120)},
+			TPOTMS:                   Distribution{Median: value(8.7)},
+			EffectiveInputTokensRate: Distribution{Median: value(3_680)},
+		}},
+		Limitations: []string{"Cold, sequential measurements only; warm-cache and concurrent workloads are intentionally not implemented in schema version 1."},
+	}
+
+	var out strings.Builder
+	WriteHuman(&out, report)
+	text := out.String()
+	for _, want := range []string{
+		"Benchmark results", "decode | 2,000 input -> 128 requested output",
+		"Activity TTFT  0.55s (0.49-0.75s)", "Decode rate    115.2 tok/s",
+		"Cache tokens    read 0 | write n/a | state miss",
+		"Valid runs      latency 3/3 | fit 3/3 | decode 3/3",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("human report missing %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"Activity TTFT min/med/max", "cache state: unknown", "\nNotes\n", "Cold, sequential measurements"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("human report retained old table output %q:\n%s", unwanted, text)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if len(line) > 78 {
+			t.Fatalf("report line is %d columns, want <= 78: %q", len(line), line)
+		}
+	}
+}
+
+func TestWriteBudgetIsCompactAndWrapped(t *testing.T) {
+	var out strings.Builder
+	WriteBudget(&out, "balanced", Budget{
+		MaximumRequests: 27, MaximumRequestInput: 64_000, MaximumRequestOutput: 128,
+		MaximumTotalInput: 738_000, MaximumTotalOutput: 1_440, OutputBudgetIsRequested: true,
+	})
+	text := out.String()
+	for _, want := range []string{"Token budget (balanced)", "up to 27", "64,000 input", "738,000 input", "output ceiling"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("budget missing %q:\n%s", want, text)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if len(line) > 78 {
+			t.Fatalf("budget line is %d columns, want <= 78: %q", len(line), line)
+		}
 	}
 }
 

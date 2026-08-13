@@ -90,6 +90,39 @@ func TestResolveBenchmarkTargetsAliasesAndManagedOptIn(t *testing.T) {
 	}
 }
 
+func TestResolveBenchmarkTargetsSupportsConfiguredVLLM(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "cdck_deepseek",
+		Providers: map[string]config.ProviderConfig{
+			"cdck_deepseek": {
+				Type:          config.ProviderTypeVLLM,
+				BaseURL:       "https://vllm.example.test/v1",
+				Model:         "deepseek-ai/DeepSeek-V4-Flash",
+				ContextWindow: 128_000,
+			},
+		},
+	}
+	scenarios := []benchmark.Scenario{{InputTokens: 2_000, OutputTokens: 128, Workload: "decode"}}
+	plans, skipped, err := resolveBenchmarkTargets(context.Background(), cfg, "cdck_deepseek", scenarios, "quick", false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skipped) != 0 || len(plans) != 1 {
+		t.Fatalf("plans=%#v skipped=%v", plans, skipped)
+	}
+	target := plans[0].target
+	if target.ProviderType != string(config.ProviderTypeVLLM) || target.RequestedModel != "deepseek-ai/DeepSeek-V4-Flash" {
+		t.Fatalf("vLLM target = %#v", target)
+	}
+	capabilities := target.Capabilities
+	if !capabilities.SupportsOutputLimit || !capabilities.SupportsTemperature || !capabilities.SupportsReasoningEffort || !capabilities.IncrementalStream {
+		t.Fatalf("vLLM capabilities = %#v", capabilities)
+	}
+	if !capabilities.ReportsCacheReads || capabilities.ManagedContext || capabilities.MeasurementScope != "direct_http" {
+		t.Fatalf("vLLM capabilities = %#v", capabilities)
+	}
+}
+
 func TestResolveBenchmarkTargetsRequiresOllamaLongContextNumCtx(t *testing.T) {
 	numCtx := 64_000
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
@@ -194,15 +227,10 @@ func TestParseBenchmarkContextLimit(t *testing.T) {
 	}
 }
 
-func TestApproveBenchmarkRequiresYesNonInteractive(t *testing.T) {
+func TestBenchmarkCommandHasNoApprovalFlag(t *testing.T) {
 	cmd := newBenchmarkCommand()
-	cmd.SetIn(bytes.NewBufferString("yes\n"))
-	cmd.SetOut(&bytes.Buffer{})
-	if err := approveBenchmark(cmd, false, false); err == nil || !strings.Contains(err.Error(), "--yes") {
-		t.Fatalf("approval error = %v", err)
-	}
-	if err := approveBenchmark(cmd, true, false); err != nil {
-		t.Fatalf("--yes approval = %v", err)
+	if flag := cmd.Flags().Lookup("yes"); flag != nil {
+		t.Fatalf("obsolete approval flag is still registered: %s", flag.Name)
 	}
 }
 
@@ -260,7 +288,11 @@ func TestExecuteBenchmarkPlansContinuesAndRendersPerModelFailure(t *testing.T) {
 		{target: benchmark.Target{ProviderKey: "p", ProviderType: "test", RequestedModel: "broken", Capabilities: capabilities}, scenarios: []benchmark.Scenario{{InputTokens: 100, OutputTokens: 1, Workload: "prefill"}}},
 		{target: benchmark.Target{ProviderKey: "p", ProviderType: "test", RequestedModel: "working", Capabilities: capabilities}, scenarios: []benchmark.Scenario{{InputTokens: 100, OutputTokens: 1, Workload: "prefill"}}},
 	}
-	opts := benchmark.Options{Mode: "prefill", Cache: "cold", Runs: 1, Timeout: time.Second, CacheTolerance: 0.01, TargetTolerance: 0.15}
+	var progress []benchmark.Progress
+	opts := benchmark.Options{
+		Mode: "prefill", Cache: "cold", Runs: 1, Timeout: time.Second, CacheTolerance: 0.01, TargetTolerance: 0.15,
+		OnProgress: func(update benchmark.Progress) { progress = append(progress, update) },
+	}
 	targets, records, err := executeBenchmarkPlans(context.Background(), &config.Config{}, plans, opts, false)
 	if err != nil {
 		t.Fatal(err)
@@ -271,11 +303,35 @@ func TestExecuteBenchmarkPlansContinuesAndRendersPerModelFailure(t *testing.T) {
 	if len(records) != 4 {
 		t.Fatalf("records = %#v", records)
 	}
+	if len(progress) != len(records) {
+		t.Fatalf("progress updates = %#v, want one per request", progress)
+	}
+	if progress[0].ProviderKey != "p" || progress[0].RequestedModel != "broken" || progress[0].Phase != "calibration" || progress[0].Attempt != 1 {
+		t.Fatalf("first progress update = %#v", progress[0])
+	}
 	report := benchmark.NewReport(opts, benchmark.Budget{}, targets, records)
 	var out bytes.Buffer
 	benchmark.WriteHuman(&out, report)
-	if !strings.Contains(out.String(), "Status: failed") || !strings.Contains(out.String(), "working") || !strings.Contains(out.String(), "Workload") || !strings.Contains(out.String(), "prefill") {
+	if !strings.Contains(out.String(), "Status") || !strings.Contains(out.String(), "working") || !strings.Contains(out.String(), "prefill |") {
 		t.Fatalf("human report = %s", out.String())
+	}
+}
+
+func TestBenchmarkProgressUpdateIsCompact(t *testing.T) {
+	update := benchmarkProgressUpdate(benchmark.Progress{
+		ProviderKey: "cdck_deepseek", RequestedModel: "deepseek-ai/DeepSeek-V4-Flash",
+		Phase: "measured", Workload: "decode", Run: 2, Attempt: 2, InputTokens: 2_000, OutputTokens: 128,
+	})
+	if update.Phase != "Benchmarking" {
+		t.Fatalf("progress phase = %q", update.Phase)
+	}
+	for _, want := range []string{"run 2 retry 1", "decode", "2.0k in / 128 out"} {
+		if !strings.Contains(update.Status, want) {
+			t.Fatalf("progress status %q missing %q", update.Status, want)
+		}
+	}
+	if strings.Contains(update.Status, "cdck_deepseek") || strings.Contains(update.Status, "DeepSeek") || len(update.Status) > 60 {
+		t.Fatalf("progress status is too noisy: %q", update.Status)
 	}
 }
 

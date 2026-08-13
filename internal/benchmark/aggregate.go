@@ -186,21 +186,9 @@ func ComputeFits(records []RunRecord) []Fit {
 
 	var fits []Fit
 	for model, points := range models {
-		for rangeIndex, fitRange := range ranges {
-			var selected []point
-			for _, candidate := range points {
-				inRange := candidate.input >= float64(fitRange.min)
-				if rangeIndex == len(ranges)-1 {
-					inRange = inRange && candidate.input <= float64(fitRange.max)
-				} else {
-					inRange = inRange && candidate.input < float64(fitRange.max)
-				}
-				if inRange {
-					selected = append(selected, candidate)
-				}
-			}
+		appendFit := func(label string, selected []point) bool {
 			if len(selected) < 3 {
-				continue
+				return false
 			}
 			sort.Slice(selected, func(i, j int) bool { return selected[i].input < selected[j].input })
 			var slopes []float64
@@ -215,11 +203,11 @@ func ComputeFits(records []RunRecord) []Fit {
 				}
 			}
 			if len(slopes) == 0 {
-				continue
+				return false
 			}
 			slope := median(slopes)
 			if slope <= 0 {
-				continue
+				return false
 			}
 			intercepts := make([]float64, 0, len(selected))
 			for _, candidate := range selected {
@@ -234,7 +222,7 @@ func ComputeFits(records []RunRecord) []Fit {
 			fits = append(fits, Fit{
 				Provider:                model.provider,
 				RequestedModel:          model.model,
-				Range:                   fitRange.label,
+				Range:                   label,
 				MinimumInputTokens:      int(math.Round(selected[0].input)),
 				MaximumInputTokens:      int(math.Round(selected[len(selected)-1].input)),
 				DistinctLengths:         len(selected),
@@ -245,6 +233,27 @@ func ComputeFits(records []RunRecord) []Fit {
 				MedianAbsoluteErrorSecs: median(residuals),
 				Method:                  "median_pairwise_slopes",
 			})
+			return true
+		}
+
+		modelHasFit := false
+		for rangeIndex, fitRange := range ranges {
+			var selected []point
+			for _, candidate := range points {
+				inRange := candidate.input >= float64(fitRange.min)
+				if rangeIndex == len(ranges)-1 {
+					inRange = inRange && candidate.input <= float64(fitRange.max)
+				} else {
+					inRange = inRange && candidate.input < float64(fitRange.max)
+				}
+				if inRange {
+					selected = append(selected, candidate)
+				}
+			}
+			modelHasFit = appendFit(fitRange.label, selected) || modelHasFit
+		}
+		if !modelHasFit {
+			appendFit("observed span", append([]point(nil), points...))
 		}
 	}
 	sort.Slice(fits, func(i, j int) bool {
