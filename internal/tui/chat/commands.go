@@ -126,6 +126,11 @@ func AllCommands() []Command {
 			Usage:       "/main",
 		},
 		{
+			Name:        "report",
+			Description: "Brief the coordinator from a completed worker session",
+			Usage:       "/report",
+		},
+		{
 			Name:        "undo",
 			Description: "Remove the latest user turn and everything after it",
 			Usage:       "/undo",
@@ -559,6 +564,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdTree(args)
 	case "main":
 		return m.cmdMain(args)
+	case "report":
+		return m.cmdReport(args)
 	case "undo":
 		return m.cmdUndoRedo(false, args)
 	case "redo":

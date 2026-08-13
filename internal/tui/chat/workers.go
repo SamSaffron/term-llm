@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -211,6 +212,101 @@ func (m *Model) cmdMain(args []string) (tea.Model, tea.Cmd) {
 		return m.showFooterError(fmt.Sprintf("Find coordinator: %v", err))
 	}
 	return m.requestResumeSession(edge.CoordinatorSessionID)
+}
+
+const interactiveReportPrompt = `Prepare a concise, self-contained result briefing for the coordinator of this worker session. Report the useful outcome and current state, not a chronological narration.
+
+Prioritize:
+- outcome and current state;
+- concrete evidence and decisions;
+- changes made and artifacts produced, including useful paths or identifiers;
+- verification performed and its results;
+- caveats, blockers, and clearly remaining work.
+
+The coordinator will receive only this document, so preserve facts needed to understand or act on the result. Do not address the user, mention this instruction, invent work, or imply that mailbox delivery has already happened. Use clear headings and compact prose. Aim for approximately 250–600 words, removing narrative detail before substantive evidence.`
+
+const interactiveReportTrigger = "Create the coordinator result briefing now."
+
+func interactiveReportTitle(edge session.WorkerEdge) string {
+	task := session.TruncateSummary(edge.Task)
+	if task == "" {
+		return "Interactive worker result"
+	}
+	return "Interactive result: " + task
+}
+
+// cmdReport generates a control-plane briefing from the active child context and
+// delivers it directly to the durable coordinator mailbox. It never appends a
+// normal turn to either transcript and deliberately avoids handover file/scripts.
+func (m *Model) cmdReport(args []string) (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	if len(args) != 0 {
+		return m.showFooterError("Usage: /report")
+	}
+	if m.transcriptMutationBusy() || m.pendingHandover != nil || m.handoverPreview != nil {
+		return m.showFooterWarning("Cannot prepare a report while conversation work is active.")
+	}
+	if m.store == nil || m.sess == nil || strings.TrimSpace(m.sess.ID) == "" {
+		return m.showFooterError("/report is available only in a durable worker child session.")
+	}
+	workerStore, ok := session.AsWorkerStore(m.store)
+	if !ok {
+		return m.showFooterError("/report is available only in a durable worker child session.")
+	}
+	edge, err := workerStore.GetWorker(m.rootContext(), m.sess.ID)
+	if errors.Is(err, session.ErrNotFound) {
+		return m.showFooterError("/report is available only in a durable worker child session.")
+	}
+	if err != nil {
+		return m.showFooterError(fmt.Sprintf("Check worker report destination: %v", err))
+	}
+	if edge.Status.Active() {
+		return m.showFooterWarning("Cannot prepare a report while the background worker is still active.")
+	}
+	if m.provider == nil {
+		return m.showFooterError("Report preparation is unavailable: no provider is configured.")
+	}
+
+	currentSystemPrompt, messages := m.snapshotActiveHelperConversation()
+	if len(messages) == 0 {
+		return m.showFooterError("Report preparation requires conversation history in this worker session.")
+	}
+	ctx := m.beginHelperStream("Preparing report", true)
+	provider := m.provider
+	model := m.modelName
+	config := m.helperCompactionConfig()
+	sessionID := m.sess.ID
+
+	return m, tea.Batch(
+		func() tea.Msg {
+			briefing, err := llm.GenerateBriefing(ctx, provider, model, currentSystemPrompt, messages, config, llm.BriefingOptions{
+				EditorialPrompt:         interactiveReportPrompt,
+				TriggerPrompt:           interactiveReportTrigger,
+				PreparingAcknowledgment: "I'll now prepare the coordinator result briefing.",
+				Operation:               "report",
+				MaxOutputTokens:         2_000,
+				AllowProviderFork:       true,
+			})
+			if err != nil {
+				return reportDoneMsg{sessionID: sessionID, err: err}
+			}
+			report, err := workerStore.AddWorkerReport(ctx, session.WorkerReport{
+				ChildSessionID:       edge.ChildSessionID,
+				SourceSessionID:      edge.ChildSessionID,
+				DestinationSessionID: edge.CoordinatorSessionID,
+				Kind:                 session.WorkerReportResult,
+				Title:                interactiveReportTitle(edge),
+				Body:                 briefing.Document,
+				Origin:               session.WorkerReportOriginInteractive,
+			})
+			if err != nil {
+				return reportDoneMsg{sessionID: sessionID, briefing: briefing, err: err, delivering: true}
+			}
+			return reportDoneMsg{sessionID: sessionID, briefing: briefing, report: report}
+		},
+		m.spinner.Tick,
+		m.tickEvery(),
+	)
 }
 
 func workerStatusLabel(status session.WorkerStatus) string {

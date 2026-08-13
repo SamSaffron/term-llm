@@ -329,7 +329,10 @@ func (s *SQLiteStore) AddWorkerReport(ctx context.Context, report WorkerReport) 
 		if report.SourceSessionID != report.ChildSessionID || report.DestinationSessionID != coordinator {
 			return fmt.Errorf("worker report route does not match durable worker edge")
 		}
-		if report.Kind == WorkerReportResult {
+		// Background completion has one canonical result: an explicit worker-tool
+		// result wins over terminal synthesis. A later interactive /report is a
+		// distinct user-requested briefing and therefore bypasses this collapse.
+		if report.Kind == WorkerReportResult && report.Origin != WorkerReportOriginInteractive {
 			existing, err := scanWorkerReport(conn.QueryRowContext(ctx, workerReportSelect+` WHERE child_session_id = ? AND kind = ? ORDER BY sequence, id LIMIT 1`, report.ChildSessionID, WorkerReportResult))
 			if err == nil {
 				report = existing

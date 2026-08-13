@@ -609,6 +609,13 @@ type (
 		result *llm.CompactionResult
 		err    error
 	}
+	reportDoneMsg struct {
+		sessionID  string
+		briefing   *llm.BriefingResult
+		report     session.WorkerReport
+		err        error
+		delivering bool
+	}
 	handoverDoneMsg struct {
 		result       *llm.HandoverResult
 		err          error
@@ -1978,6 +1985,7 @@ func isParentChatMessage(msg tea.Msg) bool {
 		copyStatusClearMsg,
 		compactStartedMsg,
 		compactDoneMsg,
+		reportDoneMsg,
 		handoverDoneMsg,
 		handoverRenameDoneMsg,
 		sessionSavedMsg,
@@ -2402,6 +2410,27 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.engine.SetContextEstimateBaseline(0, 0)
 		}
 		return m.showFooterSuccess("Conversation compacted.")
+
+	case reportDoneMsg:
+		m.streaming = false
+		m.phase = "Thinking"
+		m.releaseStreamCancelFunc()
+		if msg.briefing != nil {
+			m.recordHandoverUsage(context.Background(), msg.sessionID, msg.briefing.Model, msg.briefing.Usage)
+		}
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
+				return m.showFooterMuted("Report cancelled.")
+			}
+			if msg.delivering {
+				return m.showFooterError(fmt.Sprintf("Report delivery failed: %v", msg.err))
+			}
+			return m.showFooterError(fmt.Sprintf("Report preparation failed: %v", msg.err))
+		}
+		if msg.report.ID == 0 {
+			return m.showFooterError("Report delivery failed: no stored report returned.")
+		}
+		return m.showFooterSuccess(fmt.Sprintf("Report #%d sent to the coordinator mailbox.", msg.report.Sequence+1))
 
 	case handoverDoneMsg:
 		m.streaming = false

@@ -208,6 +208,37 @@ func TestWorkerPreventsConflictingActiveSharedCWD(t *testing.T) {
 	}
 }
 
+func TestInteractiveWorkerResultAppendsAfterCanonicalTerminalResult(t *testing.T) {
+	store, coordinator := newWorkerStoreTest(t)
+	edge, err := store.CreateWorker(context.Background(), coordinator.ID, "continue after completion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := store.AddWorkerReport(context.Background(), WorkerReport{
+		ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+		DestinationSessionID: edge.CoordinatorSessionID, Kind: WorkerReportResult,
+		Title: "Terminal", Body: "background complete", Origin: "terminal_synthesis",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive, err := store.AddWorkerReport(context.Background(), WorkerReport{
+		ChildSessionID: edge.ChildSessionID, SourceSessionID: edge.ChildSessionID,
+		DestinationSessionID: edge.CoordinatorSessionID, Kind: WorkerReportResult,
+		Title: "Interactive", Body: "continued result", Origin: WorkerReportOriginInteractive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interactive.ID == terminal.ID || interactive.Sequence != terminal.Sequence+1 {
+		t.Fatalf("interactive result collapsed into terminal result: terminal=%#v interactive=%#v", terminal, interactive)
+	}
+	reports, err := store.ListWorkerReports(context.Background(), edge.ChildSessionID)
+	if err != nil || len(reports) != 2 || reports[1].Origin != WorkerReportOriginInteractive {
+		t.Fatalf("reports = %#v, %v", reports, err)
+	}
+}
+
 func TestWorkerReportsAreBoundedImmutableAndImportedAsUser(t *testing.T) {
 	store, coordinator := newWorkerStoreTest(t)
 	edge, err := store.CreateWorker(context.Background(), coordinator.ID, "summarize tests")

@@ -43,6 +43,11 @@ const (
 	WorkerReportBlocker  WorkerReportKind = "blocker"
 )
 
+// WorkerReportOriginInteractive identifies a user-requested briefing generated
+// from a resumed worker child. Unlike the worker's terminal result, subsequent
+// interactive reports are separate immutable mailbox entries.
+const WorkerReportOriginInteractive = "interactive_report"
+
 const (
 	MaxWorkerTaskRunes        = 16_000
 	MaxWorkerReportTitleRunes = 200

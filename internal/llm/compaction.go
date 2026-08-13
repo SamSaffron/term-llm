@@ -1517,6 +1517,26 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	return result, nil
 }
 
+// BriefingResult is the generated document and helper-call accounting shared by
+// handover and other control-plane briefings.
+type BriefingResult struct {
+	Document string
+	Model    string
+	Usage    Usage
+}
+
+// BriefingOptions controls the editorial instructions and whether generation
+// may branch from live provider state. Callers must only enable forking at a
+// settled provider boundary.
+type BriefingOptions struct {
+	EditorialPrompt         string
+	TriggerPrompt           string
+	PreparingAcknowledgment string
+	Operation               string
+	MaxOutputTokens         int
+	AllowProviderFork       bool
+}
+
 // HandoverResult describes the outcome of a handover compression.
 type HandoverResult struct {
 	Document    string    // The handover document text
@@ -1587,29 +1607,35 @@ func conversationEndsAtSettledAssistant(messages []Message) bool {
 	return len(pending) == 0
 }
 
-// Handover generates a handover document from the conversation history using
-// the outgoing provider. This is the Tier 2 fallback used when file-based
-// handover is not available. The result contains reconstructed messages suitable
-// for the new agent: [new system prompt] + [handover doc] + [assistant ack].
-func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt, newSystemPrompt string, messages []Message, sourceAgent, targetAgent string, config CompactionConfig, options HandoverOptions) (*HandoverResult, error) {
+// GenerateBriefing prepares a self-contained control-plane document from a
+// conversation without creating a normal agent turn. It owns tool-history
+// settlement, isolated/forked provider selection, the ephemeral helper stream,
+// document collection, and usage accounting returned to the caller.
+func GenerateBriefing(ctx context.Context, provider Provider, model, currentSystemPrompt string, messages []Message, config CompactionConfig, options BriefingOptions) (*BriefingResult, error) {
 	if len(messages) == 0 {
-		return nil, fmt.Errorf("no messages to hand over")
+		return nil, fmt.Errorf("no messages to brief")
+	}
+	if strings.TrimSpace(options.EditorialPrompt) == "" || strings.TrimSpace(options.TriggerPrompt) == "" {
+		return nil, fmt.Errorf("briefing instructions are required")
+	}
+	operation := strings.TrimSpace(options.Operation)
+	if operation == "" {
+		operation = "briefing"
 	}
 
 	settledBoundary := conversationEndsAtSettledAssistant(messages)
 	messages = sanitizeToolHistory(messages)
 
-	prompt := fmt.Sprintf(handoverPromptTemplate, sourceAgent, targetAgent)
-	policy := Message{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: prompt}}}
-	trigger := UserText(handoverTriggerPrompt)
+	policy := Message{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: options.EditorialPrompt}}}
+	trigger := UserText(options.TriggerPrompt)
 
 	// A settled assistant response is the exact provider boundary from which a
-	// handover can branch. Reuse that server-side state when the provider supports
-	// an isolated native fork; otherwise preserve the established full-history path.
-	var handoverProvider Provider
+	// helper can branch. Reuse that server-side state when supported; otherwise
+	// use an isolated full-history request so the live conversation is untouched.
+	var briefingProvider Provider
 	forked := options.AllowProviderFork && settledBoundary
 	if forked {
-		handoverProvider, forked = forkConversationProvider(provider)
+		briefingProvider, forked = forkConversationProvider(provider)
 	}
 
 	var reqMessages []Message
@@ -1621,25 +1647,32 @@ func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt
 		}
 		reqMessages = append(reqMessages, policy, trigger)
 	} else {
-		handoverProvider = isolatedConversationProvider(provider)
+		briefingProvider = isolatedConversationProvider(provider)
 		inputLimit := config.InputLimit
 		if inputLimit <= 0 {
 			inputLimit = InputLimitForModel(model)
+		}
+		acknowledgment := strings.TrimSpace(options.PreparingAcknowledgment)
+		if acknowledgment == "" {
+			acknowledgment = "I'll now prepare the briefing."
 		}
 		reqMessages = buildHelperRequestMessages(
 			currentSystemPrompt,
 			messages,
 			inputLimit,
-			"I'll now prepare the handover briefing.",
+			acknowledgment,
 			policy,
 			trigger,
 		)
 	}
 
-	budget := 12_000 // Slightly larger budget than compaction for handover precision
+	budget := options.MaxOutputTokens
+	if budget <= 0 {
+		budget = defaultSummaryTokenBudget
+	}
 	budget = ClampOutputTokens(budget, model)
 
-	stream, err := handoverProvider.Stream(ctx, Request{
+	stream, err := briefingProvider.Stream(ctx, Request{
 		Model:                          model,
 		Messages:                       reqMessages,
 		MaxOutputTokens:                budget,
@@ -1648,28 +1681,55 @@ func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt
 		IncludeDeveloperInContinuation: forked,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("handover stream failed: %w", err)
+		return nil, fmt.Errorf("%s stream failed: %w", operation, err)
 	}
 	defer stream.Close()
 
 	collected, err := CollectTextStream(stream, nil)
 	if err != nil {
-		return nil, fmt.Errorf("handover recv failed: %w", err)
+		return nil, fmt.Errorf("%s recv failed: %w", operation, err)
 	}
-	if strings.TrimSpace(collected.Text) == "" {
-		return nil, fmt.Errorf("handover produced empty document")
+	document := collected.Text
+	if strings.TrimSpace(document) == "" {
+		return nil, fmt.Errorf("%s produced empty document", operation)
+	}
+	return &BriefingResult{
+		Document: document,
+		Model:    strings.TrimSpace(model),
+		Usage:    collected.Usage,
+	}, nil
+}
+
+// Handover generates a handover document from the conversation history using
+// the outgoing provider. This is the Tier 2 fallback used when file-based
+// handover is not available. The result contains reconstructed messages suitable
+// for the new agent: [new system prompt] + [handover doc] + [assistant ack].
+func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt, newSystemPrompt string, messages []Message, sourceAgent, targetAgent string, config CompactionConfig, options HandoverOptions) (*HandoverResult, error) {
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("no messages to hand over")
+	}
+	briefing, err := GenerateBriefing(ctx, provider, model, currentSystemPrompt, messages, config, BriefingOptions{
+		EditorialPrompt:         fmt.Sprintf(handoverPromptTemplate, sourceAgent, targetAgent),
+		TriggerPrompt:           handoverTriggerPrompt,
+		PreparingAcknowledgment: "I'll now prepare the handover briefing.",
+		Operation:               "handover",
+		MaxOutputTokens:         12_000,
+		AllowProviderFork:       options.AllowProviderFork,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// Reconstruct messages for the new agent with the new system prompt.
-	newMessages := ReconstructHandoverHistory(newSystemPrompt, collected.Text, sourceAgent, targetAgent)
+	newMessages := ReconstructHandoverHistory(newSystemPrompt, briefing.Document, sourceAgent, targetAgent)
 
 	return &HandoverResult{
-		Document:    collected.Text,
+		Document:    briefing.Document,
 		NewMessages: newMessages,
 		SourceAgent: sourceAgent,
 		TargetAgent: targetAgent,
-		Model:       strings.TrimSpace(model),
-		Usage:       collected.Usage,
+		Model:       briefing.Model,
+		Usage:       briefing.Usage,
 	}, nil
 }
 

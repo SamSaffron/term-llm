@@ -2293,6 +2293,44 @@ func TestForkConversationProvider_ClaudeBinUsesForkSession(t *testing.T) {
 	}
 }
 
+func TestGenerateBriefingUsesSharedHelperStreamWithCustomEditorialPolicy(t *testing.T) {
+	provider := NewMockProvider("test").AddTurn(MockTurn{
+		Text:  "## Outcome\nThe focused implementation is complete.",
+		Usage: Usage{InputTokens: 42, OutputTokens: 11, CachedInputTokens: 7},
+	})
+	messages := []Message{UserText("implement it"), AssistantText("implementation complete")}
+
+	result, err := GenerateBriefing(context.Background(), provider, "test-model", "system policy", messages, DefaultCompactionConfig(), BriefingOptions{
+		EditorialPrompt:         "Prioritize evidence and current state, not chronology.",
+		TriggerPrompt:           "Write the result report now.",
+		PreparingAcknowledgment: "I'll prepare the result report.",
+		MaxOutputTokens:         777,
+	})
+	if err != nil {
+		t.Fatalf("GenerateBriefing: %v", err)
+	}
+	if result.Document != "## Outcome\nThe focused implementation is complete." || result.Model != "test-model" || result.Usage.InputTokens != 42 || result.Usage.OutputTokens != 11 || result.Usage.CachedInputTokens != 7 {
+		t.Fatalf("briefing result = %#v", result)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("requests = %#v", provider.Requests)
+	}
+	request := provider.Requests[0]
+	if !request.Ephemeral || request.MaxTurns != 1 || request.MaxOutputTokens != 777 {
+		t.Fatalf("helper request controls = %#v", request)
+	}
+	var requestText strings.Builder
+	for _, message := range request.Messages {
+		requestText.WriteString(MessageText(message))
+		requestText.WriteByte('\n')
+	}
+	for _, want := range []string{"implement it", "implementation complete", "Prioritize evidence and current state", "Write the result report now"} {
+		if !strings.Contains(requestText.String(), want) {
+			t.Fatalf("helper request missing %q:\n%s", want, requestText.String())
+		}
+	}
+}
+
 func TestHandoverEndToEnd(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.AddTurn(MockTurn{

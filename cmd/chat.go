@@ -143,7 +143,9 @@ Slash commands:
   /inspect     - View conversation/tool details
   /compact     - Compact conversation context
   /resume      - Browse and resume previous sessions
-  /tree        - Browse paths or branch from an earlier message
+  /tree        - Browse paths, workers, and mailbox reports
+  /main        - Return from a worker session to its coordinator
+  /report      - Brief the coordinator from a completed worker session
   /reload      - Re-exec current binary and resume session
   /handover    - Hand conversation to another agent`,
 	RunE:              runChat,
