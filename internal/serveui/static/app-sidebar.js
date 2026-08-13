@@ -178,6 +178,7 @@ let hubAgentLinksLastFetchAt = null;
 let hubAgentLinksFetchPromise = null;
 let hubAgentLinksRefreshTimer = null;
 let hubAgentLinksHasValidRender = false;
+const hubAgentAttention = new Map();
 
 const compareCodeUnits = (left, right) => {
   if (left < right) return -1;
@@ -267,19 +268,18 @@ const renderHubAgentLinks = (nodes, context) => {
     const link = createEl('a', 'hub-agent-link');
     link.href = target;
     if (id && id === context.nodeId) link.setAttribute('aria-current', 'true');
-
-    const sessions = node.sessions;
-    const active = Number(sessions?.active_count) > 0
-      || (Array.isArray(sessions?.active) && sessions.active.length > 0);
-    if (active) {
-      const dot = createEl('span', 'hub-agent-active');
-      dot.title = 'Active session';
-      dot.setAttribute('aria-hidden', 'true');
-      link.appendChild(dot);
-      link.appendChild(createEl('span', 'visually-hidden', 'Active session'));
+    const icon = createEl('span', 'hub-agent-icon');
+    icon.setAttribute('aria-hidden', 'true'); link.appendChild(icon); link.appendChild(createEl('span', 'hub-agent-name', displayName));
+    const active = Number(node.sessions?.active_count) > 0
+      || (Array.isArray(node.sessions?.active) && node.sessions.active.length > 0);
+    const previous = hubAgentAttention.get(id); const attention = id !== context.nodeId
+      && Boolean(previous?.attention || (previous?.active && !active));
+    hubAgentAttention.set(id, { active, attention });
+    if (attention) {
+      const dot = createEl('span', 'hub-agent-attention');
+      dot.title = 'Needs attention'; dot.setAttribute('aria-hidden', 'true'); link.appendChild(dot); link.appendChild(createEl('span', 'visually-hidden', 'Needs attention'));
     }
-    link.appendChild(createEl('span', 'hub-agent-name', displayName));
-    return link;
+    link.addEventListener('click', () => hubAgentAttention.set(id, { active, attention: false })); return link;
   });
 
   elements.hubAgentLinks.replaceChildren(...rows);
