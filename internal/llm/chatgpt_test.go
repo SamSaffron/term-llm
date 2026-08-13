@@ -443,3 +443,78 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 		t.Fatalf("reasoning tokens = %d, want 1", usageEvent.Use.ReasoningTokens)
 	}
 }
+
+func TestChatGPTProviderResetConversationClearsResponsesState(t *testing.T) {
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "gpt-5.6-luna")
+	provider.responsesClient = NewChatGPTResponsesClient(provider.creds)
+	provider.responsesClient.LastResponseID = "resp_previous"
+	provider.responsesClient.responseStateSessionID = "benchmark-old"
+
+	provider.ResetConversation()
+
+	if provider.responsesClient.LastResponseID != "" || provider.responsesClient.responseStateSessionID != "" {
+		t.Fatalf("responses state was not reset: id=%q session=%q", provider.responsesClient.LastResponseID, provider.responsesClient.responseStateSessionID)
+	}
+}
+
+func TestChatGPTStreamOmitsUnsupportedOutputLimit(t *testing.T) {
+	originalClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = originalClient }()
+
+	var body []byte
+	var sessionID string
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		sessionID = req.Header.Get("session_id")
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "gpt-5.6-luna-low")
+	stream, err := provider.Stream(context.Background(), Request{
+		SessionID:       "benchmark-unique-request",
+		Messages:        []Message{UserText("hello")},
+		MaxOutputTokens: 77,
+	})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if sessionID != "benchmark-unique-request" {
+		t.Fatalf("session_id header = %q", sessionID)
+	}
+	if got, ok := payload["max_output_tokens"]; ok {
+		t.Fatalf("unsupported max_output_tokens was forwarded: %v", got)
+	}
+	if _, ok := payload["temperature"]; ok {
+		t.Fatalf("temperature should be omitted for unsupported ChatGPT benchmark control: %v", payload["temperature"])
+	}
+	if _, ok := payload["top_p"]; ok {
+		t.Fatalf("top_p should be omitted: %v", payload["top_p"])
+	}
+}

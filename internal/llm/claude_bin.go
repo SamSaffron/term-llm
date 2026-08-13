@@ -1081,6 +1081,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 				InputTokens:       resultMsg.Usage.InputTokens,
 				OutputTokens:      resultMsg.Usage.OutputTokens,
 				CachedInputTokens: resultMsg.Usage.CacheReadInputTokens,
+				CacheWriteTokens:  resultMsg.Usage.CacheCreationInputTokens,
 			}
 		}
 	}
@@ -1833,9 +1834,10 @@ type claudeResultMessage struct {
 	Result            string            `json:"result"`
 	PermissionDenials []json.RawMessage `json:"permission_denials"`
 	Usage             struct {
-		InputTokens          int `json:"input_tokens"`
-		OutputTokens         int `json:"output_tokens"`
-		CacheReadInputTokens int `json:"cache_read_input_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 }
