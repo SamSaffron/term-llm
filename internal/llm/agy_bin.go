@@ -481,15 +481,13 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 	}()
 	go func() {
 		defer close(stderrDone)
-		sc := bufio.NewScanner(stderr)
-		sc.Buffer(make([]byte, 64<<10), 1<<20)
-		for sc.Scan() {
-			line := redact(sc.Text())
+		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
+			line := redact(rawLine)
 			if debug {
 				fmt.Fprintf(os.Stderr, "[agy stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, agyStderrTailMaxLines)
-		}
+		})
 	}()
 	bridge := &cliTurnBridge{toolReqCh: make(chan cliToolRequest, 64), done: make(chan struct{})}
 	if exposeBridge {
@@ -508,6 +506,9 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 		cancel()
 	}
 	scanErr := <-scanErrCh
+	if scanErr != nil {
+		cancel()
+	}
 	<-stderrDone
 	waitErr := cmd.Wait()
 	if dispatchErr != nil {

@@ -1,10 +1,12 @@
 package llm
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,7 +19,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
 
-const cliDiagnosticLineMaxBytes = 4 * 1024
+const (
+	cliDiagnosticLineMaxBytes     = 4 * 1024
+	cliDiagnosticLineReadMaxBytes = 1024 * 1024
+)
 
 // mcpCallCounter generates process-unique IDs for CLI-provider MCP tool calls.
 var mcpCallCounter atomic.Int64
@@ -537,6 +542,66 @@ func firstUsefulCLIDiagnosticLine(text string) string {
 		return truncateOneLine(line, 240)
 	}
 	return ""
+}
+
+func drainCLIDiagnosticLines(r io.Reader, handle func(string)) error {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	line := make([]byte, 0, 64*1024)
+	var lineBytes int64
+	oversized := false
+
+	emit := func() {
+		if oversized {
+			handle(fmt.Sprintf("[oversized diagnostic line omitted: %d bytes]", lineBytes))
+		} else {
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			handle(string(line))
+		}
+		line = line[:0]
+		lineBytes = 0
+		oversized = false
+	}
+
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		terminated := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
+		if terminated {
+			fragment = fragment[:len(fragment)-1]
+		}
+		lineBytes += int64(len(fragment))
+		if !oversized {
+			if lineBytes <= cliDiagnosticLineReadMaxBytes {
+				line = append(line, fragment...)
+			} else {
+				// Do not retain a partial oversized diagnostic: it could be a
+				// prefix of a prompt or credential that redaction expects whole.
+				line = line[:0]
+				oversized = true
+			}
+		}
+		if terminated {
+			emit()
+		}
+
+		switch err {
+		case nil:
+			continue
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if !terminated && lineBytes > 0 {
+				emit()
+			}
+			return nil
+		default:
+			if !terminated && lineBytes > 0 {
+				emit()
+			}
+			return err
+		}
+	}
 }
 
 func recordCLITailLine(mu *sync.Mutex, tail *[]string, line string, maxLines int) {

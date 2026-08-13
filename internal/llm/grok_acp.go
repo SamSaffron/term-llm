@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -740,15 +739,13 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 	redactDiagnostic := p.grokACPDiagnosticRedactor(req.Messages, cmd.Env)
 	go func() {
 		defer close(process.stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 64<<10), 1<<20)
-		for scanner.Scan() {
-			line := redactDiagnostic(scanner.Text())
+		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
+			line := redactDiagnostic(rawLine)
 			if debug {
 				fmt.Fprintf(os.Stderr, "[grok stderr] %s\n", line)
 			}
 			recordCLITailLine(&process.stderrMu, &process.stderrTail, line, grokStderrTailMaxLines)
-		}
+		})
 	}()
 	go func() {
 		process.waitErr = cmd.Wait()

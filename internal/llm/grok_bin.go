@@ -607,15 +607,12 @@ func (p *GrokBinProvider) runGrokCommand(
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
+		_ = drainCLIDiagnosticLines(stderr, func(line string) {
 			if debug {
 				fmt.Fprintf(os.Stderr, "[grok stderr] %s\n", redactGrokSystemPrompt(line, systemPrompt))
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, grokStderrTailMaxLines)
-		}
+		})
 	}()
 
 	lineCh := make(chan string, 256)
@@ -657,6 +654,13 @@ func (p *GrokBinProvider) runGrokCommand(
 		}
 	}
 	scanErr := <-scanErrCh
+	if scanErr != nil {
+		if cmd.Cancel != nil {
+			_ = cmd.Cancel()
+		} else if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
 	cmdErr := cmd.Wait()
 	<-stderrDone
 

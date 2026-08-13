@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"go/ast"
 	"go/parser"
@@ -76,6 +77,29 @@ func TestNewCLICommandAppliesWorkingDirectoryPolicy(t *testing.T) {
 				t.Fatalf("Dir = %q, want %q", cmd.Dir, tt.want)
 			}
 		})
+	}
+}
+
+func TestDrainCLIDiagnosticLinesDrainsOversizedLineAndUnterminatedTail(t *testing.T) {
+	oversizedBytes := cliDiagnosticLineReadMaxBytes + 2*1024*1024
+	input := bytes.NewReader(append(bytes.Repeat([]byte("x"), oversizedBytes), []byte("\nshort\r\nfinal")...))
+	var lines []string
+	if err := drainCLIDiagnosticLines(input, func(line string) {
+		lines = append(lines, line)
+	}); err != nil {
+		t.Fatalf("drainCLIDiagnosticLines: %v", err)
+	}
+	if input.Len() != 0 {
+		t.Fatalf("reader has %d bytes left; diagnostics were not fully drained", input.Len())
+	}
+	if len(lines) != 3 {
+		t.Fatalf("lines = %#v, want oversized marker plus two lines", lines)
+	}
+	if !strings.Contains(lines[0], "oversized diagnostic line omitted") || strings.Contains(lines[0], "x") {
+		t.Fatalf("oversized line marker = %q", lines[0])
+	}
+	if lines[1] != "short" || lines[2] != "final" {
+		t.Fatalf("remaining lines = %#v, want [short final]", lines[1:])
 	}
 }
 

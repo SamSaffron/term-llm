@@ -187,6 +187,61 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	}
 }
 
+func TestClaudeBinProvider_OversizedStderrLineDoesNotBlock(t *testing.T) {
+	err := runFakeClaudeCommand(t, `#!/bin/sh
+cat >/dev/null
+head -c 3145728 /dev/zero | tr '\000' x >&2
+printf '%s\n' '{"type":"system","session_id":"test-session","model":"sonnet","tools":[]}'
+printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
+`)
+	if err != nil {
+		t.Fatalf("runClaudeCommand: %v", err)
+	}
+}
+
+func TestClaudeBinProvider_OversizedStdoutRecordCancelsProcess(t *testing.T) {
+	err := runFakeClaudeCommand(t, `#!/bin/sh
+cat >/dev/null
+head -c 12582912 /dev/zero | tr '\000' x
+`)
+	if err == nil || !strings.Contains(err.Error(), "reading claude output") {
+		t.Fatalf("runClaudeCommand error = %v, want stdout read error", err)
+	}
+}
+
+func runFakeClaudeCommand(t *testing.T, script string) error {
+	t.Helper()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan error, 1)
+	go func() {
+		provider := NewClaudeBinProvider("sonnet", nil)
+		resultCh <- provider.runClaudeCommand(ctx, nil, "", "prompt", "", false, eventSender{
+			ctx: ctx,
+			ch:  make(chan Event, 8),
+		}, true, false)
+	}()
+
+	select {
+	case err := <-resultCh:
+		return err
+	case <-time.After(5 * time.Second):
+		cancel()
+		select {
+		case <-resultCh:
+		case <-time.After(3 * time.Second):
+		}
+		t.Fatal("fake Claude command remained blocked on an oversized pipe record")
+		return nil
+	}
+}
+
 func TestClaudeBinProvider_StreamUsesWorkingDir(t *testing.T) {
 	binDir := t.TempDir()
 	cwdFile := filepath.Join(t.TempDir(), "cwd.txt")
