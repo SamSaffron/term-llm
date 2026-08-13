@@ -33,6 +33,8 @@ Other profiles are available with `--mode quick`, `decode`, `prefill`, and `long
 
 ## Reading the report
 
+The human report leads with a per-target comparison table of median activity TTFT, decode rate, and effective input, then the prefill fit. Scenario cards under that summary add ranges, token accounting, and any incomplete validity counts.
+
 All timing is client-observed. It includes network, queueing, transport, and provider overhead; it is not server-side phase telemetry.
 
 - **Activity TTFT** is time to the first streamed activity, including reasoning activity.
@@ -47,7 +49,7 @@ Values shown first are medians. Parenthesized values are the minimum and maximum
 
 ## Validity and cache handling
 
-The report separates three validity counts:
+The report separates three validity counts. They are omitted from a scenario card when every measured run is valid:
 
 - **latency** runs are usable for latency and provider-token summaries;
 - **fit** runs are also safe for effective-input and prefill fitting;

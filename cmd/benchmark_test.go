@@ -312,7 +312,7 @@ func TestExecuteBenchmarkPlansContinuesAndRendersPerModelFailure(t *testing.T) {
 	report := benchmark.NewReport(opts, benchmark.Budget{}, targets, records)
 	var out bytes.Buffer
 	benchmark.WriteHuman(&out, report)
-	if !strings.Contains(out.String(), "Status") || !strings.Contains(out.String(), "working") || !strings.Contains(out.String(), "prefill |") {
+	if !strings.Contains(out.String(), "Status") || !strings.Contains(out.String(), "working") || !strings.Contains(out.String(), "prefill  100") {
 		t.Fatalf("human report = %s", out.String())
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 func DefaultProfile(mode string) ([]Scenario, int, int, error) {
@@ -192,7 +193,7 @@ func WriteBudget(w io.Writer, mode string, budget Budget) {
 
 func WriteHuman(w io.Writer, report Report) {
 	fmt.Fprintln(w, "\nBenchmark results")
-	fmt.Fprintf(w, "  %s mode | %s cache | %d warmup + %d measured | seed %d\n",
+	fmt.Fprintf(w, "  %s mode · %s cache · %d warmup + %d measured · seed %d\n",
 		report.Benchmark.Mode, report.Benchmark.Cache, report.Benchmark.Warmups, report.Benchmark.Runs, report.Benchmark.Seed)
 	fmt.Fprintln(w, "  Client-observed timing at the llm.Provider.Stream boundary")
 	if report.Benchmark.AssumedContextLimit > 0 {
@@ -201,9 +202,9 @@ func WriteHuman(w io.Writer, report Report) {
 
 	for _, target := range report.Targets {
 		fmt.Fprintln(w)
-		writeWrappedLine(w, target.ProviderKey, "  ", 78)
+		writeWrappedLine(w, "  "+target.ProviderKey, "  ", 78)
 		writeWrappedLine(w, "  Model     "+target.RequestedModel, "            ", 78)
-		fmt.Fprintf(w, "  Adapter   %s | credential %s\n", target.ProviderType, target.CredentialType)
+		fmt.Fprintf(w, "  Adapter   %s · credential %s\n", target.ProviderType, target.CredentialType)
 		if target.Error != "" {
 			writeWrappedLine(w, "  Status    failed - "+target.Error, "            ", 78)
 			continue
@@ -214,25 +215,43 @@ func WriteHuman(w io.Writer, report Report) {
 				"    ", 78)
 		}
 		successes, failures, timeouts, retryEvents, discarded := targetRunCounts(report.Runs, target.ProviderKey, target.RequestedModel)
-		fmt.Fprintf(w, "  Attempts  %d succeeded | %d failed (%d timeout) | %d retries | %d discards\n",
-			successes, failures, timeouts, retryEvents, discarded)
+		writeHumanPrefixedParts(w, "  Attempts  ", []string{
+			fmt.Sprintf("%d succeeded", successes),
+			fmt.Sprintf("%d failed (%d timeout)", failures, timeouts),
+			fmt.Sprintf("%d retries", retryEvents),
+			fmt.Sprintf("%d discards", discarded),
+		}, 78)
 		measurementScope := target.Capabilities.MeasurementScope
 		if measurementScope == "" {
 			measurementScope = "unspecified scope"
 		}
-		fmt.Fprintf(w, "  Features  cache reads %s | output limit %s | %s\n",
-			reportedLabel(target.Capabilities.ReportsCacheReads), supportedLabel(target.Capabilities.SupportsOutputLimit), measurementScope)
+		writeHumanPrefixedParts(w, "  Features  ", []string{
+			"cache reads " + reportedLabel(target.Capabilities.ReportsCacheReads),
+			"output limit " + supportedLabel(target.Capabilities.SupportsOutputLimit),
+			measurementScope,
+		}, 78)
+
+		aggregates := aggregatesForTarget(report.Aggregates, target)
+		cacheState := sharedCacheState(aggregates)
+		cacheLine := "  Cache     "
+		if cacheState != "" {
+			cacheLine += cacheState
+		}
 		if target.Capabilities.CacheTelemetryNote != "" {
-			writeWrappedLine(w, "  Cache     "+target.Capabilities.CacheTelemetryNote, "            ", 78)
+			if cacheState != "" {
+				cacheLine += " · "
+			}
+			cacheLine += target.Capabilities.CacheTelemetryNote
+		}
+		if cacheLine != "  Cache     " {
+			writeWrappedLine(w, cacheLine, "            ", 78)
 		}
 
-		for _, aggregate := range report.Aggregates {
-			if aggregate.Provider != target.ProviderKey || aggregate.RequestedModel != target.RequestedModel {
-				continue
-			}
-			writeHumanAggregate(w, target, aggregate)
+		wroteTable := writeHumanComparison(w, aggregates)
+		writeHumanFits(w, report.Fits, target, aggregates, wroteTable)
+		for _, aggregate := range aggregates {
+			writeHumanAggregate(w, target, aggregate, cacheState)
 		}
-		writeHumanFits(w, report.Fits, target)
 	}
 }
 
@@ -255,62 +274,288 @@ func targetRunCounts(records []RunRecord, provider, model string) (successes, fa
 	return successes, failures, timeouts, retryEvents, discards
 }
 
-func writeHumanAggregate(w io.Writer, target TargetMetadata, aggregate Aggregate) {
-	heading := fmt.Sprintf("  %s | %s input -> %s requested output",
-		aggregate.Workload, formatInteger(int64(aggregate.RequestedInput)), formatInteger(int64(aggregate.RequestedOutput)))
-	if target.InputTargetMeaning == "generated_user_payload" {
-		heading += " (payload target)"
+func writeHumanComparison(w io.Writer, aggregates []Aggregate) bool {
+	if len(aggregates) < 2 {
+		return false
 	}
-	fmt.Fprintf(w, "\n%s\n", heading)
-	fmt.Fprintf(w, "    Activity TTFT  %s\n", formatDurationSummary(aggregate.ActivityTTFTMS))
-	fmt.Fprintf(w, "    Visible TTFT   %s\n", formatDurationSummary(aggregate.VisibleTTFTMS))
-	fmt.Fprintf(w, "    End to end     %s\n", formatDurationSummary(aggregate.EndToEndMS))
-
-	decodeLabel, decode := "Decode rate", formatRateSummary(aggregate.DecodeTokensPerSecond, "tok/s")
-	if aggregate.DecodeTokensPerSecond.Median == nil && aggregate.VisibleTokensPerSecond.Median != nil {
-		decodeLabel, decode = "Visible rate", formatRateSummary(aggregate.VisibleTokensPerSecond, "tok/s")
-	}
-	fmt.Fprintf(w, "    %-15s%s", decodeLabel, decode)
-	if aggregate.TPOTMS.Median != nil {
-		fmt.Fprintf(w, " | TPOT %s", formatRateSummary(aggregate.TPOTMS, "ms"))
+	rows := [][]string{{"Workload", "Target", "TTFT", "Decode", "Prefill"}}
+	for _, aggregate := range aggregates {
+		decode := "n/a"
+		if highlightDecode(aggregate) {
+			decode = formatCompactThroughput(decodeDistribution(aggregate))
+		}
+		rows = append(rows, []string{
+			aggregate.Workload,
+			fmt.Sprintf("%s→%s", formatInteger(int64(aggregate.RequestedInput)), formatInteger(int64(aggregate.RequestedOutput))),
+			formatDurationMedian(aggregate.ActivityTTFTMS),
+			decode,
+			formatCompactThroughput(aggregate.EffectiveInputTokensRate),
+		})
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "    Effective input %s\n", formatRateSummary(aggregate.EffectiveInputTokensRate, "tok/s"))
+	writeAlignedRows(w, "  ", rows, []bool{false, true, true, true, true})
+	return true
+}
 
-	providerInput := formatNumber(aggregate.TotalInputTokens)
-	if target.InputTargetMeaning == "generated_user_payload" {
-		providerInput += " (reported, not target-gated)"
+func writeHumanAggregate(w io.Writer, target TargetMetadata, aggregate Aggregate, sharedCache string) {
+	fmt.Fprintln(w)
+	writeWrappedLine(w, humanAggregateHeading(target, aggregate), "    ", 78)
+
+	if durationHasExtra(aggregate.ActivityTTFTMS) {
+		writeHumanMetric(w, "Activity TTFT", formatDurationSummary(aggregate.ActivityTTFTMS))
 	}
-	fmt.Fprintf(w, "    Input tokens    provider %s | computed %s\n", providerInput, formatNumber(aggregate.ComputedInputTokens))
-	fmt.Fprintf(w, "    Cache tokens    read %s | write %s | state %s\n",
-		formatNumber(aggregate.CachedInputTokens), formatNumber(aggregate.CacheWriteTokens), aggregate.CacheState)
-	fmt.Fprintf(w, "    Output tokens   %s actual | %s requested\n",
-		formatNumber(aggregate.OutputTokens), formatInteger(int64(aggregate.RequestedOutput)))
-	fmt.Fprintf(w, "    Valid runs      latency %d/%d | fit %d/%d | decode %d/%d\n",
-		aggregate.LatencyValidRuns, aggregate.MeasuredRuns,
-		aggregate.FitValidRuns, aggregate.MeasuredRuns,
-		aggregate.DecodeValidRuns, aggregate.MeasuredRuns)
+	if aggregate.VisibleTTFTMS.Median != nil {
+		writeHumanMetric(w, "Visible TTFT", formatDurationSummary(aggregate.VisibleTTFTMS))
+	}
+	writeHumanMetric(w, "End to end", formatDurationSummary(aggregate.EndToEndMS))
+
+	if highlightDecode(aggregate) {
+		decodeLabel, decode := "Decode rate", formatRateSummary(aggregate.DecodeTokensPerSecond, "tok/s")
+		if aggregate.DecodeTokensPerSecond.Median == nil && aggregate.VisibleTokensPerSecond.Median != nil {
+			decodeLabel, decode = "Visible rate", formatRateSummary(aggregate.VisibleTokensPerSecond, "tok/s")
+		}
+		if aggregate.TPOTMS.Median != nil {
+			decode += " · TPOT " + formatRateSummary(aggregate.TPOTMS, "ms")
+		}
+		writeHumanMetric(w, decodeLabel, decode)
+	}
+	writeHumanMetric(w, "Effective input", formatRateSummary(aggregate.EffectiveInputTokensRate, "tok/s"))
+	writeHumanMetric(w, "Input tokens", formatInputTokens(target, aggregate))
+	writeHumanMetric(w, "Cache tokens", formatCacheTokens(aggregate, sharedCache == ""))
+	writeHumanMetric(w, "Output tokens", formatOutputTokens(aggregate))
+	if !aggregateFullyValid(aggregate) {
+		writeHumanMetric(w, "Valid runs", fmt.Sprintf("latency %d/%d · fit %d/%d · decode %d/%d",
+			aggregate.LatencyValidRuns, aggregate.MeasuredRuns,
+			aggregate.FitValidRuns, aggregate.MeasuredRuns,
+			aggregate.DecodeValidRuns, aggregate.MeasuredRuns))
+	}
 	if aggregate.ErrorRuns > 0 {
-		fmt.Fprintf(w, "    Errors          %d measured run(s) failed\n", aggregate.ErrorRuns)
+		writeHumanMetric(w, "Errors", fmt.Sprintf("%d measured run(s) failed", aggregate.ErrorRuns))
 	}
 }
 
-func writeHumanFits(w io.Writer, fits []Fit, target TargetMetadata) {
+func writeHumanFits(w io.Writer, fits []Fit, target TargetMetadata, aggregates []Aggregate, wroteTable bool) {
 	var targetFits []Fit
 	for _, fit := range fits {
 		if fit.Provider == target.ProviderKey && fit.RequestedModel == target.RequestedModel {
 			targetFits = append(targetFits, fit)
 		}
 	}
-	fmt.Fprintln(w, "\n  Effective prefill fit")
+	if len(targetFits) == 0 && !hasPrefillAggregate(aggregates) {
+		return
+	}
+	if !wroteTable {
+		fmt.Fprintln(w)
+	}
 	if len(targetFits) == 0 {
-		fmt.Fprintln(w, "    unavailable - needs at least 3 distinct fit-valid input lengths")
+		fmt.Fprintln(w, "  Prefill fit  unavailable · needs 3 distinct fit-valid input lengths")
 		return
 	}
 	for _, fit := range targetFits {
-		fmt.Fprintf(w, "    %s  %.0f tok/s | %d lengths | %d valid runs\n",
-			fit.Range, fit.EffectiveTokensPerSec, fit.DistinctLengths, fit.ValidRuns)
+		fmt.Fprintf(w, "  Prefill fit  %s tok/s  %s · %d lengths · %d runs\n",
+			formatInteger(int64(fit.EffectiveTokensPerSec+0.5)), fit.Range, fit.DistinctLengths, fit.ValidRuns)
 	}
+}
+
+func humanAggregateHeading(target TargetMetadata, aggregate Aggregate) string {
+	parts := []string{formatDurationMedian(aggregate.ActivityTTFTMS) + " TTFT"}
+	if highlightDecode(aggregate) {
+		parts = append(parts, formatCompactThroughput(decodeDistribution(aggregate)))
+		if aggregate.TPOTMS.Median != nil {
+			parts = append(parts, fmt.Sprintf("%.1fms TPOT", *aggregate.TPOTMS.Median))
+		}
+	} else if aggregate.EffectiveInputTokensRate.Median != nil {
+		parts = append(parts, formatCompactThroughput(aggregate.EffectiveInputTokensRate)+" input")
+	}
+	heading := fmt.Sprintf("  %s  %s → %s    %s",
+		aggregate.Workload,
+		formatInteger(int64(aggregate.RequestedInput)),
+		formatInteger(int64(aggregate.RequestedOutput)),
+		strings.Join(parts, " · "))
+	if target.InputTargetMeaning == "generated_user_payload" {
+		heading += " (payload target)"
+	}
+	return heading
+}
+
+func formatInputTokens(target TargetMetadata, aggregate Aggregate) string {
+	provider := formatNumber(aggregate.TotalInputTokens)
+	computed := formatNumber(aggregate.ComputedInputTokens)
+	if target.InputTargetMeaning == "generated_user_payload" {
+		return "provider " + provider + " (reported, not target-gated) · computed " + computed
+	}
+	if provider == computed {
+		return provider
+	}
+	return "provider " + provider + " · computed " + computed
+}
+
+func formatCacheTokens(aggregate Aggregate, includeState bool) string {
+	text := "read " + formatNumber(aggregate.CachedInputTokens) + " · write " + formatNumber(aggregate.CacheWriteTokens)
+	if includeState && aggregate.CacheState != "" {
+		text += " · " + aggregate.CacheState
+	}
+	return text
+}
+
+func formatOutputTokens(aggregate Aggregate) string {
+	actual := formatNumber(aggregate.OutputTokens)
+	requested := formatInteger(int64(aggregate.RequestedOutput))
+	if actual == requested {
+		return actual
+	}
+	return actual + " actual · " + requested + " requested"
+}
+
+const humanLabelWidth = 16
+
+func writeHumanMetric(w io.Writer, label, value string) {
+	prefix := fmt.Sprintf("    %-*s", humanLabelWidth, label)
+	writeHumanPrefixedParts(w, prefix, strings.Split(value, " · "), 78)
+}
+
+func aggregatesForTarget(aggregates []Aggregate, target TargetMetadata) []Aggregate {
+	out := make([]Aggregate, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		if aggregate.Provider == target.ProviderKey && aggregate.RequestedModel == target.RequestedModel {
+			out = append(out, aggregate)
+		}
+	}
+	return out
+}
+
+func sharedCacheState(aggregates []Aggregate) string {
+	if len(aggregates) == 0 {
+		return ""
+	}
+	state := aggregates[0].CacheState
+	if state == "" || state == "mixed" {
+		return ""
+	}
+	for _, aggregate := range aggregates[1:] {
+		if aggregate.CacheState != state {
+			return ""
+		}
+	}
+	return state
+}
+
+func hasPrefillAggregate(aggregates []Aggregate) bool {
+	for _, aggregate := range aggregates {
+		if aggregate.Workload == "prefill" {
+			return true
+		}
+	}
+	return false
+}
+
+func highlightDecode(aggregate Aggregate) bool {
+	return aggregate.RequestedOutput >= 64
+}
+
+func decodeDistribution(aggregate Aggregate) Distribution {
+	if aggregate.DecodeTokensPerSecond.Median != nil {
+		return aggregate.DecodeTokensPerSecond
+	}
+	return aggregate.VisibleTokensPerSecond
+}
+
+func aggregateFullyValid(aggregate Aggregate) bool {
+	if aggregate.MeasuredRuns <= 0 {
+		return true
+	}
+	if aggregate.LatencyValidRuns != aggregate.MeasuredRuns || aggregate.FitValidRuns != aggregate.MeasuredRuns {
+		return false
+	}
+	if highlightDecode(aggregate) && aggregate.DecodeValidRuns != aggregate.MeasuredRuns {
+		return false
+	}
+	return true
+}
+
+func durationHasExtra(distribution Distribution) bool {
+	if distribution.Median == nil {
+		return false
+	}
+	if distribution.P95 != nil {
+		return true
+	}
+	return distribution.Min != nil && distribution.Max != nil && *distribution.Min != *distribution.Max
+}
+
+func formatDurationMedian(distribution Distribution) string {
+	if distribution.Median == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.2fs", *distribution.Median/1000)
+}
+
+func formatCompactThroughput(distribution Distribution) string {
+	if distribution.Median == nil {
+		return "n/a"
+	}
+	value := *distribution.Median
+	switch {
+	case value >= 1_000_000:
+		return fmt.Sprintf("%.1fM/s", value/1_000_000)
+	case value >= 1000:
+		return fmt.Sprintf("%.1fk/s", value/1000)
+	case value >= 10:
+		return fmt.Sprintf("%.0f tok/s", value)
+	default:
+		return fmt.Sprintf("%.1f tok/s", value)
+	}
+}
+
+func writeAlignedRows(w io.Writer, indent string, rows [][]string, alignRight []bool) {
+	if len(rows) == 0 {
+		return
+	}
+	widths := make([]int, len(rows[0]))
+	for _, row := range rows {
+		for i, cell := range row {
+			if i >= len(widths) {
+				continue
+			}
+			if n := utf8.RuneCountInString(cell); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+	for _, row := range rows {
+		line := indent
+		for i, cell := range row {
+			if i > 0 {
+				line += "  "
+			}
+			width := 0
+			if i < len(widths) {
+				width = widths[i]
+			}
+			if i < len(alignRight) && alignRight[i] {
+				line += padLeft(cell, width)
+			} else {
+				line += padRight(cell, width)
+			}
+		}
+		fmt.Fprintln(w, strings.TrimRight(line, " "))
+	}
+}
+
+func padLeft(value string, width int) string {
+	n := utf8.RuneCountInString(value)
+	if n >= width {
+		return value
+	}
+	return strings.Repeat(" ", width-n) + value
+}
+
+func padRight(value string, width int) string {
+	n := utf8.RuneCountInString(value)
+	if n >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-n)
 }
 
 func formatDurationSummary(distribution Distribution) string {
@@ -318,12 +563,14 @@ func formatDurationSummary(distribution Distribution) string {
 		return "n/a"
 	}
 	result := fmt.Sprintf("%.2fs", *distribution.Median/1000)
-	if distribution.Min != nil && distribution.Max != nil {
+	if distribution.Min != nil && distribution.Max != nil && *distribution.Min != *distribution.Max {
 		result += fmt.Sprintf(" (%.2f-%.2fs", *distribution.Min/1000, *distribution.Max/1000)
 		if distribution.P95 != nil {
 			result += fmt.Sprintf(", p95 %.2fs", *distribution.P95/1000)
 		}
 		result += ")"
+	} else if distribution.P95 != nil {
+		result += fmt.Sprintf(" (p95 %.2fs)", *distribution.P95/1000)
 	}
 	return result
 }
@@ -332,11 +579,54 @@ func formatRateSummary(distribution Distribution, unit string) string {
 	if distribution.Median == nil {
 		return "n/a"
 	}
-	result := fmt.Sprintf("%.1f %s", *distribution.Median, unit)
+	result := formatFixedRate(*distribution.Median) + " " + unit
 	if distribution.Min != nil && distribution.Max != nil && *distribution.Min != *distribution.Max {
-		result += fmt.Sprintf(" (%.1f-%.1f)", *distribution.Min, *distribution.Max)
+		result += fmt.Sprintf(" (%s-%s)", formatFixedRate(*distribution.Min), formatFixedRate(*distribution.Max))
 	}
 	return result
+}
+
+func formatFixedRate(value float64) string {
+	formatted := fmt.Sprintf("%.1f", value)
+	dot := strings.LastIndex(formatted, ".")
+	intPart, frac := formatted, ""
+	if dot >= 0 {
+		intPart, frac = formatted[:dot], formatted[dot:]
+	}
+	sign := ""
+	if strings.HasPrefix(intPart, "-") {
+		sign = "-"
+		intPart = intPart[1:]
+	}
+	for i := len(intPart) - 3; i > 0; i -= 3 {
+		intPart = intPart[:i] + "," + intPart[i:]
+	}
+	return sign + intPart + frac
+}
+
+func writeHumanPrefixedParts(w io.Writer, prefix string, parts []string, width int) {
+	if len(parts) == 0 {
+		return
+	}
+	pad := strings.Repeat(" ", utf8.RuneCountInString(prefix))
+	flush := func(line string) {
+		if utf8.RuneCountInString(line) <= width {
+			fmt.Fprintln(w, line)
+			return
+		}
+		writeWrappedLine(w, line, pad, width)
+	}
+	line := prefix + parts[0]
+	for _, part := range parts[1:] {
+		trial := line + " · " + part
+		if utf8.RuneCountInString(trial) <= width {
+			line = trial
+			continue
+		}
+		flush(line)
+		line = pad + part
+	}
+	flush(line)
 }
 
 func formatNumber(value *float64) string {
@@ -378,15 +668,36 @@ func writeWrappedBullet(w io.Writer, text string, width int) {
 }
 
 func writeWrappedLine(w io.Writer, text, continuation string, width int) {
+	text = strings.TrimRight(text, " ")
+	if text == "" {
+		fmt.Fprintln(w)
+		return
+	}
+	if utf8.RuneCountInString(text) <= width {
+		fmt.Fprintln(w, text)
+		return
+	}
 	words := strings.Fields(text)
 	if len(words) == 0 {
 		fmt.Fprintln(w)
 		return
 	}
-	line := words[0]
-	for _, word := range words[1:] {
-		if len(line)+1+len(word) <= width {
-			line += " " + word
+	first := words[0]
+	idx := strings.Index(text, first)
+	prefixEnd := idx + len(first)
+	for prefixEnd < len(text) && text[prefixEnd] == ' ' {
+		prefixEnd++
+	}
+	var line string
+	if len(words) == 1 {
+		fmt.Fprintln(w, text)
+		return
+	}
+	line = text[:prefixEnd] + words[1]
+	for _, word := range words[2:] {
+		trial := line + " " + word
+		if utf8.RuneCountInString(trial) <= width {
+			line = trial
 			continue
 		}
 		fmt.Fprintln(w, line)

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -649,23 +650,159 @@ func TestWriteHumanUsesReadableScenarioCards(t *testing.T) {
 	WriteHuman(&out, report)
 	text := out.String()
 	for _, want := range []string{
-		"Benchmark results", "decode | 2,000 input -> 128 requested output",
-		"Activity TTFT  0.55s (0.49-0.75s)", "Decode rate    115.2 tok/s",
-		"Cache tokens    read 0 | write n/a | state miss",
-		"Valid runs      latency 3/3 | fit 3/3 | decode 3/3",
+		"Benchmark results", "balanced mode · cold cache",
+		"decode  2,000 → 128    0.55s TTFT · 115 tok/s · 8.7ms TPOT",
+		"Activity TTFT   0.55s (0.49-0.75s)", "Decode rate     115.2 tok/s",
+		"Effective input 3,680.0 tok/s",
+		"Cache     miss", "Cache tokens    read 0 · write n/a",
+		"Input tokens    2,025", "Output tokens   128",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("human report missing %q:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"Activity TTFT min/med/max", "cache state: unknown", "\nNotes\n", "Cold, sequential measurements"} {
+	for _, unwanted := range []string{
+		"Activity TTFT min/med/max", "cache state: unknown", "\nNotes\n", "Cold, sequential measurements",
+		"decode | 2,000 input -> 128 requested output", "Valid runs", "provider 2,025",
+		"Workload", "Prefill fit",
+	} {
 		if strings.Contains(text, unwanted) {
-			t.Fatalf("human report retained old table output %q:\n%s", unwanted, text)
+			t.Fatalf("human report retained old or noisy output %q:\n%s", unwanted, text)
 		}
 	}
+	assertHumanReportWidth(t, text)
+}
+
+func TestWriteHumanLeadsWithComparisonTable(t *testing.T) {
+	value := func(v float64) *float64 { return &v }
+	dist := func(median float64) Distribution { return Distribution{Median: value(median)} }
+	rangeDist := func(min, median, max float64) Distribution {
+		return Distribution{Min: value(min), Median: value(median), Max: value(max)}
+	}
+	aggregate := func(workload string, input, output int, ttft, decode, prefill float64, visible *float64) Aggregate {
+		item := Aggregate{
+			Provider: "cdck_deepseek", RequestedModel: "deepseek-v4", Workload: workload,
+			RequestedInput: input, RequestedOutput: output, MeasuredRuns: 3, SuccessfulRuns: 3,
+			LatencyValidRuns: 3, FitValidRuns: 3, DecodeValidRuns: 3, CacheState: "miss",
+			TotalInputTokens: value(float64(input)), ComputedInputTokens: value(float64(input)), CachedInputTokens: value(0),
+			OutputTokens:             value(float64(output)),
+			ActivityTTFTMS:           dist(ttft),
+			EndToEndMS:               dist(ttft + 120),
+			DecodeTokensPerSecond:    dist(decode),
+			TPOTMS:                   dist(8.7),
+			EffectiveInputTokensRate: dist(prefill),
+		}
+		if visible != nil {
+			item.VisibleTTFTMS = dist(*visible)
+		}
+		return item
+	}
+	visible := 1_220.0
+	report := Report{
+		Benchmark: BenchmarkMetadata{Mode: "balanced", Cache: "cold", Runs: 3, Warmups: 1, Seed: 42},
+		Targets: []TargetMetadata{{
+			ProviderKey: "cdck_deepseek", ProviderType: "vllm", CredentialType: "api_key",
+			RequestedModel: "deepseek-v4",
+			Capabilities: AdapterCapabilities{
+				ReportsCacheReads: true, SupportsOutputLimit: true, MeasurementScope: "direct_http",
+				CacheTelemetryNote: "OpenAI-compatible prompt_tokens_details.cached_tokens reports prefix-cache reads",
+			},
+		}},
+		Aggregates: []Aggregate{
+			aggregate("decode", 2_000, 128, 490, 115.4, 4_105.1, &visible),
+			aggregate("prefill", 4_000, 16, 930, 116.5, 4_341.9, nil),
+			aggregate("prefill", 16_000, 16, 2_320, 119.8, 6_866.7, nil),
+			aggregate("prefill", 64_000, 16, 7_950, 126.8, 8_053.0, nil),
+		},
+		Fits: []Fit{{
+			Provider: "cdck_deepseek", RequestedModel: "deepseek-v4", Range: "observed span",
+			DistinctLengths: 3, ValidRuns: 9, EffectiveTokensPerSec: 8_552,
+		}},
+	}
+	// Keep a range on the decode card so detail is not only medians.
+	report.Aggregates[0].ActivityTTFTMS = rangeDist(490, 490, 750)
+
+	var out strings.Builder
+	WriteHuman(&out, report)
+	text := out.String()
+	for _, want := range []string{
+		"Workload", "Target", "TTFT", "Decode", "Prefill",
+		"decode    2,000→128", "0.49s", "115 tok/s", "4.1k/s",
+		"prefill    4,000→16", "0.93s",
+		"prefill   16,000→16", "2.32s",
+		"prefill   64,000→16", "7.95s", "8.1k/s",
+		"Prefill fit  8,552 tok/s  observed span · 3 lengths · 9 runs",
+		"decode  2,000 → 128    0.49s TTFT · 115 tok/s · 8.7ms TPOT",
+		"prefill  64,000 → 16    7.95s TTFT · 8.1k/s input",
+		"Cache     miss · OpenAI-compatible",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("human report missing %q:\n%s", want, text)
+		}
+	}
+	if idxTable := strings.Index(text, "Workload"); idxTable < 0 {
+		t.Fatal(text)
+	} else if idxFit := strings.Index(text, "Prefill fit"); idxFit < idxTable {
+		t.Fatalf("prefill fit should follow the comparison table:\n%s", text)
+	} else if idxCard := strings.Index(text, "decode  2,000 → 128"); idxCard < idxFit {
+		t.Fatalf("scenario cards should follow the prefill fit:\n%s", text)
+	}
+	prefillCard := text[strings.Index(text, "prefill  4,000 → 16"):]
+	for _, unwanted := range []string{
+		"Visible TTFT", "Decode rate", "Valid runs", "116.5 tok/s",
+		"provider 4,000", "actual ·", "Effective prefill fit",
+	} {
+		if strings.Contains(prefillCard, unwanted) {
+			t.Fatalf("prefill card retained noisy output %q:\n%s", unwanted, prefillCard)
+		}
+	}
+	assertHumanReportWidth(t, text)
+}
+
+func TestWriteHumanShowsIncompleteValidityAndSplitTokens(t *testing.T) {
+	value := func(v float64) *float64 { return &v }
+	report := Report{
+		Benchmark: BenchmarkMetadata{Mode: "quick", Cache: "cold", Runs: 3, Warmups: 1, Seed: 1},
+		Targets: []TargetMetadata{{
+			ProviderKey: "p", ProviderType: "test", CredentialType: "api_key", RequestedModel: "m",
+			InputTargetMeaning: "generated_user_payload",
+		}},
+		Aggregates: []Aggregate{{
+			Provider: "p", RequestedModel: "m", Workload: "decode",
+			RequestedInput: 2_000, RequestedOutput: 128, MeasuredRuns: 3, SuccessfulRuns: 2,
+			LatencyValidRuns: 2, FitValidRuns: 1, DecodeValidRuns: 2, ErrorRuns: 1, CacheState: "unknown",
+			TotalInputTokens: value(2_180), ComputedInputTokens: value(2_000), CachedInputTokens: value(0),
+			OutputTokens:             value(96),
+			ActivityTTFTMS:           Distribution{Median: value(500)},
+			DecodeTokensPerSecond:    Distribution{Median: value(90)},
+			EffectiveInputTokensRate: Distribution{Median: value(4_000)},
+		}},
+	}
+
+	var out strings.Builder
+	WriteHuman(&out, report)
+	text := out.String()
+	for _, want := range []string{
+		"(payload target)",
+		"latency 2/3 · fit 1/3 · decode 2/3",
+		"provider 2,180 (reported, not target-gated)",
+		"computed 2,000",
+		"96 actual · 128 requested",
+		"1 measured run(s) failed",
+		"Cache     unknown",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("human report missing %q:\n%s", want, text)
+		}
+	}
+	assertHumanReportWidth(t, text)
+}
+
+func assertHumanReportWidth(t *testing.T, text string) {
+	t.Helper()
 	for _, line := range strings.Split(text, "\n") {
-		if len(line) > 78 {
-			t.Fatalf("report line is %d columns, want <= 78: %q", len(line), line)
+		if n := utf8.RuneCountInString(line); n > 78 {
+			t.Fatalf("report line is %d columns, want <= 78: %q", n, line)
 		}
 	}
 }
@@ -683,8 +820,8 @@ func TestWriteBudgetIsCompactAndWrapped(t *testing.T) {
 		}
 	}
 	for _, line := range strings.Split(text, "\n") {
-		if len(line) > 78 {
-			t.Fatalf("budget line is %d columns, want <= 78: %q", len(line), line)
+		if n := utf8.RuneCountInString(line); n > 78 {
+			t.Fatalf("budget line is %d columns, want <= 78: %q", n, line)
 		}
 	}
 }
