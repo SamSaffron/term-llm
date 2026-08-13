@@ -3059,6 +3059,85 @@ func TestExecuteHandover_AddMessageErrorUsesFooterMessage(t *testing.T) {
 	}
 }
 
+func TestMCPDiscoveryDiagnosticsStaleUsesCatalogueIdentityNotRefreshGeneration(t *testing.T) {
+	tests := []struct {
+		name        string
+		diagnostics llm.ToolDiscoveryDiagnostics
+		snapshot    *mcp.CatalogueSnapshot
+		want        bool
+	}{
+		{
+			name:        "same catalogue after refresh",
+			diagnostics: llm.ToolDiscoveryDiagnostics{CatalogueHash: "same", CatalogueGen: 1},
+			snapshot:    &mcp.CatalogueSnapshot{Hash: "same", Generation: 9, Tools: []mcp.CatalogTool{{Name: "server__tool"}}},
+			want:        false,
+		},
+		{
+			name:        "changed catalogue",
+			diagnostics: llm.ToolDiscoveryDiagnostics{CatalogueHash: "old", CatalogueGen: 8},
+			snapshot:    &mcp.CatalogueSnapshot{Hash: "new", Generation: 9, Tools: []mcp.CatalogTool{{Name: "server__tool"}}},
+			want:        true,
+		},
+		{
+			name:        "catalogue not consumed yet",
+			diagnostics: llm.ToolDiscoveryDiagnostics{},
+			snapshot:    &mcp.CatalogueSnapshot{Hash: "new", Generation: 1, Tools: []mcp.CatalogTool{{Name: "server__tool"}}},
+			want:        true,
+		},
+		{
+			name:        "empty catalogue",
+			diagnostics: llm.ToolDiscoveryDiagnostics{},
+			snapshot:    &mcp.CatalogueSnapshot{Generation: 2},
+			want:        false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mcpDiscoveryDiagnosticsStale(tt.diagnostics, tt.snapshot); got != tt.want {
+				t.Fatalf("mcpDiscoveryDiagnosticsStale() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMCPStatusOpensVisibleContentDialog(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.mcpManager = mcp.NewManagerWithConfig(&mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"discourse_local": {Command: "unused-in-status-test"},
+		"github":          {Command: "unused-in-status-test"},
+		"playwright":      {Command: "unused-in-status-test"},
+	}})
+	m.setTextareaValue("/mcp status")
+	m.footerMessage = "old footer"
+
+	result, cmd := m.ExecuteCommand("/mcp status")
+	rm := result.(*Model)
+
+	if cmd != nil {
+		t.Fatal("MCP status returned an unmanaged print command instead of opening a dialog")
+	}
+	if !rm.dialog.IsOpen() || rm.dialog.Type() != DialogContent {
+		t.Fatalf("MCP status dialog open/type = %v/%v, want content dialog", rm.dialog.IsOpen(), rm.dialog.Type())
+	}
+	content := rm.dialog.Content()
+	for _, want := range []string{"No MCP servers are running", "3 other configured servers stopped", "Model access: unavailable"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("MCP status content missing %q:\n%s", want, content)
+		}
+	}
+	for _, noisy := range []string{"discourse_local: stopped", "github: stopped", "playwright: stopped", "Available tools"} {
+		if strings.Contains(content, noisy) {
+			t.Fatalf("concise MCP status unexpectedly contains %q:\n%s", noisy, content)
+		}
+	}
+	if rm.footerMessage != "" {
+		t.Fatalf("MCP status retained stale footer %q", rm.footerMessage)
+	}
+	if got := rm.textarea.Value(); got != "" {
+		t.Fatalf("MCP status retained composer text %q", got)
+	}
+}
+
 func TestMCPFailedStatusUpdateShowsDetailedError(t *testing.T) {
 	m := newCmdTestModel(&mockStore{})
 	startupErr := errors.New("connection closed\nMCP server stderr:\nmissing DISCOURSE_API_KEY")

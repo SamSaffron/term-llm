@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1089,6 +1090,37 @@ func sessionMessageForInterjection(sessionID, visibleText string, message llm.Me
 		userMessage.TextContent = llm.MessageText(message)
 	}
 	return userMessage
+}
+
+func (m *Model) setMCPServerSelected(name string, selected bool) {
+	name = strings.TrimSpace(name)
+	if m == nil || name == "" {
+		return
+	}
+	servers := make(map[string]bool)
+	for _, current := range strings.Split(m.mcpStr, ",") {
+		current = strings.TrimSpace(current)
+		if current != "" {
+			servers[current] = true
+		}
+	}
+	if selected {
+		servers[name] = true
+	} else {
+		delete(servers, name)
+	}
+	names := make([]string, 0, len(servers))
+	for current := range servers {
+		names = append(names, current)
+	}
+	sort.Strings(names)
+	m.mcpStr = strings.Join(names, ",")
+	if m.sess != nil {
+		m.sess.MCP = m.mcpStr
+		if m.store != nil {
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
 }
 
 func (m *Model) showMCPPicker() {

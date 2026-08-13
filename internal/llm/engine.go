@@ -348,6 +348,17 @@ func (e *Engine) ToolDiscoveryDiagnostics(sessionID string) (ToolDiscoveryDiagno
 	return diagnoser.Diagnostics(sessionID), true
 }
 
+// ToolDiscoveryActiveSpecs returns the currently active MCP schemas for a
+// session. It excludes catalogue entries that remain deferred.
+func (e *Engine) ToolDiscoveryActiveSpecs(sessionID string) []ToolSpec {
+	planner := e.currentToolPlanner()
+	inspector, ok := planner.(ToolDiscoverySurfaceInspector)
+	if !ok {
+		return nil
+	}
+	return inspector.ActiveToolSpecs(sessionID)
+}
+
 // AddDynamicTool registers a tool and queues it for the currently active run.
 // Calls outside a run only register the tool; durable activation belongs to the planner/tool.
 func (e *Engine) AddDynamicTool(tool Tool) {

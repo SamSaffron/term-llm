@@ -304,6 +304,32 @@ func TestRunnerStreamDoneWaitsForRunnerAfterCancellation(t *testing.T) {
 	}
 }
 
+func TestRunnerStreamPropagatesInteractiveMCPSelection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setMCPServerSelected("discourse_local", true)
+	runner := &capturingChatRunner{requests: make(chan runpkg.Request, 1)}
+	m.SetRunner(runner)
+
+	cmdDone := make(chan any, 1)
+	go func() {
+		cmdDone <- m.startStream("list workflows")()
+	}()
+
+	select {
+	case req := <-runner.requests:
+		if req.MCP != "discourse_local" {
+			t.Fatalf("runner request MCP = %q, want interactive selection", req.MCP)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner did not receive request")
+	}
+	select {
+	case <-cmdDone:
+	case <-time.After(time.Second):
+		t.Fatal("stream command did not finish")
+	}
+}
+
 func TestRunnerStreamPropagatesSessionWorkingDirectory(t *testing.T) {
 	m := newTestChatModel(false)
 	worktreeDir := t.TempDir()

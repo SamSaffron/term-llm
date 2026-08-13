@@ -83,3 +83,10 @@ type ToolActivationDiagnostic struct {
 type ToolDiscoveryDiagnoser interface {
 	Diagnostics(sessionID string) ToolDiscoveryDiagnostics
 }
+
+// ToolDiscoverySurfaceInspector exposes the MCP schemas currently active for a
+// durable session. Deferred catalogue entries that have not been loaded are not
+// included.
+type ToolDiscoverySurfaceInspector interface {
+	ActiveToolSpecs(sessionID string) []ToolSpec
+}

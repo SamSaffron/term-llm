@@ -231,6 +231,97 @@ func TestDynamicActivationBudgetIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestSampleDeferredToolNamesUsesBoundedDeterministicSpread(t *testing.T) {
+	names := make([]string, 75)
+	for i := range names {
+		names[i] = fmt.Sprintf("tool_%02d", 74-i)
+	}
+	got := sampleDeferredToolNames(names, 50)
+	if len(got) != 50 {
+		t.Fatalf("sample size = %d, want 50", len(got))
+	}
+	if got[0] != "tool_00" || got[len(got)-1] != "tool_74" {
+		t.Fatalf("sample did not span sorted catalogue: first=%q last=%q", got[0], got[len(got)-1])
+	}
+	if one := sampleDeferredToolNames(names, 1); len(one) != 1 || one[0] != "tool_00" {
+		t.Fatalf("single sample = %#v, want first sorted name", one)
+	}
+}
+
+func TestDeferredSurfaceAddsDeveloperToolSearchInstructionOnce(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := llm.NewMockProvider("deferred-instruction")
+	engine := llm.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "portable"}, manager, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{SessionID: "instruction", Messages: []llm.Message{llm.UserText("list the workflows on my site")}, MaxTurns: 4}
+	if _, err := planner.BeginRun(context.Background(), provider, &req, "instruction-run"); err != nil {
+		t.Fatal(err)
+	}
+	defer planner.EndRun("instruction-run")
+	if _, err := planner.PrepareTurn(context.Background(), provider, &req, "instruction-run", 0, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	count := 0
+	developerBeforeUser := false
+	for i, message := range req.Messages {
+		text := llm.MessageText(message)
+		if strings.Contains(text, deferredToolSearchInstructionMarker) {
+			count++
+			if message.Role != llm.RoleDeveloper {
+				t.Fatalf("tool-search instruction role = %q, want developer", message.Role)
+			}
+			if !strings.Contains(text, "MUST call tool_search") || !strings.Contains(text, "before saying the capability is unavailable") {
+				t.Fatalf("tool-search instruction is too weak: %q", text)
+			}
+			for _, want := range []string{"User loaded these MCP servers", "federation: 25 tools", "Tools provided by discovery-test.", "Example tool names:", "realistic_operation_00", "special_action"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("tool-search instruction missing server context %q: %q", want, text)
+				}
+			}
+			developerBeforeUser = i+1 < len(req.Messages) && req.Messages[i+1].Role == llm.RoleUser
+		}
+	}
+	if count != 1 {
+		t.Fatalf("tool-search developer instruction count = %d, want 1; messages=%#v", count, req.Messages)
+	}
+	if !developerBeforeUser {
+		t.Fatalf("tool-search developer instruction was not inserted before the latest user message: %#v", req.Messages)
+	}
+	if specs := engine.ToolDiscoveryActiveSpecs("instruction"); len(specs) != 0 {
+		t.Fatalf("unloaded deferred tools appeared active in inspector surface: %v", toolNames(specs))
+	}
+
+	updatedSnapshot := *manager.CatalogueSnapshot()
+	updatedSnapshot.Tools = append(append([]internalmcp.CatalogTool(nil), updatedSnapshot.Tools...), internalmcp.CatalogTool{
+		Server: "browser", Name: "browser__open", NamespaceDescription: "Browser automation and page inspection.",
+	})
+	updatedServers := []llm.ToolDiscoveryServerDiagnostic{
+		{Name: "browser", Total: 1, Deferred: 1},
+		{Name: "federation", Total: 25, Deferred: 25},
+	}
+	ensureDeferredToolSearchInstruction(&req, &updatedSnapshot, updatedServers)
+	count = 0
+	for _, message := range req.Messages {
+		text := llm.MessageText(message)
+		if strings.Contains(text, deferredToolSearchInstructionMarker) {
+			count++
+			for _, want := range []string{"browser: 1 tool", "Browser automation and page inspection.", "Example tool names: browser__open", "federation: 25 tools"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("refreshed instruction missing newly loaded MCP context %q: %q", want, text)
+				}
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("refreshed tool-search developer instruction count = %d, want 1", count)
+	}
+}
+
 func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
@@ -280,6 +371,10 @@ func TestGenericProviderDeferredDiscoveryAndSessionActivation(t *testing.T) {
 	diagnostics, ok := engine.ToolDiscoveryDiagnostics("session-a")
 	if !ok || diagnostics.ResolvedMode != "deferred" || diagnostics.DynamicActive != 1 || diagnostics.DeferredCount != 24 {
 		t.Fatalf("diagnostics = %+v, ok=%v", diagnostics, ok)
+	}
+	activeSpecs := engine.ToolDiscoveryActiveSpecs("session-a")
+	if got := toolNames(activeSpecs); len(got) != 1 || got[0] != "federation__special_action" {
+		t.Fatalf("active inspector surface = %v, want loaded MCP schema only", got)
 	}
 
 	provider.ResetTurns()
@@ -453,8 +548,14 @@ func TestAutoEagerAtThresholdAndForcedChoicePinning(t *testing.T) {
 		t.Fatal(err)
 	}
 	drainStream(t, stream)
-	if got := len(provider.RecordedRequests()[0].Tools); got != 25 {
+	request := provider.RecordedRequests()[0]
+	if got := len(request.Tools); got != 25 {
 		t.Fatalf("at-threshold eager tools = %d, want 25", got)
+	}
+	for _, message := range request.Messages {
+		if strings.Contains(llm.MessageText(message), deferredToolSearchInstructionMarker) {
+			t.Fatalf("eager surface received deferred MCP guidance: %#v", request.Messages)
+		}
 	}
 
 	provider.ResetTurns()

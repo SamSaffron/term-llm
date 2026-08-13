@@ -1041,9 +1041,12 @@ func (d *DialogModel) viewMCPPicker() string {
 	for i, item := range items {
 		actualIdx := startIdx + i
 
-		// Status indicator with new icons
+		// Status metadata follows the lifecycle value after " · ". Keep the
+		// indicator keyed to the lifecycle value rather than the full description.
+		status, _, _ := strings.Cut(item.Description, " · ")
+
 		var statusIcon string
-		switch item.Description {
+		switch status {
 		case "ready":
 			statusIcon = successStyle.Render("●")
 		case "starting":
@@ -1062,7 +1065,7 @@ func (d *DialogModel) viewMCPPicker() string {
 
 		// Status text
 		statusText := ""
-		switch item.Description {
+		switch status {
 		case "ready":
 			statusText = successStyle.Render(" ready")
 		case "starting":

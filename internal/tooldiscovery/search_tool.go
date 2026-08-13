@@ -24,19 +24,19 @@ type SearchTool struct {
 func (t *SearchTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        ToolSearchName,
-		Description: "Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use this before the final turn when the needed MCP capability is not already available.",
+		Description: "Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use query when the exact tool name is unknown, or tool_names when it is known. Do not supply both. If both are supplied, tool_names takes precedence. Use this before the final turn when the needed MCP capability is not already available.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Describe the capability or operation needed.",
+					"description": "Describe the capability needed when exact tool names are unknown. Omit this when using tool_names. Do not supply both.",
 				},
 				"tool_names": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
 					"maxItems":    8,
-					"description": "Exact available tool names to load when already known.",
+					"description": "Exact available tool names to load. Prefer this when names are known and omit query. Do not supply both.",
 				},
 				"max_results": map[string]any{
 					"type":    "integer",
@@ -53,11 +53,11 @@ func (t *SearchTool) Spec() llm.ToolSpec {
 func (t *SearchTool) Preview(args json.RawMessage) string {
 	var input searchInput
 	if json.Unmarshal(args, &input) == nil {
-		if query := strings.TrimSpace(input.Query); query != "" {
-			return fmt.Sprintf("Searching MCP tools for %q", query)
-		}
 		if len(input.ToolNames) > 0 {
 			return "Loading MCP tools: " + strings.Join(input.ToolNames, ", ")
+		}
+		if query := strings.TrimSpace(input.Query); query != "" {
+			return fmt.Sprintf("Searching MCP tools for %q", query)
 		}
 	}
 	return "Searching MCP tools"
@@ -84,8 +84,13 @@ func decodeSearchInput(args json.RawMessage) (searchInput, error) {
 		}
 	}
 	input.ToolNames = names
-	if (input.Query == "") == (len(input.ToolNames) == 0) {
-		return searchInput{}, fmt.Errorf("exactly one of a non-empty query or non-empty tool_names is required")
+	if len(input.ToolNames) > 0 {
+		// Exact names are an unambiguous, authorization-checked selector. Models
+		// sometimes redundantly include a semantic query as well; prefer the exact
+		// request instead of rejecting the call and wasting an agentic turn.
+		input.Query = ""
+	} else if input.Query == "" {
+		return searchInput{}, fmt.Errorf("provide a non-empty query or non-empty tool_names")
 	}
 	if utf8.RuneCountInString(input.Query) > 500 {
 		return searchInput{}, fmt.Errorf("query is too long: maximum is 500 Unicode code points")

@@ -230,7 +230,7 @@ func AllCommands() []Command {
 		{
 			Name:        "mcp",
 			Description: "MCP servers (browser, database, git tools)",
-			Usage:       "/mcp [start|stop|add|list]",
+			Usage:       "/mcp [start|stop|add|list|status [tools]]",
 			Subcommands: []Subcommand{
 				{Name: "start", Description: "Start a configured server"},
 				{Name: "stop", Description: "Stop a running server"},
@@ -2690,6 +2690,7 @@ func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
 		if err := m.mcpManager.Restart(context.Background(), name); err != nil {
 			return m.showSystemMessage(fmt.Sprintf("Failed to restart %s: %v", name, err))
 		}
+		m.setMCPServerSelected(name, true)
 		m.setTextareaValue("")
 		return m.showSystemMessage(fmt.Sprintf("Restarting MCP server: %s", name))
 
@@ -2697,7 +2698,11 @@ func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
 		if m.mcpManager == nil {
 			return m.showMCPQuickStart()
 		}
-		return m.mcpShowStatus()
+		showTools := len(subArgs) > 0 && strings.EqualFold(subArgs[0], "tools")
+		if len(subArgs) > 0 && !showTools {
+			return m.showSystemMessage("Usage: `/mcp status [tools]`")
+		}
+		return m.mcpShowStatus(showTools)
 
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Unknown subcommand: %s\n\n**Commands:**\n- `/mcp start <server>` - Start a server\n- `/mcp stop <server>` - Stop a server\n- `/mcp add <server>` - Add a new server\n- `/mcp list` - Show available servers\n- `/mcp status` - Show current status", subCmd))
@@ -2765,6 +2770,7 @@ func (m *Model) mcpStartServer(query string) (tea.Model, tea.Cmd) {
 	if err := m.mcpManager.Enable(context.Background(), name); err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to start %s: %v", name, err))
 	}
+	m.setMCPServerSelected(name, true)
 	m.setTextareaValue("")
 	return m.showFooterMuted(fmt.Sprintf("Starting %s… tools will be available shortly.", name))
 }
@@ -2784,6 +2790,7 @@ func (m *Model) mcpStopServer(query string) (tea.Model, tea.Cmd) {
 	if err := m.mcpManager.Disable(name); err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to stop %s: %v", name, err))
 	}
+	m.setMCPServerSelected(name, false)
 	m.setTextareaValue("")
 	return m.showFooterSuccess(fmt.Sprintf("Stopped %s.", name))
 }
@@ -2803,92 +2810,126 @@ func formatMCPFailureMessage(update mcp.StatusUpdate) string {
 	return b.String()
 }
 
-func (m *Model) mcpShowStatus() (tea.Model, tea.Cmd) {
+func (m *Model) mcpShowStatus(showTools bool) (tea.Model, tea.Cmd) {
 	var b strings.Builder
 
 	available := m.mcpManager.AvailableServers()
 	states := m.mcpManager.GetAllStates()
 
 	if len(available) == 0 {
-		b.WriteString("## MCP Servers\n\n")
 		b.WriteString("No MCP servers configured.\n\n")
-		b.WriteString("**Quick start:**\n")
-		b.WriteString("- `/mcp add playwright` - Browser automation\n")
-		b.WriteString("- `/mcp add github` - GitHub integration\n")
-		b.WriteString("- `/mcp add filesystem` - File operations\n")
-		b.WriteString("- `/mcp list` - See all available servers\n")
-		return m.showSystemMessage(b.String())
+		b.WriteString("Quick start:\n")
+		b.WriteString("  /mcp add playwright  Browser automation\n")
+		b.WriteString("  /mcp add github      GitHub integration\n")
+		b.WriteString("  /mcp add filesystem  File operations\n")
+		b.WriteString("  /mcp list            See all available servers")
+		return m.showMCPStatusContent(b.String())
 	}
 
-	b.WriteString("## MCP Servers\n\n")
-
-	// Build status map
-	statusMap := make(map[string]string)
+	stateMap := make(map[string]mcp.ServerState, len(states))
 	for _, state := range states {
-		switch state.Status {
-		case "starting":
-			statusMap[state.Name] = "starting..."
-		case "ready":
-			statusMap[state.Name] = "running"
-		case "failed":
-			errMsg := "failed"
-			if state.Error != nil {
-				errMsg = fmt.Sprintf("failed: %v", state.Error)
-			}
-			statusMap[state.Name] = errMsg
-		default:
-			statusMap[state.Name] = "stopped"
-		}
+		stateMap[state.Name] = state
 	}
 
-	hasStoppedServers := false
+	activeCount := 0
+	stoppedCount := 0
 	for _, name := range available {
-		status := statusMap[name]
-		if status == "" {
-			status = "stopped"
+		state := stateMap[name]
+		if state.Status == "" || state.Status == mcp.StatusStopped {
+			stoppedCount++
+			continue
 		}
-		if status == "stopped" {
-			hasStoppedServers = true
+		activeCount++
+		fmt.Fprintf(&b, "%s: %s", name, state.Status)
+		if state.Status == mcp.StatusReady {
+			fmt.Fprintf(&b, " (%d catalogued tools)", state.ToolCount)
 		}
-
-		icon := "  "
-		if status == "running" {
-			icon = "* "
-		} else if status == "starting..." {
-			icon = ". "
+		if state.Error != nil {
+			fmt.Fprintf(&b, "\n  error: %v", state.Error)
 		}
-
-		b.WriteString(fmt.Sprintf("%s**%s** - %s\n", icon, name, status))
+		if state.RefreshError != nil {
+			fmt.Fprintf(&b, "\n  refresh warning: %v", state.RefreshError)
+		}
+		if !state.LastToolRefresh.IsZero() {
+			fmt.Fprintf(&b, "\n  refreshed: %s", state.LastToolRefresh.Local().Format(time.RFC3339))
+		}
+		b.WriteString("\n")
+	}
+	if activeCount == 0 {
+		b.WriteString("No MCP servers are running.\n")
+	}
+	if stoppedCount > 0 {
+		fmt.Fprintf(&b, "%d other configured servers stopped.\n", stoppedCount)
 	}
 
-	// Add hint for stopped servers
-	if hasStoppedServers {
-		b.WriteString("\n`/mcp start <name>` to start a server\n")
-	}
-
-	// Show tools from running servers
 	tools := m.mcpManager.AllTools()
-	if len(tools) > 0 {
-		b.WriteString(fmt.Sprintf("\n**Available tools (%d):**\n", len(tools)))
-		for _, t := range tools {
-			// Tool name is prefixed with "servername__toolname"
-			parts := strings.SplitN(t.Name, "__", 2)
-			if len(parts) == 2 {
-				b.WriteString(fmt.Sprintf("- `%s` (%s)\n", parts[1], parts[0]))
-			} else {
-				b.WriteString(fmt.Sprintf("- `%s`\n", t.Name))
-			}
+	m.writeMCPModelAccessStatus(&b, len(tools))
+	if showTools && len(tools) > 0 {
+		fmt.Fprintf(&b, "\nCatalogued tools (%d):\n", len(tools))
+		for _, tool := range tools {
+			fmt.Fprintf(&b, "  %s\n", tool.Name)
 		}
+	} else if len(tools) > 0 {
+		b.WriteString("\nRun /mcp status tools to list tool names.")
 	}
 
-	b.WriteString("\n**Commands:**\n")
-	b.WriteString("- `/mcp start <server>` - Start a server\n")
-	b.WriteString("- `/mcp stop <server>` - Stop a server\n")
-	b.WriteString("- `/mcp add <name>` - Add a new server\n")
-	b.WriteString("- `/mcp list` - Show available servers\n")
+	return m.showMCPStatusContent(b.String())
+}
 
+func (m *Model) writeMCPModelAccessStatus(b *strings.Builder, catalogueCount int) {
+	if b == nil {
+		return
+	}
+	b.WriteString("\nModel access: ")
+	if m.engine == nil {
+		b.WriteString("unavailable (no active engine)\n")
+		return
+	}
+	sessionID := ""
+	if m.sess != nil {
+		sessionID = m.sess.ID
+	}
+	diagnostics, ok := m.engine.ToolDiscoveryDiagnostics(sessionID)
+	snapshot := m.mcpManager.CatalogueSnapshot()
+	if !ok || diagnostics.ResolvedMode == "" || mcpDiscoveryDiagnosticsStale(diagnostics, snapshot) {
+		if catalogueCount == 0 {
+			b.WriteString("no catalogued tools\n")
+		} else {
+			b.WriteString("pending; send a new message now that the server is ready\n")
+		}
+		return
+	}
+	authorized := diagnostics.PinnedCount + diagnostics.ActiveMCPCount + diagnostics.DeferredCount
+	if catalogueCount > 0 && authorized == 0 {
+		b.WriteString("blocked by the active tool policy\n")
+		return
+	}
+	switch diagnostics.ResolvedMode {
+	case "deferred":
+		control := "tool_search"
+		if diagnostics.Strategy == "native" {
+			control = "native tool search"
+		}
+		fmt.Fprintf(b, "%d active, %d deferred via %s\n", diagnostics.PinnedCount+diagnostics.ActiveMCPCount, diagnostics.DeferredCount, control)
+	case "eager":
+		fmt.Fprintf(b, "%d tools included directly\n", authorized)
+	default:
+		fmt.Fprintf(b, "%d tools authorised (%s mode)\n", authorized, diagnostics.ResolvedMode)
+	}
+}
+
+func mcpDiscoveryDiagnosticsStale(diagnostics llm.ToolDiscoveryDiagnostics, snapshot *mcp.CatalogueSnapshot) bool {
+	if snapshot == nil || len(snapshot.Tools) == 0 {
+		return false
+	}
+	return diagnostics.CatalogueHash == "" || diagnostics.CatalogueHash != snapshot.Hash
+}
+
+func (m *Model) showMCPStatusContent(content string) (tea.Model, tea.Cmd) {
 	m.setTextareaValue("")
-	return m.showSystemMessage(b.String())
+	m.clearFooterMessage()
+	m.dialog.ShowContent("MCP Status", content)
+	return m, nil
 }
 
 // showMCPQuickStart shows helpful info when user presses Ctrl+M with no MCPs configured
@@ -2977,6 +3018,7 @@ func (m *Model) quickAddMCP(query string) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	m.setMCPServerSelected(match.Name, true)
 	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf(
 		"Enabled **%s**\n\n%s\n\nTools will be available shortly.",
@@ -3023,14 +3065,12 @@ func (m *Model) cmdSkills(args []string, rawArgs string) (tea.Model, tea.Cmd) {
 
 func (m *Model) newInspectorConfig() *inspector.Config {
 	var toolSpecs []llm.ToolSpec
-	if m.mcpManager != nil {
-		for _, t := range m.mcpManager.AllTools() {
-			toolSpecs = append(toolSpecs, llm.ToolSpec{
-				Name:        t.Name,
-				Description: t.Description,
-				Schema:      t.Schema,
-			})
+	if m.engine != nil {
+		sessionID := ""
+		if m.sess != nil {
+			sessionID = m.sess.ID
 		}
+		toolSpecs = append(toolSpecs, m.engine.ToolDiscoveryActiveSpecs(sessionID)...)
 	}
 	if len(m.localTools) > 0 && m.engine != nil {
 		for _, specName := range m.localTools {

@@ -668,13 +668,19 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 				selected := m.dialog.Selected()
 				if selected != nil {
-					// Toggle the selected MCP server
+					// Toggle the selected MCP server and keep the runner-facing
+					// selection in sync. Chat turns use mcpStr to opt into the
+					// attached discovery planner.
 					name := selected.ID
 					status, _ := m.mcpManager.ServerStatus(name)
-					if status == "ready" || status == "starting" {
-						m.mcpManager.Disable(name)
+					if status == mcp.StatusReady || status == mcp.StatusStarting {
+						if err := m.mcpManager.Disable(name); err == nil {
+							m.setMCPServerSelected(name, false)
+						}
 					} else {
-						m.mcpManager.Enable(context.Background(), name)
+						if err := m.mcpManager.Enable(context.Background(), name); err == nil {
+							m.setMCPServerSelected(name, true)
+						}
 					}
 					m.refreshMCPPickerIfOpen()
 				}

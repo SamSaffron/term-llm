@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
@@ -1451,6 +1452,21 @@ func TestUpdate_PasteMsg_RoutedToModelPickerFilter(t *testing.T) {
 	}
 	if got := rm.dialog.Query(); got != "other" {
 		t.Fatalf("expected pasted model filter query, got %q", got)
+	}
+}
+
+func TestMCPPickerToggleUpdatesRunnerFacingSelection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.mcpManager = mcp.NewManagerWithConfig(&mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"discourse_local": {Command: "term-llm-test-command-that-does-not-exist"},
+	}})
+	t.Cleanup(m.mcpManager.StopAll)
+	m.showMCPPicker()
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	rm := result.(*Model)
+	if rm.mcpStr != "discourse_local" || rm.sess.MCP != "discourse_local" {
+		t.Fatalf("interactive MCP selection = model %q session %q, want discourse_local", rm.mcpStr, rm.sess.MCP)
 	}
 }
 
