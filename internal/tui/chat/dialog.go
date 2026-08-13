@@ -23,6 +23,7 @@ const (
 	DialogModelPicker
 	DialogSessionList
 	DialogBranchTree
+	DialogWorkerReports
 	DialogBranchContext
 	DialogDirApproval
 	DialogMCPPicker
@@ -192,6 +193,11 @@ func (d *DialogModel) ShowBranchTree(items []DialogItem, currentItemID string) {
 	d.treeToolsVisible = false
 	d.treeExpandedTurns = make(map[string]bool)
 	d.filterItems()
+}
+
+// ShowWorkerReports opens worker actions and durable mailbox events.
+func (d *DialogModel) ShowWorkerReports(items []DialogItem, title string) {
+	d.showSessionItems(DialogWorkerReports, title, items, "")
 }
 
 // ShowBranchContext asks which context the new path should include.
@@ -377,6 +383,13 @@ func (d *DialogModel) ShowContent(title, content string) {
 // Content returns the raw content currently displayed by a content dialog.
 func (d *DialogModel) Content() string {
 	return strings.Join(d.contentLines, "\n")
+}
+
+// SetContentFooter customizes static-dialog actions while preserving its body.
+func (d *DialogModel) SetContentFooter(footer string) {
+	if d.dialogType == DialogContent {
+		d.contentFooter = strings.TrimSpace(footer)
+	}
 }
 
 func (d *DialogModel) GetDirApprovalPath() string {

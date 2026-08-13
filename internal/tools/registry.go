@@ -266,6 +266,19 @@ func (r *LocalToolRegistry) RegisterWithEngine(engine *llm.Engine) {
 	}
 }
 
+// RegisterWorkerReportTool adds the durable mailbox tool to a worker-only
+// runtime after ordinary configured tools have been registered.
+func (r *LocalToolRegistry) RegisterWorkerReportTool(engine *llm.Engine, store session.WorkerStore, childSessionID, coordinatorSessionID string) {
+	if r == nil || engine == nil || store == nil {
+		return
+	}
+	tool := NewWorkerReportTool(store, childSessionID, coordinatorSessionID)
+	r.mu.Lock()
+	r.tools[WorkerReportToolName] = tool
+	r.mu.Unlock()
+	engine.RegisterTool(tool)
+}
+
 // SetPlanStore wires durable latest-snapshot persistence only when update_plan
 // was explicitly configured and registered.
 func (r *LocalToolRegistry) SetPlanStore(store session.Store) {

@@ -110,9 +110,20 @@ func AllCommands() []Command {
 			Usage:       "/clear",
 		},
 		{
+			Name:         "thread",
+			Description:  "Start a durable background worker",
+			Usage:        "/thread TASK",
+			ArgumentHint: "TASK",
+		},
+		{
 			Name:        "tree",
-			Description: "Browse conversation paths or branch from an earlier message",
+			Description: "Browse conversation paths, workers, and mailbox reports",
 			Usage:       "/tree",
+		},
+		{
+			Name:        "main",
+			Description: "Return from a worker session to its coordinator",
+			Usage:       "/main",
 		},
 		{
 			Name:        "undo",
@@ -542,8 +553,12 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdGoal(args, rawArgs)
 	case "clear":
 		return m.cmdClear()
+	case "thread":
+		return m.cmdThread(rawArgs)
 	case "tree":
 		return m.cmdTree(args)
+	case "main":
+		return m.cmdMain(args)
 	case "undo":
 		return m.cmdUndoRedo(false, args)
 	case "redo":

@@ -197,17 +197,20 @@ type NotifyOrigin struct {
 }
 
 type LLMConfig struct {
-	AgentName      string        `json:"agent_name"`
-	Instructions   string        `json:"instructions"`
-	Progressive    bool          `json:"progressive,omitempty"`
-	StopWhen       string        `json:"stop_when,omitempty"`
-	ContinueWith   string        `json:"continue_with,omitempty"`
-	PersistSession *bool         `json:"persist_session,omitempty"`
-	SessionID      string        `json:"session_id,omitempty"`
-	SessionName    string        `json:"session_name,omitempty"`
-	NotifyWhenDone bool          `json:"notify_when_done,omitempty"`
-	NotifyOrigin   *NotifyOrigin `json:"notify_origin,omitempty"`
-	Cwd            string        `json:"cwd"`
+	AgentName          string        `json:"agent_name"`
+	Instructions       string        `json:"instructions"`
+	Progressive        bool          `json:"progressive,omitempty"`
+	StopWhen           string        `json:"stop_when,omitempty"`
+	ContinueWith       string        `json:"continue_with,omitempty"`
+	PersistSession     *bool         `json:"persist_session,omitempty"`
+	SessionID          string        `json:"session_id,omitempty"`
+	SessionName        string        `json:"session_name,omitempty"`
+	NotifyWhenDone     bool          `json:"notify_when_done,omitempty"`
+	NotifyOrigin       *NotifyOrigin `json:"notify_origin,omitempty"`
+	ParentSessionID    string        `json:"parent_session_id,omitempty"`
+	Worker             bool          `json:"worker,omitempty"`
+	WorkerApprovalMode string        `json:"worker_approval_mode,omitempty"`
+	Cwd                string        `json:"cwd"`
 
 	Provider        string   `json:"provider,omitempty"`
 	Model           string   `json:"model,omitempty"`
@@ -250,6 +253,16 @@ func ValidateRunnerConfig(runnerType RunnerType, raw json.RawMessage) error {
 		}
 		if strings.TrimSpace(cfg.Cwd) == "" {
 			return fmt.Errorf("llm runner_config.cwd is required")
+		}
+		if cfg.Worker {
+			if strings.TrimSpace(cfg.SessionID) == "" || strings.TrimSpace(cfg.ParentSessionID) == "" {
+				return fmt.Errorf("worker runner_config requires session_id and parent_session_id")
+			}
+			switch strings.TrimSpace(cfg.WorkerApprovalMode) {
+			case "", "prompt", "auto", "yolo":
+			default:
+				return fmt.Errorf("worker runner_config.worker_approval_mode is invalid")
+			}
 		}
 	case RunnerProgram:
 	case "":

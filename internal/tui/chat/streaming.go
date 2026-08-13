@@ -476,6 +476,9 @@ func (m *Model) ensureContextMessages() {
 }
 
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
+	if m.workerChildReadOnly() {
+		return m.showFooterWarning("This running worker transcript is read-only. Use /main to continue the coordinator chat.")
+	}
 	if m.directShellRun != nil {
 		return m.showFooterWarning("Wait for the shell command to finish or press Esc to cancel it.")
 	}

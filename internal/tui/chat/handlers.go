@@ -568,8 +568,32 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Handle dialog first if open
 	if m.dialog.IsOpen() {
 		if m.dialog.Type() == DialogContent {
+			if m.pendingWorkerReport != nil && key.Matches(msg, key.NewBinding(key.WithKeys("i"))) {
+				return m.importPendingWorkerReport()
+			}
 			m.dialog.Update(msg)
+			if !m.dialog.IsOpen() {
+				m.pendingWorkerReport = nil
+			}
 			return m, nil
+		}
+		if m.dialog.Type() == DialogWorkerReports {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):
+				selected := m.dialog.Selected()
+				if selected == nil {
+					return m, nil
+				}
+				m.dialog.Close()
+				return m.handleWorkerReportsSelection(selected.ID)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q", "ctrl+c"))):
+				m.dialog.Close()
+				m.workerTreeSelection = nil
+				return m, nil
+			default:
+				m.dialog.Update(msg)
+				return m, nil
+			}
 		}
 		// Conversation tree supports type-to-search while preserving arrow-key navigation.
 		if m.dialog.Type() == DialogBranchTree {

@@ -664,3 +664,54 @@ func TestJobsV2CloseCancelsCompletionNotification(t *testing.T) {
 		t.Fatalf("notification attempts after shutdown = %d, want 1", got)
 	}
 }
+
+func TestJobsV2ThreadCloseAllowsTerminalNotification(t *testing.T) {
+	started := make(chan struct{})
+	notified := make(chan jobsV2RunStatus, 1)
+	mgr, err := newThreadWorkerJobsV2Manager(":memory:", 1, nil, func(ctx context.Context, _ jobsV2Run, _ jobsV2Job, status jobsV2RunStatus, _ jobsV2RunResult, _ string, _ bool, _ string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		notified <- status
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newThreadWorkerJobsV2Manager: %v", err)
+	}
+	mgr.runners[jobsV2RunnerProgram] = jobsV2RunnerFunc(func(ctx context.Context, _ jobsV2Job, _ progressWriter) (jobsV2RunResult, error) {
+		close(started)
+		<-ctx.Done()
+		return jobsV2RunResult{}, ctx.Err()
+	})
+	labels, _ := json.Marshal(map[string]string{threadWorkerLabelKey: threadWorkerLabelValue})
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name: "thread-notify-on-close", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"ignored"}`), TriggerType: jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`), RetryPolicy: json.RawMessage(`{"max_attempts":1}`), Labels: labels,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if _, err := mgr.TriggerJob(job.ID); err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not start")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := mgr.CloseContext(closeCtx); err != nil {
+		t.Fatalf("CloseContext: %v", err)
+	}
+	select {
+	case status := <-notified:
+		if status != jobsV2RunCancelled {
+			t.Fatalf("notification status = %s, want %s", status, jobsV2RunCancelled)
+		}
+	default:
+		t.Fatal("thread terminal notification was cancelled during manager shutdown")
+	}
+}

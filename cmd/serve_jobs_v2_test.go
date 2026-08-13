@@ -661,6 +661,99 @@ func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
 	}
 }
 
+func TestJobsV2SecondManagerDoesNotRecoverLiveLeasedRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	mgr1, err := newJobsV2Manager(path, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mgr1.runners[jobsV2RunnerProgram] = jobsV2RunnerFunc(func(context.Context, jobsV2Job, progressWriter) (jobsV2RunResult, error) {
+		close(started)
+		<-release
+		return jobsV2RunResult{Stdout: "owned"}, nil
+	})
+	job, err := mgr1.CreateJob(jobsV2Job{
+		Name: "leased-owner", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"ignored"}`), TriggerType: jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`), RetryPolicy: json.RawMessage(`{"max_attempts":1}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := mgr1.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first manager did not start run")
+	}
+
+	mgr2, err := newJobsV2Manager(path, 0, nil)
+	if err != nil {
+		t.Fatalf("start second manager: %v", err)
+	}
+	live, err := mgr2.GetRun(run.ID)
+	if err != nil || live.Status != jobsV2RunRunning || live.WorkerID != mgr1.workerID {
+		t.Fatalf("second manager changed live run: %#v, %v", live, err)
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		finished, err := mgr2.GetRun(run.ID)
+		if err == nil && finished.Status == jobsV2RunSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("owned run did not finish successfully: %#v, %v", finished, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = mgr2.Close()
+	_ = mgr1.Close()
+}
+
+func TestJobsV2RecoveryClaimsOnlyExpiredLease(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	seed, err := newJobsV2Manager(path, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := seed.CreateJob(jobsV2Job{
+		Name: "expired-lease", Enabled: true, RunnerType: jobsV2RunnerProgram,
+		RunnerConfig: json.RawMessage(`{"command":"ignored"}`), TriggerType: jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`), RetryPolicy: json.RawMessage(`{"max_attempts":1}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := seed.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = 'dead', lease_expires_at = ? WHERE id = ?`, jobsV2RunRunning, time.Now().Add(-time.Minute).UnixMilli(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = seed.Close()
+
+	recovering, err := newJobsV2Manager(path, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovering.Close()
+	recovered, err := recovering.GetRun(run.ID)
+	if err != nil || recovered.Status != jobsV2RunFailed || recovered.ExitReason != exitReasonWorkerLost {
+		t.Fatalf("expired run = %#v, %v", recovered, err)
+	}
+	var lease sql.NullInt64
+	if err := recovering.db.QueryRow(`SELECT lease_expires_at FROM job_runs_v2 WHERE id = ?`, run.ID).Scan(&lease); err != nil || lease.Valid {
+		t.Fatalf("terminal lease = %#v, %v", lease, err)
+	}
+}
+
 func TestJobsV2CreateDefaultsEnabledWhenOmitted(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 0, nil)
 	if err != nil {

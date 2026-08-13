@@ -117,6 +117,7 @@ type Request struct {
 	// Sub-agent/session-linking options used by spawn_agent migrations.
 	ParentSessionID          string
 	IsSubagent               bool
+	IsWorker                 bool
 	Depth                    int
 	ApprovalRole             string
 	ApprovalTranscriptPrefix []llm.Message

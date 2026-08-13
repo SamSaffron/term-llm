@@ -733,6 +733,19 @@ func (m *Model) buildFooterLayout() footerLayout {
 		appendMetaRow(pendingStyle.Render("  ⏳ " + pendingText + " (will incorporate)"))
 	}
 
+	if m.workerUnreadReports > 0 {
+		mailStyle := lipgloss.NewStyle().Foreground(theme.Secondary).Bold(true)
+		noun := "reports"
+		if m.workerUnreadReports == 1 {
+			noun = "report"
+		}
+		appendMetaRow(mailStyle.Render(fmt.Sprintf("  ✉ %d unread worker %s · /tree", m.workerUnreadReports, noun)))
+	}
+	if m.workerChildReadOnly() {
+		workerStyle := lipgloss.NewStyle().Foreground(theme.Warning).Bold(true)
+		appendMetaRow(workerStyle.Render("  Worker is active · read-only transcript · /main returns to coordinator"))
+	}
+
 	if len(m.files) > 0 {
 		var fileNames []string
 		for _, f := range m.files {
@@ -765,6 +778,8 @@ func (m *Model) buildFooterLayout() footerLayout {
 		m.textarea.Placeholder = "Shell command running…"
 	} else if shellComposer {
 		m.textarea.Placeholder = "Type a shell command…"
+	} else if m.workerChildReadOnly() {
+		m.textarea.Placeholder = "Worker is running; use /main or /tree…"
 	} else {
 		m.textarea.Placeholder = "Type a message..."
 	}

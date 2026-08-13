@@ -363,6 +363,14 @@ type Model struct {
 	branchPathNotesRequest *BranchPathNotesRequest
 	queuedBranchSend       *pendingBranchSend
 
+	// Durable background worker supervision and mailbox state.
+	workerController    WorkerController
+	workerEdge          *session.WorkerEdge
+	workerUnreadReports int
+	workerTreeSelection *session.WorkerEdge
+	workerReportChoices map[int64]session.WorkerReport
+	pendingWorkerReport *session.WorkerReport
+
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string
 
@@ -1729,6 +1737,9 @@ func (m *Model) Init() tea.Cmd {
 	m.updateTextareaHeight()
 
 	baseCmds := []tea.Cmd{textarea.Blink, m.spinner.Tick}
+	if cmd := m.workerMailboxPollCmd(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
 	if (!m.fastMetadataLoaded || m.fastMetadataStale) && !m.fastMetadataLoading {
 		if cmd := m.loadModelMetadataCmd(); cmd != nil {
 			baseCmds = append(baseCmds, cmd)
@@ -1957,6 +1968,7 @@ func isParentChatMessage(msg tea.Msg) bool {
 	switch msg.(type) {
 	case streamEventMsg,
 		tickMsg,
+		workerMailboxPollMsg,
 		streamRenderTickMsg,
 		ui.SmoothTickMsg,
 		ui.WaveTickMsg,
@@ -2241,6 +2253,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if m.streaming || m.directShellRun != nil {
 			cmds = append(cmds, m.tickEvery())
 		}
+
+	case workerMailboxPollMsg:
+		cmds = append(cmds, m.handleWorkerMailboxPoll(msg))
 
 	case streamRenderTickMsg:
 		m.streamRenderTickPending = false

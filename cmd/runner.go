@@ -354,6 +354,13 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		if err := toolMgr.ConfigureWorkspacePersistence(ctx, store, workspaceSessionID); err != nil {
 			return nil, err
 		}
+		if req.IsWorker {
+			workerStore, ok := session.AsWorkerStore(store)
+			if !ok || strings.TrimSpace(req.ParentSessionID) == "" {
+				return nil, fmt.Errorf("worker mailbox persistence is unavailable")
+			}
+			toolMgr.Registry.RegisterWorkerReportTool(engine, workerStore, req.SessionID, req.ParentSessionID)
+		}
 	}
 
 	if settings.MCP != "" && !borrowedEngine {

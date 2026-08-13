@@ -50,6 +50,7 @@ type SQLiteStore struct {
 	hasMessageStreamIdentity bool // true if messages table has response-scoped segment identity columns
 	hasMessageClientID       bool // true if messages table has client_message_id
 	hasSessionBranches       bool // true if session_branches table exists
+	hasSessionWorkers        bool // true if worker edge/mailbox tables exist
 }
 
 var _ MessageSequenceStore = (*SQLiteStore)(nil)
@@ -186,6 +187,50 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_session_branches_idempotency
     WHERE idempotency_key <> '';
 CREATE INDEX IF NOT EXISTS idx_session_branches_parent
     ON session_branches(parent_session_id);
+
+CREATE TABLE IF NOT EXISTS session_workers (
+    child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    coordinator_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    task TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'done', 'failed', 'cancelled')),
+    job_id TEXT,
+    run_id TEXT,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    finished_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_session_workers_coordinator
+    ON session_workers(coordinator_session_id, created_at, child_session_id);
+CREATE INDEX IF NOT EXISTS idx_session_workers_status
+    ON session_workers(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS session_worker_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    child_session_id TEXT NOT NULL REFERENCES session_workers(child_session_id) ON DELETE CASCADE,
+    source_session_id TEXT NOT NULL,
+    destination_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('progress', 'result', 'blocker')),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    origin TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    read_at TIMESTAMP,
+    imported_at TIMESTAMP,
+    imported_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL,
+    UNIQUE (child_session_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_session_worker_reports_destination
+    ON session_worker_reports(destination_session_id, read_at, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_session_worker_reports_child
+    ON session_worker_reports(child_session_id, sequence, id);
+CREATE TRIGGER IF NOT EXISTS session_worker_reports_content_immutable
+BEFORE UPDATE OF child_session_id, source_session_id, destination_session_id, kind, title, body, metadata, origin, sequence, created_at
+ON session_worker_reports
+BEGIN
+    SELECT RAISE(ABORT, 'worker report content is immutable');
+END;
 
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
@@ -329,6 +374,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		store.probeSessionColumns()
 		store.probeMessageColumns()
 		store.probeBranchTable()
+		store.probeWorkerTables()
 	} else {
 		store.setCurrentColumns()
 	}
@@ -377,7 +423,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 46
+const schemaVersion = 47
 
 // migration represents a schema migration.
 type migration struct {
@@ -1284,6 +1330,61 @@ var migrations = []migration{
 				)`,
 				`CREATE INDEX IF NOT EXISTS idx_session_workspace_grants_session
 					ON session_workspace_grants(session_id, created_at, id)`,
+			} {
+				if _, err := db.Exec(statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		version:     47,
+		description: "create durable workers and mailbox reports",
+		up: func(db schemaExecutor) error {
+			for _, statement := range []string{
+				`CREATE TABLE IF NOT EXISTS session_workers (
+					child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+					coordinator_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+					task TEXT NOT NULL,
+					status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'blocked', 'done', 'failed', 'cancelled')),
+					job_id TEXT,
+					run_id TEXT,
+					created_at TIMESTAMP NOT NULL,
+					updated_at TIMESTAMP NOT NULL,
+					finished_at TIMESTAMP
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_session_workers_coordinator
+					ON session_workers(coordinator_session_id, created_at, child_session_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_session_workers_status
+					ON session_workers(status, updated_at)`,
+				`CREATE TABLE IF NOT EXISTS session_worker_reports (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					child_session_id TEXT NOT NULL REFERENCES session_workers(child_session_id) ON DELETE CASCADE,
+					source_session_id TEXT NOT NULL,
+					destination_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+					kind TEXT NOT NULL CHECK (kind IN ('progress', 'result', 'blocker')),
+					title TEXT NOT NULL,
+					body TEXT NOT NULL,
+					metadata TEXT NOT NULL DEFAULT '{}',
+					origin TEXT NOT NULL,
+					sequence INTEGER NOT NULL,
+					read_at TIMESTAMP,
+					imported_at TIMESTAMP,
+					imported_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+					created_at TIMESTAMP NOT NULL,
+					UNIQUE (child_session_id, sequence)
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_session_worker_reports_destination
+					ON session_worker_reports(destination_session_id, read_at, created_at, id)`,
+				`CREATE INDEX IF NOT EXISTS idx_session_worker_reports_child
+					ON session_worker_reports(child_session_id, sequence, id)`,
+				`CREATE TRIGGER IF NOT EXISTS session_worker_reports_content_immutable
+					BEFORE UPDATE OF child_session_id, source_session_id, destination_session_id, kind, title, body, metadata, origin, sequence, created_at
+					ON session_worker_reports
+					BEGIN
+						SELECT RAISE(ABORT, 'worker report content is immutable');
+					END`,
 			} {
 				if _, err := db.Exec(statement); err != nil {
 					return err
@@ -4586,12 +4687,20 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasMessageStreamIdentity = true
 	s.hasMessageClientID = true
 	s.hasSessionBranches = true
+	s.hasSessionWorkers = true
 }
 
 func (s *SQLiteStore) probeBranchTable() {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_branches'`).Scan(&count); err == nil {
 		s.hasSessionBranches = count > 0
+	}
+}
+
+func (s *SQLiteStore) probeWorkerTables() {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('session_workers', 'session_worker_reports')`).Scan(&count); err == nil {
+		s.hasSessionWorkers = count == 2
 	}
 }
 

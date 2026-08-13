@@ -210,9 +210,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	handoverAutoSend := ""
 	relaunchHandoff := chatRelaunchHandoff{}
+	workerRuntime := &chatWorkerRuntime{}
+	defer func() { _ = workerRuntime.Close() }()
 	chatHandoverApprovalMode = nil
 	for {
-		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff)
+		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, workerRuntime)
 		if err != nil {
 			return err
 		}
@@ -318,10 +320,19 @@ func toolManagerHasPathCapableTools(manager *tools.ToolManager) bool {
 	return false
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff) (string, string, error) {
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, workerRuntimes ...*chatWorkerRuntime) (string, string, error) {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return "", "", err
+	}
+	var workerRuntime *chatWorkerRuntime
+	if len(workerRuntimes) > 0 {
+		workerRuntime = workerRuntimes[0]
+	}
+	if workerRuntime != nil {
+		if err := workerRuntime.Ensure(cfg); err != nil {
+			return "", "", fmt.Errorf("initialize worker runtime: %w", err)
+		}
 	}
 	rawConfigInstructions := cfg.Chat.Instructions
 
@@ -647,6 +658,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		chatPlatformMessage = agent.PlatformMessages.For("chat")
 	}
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
+	if workerRuntime != nil {
+		model.SetWorkerController(workerRuntime)
+	}
 	model.SetAgentMentionCapability(runtimeAgentMentionCapability{engine: model.CurrentAgentMentionEngine, manager: toolMgr})
 	if sess != nil {
 		model.SetConversationBranch(sessionIsConversationBranch(context.Background(), store, sess.ID))

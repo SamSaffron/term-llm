@@ -738,7 +738,7 @@ func TestSideAndOnlySideIsStreamingLocalCommand(t *testing.T) {
 	if !isStreamingLocalSlashCommand("/side question") {
 		t.Fatal("/side should be available while main streams")
 	}
-	if isStreamingLocalSlashCommand("/main") || isSlashCommandLike("/main") {
-		t.Fatal("/main should not exist")
+	if isStreamingLocalSlashCommand("/main") || !isSlashCommandLike("/main") {
+		t.Fatal("/main should exist but remain unavailable while the current chat streams")
 	}
 }

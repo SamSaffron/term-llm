@@ -134,24 +134,39 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 		return m.showFooterError("Session storage does not support conversation branching.")
 	}
 	ctx := context.Background()
-	tree, err := branchStore.GetBranchTree(ctx, m.sess.ID)
+	treeSessionID := m.sess.ID
+	workerStore, workerStoreOK := session.AsWorkerStore(m.store)
+	currentIsWorker := false
+	if workerStoreOK {
+		if edge, edgeErr := workerStore.GetWorker(ctx, m.sess.ID); edgeErr == nil {
+			treeSessionID = edge.CoordinatorSessionID
+			currentIsWorker = true
+		}
+	}
+	tree, err := branchStore.GetBranchTree(ctx, treeSessionID)
 	if err != nil {
 		return m.showFooterError(fmt.Sprintf("Load conversation tree: %v", err))
 	}
-	messages, err := m.store.GetMessages(ctx, m.sess.ID, 0, 0)
-	if err != nil {
-		return m.showFooterError(fmt.Sprintf("Load branch points: %v", err))
+	messages := []session.Message(nil)
+	if !currentIsWorker {
+		messages, err = m.store.GetMessages(ctx, m.sess.ID, 0, 0)
+		if err != nil {
+			return m.showFooterError(fmt.Sprintf("Load branch points: %v", err))
+		}
 	}
 	mutationStore, ok := m.store.(session.TranscriptUndoRedoStore)
 	if !ok {
 		return m.showFooterError("Session storage does not support revision-safe branching.")
 	}
-	state, err := mutationStore.TranscriptMutationState(ctx, m.sess.ID)
-	if err != nil {
-		return m.showFooterError(fmt.Sprintf("Load conversation revision: %v", err))
+	state := session.TranscriptMutationState{}
+	if !currentIsWorker {
+		state, err = mutationStore.TranscriptMutationState(ctx, m.sess.ID)
+		if err != nil {
+			return m.showFooterError(fmt.Sprintf("Load conversation revision: %v", err))
+		}
 	}
 
-	items := make([]DialogItem, 0, len(tree.Nodes)+len(messages))
+	items := make([]DialogItem, 0, len(tree.Nodes)+len(messages)+4)
 	depths := branchTreeDepths(tree)
 	for _, node := range tree.Nodes {
 		marker := "○"
@@ -166,6 +181,15 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 		items = append(items, DialogItem{
 			ID: "path:" + node.SessionID, Label: label, Description: description, Category: "Existing paths",
 		})
+	}
+	if workerStoreOK {
+		workers, workerErr := workerStore.ListWorkers(ctx, treeSessionID)
+		if workerErr != nil {
+			return m.showFooterError(fmt.Sprintf("Load workers: %v", workerErr))
+		}
+		for _, worker := range workers {
+			items = append(items, workerTreeItem(worker, m.sess.ID))
+		}
 	}
 
 	m.branchTreeChoices = make(map[string]conversationBranchPoint)
@@ -250,6 +274,9 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleBranchTreeSelection(choiceID string) (tea.Model, tea.Cmd) {
+	if strings.HasPrefix(choiceID, "worker:") {
+		return m.openWorkerReports(strings.TrimPrefix(choiceID, "worker:"))
+	}
 	if strings.HasPrefix(choiceID, "path:") {
 		sessionID := strings.TrimPrefix(choiceID, "path:")
 		if m.sess != nil && sessionID == m.sess.ID {

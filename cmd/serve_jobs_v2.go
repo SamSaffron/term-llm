@@ -243,6 +243,8 @@ const (
 	jobsV2FinishRunRetryWindow = 30 * time.Second
 	jobsV2FinishRunRetryDelay  = 50 * time.Millisecond
 	jobsV2FinishRunMaxDelay    = time.Second
+	jobsV2LeaseDuration        = 30 * time.Second
+	jobsV2HeartbeatInterval    = 5 * time.Second
 )
 
 type jobsV2ProgramConfig = jobs.ProgramConfig
@@ -296,16 +298,19 @@ type jobsV2NotifyOrigin struct {
 }
 
 type jobsV2LLMConfig struct {
-	AgentName      string              `json:"agent_name"`
-	Instructions   string              `json:"instructions"`
-	Progressive    bool                `json:"progressive,omitempty"`
-	StopWhen       string              `json:"stop_when,omitempty"`
-	ContinueWith   string              `json:"continue_with,omitempty"`
-	PersistSession *bool               `json:"persist_session,omitempty"`
-	SessionID      string              `json:"session_id,omitempty"`
-	SessionName    string              `json:"session_name,omitempty"`
-	NotifyWhenDone bool                `json:"notify_when_done,omitempty"`
-	NotifyOrigin   *jobsV2NotifyOrigin `json:"notify_origin,omitempty"`
+	AgentName          string              `json:"agent_name"`
+	Instructions       string              `json:"instructions"`
+	Progressive        bool                `json:"progressive,omitempty"`
+	StopWhen           string              `json:"stop_when,omitempty"`
+	ContinueWith       string              `json:"continue_with,omitempty"`
+	PersistSession     *bool               `json:"persist_session,omitempty"`
+	SessionID          string              `json:"session_id,omitempty"`
+	SessionName        string              `json:"session_name,omitempty"`
+	NotifyWhenDone     bool                `json:"notify_when_done,omitempty"`
+	NotifyOrigin       *jobsV2NotifyOrigin `json:"notify_origin,omitempty"`
+	ParentSessionID    string              `json:"parent_session_id,omitempty"`
+	Worker             bool                `json:"worker,omitempty"`
+	WorkerApprovalMode string              `json:"worker_approval_mode,omitempty"`
 
 	// cwd is REQUIRED: it roots this run's file/shell tools at a directory so a
 	// job never silently inherits the jobs server's process working directory.
@@ -495,11 +500,14 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 }
 
 type jobsV2Manager struct {
-	db         *sql.DB
-	workers    int
-	workerID   string
-	runners    map[jobsV2RunnerType]jobsV2Runner
-	notifyDone jobsV2RunDoneNotifier
+	db       *sql.DB
+	workers  int
+	workerID string
+	// claimThreadWorkers partitions embedded /thread execution from ordinary
+	// jobs-v2 managers sharing the same durable database.
+	claimThreadWorkers bool
+	runners            map[jobsV2RunnerType]jobsV2Runner
+	notifyDone         jobsV2RunDoneNotifier
 	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
 	schedulerIdleDelay time.Duration
 	workerIdleDelay    time.Duration
@@ -566,6 +574,7 @@ CREATE TABLE IF NOT EXISTS job_runs_v2 (
 	turn_count INTEGER NOT NULL DEFAULT 0,
 	input_tokens INTEGER NOT NULL DEFAULT 0,
 	output_tokens INTEGER NOT NULL DEFAULT 0,
+	lease_expires_at INTEGER,
 	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -591,6 +600,10 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 }
 
 func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
+	return newJobsV2ManagerConfigured(dbPath, workers, llmExec, notifyDone, false, true)
+}
+
+func newJobsV2ManagerConfigured(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier, claimThreadWorkers, runScheduler bool) (*jobsV2Manager, error) {
 	if workers < 0 {
 		workers = 1
 	}
@@ -635,6 +648,7 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		`ALTER TABLE job_runs_v2 ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_runs_v2 ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_runs_v2 ADD COLUMN session_id TEXT`,
+		`ALTER TABLE job_runs_v2 ADD COLUMN lease_expires_at INTEGER`,
 	}
 	for _, migration := range migrations {
 		_, _ = db.Exec(migration)
@@ -664,6 +678,7 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		db:                 db,
 		workers:            workers,
 		workerID:           "worker_" + randomSuffix(),
+		claimThreadWorkers: claimThreadWorkers,
 		notifyDone:         notifyDone,
 		schedulerIdleDelay: jobsV2SchedulerIdleDelay,
 		workerIdleDelay:    jobsV2WorkerIdleDelay,
@@ -695,14 +710,27 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		return nil, err
 	}
 
-	mgr.wg.Add(1)
-	go mgr.schedulerLoop()
+	if runScheduler {
+		mgr.wg.Add(1)
+		go mgr.schedulerLoop()
+	}
 	for i := 0; i < mgr.workers; i++ {
 		mgr.wg.Add(1)
 		go mgr.workerLoop()
 	}
 
 	return mgr, nil
+}
+
+// newThreadWorkerJobsV2Manager reuses the jobs-v2 manager and database while
+// partitioning claims to durable /thread jobs. Ordinary serve managers exclude
+// that label, so neither runner can steal work requiring different approval and
+// mailbox wiring.
+func newThreadWorkerJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
+	if workers <= 0 {
+		workers = 1
+	}
+	return newJobsV2ManagerConfigured(dbPath, workers, llmExec, notifyDone, true, false)
 }
 
 func execJobsV2Schema(db *sql.DB) error {
@@ -720,15 +748,21 @@ func execJobsV2Schema(db *sql.DB) error {
 }
 
 func (m *jobsV2Manager) recoverRuns() error {
-	rows, err := m.db.Query(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status IN (?, ?) ORDER BY created_at ASC`, jobsV2RunClaimed, jobsV2RunRunning)
+	now := time.Now().UTC()
+	leaseCutoff := now.UnixMilli()
+	predicate, predicateArgs := m.threadWorkerClaimPredicate("j")
+	queryArgs := []any{jobsV2RunClaimed, jobsV2RunRunning, leaseCutoff}
+	queryArgs = append(queryArgs, predicateArgs...)
+	rows, err := m.db.Query(`SELECT r.id, r.job_id, r.attempt, r.trigger, r.scheduled_for, r.status, r.worker_id, r.session_id, r.started_at, r.finished_at, r.exit_code, r.error, r.stdout, r.stderr, r.thinking, r.response, r.exit_reason, r.truncated, r.turn_count, r.input_tokens, r.output_tokens, r.created_at, r.updated_at FROM job_runs_v2 r JOIN jobs_v2 j ON j.id = r.job_id WHERE r.status IN (?, ?) AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= ?) AND `+predicate+` ORDER BY r.created_at ASC`, queryArgs...)
 	if err != nil {
-		return fmt.Errorf("load interrupted runs: %w", err)
+		return fmt.Errorf("load expired interrupted runs: %w", err)
 	}
 
 	var interrupted []jobsV2Run
 	for rows.Next() {
 		run, err := scanRunV2(rows)
 		if err != nil {
+			_ = rows.Close()
 			return fmt.Errorf("scan interrupted run: %w", err)
 		}
 		interrupted = append(interrupted, run)
@@ -741,20 +775,32 @@ func (m *jobsV2Manager) recoverRuns() error {
 		return fmt.Errorf("close interrupted runs query: %w", err)
 	}
 
+	cancelArgs := []any{jobsV2RunCancelled, exitReasonCancelled, jobsV2RunCancelRequested, leaseCutoff}
+	cancelArgs = append(cancelArgs, predicateArgs...)
 	if _, err := m.db.Exec(`
 		UPDATE job_runs_v2
 		SET status = ?,
 			finished_at = CURRENT_TIMESTAMP,
 			exit_reason = ?,
+			lease_expires_at = NULL,
 			updated_at = CURRENT_TIMESTAMP
-		WHERE status = ?`,
-		jobsV2RunCancelled,
-		exitReasonCancelled,
-		jobsV2RunCancelRequested); err != nil {
-		return fmt.Errorf("recover cancel requested runs: %w", err)
+		WHERE status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+		  AND job_id IN (SELECT j.id FROM jobs_v2 j WHERE `+predicate+`)`, cancelArgs...); err != nil {
+		return fmt.Errorf("recover expired cancel requested runs: %w", err)
 	}
 
 	for _, run := range interrupted {
+		// Claim recovery ownership with a compare-and-swap. A live manager keeps
+		// extending its lease, so another manager starting on the same database
+		// cannot fail or steal that run.
+		res, err := m.db.Exec(`UPDATE job_runs_v2 SET worker_id = ?, lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?) AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+			m.workerID, now.Add(jobsV2LeaseDuration).UnixMilli(), run.ID, jobsV2RunClaimed, jobsV2RunRunning, leaseCutoff)
+		if err != nil {
+			return fmt.Errorf("claim interrupted run %s for recovery: %w", run.ID, err)
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			continue
+		}
 		exitCode := 0
 		if run.ExitCode != nil {
 			exitCode = *run.ExitCode
@@ -891,7 +937,11 @@ func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
 	if m.done != nil {
 		close(m.done)
 	}
-	if m.notifyCancel != nil {
+	// Ordinary server notifications may block on remote delivery, so preserve
+	// prompt shutdown by cancelling them immediately. Embedded /thread managers
+	// must first drain terminal callbacks: those callbacks are what persist the
+	// worker's final mailbox report when shutdown cancels an active child.
+	if !m.claimThreadWorkers && m.notifyCancel != nil {
 		m.notifyCancel()
 	}
 	cancels := make([]context.CancelFunc, 0, len(m.cancels))
@@ -910,8 +960,14 @@ func (m *jobsV2Manager) CloseContext(ctx context.Context) error {
 	}()
 	select {
 	case <-waitDone:
+		if m.notifyCancel != nil {
+			m.notifyCancel()
+		}
 		return m.db.Close()
 	case <-ctx.Done():
+		if m.notifyCancel != nil {
+			m.notifyCancel()
+		}
 		return ctx.Err()
 	}
 }
@@ -1192,6 +1248,19 @@ func (m *jobsV2Manager) nextWorkerDelay(now time.Time) time.Duration {
 	return delay
 }
 
+func (m *jobsV2Manager) threadWorkerClaimPredicate(jobAlias string) (string, []any) {
+	if jobAlias != "" {
+		jobAlias += "."
+	}
+	expr := fmt.Sprintf("CASE WHEN json_valid(%[1]slabels) THEN COALESCE(json_extract(%[1]slabels, ?), '') ELSE '' END", jobAlias)
+	if m.claimThreadWorkers {
+		return expr + " = ?", []any{"$." + threadWorkerLabelKey, threadWorkerLabelValue}
+	}
+	// Ordinary serve managers claim every non-thread job, including legacy rows
+	// whose labels column is NULL.
+	return expr + " <> ?", []any{"$." + threadWorkerLabelKey, threadWorkerLabelValue}
+}
+
 func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, error) {
 	idleDelay := m.workerIdleDelay
 	if idleDelay <= 0 {
@@ -1199,8 +1268,11 @@ func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, 
 	}
 	delay := idleDelay
 
+	predicate, predicateArgs := m.threadWorkerClaimPredicate("j")
+	args := []any{jobsV2RunQueued}
+	args = append(args, predicateArgs...)
 	var nextRun sql.NullTime
-	err := m.db.QueryRow(`SELECT scheduled_for FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued).Scan(&nextRun)
+	err := m.db.QueryRow(`SELECT r.scheduled_for FROM job_runs_v2 r JOIN jobs_v2 j ON j.id = r.job_id WHERE r.status = ? AND `+predicate+` ORDER BY r.scheduled_for ASC LIMIT 1`, args...).Scan(&nextRun)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
@@ -1349,7 +1421,10 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UTC()
-	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status = ? AND scheduled_for <= ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued, now)
+	predicate, predicateArgs := m.threadWorkerClaimPredicate("j")
+	args := []any{jobsV2RunQueued, now}
+	args = append(args, predicateArgs...)
+	row := tx.QueryRow(`SELECT r.id, r.job_id, r.attempt, r.trigger, r.scheduled_for, r.status, r.worker_id, r.session_id, r.started_at, r.finished_at, r.exit_code, r.error, r.stdout, r.stderr, r.thinking, r.response, r.exit_reason, r.truncated, r.turn_count, r.input_tokens, r.output_tokens, r.created_at, r.updated_at FROM job_runs_v2 r JOIN jobs_v2 j ON j.id = r.job_id WHERE r.status = ? AND r.scheduled_for <= ? AND `+predicate+` ORDER BY r.scheduled_for ASC LIMIT 1`, args...)
 	run, err := scanRunV2(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1358,7 +1433,8 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 		return jobsV2Run{}, false, err
 	}
 
-	res, err := tx.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunClaimed, m.workerID, run.ID, jobsV2RunQueued)
+	leaseExpiresAt := now.Add(jobsV2LeaseDuration).UnixMilli()
+	res, err := tx.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunClaimed, m.workerID, leaseExpiresAt, run.ID, jobsV2RunQueued)
 	if err != nil {
 		return jobsV2Run{}, false, err
 	}
@@ -1377,7 +1453,7 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 }
 
 func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, runID, jobsV2RunClaimed, m.workerID)
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND worker_id = ?`, jobsV2RunQueued, runID, jobsV2RunClaimed, m.workerID)
 	if err != nil {
 		log.Printf("jobs v2: failed to requeue unstarted run %q during shutdown: %v", runID, err)
 		return
@@ -1392,6 +1468,44 @@ func (m *jobsV2Manager) requeueClaimedRunAfterShutdown(runID string) {
 	}
 	if err := m.addRunEvent(runID, "requeued", "run returned to queue during worker shutdown", map[string]any{"worker_id": m.workerID}); err != nil {
 		log.Printf("jobs v2: failed to record shutdown requeue event for run %q: %v", runID, err)
+	}
+}
+
+func (m *jobsV2Manager) heartbeatRun(ctx context.Context, runID string, cancel context.CancelFunc, stop <-chan struct{}) {
+	interval := jobsV2HeartbeatInterval
+	if interval <= 0 || interval >= jobsV2LeaseDuration {
+		interval = jobsV2LeaseDuration / 3
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			var status jobsV2RunStatus
+			err := m.db.QueryRow(`
+				UPDATE job_runs_v2
+				SET lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE id = ? AND worker_id = ? AND status IN (?, ?)
+				RETURNING status`, time.Now().UTC().Add(jobsV2LeaseDuration).UnixMilli(), runID, m.workerID,
+				jobsV2RunRunning, jobsV2RunCancelRequested).Scan(&status)
+			if errors.Is(err, sql.ErrNoRows) {
+				cancel()
+				return
+			}
+			if err != nil {
+				// A transient SQLite error is not ownership loss. The current lease
+				// remains valid long enough for the next heartbeat/recovery decision.
+				continue
+			}
+			if status == jobsV2RunCancelRequested {
+				cancel()
+				return
+			}
+		}
 	}
 }
 
@@ -1438,7 +1552,7 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}()
 
 	started := time.Now().UTC()
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, started_at = ?, lease_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND (worker_id = ? OR worker_id IS NULL)`, jobsV2RunRunning, m.workerID, started, started.Add(jobsV2LeaseDuration).UnixMilli(), run.ID, jobsV2RunClaimed, m.workerID)
 	if err != nil {
 		m.finishRunWithRetry(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
 		return
@@ -1448,17 +1562,27 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		return
 	}
 	_ = m.addRunEvent(run.ID, "running", "run started", map[string]any{"worker_id": m.workerID})
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		m.heartbeatRun(ctx, run.ID, cancel, stopHeartbeat)
+	}()
+	defer func() {
+		close(stopHeartbeat)
+		<-heartbeatDone
+	}()
 
 	// Build a progress writer that writes events and flushes partial response to DB.
 	pw := func(eventType, message string, data any) {
 		switch eventType {
 		case "response_flush":
 			// Update response column so GET /v2/runs/{id} shows partial output.
-			_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, message, run.ID)
+			_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND worker_id = ?`, message, run.ID, m.workerID)
 		case "progress_update":
 			if data != nil {
 				if payload, err := json.Marshal(data); err == nil {
-					_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, string(payload), run.ID)
+					_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND worker_id = ?`, string(payload), run.ID, m.workerID)
 				}
 			}
 			_ = m.addRunEvent(run.ID, eventType, message, data)
@@ -1539,14 +1663,15 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		errText = runErr.Error()
 	}
 	cancelledErrText := context.Canceled.Error()
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?) AND (status = ? OR worker_id = ? OR worker_id IS NULL)`,
 		jobsV2RunCancelRequested, jobsV2RunCancelled, status,
 		now, result.ExitCode,
 		jobsV2RunCancelRequested, cancelledErrText, errText,
 		result.Stdout, result.Stderr, result.Thinking, result.Response, result.SessionID,
 		jobsV2RunCancelRequested, exitReasonCancelled, exitReason,
 		boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
-		runID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
+		runID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested,
+		jobsV2RunQueued, m.workerID)
 	if err != nil {
 		return err
 	}
@@ -2235,12 +2360,14 @@ func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
 				WHEN status IN (?, ?) THEN ?
 				ELSE finished_at
 			END,
+			lease_expires_at = CASE WHEN status IN (?, ?) THEN NULL ELSE lease_expires_at END,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND status IN (?, ?, ?)
 		RETURNING status`,
 		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunCancelled,
 		jobsV2RunCancelRequested,
 		jobsV2RunQueued, jobsV2RunClaimed, now,
+		jobsV2RunQueued, jobsV2RunClaimed,
 		id, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning,
 	).Scan(&transitioned)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2255,6 +2382,9 @@ func (m *jobsV2Manager) CancelRun(id string) (jobsV2Run, error) {
 	switch transitioned {
 	case jobsV2RunCancelled:
 		_ = m.addRunEvent(id, "cancelled", "run cancelled before start", nil)
+		if run, getErr := m.GetRun(id); getErr == nil {
+			m.enqueueRunDoneNotification(run, jobsV2RunCancelled, jobsV2RunResult{SessionID: run.SessionID}, exitReasonCancelled, false, context.Canceled.Error())
+		}
 	case jobsV2RunCancelRequested:
 		_ = m.addRunEvent(id, "cancel_requested", "cancellation requested", nil)
 		m.mu.Lock()
@@ -3181,8 +3311,22 @@ func serveJobsRunnerOptions(approval resolvedApprovalMode) cmdRunnerOptions {
 	}
 }
 
+type serveJobsApprovalResolver func(context.Context, jobsV2LLMConfig) (resolvedApprovalMode, error)
+
 func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode) serveJobsExecutor {
+	return newServeJobsExecutorWithApprovalResolver(baseCfg, approval, nil)
+}
+
+func newServeJobsExecutorWithApprovalResolver(baseCfg *config.Config, approval resolvedApprovalMode, resolve serveJobsApprovalResolver) serveJobsExecutor {
 	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+		runApproval := approval
+		if resolve != nil {
+			var err error
+			runApproval, err = resolve(ctx, cfg)
+			if err != nil {
+				return serveJobsExecResult{}, err
+			}
+		}
 		var search *bool
 		if cfg.Search {
 			v := true
@@ -3197,7 +3341,7 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 			}
 		}
 
-		runner := newCmdRunner(baseCfg, serveJobsRunnerOptions(approval))
+		runner := newCmdRunner(baseCfg, serveJobsRunnerOptions(runApproval))
 
 		result, err := runner.Run(ctx, runpkg.Request{
 			Platform:        runpkg.PlatformJob,
@@ -3206,6 +3350,8 @@ func newServeJobsExecutor(baseCfg *config.Config, approval resolvedApprovalMode)
 			SessionID:       cfg.SessionID,
 			SessionName:     cfg.SessionName,
 			Persist:         cfg.sessionPersistenceEnabled(),
+			ParentSessionID: cfg.ParentSessionID,
+			IsWorker:        cfg.Worker,
 			Provider:        cfg.Provider,
 			Model:           cfg.Model,
 			Cwd:             cfg.Cwd,
