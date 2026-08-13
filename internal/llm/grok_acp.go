@@ -147,7 +147,15 @@ func (h *grokACPHandler) HandleNotification(_ context.Context, method string, pa
 		return
 	}
 	if toolName != "" && !grokACPToolAllowed(toolName, turn.nativeSearch) {
-		turn.err = fmt.Errorf("Grok ACP restricted profile attempted native tool %q", toolName)
+		// Grok still proposes native builtins (grep, todo_write, read_file, …)
+		// even with --disallowed-tools and the restricted profile. Those calls
+		// are not executed: permission requests are cancelled, and the MCP
+		// bridge is the only EventToolCall source. Failing the turn made
+		// grok-bin unusable because one leaked builtin aborted later MCP
+		// text and tool events. Ignore the leak and keep the turn alive.
+		if update.SessionUpdate == "tool_call" {
+			turn.reasoningItem++
+		}
 		h.mu.Unlock()
 		return
 	}
@@ -306,9 +314,9 @@ func (h *grokACPHandler) waitToolBarrier(ctx context.Context, timeout time.Durat
 
 func (h *grokACPHandler) HandleRequest(_ context.Context, method string, params json.RawMessage) (any, *acp.RPCError) {
 	if method == "session/request_permission" {
-		// The restricted Grok profile should never need native-tool approval.
-		// Cancel unexpected requests rather than granting access outside the
-		// term-llm tool registry.
+		// Cancel native-tool approval rather than granting access outside the
+		// term-llm tool registry. The matching tool_call is ignored, not a
+		// turn-ending error, so the model can continue via MCP.
 		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}, nil
 	}
 	return nil, acp.MethodNotFound(method)

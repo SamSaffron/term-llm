@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -159,23 +160,33 @@ func TestGrokACPHandlerSeparatesThoughtsAcrossHiddenToolCall(t *testing.T) {
 	}
 }
 
-func TestGrokACPHandlerRejectsNativeToolLeak(t *testing.T) {
+func TestGrokACPHandlerIgnoresNativeToolLeak(t *testing.T) {
+	events := make(chan Event, 2)
 	handler := &grokACPHandler{}
-	handler.beginTurn(eventSender{}, false, false)
+	handler.beginTurn(eventSender{ctx: context.Background(), ch: events}, false, false)
 	defer handler.endTurn()
-	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"native-1","title":"Read file","_meta":{"x.ai/tool":{"name":"read_file"}}}}`))
-	if err := handler.turnError(); err == nil || !strings.Contains(err.Error(), "native tool") {
-		t.Fatalf("native tool error = %v", err)
+
+	for _, name := range []string{"read_file", "grep", "todo_write"} {
+		handler.HandleNotification(context.Background(), "session/update", json.RawMessage(fmt.Sprintf(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"native-%s","title":%q,"_meta":{"x.ai/tool":{"name":%q}}}}`, name, name, name)))
+	}
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"still going"}}}`))
+
+	if err := handler.turnError(); err != nil {
+		t.Fatalf("native tool leak should not fail the turn: %v", err)
+	}
+	got := <-events
+	if got.Type != EventTextDelta || got.Text != "still going" {
+		t.Fatalf("event after native leak = %+v", got)
 	}
 }
 
-func TestGrokACPHandlerRejectsNativeToolLeakWithRichContent(t *testing.T) {
+func TestGrokACPHandlerIgnoresNativeToolLeakWithRichContent(t *testing.T) {
 	handler := &grokACPHandler{}
 	handler.beginTurn(eventSender{}, false, false)
 	defer handler.endTurn()
 	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"native-1","content":[{"type":"content","content":{"type":"text","text":"details"}}],"_meta":{"x.ai/tool":{"name":"read_file"}}}}`))
-	if err := handler.turnError(); err == nil || !strings.Contains(err.Error(), "native tool") {
-		t.Fatalf("native tool error = %v", err)
+	if err := handler.turnError(); err != nil {
+		t.Fatalf("native tool leak should not fail the turn: %v", err)
 	}
 }
 
@@ -364,7 +375,7 @@ func TestGrokACPHandlerAllowsNativeSearchOnlyWhenEnabled(t *testing.T) {
 		update        string
 		wantTurnError bool
 	}{
-		{name: "named disabled", update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"web-1","_meta":{"x.ai/tool":{"name":"web_search"}}}}`, wantTurnError: true},
+		{name: "named disabled", update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"web-1","_meta":{"x.ai/tool":{"name":"web_search"}}}}`},
 		{name: "named enabled", nativeSearch: true, update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"web-1","_meta":{"x.ai/tool":{"name":"web_search"}}}}`},
 		{name: "backend disabled", update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"x-1","kind":"search","_meta":{"backend":true}}}`, wantTurnError: true},
 		{name: "backend enabled", nativeSearch: true, update: `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"x-1","kind":"search","_meta":{"backend":true}}}`},
