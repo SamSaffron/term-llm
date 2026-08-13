@@ -7,11 +7,14 @@ import (
 	"time"
 )
 
+const defaultServeSessionRetirementTimeout = 2 * time.Second
+
 type serveSessionManager struct {
-	ttl     time.Duration
-	max     int
-	factory func(context.Context) (*serveRuntime, error)
-	onEvict func(rt *serveRuntime) // called when a session is evicted
+	ttl               time.Duration
+	max               int
+	factory           func(context.Context) (*serveRuntime, error)
+	onEvict           func(rt *serveRuntime) // called when a session is evicted
+	retirementTimeout time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*serveRuntime
@@ -28,12 +31,13 @@ type sessionCreateInFlight struct {
 
 func newServeSessionManager(ttl time.Duration, max int, factory func(context.Context) (*serveRuntime, error)) *serveSessionManager {
 	m := &serveSessionManager{
-		ttl:      ttl,
-		max:      max,
-		factory:  factory,
-		sessions: make(map[string]*serveRuntime),
-		creating: make(map[string]*sessionCreateInFlight),
-		stopCh:   make(chan struct{}),
+		ttl:               ttl,
+		max:               max,
+		factory:           factory,
+		retirementTimeout: defaultServeSessionRetirementTimeout,
+		sessions:          make(map[string]*serveRuntime),
+		creating:          make(map[string]*sessionCreateInFlight),
+		stopCh:            make(chan struct{}),
 	}
 	go m.janitor()
 	return m
@@ -66,11 +70,24 @@ func (m *serveSessionManager) evictExpired() {
 	m.mu.Unlock()
 
 	for _, rt := range stale {
-		if m.onEvict != nil {
-			m.onEvict(rt)
-		}
-		rt.Close()
+		m.retireRuntime(rt)
 	}
+}
+
+func (m *serveSessionManager) retireRuntime(rt *serveRuntime) {
+	if rt == nil {
+		return
+	}
+	if m.onEvict != nil {
+		m.onEvict(rt)
+	}
+	timeout := m.retirementTimeout
+	if timeout <= 0 {
+		timeout = defaultServeSessionRetirementTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	rt.CloseContext(ctx)
 }
 
 func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
@@ -186,12 +203,7 @@ func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serv
 	if duplicate != nil {
 		duplicate.Close()
 	}
-	if evicted != nil {
-		if m.onEvict != nil {
-			m.onEvict(evicted)
-		}
-		evicted.Close()
-	}
+	m.retireRuntime(evicted)
 	if inflight.err != nil {
 		if rt != nil && inflight.rt == nil {
 			rt.Close()
@@ -270,12 +282,7 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 	if duplicate != nil {
 		duplicate.Close()
 	}
-	if evicted != nil {
-		if m.onEvict != nil {
-			m.onEvict(evicted)
-		}
-		evicted.Close()
-	}
+	m.retireRuntime(evicted)
 	if inflight.err != nil {
 		if rt != nil && inflight.rt == nil {
 			rt.Close()
@@ -379,18 +386,8 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 	if duplicate != nil {
 		duplicate.Close()
 	}
-	if retired != nil {
-		if m.onEvict != nil {
-			m.onEvict(retired)
-		}
-		retired.Close()
-	}
-	if evicted != nil {
-		if m.onEvict != nil {
-			m.onEvict(evicted)
-		}
-		evicted.Close()
-	}
+	m.retireRuntime(retired)
+	m.retireRuntime(evicted)
 	if inflight.err != nil {
 		if rt != nil && inflight.rt == nil {
 			rt.Close()
@@ -472,12 +469,7 @@ func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create f
 		if closeCandidate != nil {
 			closeCandidate.Close()
 		}
-		if evicted != nil {
-			if m.onEvict != nil {
-				m.onEvict(evicted)
-			}
-			evicted.Close()
-		}
+		m.retireRuntime(evicted)
 		if inflight.err != nil {
 			if rt != nil && closeCandidate == nil && inflight.rt == nil {
 				rt.Close()
@@ -501,10 +493,7 @@ func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create f
 				}
 				m.mu.Unlock()
 				if previous != nil && previous != candidate {
-					if m.onEvict != nil {
-						m.onEvict(previous)
-					}
-					previous.Close()
+					m.retireRuntime(previous)
 				}
 			})
 		}
