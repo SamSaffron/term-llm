@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -1000,6 +1001,91 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 	}
 	if !foundUnregistered {
 		t.Errorf("Expected suggest_something tool call to be present")
+	}
+}
+
+type immediateInterruptionProvider struct {
+	calls       int
+	interrupted chan struct{}
+	once        sync.Once
+}
+
+func (p *immediateInterruptionProvider) Name() string       { return "immediate-interruption-test" }
+func (p *immediateInterruptionProvider) Credential() string { return "test" }
+func (p *immediateInterruptionProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}
+}
+func (p *immediateInterruptionProvider) SupportsInlineFlush() bool { return true }
+func (p *immediateInterruptionProvider) SupportsImmediateInterruption() bool {
+	return true
+}
+func (p *immediateInterruptionProvider) RequestInlineFlush() {
+	p.once.Do(func() { close(p.interrupted) })
+}
+func (p *immediateInterruptionProvider) Stream(ctx context.Context, _ Request) (Stream, error) {
+	p.calls++
+	call := p.calls
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		if call == 1 {
+			if err := send.Send(Event{Type: EventTextDelta, Text: "partial"}); err != nil {
+				return err
+			}
+			select {
+			case <-p.interrupted:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			if err := send.Send(Event{Type: EventTextDelta, Text: "steered"}); err != nil {
+				return err
+			}
+		}
+		return send.Send(Event{Type: EventDone})
+	}), nil
+}
+
+func TestImmediateInterruptionEnablesInterjectionWithoutTools(t *testing.T) {
+	provider := &immediateInterruptionProvider{interrupted: make(chan struct{})}
+	engine := NewEngine(provider, nil)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("start")}, MaxTurns: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	committed := false
+	queued := false
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatal(recvErr)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+			if !queued {
+				_, status := engine.QueueInterjectionWithStatus(QueuedInterjection{ID: "no-tools-steer", Message: UserText("steer")})
+				if status != InterjectionQueueQueued {
+					t.Fatalf("queue status = %q", status)
+				}
+				queued = true
+			}
+		}
+		if event.Type == EventInterjection && event.InterjectionID == "no-tools-steer" {
+			committed = true
+		}
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want interrupted turn plus resumed steer", provider.calls)
+	}
+	if !committed {
+		t.Fatal("queued interjection was not committed")
+	}
+	if got := text.String(); got != "partialsteered" {
+		t.Fatalf("text = %q", got)
 	}
 }
 

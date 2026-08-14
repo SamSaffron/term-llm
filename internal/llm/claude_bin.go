@@ -96,6 +96,15 @@ type ClaudeBinProvider struct {
 	tempFileTracker
 
 	activeStream atomic.Bool
+
+	// activeInput keeps Claude's stream-json stdin open for native control
+	// requests while a turn is running. RequestInlineFlush uses it to interrupt
+	// prose/model generation immediately instead of waiting for an MCP tool
+	// result boundary.
+	activeInputMu sync.Mutex
+	activeInput   *claudeStreamInput
+	interruptSeq  atomic.Uint64
+	interruptSent atomic.Bool
 }
 
 // ClaudeCommandError is retained as a compatibility alias for callers and tests.
@@ -342,11 +351,81 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 	}
 }
 
+type claudeStreamInput struct {
+	mu     sync.Mutex
+	writer io.WriteCloser
+	closed bool
+}
+
+func (in *claudeStreamInput) WriteLine(payload []byte) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed || in.writer == nil {
+		return io.ErrClosedPipe
+	}
+	if _, err := in.writer.Write(payload); err != nil {
+		return err
+	}
+	_, err := in.writer.Write([]byte{'\n'})
+	return err
+}
+
+func (in *claudeStreamInput) Close() error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed || in.writer == nil {
+		return nil
+	}
+	in.closed = true
+	return in.writer.Close()
+}
+
+func (p *ClaudeBinProvider) activateStreamInput(in *claudeStreamInput) {
+	p.activeInputMu.Lock()
+	p.activeInput = in
+	p.activeInputMu.Unlock()
+}
+
+func (p *ClaudeBinProvider) deactivateStreamInput(in *claudeStreamInput) {
+	p.activeInputMu.Lock()
+	if p.activeInput == in {
+		p.activeInput = nil
+	}
+	p.activeInputMu.Unlock()
+}
+
+func (p *ClaudeBinProvider) sendNativeInterrupt() bool {
+	p.activeInputMu.Lock()
+	in := p.activeInput
+	p.activeInputMu.Unlock()
+	if in == nil {
+		return false
+	}
+	requestID := fmt.Sprintf("term_llm_interrupt_%d", p.interruptSeq.Add(1))
+	payload, err := json.Marshal(map[string]any{
+		"type":       "control_request",
+		"request_id": requestID,
+		"request": map[string]string{
+			"subtype": "interrupt",
+		},
+	})
+	p.interruptSent.Store(true)
+	if err != nil || in.WriteLine(payload) != nil {
+		p.interruptSent.Store(false)
+		return false
+	}
+	p.clearInlineFlush()
+	return true
+}
+
 func (p *ClaudeBinProvider) RequestInlineFlush() {
 	p.requestInlineFlush()
+	p.sendNativeInterrupt()
 }
 
 func (p *ClaudeBinProvider) SupportsInlineFlush() bool { return true }
+
+func (p *ClaudeBinProvider) SupportsImmediateInterruption() bool { return true }
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
@@ -399,29 +478,17 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			streamJSONSessionID = p.sessionID
 		}
 
-		// Build the conversation prompt from messages to send.
-		// Use stream-json format when images are present so the model can vision-analyze them.
-		useStreamJson := hasImages(messagesToSend)
-		if useStreamJson && strings.TrimSpace(p.buildStreamJsonInput(messagesToSend, streamJSONSessionID)) == "" {
-			slog.Warn("claude-bin stream-json input was empty despite image detection; falling back to text prompt")
-			useStreamJson = false
-		}
-		// buildPrompt produces the full stdin payload for a set of messages.
-		// For text mode the system prompt is passed via --system-prompt above,
-		// not embedded in stdin as a fake "System:" transcript line. Claude Code
-		// treats stdin as user conversation text; putting the system prompt there
-		// makes it vulnerable to being interpreted or narrated as prompt content.
-		// For stream-json mode the system prompt also goes on argv.
+		// Keep every Claude turn on stream-json input. Besides carrying images,
+		// this leaves a bidirectional stdin channel available for Claude Code's
+		// native interrupt control request while model output is in flight.
 		buildPrompt := func(msgs []Message) string {
-			if useStreamJson {
-				return p.buildStreamJsonInput(msgs, streamJSONSessionID)
-			}
-			return p.buildConversationPrompt(msgs)
-		}
-		if useStreamJson {
-			args = append(args, "--input-format", "stream-json")
+			return p.buildStreamJsonInput(msgs, streamJSONSessionID)
 		}
 		userPrompt := buildPrompt(messagesToSend)
+		if strings.TrimSpace(userPrompt) == "" {
+			return fmt.Errorf("claude-bin stream-json input is empty")
+		}
+		args = append(args, "--input-format", "stream-json")
 
 		debug := req.Debug || req.DebugRaw
 
@@ -780,6 +847,24 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
 
+	p.interruptSent.Store(false)
+	streamInput := &claudeStreamInput{writer: stdin}
+	if err := streamInput.WriteLine([]byte(userPrompt)); err != nil {
+		_ = streamInput.Close()
+		return fmt.Errorf("write claude stream-json input: %w", err)
+	}
+	p.activateStreamInput(streamInput)
+	defer func() {
+		p.deactivateStreamInput(streamInput)
+		_ = streamInput.Close()
+		p.interruptSent.Store(false)
+	}()
+	// An interjection can race process startup. The shared flush marker records
+	// it until stdin is live, at which point the native interrupt can be sent.
+	if p.inlineFlushRequested() {
+		p.sendNativeInterrupt()
+	}
+
 	bridge := &claudeTurnBridge{
 		toolReqCh: make(chan claudeToolRequest, 64),
 		done:      make(chan struct{}),
@@ -829,12 +914,6 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		}
 	}()
 
-	// Write prompt to stdin and close
-	go func() {
-		defer stdin.Close()
-		stdin.Write([]byte(userPrompt))
-	}()
-
 	lineCh := make(chan string, 256)
 	scanErrCh := make(chan error, 1)
 	var (
@@ -848,6 +927,12 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		for scanner.Scan() {
 			line := scanner.Text()
 			recordCLITailLine(&stdoutMu, &stdoutTail, line, claudeStdoutTailMaxLines)
+			if claudeStreamLineType(line) == "result" {
+				// Streaming input keeps Claude alive for more user turns. term-llm
+				// resumes those as separate provider turns, so EOF after this
+				// terminal frame lets the current subprocess exit cleanly.
+				_ = streamInput.Close()
+			}
 			if line != "" {
 				select {
 				case lineCh <- line:
@@ -1013,6 +1098,16 @@ drained:
 	return lastUsage, toolsExecuted, handledTerminalResult, nil
 }
 
+func claudeStreamLineType(line string) string {
+	var message struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(line), &message) != nil {
+		return ""
+	}
+	return message.Type
+}
+
 func (p *ClaudeBinProvider) handleClaudeLine(
 	ctx context.Context,
 	line string,
@@ -1095,6 +1190,10 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 		var resultMsg claudeResultMessage
 		if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
 			permissionDenied := resultMsg.hasPermissionDenial()
+			nativeInterrupted := resultMsg.Subtype == claudeResultSubtypeInterrupted && p.interruptSent.Swap(false)
+			if nativeInterrupted && handledTerminalResult != nil {
+				*handledTerminalResult = true
+			}
 			// Claude Code owns the tool loop, so exhausting its turn budget ends
 			// the run here rather than in the engine. Warn like the engine's own
 			// budget does and let the turn complete: the work already streamed is
@@ -1112,7 +1211,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 			// Check for API errors (rate limits, auth issues, etc.). Claude Code
 			// reports permission denials as terminal result errors too; surface
 			// those as model-visible text so the conversation can fail gracefully.
-			if resultMsg.IsError && resultMsg.Result != "" && !permissionDenied && !maxTurnsReached {
+			if resultMsg.IsError && resultMsg.Result != "" && !permissionDenied && !maxTurnsReached && !nativeInterrupted {
 				return fmt.Errorf("claude API error: %s", resultMsg.Result)
 			}
 
@@ -1176,6 +1275,10 @@ const defaultClaudeBinMaxTurns = 200
 // claudeResultSubtypeMaxTurns is the terminal result subtype Claude Code reports
 // when the inline tool loop exhausts --max-turns.
 const claudeResultSubtypeMaxTurns = "error_max_turns"
+
+// claudeResultSubtypeInterrupted is emitted after a successful native interrupt
+// control request. It is an expected provider-turn boundary, not an API error.
+const claudeResultSubtypeInterrupted = "error_during_execution"
 
 // claudeMaxTurns returns the turn budget handed to Claude Code for one provider
 // turn. Requests without tools cannot loop, so they stay pinned at a single turn.

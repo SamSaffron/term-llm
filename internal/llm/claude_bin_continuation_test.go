@@ -58,6 +58,20 @@ func (h *claudeContinuationHarness) resumed() bool {
 	return false
 }
 
+func (h *claudeContinuationHarness) inputText(t *testing.T) string {
+	t.Helper()
+	messages := parseSDKUserMessages(t, h.stdin)
+	var parts []string
+	for _, message := range messages {
+		for _, block := range message.Message.Content {
+			if block.Type == "text" {
+				parts = append(parts, block.Text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func assistantToolCall(id, name, args string) Message {
 	return Message{
 		Role: RoleAssistant,
@@ -82,8 +96,8 @@ func TestClaudeBinResumeSendsOnlyNewUserTurns(t *testing.T) {
 	if h.resumed() {
 		t.Fatalf("first turn used --resume: %q", strings.Join(h.args, " "))
 	}
-	if got, want := h.stdin, "User: turn one"; got != want {
-		t.Fatalf("first turn stdin = %q, want %q", got, want)
+	if got, want := h.inputText(t), "turn one"; got != want {
+		t.Fatalf("first turn stdin text = %q, want %q", got, want)
 	}
 
 	replyOne := AssistantText("answer one")
@@ -92,8 +106,8 @@ func TestClaudeBinResumeSendsOnlyNewUserTurns(t *testing.T) {
 	if !h.resumed() {
 		t.Fatalf("second turn did not resume: %q", strings.Join(h.args, " "))
 	}
-	if got, want := h.stdin, "User: turn two"; got != want {
-		t.Fatalf("second turn stdin = %q, want only the new user turn %q", got, want)
+	if got, want := h.inputText(t), "turn two"; got != want {
+		t.Fatalf("second turn stdin text = %q, want only the new user turn %q", got, want)
 	}
 
 	toolCall := assistantToolCall("call-1", "glob", `{"pattern":"*.md"}`)
@@ -104,8 +118,8 @@ func TestClaudeBinResumeSendsOnlyNewUserTurns(t *testing.T) {
 	if !h.resumed() {
 		t.Fatalf("third turn did not resume: %q", strings.Join(h.args, " "))
 	}
-	if got, want := h.stdin, "User: turn three"; got != want {
-		t.Fatalf("third turn stdin = %q, want only the new user turn %q", got, want)
+	if got, want := h.inputText(t), "turn three"; got != want {
+		t.Fatalf("third turn stdin text = %q, want only the new user turn %q", got, want)
 	}
 	for _, banned := range []string{"<conversation_history>", "Assistant called tool:", "Tool result (", "answer one", "answer two"} {
 		if strings.Contains(h.stdin, banned) {
@@ -171,8 +185,8 @@ func TestClaudeBinImportedStateWithoutDigestStillResumes(t *testing.T) {
 	if !h.resumed() {
 		t.Fatalf("legacy state did not resume: %q", strings.Join(h.args, " "))
 	}
-	if got, want := h.stdin, "User: turn two"; got != want {
-		t.Fatalf("legacy resume stdin = %q, want %q", got, want)
+	if got, want := h.inputText(t), "turn two"; got != want {
+		t.Fatalf("legacy resume stdin text = %q, want %q", got, want)
 	}
 	if h.provider.transcriptDigest == "" {
 		t.Fatal("completed turn did not start fingerprinting the transcript")
