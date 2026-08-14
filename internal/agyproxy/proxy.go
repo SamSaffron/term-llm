@@ -7,21 +7,17 @@
 package agyproxy
 
 import (
+	"bufio"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,6 +28,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/mitmca"
 )
 
 const (
@@ -54,20 +52,30 @@ const (
 // Code host; CONNECT requests for every other host are tunneled without TLS
 // termination.
 type Server struct {
-	mu           sync.Mutex
-	traceMu      sync.Mutex
-	server       *http.Server
-	listener     net.Listener
-	transport    *http.Transport
-	caCert       *x509.Certificate
-	caKey        *ecdsa.PrivateKey
-	caPath       string
-	proxyToken   string
-	requireMCP   bool
-	artifactRoot string
-	filtered     atomic.Int64
-	connections  map[net.Conn]struct{}
-	running      bool
+	mu            sync.Mutex
+	traceMu       sync.Mutex
+	server        *http.Server
+	listener      net.Listener
+	transport     *http.Transport
+	authority     *mitmca.Authority
+	caPath        string
+	proxyToken    string
+	upstreamProxy string
+	upstreamCA    string
+	requireMCP    bool
+	artifactRoot  string
+	filtered      atomic.Int64
+	connections   map[net.Conn]struct{}
+	running       bool
+}
+
+// SetUpstream configures an optional authenticated HTTP proxy used for all
+// outbound traffic. It must be called before Start.
+func (s *Server) SetUpstream(proxyURL, caPath string) {
+	s.mu.Lock()
+	s.upstreamProxy = strings.TrimSpace(proxyURL)
+	s.upstreamCA = strings.TrimSpace(caPath)
+	s.mu.Unlock()
 }
 
 // Start starts the proxy and writes its public CA certificate to a private
@@ -78,11 +86,18 @@ func (s *Server) Start() (proxyURL, caPath string, err error) {
 	if s.running {
 		return "", "", errors.New("agy proxy already running")
 	}
-	cert, key, certPEM, err := newCA()
+	authority, err := mitmca.New("term-llm agy proxy")
 	if err != nil {
 		return "", "", err
 	}
-	certPEM, err = appendSystemRoots(certPEM)
+	var upstreamCA []byte
+	if path := strings.TrimSpace(s.upstreamCA); path != "" {
+		upstreamCA, err = os.ReadFile(path)
+		if err != nil {
+			return "", "", fmt.Errorf("read upstream wire-audit CA: %w", err)
+		}
+	}
+	certPEM, err := authority.BundleWithSystemRoots(upstreamCA)
 	if err != nil {
 		return "", "", err
 	}
@@ -105,10 +120,29 @@ func (s *Server) Start() (proxyURL, caPath string, err error) {
 		os.RemoveAll(dir)
 		return "", "", fmt.Errorf("listen for agy proxy: %w", err)
 	}
-	s.caCert, s.caKey, s.caPath, s.proxyToken = cert, key, path, proxyToken
+	s.authority, s.caPath, s.proxyToken = authority, path, proxyToken
 	s.listener = ln
 	s.connections = make(map[net.Conn]struct{})
-	s.transport = &http.Transport{Proxy: nil}
+	transport := &http.Transport{}
+	if proxyText := strings.TrimSpace(s.upstreamProxy); proxyText != "" {
+		proxyURL, err := url.Parse(proxyText)
+		if err != nil {
+			ln.Close()
+			os.RemoveAll(dir)
+			return "", "", fmt.Errorf("parse upstream wire-audit proxy: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(certPEM) {
+			ln.Close()
+			os.RemoveAll(dir)
+			return "", "", errors.New("load chained agy proxy CA bundle")
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	} else {
+		transport.Proxy = nil
+	}
+	s.transport = transport
 	server := &http.Server{Handler: http.HandlerFunc(s.serveHTTP), ReadHeaderTimeout: 10 * time.Second}
 	s.server = server
 	s.running = true
@@ -178,7 +212,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
-	upstream, err := net.DialTimeout("tcp", r.Host, 15*time.Second)
+	upstream, err := s.dialTunnel(r.Host)
 	if err != nil {
 		http.Error(w, "proxy connect failed", http.StatusBadGateway)
 		return
@@ -201,6 +235,44 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 	proxyCopy(client, upstream)
 	s.untrackConnection(client)
 	s.untrackConnection(upstream)
+}
+
+func (s *Server) dialTunnel(target string) (net.Conn, error) {
+	s.mu.Lock()
+	proxyText := s.upstreamProxy
+	s.mu.Unlock()
+	if strings.TrimSpace(proxyText) == "" {
+		return net.DialTimeout("tcp", target, 15*time.Second)
+	}
+	proxyURL, err := url.Parse(proxyText)
+	if err != nil {
+		return nil, fmt.Errorf("parse upstream proxy: %w", err)
+	}
+	conn, err := net.DialTimeout("tcp", proxyURL.Host, 15*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial upstream proxy: %w", err)
+	}
+	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: target}, Host: target, Header: make(http.Header)}
+	if proxyURL.User != nil {
+		password, _ := proxyURL.User.Password()
+		token := base64.StdEncoding.EncodeToString([]byte(proxyURL.User.Username() + ":" + password))
+		req.Header.Set("Proxy-Authorization", "Basic "+token)
+	}
+	if err := req.WriteProxy(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("write upstream CONNECT: %w", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read upstream CONNECT response: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		conn.Close()
+		return nil, fmt.Errorf("upstream CONNECT returned %s", resp.Status)
+	}
+	return conn, nil
 }
 
 func proxyCopy(dst, src net.Conn) { _, _ = io.Copy(dst, src); _ = dst.Close(); _ = src.Close() }
@@ -432,10 +504,11 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.server = nil
 	s.listener = nil
 	s.transport = nil
-	s.caCert = nil
-	s.caKey = nil
+	s.authority = nil
 	s.caPath = ""
 	s.proxyToken = ""
+	s.upstreamProxy = ""
+	s.upstreamCA = ""
 	s.artifactRoot = ""
 	s.connections = nil
 	s.mu.Unlock()
@@ -455,79 +528,14 @@ func (s *Server) Stop(ctx context.Context) error {
 	return err
 }
 
-func appendSystemRoots(proxyCA []byte) ([]byte, error) {
-	candidates := []string{
-		"/etc/ssl/certs/ca-certificates.crt",
-		"/etc/ssl/cert.pem",
-		"/etc/pki/tls/certs/ca-bundle.crt",
-		"/etc/ssl/ca-bundle.pem",
-		"/etc/pki/tls/cacert.pem",
-		"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-	}
-	for _, path := range candidates {
-		roots, err := os.ReadFile(path)
-		if err != nil || len(roots) == 0 {
-			continue
-		}
-		bundle := make([]byte, 0, len(roots)+len(proxyCA)+1)
-		bundle = append(bundle, roots...)
-		if len(bundle) > 0 && bundle[len(bundle)-1] != '\n' {
-			bundle = append(bundle, '\n')
-		}
-		bundle = append(bundle, proxyCA...)
-		return bundle, nil
-	}
-	return nil, errors.New("locate system CA bundle for agy proxy")
-}
-
-func newCA() (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("generate agy proxy CA key: %w", err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	now := time.Now()
-	tmpl := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "term-llm agy proxy"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, BasicConstraintsValid: true, IsCA: true}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return cert, key, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
-}
-
 func (s *Server) leafCertificate(host string) (tls.Certificate, error) {
 	s.mu.Lock()
-	ca, key := s.caCert, s.caKey
+	authority := s.authority
 	s.mu.Unlock()
-	if ca == nil || key == nil {
+	if authority == nil {
 		return tls.Certificate{}, errors.New("agy proxy CA unavailable")
 	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	now := time.Now()
-	tmpl := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: host}, DNSNames: []string{host}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &leafKey.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(leafKey)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	return tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+	return authority.Leaf(host)
 }
 
 func isGenerationPath(path string) bool {

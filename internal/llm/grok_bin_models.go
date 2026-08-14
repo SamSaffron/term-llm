@@ -94,6 +94,12 @@ func defaultGrokModelsCommandOutput(ctx context.Context, p *GrokBinProvider, hom
 		return nil, err
 	}
 	cmd.Env = p.buildCommandEnvForHome(home)
+	auditedEnv, wireAudit, err := startCLIWireAudit("grok-bin-models", cmd.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = auditedEnv
+	defer stopCLIWireAudit(wireAudit)
 	return cmd.Output()
 }
 

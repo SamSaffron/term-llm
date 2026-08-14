@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/acp"
+	"github.com/samsaffron/term-llm/internal/cliwire"
 	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
@@ -52,6 +53,7 @@ type grokACPProcess struct {
 	effort       string
 	systemPrompt string
 	nativeSearch bool
+	wireAudit    *cliwire.Server
 	stopOnce     sync.Once
 }
 
@@ -797,32 +799,43 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 	}
 	cmd.WaitDelay = grokCommandWaitDelay
 	cmd.Env = p.buildCommandEnv()
+	auditedEnv, wireAudit, err := startCLIWireAudit("grok-bin", cmd.Env)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cmd.Env = auditedEnv
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
+		stopCLIWireAudit(wireAudit)
 		return nil, fmt.Errorf("get grok ACP stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
+		stopCLIWireAudit(wireAudit)
 		_ = stdin.Close()
 		return nil, fmt.Errorf("get grok ACP stdout: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
+		stopCLIWireAudit(wireAudit)
 		_ = stdin.Close()
 		return nil, fmt.Errorf("get grok ACP stderr: %w", err)
 	}
 	cleanup, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		cancel()
+		stopCLIWireAudit(wireAudit)
 		_ = stdin.Close()
 		return nil, fmt.Errorf("prepare grok ACP command: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		cleanup()
+		stopCLIWireAudit(wireAudit)
 		return nil, fmt.Errorf("start grok ACP: %w", err)
 	}
 
@@ -842,6 +855,7 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 		effort:       effort,
 		systemPrompt: systemPrompt,
 		nativeSearch: req.Search,
+		wireAudit:    wireAudit,
 	}
 	redactDiagnostic := p.grokACPDiagnosticRedactor(req.Messages, cmd.Env)
 	go func() {
@@ -1084,6 +1098,7 @@ func (p *GrokBinProvider) stopGrokACPProcess(process *grokACPProcess) {
 			case <-time.After(time.Second):
 			}
 		}
+		stopCLIWireAudit(process.wireAudit)
 	})
 }
 

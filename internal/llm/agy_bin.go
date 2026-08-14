@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/cliwire"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
 )
@@ -46,6 +47,7 @@ type AgyBinProvider struct {
 	mcpServer              *mcphttp.Server
 	mcpURL, mcpToken       string
 	isolation              agyToolIsolation
+	wireAudit              *cliwire.Server
 	cliToolBridgeState
 	tempFileTracker
 	active atomic.Bool
@@ -268,6 +270,16 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req Request) (Stream, error
 		if err := p.writeMCPConfigs(exposeBridge); err != nil {
 			return err
 		}
+		wireAudit, err := startCLIWireServer("agy-bin", p.buildCommandEnv())
+		if err != nil {
+			return err
+		}
+		p.wireAudit = wireAudit
+		if wireAudit != nil {
+			p.isolation.SetUpstream(wireAudit.ProxyURL(), wireAudit.CAPath())
+		} else {
+			p.isolation.SetUpstream("", "")
+		}
 		if err := p.isolation.EnsureStarted(p.agyHome); err != nil {
 			return fmt.Errorf("start agy native-tool isolation: %w", err)
 		}
@@ -439,7 +451,7 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 	if err != nil {
 		return nil, fmt.Errorf("prepare agy command: %w", err)
 	}
-	cmd.Env = p.buildCommandEnv()
+	cmd.Env = forceCLIWireEnvironment(p.buildCommandEnv(), p.isolation.Environment())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("get agy stdout: %w", err)
@@ -866,6 +878,8 @@ func (p *AgyBinProvider) cleanupRuntime() {
 		_ = p.isolation.Stop(ctx)
 		cancel()
 	}
+	stopCLIWireAudit(p.wireAudit)
+	p.wireAudit = nil
 }
 
 func (p *AgyBinProvider) CleanupMCP() {
@@ -898,6 +912,12 @@ func (p *AgyBinProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, err
 	}
 	cmd.Env = p.extraEnvList()
+	auditedEnv, wireAudit, err := startCLIWireAudit("agy-bin-models", cmd.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = auditedEnv
+	defer stopCLIWireAudit(wireAudit)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("list agy models: %w", err)

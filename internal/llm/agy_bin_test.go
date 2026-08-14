@@ -18,6 +18,7 @@ type fakeAgyIsolation struct {
 	env     map[string]string
 }
 
+func (f *fakeAgyIsolation) SetUpstream(string, string) {}
 func (f *fakeAgyIsolation) EnsureStarted(string) error { f.started = true; return nil }
 func (f *fakeAgyIsolation) BeginTurn(v bool)           { f.require = v }
 func (f *fakeAgyIsolation) FilteredGenerations() int64 {

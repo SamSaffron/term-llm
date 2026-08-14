@@ -3,7 +3,10 @@ package agyproxy
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/cliwire"
 )
 
 func generationBody(names ...string) []byte {
@@ -406,5 +411,72 @@ func TestServerStopDoesNotBreakInFlightForward(t *testing.T) {
 	server.forward(stoppedRecorder, stoppedReq)
 	if stoppedRecorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("post-stop response status = %d, want %d", stoppedRecorder.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestServerChainsNonCloudTrafficThroughWireAudit(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("chain-ok"))
+	}))
+	defer upstream.Close()
+	upstreamCA := filepath.Join(t.TempDir(), "upstream.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw})
+	if err := os.WriteFile(upstreamCA, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wire, err := cliwire.StartWithAdditionalCA(t.TempDir(), "agy-bin", upstreamCA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wire.Stop(context.Background())
+	var server Server
+	server.SetUpstream(wire.ProxyURL(), wire.CAPath())
+	proxyText, caPath, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop(context.Background())
+
+	proxyURL, _ := url.Parse(proxyText)
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("agy chained CA bundle contained no certificates")
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: roots}}
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(upstream.URL + "/chained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "chain-ok" {
+		t.Fatalf("response = %q", body)
+	}
+	transport.CloseIdleConnections()
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := wire.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requests, _ := filepath.Glob(filepath.Join(wire.TraceDir(), "connections", "*-request.bin"))
+	if len(requests) != 1 {
+		t.Fatalf("wire requests = %v", requests)
+	}
+	captured, err := os.ReadFile(requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(captured), "GET /chained") {
+		t.Fatalf("wire capture = %q", captured)
 	}
 }

@@ -393,6 +393,12 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 		return nil, fmt.Errorf("prepare Cursor command: %w", err)
 	}
 	cmd.Env = p.buildCommandEnv(home)
+	auditedEnv, wireAudit, err := startCLIWireAudit("cursor-bin", cmd.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = auditedEnv
+	defer stopCLIWireAudit(wireAudit)
 	cmd.Stdin = strings.NewReader(prompt)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -826,6 +832,12 @@ func defaultCursorModelsCommandOutput(ctx context.Context, p *CursorBinProvider,
 		return nil, err
 	}
 	cmd.Env = p.buildCommandEnv(home)
+	auditedEnv, wireAudit, err := startCLIWireAudit("cursor-bin-models", cmd.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = auditedEnv
+	defer stopCLIWireAudit(wireAudit)
 	return cmd.Output()
 }
 

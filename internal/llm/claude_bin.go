@@ -664,16 +664,27 @@ func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []str
 	}
 	cmd.WaitDelay = claudeCommandWaitDelay
 	cmd.Env = p.buildCommandEnv(effort)
+	auditedEnv, wireAudit, err := startCLIWireAudit("claude-bin", cmd.Env)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cmd.Env = auditedEnv
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		stopCLIWireAudit(wireAudit)
 		return nil, nil, nil, fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
 
-	cleanup, err := procutil.PrepareCommand(cmd)
+	cleanupProcess, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		_ = stdin.Close()
+		stopCLIWireAudit(wireAudit)
 		return nil, nil, nil, fmt.Errorf("failed to prepare claude command: %w", err)
+	}
+	cleanup := func() {
+		cleanupProcess()
+		stopCLIWireAudit(wireAudit)
 	}
 
 	return cmd, stdin, cleanup, nil

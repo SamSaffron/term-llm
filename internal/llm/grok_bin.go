@@ -555,9 +555,19 @@ func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string,
 	}
 	cmd.WaitDelay = grokCommandWaitDelay
 	cmd.Env = p.buildCommandEnv()
-	cleanup, err := procutil.PrepareCommand(cmd)
+	auditedEnv, wireAudit, err := startCLIWireAudit("grok-bin", cmd.Env)
 	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Env = auditedEnv
+	cleanupProcess, err := procutil.PrepareCommand(cmd)
+	if err != nil {
+		stopCLIWireAudit(wireAudit)
 		return nil, nil, fmt.Errorf("prepare grok command: %w", err)
+	}
+	cleanup := func() {
+		cleanupProcess()
+		stopCLIWireAudit(wireAudit)
 	}
 	return cmd, cleanup, nil
 }

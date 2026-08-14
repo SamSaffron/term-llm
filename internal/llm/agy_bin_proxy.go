@@ -13,6 +13,7 @@ import (
 // newAgyToolIsolation with a direct CLI implementation and delete
 // internal/agyproxy plus this proxy-backed implementation.
 type agyToolIsolation interface {
+	SetUpstream(string, string)
 	EnsureStarted(string) error
 	BeginTurn(bool)
 	FilteredGenerations() int64
@@ -21,12 +22,21 @@ type agyToolIsolation interface {
 }
 
 type agyProxyToolIsolation struct {
-	server   *agyproxy.Server
-	proxyURL string
-	caPath   string
+	server        *agyproxy.Server
+	proxyURL      string
+	caPath        string
+	upstreamProxy string
+	upstreamCA    string
 }
 
 func newAgyToolIsolation() agyToolIsolation { return &agyProxyToolIsolation{} }
+
+func (i *agyProxyToolIsolation) SetUpstream(proxyURL, caPath string) {
+	i.upstreamProxy, i.upstreamCA = proxyURL, caPath
+	if i.server != nil {
+		i.server.SetUpstream(proxyURL, caPath)
+	}
+}
 
 func (i *agyProxyToolIsolation) EnsureStarted(agyHome string) error {
 	artifactRoot := filepath.Join(agyHome, ".gemini", "antigravity-cli", "brain")
@@ -35,6 +45,7 @@ func (i *agyProxyToolIsolation) EnsureStarted(agyHome string) error {
 		return nil
 	}
 	server := &agyproxy.Server{}
+	server.SetUpstream(i.upstreamProxy, i.upstreamCA)
 	server.SetArtifactRoot(artifactRoot)
 	proxyURL, caPath, err := server.Start()
 	if err != nil {
