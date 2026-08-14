@@ -9,7 +9,7 @@ type ToolSurfacePlanner interface {
 	PrepareTurn(ctx context.Context, provider Provider, req *Request, runID string, attempt, maxTurns int) (resetReason string, err error)
 	EndRun(runID string)
 	ResetSession(sessionID string)
-	ToolExecuted(sessionID, name string)
+	ToolExecuted(sessionID, runID, name string)
 	CanActivateDeferredTool(name string) bool
 	AllowsPlannerTool(runID, name string) bool
 	ResolveProviderToolCall(runID string, call ToolCall) (ToolCall, error)
@@ -56,7 +56,9 @@ type ToolDiscoveryDiagnostics struct {
 	DeferredTokens     int
 	DynamicActive      int
 	DynamicLimit       int
+	EvictionCount      int
 	Recent             []ToolActivationDiagnostic
+	RecentEvictions    []ToolEvictionDiagnostic
 	Servers            []ToolDiscoveryServerDiagnostic
 	ResetReason        string
 }
@@ -77,6 +79,13 @@ type ToolActivationDiagnostic struct {
 	Namespace string
 	ChildName string
 	Reason    string
+}
+
+// ToolEvictionDiagnostic records a dynamic tool removed from the visible working set.
+type ToolEvictionDiagnostic struct {
+	Name     string
+	Reason   string
+	Executed bool
 }
 
 // ToolDiscoveryDiagnoser is implemented by planners that expose inspect data.

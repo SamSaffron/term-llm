@@ -432,6 +432,27 @@ or by adding the YAML above to your config file.
 
 Shell-made changes are tracked best-effort: commands that declare an `affected_paths` hint are snapshotted precisely; otherwise term-llm relies on `git status` (when inside a repository) and re-checking files the session already touched. Broad scripts writing to non-git directories without a hint may not appear in the diff sidebar.
 
+## MCP tool discovery config
+
+```yaml
+tool_discovery:
+  mode: auto
+  strategy: auto
+  threshold: 24
+  max_active_tools: 300
+```
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `mode` | `auto` | `auto` eagerly exposes catalogues at or below `threshold` and defers larger catalogues; `eager` and `deferred` force either behavior. |
+| `strategy` | `auto` | `auto` uses verified provider-native discovery when available and otherwise portable `tool_search`; `portable` or `native` force one path. |
+| `threshold` | `24` | Authorized MCP tool count at or below which `auto` mode remains eager. |
+| `max_active_tools` | `300` | Maximum unpinned, dynamically visible MCP schemas. A value of `0` selects the default 300. |
+
+When the dynamic working set is full, term-llm first evicts tools that have not yet been sent to the provider, then never-called tools, and finally least-recently-used called tools. Pinned and MCP `always_load` tools are outside this limit and are never evicted. Eviction affects visibility and context usage, not authorization; an evicted tool remains discoverable and can be activated again. If all eligible victims were already sent, eviction may reset provider conversation or prompt-cache state so the changed schema surface is applied safely.
+
+Tool-discovery diagnostics report `dynamic_active`, `dynamic_limit`, and `eviction_count`; the same count is exposed by the serve MCP session JSON response. See the [MCP servers guide](/guides/mcp-servers/#deferred-tool-discovery) for server configuration and discovery details.
+
 ## Search config
 
 ```yaml

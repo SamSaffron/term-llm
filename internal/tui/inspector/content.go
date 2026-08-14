@@ -134,7 +134,18 @@ func (r *ContentRenderer) renderHeader(messages []session.Message) (string, []Co
 		writeField("Pinned MCP", fmt.Sprintf("%d tools, ~%d tokens", discovery.PinnedCount, discovery.PinnedTokens))
 		writeField("Active MCP", fmt.Sprintf("%d tools, ~%d tokens", discovery.ActiveMCPCount, discovery.ActiveMCPTokens))
 		writeField("Deferred MCP", fmt.Sprintf("%d tools, ~%d tokens avoided", discovery.DeferredCount, discovery.DeferredTokens))
-		writeField("Dynamic budget", fmt.Sprintf("%d/%d tools", discovery.DynamicActive, discovery.DynamicLimit))
+		writeField("Dynamic working set", fmt.Sprintf("%d/%d tools", discovery.DynamicActive, discovery.DynamicLimit))
+		if discovery.EvictionCount > 0 {
+			writeField("Working-set evictions", fmt.Sprintf("%d", discovery.EvictionCount))
+		}
+		if len(discovery.RecentEvictions) > 0 {
+			b.WriteString(labelStyle.Render("  Recent eviction:\n"))
+			currentLine++
+			for _, eviction := range discovery.RecentEvictions {
+				b.WriteString(fmt.Sprintf("    %s — %s\n", valueStyle.Render(eviction.Name), eviction.Reason))
+				currentLine++
+			}
+		}
 		if len(discovery.Recent) > 0 {
 			b.WriteString(labelStyle.Render("  Recent activation:\n"))
 			currentLine++

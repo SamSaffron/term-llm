@@ -198,10 +198,10 @@ func TestAmbiguousOriginalNameDoesNotActivate(t *testing.T) {
 	}
 }
 
-func TestDynamicActivationBudgetIsDeterministic(t *testing.T) {
+func TestDefaultDynamicWorkingSetHandlesLargeCatalogue(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
-	provider := llm.NewMockProvider("budget")
+	provider := llm.NewMockProvider("working-set")
 	first, second := make([]string, 8), make([]string, 8)
 	for i := 0; i < 8; i++ {
 		first[i] = fmt.Sprintf("realistic_operation_%02d", i)
@@ -210,24 +210,173 @@ func TestDynamicActivationBudgetIsDeterministic(t *testing.T) {
 	provider.AddToolCall("search-1", ToolSearchName, map[string]any{"tool_names": first})
 	provider.AddToolCall("search-2", ToolSearchName, map[string]any{"tool_names": second})
 	provider.AddToolCall("search-3", ToolSearchName, map[string]any{"tool_names": []string{"special_action"}})
-	provider.AddTextResponse("budget handled")
+	provider.AddTextResponse("working set handled")
 	engine := llm.NewEngine(provider, nil)
 	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Threshold: 24}, manager, engine); err != nil {
 		t.Fatal(err)
 	}
-	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "budget", Messages: []llm.Message{llm.UserText("load many")}, MaxTurns: 5})
+	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, SessionID: "working-set", Messages: []llm.Message{llm.UserText("load many")}, MaxTurns: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	drainStream(t, stream)
-	diagnostics, _ := engine.ToolDiscoveryDiagnostics("budget")
-	if diagnostics.DynamicActive != MaxActiveDeferred || diagnostics.DeferredCount != 9 {
-		t.Fatalf("budget diagnostics = %+v", diagnostics)
+	diagnostics, _ := engine.ToolDiscoveryDiagnostics("working-set")
+	if diagnostics.DynamicLimit != config.DefaultToolDiscoveryMaxActiveTools || diagnostics.DynamicActive != 17 || diagnostics.DeferredCount != 8 {
+		t.Fatalf("working-set diagnostics = %+v", diagnostics)
 	}
-	for _, request := range provider.RecordedRequests() {
-		if hasTool(request.Tools, "federation__special_action") {
-			t.Fatal("tool activated after dynamic budget was exhausted")
-		}
+	requests := provider.RecordedRequests()
+	if !hasTool(requests[len(requests)-1].Tools, "federation__special_action") {
+		t.Fatal("tool was not activated after more than 16 dynamic activations")
+	}
+}
+
+func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := llm.NewMockProvider("eviction")
+	engine := llm.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 2}, manager, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{SessionID: "eviction", MaxTurns: 5}
+	if _, err := planner.BeginRun(context.Background(), provider, &req, "eviction-run"); err != nil {
+		t.Fatal(err)
+	}
+	defer planner.EndRun("eviction-run")
+
+	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_00", "realistic_operation_01"}, MaxResults: 5}); err != nil || len(evicted) != 0 || omitted != 0 {
+		t.Fatalf("initial activation: evicted=%v omitted=%d err=%v", evicted, omitted, err)
+	}
+	if reset, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 0, 5); err != nil || reset != "" {
+		t.Fatalf("prepare initial surface: reset=%q err=%v", reset, err)
+	}
+	planner.ToolExecuted("eviction", "eviction-run", "federation__realistic_operation_00")
+
+	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_02"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_01" {
+		t.Fatalf("never-executed eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
+	}
+	reset, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 1, 5)
+	if err != nil || !strings.Contains(reset, "LRU-evicted") {
+		t.Fatalf("eviction surface reset: reset=%q err=%v", reset, err)
+	}
+
+	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_03"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_02" {
+		t.Fatalf("second never-executed eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
+	}
+	if reset, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 2, 5); err != nil || !strings.Contains(reset, "LRU-evicted") {
+		t.Fatalf("prepare second eviction: reset=%q err=%v", reset, err)
+	}
+	planner.ToolExecuted("eviction", "eviction-run", "federation__realistic_operation_03")
+	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_04"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_00" {
+		t.Fatalf("executed LRU eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
+	}
+	got := toolNames(planner.ActiveToolSpecs("eviction"))
+	want := []string{"federation__realistic_operation_03", "federation__realistic_operation_04"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("active tools = %v, want %v", got, want)
+	}
+	if _, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 3, 5); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := planner.Diagnostics("eviction")
+	if diagnostics.DynamicLimit != 2 || diagnostics.DynamicActive != 2 || diagnostics.EvictionCount != 3 || len(diagnostics.RecentEvictions) != 3 {
+		t.Fatalf("eviction diagnostics = %+v", diagnostics)
+	}
+	if diagnostics.RecentEvictions[0].Reason != "never executed" || diagnostics.RecentEvictions[0].Executed {
+		t.Fatalf("first eviction diagnostic = %+v", diagnostics.RecentEvictions[0])
+	}
+	lastEviction := diagnostics.RecentEvictions[len(diagnostics.RecentEvictions)-1]
+	if lastEviction.Reason != "least recently used" || !lastEviction.Executed {
+		t.Fatalf("last eviction diagnostic = %+v", lastEviction)
+	}
+}
+
+func TestSessionlessRunTracksExecutionForEviction(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := llm.NewMockProvider("sessionless-eviction")
+	provider.AddToolCall("search-1", ToolSearchName, map[string]any{"tool_names": []string{"realistic_operation_00", "realistic_operation_01"}})
+	provider.AddToolCall("execute-0", "federation__realistic_operation_00", map[string]any{})
+	provider.AddToolCall("search-2", ToolSearchName, map[string]any{"tool_names": []string{"realistic_operation_02"}})
+	provider.AddTextResponse("done")
+	engine := llm.NewEngine(provider, nil)
+	if _, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 2}, manager, engine); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := engine.Stream(context.Background(), llm.Request{EnableToolDiscovery: true, Messages: []llm.Message{llm.UserText("run without a durable session")}, MaxTurns: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStream(t, stream)
+	requests := provider.RecordedRequests()
+	last := requests[len(requests)-1]
+	if !hasTool(last.Tools, "federation__realistic_operation_00") || !hasTool(last.Tools, "federation__realistic_operation_02") {
+		t.Fatalf("sessionless working set did not retain executed tool: %v", toolNames(last.Tools))
+	}
+	if hasTool(last.Tools, "federation__realistic_operation_01") {
+		t.Fatalf("sessionless working set retained never-executed victim: %v", toolNames(last.Tools))
+	}
+}
+
+func TestDynamicWorkingSetPrefersUnsentEvictionVictim(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := llm.NewMockProvider("unsent-eviction")
+	engine := llm.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 3}, manager, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{SessionID: "unsent-eviction", MaxTurns: 5}
+	if _, err := planner.BeginRun(context.Background(), provider, &req, "unsent-eviction-run"); err != nil {
+		t.Fatal(err)
+	}
+	defer planner.EndRun("unsent-eviction-run")
+	if _, _, _, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_00", "realistic_operation_01"}, MaxResults: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planner.PrepareTurn(context.Background(), provider, &req, "unsent-eviction-run", 0, 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_02"}, MaxResults: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, evicted, omitted, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_03"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_02" {
+		t.Fatalf("unsent eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
+	}
+	planner.mu.Lock()
+	reset := planner.sessions[planner.stateKey("unsent-eviction", "")].resetRequired
+	planner.mu.Unlock()
+	if reset != "" {
+		t.Fatalf("evicting an unsent tool unnecessarily requested provider reset: %q", reset)
+	}
+}
+
+func TestDynamicWorkingSetNeverEvictsPinnedTools(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := llm.NewMockProvider("pinned-eviction")
+	engine := llm.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", MaxActiveTools: 1}, manager, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{SessionID: "pinned-eviction", MaxTurns: 4, ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceName, Name: "federation__special_action"}}
+	if _, err := planner.BeginRun(context.Background(), provider, &req, "pinned-eviction-run"); err != nil {
+		t.Fatal(err)
+	}
+	defer planner.EndRun("pinned-eviction-run")
+	if _, _, _, _, _, err := planner.activate("pinned-eviction-run", searchInput{ToolNames: []string{"realistic_operation_00"}, MaxResults: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, evicted, omitted, _, err := planner.activate("pinned-eviction-run", searchInput{ToolNames: []string{"realistic_operation_01"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_00" {
+		t.Fatalf("pinned eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
+	}
+	got := toolNames(planner.ActiveToolSpecs("pinned-eviction"))
+	want := []string{"federation__realistic_operation_01", "federation__special_action"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("active tools = %v, want pinned tool retained: %v", got, want)
 	}
 }
 

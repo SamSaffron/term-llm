@@ -785,6 +785,9 @@ func TestToolDiscoveryDefaultsAndValidation(t *testing.T) {
 	if got, ok := DefaultForKey("tool_discovery.threshold"); !ok || got != 24 {
 		t.Fatalf("tool_discovery.threshold default = %#v, %v", got, ok)
 	}
+	if got, ok := DefaultForKey("tool_discovery.max_active_tools"); !ok || got != 300 {
+		t.Fatalf("tool_discovery.max_active_tools default = %#v, %v", got, ok)
+	}
 	for _, mode := range []string{"", "auto", "eager", "deferred"} {
 		cfg := &Config{ToolDiscovery: ToolDiscoveryConfig{Mode: mode, Threshold: 0}}
 		if err := cfg.ValidateToolDiscovery(); err != nil {
@@ -805,6 +808,12 @@ func TestToolDiscoveryDefaultsAndValidation(t *testing.T) {
 	}
 	if err := (&Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "auto", Threshold: -1}}).ValidateToolDiscovery(); err == nil || !strings.Contains(err.Error(), "non-negative") {
 		t.Fatalf("negative threshold error = %v", err)
+	}
+	if err := (&Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "auto", MaxActiveTools: 0}}).ValidateToolDiscovery(); err != nil {
+		t.Fatalf("zero max_active_tools default sentinel rejected: %v", err)
+	}
+	if err := (&Config{ToolDiscovery: ToolDiscoveryConfig{Mode: "auto", MaxActiveTools: -1}}).ValidateToolDiscovery(); err == nil || !strings.Contains(err.Error(), "max_active_tools") {
+		t.Fatalf("negative max active tools error = %v", err)
 	}
 }
 

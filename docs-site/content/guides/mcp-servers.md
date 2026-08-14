@@ -143,6 +143,7 @@ tool_discovery:
   mode: auto
   strategy: auto
   threshold: 24
+  max_active_tools: 300
 ```
 
 `mode` controls whether tools are deferred:
@@ -160,6 +161,8 @@ tool_discovery:
 | `auto` | Use an exactly supported provider-native path; otherwise use portable search |
 | `portable` | Use term-llm's ordinary cross-provider `tool_search` tool |
 | `native` | Require provider-native loading and fail clearly when unsupported |
+
+`max_active_tools` limits the dynamic provider-visible working set, not the number of tools that may be discovered during a session. It defaults to 300; `0` also selects that default rather than disabling discovery. When the working set is full, term-llm first evicts an unpinned tool that has not yet been sent to the provider, then prefers tools that have never been called before falling back to least-recently-used called tools. Pinned and `always_load` tools do not consume this dynamic limit and are never evicted. Eviction only changes schema visibility, not authorization: evicted tools remain searchable and can be activated again. If every eligible victim has already been sent, changing the visible schema set may reset provider conversation or prompt-cache state to keep the next request correct.
 
 ChatGPT OAuth `gpt-5.6-luna` supports native client-executed search. Qwen/Ollama and conventional providers use portable search. Native loading keeps selected schemas in provider discovery output rather than rebuilding the ordinary top-level tool array. Selected MCP tools are grouped under their server namespace on the ChatGPT wire, but discovery, authorization, and execution remain child-granular: selecting one child never loads its siblings. Namespace descriptions use bounded MCP server instructions/metadata when available.
 

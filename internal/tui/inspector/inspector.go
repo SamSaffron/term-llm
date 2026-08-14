@@ -109,6 +109,7 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 		if cfg.ToolDiscovery != nil {
 			diagnostics := *cfg.ToolDiscovery
 			diagnostics.Recent = append([]llm.ToolActivationDiagnostic(nil), cfg.ToolDiscovery.Recent...)
+			diagnostics.RecentEvictions = append([]llm.ToolEvictionDiagnostic(nil), cfg.ToolDiscovery.RecentEvictions...)
 			diagnostics.Servers = append([]llm.ToolDiscoveryServerDiagnostic(nil), cfg.ToolDiscovery.Servers...)
 			m.toolDiscovery = &diagnostics
 		}

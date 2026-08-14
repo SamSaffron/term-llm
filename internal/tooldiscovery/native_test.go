@@ -145,6 +145,69 @@ func TestNativeStrategyOrchestratesDiscoveryWithoutTopLevelSchemaMutation(t *tes
 	}
 }
 
+func TestNativeHistoryDoesNotRestoreEvictedTools(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := &nativeScriptProvider{supported: true}
+	engine := llm.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred", Strategy: "native", MaxActiveTools: 1}, manager, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := manager.CatalogueSnapshot()
+	if snapshot == nil || len(snapshot.Tools) < 2 {
+		t.Fatal("expected at least two catalogue tools")
+	}
+	first, second := snapshot.Tools[0], snapshot.Tools[1]
+	req := llm.Request{SessionID: "native-eviction", Messages: []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{
+		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-old"}},
+		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: &llm.ToolDiscoveryOutput{CallID: "search-old", Tools: []llm.DiscoveredTool{
+			{Spec: first.ToolSpec(), SchemaHash: first.SchemaHash},
+			{Spec: second.ToolSpec(), SchemaHash: second.SchemaHash},
+		}}},
+	}}}}
+	key := planner.stateKey(req.SessionID, "")
+	planner.mu.Lock()
+	planner.stateLocked(key).evicted[first.Name] = true
+	planner.mu.Unlock()
+
+	originalOutput := req.Messages[0].Parts[1].DiscoveryOutput
+	planner.restoreNativeHistory(&req, key)
+	output := req.Messages[0].Parts[1].DiscoveryOutput
+	if output == nil || len(output.Tools) != 1 || output.Tools[0].Spec.Name != second.Name {
+		t.Fatalf("restored discovery output = %+v, want only %q", output, second.Name)
+	}
+	if len(originalOutput.Tools) != 2 {
+		t.Fatalf("caller-owned discovery output was mutated: %+v", originalOutput)
+	}
+	got := toolNames(planner.ActiveToolSpecs(req.SessionID))
+	if len(got) != 1 || got[0] != second.Name {
+		t.Fatalf("restored active tools = %v, want [%s]", got, second.Name)
+	}
+
+	emptyOutput := &llm.ToolDiscoveryOutput{CallID: "search-empty", Tools: []llm.DiscoveredTool{
+		{Spec: first.ToolSpec(), SchemaHash: first.SchemaHash},
+		{Spec: second.ToolSpec(), SchemaHash: second.SchemaHash},
+	}}
+	emptyReq := llm.Request{SessionID: "native-all-evicted", Messages: []llm.Message{{Role: llm.RoleAssistant, Parts: []llm.Part{
+		{Type: llm.PartDiscoveryCall, DiscoveryCall: &llm.ToolDiscoveryCall{ID: "search-empty"}},
+		{Type: llm.PartDiscoveryOutput, DiscoveryOutput: emptyOutput},
+	}}}}
+	emptyKey := planner.stateKey(emptyReq.SessionID, "")
+	planner.mu.Lock()
+	emptyState := planner.stateLocked(emptyKey)
+	emptyState.evicted[first.Name] = true
+	emptyState.evicted[second.Name] = true
+	planner.mu.Unlock()
+	planner.restoreNativeHistory(&emptyReq, emptyKey)
+	if len(emptyReq.Messages[0].Parts) != 0 {
+		t.Fatalf("empty discovery call/output pair was retained: %+v", emptyReq.Messages[0].Parts)
+	}
+	if len(emptyOutput.Tools) != 2 {
+		t.Fatalf("caller-owned empty discovery output was mutated: %+v", emptyOutput)
+	}
+}
+
 func TestNativeNamespaceCallRejectsUnselectedSibling(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
@@ -336,8 +399,12 @@ func TestNativeReplayOldGenerationReResolvesCurrentCatalogue(t *testing.T) {
 	if resetReason != "" {
 		t.Fatalf("unchanged schema forced reset: %q", resetReason)
 	}
-	if output.CatalogueGen != snapshot.Generation || output.CatalogueHash != snapshot.Hash || output.Tools[0].Spec.Name != "federation__special_action" {
-		t.Fatalf("re-resolved output = %#v", output)
+	resolvedOutput := req.Messages[0].Parts[1].DiscoveryOutput
+	if resolvedOutput == nil || resolvedOutput.CatalogueGen != snapshot.Generation || resolvedOutput.CatalogueHash != snapshot.Hash || resolvedOutput.Tools[0].Spec.Name != "federation__special_action" {
+		t.Fatalf("re-resolved output = %#v", resolvedOutput)
+	}
+	if output.CatalogueGen != 0 || output.CatalogueHash != "old" {
+		t.Fatalf("caller-owned output was mutated = %#v", output)
 	}
 }
 

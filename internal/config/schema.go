@@ -119,9 +119,10 @@ const (
 	DefaultToolsShellNonTTYEnv     = "TERM_LLM_ALLOW_NON_TTY"
 	DefaultToolsMaxToolOutputChars = 20000
 
-	DefaultToolDiscoveryMode      = "auto"
-	DefaultToolDiscoveryStrategy  = "auto"
-	DefaultToolDiscoveryThreshold = 24
+	DefaultToolDiscoveryMode           = "auto"
+	DefaultToolDiscoveryStrategy       = "auto"
+	DefaultToolDiscoveryThreshold      = 24
+	DefaultToolDiscoveryMaxActiveTools = 300
 
 	DefaultSessionsEnabled          = true
 	DefaultSessionsMaxAgeDays       = 0
@@ -318,6 +319,7 @@ var keySpecs = []KeySpec{
 	def("tool_discovery.mode", DefaultToolDiscoveryMode),
 	def("tool_discovery.strategy", DefaultToolDiscoveryStrategy),
 	def("tool_discovery.threshold", DefaultToolDiscoveryThreshold),
+	def("tool_discovery.max_active_tools", DefaultToolDiscoveryMaxActiveTools),
 
 	def("agents.use_builtin", true),
 	def("agents.search_paths", []string{}),

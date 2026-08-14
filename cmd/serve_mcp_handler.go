@@ -44,6 +44,7 @@ type serveMCPDiscoveryView struct {
 	DeferredTokens int    `json:"deferred_tokens"`
 	DynamicActive  int    `json:"dynamic_active"`
 	DynamicLimit   int    `json:"dynamic_limit"`
+	EvictionCount  int    `json:"eviction_count"`
 }
 
 type serveMCPSessionResponse struct {
@@ -236,6 +237,7 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 			DeferredTokens: discovery.DeferredTokens,
 			DynamicActive:  discovery.DynamicActive,
 			DynamicLimit:   discovery.DynamicLimit,
+			EvictionCount:  discovery.EvictionCount,
 		}
 	}
 	return resp

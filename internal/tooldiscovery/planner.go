@@ -17,7 +17,6 @@ import (
 const (
 	ToolSearchName          = "tool_search"
 	MaxSearchResults        = 5
-	MaxActiveDeferred       = 16
 	maxRecentEvents         = 16
 	maxPlannerSessionStates = 256
 
@@ -57,6 +56,7 @@ type sessionState struct {
 	mode            Mode
 	strategy        Strategy
 	active          map[string]activeToolState
+	evicted         map[string]bool
 	sent            map[string]string
 	lastUsed        uint64
 	lastAccess      uint64
@@ -66,18 +66,21 @@ type sessionState struct {
 	fallbackReason  string
 	lastDiagnostics llm.ToolDiscoveryDiagnostics
 	recent          []llm.ToolActivationDiagnostic
+	evictionCount   int
+	recentEvictions []llm.ToolEvictionDiagnostic
 }
 
 // Planner owns catalogue indexing, session activation, and authoritative MCP
 // provider visibility. Engine queues are only per-run delivery.
 type Planner struct {
-	manager   *mcp.Manager
-	engine    *llm.Engine
-	engineMu  sync.RWMutex
-	mode      Mode
-	strategy  Strategy
-	threshold int
-	index     *searchIndex
+	manager        *mcp.Manager
+	engine         *llm.Engine
+	engineMu       sync.RWMutex
+	mode           Mode
+	strategy       Strategy
+	threshold      int
+	maxActiveTools int
+	index          *searchIndex
 
 	mu            sync.Mutex
 	sessions      map[string]*sessionState
@@ -115,24 +118,34 @@ func NewPlanner(cfg config.ToolDiscoveryConfig, manager *mcp.Manager, engine *ll
 	if threshold < 0 {
 		return nil, fmt.Errorf("tool discovery threshold must be non-negative")
 	}
+	maxActiveTools := cfg.MaxActiveTools
+	// Zero is the unset/default sentinel for direct ToolDiscoveryConfig values;
+	// loaded configuration receives the same canonical default from keySpecs.
+	if maxActiveTools == 0 {
+		maxActiveTools = config.DefaultToolDiscoveryMaxActiveTools
+	}
+	if maxActiveTools < 0 {
+		return nil, fmt.Errorf("tool discovery max active tools must be non-negative")
+	}
 	snapshot := manager.CatalogueSnapshot()
 	if snapshot == nil {
 		snapshot = &mcp.CatalogueSnapshot{}
 	}
 	planner := &Planner{
-		manager:       manager,
-		engine:        engine,
-		mode:          mode,
-		strategy:      strategy,
-		threshold:     threshold,
-		index:         newSearchIndex(snapshot.Tools, snapshot.Generation),
-		sessions:      make(map[string]*sessionState),
-		runs:          make(map[string]string),
-		runStrategies: make(map[string]Strategy),
-		fallbackUsed:  make(map[string]bool),
-		searchAllowed: make(map[string]bool),
-		registered:    make(map[string]string),
-		warnedAlways:  make(map[string]uint64),
+		manager:        manager,
+		engine:         engine,
+		mode:           mode,
+		strategy:       strategy,
+		threshold:      threshold,
+		maxActiveTools: maxActiveTools,
+		index:          newSearchIndex(snapshot.Tools, snapshot.Generation),
+		sessions:       make(map[string]*sessionState),
+		runs:           make(map[string]string),
+		runStrategies:  make(map[string]Strategy),
+		fallbackUsed:   make(map[string]bool),
+		searchAllowed:  make(map[string]bool),
+		registered:     make(map[string]string),
+		warnedAlways:   make(map[string]uint64),
 	}
 	planner.syncCatalogue(snapshot)
 	manager.SetCatalogueChangeHandler(planner.handleCatalogueEvent)
@@ -210,6 +223,11 @@ func (p *Planner) syncCatalogue(snapshot *mcp.CatalogueSnapshot) {
 		}
 	}
 	for _, state := range p.sessions {
+		for name := range state.evicted {
+			if _, exists := current[name]; !exists {
+				delete(state.evicted, name)
+			}
+		}
 		for name, active := range state.active {
 			tool, exists := current[name]
 			if !exists {
@@ -274,6 +292,7 @@ func (p *Planner) stateLocked(key string) *sessionState {
 	}
 	state := &sessionState{
 		active:     make(map[string]activeToolState),
+		evicted:    make(map[string]bool),
 		sent:       make(map[string]string),
 		lastAccess: p.stateClock,
 	}
@@ -310,6 +329,13 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 			current[tool.Name] = tool
 		}
 	}
+	p.mu.Lock()
+	state := p.stateLocked(key)
+	evicted := make(map[string]bool, len(state.evicted))
+	for name := range state.evicted {
+		evicted[name] = true
+	}
+	p.mu.Unlock()
 	calls := make(map[string]bool)
 	for _, msg := range req.Messages {
 		for _, part := range msg.Parts {
@@ -320,6 +346,7 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 	}
 	staleReason := ""
 	resolved := make(map[string]mcp.CatalogTool)
+	emptyCalls := make(map[string]bool)
 	for mi := range req.Messages {
 		for pi := range req.Messages[mi].Parts {
 			part := &req.Messages[mi].Parts[pi]
@@ -330,8 +357,13 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 				staleReason = "native discovery output is missing its call replay item"
 				break
 			}
-			for ti := range part.DiscoveryOutput.Tools {
-				selected := &part.DiscoveryOutput.Tools[ti]
+			output := *part.DiscoveryOutput
+			kept := make([]llm.DiscoveredTool, 0, len(output.Tools))
+			for _, discovered := range output.Tools {
+				selected := discovered
+				if evicted[selected.Spec.Name] {
+					continue
+				}
 				tool, ok := current[selected.Spec.Name]
 				if !ok {
 					staleReason = "a native-discovered MCP tool is no longer authorised or available"
@@ -343,9 +375,15 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 				}
 				selected.Spec = tool.ToolSpec()
 				resolved[tool.Name] = tool
+				kept = append(kept, selected)
 			}
-			part.DiscoveryOutput.CatalogueHash = snapshot.Hash
-			part.DiscoveryOutput.CatalogueGen = snapshot.Generation
+			output.Tools = kept
+			output.CatalogueHash = snapshot.Hash
+			output.CatalogueGen = snapshot.Generation
+			part.DiscoveryOutput = &output
+			if len(kept) == 0 {
+				emptyCalls[output.CallID] = true
+			}
 			if staleReason != "" {
 				break
 			}
@@ -354,8 +392,11 @@ func (p *Planner) restoreNativeHistory(req *llm.Request, key string) {
 			break
 		}
 	}
+	if staleReason == "" && len(emptyCalls) > 0 {
+		removeNativeDiscoveryPairs(req, emptyCalls)
+	}
 	p.mu.Lock()
-	state := p.stateLocked(key)
+	state = p.stateLocked(key)
 	if staleReason != "" {
 		for name, active := range state.active {
 			if !active.Pinned {
@@ -592,6 +633,7 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 	}
 	for name, tool := range authorized {
 		if pinnedNow[name] {
+			delete(state.evicted, name)
 			active := state.active[name]
 			active.SchemaHash = tool.SchemaHash
 			active.Pinned = true
@@ -601,6 +643,9 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 			}
 			state.active[name] = active
 		}
+	}
+	if strategy == StrategyNative {
+		pruneNativeDiscoveryTools(req, state.active)
 	}
 	if beginning && priorMode != "" && priorMode != resolved && len(state.sent) > 0 {
 		state.resetRequired = fmt.Sprintf("tool discovery mode changed from %s to %s", priorMode, resolved)
@@ -738,8 +783,10 @@ func (p *Planner) selectSurface(provider llm.Provider, req *llm.Request, key, ru
 		ActiveMCPTokens:    activeTokens,
 		DeferredTokens:     deferredTokens,
 		DynamicActive:      activeCount,
-		DynamicLimit:       MaxActiveDeferred,
+		DynamicLimit:       p.maxActiveTools,
+		EvictionCount:      state.evictionCount,
 		Recent:             append([]llm.ToolActivationDiagnostic(nil), state.recent...),
+		RecentEvictions:    append([]llm.ToolEvictionDiagnostic(nil), state.recentEvictions...),
 		Servers:            serverDetails,
 		ResetReason:        resetReason,
 	}
@@ -768,7 +815,7 @@ func (p *Planner) ResolveNativeToolDiscovery(_ context.Context, runID string, ca
 	if err != nil {
 		return llm.ToolDiscoveryOutput{}, err
 	}
-	loaded, already, _, _, err := p.activate(runID, input)
+	loaded, already, _, _, _, err := p.activate(runID, input)
 	if err != nil {
 		return llm.ToolDiscoveryOutput{}, err
 	}
@@ -836,6 +883,53 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func pruneNativeDiscoveryTools(req *llm.Request, active map[string]activeToolState) {
+	if req == nil {
+		return
+	}
+	emptyCalls := make(map[string]bool)
+	for mi := range req.Messages {
+		for pi := range req.Messages[mi].Parts {
+			part := &req.Messages[mi].Parts[pi]
+			if part.DiscoveryOutput == nil {
+				continue
+			}
+			output := *part.DiscoveryOutput
+			kept := make([]llm.DiscoveredTool, 0, len(output.Tools))
+			for _, tool := range output.Tools {
+				if _, ok := active[tool.Spec.Name]; ok {
+					kept = append(kept, tool)
+				}
+			}
+			output.Tools = kept
+			part.DiscoveryOutput = &output
+			if len(kept) == 0 {
+				emptyCalls[output.CallID] = true
+			}
+		}
+	}
+	removeNativeDiscoveryPairs(req, emptyCalls)
+}
+
+func removeNativeDiscoveryPairs(req *llm.Request, callIDs map[string]bool) {
+	if req == nil || len(callIDs) == 0 {
+		return
+	}
+	for mi := range req.Messages {
+		parts := make([]llm.Part, 0, len(req.Messages[mi].Parts))
+		for _, part := range req.Messages[mi].Parts {
+			if part.DiscoveryCall != nil && callIDs[part.DiscoveryCall.ID] {
+				continue
+			}
+			if part.DiscoveryOutput != nil && callIDs[part.DiscoveryOutput.CallID] {
+				continue
+			}
+			parts = append(parts, part)
+		}
+		req.Messages[mi].Parts = parts
+	}
 }
 
 func stripNativeDiscoveryParts(req *llm.Request) bool {
@@ -962,9 +1056,13 @@ func (p *Planner) ResetSession(sessionID string) {
 	p.mu.Unlock()
 }
 
-func (p *Planner) ToolExecuted(sessionID, name string) {
+func (p *Planner) ToolExecuted(sessionID, runID, name string) {
 	p.mu.Lock()
-	state := p.sessions[p.stateKey(sessionID, "")]
+	key := p.stateKey(sessionID, runID)
+	if strings.TrimSpace(sessionID) == "" {
+		key = p.runs[runID]
+	}
+	state := p.sessions[key]
 	if state != nil {
 		if active, ok := state.active[name]; ok {
 			state.lastUsed++
@@ -1014,10 +1112,11 @@ func (p *Planner) Diagnostics(sessionID string) llm.ToolDiscoveryDiagnostics {
 	defer p.mu.Unlock()
 	state := p.sessions[p.stateKey(sessionID, "")]
 	if state == nil {
-		return llm.ToolDiscoveryDiagnostics{ConfiguredMode: string(p.mode), ConfiguredStrategy: string(p.strategy), DynamicLimit: MaxActiveDeferred}
+		return llm.ToolDiscoveryDiagnostics{ConfiguredMode: string(p.mode), ConfiguredStrategy: string(p.strategy), DynamicLimit: p.maxActiveTools}
 	}
 	diagnostics := state.lastDiagnostics
 	diagnostics.Recent = append([]llm.ToolActivationDiagnostic(nil), diagnostics.Recent...)
+	diagnostics.RecentEvictions = append([]llm.ToolEvictionDiagnostic(nil), diagnostics.RecentEvictions...)
 	diagnostics.Servers = append([]llm.ToolDiscoveryServerDiagnostic(nil), diagnostics.Servers...)
 	return diagnostics
 }

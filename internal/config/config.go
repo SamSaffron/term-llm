@@ -587,9 +587,10 @@ type AgentsMdConfig struct {
 
 // ToolDiscoveryConfig controls provider-visible loading of authorised MCP tools.
 type ToolDiscoveryConfig struct {
-	Mode      string `mapstructure:"mode" yaml:"mode,omitempty"`
-	Strategy  string `mapstructure:"strategy" yaml:"strategy,omitempty"`
-	Threshold int    `mapstructure:"threshold" yaml:"threshold,omitempty"`
+	Mode           string `mapstructure:"mode" yaml:"mode,omitempty"`
+	Strategy       string `mapstructure:"strategy" yaml:"strategy,omitempty"`
+	Threshold      int    `mapstructure:"threshold" yaml:"threshold,omitempty"`
+	MaxActiveTools int    `mapstructure:"max_active_tools" yaml:"max_active_tools,omitempty"`
 }
 
 // ValidateToolDiscovery rejects invalid loading policy before any MCP server starts.
@@ -611,6 +612,9 @@ func (c *Config) ValidateToolDiscovery() error {
 	}
 	if c.ToolDiscovery.Threshold < 0 {
 		return fmt.Errorf("invalid tool_discovery.threshold %d: expected a non-negative integer", c.ToolDiscovery.Threshold)
+	}
+	if c.ToolDiscovery.MaxActiveTools < 0 {
+		return fmt.Errorf("invalid tool_discovery.max_active_tools %d: expected a non-negative integer", c.ToolDiscovery.MaxActiveTools)
 	}
 	return nil
 }

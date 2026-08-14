@@ -120,7 +120,7 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.Too
 	if runID == "" {
 		return llm.ToolOutput{}, fmt.Errorf("tool_search is not attached to an active agentic run")
 	}
-	loaded, already, omitted, label, err := t.planner.activate(runID, input)
+	loaded, already, evicted, omitted, label, err := t.planner.activate(runID, input)
 	if err != nil {
 		return llm.ToolOutput{}, err
 	}
@@ -142,27 +142,30 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.Too
 		}
 		fmt.Fprintf(&b, "Already active: %s.", strings.Join(already, ", "))
 	}
+	if len(evicted) > 0 {
+		fmt.Fprintf(&b, "\n\nEvicted %d inactive/LRU tool(s) from the visible working set: %s.", len(evicted), strings.Join(evicted, ", "))
+	}
 	if omitted > 0 {
-		fmt.Fprintf(&b, "\n\n%d additional matching tool(s) were not loaded because the dynamic active-tool budget is full.", omitted)
+		fmt.Fprintf(&b, "\n\n%d additional matching tool(s) were not loaded because this single request exceeds the dynamic working-set limit.", omitted)
 	}
 	return llm.TextOutput(b.String()), nil
 }
 
-func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.CatalogTool, already []string, omitted int, label string, err error) {
+func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.CatalogTool, already []string, evicted []string, omitted int, label string, err error) {
 	p.mu.Lock()
 	key := p.runs[runID]
 	state := p.sessions[key]
 	p.mu.Unlock()
 	if key == "" || state == nil {
-		return nil, nil, 0, "", fmt.Errorf("tool_search run is no longer active")
+		return nil, nil, nil, 0, "", fmt.Errorf("tool_search run is no longer active")
 	}
 	snapshot := p.manager.CatalogueSnapshot()
 	if snapshot == nil {
-		return nil, nil, 0, "", fmt.Errorf("tool catalogue is unavailable")
+		return nil, nil, nil, 0, "", fmt.Errorf("tool catalogue is unavailable")
 	}
 	engine := p.currentEngine()
 	if engine == nil {
-		return nil, nil, 0, "", fmt.Errorf("tool discovery engine is unavailable")
+		return nil, nil, nil, 0, "", fmt.Errorf("tool discovery engine is unavailable")
 	}
 	byName := make(map[string]mcp.CatalogTool, len(snapshot.Tools))
 	byOriginal := make(map[string][]string)
@@ -192,14 +195,14 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 			sort.Strings(matches)
 			switch len(matches) {
 			case 0:
-				return nil, nil, 0, label, fmt.Errorf("requested tool %q is unavailable or denied", requested)
+				return nil, nil, nil, 0, label, fmt.Errorf("requested tool %q is unavailable or denied", requested)
 			case 1:
 				if !seen[matches[0]] {
 					candidateIDs = append(candidateIDs, matches[0])
 					seen[matches[0]] = true
 				}
 			default:
-				return nil, nil, 0, label, fmt.Errorf("original tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
+				return nil, nil, nil, 0, label, fmt.Errorf("original tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
 			}
 		}
 	} else {
@@ -209,7 +212,11 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 				return false
 			}
 			p.mu.Lock()
-			_, active := p.sessions[key].active[name]
+			state := p.sessions[key]
+			active := false
+			if state != nil {
+				_, active = state.active[name]
+			}
 			p.mu.Unlock()
 			return !active
 		})
@@ -236,40 +243,115 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	defer p.mu.Unlock()
 	state = p.sessions[key]
 	if state == nil || p.runs[runID] != key {
-		return nil, nil, 0, label, fmt.Errorf("tool_search run ended before activation")
+		return nil, nil, nil, 0, label, fmt.Errorf("tool_search run ended before activation")
 	}
+
+	requested := make(map[string]bool, len(candidateIDs))
+	newTools := make([]mcp.CatalogTool, 0, len(candidateIDs))
+	protectedDynamic := 0
+	for _, name := range candidateIDs {
+		tool, ok := latestByName[name]
+		if !ok {
+			continue
+		}
+		requested[name] = true
+		if active, ok := state.active[name]; ok {
+			delete(state.evicted, name)
+			state.lastUsed++
+			active.LastUsed = state.lastUsed
+			state.active[name] = active
+			if !active.Pinned {
+				protectedDynamic++
+			}
+			if len(input.ToolNames) > 0 {
+				already = append(already, name)
+			}
+			continue
+		}
+		newTools = append(newTools, tool)
+	}
+
+	admitCount := len(newTools)
+	if available := p.maxActiveTools - protectedDynamic; admitCount > available {
+		admitCount = available
+		if admitCount < 0 {
+			admitCount = 0
+		}
+	}
+	omitted = len(newTools) - admitCount
+	newTools = newTools[:admitCount]
+
 	dynamicCount := 0
 	for _, active := range state.active {
 		if !active.Pinned {
 			dynamicCount++
 		}
 	}
-	for _, name := range candidateIDs {
-		tool, ok := latestByName[name]
-		if !ok {
-			continue
+	evictionsNeeded := dynamicCount + len(newTools) - p.maxActiveTools
+	if evictionsNeeded > 0 {
+		type evictionCandidate struct {
+			name  string
+			state activeToolState
+			sent  bool
 		}
-		if _, ok := state.active[name]; ok {
-			if len(input.ToolNames) > 0 {
-				already = append(already, name)
+		victims := make([]evictionCandidate, 0, dynamicCount)
+		for name, active := range state.active {
+			if active.Pinned || requested[name] {
+				continue
 			}
-			continue
+			_, sent := state.sent[name]
+			victims = append(victims, evictionCandidate{name: name, state: active, sent: sent})
 		}
-		if dynamicCount >= MaxActiveDeferred {
-			omitted++
-			continue
+		sort.Slice(victims, func(i, j int) bool {
+			if victims[i].sent != victims[j].sent {
+				return !victims[i].sent
+			}
+			if victims[i].state.Executed != victims[j].state.Executed {
+				return !victims[i].state.Executed
+			}
+			if victims[i].state.LastUsed != victims[j].state.LastUsed {
+				return victims[i].state.LastUsed < victims[j].state.LastUsed
+			}
+			if !victims[i].state.ActivatedAt.Equal(victims[j].state.ActivatedAt) {
+				return victims[i].state.ActivatedAt.Before(victims[j].state.ActivatedAt)
+			}
+			return victims[i].name < victims[j].name
+		})
+		if evictionsNeeded > len(victims) {
+			evictionsNeeded = len(victims)
 		}
+		for _, victim := range victims[:evictionsNeeded] {
+			delete(state.active, victim.name)
+			state.evicted[victim.name] = true
+			reason := "never executed"
+			if victim.state.Executed {
+				reason = "least recently used"
+			}
+			state.evictionCount++
+			state.recentEvictions = append(state.recentEvictions, llm.ToolEvictionDiagnostic{Name: victim.name, Reason: reason, Executed: victim.state.Executed})
+			if len(state.recentEvictions) > maxRecentEvents {
+				state.recentEvictions = append([]llm.ToolEvictionDiagnostic(nil), state.recentEvictions[len(state.recentEvictions)-maxRecentEvents:]...)
+			}
+			if _, sent := state.sent[victim.name]; sent {
+				state.resetRequired = "an LRU-evicted MCP tool is no longer visible"
+			}
+			evicted = append(evicted, victim.name)
+		}
+	}
+
+	for _, tool := range newTools {
+		delete(state.evicted, tool.Name)
 		wrapper := mcp.NewCatalogMCPTool(p.manager, tool)
 		engine.Tools().RegisterDeferred(wrapper)
 		state.lastUsed++
-		state.active[name] = activeToolState{
+		state.active[tool.Name] = activeToolState{
 			SchemaHash:  tool.SchemaHash,
 			ActivatedBy: activationReason(input),
 			ActivatedAt: timeNowUTC(),
 			LastUsed:    state.lastUsed,
 		}
 		state.recent = append(state.recent, llm.ToolActivationDiagnostic{
-			Name:      name,
+			Name:      tool.Name,
 			Namespace: tool.Namespace,
 			ChildName: tool.ChildName,
 			Reason:    activationReason(input),
@@ -278,20 +360,16 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 			state.recent = append([]llm.ToolActivationDiagnostic(nil), state.recent[len(state.recent)-maxRecentEvents:]...)
 		}
 		loaded = append(loaded, tool)
-		dynamicCount++
 	}
 	if len(candidateIDs) > 0 && len(loaded) == 0 && len(already) == 0 && omitted == 0 {
-		return nil, nil, 0, label, fmt.Errorf("no requested tools remain available in the current catalogue; search again")
-	}
-	if len(candidateIDs) > 0 && len(loaded) == 0 && len(already) == 0 && omitted > 0 {
-		return nil, nil, omitted, label, fmt.Errorf("dynamic MCP tool budget is full (%d/%d); no additional tool was activated", dynamicCount, MaxActiveDeferred)
+		return nil, nil, nil, 0, label, fmt.Errorf("no requested tools remain available in the current catalogue; search again")
 	}
 	loadedNames := make([]string, 0, len(loaded))
 	for _, tool := range loaded {
 		loadedNames = append(loadedNames, tool.Name)
 	}
-	slog.Debug("MCP tool catalogue activation", "run_id", runID, "loaded", loadedNames, "already_active", already, "budget_omitted", omitted, "dynamic_active", dynamicCount)
-	return loaded, already, omitted, label, nil
+	slog.Debug("MCP tool catalogue activation", "run_id", runID, "loaded", loadedNames, "already_active", already, "evicted", evicted, "working_set_omitted", omitted, "dynamic_active", dynamicCount-len(evicted)+len(loaded), "dynamic_limit", p.maxActiveTools)
+	return loaded, already, evicted, omitted, label, nil
 }
 
 var timeNowUTC = func() time.Time { return time.Now().UTC() }

@@ -4315,7 +4315,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 
 	output, err, panicValue := executeToolWithCancellation(toolCtx, tool, call.Arguments)
 	if planner := e.currentToolPlanner(); planner != nil {
-		planner.ToolExecuted(SessionIDFromContext(ctx), call.Name)
+		planner.ToolExecuted(SessionIDFromContext(ctx), ToolRunIDFromContext(ctx), call.Name)
 	}
 	if panicValue != nil {
 		panic(panicValue)

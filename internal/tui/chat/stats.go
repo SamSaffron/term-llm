@@ -137,7 +137,16 @@ func (m *Model) renderStatsModal() string {
 			b.WriteString(fmt.Sprintf("Pinned MCP:          %d tools, ~%s tokens\n", discovery.PinnedCount, ui.FormatTokenCount(discovery.PinnedTokens)))
 			b.WriteString(fmt.Sprintf("Active MCP:          %d tools, ~%s tokens\n", discovery.ActiveMCPCount, ui.FormatTokenCount(discovery.ActiveMCPTokens)))
 			b.WriteString(fmt.Sprintf("Deferred MCP:        %d tools, ~%s tokens avoided\n", discovery.DeferredCount, ui.FormatTokenCount(discovery.DeferredTokens)))
-			b.WriteString(fmt.Sprintf("Dynamic budget:      %d/%d tools\n", discovery.DynamicActive, discovery.DynamicLimit))
+			b.WriteString(fmt.Sprintf("Dynamic working set: %d/%d tools\n", discovery.DynamicActive, discovery.DynamicLimit))
+			if discovery.EvictionCount > 0 {
+				b.WriteString(fmt.Sprintf("Working-set evictions: %d\n", discovery.EvictionCount))
+			}
+			if len(discovery.RecentEvictions) > 0 {
+				b.WriteString("Recent eviction:\n")
+				for _, eviction := range discovery.RecentEvictions {
+					b.WriteString(fmt.Sprintf("  %s — %s\n", eviction.Name, eviction.Reason))
+				}
+			}
 			if len(discovery.Recent) > 0 {
 				b.WriteString("Recent activation:\n")
 				for _, activation := range discovery.Recent {
