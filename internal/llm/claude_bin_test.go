@@ -38,6 +38,10 @@ func TestClaudeBinProvider_ImplementsInlineFlusher(t *testing.T) {
 	if !flusher.SupportsInlineFlush() {
 		t.Fatal("retry wrapper does not report claude-bin inline flush support")
 	}
+	interrupter, ok := wrapped.(ImmediateInterrupter)
+	if !ok || !interrupter.SupportsImmediateInterruption() {
+		t.Fatal("retry wrapper does not report claude-bin immediate interruption support")
+	}
 	flusher.RequestInlineFlush()
 	if !provider.inlineFlushRequested() {
 		t.Fatal("RequestInlineFlush did not mark the tool-result boundary")
@@ -45,6 +49,88 @@ func TestClaudeBinProvider_ImplementsInlineFlusher(t *testing.T) {
 	formatted := provider.formatToolOutputForClaude(TextOutput("tool ok"))
 	if !strings.Contains(formatted, strings.TrimSpace(inlineFlushToolNotice)) {
 		t.Fatalf("formatToolOutputForClaude = %q, want flush notice", formatted)
+	}
+}
+
+func TestClaudeBinProvider_NativeInterruptEndsActiveProseTurn(t *testing.T) {
+	binDir := t.TempDir()
+	readyFile := filepath.Join(t.TempDir(), "ready")
+	script := `#!/usr/bin/env python3
+import json, os, sys
+first = json.loads(sys.stdin.readline())
+if first.get("type") != "user":
+    sys.exit(2)
+open(os.environ["CLAUDE_INTERRUPT_READY"], "w").close()
+control = json.loads(sys.stdin.readline())
+if control.get("type") != "control_request" or control.get("request", {}).get("subtype") != "interrupt":
+    sys.exit(3)
+print(json.dumps({"type":"control_response","response":{"subtype":"success","request_id":control.get("request_id"),"response":{"still_queued":[]}}}), flush=True)
+print(json.dumps({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}}), flush=True)
+print(json.dumps({"type":"result","subtype":"error_during_execution","is_error":True,"result":"interrupted by user","usage":{}}), flush=True)
+sys.exit(1)
+`
+	claudePath := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CLAUDE_INTERRUPT_READY", readyFile)
+
+	provider := NewClaudeBinProvider("haiku", nil)
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("long answer")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	type streamResult struct {
+		text string
+		err  error
+	}
+	done := make(chan streamResult, 1)
+	go func() {
+		var text strings.Builder
+		for {
+			event, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				done <- streamResult{text: text.String()}
+				return
+			}
+			if recvErr != nil {
+				done <- streamResult{err: recvErr}
+				return
+			}
+			if event.Type == EventTextDelta {
+				text.WriteString(event.Text)
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, statErr := os.Stat(readyFile); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake Claude did not receive initial stream-json user message")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	provider.RequestInlineFlush()
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("interrupted stream failed: %v", result.err)
+		}
+		if result.text != "partial" {
+			t.Fatalf("stream text = %q, want partial output preserved", result.text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("native interrupt did not end Claude stream")
+	}
+	if provider.inlineFlushRequested() {
+		t.Fatal("successful native interrupt retained tool-boundary fallback")
 	}
 }
 

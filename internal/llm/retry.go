@@ -187,6 +187,13 @@ func (r *RetryProvider) SupportsInlineFlush() bool {
 	return ok && flusher.SupportsInlineFlush()
 }
 
+// SupportsImmediateInterruption reports whether the wrapped provider can end
+// model generation immediately rather than waiting for a tool result.
+func (r *RetryProvider) SupportsImmediateInterruption() bool {
+	interrupter, ok := r.inner.(ImmediateInterrupter)
+	return ok && interrupter.SupportsImmediateInterruption()
+}
+
 // clearInlineFlush forwards logical provider-turn resets without clearing a
 // request between RetryProvider attempts of that same turn.
 func (r *RetryProvider) clearInlineFlush() {

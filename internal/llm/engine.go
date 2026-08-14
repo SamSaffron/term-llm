@@ -195,6 +195,14 @@ type InlineFlusher interface {
 	SupportsInlineFlush() bool
 }
 
+// ImmediateInterrupter reports that a provider can end an in-flight model turn
+// without waiting for a tool boundary. Engines use the normal agentic loop for
+// these providers even when no tools are exposed so queued interjections have a
+// continuation boundary to consume.
+type ImmediateInterrupter interface {
+	SupportsImmediateInterruption() bool
+}
+
 // inlineFlushResetter clears a flush request at an engine-controlled provider
 // turn boundary. Keeping this outside provider Stream implementations preserves
 // a request while RetryProvider re-enters the same logical turn.
@@ -460,6 +468,11 @@ func (e *Engine) requestInlineFlush() {
 func (e *Engine) providerSupportsInlineFlush() bool {
 	flusher, ok := e.provider.(InlineFlusher)
 	return ok && flusher.SupportsInlineFlush()
+}
+
+func (e *Engine) providerSupportsImmediateInterruption() bool {
+	interrupter, ok := e.provider.(ImmediateInterrupter)
+	return ok && interrupter.SupportsImmediateInterruption()
 }
 
 func (e *Engine) clearInlineFlush() {
@@ -1846,7 +1859,10 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// 2. Decide if we use the agentic loop
 	// We use it if request has tools, or this request opted into a discovery
 	// planner that may add authorised MCP tools, and the provider supports calls.
-	useLoop := caps.ToolCalls && (len(req.Tools) > 0 || planner != nil)
+	// Providers with a true mid-generation interrupt also need the loop when no
+	// tools are exposed: the next provider turn is where the queued steer is
+	// committed and delivered after the interrupted turn.
+	useLoop := caps.ToolCalls && (len(req.Tools) > 0 || planner != nil || e.providerSupportsImmediateInterruption())
 
 	if useLoop {
 		e.beginInterjectionRun(getMaxTurns(req) > 1)
