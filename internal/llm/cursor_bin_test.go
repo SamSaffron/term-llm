@@ -188,12 +188,17 @@ func TestCursorCommandEnvSharesAuthConfigAndIsolatesData(t *testing.T) {
 	p := NewCursorBinProvider("auto-smart", map[string]string{
 		"CURSOR_DATA_DIR": "/unsafe/data",
 		"CURSOR_API_KEY":  "secret-cursor-key",
+		"HOME":            "/unsafe/home",
+		"USERPROFILE":     "/unsafe/profile",
 	})
 	env := strings.Join(p.buildCommandEnv(home), "\n")
+	privateUserHome := filepath.Join(home, cursorUserHomeDir)
 	for _, want := range []string{
 		"CURSOR_CONFIG_DIR=" + configDir,
 		"CURSOR_DATA_DIR=" + filepath.Join(home, "data"),
 		"CURSOR_API_KEY=secret-cursor-key",
+		"HOME=" + privateUserHome,
+		"USERPROFILE=" + privateUserHome,
 	} {
 		if !strings.Contains(env, want) {
 			t.Fatalf("command environment missing %q\n%s", want, env)
@@ -207,6 +212,89 @@ func TestCursorCommandEnvSharesAuthConfigAndIsolatesData(t *testing.T) {
 	}
 	if got := p.cursorDiagnosticRedactor()("failed with secret-cursor-key"); strings.Contains(got, "secret-cursor-key") {
 		t.Fatalf("diagnostic was not redacted: %q", got)
+	}
+}
+
+func TestCursorHomeLayoutBlocksManagedSkills(t *testing.T) {
+	t.Setenv(cursorAllowBuiltinSkillsEnv, "")
+	home := t.TempDir()
+	if err := ensureCursorHomeLayout(home); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCursorHomeLayout(home); err != nil {
+		t.Fatalf("layout is not idempotent: %v", err)
+	}
+
+	userHome := filepath.Join(home, cursorUserHomeDir)
+	for _, dir := range []string{userHome, filepath.Join(userHome, ".cursor")} {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			t.Fatalf("private Cursor home directory %q: info=%v err=%v", dir, info, err)
+		}
+	}
+	sentinel := filepath.Join(userHome, ".cursor", cursorManagedSkillsDir)
+	info, err := os.Lstat(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("managed skills sentinel = mode %v size %d, want empty regular file", info.Mode(), info.Size())
+	}
+}
+
+func TestCursorHomeLayoutRejectsUnsafeManagedSkillsPath(t *testing.T) {
+	t.Setenv(cursorAllowBuiltinSkillsEnv, "")
+
+	t.Run("directory", func(t *testing.T) {
+		home := t.TempDir()
+		path := filepath.Join(home, cursorUserHomeDir, ".cursor", cursorManagedSkillsDir)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensureCursorHomeLayout(home); err == nil || !strings.Contains(err.Error(), "safe regular file") {
+			t.Fatalf("ensureCursorHomeLayout error = %v, want unsafe managed skills directory rejection", err)
+		}
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		home := t.TempDir()
+		cursorDir := filepath.Join(home, cursorUserHomeDir, ".cursor")
+		if err := os.MkdirAll(cursorDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(cursorDir, cursorManagedSkillsDir)
+		if err := os.Symlink(t.TempDir(), path); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := ensureCursorHomeLayout(home); err == nil || !strings.Contains(err.Error(), "safe regular file") {
+			t.Fatalf("ensureCursorHomeLayout error = %v, want unsafe managed skills symlink rejection", err)
+		}
+	})
+}
+
+func TestCursorHomeLayoutAllowsBuiltinSkillsWithEscapeHatch(t *testing.T) {
+	t.Setenv(cursorAllowBuiltinSkillsEnv, "")
+	home := t.TempDir()
+	if err := ensureCursorHomeLayout(home); err != nil {
+		t.Fatal(err)
+	}
+	skillsPath := filepath.Join(home, cursorUserHomeDir, ".cursor", cursorManagedSkillsDir)
+	if _, err := os.Lstat(skillsPath); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(cursorAllowBuiltinSkillsEnv, "true")
+	if err := ensureCursorHomeLayout(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(skillsPath); !os.IsNotExist(err) {
+		t.Fatalf("managed skills sentinel still exists with escape hatch: %v", err)
+	}
+	if err := os.Mkdir(skillsPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCursorHomeLayout(home); err != nil {
+		t.Fatalf("layout rejected Cursor-managed skills directory with escape hatch: %v", err)
 	}
 }
 

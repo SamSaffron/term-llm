@@ -19,13 +19,16 @@ import (
 )
 
 const (
-	cursorStderrTailMaxLines = 40
-	cursorStdoutTailMaxLines = 40
-	cursorHomeMaxAge         = 30 * 24 * time.Hour
-	cursorMCPServerName      = "term-llm"
-	cursorAllowedTools       = "mcp_tool_call,get_mcp_tools_tool_call"
-	cursorToolLineGrace      = 75 * time.Millisecond
-	cursorToolLineGraceEnv   = "TERM_LLM_CURSOR_TOOL_LINE_GRACE_MS"
+	cursorStderrTailMaxLines    = 40
+	cursorStdoutTailMaxLines    = 40
+	cursorHomeMaxAge            = 30 * 24 * time.Hour
+	cursorMCPServerName         = "term-llm"
+	cursorAllowedTools          = "mcp_tool_call,get_mcp_tools_tool_call"
+	cursorToolLineGrace         = 75 * time.Millisecond
+	cursorToolLineGraceEnv      = "TERM_LLM_CURSOR_TOOL_LINE_GRACE_MS"
+	cursorAllowBuiltinSkillsEnv = "TERM_LLM_CURSOR_ALLOW_BUILTIN_SKILLS"
+	cursorUserHomeDir           = "user-home"
+	cursorManagedSkillsDir      = "skills-cursor"
 )
 
 // Longer effort suffixes must come first so "extra-high" is not parsed as "high".
@@ -619,15 +622,19 @@ func (p *CursorBinProvider) CleanupMCP() {
 func (p *CursorBinProvider) CleanupTurn() { p.cleanupTempFilesIfIdle() }
 
 func (p *CursorBinProvider) buildCommandEnv(home string) []string {
-	// Isolate session/project data under the private home, but keep Cursor's real
-	// config dir so `cursor-agent login` credentials in cli-config.json remain visible.
+	// Keep Cursor's real config dir so `cursor-agent login` credentials in
+	// cli-config.json remain visible, but isolate everything Cursor discovers
+	// through the OS home along with its session/project data.
 	configDir := strings.TrimSpace(p.extraEnv["CURSOR_CONFIG_DIR"])
 	if configDir == "" {
 		configDir = cursorConfigDir()
 	}
+	userHome := filepath.Join(home, cursorUserHomeDir)
 	forced := map[string]string{
 		"CURSOR_CONFIG_DIR": configDir,
 		"CURSOR_DATA_DIR":   filepath.Join(home, "data"),
+		"HOME":              userHome,
+		"USERPROFILE":       userHome,
 	}
 	out := make([]string, 0, len(os.Environ())+len(p.extraEnv)+len(forced))
 	for _, entry := range os.Environ() {
@@ -769,7 +776,8 @@ func (p *CursorBinProvider) ensureCursorHome() error {
 }
 
 func ensureCursorHomeLayout(home string) error {
-	for _, dir := range []string{home, filepath.Join(home, "data"), filepath.Join(home, "cwd")} {
+	userHome := filepath.Join(home, cursorUserHomeDir)
+	for _, dir := range []string{home, filepath.Join(home, "data"), filepath.Join(home, "cwd"), userHome, filepath.Join(userHome, ".cursor")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create cursor-bin directory: %w", err)
 		}
@@ -777,7 +785,67 @@ func ensureCursorHomeLayout(home string) error {
 			return err
 		}
 	}
-	return nil
+	return ensureCursorManagedSkillsPath(userHome, cursorBuiltinSkillsAllowed())
+}
+
+func cursorBuiltinSkillsAllowed() bool {
+	// Compatibility escape hatch for Cursor versions that make a failed managed
+	// skill sync fatal. Isolation remains the default so Cursor cannot add a
+	// second, provider-owned instruction layer to term-llm conversations.
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(cursorAllowBuiltinSkillsEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func ensureCursorManagedSkillsPath(userHome string, allow bool) error {
+	// Cursor synchronizes its built-in skills into this path before discovery.
+	// An empty regular file makes that sync and the subsequent directory walk
+	// fail harmlessly, which keeps Cursor's managed instructions off the wire.
+	path := filepath.Join(userHome, ".cursor", cursorManagedSkillsDir)
+	info, err := os.Lstat(path)
+	if allow {
+		switch {
+		case os.IsNotExist(err):
+			return nil
+		case err != nil:
+			return fmt.Errorf("inspect cursor-bin managed skills path: %w", err)
+		case info.Mode().IsRegular():
+			if err := os.Chmod(path, 0o600); err != nil {
+				return fmt.Errorf("prepare Cursor managed skills sentinel removal: %w", err)
+			}
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("enable Cursor managed skills: %w", err)
+			}
+			return nil
+		case info.IsDir():
+			return nil
+		default:
+			return fmt.Errorf("cursor-bin managed skills path is not a safe file or directory")
+		}
+	}
+
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("cursor-bin managed skills path is not a safe regular file")
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("prepare cursor-bin managed skills sentinel: %w", err)
+		}
+		if err := os.WriteFile(path, nil, 0o400); err != nil {
+			return fmt.Errorf("reset cursor-bin managed skills sentinel: %w", err)
+		}
+		return os.Chmod(path, 0o400)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect cursor-bin managed skills path: %w", err)
+	}
+	if err := os.WriteFile(path, nil, 0o400); err != nil {
+		return fmt.Errorf("create cursor-bin managed skills sentinel: %w", err)
+	}
+	return os.Chmod(path, 0o400)
 }
 
 func validateCursorHomeState(home string) (string, bool, error) {
