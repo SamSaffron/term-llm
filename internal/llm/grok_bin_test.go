@@ -288,6 +288,63 @@ func TestGrokResumeMessagesKeepsDeferredInterjections(t *testing.T) {
 	}
 }
 
+func TestGrokRecoveryMessagesBoundsReplayAndKeepsLatestUser(t *testing.T) {
+	messages := []Message{
+		SystemText("system prompt remains session metadata"),
+		UserText(strings.Repeat("old user ", 4000)),
+		AssistantText(strings.Repeat("old assistant ", 4000)),
+		ToolResultMessage("call-1", "read_file", strings.Repeat("huge tool output", 10000), nil),
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "current developer context"}}},
+		UserText("latest request: launch both reviewers now"),
+	}
+
+	got := grokRecoveryMessages(messages)
+	if len(got) == 0 || got[len(got)-1].Role != RoleUser || MessageText(got[len(got)-1]) != "latest request: launch both reviewers now" {
+		t.Fatalf("recovery tail = %+v", got)
+	}
+	if bytes := grokMessagesTextBytes(got); bytes > grokRecoveryTextBudget {
+		t.Fatalf("recovery text bytes = %d, want <= %d", bytes, grokRecoveryTextBudget)
+	}
+	for _, message := range got {
+		if message.Role == RoleTool || strings.Contains(MessageText(message), "huge tool output") {
+			t.Fatalf("recovery retained tool bulk: %+v", message)
+		}
+	}
+	data, err := buildGrokACPPrompt(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "huge tool output") || !strings.Contains(string(data), "latest request: launch both reviewers now") {
+		t.Fatalf("recovery ACP prompt = %s", data)
+	}
+}
+
+func TestGrokRecoveryMessagesBoundsOversizedLatestUser(t *testing.T) {
+	latest := "BEGIN " + strings.Repeat("界", 10_000) + " END"
+	got := grokRecoveryMessages([]Message{AssistantText("prior"), UserText(latest)})
+	if len(got) < 2 || got[len(got)-1].Role != RoleUser {
+		t.Fatalf("recovery messages = %+v", got)
+	}
+	text := MessageText(got[len(got)-1])
+	if len(text) > grokRecoveryLatestUserLimit || !strings.Contains(text, "BEGIN") || !strings.Contains(text, "END") || strings.ToValidUTF8(text, "") != text {
+		t.Fatalf("bounded latest user bytes=%d text=%q", len(text), text)
+	}
+	if !strings.Contains(MessageText(got[len(got)-2]), "Some older turns and tool results were omitted") {
+		t.Fatalf("recovery context note missing: %+v", got)
+	}
+}
+
+func TestGrokRecoveryMessagesWithoutUserAddsBoundedRecoveryPrompt(t *testing.T) {
+	messages := []Message{AssistantText(strings.Repeat("answer only", 3000))}
+	got := grokRecoveryMessages(messages)
+	if len(got) < 2 || got[len(got)-1].Role != RoleUser || MessageText(got[len(got)-1]) != "Continue from the condensed recovery context." {
+		t.Fatalf("recovery messages = %+v", got)
+	}
+	if bytes := grokMessagesTextBytes(got); bytes > grokRecoveryTextBudget {
+		t.Fatalf("recovery text bytes = %d, want <= %d", bytes, grokRecoveryTextBudget)
+	}
+}
+
 func TestGrokBinProviderBuildACPPromptWithImage(t *testing.T) {
 	image := base64.StdEncoding.EncodeToString([]byte("png bytes"))
 	data, err := buildGrokACPPrompt([]Message{{

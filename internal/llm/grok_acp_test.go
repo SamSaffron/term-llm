@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -159,6 +160,23 @@ func TestGrokACPHandlerSeparatesThoughtsAcrossHiddenToolCall(t *testing.T) {
 	}
 }
 
+func TestGrokACPHandlerKeepsPolicyViolationAfterCancelledDelivery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	handler := &grokACPHandler{}
+	handler.beginTurn(eventSender{ctx: ctx, ch: make(chan Event)}, false, false)
+	defer handler.endTurn()
+
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late"}}}`))
+	if err := handler.turnError(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("delivery error = %v, want cancellation", err)
+	}
+	handler.HandleNotification(context.Background(), "session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"bad","_meta":{"x.ai/tool":{"name":"read_file"}}}}`))
+	if err := handler.policyError(); err == nil || !strings.Contains(err.Error(), "restricted profile attempted native tool") {
+		t.Fatalf("policy error = %v", err)
+	}
+}
+
 func TestGrokACPHandlerRejectsNativeToolLeak(t *testing.T) {
 	handler := &grokACPHandler{}
 	handler.beginTurn(eventSender{}, false, false)
@@ -281,8 +299,148 @@ func TestGrokBinProviderBuildACPArgsUsesRestrictedProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(profile)
-	if !strings.Contains(text, "tools:\n  - search_tool\n  - use_tool") || strings.Contains(text, "  - web_search") || strings.Contains(text, "  - web_fetch") || strings.Contains(text, "  - x_search") || strings.Contains(text, "list_dir") {
-		t.Fatalf("unsafe agent profile:\n%s", text)
+	for _, want := range []string{
+		"promptMode: full",
+		"permissionMode: default",
+		"agentsMd: false",
+		"discoverSkills: false",
+		"inheritSkills: false",
+		"skills: []",
+		"tools:\n  - search_tool\n  - use_tool",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("restricted ACP profile missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"prompt_mode:", "permission_mode:", "agents_md:", "  - web_search", "  - web_fetch", "  - x_search", "list_dir"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("unsafe agent profile contains %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func TestGrokACPPromptMetaUsesVerbatimModeAndPromptID(t *testing.T) {
+	meta, promptID, err := grokACPPromptMeta()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Verbatim bool   `json:"verbatim"`
+		PromptID string `json:"promptId"`
+	}
+	if err := json.Unmarshal(meta, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Verbatim || decoded.PromptID == "" || decoded.PromptID != promptID || !isGrokHomeID(promptID) {
+		t.Fatalf("prompt metadata = %s, promptID=%q", meta, promptID)
+	}
+}
+
+func TestGrokACPWirePromptUsesVerbatimMetadata(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	promptLog := filepath.Join(t.TempDir(), "prompt.json")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"wire-session\"}}" ;;
+    *'"method":"session/prompt"'*)
+      printf '%s' "$line" > "$GROK_PROMPT_LOG"
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.6-low", map[string]string{"GROK_PROMPT_LOG": promptLog})
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{SystemText("system"), UserText(strings.Repeat("x", 30_000))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Err)
+		}
+	}
+	raw, err := os.ReadFile(promptLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Params struct {
+			Meta struct {
+				Verbatim bool   `json:"verbatim"`
+				PromptID string `json:"promptId"`
+			} `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		t.Fatalf("decode prompt request: %v: %s", err, raw)
+	}
+	if !request.Params.Meta.Verbatim || !isGrokHomeID(request.Params.Meta.PromptID) {
+		t.Fatalf("wire prompt metadata = %+v", request.Params.Meta)
+	}
+}
+
+func TestGrokACPAgentCancelledTurnEmitsWarningAndCommits(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"agent-cancel-session\"}}" ;;
+    *'"method":"session/prompt"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"cancelled\"}}" ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("cancel this")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warning string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == EventPhase {
+			warning += event.Text
+		}
+	}
+	if !strings.Contains(warning, "cancelled the turn") || p.sessionID != "agent-cancel-session" || p.messagesSent != 1 {
+		t.Fatalf("warning/state = %q %q/%d", warning, p.sessionID, p.messagesSent)
 	}
 }
 
@@ -537,11 +695,12 @@ done
 	}
 }
 
-func TestGrokBinProviderACPCancellationStopsProcess(t *testing.T) {
+func TestGrokBinProviderACPCancellationPreservesResidentSession(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	binDir := t.TempDir()
 	path := filepath.Join(binDir, "grok")
 	script := `#!/bin/sh
+prompt_id=""
 while IFS= read -r line; do
   id=${line#*\"id\":}
   id=${id%%,*}
@@ -549,7 +708,11 @@ while IFS= read -r line; do
     *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
     *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
     *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"cancel-session\"}}" ;;
-    *'"method":"session/prompt"'*) sleep 30 ;;
+    *'"method":"session/prompt"'*) prompt_id=$id ;;
+    *'"method":"session/cancel"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"cancel-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"late\"}}}}"
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$prompt_id,\"result\":{\"stopReason\":\"cancelled\",\"_meta\":{\"inputTokens\":10,\"outputTokens\":1,\"cachedReadTokens\":0,\"reasoningTokens\":0,\"totalTokens\":11}}}"
+      ;;
   esac
 done
 `
@@ -563,6 +726,19 @@ done
 	if err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		p.acpMu.Lock()
+		ready := p.acpProcess != nil && p.acpProcess.sessionID == "cancel-session"
+		p.acpMu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Grok ACP session did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	done := make(chan error, 1)
 	go func() { done <- stream.Close() }()
 	select {
@@ -571,13 +747,297 @@ done
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("stream cancellation did not stop Grok ACP process")
+		t.Fatal("stream cancellation did not settle Grok ACP prompt")
 	}
 	p.acpMu.Lock()
 	process := p.acpProcess
 	p.acpMu.Unlock()
-	if process != nil {
-		t.Fatal("cancelled ACP process remained attached to provider")
+	if process == nil || process.sessionID != "cancel-session" {
+		t.Fatalf("cancelled ACP process = %+v, want resident cancel-session", process)
+	}
+	if p.sessionID != "cancel-session" || p.messagesSent != 1 {
+		t.Fatalf("cancelled ACP provider state = %q/%d, want cancel-session/1", p.sessionID, p.messagesSent)
+	}
+	p.CleanupMCP()
+}
+
+func collectGrokACPTestText(t *testing.T, stream Stream) string {
+	t.Helper()
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			return text.String()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+}
+
+func TestGrokBinProviderACPRealMultiTurnIsolationSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	system := SystemText("Reply exactly as requested. Do not use tools.")
+	firstUser := UserText("Reply with exactly: GROK TURN ONE OK")
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{system, firstUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := collectGrokACPTestText(t, stream)
+	if !strings.Contains(first, "GROK TURN ONE OK") {
+		t.Fatalf("first response = %q", first)
+	}
+	firstSessionID := p.sessionID
+	secondUser := UserText("Reply with exactly: GROK TURN TWO OK")
+	stream, err = p.Stream(context.Background(), Request{Messages: []Message{system, firstUser, AssistantText(first), secondUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := collectGrokACPTestText(t, stream)
+	if !strings.Contains(second, "GROK TURN TWO OK") {
+		t.Fatalf("second response = %q", second)
+	}
+	if p.sessionID == "" || p.sessionID != firstSessionID {
+		t.Fatalf("Grok session changed across turns: %q -> %q", firstSessionID, p.sessionID)
+	}
+
+	var summaries, promptFiles []string
+	err = filepath.WalkDir(filepath.Join(p.grokHome, "sessions"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		switch entry.Name() {
+		case "summary.json":
+			summaries = append(summaries, path)
+		case "prompt_0.txt", "prompt_1.txt":
+			promptFiles = append(promptFiles, path)
+		case "chat_history.jsonl":
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{"The following skills are available for use", "bundled/skills/review/SKILL.md", "Read this file with read_file before responding"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Errorf("Grok history contains ambient prompt contamination %q", forbidden)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || len(promptFiles) != 0 {
+		t.Fatalf("Grok artifacts: summaries=%v promptFiles=%v", summaries, promptFiles)
+	}
+}
+
+type grokACPReviewProbeTool struct {
+	mu    sync.Mutex
+	calls []map[string]any
+}
+
+func (t *grokACPReviewProbeTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "spawn_agent",
+		Description: "Launch one requested reviewer. Call once per requested reviewer model.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent_name": map[string]any{"type": "string", "enum": []string{"reviewer"}},
+				"model":      map[string]any{"type": "string"},
+				"prompt":     map[string]any{"type": "string"},
+			},
+			"required": []string{"agent_name", "model", "prompt"},
+		},
+	}
+}
+
+func (t *grokACPReviewProbeTool) Execute(_ context.Context, args json.RawMessage) (ToolOutput, error) {
+	var call map[string]any
+	if err := json.Unmarshal(args, &call); err != nil {
+		return ToolOutput{}, err
+	}
+	t.mu.Lock()
+	t.calls = append(t.calls, call)
+	t.mu.Unlock()
+	return TextOutput("REVIEW_COMPLETE"), nil
+}
+
+func (t *grokACPReviewProbeTool) Preview(json.RawMessage) string { return "review probe" }
+
+func TestGrokBinProviderACPRealMultiReviewOrchestrationSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	tool := &grokACPReviewProbeTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(p, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{
+			SystemText("Use only the supplied term-llm tools. Do not activate skills or read workflow files. When multiple reviews are requested, call spawn_agent once for each requested model before replying."),
+			UserText("Review with opus and gpt. Use reviewer agents with models claude-bin:opus-max and chatgpt:gpt-5.6-sol-high. Call both now, then reply REVIEWERS LAUNCHED."),
+		},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := collectGrokACPTestText(t, stream)
+	tool.mu.Lock()
+	calls := append([]map[string]any(nil), tool.calls...)
+	tool.mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("spawn_agent calls = %d (%v), response=%q", len(calls), calls, text)
+	}
+	models := map[string]bool{}
+	for _, call := range calls {
+		model, _ := call["model"].(string)
+		models[model] = true
+	}
+	for _, model := range []string{"claude-bin:opus-max", "chatgpt:gpt-5.6-sol-high"} {
+		if !models[model] {
+			t.Fatalf("spawn_agent models = %v, missing %q", models, model)
+		}
+	}
+	if !strings.Contains(text, "REVIEWERS LAUNCHED") {
+		t.Fatalf("multi-review response = %q", text)
+	}
+}
+
+func TestGrokBinProviderACPRealOversizedVerbatimSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-low", nil)
+	defer p.CleanupMCP()
+	prompt := strings.Repeat("context filler ", 1900) + "\nReply with exactly: OVERSIZED VERBATIM OK"
+	if len(prompt) <= 25_000 {
+		t.Fatalf("test prompt is only %d bytes", len(prompt))
+	}
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{
+		SystemText("Ignore repetitive filler and follow the final response instruction exactly. Do not use tools."),
+		UserText(prompt),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := collectGrokACPTestText(t, stream)
+	if !strings.Contains(answer, "OVERSIZED VERBATIM OK") {
+		t.Fatalf("oversized response = %q", answer)
+	}
+	var promptFiles []string
+	err = filepath.WalkDir(filepath.Join(p.grokHome, "sessions"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if strings.HasPrefix(entry.Name(), "prompt_") && strings.HasSuffix(entry.Name(), ".txt") {
+			promptFiles = append(promptFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promptFiles) != 0 {
+		t.Fatalf("verbatim prompt unexpectedly offloaded: %v", promptFiles)
+	}
+}
+
+func grokUpdateOccurrenceCount(home, needle string) int {
+	count := 0
+	_ = filepath.WalkDir(filepath.Join(home, "sessions"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Name() != "updates.jsonl" {
+			return nil
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr == nil {
+			count += strings.Count(string(raw), needle)
+		}
+		return nil
+	})
+	return count
+}
+
+func waitForGrokUpdateAfter(t *testing.T, home, needle string, before int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if grokUpdateOccurrenceCount(home, needle) > before {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Grok updates did not add %q within %s", needle, timeout)
+}
+
+func TestGrokBinProviderACPRealCancellationRecoverySmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := NewGrokBinProvider("grok-4.6-high", nil)
+	defer p.CleanupMCP()
+	system := SystemText("Follow the user's response format exactly. Do not use tools.")
+	firstUser := UserText("Reply with exactly: CANCELLATION BASELINE OK")
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{system, firstUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := collectGrokACPTestText(t, stream)
+	if !strings.Contains(first, "CANCELLATION BASELINE OK") {
+		t.Fatalf("baseline response = %q", first)
+	}
+	stableSessionID := p.sessionID
+
+	cancelText := "Remember this cancellation marker: WIDGET-8823. Then analyze every possible ordering of the first 20 prime numbers in exhaustive detail."
+	cancelUser := UserText(cancelText)
+	thoughtsBefore := grokUpdateOccurrenceCount(p.grokHome, `"sessionUpdate":"agent_thought_chunk"`)
+	stream, err = p.Stream(context.Background(), Request{Messages: []Message{system, firstUser, AssistantText(first), cancelUser}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForGrokUpdateAfter(t, p.grokHome, `"sessionUpdate":"agent_thought_chunk"`, thoughtsBefore, 15*time.Second)
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// channelStream.Close waits for the provider producer to finish, so state
+	// committed by the cancelled prompt is synchronized before these reads.
+	if p.sessionID != stableSessionID || p.messagesSent != 4 {
+		t.Fatalf("cancelled state = %q/%d, want %q/4", p.sessionID, p.messagesSent, stableSessionID)
+	}
+	p.acpMu.Lock()
+	resident := p.acpProcess
+	p.acpMu.Unlock()
+	if resident == nil || resident.sessionID != stableSessionID {
+		t.Fatalf("cancelled resident process = %+v", resident)
+	}
+
+	followUp := UserText("What cancellation marker did I give you? Reply with exactly: WIDGET-8823")
+	stream, err = p.Stream(context.Background(), Request{Messages: []Message{system, firstUser, AssistantText(first), cancelUser, followUp}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := collectGrokACPTestText(t, stream)
+	if !strings.Contains(answer, "WIDGET-8823") || p.sessionID != stableSessionID {
+		t.Fatalf("recovery response/session = %q / %q, want %q", answer, p.sessionID, stableSessionID)
 	}
 }
 

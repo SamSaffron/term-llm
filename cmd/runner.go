@@ -324,6 +324,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		debug:               r.defaults.Debug || req.Debug,
 		debugRaw:            r.defaults.DebugRaw || req.DebugRaw,
 		autoCompact:         cfg.AutoCompact,
+		borrowedEngine:      borrowedEngine,
 		skipProviderCleanup: !providerOwned,
 		defaultModel:        modelName,
 		yoloMode:            yoloMode,

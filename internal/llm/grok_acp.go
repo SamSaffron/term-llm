@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	grokACPHandshakeTimeout = 30 * time.Second
-	grokACPStopTimeout      = 3 * time.Second
-	grokACPProfileName      = "term-llm-acp-agent.md"
-	grokLegacyTransportEnv  = "TERM_LLM_GROK_LEGACY_STREAMING_JSON"
+	grokACPHandshakeTimeout    = 30 * time.Second
+	grokACPCancelSettleTimeout = 5 * time.Second
+	grokACPStopTimeout         = 3 * time.Second
+	grokACPProfileName         = "term-llm-acp-agent.md"
+	grokLegacyTransportEnv     = "TERM_LLM_GROK_LEGACY_STREAMING_JSON"
 )
 
 var grokACPCloseTimeout = time.Second
@@ -66,6 +67,7 @@ type grokACPTurn struct {
 	reasoningItem int
 	nativeSearch  bool
 	nativeCalls   map[string]grokACPNativeCall
+	policyErr     error
 }
 
 type grokACPHandler struct {
@@ -99,6 +101,15 @@ func (h *grokACPHandler) turnError() error {
 		return nil
 	}
 	return h.turn.err
+}
+
+func (h *grokACPHandler) policyError() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.turn == nil {
+		return nil
+	}
+	return h.turn.policyErr
 }
 
 func (h *grokACPHandler) HandleNotification(_ context.Context, method string, params json.RawMessage) {
@@ -135,19 +146,29 @@ func (h *grokACPHandler) HandleNotification(_ context.Context, method string, pa
 
 	h.mu.Lock()
 	turn := h.turn
-	if turn == nil || turn.replay || turn.err != nil {
+	if turn == nil || turn.replay {
 		h.mu.Unlock()
 		return
 	}
 	toolName := update.Meta.Tool.Name
 	backendSearch := turn.nativeSearch && update.Meta.Backend && (update.Kind == "search" || update.Kind == "fetch")
 	if toolName == "" && update.SessionUpdate == "tool_call" && !backendSearch {
-		turn.err = fmt.Errorf("Grok ACP tool call omitted stable tool identity")
+		turn.policyErr = fmt.Errorf("Grok ACP tool call omitted stable tool identity")
+		if turn.err == nil {
+			turn.err = turn.policyErr
+		}
 		h.mu.Unlock()
 		return
 	}
 	if toolName != "" && !grokACPToolAllowed(toolName, turn.nativeSearch) {
-		turn.err = fmt.Errorf("Grok ACP restricted profile attempted native tool %q", toolName)
+		turn.policyErr = fmt.Errorf("Grok ACP restricted profile attempted native tool %q", toolName)
+		if turn.err == nil {
+			turn.err = turn.policyErr
+		}
+		h.mu.Unlock()
+		return
+	}
+	if turn.err != nil {
 		h.mu.Unlock()
 		return
 	}
@@ -431,10 +452,13 @@ func (p *GrokBinProvider) writeACPAgentProfile(nativeSearch bool) (string, error
 	profile := fmt.Sprintf(`---
 name: term-llm
 description: Restricted transport agent using term-llm MCP tools and optional native search
-prompt_mode: full
+promptMode: full
 model: inherit
-permission_mode: default
-agents_md: false
+permissionMode: default
+agentsMd: false
+discoverSkills: false
+inheritSkills: false
+skills: []
 tools:
 %s
 ---
@@ -460,6 +484,21 @@ func grokACPSessionMeta(systemPrompt string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("encode Grok ACP session metadata: %w", err)
 	}
 	return meta, nil
+}
+
+func grokACPPromptMeta() (json.RawMessage, string, error) {
+	promptID, err := newGrokHomeID()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate Grok ACP prompt ID: %w", err)
+	}
+	meta, err := json.Marshal(map[string]any{
+		"verbatim": true,
+		"promptId": promptID,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("encode Grok ACP prompt metadata: %w", err)
+	}
+	return meta, promptID, nil
 }
 
 func grokACPMCPServer(url, token string) acp.MCPServer {
@@ -498,7 +537,14 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 	process, temporary, err := p.ensureGrokACPProcess(ctx, req, debug)
 	if errors.Is(err, errGrokACPResumeUnavailable) && !req.Ephemeral {
 		p.ResetConversation()
-		return p.runGrokACP(ctx, req, req.Messages, debug, send, exposeToolBridge)
+		recoveryMessages := grokRecoveryMessages(req.Messages)
+		if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "Grok's session could not be restored; continuing from a condensed excerpt of the conversation."}); err != nil {
+			return grokCommandResult{}, err
+		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "[grok-bin] ACP resume unavailable; starting bounded recovery (source_messages=%d, recovery_messages=%d, recovery_bytes=%d)\n", len(req.Messages), len(recoveryMessages), grokMessagesTextBytes(recoveryMessages))
+		}
+		return p.runGrokACP(ctx, req, recoveryMessages, debug, send, exposeToolBridge)
 	}
 	if err != nil {
 		return grokCommandResult{}, err
@@ -523,6 +569,10 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 	process.handler.beginTurn(send, false, process.nativeSearch)
 	defer process.handler.endTurn()
 
+	promptMeta, promptID, err := grokACPPromptMeta()
+	if err != nil {
+		return grokCommandResult{}, err
+	}
 	cancelDone := make(chan struct{})
 	go func() {
 		select {
@@ -534,12 +584,17 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 		}
 	}()
 
+	if debug {
+		fmt.Fprintf(os.Stderr, "[grok-bin] prompting ACP session %s (prompt_id=%s, blocks=%d, bytes=%d, verbatim=true)\n", process.sessionID, promptID, len(blocks), len(promptData))
+	}
+	promptCtx, cancelPrompt := context.WithCancel(context.Background())
+	defer cancelPrompt()
 	promptResultCh := make(chan struct {
 		response acp.PromptResponse
 		err      error
 	}, 1)
 	go func() {
-		response, promptErr := process.client.Prompt(ctx, acp.PromptRequest{SessionID: process.sessionID, Prompt: blocks})
+		response, promptErr := process.client.Prompt(promptCtx, acp.PromptRequest{SessionID: process.sessionID, Prompt: blocks, Meta: promptMeta})
 		promptResultCh <- struct {
 			response acp.PromptResponse
 			err      error
@@ -562,7 +617,7 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 			}
 			handleCLIToolRequest(toolRequest, send)
 		case <-ctx.Done():
-			cancelTimer := time.NewTimer(2 * time.Second)
+			cancelTimer := time.NewTimer(grokACPCancelSettleTimeout)
 			for {
 				select {
 				case promptResult = <-promptResultCh:
@@ -574,6 +629,10 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 				case toolRequest := <-bridge.toolReqCh:
 					toolRequest.ack <- ctx.Err()
 				case <-cancelTimer.C:
+					// The session contents are uncertain when Grok does not acknowledge
+					// cancellation in time. Discard the process below, but retain the last
+					// confirmed provider boundary; a later resume may replay this cancelled
+					// user turn, which is safer than silently dropping a turn Grok never stored.
 					promptResult.err = ctx.Err()
 					close(cancelDone)
 					goto promptComplete
@@ -583,17 +642,51 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 	}
 
 promptComplete:
+	policyErr := process.handler.policyError()
 	if promptResult.err != nil {
+		if debug {
+			redact := p.grokACPDiagnosticRedactor(req.Messages, process.cmd.Env)
+			fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s failed: %s\n", promptID, redact(promptResult.err.Error()))
+		}
 		if !temporary {
 			p.discardGrokACPProcess(process)
 		}
-		return grokCommandResult{}, p.classifyGrokACPError(promptResult.err, process)
+		classified := p.classifyGrokACPError(promptResult.err, process)
+		if policyErr != nil {
+			if !temporary {
+				p.ResetConversation()
+			}
+			return grokCommandResult{}, errors.Join(classified, policyErr)
+		}
+		return grokCommandResult{}, classified
 	}
-	if err := process.handler.turnError(); err != nil {
+	if policyErr != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s policy failure: %v\n", promptID, policyErr)
+		}
 		if !temporary {
 			p.discardGrokACPProcess(process)
+			p.ResetConversation()
 		}
-		return grokCommandResult{}, err
+		return grokCommandResult{}, policyErr
+	}
+	if turnErr := process.handler.turnError(); turnErr != nil {
+		// Once the caller cancels, late Grok deltas cannot be delivered to the
+		// closed event stream. That transport error must not discard a session
+		// whose prompt RPC still settles cleanly as a durable cancelled turn.
+		callerCancelled := ctx.Err() != nil && (errors.Is(turnErr, context.Canceled) || errors.Is(turnErr, context.DeadlineExceeded) || errors.Is(turnErr, errEventStreamClosed))
+		if !callerCancelled {
+			if debug {
+				fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s turn failure: %v\n", promptID, turnErr)
+			}
+			if !temporary {
+				p.discardGrokACPProcess(process)
+			}
+			return grokCommandResult{}, turnErr
+		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "[grok-bin] ignoring post-cancel event delivery error for prompt %s: %v\n", promptID, turnErr)
+		}
 	}
 	usage, usageErr := parseGrokACPUsage(promptResult.response.Meta)
 	if usageErr != nil {
@@ -603,9 +696,17 @@ promptComplete:
 		usage = nil
 	}
 	if usage != nil {
-		if err := send.Send(Event{Type: EventUsage, Use: usage}); err != nil {
+		usageEvent := Event{Type: EventUsage, Use: usage}
+		if ctx.Err() != nil {
+			// Best-effort only after caller cancellation; the durable prompt result
+			// still has to commit even when the UI stream can no longer receive usage.
+			send.TrySend(usageEvent)
+		} else if err := send.Send(usageEvent); err != nil {
 			return grokCommandResult{}, err
 		}
+	}
+	if debug {
+		fmt.Fprintf(os.Stderr, "[grok-bin] ACP prompt %s completed (stop_reason=%s)\n", promptID, promptResult.response.StopReason)
 	}
 	switch promptResult.response.StopReason {
 	case "max_tokens":
@@ -617,10 +718,15 @@ promptComplete:
 			return grokCommandResult{}, err
 		}
 	case "cancelled":
-		if ctx.Err() != nil {
-			return grokCommandResult{}, ctx.Err()
+		// Grok records an accepted cancelled prompt as a durable turn boundary.
+		// Preserve the resident session and advance the sent-message boundary so
+		// the cancelled user turn is not replayed on the next request.
+		if ctx.Err() == nil {
+			if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "Grok cancelled the turn before producing a complete response."}); err != nil {
+				return grokCommandResult{}, err
+			}
 		}
-		return grokCommandResult{}, nil
+		return grokCommandResult{sawEnd: true, sessionID: process.sessionID}, nil
 	}
 	return grokCommandResult{sawEnd: true, sessionID: process.sessionID}, nil
 }

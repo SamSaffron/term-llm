@@ -52,6 +52,7 @@ type serveRuntime struct {
 	debug                bool
 	debugRaw             bool
 	autoCompact          bool
+	borrowedEngine       bool
 	skipProviderCleanup  bool
 	defaultModel         string
 	yoloMode             bool
@@ -1128,7 +1129,12 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	}
 
 	if !stateful {
-		rt.engine.ResetConversation()
+		// Borrowed engines are session-scoped resources owned by their caller
+		// (notably the chat TUI). Keep provider continuation state while this
+		// per-run runtime remains stateless and discards its own history.
+		if !rt.borrowedEngine {
+			rt.engine.ResetConversation()
+		}
 		rt.history = nil
 		rt.historyPersisted = false
 	}

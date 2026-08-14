@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 	"github.com/samsaffron/term-llm/internal/procutil"
@@ -350,6 +351,9 @@ func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, erro
 			if err != nil {
 				return err
 			}
+		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "[grok-bin] ACP run result: saw_end=%t session_id=%s\n", result.sawEnd, result.sessionID)
 		}
 		p.commitGrokResult(req, result)
 		return send.Send(Event{Type: EventDone})
@@ -1022,6 +1026,99 @@ func (p *GrokBinProvider) writePromptFile(prompt []byte) (string, error) {
 		return "", fmt.Errorf("close grok-bin prompt file: %w", err)
 	}
 	return p.trackTempFile(path), nil
+}
+
+const (
+	grokRecoveryTextBudget      = 20 * 1024
+	grokRecoveryLatestUserLimit = 12 * 1024
+	grokRecoveryContextNote     = "The prior Grok session could not be restored. Some older turns and tool results were omitted from this condensed recovery context; rely on the latest user request and re-read files when exact prior evidence is needed."
+)
+
+func grokRecoveryMessages(messages []Message) []Message {
+	latestUser := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == RoleUser && strings.TrimSpace(collectTextParts(messages[i].Parts)) != "" {
+			latestUser = i
+			break
+		}
+	}
+	if latestUser < 0 {
+		withRecoveryPrompt := append([]Message(nil), messages...)
+		withRecoveryPrompt = append(withRecoveryPrompt, UserText("Continue from the condensed recovery context."))
+		return grokRecoveryMessages(withRecoveryPrompt)
+	}
+
+	latestText := boundGrokRecoveryText(collectTextParts(messages[latestUser].Parts), grokRecoveryLatestUserLimit)
+	remaining := grokRecoveryTextBudget - len(latestText) - len(grokRecoveryContextNote)
+	selected := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: grokRecoveryContextNote}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: latestText}}},
+	}
+	for i := latestUser - 1; i >= 0 && remaining > 0; i-- {
+		role := messages[i].Role
+		if role != RoleUser && role != RoleAssistant && role != RoleDeveloper {
+			continue
+		}
+		text := strings.TrimSpace(collectTextParts(messages[i].Parts))
+		if text == "" {
+			continue
+		}
+		text = boundGrokRecoveryText(text, remaining)
+		if text == "" {
+			break
+		}
+		remaining -= len(text)
+		selected = append([]Message{{Role: role, Parts: []Part{{Type: PartText, Text: text}}}}, selected...)
+	}
+	return selected
+}
+
+func boundGrokRecoveryText(text string, limit int) string {
+	text = strings.ToValidUTF8(text, "�")
+	if limit <= 0 {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	const marker = "\n...[older content truncated by term-llm]...\n"
+	if limit <= len(marker) {
+		return truncateGrokUTF8(text, limit)
+	}
+	headLimit := (limit - len(marker)) / 2
+	tailLimit := limit - len(marker) - headLimit
+	head := truncateGrokUTF8(text, headLimit)
+	tail := truncateGrokUTF8Suffix(text, tailLimit)
+	return head + marker + tail
+}
+
+func truncateGrokUTF8(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
+}
+
+func truncateGrokUTF8Suffix(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	start := len(text) - limit
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
+}
+
+func grokMessagesTextBytes(messages []Message) int {
+	total := 0
+	for _, message := range messages {
+		total += len(collectTextParts(message.Parts))
+	}
+	return total
 }
 
 func buildGrokACPPrompt(messages []Message) ([]byte, error) {

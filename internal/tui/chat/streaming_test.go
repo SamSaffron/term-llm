@@ -320,6 +320,12 @@ func TestRunnerStreamPropagatesInteractiveMCPSelection(t *testing.T) {
 		if req.MCP != "discourse_local" {
 			t.Fatalf("runner request MCP = %q, want interactive selection", req.MCP)
 		}
+		if req.Engine != m.engine || req.ProviderInstance != m.provider {
+			t.Fatal("runner request did not borrow the chat engine/provider")
+		}
+		if req.Stateful || !req.DisableRuntimePersistence {
+			t.Fatalf("runner ownership flags = stateful:%t disableRuntimePersistence:%t", req.Stateful, req.DisableRuntimePersistence)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("runner did not receive request")
 	}

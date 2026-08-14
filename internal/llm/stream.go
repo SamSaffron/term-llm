@@ -2,10 +2,13 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 )
+
+var errEventStreamClosed = errors.New("stream closed")
 
 // eventSender provides safe event sending for stream producers.
 // It handles context cancellation and closed-channel panics, preventing
@@ -28,7 +31,7 @@ func (s eventSender) Send(event Event) error {
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	return fmt.Errorf("stream closed")
+	return errEventStreamClosed
 }
 
 // TrySend attempts a non-blocking send. Returns true if the event was delivered.

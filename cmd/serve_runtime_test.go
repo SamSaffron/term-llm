@@ -268,6 +268,51 @@ func TestServeRuntimeStatefulRunRequiresSessionPersistence(t *testing.T) {
 	}
 }
 
+type resetTrackingProvider struct {
+	*llm.MockProvider
+	resets int
+}
+
+func (p *resetTrackingProvider) ResetConversation() { p.resets++ }
+
+func TestServeRuntimeBorrowedEnginePreservesProviderConversation(t *testing.T) {
+	provider := &resetTrackingProvider{MockProvider: llm.NewMockProvider("mock").AddTextResponse("one").AddTextResponse("two")}
+	rt := &serveRuntime{
+		provider:       provider,
+		engine:         llm.NewEngine(provider, nil),
+		borrowedEngine: true,
+		defaultModel:   "mock-model",
+	}
+	for _, prompt := range []string{"first", "second"} {
+		if _, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText(prompt)}, llm.Request{}); err != nil {
+			t.Fatalf("Run(%q): %v", prompt, err)
+		}
+	}
+	if provider.resets != 0 {
+		t.Fatalf("borrowed provider resets = %d, want 0", provider.resets)
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(provider.Requests))
+	}
+	for i, want := range []string{"first", "second"} {
+		request := provider.Requests[i]
+		if len(request.Messages) != 1 || llm.MessageText(request.Messages[0]) != want {
+			t.Fatalf("provider request %d messages = %#v, want only %q", i, request.Messages, want)
+		}
+	}
+}
+
+func TestServeRuntimeOwnedEngineResetsStatelessConversation(t *testing.T) {
+	provider := &resetTrackingProvider{MockProvider: llm.NewMockProvider("mock").AddTextResponse("ok")}
+	rt := &serveRuntime{provider: provider, engine: llm.NewEngine(provider, nil), defaultModel: "mock-model"}
+	if _, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText("hello")}, llm.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.resets != 1 {
+		t.Fatalf("owned provider resets = %d, want 1", provider.resets)
+	}
+}
+
 func TestServeRuntimeNonPersistentRunsStillExecute(t *testing.T) {
 	storeErr := errors.New("database unavailable")
 	tests := []struct {

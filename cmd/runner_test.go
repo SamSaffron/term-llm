@@ -204,4 +204,7 @@ func TestCmdRunnerPrepareUsesBorrowedEngineProvider(t *testing.T) {
 	if env.runtime == nil || !env.runtime.skipProviderCleanup {
 		t.Fatal("borrowed provider should skip runtime provider cleanup")
 	}
+	if !env.runtime.borrowedEngine {
+		t.Fatal("borrowed engine should preserve provider conversation state")
+	}
 }
