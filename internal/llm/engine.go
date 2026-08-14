@@ -29,6 +29,7 @@ const (
 	defaultUncommittedStreamMaxRetries = 5
 	stopSearchToolHint                 = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
 	contextContinuationPrompt          = "Continue the task from the compacted context. Follow the pending next step; do not ask the user unless blocked."
+	dynamicToolContinuationPrompt      = "Continue the task now that newly activated tools are available. Discover and use the new tools as required; do not repeat the activation call."
 	PhaseCompacting                    = "Compacting"
 	PhaseCompactingWriteBrief          = "Compacting: write brief"
 	PhaseCompactingSummarizeHistory    = "Compacting: summarize history"
@@ -175,6 +176,13 @@ type Engine struct {
 // tool execution wired up externally (for example, local CLI providers with HTTP MCP).
 type ToolExecutorSetter interface {
 	SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error))
+}
+
+// DynamicToolPublisher is implemented by providers that must react while a
+// tool loop is active inside one Stream call. Implementations may publish the
+// schema live or arrange a controlled provider boundary before the next tool.
+type DynamicToolPublisher interface {
+	PublishDynamicTools([]ToolSpec) error
 }
 
 // ProviderCleaner is an optional interface for providers that need cleanup
@@ -378,8 +386,8 @@ func (e *Engine) AddDynamicToolForRun(runID string, tool Tool) bool {
 	}
 	spec := tool.Spec()
 	e.pendingToolsMu.Lock()
-	defer e.pendingToolsMu.Unlock()
 	if e.activeToolRunID != runID {
+		e.pendingToolsMu.Unlock()
 		return false
 	}
 	pending := e.pendingToolSpecs[runID]
@@ -388,6 +396,15 @@ func (e *Engine) AddDynamicToolForRun(runID string, tool Tool) bool {
 		e.pendingToolSpecs[runID] = pending
 	}
 	pending[spec.Name] = spec
+	e.pendingToolsMu.Unlock()
+
+	if publisher, ok := e.provider.(DynamicToolPublisher); ok {
+		if err := publisher.PublishDynamicTools([]ToolSpec{spec}); err != nil {
+			// Keep the normal pending queue as a fallback for the next provider
+			// turn, but make the inline publication failure diagnosable.
+			slog.Warn("publish dynamic tool to active provider", "tool", spec.Name, "run_id", runID, "error", err)
+		}
+	}
 	return true
 }
 
@@ -409,6 +426,12 @@ func (e *Engine) endToolRun(runID string) {
 		e.activeToolRunID = ""
 	}
 	e.pendingToolsMu.Unlock()
+}
+
+func (e *Engine) hasPendingToolSpecs(runID string) bool {
+	e.pendingToolsMu.Lock()
+	defer e.pendingToolsMu.Unlock()
+	return len(e.pendingToolSpecs[runID]) > 0
 }
 
 // drainPendingToolSpecs returns queued specs for one run and clears that queue.
@@ -3642,9 +3665,24 @@ turnLoop:
 				cancel()
 			}
 
-			// These terminal paths cannot consume another steer. Close ownership before
-			// inspecting the queue so arrivals at or after the decision are rejected.
-			if finishingToolExecuted || inlineToolLoop {
+			// Inline-loop providers normally finish after their synchronous tool
+			// stream. A dynamically registered tool is the exception: grok-bin
+			// deliberately ends the current ACP prompt so the next provider turn can
+			// reconnect with the expanded MCP catalogue.
+			if finishingToolExecuted {
+				if err := sendDone(); err != nil {
+					return err
+				}
+				return nil
+			}
+			if inlineToolLoop && e.hasPendingToolSpecs(runID) {
+				req.Messages = append(req.Messages, UserText(dynamicToolContinuationPrompt))
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return err
+				}
+				continue
+			}
+			if inlineToolLoop {
 				if err := sendDone(); err != nil {
 					return err
 				}

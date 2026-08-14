@@ -12,6 +12,19 @@ type namedTestTool struct{ name string }
 
 type finishingNamedTestTool struct{ namedTestTool }
 
+type dynamicPublishingProvider struct {
+	*MockProvider
+	mu        sync.Mutex
+	published []ToolSpec
+}
+
+func (p *dynamicPublishingProvider) PublishDynamicTools(tools []ToolSpec) error {
+	p.mu.Lock()
+	p.published = append(p.published, tools...)
+	p.mu.Unlock()
+	return nil
+}
+
 func (t *namedTestTool) Spec() ToolSpec {
 	return ToolSpec{Name: t.name, Description: t.name, Schema: map[string]any{"type": "object"}}
 }
@@ -48,6 +61,28 @@ func TestToolRegistryDeferredVisibility(t *testing.T) {
 	}
 	if _, ok := registry.Get("deferred"); !ok {
 		t.Fatal("deferred tool stopped being executable")
+	}
+}
+
+func TestDynamicToolPublishesImmediatelyForActiveRun(t *testing.T) {
+	provider := &dynamicPublishingProvider{MockProvider: NewMockProvider("dynamic")}
+	engine := NewEngine(provider, nil)
+	runID := engine.beginToolRun()
+	defer engine.endToolRun(runID)
+
+	tool := &namedTestTool{name: "late_tool"}
+	if !engine.AddDynamicToolForRun(runID, tool) {
+		t.Fatal("active run rejected dynamic tool")
+	}
+	provider.mu.Lock()
+	published := append([]ToolSpec(nil), provider.published...)
+	provider.mu.Unlock()
+	if len(published) != 1 || published[0].Name != "late_tool" {
+		t.Fatalf("published tools = %#v, want late_tool immediately", published)
+	}
+	pending := engine.drainPendingToolSpecs(runID)
+	if len(pending) != 1 || pending[0].Name != "late_tool" {
+		t.Fatalf("fallback pending tools = %#v, want late_tool", pending)
 	}
 }
 

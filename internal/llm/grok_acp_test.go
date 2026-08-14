@@ -1083,6 +1083,80 @@ func TestGrokBinProviderACPRealSmoke(t *testing.T) {
 	}
 }
 
+type grokDynamicResultProbeTool struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (t *grokDynamicResultProbeTool) Spec() ToolSpec {
+	return ToolSpec{Name: "late_dynamic", Description: "Returns DYNAMIC_TOOL_OK after dynamic registration.", Schema: map[string]any{"type": "object"}}
+}
+func (t *grokDynamicResultProbeTool) Execute(context.Context, json.RawMessage) (ToolOutput, error) {
+	t.mu.Lock()
+	t.calls++
+	t.mu.Unlock()
+	return TextOutput("DYNAMIC_TOOL_OK"), nil
+}
+func (t *grokDynamicResultProbeTool) Preview(json.RawMessage) string { return "dynamic result probe" }
+
+type grokDynamicActivationProbeTool struct {
+	mu     sync.Mutex
+	calls  int
+	engine *Engine
+	late   Tool
+}
+
+func (t *grokDynamicActivationProbeTool) Spec() ToolSpec {
+	return ToolSpec{Name: "activate_dynamic", Description: "Registers the late_dynamic tool. Call this before searching for late_dynamic.", Schema: map[string]any{"type": "object"}}
+}
+func (t *grokDynamicActivationProbeTool) Execute(context.Context, json.RawMessage) (ToolOutput, error) {
+	t.mu.Lock()
+	t.calls++
+	t.mu.Unlock()
+	t.engine.AddDynamicTool(t.late)
+	return TextOutput("late_dynamic is registered; discover and call it now. Do not claim its result without calling it."), nil
+}
+func (t *grokDynamicActivationProbeTool) Preview(json.RawMessage) string {
+	return "register dynamic result probe"
+}
+
+func TestGrokBinProviderACPRealDynamicToolSmoke(t *testing.T) {
+	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
+		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP dynamic-tool smoke test")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	provider := NewGrokBinProvider("grok-4.6-low", nil)
+	defer provider.CleanupMCP()
+	registry := NewToolRegistry()
+	late := &grokDynamicResultProbeTool{}
+	activation := &grokDynamicActivationProbeTool{late: late}
+	registry.Register(activation)
+	engine := NewEngine(provider, registry)
+	activation.engine = engine
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{
+			SystemText("Use only supplied term-llm MCP tools. You must execute every requested tool and must not invent tool results."),
+			UserText("First call activate_dynamic exactly once. After it returns, search again for the newly registered late_dynamic tool and call late_dynamic exactly once in this same turn. Do not reply until both real tool calls have completed; then reply with the late_dynamic result."),
+		},
+		Tools:    []ToolSpec{activation.Spec()},
+		MaxTurns: 6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := collectGrokACPTestText(t, stream)
+	activation.mu.Lock()
+	activationCalls := activation.calls
+	activation.mu.Unlock()
+	late.mu.Lock()
+	calls := late.calls
+	late.mu.Unlock()
+	if activationCalls != 1 || calls != 1 || !strings.Contains(text, "DYNAMIC_TOOL_OK") {
+		t.Fatalf("activate_dynamic calls=%d late_dynamic calls=%d response=%q", activationCalls, calls, text)
+	}
+}
+
 func TestGrokBinProviderACPRealToolSmoke(t *testing.T) {
 	if os.Getenv("TERM_LLM_TEST_GROK_ACP") != "1" {
 		t.Skip("set TERM_LLM_TEST_GROK_ACP=1 to run the credentialed Grok ACP tool smoke test")

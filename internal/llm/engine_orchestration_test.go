@@ -98,6 +98,127 @@ func (p *inlineSyncToolProvider) Stream(ctx context.Context, req Request) (Strea
 	}), nil
 }
 
+type inlineDynamicToolProvider struct {
+	published chan ToolSpec
+	calls     int
+}
+
+func (p *inlineDynamicToolProvider) Name() string       { return "inline-dynamic-test" }
+func (p *inlineDynamicToolProvider) Credential() string { return "test" }
+func (p *inlineDynamicToolProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true, InlineToolLoop: true}
+}
+func (p *inlineDynamicToolProvider) PublishDynamicTools(tools []ToolSpec) error {
+	for _, tool := range tools {
+		p.published <- tool
+	}
+	return nil
+}
+func (p *inlineDynamicToolProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls++
+	call := p.calls
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		if call > 1 {
+			if !hasToolNamed(req.Tools, "late_tool") {
+				return errors.New("refreshed inline turn is missing late_tool")
+			}
+			foundContinuation := false
+			for _, message := range req.Messages {
+				if MessageText(message) == dynamicToolContinuationPrompt {
+					foundContinuation = true
+					break
+				}
+			}
+			if !foundContinuation {
+				return errors.New("refreshed inline turn is missing continuation prompt")
+			}
+			if err := send.Send(Event{Type: EventTextDelta, Text: "dynamic ready"}); err != nil {
+				return err
+			}
+			return send.Send(Event{Type: EventDone})
+		}
+		response := make(chan ToolExecutionResponse, 1)
+		if err := send.Send(Event{
+			Type:         EventToolCall,
+			ToolCallID:   "activate",
+			ToolName:     "activate_dynamic",
+			Tool:         &ToolCall{ID: "activate", Name: "activate_dynamic", Arguments: json.RawMessage(`{}`)},
+			ToolResponse: response,
+		}); err != nil {
+			return err
+		}
+		select {
+		case result := <-response:
+			if result.Err != nil {
+				return result.Err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case published := <-p.published:
+			if published.Name != "late_tool" {
+				return fmt.Errorf("published tool = %q, want late_tool", published.Name)
+			}
+		default:
+			return errors.New("dynamic tool was not published before inline execution resumed")
+		}
+		return send.Send(Event{Type: EventDone})
+	}), nil
+}
+
+type dynamicActivationTool struct {
+	engine *Engine
+	late   Tool
+}
+
+func (t *dynamicActivationTool) Spec() ToolSpec {
+	return ToolSpec{Name: "activate_dynamic", Schema: map[string]any{"type": "object"}}
+}
+func (t *dynamicActivationTool) Execute(context.Context, json.RawMessage) (ToolOutput, error) {
+	t.engine.AddDynamicTool(t.late)
+	return TextOutput("activated"), nil
+}
+func (t *dynamicActivationTool) Preview(json.RawMessage) string { return "activate dynamic tool" }
+
+func TestEngineOrchestration_InlineDynamicToolPublishesBeforeResume(t *testing.T) {
+	provider := &inlineDynamicToolProvider{published: make(chan ToolSpec, 1)}
+	registry := NewToolRegistry()
+	activation := &dynamicActivationTool{late: &namedTestTool{name: "late_tool"}}
+	registry.Register(activation)
+	engine := NewEngine(provider, registry)
+	activation.engine = engine
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("activate")},
+		Tools:    []ToolSpec{activation.Spec()},
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+	if text.String() != "dynamic ready" {
+		t.Fatalf("text = %q, want dynamic ready", text.String())
+	}
+}
+
 func TestEngineOrchestration_InlineProviderPureTextCompletesOnce(t *testing.T) {
 	provider := &inlineSyncToolProvider{inline: true}
 	engine := NewEngine(provider, nil)

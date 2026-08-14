@@ -91,9 +91,12 @@ type GrokBinProvider struct {
 	// GROK_HOME. CleanupMCP deliberately leaves this directory in place.
 	grokHome string
 
-	mcpServer *mcphttp.Server
-	mcpURL    string
-	mcpToken  string
+	mcpMu                 sync.Mutex
+	mcpServer             *mcphttp.Server
+	mcpURL                string
+	mcpToken              string
+	mcpToolFingerprint    [sha256.Size]byte
+	mcpToolFingerprintSet bool
 
 	acpMu      sync.Mutex
 	acpProcess *grokACPProcess
@@ -101,7 +104,8 @@ type GrokBinProvider struct {
 	cliToolBridgeState
 	tempFileTracker
 
-	activeStream atomic.Bool
+	activeStream              atomic.Bool
+	dynamicToolRefreshPending atomic.Bool
 }
 
 type grokBinProviderState struct {
@@ -920,17 +924,36 @@ func (p *GrokBinProvider) userFacingGrokCommandError(err *CLICommandError) error
 }
 
 func (p *GrokBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec, debug bool) error {
-	// Match claude-bin's conversation-scoped bridge semantics: the first tool
-	// list registered for a provider instance remains fixed until CleanupMCP.
-	if p.mcpServer != nil {
+	specs := mcpToolSpecs(tools)
+	encoded, err := json.Marshal(specs)
+	if err != nil {
+		return fmt.Errorf("encode grok-bin MCP tool surface: %w", err)
+	}
+	fingerprint := sha256.Sum256(encoded)
+
+	p.mcpMu.Lock()
+	if p.mcpServer != nil && p.mcpToolFingerprintSet && p.mcpToolFingerprint == fingerprint {
+		p.mcpMu.Unlock()
 		return nil
 	}
+	oldServer := p.mcpServer
+	p.mcpServer = nil
+	p.mcpURL = ""
+	p.mcpToken = ""
+	p.mcpToolFingerprintSet = false
+	p.mcpMu.Unlock()
+	if oldServer != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), mcpStopTimeout)
+		oldServer.Stop(stopCtx)
+		cancel()
+	}
+
 	if debug {
 		fmt.Fprintf(os.Stderr, "[grok-bin] starting HTTP MCP server for %d tools\n", len(tools))
 	}
-	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(formatToolOutputForGrok))
+	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(p.formatToolOutput))
 	server.SetDebug(debug)
-	url, token, err := server.Start(ctx, mcpToolSpecs(tools))
+	url, token, err := server.Start(ctx, specs)
 	if err != nil {
 		return fmt.Errorf("start grok-bin MCP server: %w", err)
 	}
@@ -940,10 +963,40 @@ func (p *GrokBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec,
 		cancel()
 		return err
 	}
+	p.mcpMu.Lock()
 	p.mcpServer = server
 	p.mcpURL = url
 	p.mcpToken = token
+	p.mcpToolFingerprint = fingerprint
+	p.mcpToolFingerprintSet = true
+	p.dynamicToolRefreshPending.Store(false)
+	p.mcpMu.Unlock()
 	return nil
+}
+
+// PublishDynamicTools marks the current inline prompt for a controlled provider
+// boundary. Grok Build 1.0.x caches MCP search registrations for the lifetime of
+// an ACP process, so the next Stream call rebuilds the MCP server and resumes
+// the durable session with the expanded tool surface.
+func (p *GrokBinProvider) PublishDynamicTools(tools []ToolSpec) error {
+	if len(tools) == 0 {
+		return nil
+	}
+	p.mcpMu.Lock()
+	running := p.mcpServer != nil
+	p.mcpMu.Unlock()
+	if running {
+		p.dynamicToolRefreshPending.Store(true)
+	}
+	return nil
+}
+
+func (p *GrokBinProvider) formatToolOutput(output ToolOutput) string {
+	text := formatToolOutputForGrok(output)
+	if p.dynamicToolRefreshPending.Load() {
+		text += "\n\n[term-llm: New tools were activated. End this response now without calling more tools or answering the original request. term-llm will immediately continue in a refreshed tool turn.]"
+	}
+	return text
 }
 
 // CleanupMCP stops the conversation-scoped ACP process and HTTP tool bridge,
@@ -957,13 +1010,19 @@ func (p *GrokBinProvider) CleanupMCP() {
 		p.acpProcess = nil
 	}
 	p.acpMu.Unlock()
-	if p.mcpServer != nil {
+	p.mcpMu.Lock()
+	server := p.mcpServer
+	p.mcpServer = nil
+	p.mcpURL = ""
+	p.mcpToken = ""
+	p.mcpToolFingerprint = [sha256.Size]byte{}
+	p.mcpToolFingerprintSet = false
+	p.dynamicToolRefreshPending.Store(false)
+	p.mcpMu.Unlock()
+	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), mcpStopTimeout)
-		p.mcpServer.Stop(ctx)
+		server.Stop(ctx)
 		cancel()
-		p.mcpServer = nil
-		p.mcpURL = ""
-		p.mcpToken = ""
 	}
 	p.cleanupTempFiles()
 }

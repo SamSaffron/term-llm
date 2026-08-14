@@ -13,6 +13,58 @@ import (
 	"time"
 )
 
+func TestGrokBinProviderRebuildsMCPForDynamicToolSurface(t *testing.T) {
+	provider := NewGrokBinProvider("grok-4.6", nil)
+	defer provider.CleanupMCP()
+	if err := provider.ensureGrokHome(); err != nil {
+		t.Fatal(err)
+	}
+	initial := []ToolSpec{{Name: "activate_dynamic", Schema: map[string]any{"type": "object"}}}
+	if err := provider.ensureMCPServer(context.Background(), initial, false); err != nil {
+		t.Fatal(err)
+	}
+	firstURL := provider.mcpURL
+	if err := provider.ensureMCPServer(context.Background(), initial, false); err != nil {
+		t.Fatal(err)
+	}
+	if provider.mcpURL != firstURL {
+		t.Fatalf("unchanged tool surface restarted MCP: %q -> %q", firstURL, provider.mcpURL)
+	}
+	if err := provider.PublishDynamicTools([]ToolSpec{{Name: "late_dynamic", Schema: map[string]any{"type": "object"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !provider.dynamicToolRefreshPending.Load() {
+		t.Fatal("dynamic publication did not mark provider refresh boundary")
+	}
+	expanded := append(append([]ToolSpec(nil), initial...), ToolSpec{Name: "late_dynamic", Schema: map[string]any{"type": "object"}})
+	if err := provider.ensureMCPServer(context.Background(), expanded, false); err != nil {
+		t.Fatal(err)
+	}
+	if provider.mcpURL == firstURL {
+		t.Fatal("expanded tool surface reused stale MCP server")
+	}
+	if provider.dynamicToolRefreshPending.Load() {
+		t.Fatal("successful MCP rebuild retained dynamic refresh marker")
+	}
+}
+
+func TestGrokBinProviderPublishesDynamicToolsThroughRetryWrapper(t *testing.T) {
+	provider := NewGrokBinProvider("grok-4.6", nil)
+	if _, ok := any(provider).(DynamicToolPublisher); !ok {
+		t.Fatal("grok-bin does not implement DynamicToolPublisher")
+	}
+	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+	publisher, ok := wrapped.(DynamicToolPublisher)
+	if !ok {
+		t.Fatal("retry wrapper does not preserve DynamicToolPublisher")
+	}
+	// Before the conversation MCP server starts, publication is intentionally a
+	// no-op; the normal request tool list will seed that server.
+	if err := publisher.PublishDynamicTools([]ToolSpec{{Name: "late", Schema: map[string]any{"type": "object"}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 	provider := NewGrokBinProvider("grok-4.5", nil)
 	workingDir := t.TempDir()

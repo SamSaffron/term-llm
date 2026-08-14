@@ -164,6 +164,15 @@ func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name 
 	}
 }
 
+// PublishDynamicTools forwards dynamic tool-surface changes to inline-loop
+// providers through the retry wrapper.
+func (r *RetryProvider) PublishDynamicTools(tools []ToolSpec) error {
+	if publisher, ok := r.inner.(DynamicToolPublisher); ok {
+		return publisher.PublishDynamicTools(tools)
+	}
+	return nil
+}
+
 // CleanupMCP forwards to the inner provider if it implements ProviderCleaner.
 // This ensures stateful providers get cleaned up properly
 // even when wrapped with retry logic.
