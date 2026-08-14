@@ -72,6 +72,12 @@ class Element {
     this.children = [];
     nodes.forEach((node) => { if (node) this.appendChild(node); });
   }
+  remove() {
+    if (!this.parentNode) return;
+    const idx = this.parentNode.children.indexOf(this);
+    if (idx !== -1) this.parentNode.children.splice(idx, 1);
+    this.parentNode = null;
+  }
   setAttribute(name, value) { this.attributes.set(name, String(value)); if (name === 'class') this.className = String(value); }
   getAttribute(name) { return this.attributes.get(name) || null; }
   addEventListener(type, listener) {
@@ -466,6 +472,23 @@ function createFakeTimers() {
     assertEqual(dot.title, 'Needs attention', 'attention dot has an explicit title');
     assertEqual(dot.getAttribute('aria-hidden'), 'true', 'visual dot is hidden from assistive technology');
     assertEqual(worker.querySelector('.visually-hidden').textContent, 'Needs attention', 'attention is announced once');
+
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+    const latchedWorker = elements.hubAgentLinks.querySelectorAll('.hub-agent-link')
+      .find((link) => link.querySelector('.hub-agent-name').textContent === 'Worker');
+    assert(latchedWorker.querySelector('.hub-agent-attention'), 'attention remains latched while the agent stays idle');
+
+    await latchedWorker.dispatchEvent({ type: 'click' });
+    assertEqual(latchedWorker.querySelector('.hub-agent-attention'), null, 'click clears the visible dot immediately');
+    assertEqual(latchedWorker.querySelector('.visually-hidden'), null, 'click clears accessible attention immediately');
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+    const visitedWorker = elements.hubAgentLinks.querySelectorAll('.hub-agent-link')
+      .find((link) => link.querySelector('.hub-agent-name').textContent === 'Worker');
+    assertEqual(visitedWorker.querySelector('.hub-agent-attention'), null, 'visiting the agent clears attention');
   });
 
   await run('initial Hub 401 hides and clears agent links', async () => {

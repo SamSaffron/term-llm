@@ -240,7 +240,7 @@ const hubAgentLinksContext = () => {
 
 const clearHubAgentLinks = () => {
   elements.hubAgentLinks?.replaceChildren();
-  elements.hubAgentLinks?.classList.add('hidden');
+  elements.hubAgentLinks?.classList.add('hidden'); hubAgentAttention.clear();
 };
 
 const renderHubAgentLinks = (nodes, context) => {
@@ -279,7 +279,7 @@ const renderHubAgentLinks = (nodes, context) => {
       const dot = createEl('span', 'hub-agent-attention');
       dot.title = 'Needs attention'; dot.setAttribute('aria-hidden', 'true'); link.appendChild(dot); link.appendChild(createEl('span', 'visually-hidden', 'Needs attention'));
     }
-    link.addEventListener('click', () => hubAgentAttention.set(id, { active, attention: false })); return link;
+    ['click', 'auxclick'].forEach((type) => link.addEventListener(type, () => { hubAgentAttention.set(id, { active, attention: false }); link.querySelector('.hub-agent-attention')?.remove(); link.querySelector('.visually-hidden')?.remove(); })); return link;
   });
 
   elements.hubAgentLinks.replaceChildren(...rows);
