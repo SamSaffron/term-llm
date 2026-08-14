@@ -25,6 +25,52 @@ func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_ImplementsInlineFlusher(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	if _, ok := interface{}(provider).(InlineFlusher); !ok {
+		t.Fatal("ClaudeBinProvider does not implement InlineFlusher")
+	}
+	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+	flusher, ok := wrapped.(InlineFlusher)
+	if !ok {
+		t.Fatal("RetryProvider does not implement InlineFlusher")
+	}
+	if !flusher.SupportsInlineFlush() {
+		t.Fatal("retry wrapper does not report claude-bin inline flush support")
+	}
+	flusher.RequestInlineFlush()
+	if !provider.inlineFlushRequested() {
+		t.Fatal("RequestInlineFlush did not mark the tool-result boundary")
+	}
+	formatted := provider.formatToolOutputForClaude(TextOutput("tool ok"))
+	if !strings.Contains(formatted, strings.TrimSpace(inlineFlushToolNotice)) {
+		t.Fatalf("formatToolOutputForClaude = %q, want flush notice", formatted)
+	}
+}
+
+type disabledInlineFlusher struct {
+	Provider
+}
+
+func (p *disabledInlineFlusher) RequestInlineFlush()       {}
+func (p *disabledInlineFlusher) SupportsInlineFlush() bool { return false }
+
+func TestRetryProvider_SupportsInlineFlushOnlyWhenInnerDoes(t *testing.T) {
+	for _, provider := range []Provider{
+		NewMockProvider("mock"),
+		&disabledInlineFlusher{Provider: NewMockProvider("disabled-inline-flusher")},
+	} {
+		wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+		flusher, ok := wrapped.(InlineFlusher)
+		if !ok {
+			t.Fatal("RetryProvider should implement InlineFlusher")
+		}
+		if flusher.SupportsInlineFlush() {
+			t.Fatalf("retry-wrapped %s should not advertise inline flush", provider.Name())
+		}
+	}
+}
+
 func TestRetryProvider_ForwardsToolExecutorSetter(t *testing.T) {
 	// ClaudeBinProvider is wrapped with WrapWithRetry in the factory.
 	// The RetryProvider must forward SetToolExecutor to the inner provider.

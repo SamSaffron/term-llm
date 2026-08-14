@@ -104,8 +104,7 @@ type GrokBinProvider struct {
 	cliToolBridgeState
 	tempFileTracker
 
-	activeStream              atomic.Bool
-	dynamicToolRefreshPending atomic.Bool
+	activeStream atomic.Bool
 }
 
 type grokBinProviderState struct {
@@ -283,6 +282,12 @@ func (p *GrokBinProvider) ImportProviderState(data []byte) error {
 	p.gcStaleGrokHomes(home)
 	return nil
 }
+
+func (p *GrokBinProvider) RequestInlineFlush() {
+	p.requestInlineFlush()
+}
+
+func (p *GrokBinProvider) SupportsInlineFlush() bool { return true }
 
 func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
@@ -969,7 +974,6 @@ func (p *GrokBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec,
 	p.mcpToken = token
 	p.mcpToolFingerprint = fingerprint
 	p.mcpToolFingerprintSet = true
-	p.dynamicToolRefreshPending.Store(false)
 	p.mcpMu.Unlock()
 	return nil
 }
@@ -986,17 +990,13 @@ func (p *GrokBinProvider) PublishDynamicTools(tools []ToolSpec) error {
 	running := p.mcpServer != nil
 	p.mcpMu.Unlock()
 	if running {
-		p.dynamicToolRefreshPending.Store(true)
+		p.requestInlineFlush()
 	}
 	return nil
 }
 
 func (p *GrokBinProvider) formatToolOutput(output ToolOutput) string {
-	text := formatToolOutputForGrok(output)
-	if p.dynamicToolRefreshPending.Load() {
-		text += "\n\n[term-llm: New tools were activated. End this response now without calling more tools or answering the original request. term-llm will immediately continue in a refreshed tool turn.]"
-	}
-	return text
+	return p.appendInlineFlushNotice(formatToolOutputForGrok(output))
 }
 
 // CleanupMCP stops the conversation-scoped ACP process and HTTP tool bridge,
@@ -1017,7 +1017,7 @@ func (p *GrokBinProvider) CleanupMCP() {
 	p.mcpToken = ""
 	p.mcpToolFingerprint = [sha256.Size]byte{}
 	p.mcpToolFingerprintSet = false
-	p.dynamicToolRefreshPending.Store(false)
+	p.clearInlineFlush()
 	p.mcpMu.Unlock()
 	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), mcpStopTimeout)

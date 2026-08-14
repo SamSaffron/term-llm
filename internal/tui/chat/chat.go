@@ -315,6 +315,7 @@ type Model struct {
 	pendingInterjections    []pendingInterjectionUI
 	selectedInterjection    int       // Selected pending interjection; -1 means none
 	interjectionSeq         uint64    // Monotonic sequence for locally generated interjection IDs
+	interjectionNonce       string    // Per-process entropy keeping those IDs unique across resumes
 	interruptNotice         string    // One-line UI notice for recent interrupt actions
 	ctrlCExitArmedUntil     time.Time // Second Ctrl+C before this time exits the TUI
 	promptHistory           promptHistoryState
@@ -665,6 +666,15 @@ type SubagentProgressMsg struct {
 
 // ResumeFromExternalUIMsg signals that external UI (ask_user/approval) is done
 type ResumeFromExternalUIMsg struct{}
+
+// FooterNoticeMsg surfaces a background warning in the footer. Subsystems that
+// would otherwise write to stderr must route through this: the TUI owns the
+// alt screen, so a direct write lands wherever the cursor sits and corrupts the
+// frame. Tone defaults to "error" when empty.
+type FooterNoticeMsg struct {
+	Text string
+	Tone string
+}
 
 // autoSendMsg triggers automatic message send (for benchmarking mode)
 type autoSendMsg struct{}
@@ -1090,6 +1100,55 @@ func sessionMessageForInterjection(sessionID, visibleText string, message llm.Me
 		userMessage.TextContent = llm.MessageText(message)
 	}
 	return userMessage
+}
+
+func addInterjectionMessage(ctx context.Context, store session.Store, sessionID string, msg *session.Message) error {
+	if unlogged, ok := store.(interface {
+		AddMessageUnlogged(context.Context, string, *session.Message) error
+	}); ok {
+		return unlogged.AddMessageUnlogged(ctx, sessionID, msg)
+	}
+	return store.AddMessage(ctx, sessionID, msg)
+}
+
+func reportInterjectionAddError(store session.Store, err error) {
+	if reporter, ok := store.(interface{ ReportAddMessageError(error) }); ok {
+		reporter.ReportAddMessageError(err)
+	}
+}
+
+// isClientMessageIDConflict reports whether a store write failed because the
+// message identity already exists in this session. SQLite does not expose the
+// constrained columns through a portable error interface.
+func isClientMessageIDConflict(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "client_message_id")
+}
+
+// persistInterjection writes a committed interjection to the session store.
+//
+// Interjections are the only chat-TUI messages that carry a ClientMessageID, so
+// they are the only ones the store's unique (session_id, client_message_id)
+// index can reject. A rejection previously dropped the message: the assistant's
+// reply to the interjection stayed in the transcript while the interjection
+// itself vanished, leaving the model answering something no one appeared to
+// have said. The identity is only a UI correlation key here, so trade it away
+// rather than lose the turn.
+func (m *Model) persistInterjection(ctx context.Context, visibleText string, message llm.Message) {
+	if m.store == nil || m.sess == nil {
+		return
+	}
+	userMsg := sessionMessageForInterjection(m.sess.ID, visibleText, message)
+	err := addInterjectionMessage(ctx, m.store, m.sess.ID, userMsg)
+	if err == nil {
+		return
+	}
+	if !isClientMessageIDConflict(err) {
+		reportInterjectionAddError(m.store, err)
+		return
+	}
+	retry := sessionMessageForInterjection(m.sess.ID, visibleText, message)
+	retry.ClientMessageID = ""
+	_ = m.store.AddMessage(ctx, m.sess.ID, retry)
 }
 
 func (m *Model) setMCPServerSelected(name string, selected bool) {
@@ -2295,6 +2354,17 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.clearFooterMessage()
 		}
 
+	case FooterNoticeMsg:
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return m, nil
+		}
+		tone := msg.Tone
+		if tone == "" {
+			tone = "error"
+		}
+		return m.showFooterMessageWithTone(text, tone)
+
 	case copyResultMsg:
 		return m.handleCopyResult(msg)
 
@@ -3078,8 +3148,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.scrollToBottom = true
 			// Persist interjected message to session store, preserving structured parts.
 			if m.store != nil {
-				userMsg := sessionMessageForInterjection(m.sess.ID, ev.Text, ev.Message)
-				_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
+				m.persistInterjection(context.Background(), ev.Text, ev.Message)
 			}
 
 		case ui.StreamEventDone:

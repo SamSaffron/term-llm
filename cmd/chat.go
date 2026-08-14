@@ -325,8 +325,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	rawConfigInstructions := cfg.Chat.Instructions
 
-	// Initialize session store EARLY so resume can override settings before tool/MCP setup
-	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
+	// Initialize session store EARLY so resume can override settings before tool/MCP setup.
+	// Store warnings are raised in the background for the whole TUI lifetime, so
+	// they route through the program instead of stderr once it is rendering.
+	storeWarnings := newTUIWarningWriter(cmd.ErrOrStderr())
+	store, storeCleanup := InitSessionStore(cfg, storeWarnings)
 	var spawnRunner *SpawnAgentRunner
 	var finalModel tea.Model
 	defer func() {
@@ -761,6 +764,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// to the tea.View that composed them; stdout remains renderer-owned.
 	p := tea.NewProgram(model, opts...)
 	model.SetProgram(p)
+	storeWarnings.attach(p)
+	defer storeWarnings.detach()
 
 	// Set up spawn_agent event callback for subagent progress visibility
 	if toolMgr != nil {

@@ -33,17 +33,26 @@ func TestGrokBinProviderRebuildsMCPForDynamicToolSurface(t *testing.T) {
 	if err := provider.PublishDynamicTools([]ToolSpec{{Name: "late_dynamic", Schema: map[string]any{"type": "object"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if !provider.dynamicToolRefreshPending.Load() {
+	if !provider.inlineFlushRequested() {
 		t.Fatal("dynamic publication did not mark provider refresh boundary")
 	}
 	expanded := append(append([]ToolSpec(nil), initial...), ToolSpec{Name: "late_dynamic", Schema: map[string]any{"type": "object"}})
+	// The engine clears the marker at the next logical provider-turn boundary.
+	// The reset goes through RetryProvider so an inner retry cannot clear a
+	// request raised during the current turn.
+	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+	resetter, ok := wrapped.(inlineFlushResetter)
+	if !ok {
+		t.Fatal("retry wrapper does not preserve inline flush resets")
+	}
+	resetter.clearInlineFlush()
 	if err := provider.ensureMCPServer(context.Background(), expanded, false); err != nil {
 		t.Fatal(err)
 	}
 	if provider.mcpURL == firstURL {
 		t.Fatal("expanded tool surface reused stale MCP server")
 	}
-	if provider.dynamicToolRefreshPending.Load() {
+	if provider.inlineFlushRequested() {
 		t.Fatal("successful MCP rebuild retained dynamic refresh marker")
 	}
 }
@@ -158,6 +167,29 @@ func TestGrokBinProviderCapabilities(t *testing.T) {
 	caps := NewGrokBinProvider("grok-4.5", nil).Capabilities()
 	if !caps.NativeWebSearch || !caps.NativeWebFetch || !caps.ToolCalls || !caps.ManagesOwnContext || !caps.InlineToolLoop || !caps.OrderedInlineToolEvents {
 		t.Fatalf("capabilities = %+v, want native search/fetch, tool calls, managed context, inline loop, and ordered inline tool events", caps)
+	}
+}
+
+func TestGrokBinProviderImplementsInlineFlusher(t *testing.T) {
+	provider := NewGrokBinProvider("grok-4.5", nil)
+	if _, ok := any(provider).(InlineFlusher); !ok {
+		t.Fatal("grok-bin does not implement InlineFlusher")
+	}
+	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+	flusher, ok := wrapped.(InlineFlusher)
+	if !ok {
+		t.Fatal("retry wrapper does not preserve InlineFlusher")
+	}
+	if !flusher.SupportsInlineFlush() {
+		t.Fatal("retry wrapper does not report grok-bin inline flush support")
+	}
+	flusher.RequestInlineFlush()
+	if !provider.inlineFlushRequested() {
+		t.Fatal("RequestInlineFlush did not mark the tool-result boundary")
+	}
+	formatted := provider.formatToolOutput(TextOutput("tool ok"))
+	if !strings.Contains(formatted, strings.TrimSpace(inlineFlushToolNotice)) {
+		t.Fatalf("formatToolOutput = %q, want flush notice", formatted)
 	}
 }
 

@@ -2,9 +2,12 @@ package chat
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1654,9 +1657,28 @@ func (m *Model) currentInterruptActivity() llm.InterruptActivity {
 	return activity
 }
 
+// nextPendingInterjectionID mints the stable identity for one queued
+// interjection. The identity becomes the message's ClientMessageID, which the
+// session store indexes uniquely per session, so a bare counter collides with
+// rows an earlier process already wrote whenever a session is resumed. Mixing in
+// per-process entropy keeps resumed sessions writable.
 func (m *Model) nextPendingInterjectionID() string {
+	if m.interjectionNonce == "" {
+		m.interjectionNonce = newInterjectionNonce()
+	}
 	m.interjectionSeq++
-	return fmt.Sprintf("tui-interject-%d", m.interjectionSeq)
+	return fmt.Sprintf("tui-interject-%s-%d", m.interjectionNonce, m.interjectionSeq)
+}
+
+// newInterjectionNonce returns short random entropy for interjection identities.
+// A time-based fallback keeps IDs usable if the system entropy source fails;
+// duplicates remain survivable because persistence retries without the identity.
+func newInterjectionNonce() string {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 func (m *Model) syncLatestPendingInterjection() {

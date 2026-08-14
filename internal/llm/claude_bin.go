@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,19 +68,20 @@ var claudeCommandWaitDelay = time.Second
 // using Claude Code's existing authentication.
 //
 // Note: This provider is NOT safe for concurrent use. Each Stream() call
-// modifies shared state (sessionID, messagesSent). Create separate instances
-// for concurrent streams.
+// modifies shared resume state (sessionID, messagesSent, transcriptDigest).
+// Create separate instances for concurrent streams.
 type ClaudeBinProvider struct {
-	model         string
-	effort        string // reasoning effort for opus: "low", "medium", "high", "max", or ""
-	sessionID     string // For session continuity with --resume
-	messagesSent  int    // Track messages already in session to avoid re-sending
-	forkSession   bool   // Add --fork-session when resuming an isolated branch.
-	toolExecutor  mcphttp.ToolExecutor
-	preferOAuth   bool                // If true, clear ANTHROPIC_API_KEY to force OAuth auth
-	extraEnv      map[string]string   // Extra subprocess env vars from provider config
-	enableHooks   bool                // Opt in to Claude Code hooks (disabled by default)
-	commandRunner claudeCommandRunner // Optional command transport override used by focused harnesses.
+	model            string
+	effort           string // reasoning effort for opus: "low", "medium", "high", "max", or ""
+	sessionID        string // For session continuity with --resume
+	messagesSent     int    // Length of the transcript prefix Claude Code's session already holds
+	transcriptDigest string // Fingerprint of that prefix; a mismatch means the transcript diverged
+	forkSession      bool   // Add --fork-session when resuming an isolated branch.
+	toolExecutor     mcphttp.ToolExecutor
+	preferOAuth      bool                // If true, clear ANTHROPIC_API_KEY to force OAuth auth
+	extraEnv         map[string]string   // Extra subprocess env vars from provider config
+	enableHooks      bool                // Opt in to Claude Code hooks (disabled by default)
+	commandRunner    claudeCommandRunner // Optional command transport override used by focused harnesses.
 
 	// Persistent MCP server for multi-turn conversations.
 	// The server is kept alive across turns so Claude CLI can maintain
@@ -220,6 +222,7 @@ func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, n
 func (p *ClaudeBinProvider) ResetConversation() {
 	p.sessionID = ""
 	p.messagesSent = 0
+	p.transcriptDigest = ""
 }
 
 func (p *ClaudeBinProvider) cloneHelperProvider() *ClaudeBinProvider {
@@ -254,13 +257,15 @@ func (p *ClaudeBinProvider) forkHelperConversation() (Provider, bool) {
 	// resumed Claude session supplies the parent context, so no local transcript
 	// offset should be applied to the helper request.
 	clone.messagesSent = 0
+	clone.transcriptDigest = ""
 	clone.forkSession = true
 	return clone, true
 }
 
 type claudeBinProviderState struct {
-	SessionID    string `json:"session_id"`
-	MessagesSent int    `json:"messages_sent"`
+	SessionID        string `json:"session_id"`
+	MessagesSent     int    `json:"messages_sent"`
+	TranscriptDigest string `json:"transcript_digest,omitempty"`
 }
 
 // ExportProviderState persists Claude Code's session id plus the term-llm
@@ -272,8 +277,9 @@ func (p *ClaudeBinProvider) ExportProviderState() ([]byte, bool) {
 		return nil, false
 	}
 	data, err := json.Marshal(claudeBinProviderState{
-		SessionID:    p.sessionID,
-		MessagesSent: p.messagesSent,
+		SessionID:        p.sessionID,
+		MessagesSent:     p.messagesSent,
+		TranscriptDigest: p.transcriptDigest,
 	})
 	if err != nil {
 		return nil, false
@@ -297,6 +303,10 @@ func (p *ClaudeBinProvider) ImportProviderState(data []byte) error {
 	}
 	p.sessionID = state.SessionID
 	p.messagesSent = state.MessagesSent
+	// State written before transcript fingerprinting carries no digest. Treat it
+	// as unverifiable rather than diverged so in-flight sessions keep resuming;
+	// the next completed turn records a digest and verification resumes.
+	p.transcriptDigest = state.TranscriptDigest
 	return nil
 }
 
@@ -322,8 +332,21 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 		ToolCalls:          true,
 		SupportsToolChoice: false, // Claude CLI doesn't support forcing specific tool use
 		ManagesOwnContext:  true,  // Claude CLI handles its own context window management
+		// Claude Code runs the whole tool loop inside one process, calling back
+		// into term-llm's MCP bridge for every tool. Re-entering the provider per
+		// tool call instead forced a fresh CLI process, which made Claude Code
+		// inject its own "Continue from where you left off." meta turn and made
+		// term-llm re-serialise tool results the resumed session already held.
+		InlineToolLoop:          true,
+		OrderedInlineToolEvents: true,
 	}
 }
+
+func (p *ClaudeBinProvider) RequestInlineFlush() {
+	p.requestInlineFlush()
+}
+
+func (p *ClaudeBinProvider) SupportsInlineFlush() bool { return true }
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
@@ -340,8 +363,8 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			defer p.activeStream.Store(false)
 		}
 
-		if !req.Ephemeral && p.sessionID != "" && p.messagesSent > len(req.Messages) {
-			slog.Warn("claude-bin resume message boundary exceeded request transcript; resetting conversation state",
+		if !req.Ephemeral && p.sessionID != "" && !p.resumeBoundaryValid(req.Messages) {
+			slog.Warn("claude-bin resume boundary no longer matches the request transcript; resetting conversation state",
 				"messages_sent", p.messagesSent, "request_messages", len(req.Messages))
 			p.ResetConversation()
 		}
@@ -358,9 +381,18 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// When resuming a session, only send new messages (claude CLI has the rest).
 		// Ephemeral one-shot requests never resume and must always send their whole
 		// standalone prompt.
+		//
+		// The boundary is recorded before the engine appends this turn's assistant
+		// reply and tool results, so the tail normally leads with content Claude
+		// Code produced itself. Deliver only what is genuinely new; if filtering
+		// leaves nothing, fall back to the raw tail rather than handing the CLI an
+		// empty prompt.
 		messagesToSend := req.Messages
 		if !req.Ephemeral && p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
 			messagesToSend = req.Messages[p.messagesSent:]
+			if delivery := claudeResumeDelivery(messagesToSend); len(delivery) > 0 {
+				messagesToSend = delivery
+			}
 		}
 		streamJSONSessionID := ""
 		if !req.Ephemeral {
@@ -423,10 +455,13 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			return err
 		}
 
-		// Track messages sent so we don't re-send them on resume. Ephemeral
-		// requests are isolated and must not alter resume accounting.
+		// Track messages sent so we don't re-send them on resume, and fingerprint
+		// that prefix so a later history rewrite cannot be mistaken for a clean
+		// continuation. Ephemeral requests are isolated and must not alter resume
+		// accounting.
 		if !req.Ephemeral {
 			p.messagesSent = len(req.Messages)
+			p.transcriptDigest = claudeTranscriptDigest(req.Messages, p.messagesSent)
 		}
 
 		return send.Send(Event{Type: EventDone})
@@ -872,11 +907,11 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		stderrSnapshot := snapshotCLITail(&stderrMu, stderrTail)
 		stdoutSnapshot := snapshotCLITail(&stdoutMu, stdoutTail)
 
-		// When MCP tools were executed, the CLI exits with code 1 because
-		// --max-turns 1 is exhausted after the tool call. This is expected;
-		// the engine's outer loop will re-invoke us with the tool results.
-		// Any other non-zero exit (crashes, OOMs, auth failures, etc.) must
-		// still surface — don't swallow those just because tools ran.
+		// A tool-using turn that exhausts --max-turns exits with code 1 after the
+		// last tool call. That is a bounded agentic loop rather than a failure, and
+		// the work already streamed to the caller stands. Any other non-zero exit
+		// (crashes, OOMs, auth failures, etc.) must still surface — don't swallow
+		// those just because tools ran.
 		expectedToolExit := toolsExecuted && exitCode == 1
 		expectedHandledTerminalResult := handledTerminalResult && exitCode == 1
 		if !expectedToolExit && !expectedHandledTerminalResult {
@@ -1060,10 +1095,24 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 		var resultMsg claudeResultMessage
 		if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
 			permissionDenied := resultMsg.hasPermissionDenial()
+			// Claude Code owns the tool loop, so exhausting its turn budget ends
+			// the run here rather than in the engine. Warn like the engine's own
+			// budget does and let the turn complete: the work already streamed is
+			// real, and failing the stream would strand the resume boundary behind
+			// messages Claude Code has already accepted.
+			maxTurnsReached := resultMsg.Subtype == claudeResultSubtypeMaxTurns
+			if maxTurnsReached {
+				if handledTerminalResult != nil {
+					*handledTerminalResult = true
+				}
+				if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(0)}); err != nil {
+					return err
+				}
+			}
 			// Check for API errors (rate limits, auth issues, etc.). Claude Code
 			// reports permission denials as terminal result errors too; surface
 			// those as model-visible text so the conversation can fail gracefully.
-			if resultMsg.IsError && resultMsg.Result != "" && !permissionDenied {
+			if resultMsg.IsError && resultMsg.Result != "" && !permissionDenied && !maxTurnsReached {
 				return fmt.Errorf("claude API error: %s", resultMsg.Result)
 			}
 
@@ -1120,6 +1169,86 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	})
 }
 
+// defaultClaudeBinMaxTurns bounds Claude Code's inline tool loop when a request
+// carries no explicit budget of its own.
+const defaultClaudeBinMaxTurns = 200
+
+// claudeResultSubtypeMaxTurns is the terminal result subtype Claude Code reports
+// when the inline tool loop exhausts --max-turns.
+const claudeResultSubtypeMaxTurns = "error_max_turns"
+
+// claudeMaxTurns returns the turn budget handed to Claude Code for one provider
+// turn. Requests without tools cannot loop, so they stay pinned at a single turn.
+func claudeMaxTurns(req Request) int {
+	if len(req.Tools) == 0 {
+		return 1
+	}
+	if req.MaxTurns > 0 {
+		return req.MaxTurns
+	}
+	return defaultClaudeBinMaxTurns
+}
+
+// claudeTranscriptDigest fingerprints the first n messages of a transcript so a
+// resumed Claude Code session can be checked against the conversation term-llm
+// believes it already delivered. Undo, branching and other history rewrites can
+// replace earlier turns without shortening the transcript, and resuming on a
+// stale boundary silently drops or duplicates conversation.
+func claudeTranscriptDigest(messages []Message, n int) string {
+	if n <= 0 || n > len(messages) {
+		return ""
+	}
+	h := sha256.New()
+	for _, msg := range messages[:n] {
+		fmt.Fprintf(h, "\x00%s", msg.Role)
+		for _, part := range msg.Parts {
+			encoded, err := json.Marshal(part)
+			if err != nil {
+				// Message parts are expected to contain JSON-compatible transcript
+				// data. Preserve a stable minimum fingerprint if that changes.
+				fmt.Fprintf(h, "\x01%s\x02%s", part.Type, part.Text)
+				continue
+			}
+			h.Write([]byte{1})
+			h.Write(encoded)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// resumeBoundaryValid reports whether Claude Code's resumed session still lines
+// up with the transcript prefix term-llm recorded as delivered. State persisted
+// before transcript fingerprinting has no digest; treat it as unverifiable
+// rather than diverged so in-flight conversations keep resuming.
+func (p *ClaudeBinProvider) resumeBoundaryValid(messages []Message) bool {
+	if p.messagesSent <= 0 {
+		return true
+	}
+	if p.messagesSent > len(messages) {
+		return false
+	}
+	if p.transcriptDigest == "" {
+		return true
+	}
+	return claudeTranscriptDigest(messages, p.messagesSent) == p.transcriptDigest
+}
+
+// claudeResumeDelivery drops the messages a resumed Claude Code session already
+// holds natively. Assistant turns were written by Claude Code itself, and tool
+// results were handed back to it by term-llm's MCP bridge while that same turn
+// was still streaming. Re-serialising either as stdin text duplicates the
+// conversation inside the resumed session.
+func claudeResumeDelivery(messages []Message) []Message {
+	delivery := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == RoleAssistant || msg.Role == RoleTool {
+			continue
+		}
+		delivery = append(delivery, msg)
+	}
+	return delivery
+}
+
 // buildArgs constructs the command line arguments for the claude binary.
 // The events channel is passed to the MCP server for routing tool execution events.
 // The MCP server is kept alive across turns - call CleanupMCP() when the conversation ends.
@@ -1149,8 +1278,12 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 		args = append(args, "--settings", `{"disableAllHooks":true}`)
 	}
 
-	// Always limit to 1 turn - term-llm handles tool execution loop
-	args = append(args, "--max-turns", "1")
+	// Claude Code owns the tool loop for this turn (see Capabilities:
+	// InlineToolLoop), so the budget must cover every tool round-trip. Capping it
+	// at one turn made Claude Code abort mid-tool-call and record a synthetic
+	// "Continue from where you left off." / "No response requested." exchange in
+	// the session before term-llm could resume it.
+	args = append(args, "--max-turns", strconv.Itoa(claudeMaxTurns(req)))
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	model := chooseModel(req.Model, p.model)
@@ -1716,10 +1849,10 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 }
 
 func (p *ClaudeBinProvider) formatToolOutputForClaude(output ToolOutput) string {
-	return p.processToolResultContent(&ToolResult{
+	return p.appendInlineFlushNotice(p.processToolResultContent(&ToolResult{
 		Content:      output.Content,
 		ContentParts: output.ContentParts,
-	})
+	}))
 }
 
 func buildSDKUserContentBlocks(parts []Part) []sdkContentBlock {
@@ -1841,6 +1974,7 @@ type claudeStreamlinedTextMessage struct {
 
 type claudeResultMessage struct {
 	Type              string            `json:"type"`
+	Subtype           string            `json:"subtype"`
 	IsError           bool              `json:"is_error"`
 	Result            string            `json:"result"`
 	PermissionDenials []json.RawMessage `json:"permission_denials"`

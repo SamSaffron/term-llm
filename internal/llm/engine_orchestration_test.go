@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -216,6 +217,48 @@ func TestEngineOrchestration_InlineDynamicToolPublishesBeforeResume(t *testing.T
 	}
 	if text.String() != "dynamic ready" {
 		t.Fatalf("text = %q, want dynamic ready", text.String())
+	}
+}
+
+func TestEngineOrchestration_InlineDynamicToolContinuationCarriesInterjections(t *testing.T) {
+	provider := &inlineDynamicToolProvider{published: make(chan ToolSpec, 1)}
+	registry := NewToolRegistry()
+	activation := &dynamicActivationTool{late: &namedTestTool{name: "late_tool"}}
+	registry.Register(activation)
+	engine := NewEngine(provider, registry)
+	activation.engine = engine
+	engine.Interject("use the new tool")
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("activate")},
+		Tools:    []ToolSpec{activation.Spec()},
+		MaxTurns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var sawInterjection bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == EventInterjection {
+			sawInterjection = true
+		}
+	}
+	if !sawInterjection {
+		t.Fatal("expected interjection to ride the dynamic-tool flush turn")
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("pending interjections = %+v, want none", pending)
 	}
 }
 
@@ -479,6 +522,86 @@ func TestEngineOrchestration_InlineSyncToolLoopLeavesInterjectionsForFollowUp(t 
 	}
 	if provider.calls != 1 {
 		t.Fatalf("provider calls = %d, want 1", provider.calls)
+	}
+}
+
+type inlineFlushingToolProvider struct {
+	inlineSyncToolProvider
+	flushed int
+}
+
+func (p *inlineFlushingToolProvider) RequestInlineFlush() {
+	p.flushed++
+}
+func (p *inlineFlushingToolProvider) SupportsInlineFlush() bool { return true }
+
+func TestEngineOrchestration_InlineFlushDeliversInterjections(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&mockTool{name: "test_tool", result: "tool output"})
+	provider := &inlineFlushingToolProvider{inlineSyncToolProvider: inlineSyncToolProvider{inline: true}}
+	engine := NewEngine(provider, registry)
+	var persisted []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turn int, messages []Message, metrics TurnMetrics) error {
+		persisted = append(persisted, messages...)
+		return nil
+	})
+
+	engine.Interject("steer mid-loop")
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	var sawInterjection bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		case EventInterjection:
+			sawInterjection = true
+			if event.Text != "steer mid-loop" {
+				t.Fatalf("interjection text = %q", event.Text)
+			}
+		}
+	}
+	if !sawInterjection {
+		t.Fatal("expected EventInterjection after inline flush")
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
+	if provider.flushed == 0 {
+		t.Fatal("queued interjection did not request an inline flush")
+	}
+	if text.String() != "inline finalcontinued final" {
+		t.Fatalf("text = %q, want flushed continuation", text.String())
+	}
+	if pending := engine.ListPendingInterjections(); len(pending) != 0 {
+		t.Fatalf("pending interjections = %+v, want none", pending)
+	}
+	foundCommitted := false
+	for _, message := range persisted {
+		if message.Role == RoleUser && MessageText(message) == "steer mid-loop" {
+			foundCommitted = true
+			break
+		}
+	}
+	if !foundCommitted {
+		t.Fatalf("persisted messages = %+v, want committed interjection", persisted)
 	}
 }
 
@@ -877,5 +1000,122 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 	}
 	if !foundUnregistered {
 		t.Errorf("Expected suggest_something tool call to be present")
+	}
+}
+
+// inlineFlushToolProvider models the CLI providers that own their tool loop and
+// can end the current prompt at a tool-result boundary (claude-bin, grok-bin,
+// cursor-bin, agy-bin). The first prompt runs one tool then stops, as it would
+// after seeing the inline flush notice.
+type inlineFlushToolProvider struct {
+	calls         int
+	flushRequests atomic.Int64
+}
+
+func (p *inlineFlushToolProvider) Name() string       { return "inline-flush-test" }
+func (p *inlineFlushToolProvider) Credential() string { return "test" }
+func (p *inlineFlushToolProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}
+}
+func (p *inlineFlushToolProvider) RequestInlineFlush()       { p.flushRequests.Add(1) }
+func (p *inlineFlushToolProvider) SupportsInlineFlush() bool { return true }
+
+func (p *inlineFlushToolProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls++
+	call := p.calls
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		if call == 1 {
+			response := make(chan ToolExecutionResponse, 1)
+			if err := send.Send(Event{
+				Type:         EventToolCall,
+				ToolCallID:   "flush-1",
+				ToolName:     "test_tool",
+				Tool:         &ToolCall{ID: "flush-1", Name: "test_tool", Arguments: json.RawMessage(`{}`)},
+				ToolResponse: response,
+			}); err != nil {
+				return err
+			}
+			select {
+			case <-response:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return send.Send(Event{Type: EventDone})
+		}
+		if err := send.Send(Event{Type: EventTextDelta, Text: "after interjection"}); err != nil {
+			return err
+		}
+		return send.Send(Event{Type: EventDone})
+	}), nil
+}
+
+type interjectingTool struct {
+	name string
+	fn   func()
+}
+
+func (t *interjectingTool) Spec() ToolSpec { return ToolSpec{Name: t.name} }
+func (t *interjectingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	if t.fn != nil {
+		t.fn()
+	}
+	return TextOutput("tool output"), nil
+}
+func (t *interjectingTool) Preview(args json.RawMessage) string { return "" }
+
+// TestInlineFlushCommitsInterjectionExactlyOnce pins the persistence contract
+// behind the inline flush path. Each committed interjection is persisted by its
+// consumer keyed on InterjectionID, so emitting one twice writes the same
+// client_message_id twice and trips the session store's unique index.
+func TestInlineFlushCommitsInterjectionExactlyOnce(t *testing.T) {
+	provider := &inlineFlushToolProvider{}
+	engine := NewEngine(provider, nil)
+	registry := NewToolRegistry()
+	registry.Register(&interjectingTool{name: "test_tool", fn: func() {
+		engine.QueueInterjection(QueuedInterjection{ID: "tui-interject-1", Message: UserText("steer me")})
+	}})
+	engine.tools = registry
+
+	var turnUserMessages int
+	engine.SetTurnCompletedCallback(func(ctx context.Context, _ int, msgs []Message, _ TurnMetrics) error {
+		for _, msg := range msgs {
+			if msg.Role == RoleUser {
+				turnUserMessages++
+			}
+		}
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("use tool")},
+		Tools:    []ToolSpec{{Name: "test_tool"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	commits := map[string]int{}
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventInterjection {
+			commits[event.InterjectionID]++
+		}
+	}
+
+	if provider.flushRequests.Load() == 0 {
+		t.Fatal("queued interjection did not request an inline flush")
+	}
+	if got := commits["tui-interject-1"]; got != 1 {
+		t.Fatalf("interjection commit events = %d, want exactly 1 (duplicates collide on client_message_id)", got)
+	}
+	if turnUserMessages != 1 {
+		t.Fatalf("turn callback user messages = %d, want exactly 1", turnUserMessages)
 	}
 }

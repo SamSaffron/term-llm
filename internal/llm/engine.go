@@ -185,6 +185,23 @@ type DynamicToolPublisher interface {
 	PublishDynamicTools([]ToolSpec) error
 }
 
+// InlineFlusher is implemented by inline-loop providers that can end the
+// current CLI prompt at the next tool-result boundary. The engine requests a
+// flush when an interjection is queued so the following Stream can deliver it.
+// RetryProvider implements the methods so factory wrapping stays transparent;
+// SupportsInlineFlush reports whether the inner provider can actually flush.
+type InlineFlusher interface {
+	RequestInlineFlush()
+	SupportsInlineFlush() bool
+}
+
+// inlineFlushResetter clears a flush request at an engine-controlled provider
+// turn boundary. Keeping this outside provider Stream implementations preserves
+// a request while RetryProvider re-enters the same logical turn.
+type inlineFlushResetter interface {
+	clearInlineFlush()
+}
+
 // ProviderCleaner is an optional interface for providers that need cleanup
 // after a conversation ends (for example, a local CLI provider's persistent MCP server).
 // Call sites: runtime eviction, server shutdown. Do NOT call per-turn.
@@ -432,6 +449,23 @@ func (e *Engine) hasPendingToolSpecs(runID string) bool {
 	e.pendingToolsMu.Lock()
 	defer e.pendingToolsMu.Unlock()
 	return len(e.pendingToolSpecs[runID]) > 0
+}
+
+func (e *Engine) requestInlineFlush() {
+	if flusher, ok := e.provider.(InlineFlusher); ok {
+		flusher.RequestInlineFlush()
+	}
+}
+
+func (e *Engine) providerSupportsInlineFlush() bool {
+	flusher, ok := e.provider.(InlineFlusher)
+	return ok && flusher.SupportsInlineFlush()
+}
+
+func (e *Engine) clearInlineFlush() {
+	if resetter, ok := e.provider.(inlineFlushResetter); ok {
+		resetter.clearInlineFlush()
+	}
 }
 
 // drainPendingToolSpecs returns queued specs for one run and clears that queue.
@@ -968,8 +1002,15 @@ func (e *Engine) QueueInterjection(entry QueuedInterjection) string {
 // cannot consume it, already queued, transferred to a follow-up, or committed.
 func (e *Engine) QueueInterjectionWithStatus(entry QueuedInterjection) (string, InterjectionQueueStatus) {
 	e.callbackMu.Lock()
-	defer e.callbackMu.Unlock()
+	id, status := e.queueInterjectionWithStatusLocked(entry)
+	e.callbackMu.Unlock()
+	if status == InterjectionQueueQueued {
+		e.requestInlineFlush()
+	}
+	return id, status
+}
 
+func (e *Engine) queueInterjectionWithStatusLocked(entry QueuedInterjection) (string, InterjectionQueueStatus) {
 	entry.ID = strings.TrimSpace(entry.ID)
 	if entry.ID == "" {
 		entry.ID = nextEngineInterjectionID()
@@ -2050,6 +2091,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 	var priorErr error
 	for retry := 0; ; retry++ {
 		providerReq := e.prepareProviderRequest(req)
+		e.clearInlineFlush()
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			return err
@@ -2716,6 +2758,7 @@ turnLoop:
 			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), providerReq, fmt.Sprintf("Request (turn %d)", attempt))
 		}
 
+		e.clearInlineFlush()
 		stream, err := e.provider.Stream(ctx, providerReq)
 		if err != nil {
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
@@ -3668,21 +3711,35 @@ turnLoop:
 			// Inline-loop providers normally finish after their synchronous tool
 			// stream. A dynamically registered tool is the exception: grok-bin
 			// deliberately ends the current ACP prompt so the next provider turn can
-			// reconnect with the expanded MCP catalogue.
+			// reconnect with the expanded MCP catalogue. claude-bin and grok-bin
+			// use the same tool-result flush for queued interjections.
 			if finishingToolExecuted {
 				if err := sendDone(); err != nil {
 					return err
 				}
 				return nil
 			}
-			if inlineToolLoop && e.hasPendingToolSpecs(runID) {
-				req.Messages = append(req.Messages, UserText(dynamicToolContinuationPrompt))
-				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
-					return err
-				}
-				continue
-			}
 			if inlineToolLoop {
+				pendingTools := e.hasPendingToolSpecs(runID)
+				canContinue := attempt < maxTurns-1
+				canFlushInterjections := pendingTools || e.providerSupportsInlineFlush()
+				continued := false
+				if pendingTools {
+					req.Messages = append(req.Messages, UserText(dynamicToolContinuationPrompt))
+				}
+				if canFlushInterjections && canContinue {
+					var err error
+					continued, err = e.continueWithInterjections(ctx, send, &req, turnCallback, attempt, Message{}, true, attempt < maxTurns-2)
+					if err != nil {
+						return err
+					}
+				}
+				if pendingTools || continued {
+					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+						return err
+					}
+					continue
+				}
 				if err := sendDone(); err != nil {
 					return err
 				}

@@ -142,6 +142,21 @@ func (p *AgyBinProvider) Credential() string { return "agy-bin" }
 func (p *AgyBinProvider) Capabilities() Capabilities {
 	return Capabilities{ToolCalls: true, ManagesOwnContext: true, InlineToolLoop: true, OrderedInlineToolEvents: true}
 }
+
+// RequestInlineFlush marks the next tool result so agy ends its current prompt.
+// The engine then starts a new Stream that delivers queued interjections.
+func (p *AgyBinProvider) RequestInlineFlush() {
+	p.requestInlineFlush()
+}
+
+// SupportsInlineFlush reports that agy-bin can stop its inline tool loop at a
+// tool-result boundary.
+func (p *AgyBinProvider) SupportsInlineFlush() bool { return true }
+
+func (p *AgyBinProvider) formatToolOutput(output ToolOutput) string {
+	return p.appendInlineFlushNotice(formatToolOutputForGrok(output))
+}
+
 func (p *AgyBinProvider) SetEnv(env map[string]string) {
 	p.extraEnv = nil
 	if len(env) == 0 {
@@ -630,7 +645,7 @@ func (p *AgyBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpec, 
 	if p.mcpServer != nil {
 		return nil
 	}
-	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(formatToolOutputForGrok))
+	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(p.formatToolOutput))
 	server.SetDebug(debug)
 	url, token, err := server.Start(ctx, mcpToolSpecs(tools))
 	if err != nil {

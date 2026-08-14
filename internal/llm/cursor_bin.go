@@ -177,6 +177,21 @@ func (p *CursorBinProvider) Capabilities() Capabilities {
 	}
 }
 
+// RequestInlineFlush marks the next tool result so Cursor Agent ends its
+// current prompt. The engine then starts a new Stream that delivers queued
+// interjections.
+func (p *CursorBinProvider) RequestInlineFlush() {
+	p.requestInlineFlush()
+}
+
+// SupportsInlineFlush reports that cursor-bin can stop its inline tool loop at
+// a tool-result boundary.
+func (p *CursorBinProvider) SupportsInlineFlush() bool { return true }
+
+func (p *CursorBinProvider) formatToolOutput(output ToolOutput) string {
+	return p.appendInlineFlushNotice(formatToolOutputForGrok(output))
+}
+
 func (p *CursorBinProvider) SetEnv(env map[string]string) {
 	p.extraEnv = nil
 	if len(env) == 0 {
@@ -576,7 +591,7 @@ func (p *CursorBinProvider) ensureMCPServer(ctx context.Context, tools []ToolSpe
 	if p.mcpServer != nil {
 		return nil
 	}
-	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(formatToolOutputForGrok))
+	server := mcphttp.NewServer(p.cliToolBridgeState.wrappedExecutor(p.formatToolOutput))
 	server.SetDebug(debug)
 	url, token, err := server.Start(ctx, mcpToolSpecs(tools))
 	if err != nil {

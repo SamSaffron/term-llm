@@ -173,6 +173,28 @@ func (r *RetryProvider) PublishDynamicTools(tools []ToolSpec) error {
 	return nil
 }
 
+// RequestInlineFlush forwards an inline tool-result flush to the inner provider.
+func (r *RetryProvider) RequestInlineFlush() {
+	if flusher, ok := r.inner.(InlineFlusher); ok {
+		flusher.RequestInlineFlush()
+	}
+}
+
+// SupportsInlineFlush reports whether the wrapped provider can stop an inline
+// CLI prompt at the next tool-result boundary.
+func (r *RetryProvider) SupportsInlineFlush() bool {
+	flusher, ok := r.inner.(InlineFlusher)
+	return ok && flusher.SupportsInlineFlush()
+}
+
+// clearInlineFlush forwards logical provider-turn resets without clearing a
+// request between RetryProvider attempts of that same turn.
+func (r *RetryProvider) clearInlineFlush() {
+	if resetter, ok := r.inner.(inlineFlushResetter); ok {
+		resetter.clearInlineFlush()
+	}
+}
+
 // CleanupMCP forwards to the inner provider if it implements ProviderCleaner.
 // This ensures stateful providers get cleaned up properly
 // even when wrapped with retry logic.
