@@ -72,6 +72,12 @@ class Element {
     this.children = [];
     nodes.forEach((node) => { if (node) this.appendChild(node); });
   }
+  remove() {
+    if (!this.parentNode) return;
+    const idx = this.parentNode.children.indexOf(this);
+    if (idx !== -1) this.parentNode.children.splice(idx, 1);
+    this.parentNode = null;
+  }
   setAttribute(name, value) { this.attributes.set(name, String(value)); if (name === 'class') this.className = String(value); }
   getAttribute(name) { return this.attributes.get(name) || null; }
   addEventListener(type, listener) {
@@ -353,6 +359,9 @@ function createFakeTimers() {
       '/hub/node/beta/?new=1',
     ].join(','), 'agents sort by folded display name, raw name, then ID');
     assert(!elements.hubAgentLinks.classList.contains('hidden'), 'valid agent list is visible');
+    const icons = elements.hubAgentLinks.querySelectorAll('.hub-agent-icon');
+    assertEqual(icons.length, 4, 'every agent row renders one robot icon');
+    icons.forEach((icon) => assertEqual(icon.getAttribute('aria-hidden'), 'true', 'robot icon is decorative'));
   });
 
   await run('hidden Hub startup waits for visibility before fetching', async () => {
@@ -432,30 +441,54 @@ function createFakeTimers() {
     assert(!targetsByName.has('Unsafe backslash'), 'backslash authority escapes are skipped');
   });
 
-  await run('Hub agent activity dots and current-node state are accessible', async () => {
-    const { elements } = createHarness({
-      hub: { url: '/', nodeId: 'array-active' },
+  await run('Hub agent attention appears after a background run finishes', async () => {
+    let now = 1000;
+    let running = true;
+    const { elements, window } = createHarness({
+      now: () => now,
+      hub: { url: '/', nodeId: 'current' },
       nativeFetch: async () => nodesResponse([
-        { id: 'count-active', name: 'Count active', status: { reachable: true }, sessions: { active_count: '2' }, new_session_path: '/node/count/' },
-        { id: 'array-active', name: 'Array active', status: { reachable: true }, sessions: { active: [{ resume_path: '/node/array/session' }] }, new_session_path: '/node/array/' },
-        { id: 'idle', name: 'Idle', status: { reachable: true }, sessions: { active_count: 0, active: [] }, new_session_path: '/node/idle/' },
+        { id: 'current', name: 'Current', status: { reachable: true }, sessions: { active_count: running ? 1 : 0 }, new_session_path: '/node/current/' },
+        { id: 'worker', name: 'Worker', status: { reachable: true }, sessions: { active_count: running ? 1 : 0 }, new_session_path: '/node/worker/' },
       ]),
     });
     await flushAsync();
+    assertEqual(elements.hubAgentLinks.querySelectorAll('.hub-agent-attention').length, 0, 'running agents do not ask for attention');
+
+    running = false;
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
 
     const links = elements.hubAgentLinks.querySelectorAll('.hub-agent-link');
-    const current = links.find((link) => link.querySelector('.hub-agent-name').textContent === 'Array active');
-    assertEqual(current.getAttribute('aria-current'), 'true', 'current node is marked without claiming the current page');
-    const dots = elements.hubAgentLinks.querySelectorAll('.hub-agent-active');
-    assertEqual(dots.length, 2, 'active count and compatibility active array each render a dot');
-    dots.forEach((dot) => {
-      assertEqual(dot.title, 'Active session', 'active dot has a title');
-      assertEqual(dot.getAttribute('aria-hidden'), 'true', 'active dot is hidden from assistive technology');
-      assertEqual(dot.getAttribute('aria-label'), null, 'generic active dot has no aria-label');
-    });
-    const activeText = elements.hubAgentLinks.querySelectorAll('.visually-hidden');
-    assertEqual(activeText.length, 2, 'each active link contains accessible status text');
-    activeText.forEach((text) => assertEqual(text.textContent, 'Active session', 'active status text is explicit'));
+    const current = links.find((link) => link.querySelector('.hub-agent-name').textContent === 'Current');
+    const worker = links.find((link) => link.querySelector('.hub-agent-name').textContent === 'Worker');
+    assertEqual(current.getAttribute('aria-current'), 'true', 'current node keeps selected state');
+    assertEqual(current.querySelector('.hub-agent-attention'), null, 'current node never duplicates session attention');
+    assertEqual(worker.children[0].className, 'hub-agent-icon', 'robot icon owns the aligned leading column');
+    assertEqual(worker.children[1].className, 'hub-agent-name', 'agent name follows the icon');
+    assertEqual(worker.children[2].className, 'hub-agent-attention', 'attention dot owns the trailing column');
+    const dot = worker.querySelector('.hub-agent-attention');
+    assertEqual(dot.title, 'Needs attention', 'attention dot has an explicit title');
+    assertEqual(dot.getAttribute('aria-hidden'), 'true', 'visual dot is hidden from assistive technology');
+    assertEqual(worker.querySelector('.visually-hidden').textContent, 'Needs attention', 'attention is announced once');
+
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+    const latchedWorker = elements.hubAgentLinks.querySelectorAll('.hub-agent-link')
+      .find((link) => link.querySelector('.hub-agent-name').textContent === 'Worker');
+    assert(latchedWorker.querySelector('.hub-agent-attention'), 'attention remains latched while the agent stays idle');
+
+    await latchedWorker.dispatchEvent({ type: 'click' });
+    assertEqual(latchedWorker.querySelector('.hub-agent-attention'), null, 'click clears the visible dot immediately');
+    assertEqual(latchedWorker.querySelector('.visually-hidden'), null, 'click clears accessible attention immediately');
+    now += 60000;
+    await window.dispatchEvent({ type: 'focus' });
+    await flushAsync();
+    const visitedWorker = elements.hubAgentLinks.querySelectorAll('.hub-agent-link')
+      .find((link) => link.querySelector('.hub-agent-name').textContent === 'Worker');
+    assertEqual(visitedWorker.querySelector('.hub-agent-attention'), null, 'visiting the agent clears attention');
   });
 
   await run('initial Hub 401 hides and clears agent links', async () => {
