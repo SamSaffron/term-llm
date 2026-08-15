@@ -567,8 +567,13 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewAgyBinProvider(cfg.Model, cfg.Env), nil
 
 	case config.ProviderTypeOllama:
+		thinkLevel, err := normalizeOllamaThinkLevel(cfg.ThinkLevel)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
 		opts := OllamaOptions{
 			Think:           cfg.Think,
+			ThinkLevel:      thinkLevel,
 			TopK:            cfg.TopK,
 			MinP:            cfg.MinP,
 			PresencePenalty: cfg.PresencePenalty,

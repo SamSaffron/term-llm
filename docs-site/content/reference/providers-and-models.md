@@ -160,6 +160,21 @@ providers:
 
 The provider uses `https://cloud-api.near.ai/v1`, supports tool calls, and has a curated fallback list of TEE-hosted text models. `term-llm models --provider nearai` queries NEAR AI Cloud's public `/model/list` catalog and filters it to chat-capable models, with token prices shown per 1M tokens when available.
 
+## Ollama thinking levels
+
+Ollama's native chat API accepts either a boolean `think` switch or a named thinking level. Use `think` for binary on/off models, or `think_level` when the model supports `low`, `medium`, `high`, or `max`:
+
+```yaml
+providers:
+  local_qwen:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen3:30b
+    think_level: low
+```
+
+`think_level` takes precedence when both settings are present. Named levels are useful when binary thinking produces unnecessarily long traces; support still depends on the selected Ollama model.
+
 ## vLLM reasoning providers
 
 For vLLM servers running reasoning models, prefer `type: vllm` instead of generic `openai_compatible`. The vLLM provider still uses the OpenAI-compatible `/v1/chat/completions` API, but maps term-llm reasoning effort suffixes into model-family-specific vLLM request fields and replays prior assistant reasoning with vLLM's current `reasoning` message field.

@@ -472,7 +472,7 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 			reasoningExpected = modelEffort != ""
 			targetCapabilities.SupportsReasoningEffort = len(llm.ReasoningEffortsForProviderModel(string(providerType), selectedModel)) > 0
 		}
-		if providerCfg.Think != nil && *providerCfg.Think {
+		if (providerCfg.Think != nil && *providerCfg.Think) || strings.TrimSpace(providerCfg.ThinkLevel) != "" {
 			reasoningExpected = true
 		}
 		reportedNumCtx := 0

@@ -128,8 +128,8 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req ollamaChatRequest
 		json.NewDecoder(r.Body).Decode(&req)
-		if req.Think == nil || !*req.Think {
-			t.Error("expected think=true in request")
+		if value, ok := req.Think.(bool); !ok || !value {
+			t.Errorf("expected think=true in request, got %#v", req.Think)
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		for _, chunk := range []string{
@@ -178,6 +178,88 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 		if kind != ReasoningKindRaw {
 			t.Fatalf("thinking kind = %q, want raw", kind)
 		}
+	}
+}
+
+func TestOllamaProviderStreamThinkFalse(t *testing.T) {
+	var capturedThink any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ollamaChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		capturedThink = req.Think
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprintln(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":"ok"},"done":true}`)
+	}))
+	defer srv.Close()
+
+	think := false
+	p := NewOllamaChatProvider(srv.URL, "qwen3:14b", OllamaOptions{Think: &think})
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	defer stream.Close()
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+
+	if capturedThink != false {
+		t.Fatalf("think = %#v, want false", capturedThink)
+	}
+}
+
+func TestOllamaProviderStreamThinkLevel(t *testing.T) {
+	var capturedThink any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ollamaChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		capturedThink = req.Think
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprintln(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":"ok"},"done":false}`)
+		fmt.Fprintln(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":""},"done":true}`)
+	}))
+	defer srv.Close()
+
+	p := NewOllamaChatProvider(srv.URL, "qwen3:14b", OllamaOptions{ThinkLevel: "low"})
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	defer stream.Close()
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+
+	if capturedThink != "low" {
+		t.Fatalf("think = %#v, want low", capturedThink)
+	}
+}
+
+func TestNormalizeOllamaThinkLevel(t *testing.T) {
+	for _, level := range []string{"low", "medium", "high", "max"} {
+		got, err := normalizeOllamaThinkLevel(level)
+		if err != nil || got != level {
+			t.Fatalf("normalizeOllamaThinkLevel(%q) = %q, %v", level, got, err)
+		}
+	}
+	if _, err := normalizeOllamaThinkLevel("extreme"); err == nil {
+		t.Fatal("expected invalid think level error")
+	}
+}
+
+func TestOllamaProviderStreamRejectsInvalidThinkLevel(t *testing.T) {
+	p := NewOllamaChatProvider("http://127.0.0.1:1", "qwen3:14b", OllamaOptions{ThinkLevel: "extreme"})
+	_, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err == nil || !strings.Contains(err.Error(), "invalid Ollama think_level") {
+		t.Fatalf("error = %v, want invalid think_level guidance", err)
 	}
 }
 
@@ -274,7 +356,7 @@ func TestOllamaProviderStreamSuppressesLeadingReasoningWhitespaceArtifact(t *tes
 
 func TestOllamaProviderStreamThinkSuffix(t *testing.T) {
 	var capturedModel string
-	var capturedThink *bool
+	var capturedThink any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req ollamaChatRequest
 		json.NewDecoder(r.Body).Decode(&req)
@@ -304,8 +386,8 @@ func TestOllamaProviderStreamThinkSuffix(t *testing.T) {
 	if capturedModel != "qwen3:14b" {
 		t.Errorf("expected model 'qwen3:14b' (suffix stripped), got %q", capturedModel)
 	}
-	if capturedThink == nil || !*capturedThink {
-		t.Error("expected think=true when -think suffix used")
+	if value, ok := capturedThink.(bool); !ok || !value {
+		t.Fatalf("expected think=true when -think suffix used, got %#v", capturedThink)
 	}
 }
 

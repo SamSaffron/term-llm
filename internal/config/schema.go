@@ -419,6 +419,7 @@ var providerFieldSpecs = []ProviderFieldSpec{
 	{Path: "session_token", Sensitive: true},
 	{Path: "model_map", Placeholder: map[string]any{}},
 	{Path: "think", Placeholder: false},
+	{Path: "think_level", Placeholder: "low"},
 	{Path: "top_k", Placeholder: 0},
 	{Path: "min_p", Placeholder: 0.0},
 	{Path: "presence_penalty", Placeholder: 0.0},
