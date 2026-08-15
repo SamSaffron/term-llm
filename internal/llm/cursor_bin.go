@@ -40,6 +40,7 @@ type CursorBinProvider struct {
 	model, effort string
 	fast          bool
 	extraEnv      map[string]string
+	realHome      string
 
 	cursorHome   string
 	sessionID    string
@@ -145,7 +146,8 @@ func ValidateCursorBinModel(model string) error {
 
 func NewCursorBinProvider(model string, env map[string]string) *CursorBinProvider {
 	model, effort, fast := parseCursorModel(model)
-	p := &CursorBinProvider{model: model, effort: effort, fast: fast}
+	realHome, _ := os.UserHomeDir()
+	p := &CursorBinProvider{model: model, effort: effort, fast: fast, realHome: realHome}
 	p.tempFileTracker.logName = "cursor-bin"
 	p.SetEnv(env)
 	return p
@@ -731,9 +733,31 @@ func (p *CursorBinProvider) cursorDiagnosticRedactor() func(string) string {
 	}
 }
 
+func (p *CursorBinProvider) effectiveEnv(key string) string {
+	if value, ok := p.extraEnv[key]; ok {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(os.Getenv(key))
+}
+
+func (p *CursorBinProvider) prepareHomeCredentials(home string) error {
+	privateHome := filepath.Join(home, cursorUserHomeDir)
+	switch strings.ToLower(p.effectiveEnv("AGENT_CLI_CREDENTIAL_STORE")) {
+	case "file":
+		return prepareCursorFileCredentials(p.realHome, privateHome)
+	case "memory":
+		return nil
+	default:
+		return prepareCursorPlatformCredentials(p.realHome, privateHome)
+	}
+}
+
 func (p *CursorBinProvider) homeForRequest(ephemeral bool) (string, func(), error) {
 	if !ephemeral {
 		if err := p.ensureCursorHome(); err != nil {
+			return "", func() {}, err
+		}
+		if err := p.prepareHomeCredentials(p.cursorHome); err != nil {
 			return "", func() {}, err
 		}
 		return p.cursorHome, func() {}, nil
@@ -743,6 +767,10 @@ func (p *CursorBinProvider) homeForRequest(ephemeral bool) (string, func(), erro
 		return "", func() {}, err
 	}
 	if err := ensureCursorHomeLayout(home); err != nil {
+		_ = os.RemoveAll(home)
+		return "", func() {}, err
+	}
+	if err := p.prepareHomeCredentials(home); err != nil {
 		_ = os.RemoveAll(home)
 		return "", func() {}, err
 	}
@@ -934,6 +962,9 @@ func (p *CursorBinProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 	}
 	defer os.RemoveAll(home)
 	if err := ensureCursorHomeLayout(home); err != nil {
+		return nil, err
+	}
+	if err := p.prepareHomeCredentials(home); err != nil {
 		return nil, err
 	}
 	output, err := cursorModelsCommandOutput(ctx, p, home)

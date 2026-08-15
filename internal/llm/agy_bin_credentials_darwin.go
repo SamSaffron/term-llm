@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +46,7 @@ func prepareAgyPlatformCredentials(realHome, privateHome string) (bool, error) {
 	// macOS resolves the default login keychain relative to HOME. agy stores its
 	// OAuth token there, so expose only that database inside agy's private HOME
 	// rather than giving agy the real HOME (and its workspace/tool settings).
-	src, err := agyLoginKeychainPath(realHome)
+	src, err := macOSLoginKeychainPath(realHome)
 	if err != nil {
 		return false, err
 	}
@@ -68,19 +69,27 @@ func prepareAgyPlatformCredentials(realHome, privateHome string) (bool, error) {
 	return true, nil
 }
 
-func agyLoginKeychainPath(home string) (string, error) {
+var errMacOSLoginKeychainNotFound = errors.New("macOS login keychain not found")
+
+func macOSLoginKeychainPath(home string) (string, error) {
+	if home == "" {
+		return "", errMacOSLoginKeychainNotFound
+	}
 	dir := filepath.Join(home, "Library", "Keychains")
 	for _, name := range []string{"login.keychain-db", "login.keychain"} {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
+		if err == nil {
+			if info.IsDir() {
+				return "", fmt.Errorf("locate macOS login keychain: %s is a directory", path)
+			}
 			return path, nil
 		}
 		if err != nil && !os.IsNotExist(err) {
-			return "", fmt.Errorf("locate agy login keychain: %w", err)
+			return "", fmt.Errorf("locate macOS login keychain: %w", err)
 		}
 	}
-	return "", fmt.Errorf("locate agy login keychain: neither login.keychain-db nor login.keychain exists in %s", dir)
+	return "", fmt.Errorf("%w: neither login.keychain-db nor login.keychain exists in %s", errMacOSLoginKeychainNotFound, dir)
 }
 
 func envWithValue(env []string, key, value string) []string {
