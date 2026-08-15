@@ -191,7 +191,8 @@ type ProviderConfig struct {
 	ModelMap     map[string]string `mapstructure:"model_map"`         // Friendly name -> Bedrock model ID/ARN
 
 	// Ollama-native sampling options (type: ollama only)
-	Think           *bool    `mapstructure:"think"`            // Enable extended thinking / reasoning
+	Think           *bool    `mapstructure:"think"`            // Enable or disable extended thinking
+	ThinkLevel      string   `mapstructure:"think_level"`      // Thinking level: low, medium, high, or max
 	TopK            *int     `mapstructure:"top_k"`            // Top-K sampling
 	MinP            *float64 `mapstructure:"min_p"`            // Min-P sampling
 	PresencePenalty *float64 `mapstructure:"presence_penalty"` // Presence penalty

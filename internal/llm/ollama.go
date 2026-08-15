@@ -24,6 +24,7 @@ var (
 // in the shared Request struct.
 type OllamaOptions struct {
 	Think           *bool
+	ThinkLevel      string
 	TopK            *int
 	MinP            *float64
 	PresencePenalty *float64
@@ -38,6 +39,16 @@ type OllamaProvider struct {
 	baseURL string
 	model   string
 	opts    OllamaOptions
+}
+
+func normalizeOllamaThinkLevel(level string) (string, error) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	switch level {
+	case "", "low", "medium", "high", "max":
+		return level, nil
+	default:
+		return "", fmt.Errorf("invalid Ollama think_level %q: expected low, medium, high, or max", level)
+	}
 }
 
 // NewOllamaChatProvider creates a native Ollama chat provider.
@@ -88,7 +99,7 @@ type ollamaChatRequest struct {
 	Messages []ollamaChatMsg `json:"messages"`
 	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Stream   bool            `json:"stream"`
-	Think    *bool           `json:"think,omitempty"`
+	Think    any             `json:"think,omitempty"`
 	Options  *ollamaChatOpts `json:"options,omitempty"`
 }
 
@@ -298,11 +309,22 @@ func buildOllamaTools(specs []ToolSpec) ([]ollamaTool, error) {
 func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	// Strip a -think suffix from the model name and enable thinking automatically.
 	model := chooseModel(req.Model, p.model)
-	think := p.opts.Think
+	var think any
+	if p.opts.Think != nil {
+		think = *p.opts.Think
+	}
+	thinkLevel, err := normalizeOllamaThinkLevel(p.opts.ThinkLevel)
+	if err != nil {
+		return nil, err
+	}
+	if thinkLevel != "" {
+		think = thinkLevel
+	}
 	if strings.HasSuffix(model, "-think") {
 		model = strings.TrimSuffix(model, "-think")
-		t := true
-		think = &t
+		if thinkLevel == "" {
+			think = true
+		}
 	}
 
 	messages := buildOllamaMessages(req.Messages)
@@ -356,8 +378,8 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 		fmt.Fprintf(os.Stderr, "Model: %s\n", model)
 		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
 		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-		if think != nil && *think {
-			fmt.Fprintf(os.Stderr, "Think: enabled\n")
+		if think != nil {
+			fmt.Fprintf(os.Stderr, "Think: %v\n", think)
 		}
 		fmt.Fprintln(os.Stderr, "====================================")
 	}

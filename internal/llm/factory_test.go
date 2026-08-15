@@ -11,6 +11,17 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestCreateProviderFromConfigRejectsInvalidOllamaThinkLevel(t *testing.T) {
+	_, err := createProviderFromConfig("local", &config.ProviderConfig{
+		Type:       config.ProviderTypeOllama,
+		Model:      "qwen3:14b",
+		ThinkLevel: "extreme",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid Ollama think_level") {
+		t.Fatalf("error = %v, want invalid think_level guidance", err)
+	}
+}
+
 func TestCreateProviderFromConfigGrokBin(t *testing.T) {
 	provider, err := createProviderFromConfig("grok-bin", &config.ProviderConfig{
 		Type:  config.ProviderTypeGrokBin,
