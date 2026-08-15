@@ -319,6 +319,25 @@ func TestGrokBinProviderBuildACPArgsUsesRestrictedProfile(t *testing.T) {
 	}
 }
 
+func TestApplyGrokInterjectionEnvelope(t *testing.T) {
+	blocks := []acp.ContentBlock{
+		{Type: "text", Text: "<conversation_history>\nold\n</conversation_history>"},
+		{Type: "text", Text: "<developer>\nnote\n</developer>\n\n"},
+		{Type: "text", Text: "also add tests"},
+		{Type: "image", Data: "abc", MimeType: "image/png"},
+	}
+	got := applyGrokInterjectionEnvelope(blocks)
+	if !strings.Contains(got[2].Text, grokInterjectionNote) || !strings.Contains(got[2].Text, "also add tests") || !strings.Contains(got[2].Text, grokUnfinishedTasksReminder) {
+		t.Fatalf("user block = %q", got[2].Text)
+	}
+	if strings.Contains(got[0].Text, grokInterjectionNote) || strings.Contains(got[1].Text, grokInterjectionNote) {
+		t.Fatalf("wrapped non-user blocks: %#v", got)
+	}
+	if got[3].Type != "image" || got[3].Data != "abc" {
+		t.Fatalf("image block = %+v", got[3])
+	}
+}
+
 func TestGrokACPPromptMetaUsesVerbatimModeAndPromptID(t *testing.T) {
 	meta, promptID, err := grokACPPromptMeta()
 	if err != nil {
@@ -395,6 +414,54 @@ done
 	}
 	if !request.Params.Meta.Verbatim || !isGrokHomeID(request.Params.Meta.PromptID) {
 		t.Fatalf("wire prompt metadata = %+v", request.Params.Meta)
+	}
+}
+
+func TestGrokBinProviderFramesInterruptedFollowUpPrompt(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	promptLog := filepath.Join(t.TempDir(), "prompt.json")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"follow-session\"}}" ;;
+    *'"method":"session/load"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/resume"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/prompt"'*)
+      printf '%s' "$line" > "$GROK_PROMPT_LOG"
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.5-low", map[string]string{"GROK_PROMPT_LOG": promptLog})
+	defer p.CleanupMCP()
+	first, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("start")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectGrokACPTestText(t, first)
+	p.interruptFollowUp.Store(true)
+	second, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("start"), AssistantText("partial"), UserText("also add tests")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectGrokACPTestText(t, second)
+	raw, err := os.ReadFile(promptLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), grokInterjectionNote) || !strings.Contains(string(raw), "also add tests") || !strings.Contains(string(raw), grokUnfinishedTasksReminder) {
+		t.Fatalf("follow-up prompt missing interjection envelope: %s", raw)
 	}
 }
 
@@ -759,6 +826,175 @@ done
 		t.Fatalf("cancelled ACP provider state = %q/%d, want cancel-session/1", p.sessionID, p.messagesSent)
 	}
 	p.CleanupMCP()
+}
+
+func TestGrokBinProviderNativeInterruptEndsActiveProseTurn(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+prompt_id=""
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"interrupt-session\"}}" ;;
+    *'"method":"session/prompt"'*)
+      prompt_id=$id
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"interrupt-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}"
+      ;;
+    *'"method":"session/cancel"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$prompt_id,\"result\":{\"stopReason\":\"cancelled\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	provider := NewGrokBinProvider("grok-4.5-low", nil)
+	defer provider.CleanupMCP()
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("long answer")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	deadline := time.Now().Add(3 * time.Second)
+	for text.String() != "partial" {
+		if time.Now().After(deadline) {
+			t.Fatal("Grok ACP prompt did not emit partial prose")
+		}
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			t.Fatalf("recv before interrupt: %v", recvErr)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatal(event.Err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	provider.RequestInlineFlush()
+	if provider.inlineFlushRequested() {
+		t.Fatal("successful native interrupt retained tool-boundary fallback")
+	}
+
+	done := make(chan error, 1)
+	phases := make(chan string, 8)
+	go func() {
+		defer close(phases)
+		for {
+			event, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				done <- nil
+				return
+			}
+			if recvErr != nil {
+				done <- recvErr
+				return
+			}
+			if event.Type == EventPhase {
+				phases <- event.Text
+			}
+			if event.Type == EventError && event.Err != nil {
+				done <- event.Err
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("interrupted stream failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("native interrupt did not end Grok ACP stream")
+	}
+	// The interrupt is the expected boundary for a steer, so it must stay quiet.
+	for phase := range phases {
+		if strings.Contains(phase, "cancelled the turn") {
+			t.Fatalf("native interrupt surfaced a cancellation warning: %q", phase)
+		}
+	}
+	if provider.sessionID != "interrupt-session" || provider.messagesSent != 1 {
+		t.Fatalf("interrupted ACP provider state = %q/%d, want interrupt-session/1", provider.sessionID, provider.messagesSent)
+	}
+}
+
+func TestGrokBinProviderNativeInterruptRacesACPStartup(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+prompt_id=""
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}" ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"race-session\"}}" ;;
+    *'"method":"session/prompt"'*) prompt_id=$id ;;
+    *'"method":"session/cancel"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$prompt_id,\"result\":{\"stopReason\":\"cancelled\"}}"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	provider := NewGrokBinProvider("grok-4.5-low", nil)
+	defer provider.CleanupMCP()
+	provider.RequestInlineFlush()
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("long answer")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		for {
+			event, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				done <- nil
+				return
+			}
+			if recvErr != nil {
+				done <- recvErr
+				return
+			}
+			if event.Type == EventError && event.Err != nil {
+				done <- event.Err
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("startup-raced interrupt failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup-raced interrupt did not end Grok ACP stream")
+	}
+	if provider.inlineFlushRequested() {
+		t.Fatal("startup-raced interrupt retained tool-boundary fallback")
+	}
+	if provider.sessionID != "race-session" || provider.messagesSent != 1 {
+		t.Fatalf("raced ACP provider state = %q/%d, want race-session/1", provider.sessionID, provider.messagesSent)
+	}
 }
 
 func collectGrokACPTestText(t *testing.T, stream Stream) string {

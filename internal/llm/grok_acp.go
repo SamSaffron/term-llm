@@ -26,6 +26,10 @@ const (
 	grokACPStopTimeout         = 3 * time.Second
 	grokACPProfileName         = "term-llm-acp-agent.md"
 	grokLegacyTransportEnv     = "TERM_LLM_GROK_LEGACY_STREAMING_JSON"
+	// Match grok-build's xai-interjection-core envelope so a cancel-and-continue
+	// steer is recognized as mid-turn work rather than a fresh user turn.
+	grokInterjectionNote        = "The user sent a message while you were working:"
+	grokUnfinishedTasksReminder = "Make sure to complete any unfinished tasks from previous turns."
 )
 
 var grokACPCloseTimeout = time.Second
@@ -515,6 +519,48 @@ func grokACPMCPServer(url, token string) acp.MCPServer {
 	}
 }
 
+// sendNativeInterrupt asks the live Grok ACP session to end its current
+// prompt. term-llm interjections are a cancel-and-continue: Grok records the
+// cancelled turn as a durable boundary, then the engine starts a new
+// session/prompt with the queued user message. This matches claude-bin's
+// native interrupt rather than Grok's in-turn x.ai/interject, which would
+// hide the steer inside the current assistant message and break transcript
+// order.
+func (p *GrokBinProvider) sendNativeInterrupt() bool {
+	p.acpMu.Lock()
+	process := p.acpProcess
+	p.acpMu.Unlock()
+	if process == nil || process.client == nil || strings.TrimSpace(process.sessionID) == "" || !p.acpPromptActive.Load() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := process.client.CancelSession(ctx, process.sessionID); err != nil {
+		return false
+	}
+	p.clearInlineFlush()
+	p.interruptFollowUp.Store(true)
+	return true
+}
+
+func applyGrokInterjectionEnvelope(blocks []acp.ContentBlock) []acp.ContentBlock {
+	out := append([]acp.ContentBlock(nil), blocks...)
+	for i := range out {
+		if out[i].Type != "text" || strings.TrimSpace(out[i].Text) == "" {
+			continue
+		}
+		if strings.HasPrefix(out[i].Text, "<conversation_history>") || strings.HasPrefix(out[i].Text, "<developer>") {
+			continue
+		}
+		out[i].Text = formatGrokInterjection(out[i].Text)
+	}
+	return out
+}
+
+func formatGrokInterjection(text string) string {
+	return grokInterjectionNote + "\n<user_query>\n" + text + "\n</user_query>\n" + grokUnfinishedTasksReminder
+}
+
 func (p *GrokBinProvider) executeGrokACP(ctx context.Context, req Request, messages []Message, debug bool, send eventSender, exposeToolBridge bool) (grokCommandResult, error) {
 	if p.acpRunner != nil {
 		return p.acpRunner(ctx, req, messages, debug, send, exposeToolBridge)
@@ -534,6 +580,9 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 	blocks := make([]acp.ContentBlock, 0, len(prompt.Content))
 	for _, block := range prompt.Content {
 		blocks = append(blocks, acp.ContentBlock{Type: block.Type, Text: block.Text, Data: block.Data, MimeType: block.MimeType})
+	}
+	if !req.Ephemeral && p.interruptFollowUp.Swap(false) {
+		blocks = applyGrokInterjectionEnvelope(blocks)
 	}
 
 	process, temporary, err := p.ensureGrokACPProcess(ctx, req, debug)
@@ -576,15 +625,6 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 		return grokCommandResult{}, err
 	}
 	cancelDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			cancelCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-			_ = process.client.CancelSession(cancelCtx, process.sessionID)
-			cancel()
-		case <-cancelDone:
-		}
-	}()
 
 	if debug {
 		fmt.Fprintf(os.Stderr, "[grok-bin] prompting ACP session %s (prompt_id=%s, blocks=%d, bytes=%d, verbatim=true)\n", process.sessionID, promptID, len(blocks), len(promptData))
@@ -596,12 +636,30 @@ func (p *GrokBinProvider) runGrokACP(ctx context.Context, req Request, messages 
 		err      error
 	}, 1)
 	go func() {
-		response, promptErr := process.client.Prompt(promptCtx, acp.PromptRequest{SessionID: process.sessionID, Prompt: blocks, Meta: promptMeta})
+		var response acp.PromptResponse
+		promptErr := process.client.Connection().CallAfterWrite(promptCtx, "session/prompt", acp.PromptRequest{SessionID: process.sessionID, Prompt: blocks, Meta: promptMeta}, &response, func() {
+			p.acpPromptActive.Store(true)
+			// Arm cancellation only after session/prompt is on the wire so a
+			// Close() or interjection cannot overtake the prompt request.
+			go func() {
+				select {
+				case <-ctx.Done():
+					cancelCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+					_ = process.client.CancelSession(cancelCtx, process.sessionID)
+					cancel()
+				case <-cancelDone:
+				}
+			}()
+			if p.inlineFlushRequested() {
+				p.sendNativeInterrupt()
+			}
+		})
 		promptResultCh <- struct {
 			response acp.PromptResponse
 			err      error
 		}{response: response, err: promptErr}
 	}()
+	defer p.acpPromptActive.Store(false)
 
 	var promptResult struct {
 		response acp.PromptResponse
@@ -723,7 +781,9 @@ promptComplete:
 		// Grok records an accepted cancelled prompt as a durable turn boundary.
 		// Preserve the resident session and advance the sent-message boundary so
 		// the cancelled user turn is not replayed on the next request.
-		if ctx.Err() == nil {
+		// A native interjection interrupt is that expected boundary, so keep it
+		// quiet. Unexpected agent-side cancels still surface a warning.
+		if ctx.Err() == nil && !p.interruptFollowUp.Load() {
 			if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "Grok cancelled the turn before producing a complete response."}); err != nil {
 				return grokCommandResult{}, err
 			}

@@ -183,6 +183,10 @@ func TestGrokBinProviderImplementsInlineFlusher(t *testing.T) {
 	if !flusher.SupportsInlineFlush() {
 		t.Fatal("retry wrapper does not report grok-bin inline flush support")
 	}
+	interrupter, ok := wrapped.(ImmediateInterrupter)
+	if !ok || !interrupter.SupportsImmediateInterruption() {
+		t.Fatal("retry wrapper does not report grok-bin immediate interruption support")
+	}
 	flusher.RequestInlineFlush()
 	if !provider.inlineFlushRequested() {
 		t.Fatal("RequestInlineFlush did not mark the tool-result boundary")

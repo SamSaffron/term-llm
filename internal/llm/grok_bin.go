@@ -100,6 +100,13 @@ type GrokBinProvider struct {
 
 	acpMu      sync.Mutex
 	acpProcess *grokACPProcess
+	// acpPromptActive is true only while session/prompt is in flight. Native
+	// interrupts before that keep the tool-result flush marker so the just-
+	// started prompt can still be cancelled.
+	acpPromptActive atomic.Bool
+	// interruptFollowUp frames the next resume prompt with Grok's mid-turn
+	// interjection envelope so a cancel-and-continue steer does not drop work.
+	interruptFollowUp atomic.Bool
 
 	cliToolBridgeState
 	tempFileTracker
@@ -222,6 +229,8 @@ func (p *GrokBinProvider) ResetConversation() {
 		p.acpProcess = nil
 	}
 	p.acpMu.Unlock()
+	p.acpPromptActive.Store(false)
+	p.interruptFollowUp.Store(false)
 	p.sessionID = ""
 	p.messagesSent = 0
 }
@@ -285,9 +294,15 @@ func (p *GrokBinProvider) ImportProviderState(data []byte) error {
 
 func (p *GrokBinProvider) RequestInlineFlush() {
 	p.requestInlineFlush()
+	// End the in-flight ACP prompt immediately. The tool-result notice remains
+	// as a fallback when no session is live yet (startup race) or the legacy
+	// headless transport is in use.
+	p.sendNativeInterrupt()
 }
 
 func (p *GrokBinProvider) SupportsInlineFlush() bool { return true }
+
+func (p *GrokBinProvider) SupportsImmediateInterruption() bool { return true }
 
 func (p *GrokBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {

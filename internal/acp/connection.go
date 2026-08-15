@@ -118,6 +118,17 @@ func (c *Connection) Err() error {
 
 // Call invokes an ACP method and decodes its result. Calls may run concurrently.
 func (c *Connection) Call(ctx context.Context, method string, params, result any) error {
+	return c.call(ctx, method, params, result, nil)
+}
+
+// CallAfterWrite is Call plus a hook invoked after the request is written and
+// before waiting for the response. Grok-bin uses this so session/cancel cannot
+// overtake session/prompt on the wire.
+func (c *Connection) CallAfterWrite(ctx context.Context, method string, params, result any, afterWrite func()) error {
+	return c.call(ctx, method, params, result, afterWrite)
+}
+
+func (c *Connection) call(ctx context.Context, method string, params, result any, afterWrite func()) error {
 	if err := c.Err(); err != nil {
 		return err
 	}
@@ -136,6 +147,9 @@ func (c *Connection) Call(ctx context.Context, method string, params, result any
 		c.removePending(id)
 		c.fail(fmt.Errorf("write ACP %s request: %w", method, err))
 		return err
+	}
+	if afterWrite != nil {
+		afterWrite()
 	}
 
 	select {

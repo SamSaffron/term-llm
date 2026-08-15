@@ -150,6 +150,43 @@ func TestConnectionPreservesNotificationOrderBeforeResponse(t *testing.T) {
 	}
 }
 
+func TestConnectionCallAfterWriteFiresBeforeResponse(t *testing.T) {
+	clientSide, agentSide := net.Pipe()
+	defer clientSide.Close()
+	defer agentSide.Close()
+	conn := NewConnection(clientSide, clientSide, &testHandler{}, Options{})
+
+	wrote := make(chan struct{})
+	go func() {
+		reader := bufio.NewReader(agentSide)
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		<-wrote
+		var request wireEnvelope
+		_ = json.Unmarshal(line, &request)
+		fmt.Fprintf(agentSide, `{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}`+"\n", request.ID)
+	}()
+
+	hooked := false
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := conn.CallAfterWrite(context.Background(), "prompt", map[string]any{}, &result, func() {
+		hooked = true
+		close(wrote)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !hooked {
+		t.Fatal("afterWrite hook was not called")
+	}
+	if !result.OK {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestConnectionSupportsFramesLargerThanScannerDefault(t *testing.T) {
 	clientSide, agentSide := net.Pipe()
 	defer clientSide.Close()

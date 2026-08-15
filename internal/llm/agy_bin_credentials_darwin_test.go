@@ -137,13 +137,3 @@ func TestAgySecurityCredentialCommandUsesRequestedHome(t *testing.T) {
 		t.Fatalf("security args = %q, want %q", got, wantArgs)
 	}
 }
-
-func envValue(env []string, key string) string {
-	prefix := key + "="
-	for _, entry := range env {
-		if strings.HasPrefix(entry, prefix) {
-			return strings.TrimPrefix(entry, prefix)
-		}
-	}
-	return ""
-}
