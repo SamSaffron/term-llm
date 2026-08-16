@@ -1616,7 +1616,7 @@ func TestJobsV2EnqueueRunWithConcurrencyLimitSerializesConcurrentEnqueues(t *tes
 	var firstErr error
 	go func() {
 		defer close(firstDone)
-		firstRunID, _, firstQueued, firstErr = mgr.enqueueRunWithConcurrencyLimit(job, "manual", time.Now().UTC(), nil, func(string) error {
+		firstRunID, _, firstQueued, firstErr = mgr.enqueueRunWithConcurrencyLimit(job, "manual", time.Now().UTC(), nil, func(*sql.Tx, string) error {
 			close(started)
 			<-release
 			return nil
@@ -1689,6 +1689,90 @@ func TestJobsV2EnqueueRunWithConcurrencyLimitSerializesConcurrentEnqueues(t *tes
 	}
 	if active != 1 {
 		t.Fatalf("active runs = %d, want 1", active)
+	}
+}
+
+func TestJobsV2ScheduledEnqueueRollsBackWhenScheduleAdvancementFails(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := execJobsV2Schema(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("execJobsV2Schema failed: %v", err)
+	}
+
+	mgr := &jobsV2Manager{db: db}
+	runAt := time.Now().UTC().Add(-time.Minute)
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:              "atomic-scheduled-enqueue",
+		Enabled:           true,
+		RunnerType:        jobsV2RunnerProgram,
+		RunnerConfig:      json.RawMessage(`{"command":"true"}`),
+		TriggerType:       jobsV2TriggerOnce,
+		TriggerConfig:     json.RawMessage(`{"run_at":"` + runAt.Format(time.RFC3339Nano) + `"}`),
+		ConcurrencyPolicy: "forbid",
+		MaxConcurrentRuns: 1,
+		MisfirePolicy:     jobsV2MisfireRun,
+		TimeoutSeconds:    30,
+	})
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	advanceErr := errors.New("injected schedule advancement failure")
+	_, _, _, err = mgr.enqueueRunWithConcurrencyLimit(job, "schedule", runAt, nil, func(*sql.Tx, string) error {
+		return advanceErr
+	})
+	if !errors.Is(err, advanceErr) {
+		_ = db.Close()
+		t.Fatalf("enqueue error = %v, want %v", err, advanceErr)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database after failed enqueue: %v", err)
+	}
+
+	db, err = sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	mgr = &jobsV2Manager{db: db}
+
+	var runs int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2 WHERE job_id = ?`, job.ID).Scan(&runs); err != nil {
+		t.Fatalf("count runs after reopen: %v", err)
+	}
+	if runs != 0 {
+		t.Fatalf("runs after rolled-back enqueue = %d, want 0", runs)
+	}
+	job, err = mgr.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob after reopen: %v", err)
+	}
+	if !job.Enabled || job.NextRunAt == nil {
+		t.Fatalf("job after rolled-back enqueue = enabled:%t next_run_at:%v, want still due", job.Enabled, job.NextRunAt)
+	}
+
+	if err := mgr.scheduleOne(job, time.Now().UTC()); err != nil {
+		t.Fatalf("scheduleOne after rollback: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2 WHERE job_id = ?`, job.ID).Scan(&runs); err != nil {
+		t.Fatalf("count runs after scheduleOne: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("runs after scheduleOne = %d, want 1", runs)
+	}
+	job, err = mgr.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob after scheduleOne: %v", err)
+	}
+	if job.Enabled || job.NextRunAt != nil {
+		t.Fatalf("job after scheduleOne = enabled:%t next_run_at:%v, want disabled", job.Enabled, job.NextRunAt)
 	}
 }
 
