@@ -39,18 +39,22 @@ var (
 
 var usageCmd = &cobra.Command{
 	Use:   "usage",
-	Short: "Show usage and costs from local CLI tools and GitHub Copilot",
+	Short: "Show usage, costs, and subscription limits",
 	Long: `Show token usage and costs from Claude Code, Codex CLI, Gemini CLI, and term-llm.
 
-This command reads local usage data stored by these CLI tools and displays
-aggregated statistics including token counts and estimated costs.
+By default, this command reads local usage data stored by these CLI tools and
+shows aggregated token counts and estimated costs. The claude-bin provider
+instead asks Claude Code for live claude.ai subscription limits; it does not
+invoke a model or consume tokens.
 
 For GitHub Copilot, it fetches AI Credit usage from GitHub's latest
 billing usage API. Set GITHUB_TOKEN or GH_TOKEN with billing permissions.
 
 Examples:
   term-llm usage                              # show last 7 days
-  term-llm usage --provider claude-code       # filter to Claude Code only
+  term-llm usage --provider claude-code       # filter local Claude Code history
+  term-llm usage --provider claude-bin        # show live Claude subscription limits
+  term-llm usage --provider claude-bin --json # output the structured Claude response
   term-llm usage --provider copilot           # show personal GitHub Copilot AI Credit usage
   term-llm usage --provider copilot --copilot-scope org --copilot-entity my-org
   term-llm usage --provider term-llm          # show term-llm direct API usage
@@ -62,7 +66,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-code, copilot, gemini-cli, term-llm, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-bin, claude-code, copilot, gemini-cli, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
@@ -88,6 +92,14 @@ func init() {
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
+	// claude-bin reports live subscription limits directly from Claude Code.
+	if usageProvider == "claude-bin" {
+		if err := validateClaudeBinUsageFlags(cmd); err != nil {
+			return err
+		}
+		return runClaudeBinUsage(cmd.Context(), cmd.OutOrStdout(), usageJSON)
+	}
+
 	// Special handling for copilot - fetch latest AI Credit usage from GitHub's billing API
 	if usageProvider == "copilot" {
 		return runCopilotUsage()
@@ -140,7 +152,7 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use claude-code, copilot, gemini-cli, or term-llm)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use claude-bin, claude-code, copilot, gemini-cli, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
