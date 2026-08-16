@@ -1283,33 +1283,46 @@ func (m *jobsV2Manager) countActiveRuns(jobID string) (int, error) {
 	return active, nil
 }
 
-func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger string, scheduledFor time.Time, onLimit func() error, afterInsert func(string) error) (string, int, bool, error) {
+func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger string, scheduledFor time.Time, onLimit func(*sql.Tx) error, afterInsert func(*sql.Tx, string) error) (string, int, bool, error) {
 	m.enqueueMu.Lock()
 	defer m.enqueueMu.Unlock()
 
-	active, err := m.countActiveRuns(job.ID)
+	tx, err := m.db.Begin()
+	if err != nil {
+		return "", 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var active int
+	err = tx.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, job.ID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning).Scan(&active)
 	if err != nil {
 		return "", 0, false, err
 	}
 	limit := jobsV2ConcurrencyLimit(job)
 	if active >= limit {
 		if onLimit != nil {
-			if err := onLimit(); err != nil {
+			if err := onLimit(tx); err != nil {
 				return "", 0, false, err
 			}
+		}
+		if err := tx.Commit(); err != nil {
+			return "", 0, false, err
 		}
 		return "", active, false, nil
 	}
 
 	runID := "run_" + randomSuffix()
-	_, err = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, job.ID, trigger, scheduledFor.UTC(), jobsV2RunQueued)
+	_, err = tx.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, job.ID, trigger, scheduledFor.UTC(), jobsV2RunQueued)
 	if err != nil {
 		return "", 0, false, err
 	}
 	if afterInsert != nil {
-		if err := afterInsert(runID); err != nil {
+		if err := afterInsert(tx, runID); err != nil {
 			return "", 0, false, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", 0, false, err
 	}
 	return runID, active + 1, true, nil
 }
@@ -1320,15 +1333,15 @@ func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
 		return err
 	}
 
-	runID, _, queued, err := m.enqueueRunWithConcurrencyLimit(job, "schedule", now, func() error {
-		_, err := m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
+	runID, _, queued, err := m.enqueueRunWithConcurrencyLimit(job, "schedule", now, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
 		return err
-	}, func(string) error {
+	}, func(tx *sql.Tx, _ string) error {
 		if job.TriggerType == jobsV2TriggerOnce {
-			_, err := m.db.Exec(`UPDATE jobs_v2 SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, job.ID)
+			_, err := tx.Exec(`UPDATE jobs_v2 SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, job.ID)
 			return err
 		}
-		_, err := m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
+		_, err := tx.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
 		return err
 	})
 	if err != nil {
