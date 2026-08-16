@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -920,15 +919,13 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 	redactDiagnostic := p.grokACPDiagnosticRedactor(req.Messages, cmd.Env)
 	go func() {
 		defer close(process.stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 64<<10), 1<<20)
-		for scanner.Scan() {
-			line := redactDiagnostic(scanner.Text())
+		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
+			line := redactDiagnostic(rawLine)
 			if debug {
 				fmt.Fprintf(os.Stderr, "[grok stderr] %s\n", line)
 			}
 			recordCLITailLine(&process.stderrMu, &process.stderrTail, line, grokStderrTailMaxLines)
-		}
+		})
 	}()
 	go func() {
 		process.waitErr = cmd.Wait()
@@ -944,6 +941,23 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 
 	handshakeCtx, handshakeCancel := context.WithTimeout(ctx, grokACPHandshakeTimeout)
 	defer handshakeCancel()
+	stopHandshakeWatchdog := context.AfterFunc(handshakeCtx, func() {
+		// ACP writes do not observe their call context while blocked in Write.
+		// Close stdin directly so startup can unwind even while acpMu is held.
+		_ = process.stdin.Close()
+		process.cancel()
+	})
+	defer stopHandshakeWatchdog()
+	finishHandshake := func() error {
+		if stopHandshakeWatchdog() {
+			return nil
+		}
+		err := handshakeCtx.Err()
+		if err == nil {
+			err = context.Canceled
+		}
+		return fmt.Errorf("complete Grok ACP handshake: %w", err)
+	}
 	initialize, err := process.client.Initialize(handshakeCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersion1,
 		ClientCapabilities: acp.ClientCapabilities{
@@ -987,6 +1001,9 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 		process.handler.endTurn()
 		if err == nil {
 			process.sessionID = resumeID
+			if err := finishHandshake(); err != nil {
+				return nil, err
+			}
 			return process, nil
 		}
 	}
@@ -996,6 +1013,9 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 		process.handler.endTurn()
 		if err == nil {
 			process.sessionID = resumeID
+			if err := finishHandshake(); err != nil {
+				return nil, err
+			}
 			return process, nil
 		}
 	}
@@ -1016,6 +1036,9 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req Request, 
 		return nil, fmt.Errorf("create Grok ACP session: empty session ID")
 	}
 	process.sessionID = strings.TrimSpace(newSession.SessionID)
+	if err := finishHandshake(); err != nil {
+		return nil, err
+	}
 	return process, nil
 }
 

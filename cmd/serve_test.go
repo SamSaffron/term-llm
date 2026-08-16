@@ -1927,6 +1927,40 @@ func TestServeAuthMiddleware(t *testing.T) {
 	}
 }
 
+type serveSessionBlockingCleanupProvider struct {
+	started     chan struct{}
+	release     chan struct{}
+	done        chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+	doneOnce    sync.Once
+}
+
+func newServeSessionBlockingCleanupProvider() *serveSessionBlockingCleanupProvider {
+	return &serveSessionBlockingCleanupProvider{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+}
+
+func (p *serveSessionBlockingCleanupProvider) Name() string       { return "blocking-cleanup" }
+func (p *serveSessionBlockingCleanupProvider) Credential() string { return "test" }
+func (p *serveSessionBlockingCleanupProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{}
+}
+func (p *serveSessionBlockingCleanupProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("not used")
+}
+func (p *serveSessionBlockingCleanupProvider) CleanupMCP() {
+	p.startedOnce.Do(func() { close(p.started) })
+	<-p.release
+	p.doneOnce.Do(func() { close(p.done) })
+}
+func (p *serveSessionBlockingCleanupProvider) unblock() {
+	p.releaseOnce.Do(func() { close(p.release) })
+}
+
 func TestServeSessionManager_GetOrCreateSingleFactoryCall(t *testing.T) {
 	var calls int32
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
@@ -2030,6 +2064,92 @@ func TestServeSessionManager_EvictExpiredSkipsActiveRun(t *testing.T) {
 	}
 	if got := evictions.Load(); got != 1 {
 		t.Fatalf("evictions after inactive session sweep = %d, want 1", got)
+	}
+}
+
+func TestServeSessionManager_EvictExpiredBoundsBlockingCleanup(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	manager.retirementTimeout = 50 * time.Millisecond
+	defer manager.Close()
+
+	provider := newServeSessionBlockingCleanupProvider()
+	t.Cleanup(func() {
+		provider.unblock()
+		select {
+		case <-provider.done:
+		case <-time.After(time.Second):
+			t.Error("blocking cleanup did not finish after release")
+		}
+	})
+	blocked := &serveRuntime{provider: provider}
+	blocked.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	manager.mu.Lock()
+	manager.sessions["blocked"] = blocked
+	manager.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		manager.evictExpired()
+		close(done)
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking cleanup did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expired-session eviction remained blocked in provider cleanup")
+	}
+
+	followup, followupProvider := newCloseTrackingServeRuntime()
+	followup.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	manager.mu.Lock()
+	manager.sessions["followup"] = followup
+	manager.mu.Unlock()
+
+	manager.evictExpired()
+	if !followupProvider.closed.Load() {
+		t.Fatal("subsequent expired runtime was not cleaned up")
+	}
+	manager.mu.Lock()
+	_, exists := manager.sessions["followup"]
+	manager.mu.Unlock()
+	if exists {
+		t.Fatal("subsequent expired runtime was not evicted")
+	}
+}
+
+func TestServeSessionManager_CloseBoundsBlockingCleanup(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	manager.retirementTimeout = 50 * time.Millisecond
+	provider := newServeSessionBlockingCleanupProvider()
+	t.Cleanup(func() {
+		provider.unblock()
+		select {
+		case <-provider.done:
+		case <-time.After(time.Second):
+			t.Error("blocking cleanup did not finish after release")
+		}
+	})
+	putTestSession(manager, "blocked", &serveRuntime{provider: provider})
+	done := make(chan struct{})
+	go func() {
+		manager.Close()
+		close(done)
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking cleanup did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Close remained blocked in provider cleanup")
 	}
 }
 
@@ -2149,6 +2269,57 @@ func TestServeSessionManager_GetOrCreateSkipsEvictingActiveRunAtCapacity(t *test
 	case <-busyCtx.Done():
 		t.Fatal("expected active session not to be cancelled during capacity eviction")
 	default:
+	}
+}
+
+func TestServeSessionManager_GetOrCreateBoundsCapacityCleanup(t *testing.T) {
+	created := &serveRuntime{}
+	manager := newServeSessionManager(time.Minute, 1, func(context.Context) (*serveRuntime, error) {
+		return created, nil
+	})
+	manager.retirementTimeout = 50 * time.Millisecond
+	defer manager.Close()
+
+	provider := newServeSessionBlockingCleanupProvider()
+	t.Cleanup(func() {
+		provider.unblock()
+		select {
+		case <-provider.done:
+		case <-time.After(time.Second):
+			t.Error("blocking cleanup did not finish after release")
+		}
+	})
+	idle := &serveRuntime{provider: provider}
+	idle.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	manager.mu.Lock()
+	manager.sessions["idle"] = idle
+	manager.mu.Unlock()
+
+	type result struct {
+		rt  *serveRuntime
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		rt, err := manager.GetOrCreate(context.Background(), "new")
+		resultCh <- result{rt: rt, err: err}
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("capacity cleanup did not start")
+	}
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatalf("GetOrCreate error: %v", got.err)
+		}
+		if got.rt != created {
+			t.Fatalf("GetOrCreate runtime = %p, want %p", got.rt, created)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("GetOrCreate remained blocked in evicted runtime cleanup")
 	}
 }
 

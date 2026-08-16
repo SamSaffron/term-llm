@@ -43,6 +43,7 @@ const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
 const telegramDownloadTimeout = 5 * time.Minute
+const telegramTranscriptionTimeout = 5 * time.Minute
 const telegramBotAPIRequestTimeout = 30 * time.Second
 const telegramUpdateLongPollSeconds = 60
 const telegramBotAPILongPollTimeout = (telegramUpdateLongPollSeconds * time.Second) + 10*time.Second
@@ -652,8 +653,9 @@ type telegramSessionMgr struct {
 	admissionMu       sync.Mutex
 	messageAdmissions map[int64]chan struct{}
 
-	tickerInterval time.Duration // 0 means use default (500ms); overridden in tests
-	editInterval   time.Duration // 0 means use minEditInterval; overridden in tests
+	tickerInterval       time.Duration // 0 means use default (500ms); overridden in tests
+	editInterval         time.Duration // 0 means use minEditInterval; overridden in tests
+	transcriptionTimeout time.Duration // 0 means use telegramTranscriptionTimeout; overridden in tests
 
 	// streamEventTimeout bounds how long the stream watchdog waits between events
 	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
@@ -1436,7 +1438,13 @@ func (m *telegramSessionMgr) handleMessageWithAdmission(ctx context.Context, bot
 		}
 		defer os.Remove(voicePath)
 
-		transcript, err := llm.TranscribeWithConfig(ctx, m.cfg, voicePath, "", "")
+		transcriptionTimeout := m.transcriptionTimeout
+		if transcriptionTimeout <= 0 {
+			transcriptionTimeout = telegramTranscriptionTimeout
+		}
+		transcriptionCtx, cancelTranscription := context.WithTimeout(ctx, transcriptionTimeout)
+		transcript, err := llm.TranscribeWithConfig(transcriptionCtx, m.cfg, voicePath, "", "")
+		cancelTranscription()
 		if err != nil {
 			log.Printf("telegram: transcribe error: %v", err)
 			// Check if it's a config/key issue vs a transient error

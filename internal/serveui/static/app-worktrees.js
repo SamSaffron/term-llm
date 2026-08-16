@@ -113,7 +113,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
         const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees/diff?dir=${encodeURIComponent(dir)}`, { headers: authHeaders() });
         if (!res.ok) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());
         const data = await res.json();
-        window.alert(data.diff || 'Worktree is clean.');
+        window.alert((data.diff || 'Worktree is clean.') + (data.truncated ? `\n\n[Diff truncated: ${(data.truncation_reasons || []).join(', ') || 'limit reached'}]` : ''));
       } else if (value === 'merge') {
         const res = await worktreeApp.apiFetch(`${UI_PREFIX}/v1/worktrees/merge`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ dir }) });
         if (!res.ok && res.status !== 409) throw await (worktreeApp.normalizeError ? worktreeApp.normalizeError(res) : res.text());

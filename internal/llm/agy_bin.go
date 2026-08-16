@@ -504,19 +504,21 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 				return
 			}
 		}
-		scanErrCh <- sc.Err()
+		scanErr := sc.Err()
+		if scanErr != nil {
+			cancel()
+		}
+		scanErrCh <- scanErr
 	}()
 	go func() {
 		defer close(stderrDone)
-		sc := bufio.NewScanner(stderr)
-		sc.Buffer(make([]byte, 64<<10), 1<<20)
-		for sc.Scan() {
-			line := redact(sc.Text())
+		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
+			line := redact(rawLine)
 			if debug {
 				fmt.Fprintf(os.Stderr, "[agy stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, agyStderrTailMaxLines)
-		}
+		})
 	}()
 	bridge := &cliTurnBridge{toolReqCh: make(chan cliToolRequest, 64), done: make(chan struct{})}
 	if exposeBridge {
@@ -530,13 +532,19 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 		expectedConversationID: expectedConversationID,
 		pathReplacer:           agyPathReplacer(p.agyHome, workspaceDir),
 	}
-	dispatchErr := p.dispatchEvents(ctx, lineCh, bridge.toolReqCh, send, state)
+	dispatchErr := p.dispatchEvents(runCtx, lineCh, bridge.toolReqCh, send, state)
 	if dispatchErr != nil {
 		cancel()
 	}
 	scanErr := <-scanErrCh
+	if scanErr != nil {
+		cancel()
+	}
 	<-stderrDone
 	waitErr := cmd.Wait()
+	if scanErr != nil && !errors.Is(scanErr, context.Canceled) {
+		return nil, fmt.Errorf("read agy output: %w", scanErr)
+	}
 	if dispatchErr != nil {
 		return nil, dispatchErr
 	}

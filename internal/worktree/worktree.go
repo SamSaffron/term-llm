@@ -2,6 +2,7 @@
 package worktree
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
+	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/textmatch"
 )
@@ -53,6 +55,56 @@ type Worktree struct {
 // Progress is emitted by long-running worktree operations.
 type Progress struct {
 	Message string `json:"message"`
+}
+
+const (
+	maxDiffBytes          = 2 << 20
+	maxDiffUntrackedFiles = 100
+	diffDiagnosticBytes   = 64 << 10
+
+	diffOutputLimitReason          = "output_limit"
+	diffUntrackedFileLimitReason   = "untracked_file_limit"
+	diffUntrackedUnavailableReason = "untracked_unavailable"
+)
+
+// DiffResult contains bounded worktree diff output and any truncation metadata.
+type DiffResult struct {
+	Diff              string   `json:"diff"`
+	Truncated         bool     `json:"truncated"`
+	TruncationReasons []string `json:"truncation_reasons,omitempty"`
+}
+
+// DisplayDiff returns the diff with a human-readable truncation notice.
+func (r DiffResult) DisplayDiff() string {
+	if !r.Truncated {
+		return r.Diff
+	}
+	labels := make([]string, 0, len(r.TruncationReasons))
+	for _, reason := range r.TruncationReasons {
+		switch reason {
+		case diffOutputLimitReason:
+			labels = append(labels, fmt.Sprintf("output exceeded %d MiB", maxDiffBytes>>20))
+		case diffUntrackedFileLimitReason:
+			labels = append(labels, fmt.Sprintf("more than %d untracked files", maxDiffUntrackedFiles))
+		case diffUntrackedUnavailableReason:
+			labels = append(labels, "some untracked files could not be included")
+		default:
+			labels = append(labels, reason)
+		}
+	}
+	notice := "[Diff truncated"
+	if len(labels) > 0 {
+		notice += ": " + strings.Join(labels, "; ")
+	}
+	notice += "]"
+	if r.Diff == "" {
+		return notice
+	}
+	separator := "\n"
+	if strings.HasSuffix(r.Diff, "\n") {
+		separator = ""
+	}
+	return r.Diff + separator + notice + "\n"
 }
 
 // CreateOptions configures Create.
@@ -808,11 +860,69 @@ func TouchLastBound(dir string) error {
 	return writeMetadata(root, m)
 }
 
-// Diff returns a unified diff from the recorded base and includes untracked files.
+var errDiffOutputLimit = errors.New("worktree diff output limit reached")
+
+type boundedDiffWriter struct {
+	builder   strings.Builder
+	limit     int
+	truncated bool
+}
+
+func (w *boundedDiffWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - w.builder.Len()
+	if remaining >= len(p) {
+		return w.builder.Write(p)
+	}
+	written := 0
+	if remaining > 0 {
+		written, _ = w.builder.Write(p[:remaining])
+	}
+	w.truncated = true
+	return written, errDiffOutputLimit
+}
+
+func (w *boundedDiffWriter) String() string { return w.builder.String() }
+
+func (w *boundedDiffWriter) endsInNewline() bool {
+	value := w.builder.String()
+	return len(value) > 0 && value[len(value)-1] == '\n'
+}
+
+// Diff returns a bounded unified diff from the recorded base, including
+// untracked files. Callers that can be abandoned should use DiffContext.
 func Diff(dir string) (string, error) {
+	result, err := DiffContext(context.Background(), dir)
+	return result.DisplayDiff(), err
+}
+
+// DiffContext returns a bounded unified diff and stops active Git commands when
+// ctx is canceled. At most maxDiffUntrackedFiles are included.
+func DiffContext(ctx context.Context, dir string) (DiffResult, error) {
+	var result DiffResult
+	addTruncation := func(reason string) {
+		result.Truncated = true
+		for _, existing := range result.TruncationReasons {
+			if existing == reason {
+				return
+			}
+		}
+		result.TruncationReasons = append(result.TruncationReasons, reason)
+	}
+	output := &boundedDiffWriter{limit: maxDiffBytes}
+	finish := func() DiffResult {
+		result.Diff = output.String()
+		if output.truncated {
+			addTruncation(diffOutputLimitReason)
+		}
+		return result
+	}
+
+	if err := ctx.Err(); err != nil {
+		return finish(), err
+	}
 	wt, err := getWorktreeForOperation(dir)
 	if err != nil {
-		return "", err
+		return finish(), err
 	}
 	base := strings.TrimSpace(wt.Base)
 	if base == "" {
@@ -821,35 +931,184 @@ func Diff(dir string) (string, error) {
 	if base == "" {
 		base = "HEAD"
 	}
-	var b strings.Builder
-	out, err := runGit(dir, "diff", "--binary", base, "--")
+
+	stderr, err := runGitInto(ctx, dir, nil, nil, output, "diff", "--binary", base, "--")
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return finish(), ctxErr
+	}
+	if output.truncated {
+		return finish(), nil
+	}
 	if err != nil {
-		// git diff returns 0 for differences; any error is real but include output.
-		if strings.TrimSpace(out) != "" {
-			b.WriteString(out)
-		}
-		return b.String(), err
+		return finish(), fmt.Errorf("worktree: diff tracked files: %w: %s", err, strings.TrimSpace(stderr))
 	}
-	b.WriteString(out)
-	untracked, err := runGit(dir, "ls-files", "--others", "--exclude-standard", "-z")
+
+	untracked, untrackedTruncated, err := listUntracked(ctx, dir, maxDiffUntrackedFiles)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return finish(), ctxErr
+	}
 	if err != nil {
-		return b.String(), nil
+		// Keep untracked discovery best-effort, but tell callers that the
+		// otherwise usable tracked diff is incomplete.
+		addTruncation(diffUntrackedUnavailableReason)
+		return finish(), nil
 	}
-	for _, rel := range strings.Split(untracked, "\x00") {
-		if rel == "" {
-			continue
-		}
-		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
-			b.WriteByte('\n')
-		}
-		noIndexOut, _ := runGitAllowExit(dir, []string{"diff", "--no-index", "--", os.DevNull, rel}, map[int]bool{0: true, 1: true})
-		noIndexOut = strings.ReplaceAll(noIndexOut, "--- "+os.DevNull, "--- /dev/null")
-		b.WriteString(noIndexOut)
-		if !strings.HasSuffix(noIndexOut, "\n") {
-			b.WriteByte('\n')
+	if untrackedTruncated {
+		addTruncation(diffUntrackedFileLimitReason)
+	}
+	if len(untracked) == 0 {
+		return finish(), nil
+	}
+	if output.builder.Len() > 0 && !output.endsInNewline() {
+		_, _ = output.Write([]byte{'\n'})
+		if output.truncated {
+			return finish(), nil
 		}
 	}
-	return b.String(), nil
+
+	indexDir, err := os.MkdirTemp("", "term-llm-diff-index-*")
+	if err != nil {
+		addTruncation(diffUntrackedUnavailableReason)
+		return finish(), nil
+	}
+	defer os.RemoveAll(indexDir)
+	indexPath := filepath.Join(indexDir, "index")
+
+	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_LITERAL_PATHSPECS=1"}
+	stageUntracked := func(paths []string) error {
+		if err := runGitDiscard(ctx, dir, env, nil, "read-tree", "--empty"); err != nil {
+			return err
+		}
+		var pathspec bytes.Buffer
+		for _, rel := range paths {
+			pathspec.WriteString(rel)
+			pathspec.WriteByte(0)
+		}
+		return runGitDiscard(ctx, dir, env, &pathspec, "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul")
+	}
+	if err := stageUntracked(untracked); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return finish(), ctxErr
+		}
+
+		// An untracked path can disappear after ls-files but before add -N.
+		// Refresh once so one stale path does not discard every surviving file.
+		untracked, untrackedTruncated, err = listUntracked(ctx, dir, maxDiffUntrackedFiles)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return finish(), ctxErr
+		}
+		if err != nil {
+			addTruncation(diffUntrackedUnavailableReason)
+			return finish(), nil
+		}
+		if untrackedTruncated {
+			addTruncation(diffUntrackedFileLimitReason)
+		}
+		if len(untracked) == 0 {
+			return finish(), nil
+		}
+		if err := stageUntracked(untracked); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return finish(), ctxErr
+			}
+			addTruncation(diffUntrackedUnavailableReason)
+			return finish(), nil
+		}
+	}
+	_, err = runGitInto(ctx, dir, env, nil, output, "diff", "--binary", "--")
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return finish(), ctxErr
+	}
+	if output.truncated {
+		return finish(), nil
+	}
+	if err != nil {
+		addTruncation(diffUntrackedUnavailableReason)
+		return finish(), nil
+	}
+	return finish(), nil
+}
+
+func listUntracked(ctx context.Context, dir string, limit int) ([]string, bool, error) {
+	cmdCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	args := []string{"ls-files", "--others", "--exclude-standard", "-z"}
+	if runGitTestHook != nil {
+		runGitTestHook(dir, append([]string(nil), args...))
+	}
+	cmd := exec.CommandContext(cmdCtx, "git", args...)
+	cmd.Dir = dir
+	stderr := procutil.NewLimitedBuffer(diffDiagnosticBytes)
+	cmd.Stderr = stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false, err
+	}
+
+	paths := make([]string, 0, limit)
+	truncated := false
+	reader := bufio.NewReader(stdout)
+	var readErr error
+	for {
+		path, err := reader.ReadString(0)
+		if len(path) > 0 {
+			path = strings.TrimSuffix(path, "\x00")
+			if path != "" {
+				if len(paths) == limit {
+					truncated = true
+					cancel()
+					break
+				}
+				paths = append(paths, path)
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
+	}
+	waitErr := cmd.Wait()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return paths, truncated, ctxErr
+	}
+	if readErr != nil {
+		return paths, truncated, readErr
+	}
+	if waitErr != nil && !truncated {
+		return paths, false, fmt.Errorf("%w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return paths, truncated, nil
+}
+
+func runGitDiscard(ctx context.Context, dir string, env []string, stdin io.Reader, args ...string) error {
+	output := procutil.NewLimitedBuffer(diffDiagnosticBytes)
+	_, err := runGitInto(ctx, dir, env, stdin, output, args...)
+	return err
+}
+
+func runGitInto(ctx context.Context, dir string, env []string, stdin io.Reader, stdout io.Writer, args ...string) (string, error) {
+	if runGitTestHook != nil {
+		runGitTestHook(dir, append([]string(nil), args...))
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	stderr := procutil.NewLimitedBuffer(diffDiagnosticBytes)
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return stderr.String(), ctxErr
+	}
+	return stderr.String(), err
 }
 
 // Promote creates a branch at the worktree HEAD and checks it out.

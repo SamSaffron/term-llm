@@ -762,6 +762,121 @@ done
 	}
 }
 
+func TestGrokBinProviderACPCancellationUnblocksSessionWrite(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	binDir := t.TempDir()
+	firstPIDPath := filepath.Join(t.TempDir(), "first-pid")
+	blockedPath := filepath.Join(t.TempDir(), "blocked")
+	path := filepath.Join(binDir, "grok")
+	script := `#!/bin/sh
+if [ ! -f "$GROK_TEST_FIRST_PID" ]; then
+  echo $$ > "$GROK_TEST_FIRST_PID"
+  first=1
+else
+  first_pid=$(cat "$GROK_TEST_FIRST_PID")
+  if kill -0 "$first_pid" 2>/dev/null; then
+    exit 42
+  fi
+  first=0
+fi
+while IFS= read -r line; do
+  id=${line#*\"id\":}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"cached_token\",\"name\":\"Cached\"}]}}" ;;
+    *'"method":"authenticate"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+      if [ "$first" = 1 ]; then
+        : > "$GROK_TEST_BLOCKED"
+        sleep 30
+      fi
+      ;;
+    *'"method":"session/new"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"recovered-session\"}}" ;;
+    *'"method":"session/prompt"'*) printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}" ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := NewGrokBinProvider("grok-4.5-low", map[string]string{
+		"GROK_TEST_FIRST_PID": firstPIDPath,
+		"GROK_TEST_BLOCKED":   blockedPath,
+	})
+	defer p.CleanupMCP()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stream, err := p.Stream(ctx, Request{Messages: []Message{
+		SystemText(strings.Repeat("large system prompt ", 1<<18)),
+		UserText("wait"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(blockedPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("fake Grok process did not reach its blocked session write")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cleanupDone := make(chan struct{})
+	go func() {
+		p.CleanupMCP()
+		close(cleanupDone)
+	}()
+	<-ctx.Done()
+
+	streamDone := make(chan error, 1)
+	go func() { streamDone <- stream.Close() }()
+	select {
+	case err := <-streamDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream close remained blocked behind the Grok ACP session write")
+	}
+	select {
+	case <-cleanupDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Grok cleanup remained blocked behind the startup mutex")
+	}
+
+	next, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("continue")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawDone := false
+	for {
+		event, err := next.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == EventError {
+			t.Fatal(event.Err)
+		}
+		if event.Type == EventDone {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Fatal("subsequent Grok turn did not complete")
+	}
+}
+
 func TestGrokBinProviderACPCancellationPreservesResidentSession(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	binDir := t.TempDir()

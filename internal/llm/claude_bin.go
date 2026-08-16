@@ -903,15 +903,12 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
-		stderrScanner := bufio.NewScanner(stderr)
-		stderrScanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		for stderrScanner.Scan() {
-			line := stderrScanner.Text()
+		_ = drainCLIDiagnosticLines(stderr, func(line string) {
 			if debug {
 				fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, claudeStderrTailMaxLines)
-		}
+		})
 	}()
 
 	lineCh := make(chan string, 256)
@@ -969,6 +966,15 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	// Wait for scanner to finish BEFORE cmd.Wait().
 	// Go docs: "It is incorrect to call Wait before all reads from the pipe have completed."
 	scanErr := <-scanErrCh
+	if scanErr != nil {
+		// A framing error stops the stdout reader. Kill the process before its
+		// unread output fills the pipe and makes Wait block forever.
+		if cmd.Cancel != nil {
+			_ = cmd.Cancel()
+		} else if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
 
 	// Now safe to call Wait() — all pipe reads are done.
 	cmdErr := cmd.Wait()

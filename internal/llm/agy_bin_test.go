@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
@@ -29,6 +30,31 @@ func (f *fakeAgyIsolation) FilteredGenerations() int64 {
 }
 func (f *fakeAgyIsolation) Environment() map[string]string { return f.env }
 func (f *fakeAgyIsolation) Stop(context.Context) error     { f.started = false; return nil }
+
+func TestAgyOversizedStdoutCancelsProcess(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "cwd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "agy")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nhead -c 17825792 /dev/zero | tr '\\000' x\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := NewAgyBinProvider("", nil)
+	p.agyBinary = script
+	p.agyHome = home
+	p.isolation = &fakeAgyIsolation{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := p.runCommand(ctx, nil, "prompt", t.TempDir(), "", false, eventSender{ctx: ctx, ch: make(chan Event, 1)}, false)
+	if err == nil || !strings.Contains(err.Error(), "read agy output") {
+		t.Fatalf("runCommand error = %v, want stdout framing error", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 5*time.Second {
+		t.Fatalf("oversized stdout cancellation took %v", elapsed)
+	}
+}
 
 func TestAgyBinCapabilities(t *testing.T) {
 	caps := NewAgyBinProvider("", nil).Capabilities()

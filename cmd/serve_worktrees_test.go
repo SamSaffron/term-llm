@@ -75,6 +75,15 @@ func TestServeWorktreeHandlersCreateListDiffDelete(t *testing.T) {
 		t.Fatalf("diff body = %s, want untracked file diff", diffRec.Body.String())
 	}
 
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelReq := httptest.NewRequest(http.MethodGet, "/v1/worktrees/diff?dir="+createResp.Worktree.Dir, nil).WithContext(cancelCtx)
+	cancelRec := httptest.NewRecorder()
+	srv.handleWorktreeDiff(cancelRec, cancelReq)
+	if cancelRec.Body.Len() != 0 {
+		t.Fatalf("cancelled diff wrote response: %s", cancelRec.Body.String())
+	}
+
 	t.Run("delete", func(t *testing.T) {
 		t.Parallel()
 		deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/worktrees?force=1&dir="+createResp.Worktree.Dir, nil)

@@ -7,8 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 var worktreeTestRepoTemplate string
@@ -325,8 +329,11 @@ func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
 		dir  string
 		args []string
 	}
+	var callsMu sync.Mutex
 	var calls []gitCall
 	runGitTestHook = func(dir string, args []string) {
+		callsMu.Lock()
+		defer callsMu.Unlock()
 		calls = append(calls, gitCall{dir: dir, args: args})
 	}
 	t.Cleanup(func() { runGitTestHook = nil })
@@ -353,8 +360,11 @@ func TestListUsesPorcelainMetadataWithoutPerWorktreeGitProbes(t *testing.T) {
 	}
 
 	worktreeDirs := map[string]bool{filepath.Clean(wt1.Dir): true, filepath.Clean(wt2.Dir): true}
+	callsMu.Lock()
+	callsSnapshot := append([]gitCall(nil), calls...)
+	callsMu.Unlock()
 	statusCalls := 0
-	for _, call := range calls {
+	for _, call := range callsSnapshot {
 		if !worktreeDirs[filepath.Clean(call.dir)] {
 			continue
 		}
@@ -437,6 +447,237 @@ func TestDiffIncludesUntrackedFiles(t *testing.T) {
 	}
 	if !strings.Contains(diff, "new.txt") || !strings.Contains(diff, "+hello from untracked") {
 		t.Fatalf("diff = %q, want untracked file diff", diff)
+	}
+}
+
+func TestDiffUsesConstantGitProcessesAndCapsUntrackedFiles(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "diff-process-bound"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupWorktreeTest(t, wt.Dir)
+	t.Cleanup(func() { runGitTestHook = nil })
+
+	created := 0
+	for _, count := range []int{1, 100, 1000} {
+		for created < count {
+			name := fmt.Sprintf("generated-%04d.txt", created)
+			if err := os.WriteFile(filepath.Join(wt.Dir, name), []byte("generated\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile %s: %v", name, err)
+			}
+			created++
+		}
+
+		var calls [][]string
+		runGitTestHook = func(_ string, args []string) {
+			calls = append(calls, append([]string(nil), args...))
+		}
+		result, err := DiffContext(context.Background(), wt.Dir)
+		runGitTestHook = nil
+		if err != nil {
+			t.Fatalf("DiffContext with %d untracked files: %v", count, err)
+		}
+
+		diffCalls := 0
+		for _, args := range calls {
+			if len(args) > 0 && args[0] == "diff" {
+				diffCalls++
+			}
+			if strings.Contains(strings.Join(args, " "), "--no-index") {
+				t.Fatalf("DiffContext with %d files launched per-file git diff: %v", count, args)
+			}
+		}
+		if diffCalls != 2 {
+			t.Fatalf("DiffContext with %d files launched %d diff processes, want 2; calls=%v", count, diffCalls, calls)
+		}
+		wantTruncated := count > maxDiffUntrackedFiles
+		if result.Truncated != wantTruncated {
+			t.Fatalf("DiffContext with %d files truncated=%t, want %t; reasons=%v", count, result.Truncated, wantTruncated, result.TruncationReasons)
+		}
+		if wantTruncated && !slices.Contains(result.TruncationReasons, diffUntrackedFileLimitReason) {
+			t.Fatalf("DiffContext with %d files reasons=%v, want %q", count, result.TruncationReasons, diffUntrackedFileLimitReason)
+		}
+	}
+}
+
+func TestDiffRetriesAfterUntrackedPathDisappears(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "diff-untracked-race"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupWorktreeTest(t, wt.Dir)
+	t.Cleanup(func() { runGitTestHook = nil })
+
+	stablePath := filepath.Join(wt.Dir, "stable.txt")
+	if err := os.WriteFile(stablePath, []byte("stable\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stable: %v", err)
+	}
+	vanishingPath := filepath.Join(wt.Dir, "vanishing.txt")
+	if err := os.WriteFile(vanishingPath, []byte("vanishing\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile vanishing: %v", err)
+	}
+
+	addCalls := 0
+	var removeErr error
+	runGitTestHook = func(_ string, args []string) {
+		if len(args) == 0 || args[0] != "add" {
+			return
+		}
+		addCalls++
+		if addCalls == 1 {
+			removeErr = os.Remove(vanishingPath)
+		}
+	}
+	result, err := DiffContext(context.Background(), wt.Dir)
+	runGitTestHook = nil
+	if err != nil {
+		t.Fatalf("DiffContext: %v", err)
+	}
+	if removeErr != nil {
+		t.Fatalf("remove vanishing path: %v", removeErr)
+	}
+	if addCalls != 2 {
+		t.Fatalf("git add calls = %d, want one retry", addCalls)
+	}
+	if result.Truncated {
+		t.Fatalf("result unexpectedly truncated: %v", result.TruncationReasons)
+	}
+	if !strings.Contains(result.Diff, "stable.txt") || !strings.Contains(result.Diff, "+stable") {
+		t.Fatalf("diff = %q, want surviving untracked file", result.Diff)
+	}
+	if strings.Contains(result.Diff, "vanishing.txt") {
+		t.Fatalf("diff = %q, unexpectedly contains vanished file", result.Diff)
+	}
+}
+
+func TestDiffSignalsFailedUntrackedDiscovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim")
+	}
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "diff-untracked-failure"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupWorktreeTest(t, wt.Dir)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "git")
+	script := `#!/bin/sh
+if [ "$1" = "ls-files" ] && [ "$2" = "--others" ]; then
+  echo "forced untracked discovery failure" >&2
+  exit 1
+fi
+exec "$REAL_GIT" "$@"
+`
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile git shim: %v", err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result, err := DiffContext(context.Background(), wt.Dir)
+	if err != nil {
+		t.Fatalf("DiffContext: %v", err)
+	}
+	if !result.Truncated || !slices.Contains(result.TruncationReasons, diffUntrackedUnavailableReason) {
+		t.Fatalf("result truncated=%t reasons=%v, want unavailable-untracked signal", result.Truncated, result.TruncationReasons)
+	}
+}
+
+func TestDiffBoundsLargeOutput(t *testing.T) {
+	t.Parallel()
+
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "diff-output-bound"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupWorktreeTest(t, wt.Dir)
+
+	large := strings.Repeat("a changed line that cannot fit in the diff limit\n", maxDiffBytes/20)
+	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte(large), 0o644); err != nil {
+		t.Fatalf("WriteFile file.txt: %v", err)
+	}
+	result, err := DiffContext(context.Background(), wt.Dir)
+	if err != nil {
+		t.Fatalf("DiffContext: %v", err)
+	}
+	if !result.Truncated || !slices.Contains(result.TruncationReasons, diffOutputLimitReason) {
+		t.Fatalf("result truncated=%t reasons=%v, want output truncation", result.Truncated, result.TruncationReasons)
+	}
+	if len(result.Diff) > maxDiffBytes {
+		t.Fatalf("diff length = %d, want at most %d", len(result.Diff), maxDiffBytes)
+	}
+}
+
+func TestDiffContextCancelsActiveGitProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX git shim")
+	}
+	repo := newGitRepoForWorktreeTest(t)
+	wt, err := Create(context.Background(), repo, CreateOptions{Name: "diff-cancel"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupWorktreeTest(t, wt.Dir)
+	if err := os.WriteFile(filepath.Join(wt.Dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile file.txt: %v", err)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	shimDir := t.TempDir()
+	ready := filepath.Join(shimDir, "ready")
+	shim := filepath.Join(shimDir, "git")
+	script := `#!/bin/sh
+if [ "$1" = "diff" ]; then
+  : > "$DIFF_READY"
+  while :; do :; done
+fi
+exec "$REAL_GIT" "$@"
+`
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile git shim: %v", err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("DIFF_READY", ready)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := DiffContext(ctx, wt.Dir)
+		done <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("git shim did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DiffContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DiffContext did not terminate the canceled git process")
 	}
 }
 

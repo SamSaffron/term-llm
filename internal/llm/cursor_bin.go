@@ -464,15 +464,13 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 	}()
 	go func() {
 		defer close(stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 64<<10), 1<<20)
-		for scanner.Scan() {
-			line := redactDiagnostic(scanner.Text())
+		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
+			line := redactDiagnostic(rawLine)
 			if debug {
 				fmt.Fprintf(os.Stderr, "[cursor stderr] %s\n", line)
 			}
 			recordCLITailLine(&stderrMu, &stderrTail, line, cursorStderrTailMaxLines)
-		}
+		})
 	}()
 
 	bridge := &cliTurnBridge{toolReqCh: make(chan cliToolRequest, 64), done: make(chan struct{})}
@@ -488,6 +486,9 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 		cancel()
 	}
 	scanErr := <-scanErrCh
+	if scanErr != nil {
+		cancel()
+	}
 	waitErr := cmd.Wait()
 	<-stderrDone
 	if dispatchErr != nil {
