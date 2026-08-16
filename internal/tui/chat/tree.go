@@ -115,13 +115,124 @@ func visibleAssistantBranchRow(message session.Message) bool {
 	return false
 }
 
+func lastSafeBranchMessageID(messages []session.Message) int64 {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if hiddenBranchTreeMessage(message) {
+			continue
+		}
+		switch message.Role {
+		case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+			return message.ID
+		}
+	}
+	return 0
+}
+
+func messagesThroughBranchAnchor(messages []session.Message, anchorID int64) []session.Message {
+	if anchorID <= 0 {
+		return nil
+	}
+	for i := range messages {
+		if messages[i].ID == anchorID {
+			return append([]session.Message(nil), messages[:i+1]...)
+		}
+	}
+	return nil
+}
+
+func (m *Model) branchShortcutState() ([]session.Message, session.TranscriptMutationState, bool, error) {
+	if m.store == nil || m.sess == nil || strings.TrimSpace(m.sess.ID) == "" {
+		return nil, session.TranscriptMutationState{}, false, errors.New("no stored conversation to branch")
+	}
+	if _, ok := m.store.(session.ConversationBranchStore); !ok {
+		return nil, session.TranscriptMutationState{}, false, errors.New("session storage does not support conversation branching")
+	}
+	mutationStore, ok := m.store.(session.TranscriptUndoRedoStore)
+	if !ok {
+		return nil, session.TranscriptMutationState{}, false, errors.New("session storage does not support revision-safe branching")
+	}
+	messages, err := m.store.GetMessages(m.rootContext(), m.sess.ID, 0, 0)
+	if err != nil {
+		return nil, session.TranscriptMutationState{}, false, fmt.Errorf("load conversation: %w", err)
+	}
+	state, err := mutationStore.TranscriptMutationState(m.rootContext(), m.sess.ID)
+	if err != nil {
+		return nil, session.TranscriptMutationState{}, false, fmt.Errorf("load conversation revision: %w", err)
+	}
+	active := m.streaming || m.streamCancelFunc != nil || m.directShellRun != nil
+	return messages, state, active, nil
+}
+
+func (m *Model) cmdThread(rawMessage string) (tea.Model, tea.Cmd) {
+	if len(m.files) > 0 || len(m.images) > 0 {
+		return m.showFooterWarning("Start the thread before attaching files or images.")
+	}
+	messages, state, active, err := m.branchShortcutState()
+	if err != nil {
+		return m.showFooterError(err.Error())
+	}
+	if active && (m.mainRunManager == nil || !m.mainRunManager.HasActive(m.SessionID())) {
+		return m.showFooterWarning("Cannot switch paths while work is active because background TUI runs are not available.")
+	}
+	contextMessages := messages
+	if active {
+		contextMessages = messagesThroughBranchAnchor(messages, m.activeBranchAnchorID)
+	}
+	sourceMessages, err := session.MessagesAfterBranchAnchor(contextMessages, 0)
+	if err != nil {
+		return m.showFooterError(fmt.Sprintf("Load thread context: %v", err))
+	}
+	point := conversationBranchPoint{
+		sourceSessionID:   m.sess.ID,
+		anchorMessageID:   0,
+		expected:          state,
+		idempotencyKey:    session.NewID(),
+		sourceMessages:    sourceMessages,
+		laterMessageCount: len(sourceMessages),
+		sourceRole:        llm.Role("conversation"),
+		autoSend:          strings.TrimSpace(rawMessage),
+		skipExpectedState: active,
+	}
+	m.pendingBranchPoint = &point
+	m.dialog.ShowBranchContext(point.laterMessageCount, point.sourceRole, 0, "")
+	m.setTextareaValue("")
+	return m, nil
+}
+
+func (m *Model) cmdFork(rawMessage string) (tea.Model, tea.Cmd) {
+	if len(m.files) > 0 || len(m.images) > 0 {
+		return m.showFooterWarning("Create the fork before attaching files or images.")
+	}
+	messages, state, active, err := m.branchShortcutState()
+	if err != nil {
+		return m.showFooterError(err.Error())
+	}
+	if active && (m.mainRunManager == nil || !m.mainRunManager.HasActive(m.SessionID())) {
+		return m.showFooterWarning("Cannot switch paths while work is active because background TUI runs are not available.")
+	}
+	anchorID := lastSafeBranchMessageID(messages)
+	if active {
+		// Rewind the whole in-flight response. Its start anchor is the last
+		// boundary known to precede partial assistant output or unfinished tools.
+		anchorID = m.activeBranchAnchorID
+	}
+	point := conversationBranchPoint{
+		sourceSessionID:   m.sess.ID,
+		anchorMessageID:   anchorID,
+		expected:          state,
+		idempotencyKey:    session.NewID(),
+		autoSend:          strings.TrimSpace(rawMessage),
+		skipExpectedState: active,
+	}
+	m.setTextareaValue("")
+	return m.createConversationBranch(point)
+}
+
 func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	if len(args) != 0 {
 		m.setTextareaValue("")
 		return m.showFooterError("Usage: /tree")
-	}
-	if m.transcriptMutationBusy() {
-		return m.showFooterWarning("Cannot open the conversation tree while work is active.")
 	}
 	if len(m.files) > 0 || len(m.images) > 0 {
 		return m.showFooterWarning("Create the branch before attaching files or images.")
@@ -142,6 +253,16 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	if err != nil {
 		return m.showFooterError(fmt.Sprintf("Load branch points: %v", err))
 	}
+	active := m.streaming || m.streamCancelFunc != nil || m.directShellRun != nil
+	if active && (m.mainRunManager == nil || !m.mainRunManager.HasActive(m.SessionID())) {
+		return m.showFooterWarning("Cannot switch paths while work is active because background TUI runs are not available.")
+	}
+	if active {
+		// Only expose the immutable prefix that predates the in-flight response.
+		// Partial assistant snapshots and unfinished tool activity remain on the
+		// source path and can never become branch anchors.
+		messages = messagesThroughBranchAnchor(messages, m.activeBranchAnchorID)
+	}
 	mutationStore, ok := m.store.(session.TranscriptUndoRedoStore)
 	if !ok {
 		return m.showFooterError("Session storage does not support revision-safe branching.")
@@ -154,17 +275,21 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	items := make([]DialogItem, 0, len(tree.Nodes)+len(messages))
 	depths := branchTreeDepths(tree)
 	for _, node := range tree.Nodes {
-		marker := "○"
-		if node.SessionID == m.sess.ID {
-			marker = "●"
-		}
-		label := strings.Repeat("  ", depths[node.SessionID]) + marker + " " + node.Title
+		current := node.SessionID == m.sess.ID
+		activeRun := m.mainRunManager != nil && m.mainRunManager.HasActive(node.SessionID)
+		label := strings.Repeat("  ", depths[node.SessionID]) + node.Title
 		description := fmt.Sprintf("#%d", node.SessionNumber)
+		if current {
+			description = "current · " + description
+		}
 		if node.AnchorPreview != "" {
 			description += " · forked after " + node.AnchorPreview
+		} else if node.ParentSessionID != "" && node.ForkAfterMessageID == 0 {
+			description += " · new thread"
 		}
 		items = append(items, DialogItem{
 			ID: "path:" + node.SessionID, Label: label, Description: description, Category: "Existing paths",
+			TreePath: true, TreePathActive: activeRun,
 		})
 	}
 
@@ -223,6 +348,14 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 			sourceRole:          message.Role,
 			sourceMessageNumber: message.Sequence + 1,
 			sourcePreview:       preview,
+			skipExpectedState:   active,
+		}
+		if active {
+			sourceMessages, sourceErr := session.MessagesAfterBranchAnchor(messages, anchorID)
+			if sourceErr != nil {
+				continue
+			}
+			choice.sourceMessages = sourceMessages
 		}
 		// Editing a user turn rewinds to the previous continuation, so exclude the
 		// selected prompt itself when deciding whether there is context to carry.
@@ -247,6 +380,28 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	m.dialog.ShowBranchTree(items, "path:"+m.sess.ID)
 	m.setTextareaValue("")
 	return m, nil
+}
+
+func (m *Model) refreshBranchTreeRunActivity() {
+	if m.mainRunManager == nil || !m.dialog.IsOpen() || m.dialog.Type() != DialogBranchTree {
+		return
+	}
+	changed := false
+	for i := range m.dialog.items {
+		item := &m.dialog.items[i]
+		if !item.TreePath {
+			continue
+		}
+		sessionID := strings.TrimPrefix(item.ID, "path:")
+		active := m.mainRunManager.HasActive(sessionID)
+		if item.TreePathActive != active {
+			item.TreePathActive = active
+			changed = true
+		}
+	}
+	if changed {
+		m.dialog.filterItems()
+	}
 }
 
 func (m *Model) handleBranchTreeSelection(choiceID string) (tea.Model, tea.Cmd) {
@@ -312,7 +467,7 @@ func (m *Model) startConversationBranchWithNotes(focus string) (tea.Model, tea.C
 	if point.laterMessageCount == 0 {
 		return m.showFooterWarning("There is no later conversation to bring from this point. Choose an earlier branch point or start clean.")
 	}
-	if m.transcriptMutationBusy() {
+	if m.transcriptMutationBusy() && !point.skipExpectedState {
 		return m.showFooterWarning("Cannot create a branch while work is active.")
 	}
 	if m.provider == nil {
@@ -322,23 +477,28 @@ func (m *Model) startConversationBranchWithNotes(focus string) (tea.Model, tea.C
 	if !ok {
 		return m.showFooterError("Session storage does not support conversation branching.")
 	}
-	messages, err := m.store.GetMessages(m.rootContext(), point.sourceSessionID, 0, 0)
-	if err != nil {
-		return m.showFooterError(fmt.Sprintf("Load branch context: %v", err))
-	}
-	point.sourceMessages, err = session.MessagesAfterBranchAnchor(messages, point.anchorMessageID)
-	if err != nil {
-		return m.showFooterError(fmt.Sprintf("Load branch context: %v", err))
+	if len(point.sourceMessages) == 0 {
+		messages, err := m.store.GetMessages(m.rootContext(), point.sourceSessionID, 0, 0)
+		if err != nil {
+			return m.showFooterError(fmt.Sprintf("Load branch context: %v", err))
+		}
+		point.sourceMessages, err = session.MessagesAfterBranchAnchor(messages, point.anchorMessageID)
+		if err != nil {
+			return m.showFooterError(fmt.Sprintf("Load branch context: %v", err))
+		}
 	}
 
 	// Materialize the inexpensive child first. Path-note generation starts only
 	// after the TUI has relaunched into that child, so the user can begin drafting
 	// immediately and the helper uses the child's fresh provider instance.
-	result, err := branchStore.CreateBranch(m.rootContext(), point.sourceSessionID, session.CreateBranchOptions{
+	branchOptions := session.CreateBranchOptions{
 		AnchorMessageID: point.anchorMessageID,
-		ExpectedState:   &point.expected,
 		IdempotencyKey:  point.idempotencyKey,
-	})
+	}
+	if !point.skipExpectedState {
+		branchOptions.ExpectedState = &point.expected
+	}
+	result, err := branchStore.CreateBranch(m.rootContext(), point.sourceSessionID, branchOptions)
 	switch {
 	case errors.Is(err, session.ErrBranchConflict):
 		return m.showFooterWarning("Conversation changed in another client; reopen /tree and try again.")
@@ -568,7 +728,7 @@ func (m *Model) restoreQueuedBranchSend() {
 }
 
 func (m *Model) createConversationBranch(point conversationBranchPoint) (tea.Model, tea.Cmd) {
-	if m.transcriptMutationBusy() {
+	if m.transcriptMutationBusy() && !point.skipExpectedState {
 		return m.showFooterWarning("Cannot create a branch while work is active.")
 	}
 	if len(m.files) > 0 || len(m.images) > 0 {
@@ -578,11 +738,14 @@ func (m *Model) createConversationBranch(point conversationBranchPoint) (tea.Mod
 	if !ok {
 		return m.showFooterError("Session storage does not support conversation branching.")
 	}
-	result, err := branchStore.CreateBranch(m.rootContext(), point.sourceSessionID, session.CreateBranchOptions{
+	branchOptions := session.CreateBranchOptions{
 		AnchorMessageID: point.anchorMessageID,
-		ExpectedState:   &point.expected,
 		IdempotencyKey:  point.idempotencyKey,
-	})
+	}
+	if !point.skipExpectedState {
+		branchOptions.ExpectedState = &point.expected
+	}
+	result, err := branchStore.CreateBranch(m.rootContext(), point.sourceSessionID, branchOptions)
 	switch {
 	case errors.Is(err, session.ErrBranchConflict):
 		return m.showFooterWarning("Conversation changed in another client; reopen /tree and try again.")
@@ -601,10 +764,11 @@ func (m *Model) finishConversationBranch(point conversationBranchPoint, result s
 	if err := m.store.SetCurrent(m.rootContext(), result.Session.ID); err != nil {
 		return m.showFooterError(fmt.Sprintf("Select branch: %v", err))
 	}
-	m.pendingBranchPathNotes = pathNotes
-	m.pendingBranchPrefill = point.prefill
 	m.clearSideQuestionHistory()
-	m.pendingResumeSessionID = result.Session.ID
-	m.quitting = true
-	return m, m.quitCmd()
+	return m.beginSessionSwitch(SessionSwitchRequest{
+		SessionID:       result.Session.ID,
+		BranchPrefill:   point.prefill,
+		BranchPathNotes: pathNotes,
+		BranchAutoSend:  point.autoSend,
+	})
 }

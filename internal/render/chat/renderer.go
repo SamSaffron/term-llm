@@ -8,6 +8,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/subagentview"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -67,6 +68,7 @@ type RenderState struct {
 	ShowStats                   bool
 	Error                       error // Display error if set
 	ReasoningExpansionOverrides map[int]bool
+	PersistedSubagents          map[string]subagentview.CompletedRun
 }
 
 // FlushResult contains the result of flushing content to scrollback
@@ -423,7 +425,7 @@ func (r *Renderer) renderHistory(state RenderState) string {
 		if msg.Role != llm.RoleUser && msg.Role != llm.RoleAssistant && msg.Role != llm.RoleEvent && !pathNote {
 			continue
 		}
-		block := r.getOrRenderBlock(msg, i, state.Messages, reasoningOrdinal, state.ReasoningExpansionOverrides)
+		block := r.getOrRenderBlock(msg, i, state.Messages, reasoningOrdinal, state.ReasoningExpansionOverrides, state.PersistedSubagents)
 		if block.Rendered != "" {
 			if hasPreviousRenderedSegment && block.HasSegmentTypes {
 				padding := ui.NewlinePadding(trailingNewlines, ui.SegmentBoundaryTrailingNewlines(previousLastType, block.FirstSegmentType))
@@ -545,17 +547,18 @@ func (r *Renderer) CachedHistorySignature(messages []session.Message) uint64 {
 }
 
 // getOrRenderBlock gets a rendered block from cache or renders it.
-func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool) *MessageBlock {
-	cacheKey := r.blockCacheKey(msg, index)
+func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool, persistedSubagents map[string]subagentview.CompletedRun) *MessageBlock {
+	projectionSignature := persistedSubagentSignature(msg, persistedSubagents)
+	cacheKey := r.blockCacheKey(msg, index, projectionSignature)
 	block := r.blockCache.Get(cacheKey)
 	if block == nil {
-		block = r.renderMessageBlock(msg, index, messages)
+		block = r.renderMessageBlock(msg, index, messages, persistedSubagents)
 		r.blockCache.Put(cacheKey, block)
 	}
 	if !reasoningOverridesAffectBlock(reasoningOrdinalBase, block.ReasoningCount, reasoningOverrides) {
 		return block
 	}
-	return r.renderMessageBlockWithReasoningOverrides(msg, index, messages, reasoningOrdinalBase, reasoningOverrides)
+	return r.renderMessageBlockWithReasoningOverrides(msg, index, messages, reasoningOrdinalBase, reasoningOverrides, persistedSubagents)
 }
 
 func reasoningOverridesAffectBlock(baseOrdinal, reasoningCount int, overrides map[int]bool) bool {
@@ -571,15 +574,41 @@ func reasoningOverridesAffectBlock(baseOrdinal, reasoningCount int, overrides ma
 	return false
 }
 
+func persistedSubagentSignature(msg *session.Message, runs map[string]subagentview.CompletedRun) uint64 {
+	if msg == nil || len(runs) == 0 {
+		return 0
+	}
+	h := uint64(fnv64Offset)
+	matched := false
+	for _, part := range msg.Parts {
+		if part.Type != llm.PartToolCall || part.ToolCall == nil {
+			continue
+		}
+		if run, ok := runs[part.ToolCall.ID]; ok {
+			h = writeUint64Hash(h, run.Fingerprint)
+			matched = true
+		}
+	}
+	if !matched {
+		return 0
+	}
+	return h
+}
+
 // blockCacheKey generates a cache key for a message.
 // Key includes a content fingerprint, not just message ID, so stale blocks
 // cannot survive same-ID content changes.
-func (r *Renderer) blockCacheKey(msg *session.Message, index int) blockCacheKey {
+func (r *Renderer) blockCacheKey(msg *session.Message, index int, projectionSignature ...uint64) blockCacheKey {
+	var persistedSignature uint64
+	if len(projectionSignature) > 0 {
+		persistedSignature = projectionSignature[0]
+	}
 	return blockCacheKey{
-		messageID:      msg.ID,
-		width:          r.width,
-		toolsExpanded:  r.toolsExpanded,
-		partsSignature: r.cachedPartsSignature(msg),
+		messageID:                  msg.ID,
+		width:                      r.width,
+		toolsExpanded:              r.toolsExpanded,
+		partsSignature:             r.cachedPartsSignature(msg),
+		persistedSubagentSignature: persistedSignature,
 	}
 }
 
@@ -732,15 +761,16 @@ func writeUint64Hash(h uint64, v uint64) uint64 {
 }
 
 // renderMessageBlock renders a single message to a block.
-func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
-	return r.renderMessageBlockWithReasoningOverrides(msg, index, messages, 0, nil)
+func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message, persistedSubagents map[string]subagentview.CompletedRun) *MessageBlock {
+	return r.renderMessageBlockWithReasoningOverrides(msg, index, messages, 0, nil, persistedSubagents)
 }
 
-func (r *Renderer) renderMessageBlockWithReasoningOverrides(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool) *MessageBlock {
+func (r *Renderer) renderMessageBlockWithReasoningOverrides(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool, persistedSubagents map[string]subagentview.CompletedRun) *MessageBlock {
 	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index, r.toolsExpanded)
 	rb.SetImageRenderer(r.imageRenderer)
 	rb.SetReasoningConfig(r.reasoningConfig)
 	rb.SetReasoningExpansionOverrides(reasoningOrdinalBase, reasoningOverrides)
+	rb.SetPersistedSubagents(persistedSubagents)
 	return rb.Render(msg)
 }
 

@@ -3125,6 +3125,26 @@
       min-width: 0;
     }
 
+    .subagent-result {
+      margin: 0.25rem 0.75rem 0.5rem 2rem;
+      display: grid;
+      gap: 0.4rem;
+    }
+
+    .subagent-result-output {
+      margin: 0;
+      max-height: 16rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 0.78rem/1.5 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace;
+      color: var(--text);
+    }
+
+    .subagent-result-error { color: var(--accent-red, #ef4444); font-size: 0.8rem; }
+    .subagent-result-meta { color: var(--text-muted); font-size: 0.75rem; }
+    .subagent-result-action { color: var(--accent); font-size: 0.78rem; width: fit-content; }
+
     .tool-artifacts {
       display: flex;
       gap: 0.5rem;

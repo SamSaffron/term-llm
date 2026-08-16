@@ -29,6 +29,7 @@ const SHELL_ASSETS = [
   './app-sessions.js',
   './app-path-notes.js',
   './app-branching.js',
+  './app-branch-commands.js',
   './app-session-events.js',
   './app-mcp.js',
   './app-goals-location.js',

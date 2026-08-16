@@ -67,17 +67,19 @@ type DialogModel struct {
 
 // DialogItem represents an item in a dialog list
 type DialogItem struct {
-	ID            string
-	Label         string
-	Description   string
-	Selected      bool
-	Category      string
-	TreeUserTurn  bool
-	TreeTool      bool
-	TreeTurnID    string
-	TreeRole      llm.Role
-	TreeRoleLabel string
-	TreePreview   string
+	ID             string
+	Label          string
+	Description    string
+	Selected       bool
+	Category       string
+	TreeUserTurn   bool
+	TreeTool       bool
+	TreeTurnID     string
+	TreeRole       llm.Role
+	TreeRoleLabel  string
+	TreePreview    string
+	TreePath       bool
+	TreePathActive bool
 }
 
 // NewDialogModel creates a new dialog model
@@ -788,6 +790,8 @@ func (d *DialogModel) viewBranchTree() string {
 	assistantRoleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Secondary)
 	toolRoleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Muted)
 	previewStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	activePathStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Success)
+	activeSelectedPathStyle := activePathStyle.Background(theme.Primary)
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(d.title))
@@ -828,7 +832,23 @@ func (d *DialogModel) viewBranchTree() string {
 				suffix = fmt.Sprintf(" · %d %s", toolCount, noun)
 			}
 			label := disclosure + item.Label + suffix
-			if actualIdx == d.cursor {
+			if item.TreePath {
+				marker := mutedStyle.Render("○")
+				if item.TreePathActive {
+					marker = activePathStyle.Render("●")
+				}
+				if actualIdx == d.cursor {
+					b.WriteString(selectedStyle.Render("❯ "))
+					if item.TreePathActive {
+						b.WriteString(activeSelectedPathStyle.Render("●"))
+					} else {
+						b.WriteString(selectedStyle.Render("○"))
+					}
+					b.WriteString(selectedStyle.Render(" " + label))
+				} else {
+					b.WriteString(prefix + marker + " " + label)
+				}
+			} else if actualIdx == d.cursor {
 				prefix = "❯ "
 				b.WriteString(selectedStyle.Render(prefix + label))
 			} else if item.TreeRoleLabel != "" {

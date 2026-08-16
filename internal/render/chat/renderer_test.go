@@ -10,6 +10,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/subagentview"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -174,6 +175,36 @@ func TestHistorySignatureChangesWhenSameCountMessagesChange(t *testing.T) {
 	fourth := MessageHistorySignature(messages)
 	if third == fourth {
 		t.Fatalf("expected history signature to change when display suppression changes")
+	}
+}
+
+func TestRenderer_PersistedSubagentProjectionKeepsUnrelatedCacheKeysStable(t *testing.T) {
+	message := &session.Message{ID: 1, Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "ordinary"}}}
+	withoutRuns := persistedSubagentSignature(message, nil)
+	withRuns := persistedSubagentSignature(message, map[string]subagentview.CompletedRun{"other": {Fingerprint: 99}})
+	if withoutRuns != 0 || withRuns != 0 {
+		t.Fatalf("unrelated signature changed from %d to %d", withoutRuns, withRuns)
+	}
+}
+
+func TestRenderer_PersistedSubagentProjectionInvalidatesBlockCache(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+	messages := []session.Message{{
+		ID: 1, Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "spawn-1", Name: "spawn_agent"}}},
+	}}
+	state := RenderState{Messages: messages, Mode: RenderModeAltScreen, Width: 80, Height: 24}
+	before := ui.StripANSI(renderer.Render(state))
+	if strings.Contains(before, "durable output") {
+		t.Fatalf("precondition rendered projection early: %q", before)
+	}
+	state.PersistedSubagents = map[string]subagentview.CompletedRun{"spawn-1": {
+		ParentCallID: "spawn-1", AgentName: "reviewer", Output: "durable output",
+		TextPreview: []string{"durable output"}, Fingerprint: 99,
+	}}
+	after := ui.StripANSI(renderer.Render(state))
+	if !strings.Contains(after, "durable output") {
+		t.Fatalf("projection-only update reused stale block: %q", after)
 	}
 }
 

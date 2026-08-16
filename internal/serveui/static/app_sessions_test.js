@@ -23,6 +23,7 @@ const sessionsSource = fs.readFileSync(path.join(dir, 'app-sessions.js'), 'utf8'
   .replace('initialize();', 'window.__termllmInitializePromise = initialize();');
 const pathNotesSource = fs.readFileSync(path.join(dir, 'app-path-notes.js'), 'utf8');
 const branchingSource = fs.readFileSync(path.join(dir, 'app-branching.js'), 'utf8');
+const branchCommandsSource = fs.readFileSync(path.join(dir, 'app-branch-commands.js'), 'utf8');
 const mcpSource = fs.readFileSync(path.join(dir, 'app-mcp.js'), 'utf8');
 const goalsLocationSource = fs.readFileSync(path.join(dir, 'app-goals-location.js'), 'utf8');
 const messageConvertSource = fs.readFileSync(path.join(dir, 'app-message-convert.js'), 'utf8');
@@ -491,6 +492,7 @@ async function createSessionsHarness(options = {}) {
   vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
   vm.runInContext(pathNotesSource, context, { filename: 'app-path-notes.js' });
   vm.runInContext(branchingSource, context, { filename: 'app-branching.js' });
+  vm.runInContext(branchCommandsSource, context, { filename: 'app-branch-commands.js' });
   vm.runInContext(sessionEventsSource, context, { filename: 'app-session-events.js' });
   if (typeof options.onInitializeStarted === 'function') {
     options.onInitializeStarted({ app, windowObj, storage, elementMap });
@@ -2987,6 +2989,24 @@ async function testConvertServerMessagesAttachesToolErrorsWithoutPhantoms() {
     return;
   }
 
+  pass(name);
+}
+
+async function testConvertServerMessagesRestoresSpawnAgentResult() {
+  const name = 'server spawn_agent results restore durable output and child activity link';
+  const { app } = await createSessionsHarness();
+  const converted = app.convertServerMessages([
+    { role: 'assistant', created_at: 1000, parts: [{ type: 'tool_call', tool_name: 'spawn_agent', tool_call_id: 'spawn_1', tool_arguments: '{"agent_name":"reviewer","prompt":"review"}' }] },
+    { role: 'tool', created_at: 2000, parts: [{
+      type: 'tool_result', tool_name: 'spawn_agent', tool_call_id: 'spawn_1', tool_error: false,
+      spawn_agent: { agent_name: 'reviewer', output: 'durable review', duration_ms: 42, session_id: 'child_1' }
+    }] }
+  ]);
+  const tool = converted.find((message) => message.role === 'tool-group')?.tools?.[0];
+  if (!tool?.subagent || tool.subagent.output !== 'durable review' || tool.subagent.childSessionId !== 'child_1' || tool.status !== 'done') {
+    fail(name, 'spawn result metadata was not restored', JSON.stringify(converted));
+    return;
+  }
   pass(name);
 }
 
@@ -7378,6 +7398,73 @@ async function testIdleConversationBranchSendsExpectedRevision() {
   pass(name);
 }
 
+async function testBranchShortcutCommandsUseSafeActiveBoundaryAndSkipEmptySend() {
+  const name = 'thread and fork shortcuts branch active conversations without submitting empty messages';
+  const makeHarness = async (kind, message) => {
+    const harness = await createSessionsHarness({
+      appOverrides: { renderMessages() {}, refreshActiveSessionMessagesFromServer: async () => {} },
+    });
+    const { app, windowObj } = harness;
+    const session = {
+      id: `shortcut_${kind}_source`, title: 'Shortcut source', number: 1,
+      messages: [
+        { id: 'u1', role: 'user', content: 'question', durable: true, durableSourceRowIds: [71] },
+        { id: 'a1', role: 'assistant', content: 'complete answer', durable: true, durableSourceRowIds: [72] },
+        { id: 'partial', role: 'assistant', content: 'partial reply', durable: false },
+      ],
+      activeResponseId: `resp_${kind}_active`, lastResponseId: 'resp_msg_72',
+    };
+    session.transcript = new windowObj.TermLLMConversation.ConversationController(session.id);
+    session.transcript.publishedMessages = session.messages.slice();
+    session.transcript.rev = 9;
+    session.transcript.setActiveRun(session.activeResponseId, 9, 1, { anchorRowId: 72 });
+    app.state.sessions = [session];
+    app.state.activeSessionId = session.id;
+    app.state.draftSessionActive = false;
+    app.state.streaming = true;
+    app.state.currentStreamSessionId = session.id;
+    app.state.currentStreamResponseId = session.activeResponseId;
+    app.setSessionOptimisticBusy(session, true);
+    app.setSessionServerActiveRun(session, true);
+    app.detachResponseStream = () => {
+      app.state.streaming = false;
+      app.state.currentStreamSessionId = '';
+      app.state.currentStreamResponseId = '';
+    };
+    let body = null;
+    const sends = [];
+    app.sendMessage = (options) => { sends.push(options); };
+    app.apiFetch = async (url, options = {}) => {
+      if (String(url).endsWith('/branches')) {
+        body = JSON.parse(String(options.body || '{}'));
+        return new Response(JSON.stringify({
+          session: { id: `shortcut_${kind}_child`, number: 2, created_at: Date.now(), last_message_at: Date.now() },
+          parent_session_id: session.id, copied_anchor_message_id: kind === 'fork' ? 172 : 0,
+        }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (String(url).endsWith('/tree')) return new Response(JSON.stringify({ path_count: 2, root_session_id: session.id, nodes: [] }), { status: 200 });
+      return new Response('{}', { status: 200 });
+    };
+    app.beginBranchCommand(kind, message);
+    await waitFor(() => app.state.activeSessionId === `shortcut_${kind}_child`, `${kind} child was not adopted`);
+    return { body, sends };
+  };
+
+  const fork = await makeHarness('fork', 'try another direction');
+  if (fork.body?.anchor_message_id !== 72 || Object.prototype.hasOwnProperty.call(fork.body || {}, 'expected_rev')
+      || fork.sends.length !== 1 || fork.sends[0]?.prompt !== 'try another direction') {
+    fail(name, 'active fork did not use its pre-run safe boundary and instruction', JSON.stringify(fork));
+    return;
+  }
+  const thread = await makeHarness('thread', '');
+  if (thread.body?.anchor_message_id !== 0 || Object.prototype.hasOwnProperty.call(thread.body || {}, 'expected_rev')
+      || thread.sends.length !== 0) {
+    fail(name, 'empty active thread submitted a message or used a non-root anchor', JSON.stringify(thread));
+    return;
+  }
+  pass(name);
+}
+
 async function testPendingBranchProjectionHidesVirtualTranscriptGaps() {
   const name = 'pending branch projection slices message data before grouped DOM rendering';
   const { app } = await createSessionsHarness({ appOverrides: { renderMessages() {} } });
@@ -7429,6 +7516,7 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testConversationBranchTreeOpensAndSwitchesPaths);
   await runAppSessionsTest(testConversationBranchPendingSelectionUsesDurableBoundaries);
   await runAppSessionsTest(testIdleConversationBranchSendsExpectedRevision);
+  await runAppSessionsTest(testBranchShortcutCommandsUseSafeActiveBoundaryAndSkipEmptySend);
   await runAppSessionsTest(testPendingBranchProjectionHidesVirtualTranscriptGaps);
   await runAppSessionsTest(testMarkedPathNoteConvertsToVisibleArtifact);
   await runAppSessionsTest(testSanitizeMessagePreservesSkillRunState);
@@ -7483,6 +7571,7 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testConvertServerMessagesRestoresAskUserAnswerAfterTool);
   await runAppSessionsTest(testConvertServerMessagesAttachesToolResultImages);
   await runAppSessionsTest(testConvertServerMessagesAttachesToolErrorsWithoutPhantoms);
+  await runAppSessionsTest(testConvertServerMessagesRestoresSpawnAgentResult);
   await runAppSessionsTest(testConvertServerMessagesCorrelatesSuccessfulPlanResults);
   await runAppSessionsTest(testConvertServerMessagesRestoresMentionAttachments);
   await runAppSessionsTest(testConvertServerMessagesRebasesHubImageURLs);

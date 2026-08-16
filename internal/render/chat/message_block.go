@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -14,6 +15,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/subagentview"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -68,6 +71,7 @@ type MessageBlockRenderer struct {
 	reasoningExpandByIndex map[int]bool
 	reasoningRenderedCount int
 	reasoningLineOffsets   []int
+	persistedSubagents     map[string]subagentview.CompletedRun
 	firstSegmentType       ui.SegmentType
 	lastSegmentType        ui.SegmentType
 	hasSegmentTypes        bool
@@ -102,6 +106,10 @@ func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, 
 		toolsExpanded:    toolsExpanded,
 		reasoningConfig:  config.DefaultReasoningConfig(),
 	}
+}
+
+func (r *MessageBlockRenderer) SetPersistedSubagents(runs map[string]subagentview.CompletedRun) {
+	r.persistedSubagents = runs
 }
 
 // SetImageRenderer configures the renderer used for generated-image artifacts.
@@ -474,6 +482,23 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 			hasContent = true
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
+				if run, ok := r.persistedSubagents[part.ToolCall.ID]; ok && part.ToolCall.Name == tools.SpawnAgentToolName {
+					segment := completedSubagentSegment(part.ToolCall, run)
+					rendered := ui.RenderSegments([]*ui.Segment{&segment}, r.width, -1, func(content string, _ int) string {
+						return r.renderMarkdown(content)
+					}, true, r.toolsExpanded)
+					if rendered != "" {
+						b.WriteString(rendered)
+						b.WriteString("\n")
+					}
+					if len(run.Images) > 0 {
+						b.WriteString(r.renderToolImages(run.Images))
+						r.noteRenderedSegment(ui.SegmentImage)
+					}
+					r.noteRenderedSegment(ui.SegmentTool)
+					hasContent = true
+					continue
+				}
 				result := r.findToolResult(part.ToolCall.ID)
 				status := ui.ToolSuccess
 				if result != nil && result.IsError {
@@ -542,6 +567,79 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 	// Text parts append paragraph spacing above.
 
 	return b.String()
+}
+
+func completedSubagentSegment(call *llm.ToolCall, run subagentview.CompletedRun) ui.Segment {
+	status := ui.ToolSuccess
+	if run.Error != "" || run.Status == session.StatusError || run.Status == session.StatusInterrupted {
+		status = ui.ToolError
+	}
+	progress := &ui.SubagentProgress{
+		ToolCallID:   run.ParentCallID,
+		AgentName:    run.AgentName,
+		Prompt:       run.Prompt,
+		Provider:     run.Provider,
+		Model:        run.Model,
+		StartTime:    run.StartedAt,
+		Done:         true,
+		ToolCalls:    run.ToolCalls,
+		InputTokens:  run.InputTokens,
+		OutputTokens: run.OutputTokens,
+	}
+	for _, activity := range run.Activities {
+		tool := ui.ToolSegment{
+			CallID: activity.CallID, Name: activity.Name, Info: activity.Info,
+			Args: activity.Args, Done: activity.Done, Success: activity.Success,
+		}
+		if activity.Done {
+			progress.CompletedTools = append(progress.CompletedTools, tool)
+		} else {
+			progress.ActiveTools = append(progress.ActiveTools, tool)
+		}
+	}
+	collapsed := ui.BuildSubagentPreview(progress, subagentview.PreviewToolLimit)
+	expanded := ui.BuildSubagentPreview(progress, 0)
+	resultPreview := append([]string(nil), run.TextPreview...)
+	if len(resultPreview) > 0 {
+		resultPreview[0] = "Result: " + resultPreview[0]
+	}
+	if run.Error != "" {
+		resultPreview = append(resultPreview, "Error: "+run.Error)
+	}
+	textOnly := len(progress.CompletedTools) == 0 && len(progress.ActiveTools) == 0
+	if textOnly {
+		collapsed = resultPreview
+		expanded = append([]string(nil), resultPreview...)
+	} else if len(resultPreview) > 0 {
+		// Persisted child activity explains how the run worked; the parent result
+		// remains the semantic answer. Keep a bounded result tail alongside the
+		// activity so reload never turns a completed agent into tool names only.
+		collapsed = append(collapsed, resultPreview...)
+		expanded = append(expanded, resultPreview...)
+	}
+	info := run.AgentName
+	if info == "" && call != nil {
+		info = call.ToolInfo
+	}
+	segment := ui.Segment{
+		Type: ui.SegmentTool, ToolName: tools.SpawnAgentToolName, ToolInfo: info,
+		ToolCallID: run.ParentCallID, ToolStatus: status, Complete: true,
+		SubagentHasProgress: true, SubagentToolCalls: run.ToolCalls,
+		SubagentTotalTokens: run.InputTokens + run.OutputTokens,
+		SubagentProvider:    run.Provider, SubagentModel: run.Model,
+		SubagentPrompt: run.Prompt, SubagentPreview: collapsed,
+		SubagentExpandedPreview: expanded, SubagentPreviewTextOnly: textOnly,
+		SubagentStartTime: run.StartedAt, SubagentEndTime: run.CompletedAt,
+	}
+	if segment.SubagentEndTime.IsZero() && !segment.SubagentStartTime.IsZero() && run.DurationMs > 0 {
+		segment.SubagentEndTime = segment.SubagentStartTime.Add(time.Duration(run.DurationMs) * time.Millisecond)
+	}
+	for _, diff := range run.Diffs {
+		segment.SubagentDiffs = append(segment.SubagentDiffs, ui.SubagentDiff{
+			Path: diff.File, Old: diff.Old, New: diff.New, Line: diff.Line, Operation: diff.Operation,
+		})
+	}
+	return segment
 }
 
 // reasoningAppendHeaderLineOffset returns the pre-wrap newline offset for a

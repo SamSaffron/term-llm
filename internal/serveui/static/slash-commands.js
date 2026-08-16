@@ -11,6 +11,7 @@ const builtInCommands = [
     name: '/compact',
     description: 'Compress the active conversation context',
   },
+  { name: '/fork', description: 'Create a parallel continuation from the last safe point', streamingSafe: true },
   {
     name: '/goal',
     description: 'Set or manage the session goal',
@@ -36,6 +37,7 @@ const builtInCommands = [
     description: 'Ask without interrupting the main response',
     streamingSafe: true,
   },
+  { name: '/thread', description: 'Start a related conversation with optional context', streamingSafe: true },
   {
     name: '/tree',
     description: 'Browse conversation paths or branch from an earlier turn',

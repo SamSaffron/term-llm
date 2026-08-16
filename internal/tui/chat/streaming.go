@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -545,6 +546,11 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		displayText = "[" + strings.Join(imageLabels, ", ") + "]"
 	}
 
+	// Capture the last completed boundary before appending this user turn. A
+	// /fork issued while the response is active rewinds here, excluding partial
+	// assistant output and any tool activity that has not completed.
+	m.activeBranchAnchorID = lastSafeBranchMessageID(m.messages)
+
 	// Ensure system/platform context messages exist before the user turn.
 	m.ensureContextMessages()
 
@@ -642,6 +648,15 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 
 	// Start streaming
 	m.streaming = true
+	m.mainRunViewComplete = true
+	// Manager sequences restart at one for every run. Clear the previous run's
+	// cursor before Start so events published before attachment are replayed.
+	m.mainRunID = ""
+	m.mainRunLastSeq = 0
+	m.mainRunSubscription++
+	m.mainRunReplay = nil
+	m.mainRunLive = nil
+	m.mainRunCoalescer = nil
 	// The previous turn's tracker is kept alive after stream-done so its
 	// reasoning headers stay click-toggleable; clear it now that a fresh
 	// assistant turn is beginning.
@@ -706,10 +721,16 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 
 func (m *Model) startStream(content string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.rootContext())
+	sessionID := m.SessionID()
 	m.streamGeneration++
 	m.discardPendingCompactionsBeforeGeneration(m.streamGeneration)
 	streamGeneration := m.streamGeneration
-	m.streamCancelFunc = cancel
+	m.streamCancelFunc = func() {
+		cancel()
+		if m.mainRunManager != nil {
+			m.mainRunManager.Cancel(sessionID)
+		}
+	}
 	m.setStreamCancelRequested(false)
 
 	return func() tea.Msg {
@@ -718,10 +739,14 @@ func (m *Model) startStream(content string) tea.Cmd {
 			_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusActive)
 		}
 
-		// Create stream adapter for unified event handling with proper buffering
-		adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
-		m.streamChan = adapter.Events()
-		m.streamCoalescer = &streamEventCoalescer{ch: m.streamChan}
+		// Legacy model-owned streams write directly to the visible listener. A
+		// process-scoped run creates its adapter inside the execution host instead.
+		var adapter *ui.StreamAdapter
+		if m.mainRunManager == nil {
+			adapter = ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+			m.streamChan = adapter.Events()
+			m.streamCoalescer = &streamEventCoalescer{ch: m.streamChan}
+		}
 
 		// Build messages from conversation history
 		messages := m.buildMessagesForStream()
@@ -820,10 +845,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 			return m.store.AddMessage(cbCtx, streamSess.ID, session.NewMessage(streamSess.ID, msg, -1))
 		}
 
-		// Start streaming in background - adapter handles all event conversion
-		m.streamDone = make(chan struct{})
-		go func() {
-			defer close(m.streamDone)
+		runWithAdapter := func(runCtx context.Context, streamAdapter *ui.StreamAdapter) {
 			if m.runner != nil {
 				includeConfiguredTools := false
 				searchEnabled := m.searchEnabled
@@ -858,8 +880,6 @@ func (m *Model) startStream(content string) tea.Cmd {
 					OnCompaction:              compactionCB,
 					OnSyntheticUserMessage:    syntheticUserCB,
 				}
-				runCtx, cancelRun := context.WithCancel(ctx)
-				defer cancelRun()
 				pipe := runpkg.NewEventPipe(runCtx, ui.DefaultStreamBufferSize)
 				done := make(chan struct{})
 				go func() {
@@ -867,29 +887,317 @@ func (m *Model) startStream(content string) tea.Cmd {
 					_, err := m.runner.Run(runCtx, runReq, pipe)
 					pipe.CloseWithError(err)
 				}()
-				adapter.ProcessStream(runCtx, pipe)
-				cancelRun()
+				streamAdapter.ProcessStream(runCtx, pipe)
 				<-done
 				return
 			}
 
-			stream, err := m.engine.Stream(ctx, req)
+			stream, err := m.engine.Stream(runCtx, req)
 			if err != nil {
-				adapter.EmitErrorAndClose(err)
+				streamAdapter.EmitErrorAndClose(err)
 				return
 			}
 			defer stream.Close()
-			// ProcessStream handles all events and closes the channel when done
-			adapter.ProcessStream(ctx, stream)
-		}()
+			streamAdapter.ProcessStream(runCtx, stream)
+		}
 
-		// Return initial listen command
+		if m.mainRunManager != nil {
+			if err := ctx.Err(); err != nil {
+				return streamEventMsg{event: ui.ErrorEvent(err), generation: streamGeneration}
+			}
+			runSessionID := req.SessionID
+			snapshot, err := m.mainRunManager.Start(runSessionID, MainRunExecution{
+				Execute: func(runCtx context.Context, emit func(ui.StreamEvent)) error {
+					runCtx = tools.ContextWithAskUserUIFunc(runCtx, func(promptCtx context.Context, questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
+						done := make(chan []tools.AskUserAnswer, 1)
+						if err := m.mainRunManager.DeliverUI(runSessionID, AskUserRequestMsg{Questions: questions, DoneCh: done}); err != nil {
+							return nil, err
+						}
+						select {
+						case answers := <-done:
+							return answers, nil
+						case <-promptCtx.Done():
+							return nil, promptCtx.Err()
+						}
+					})
+					runCtx = tools.ContextWithHandoverFunc(runCtx, func(promptCtx context.Context, agent string) (bool, error) {
+						done := make(chan bool, 1)
+						if err := m.mainRunManager.DeliverUI(runSessionID, HandoverRequestMsg{Agent: agent, DoneCh: done}); err != nil {
+							return false, err
+						}
+						select {
+						case confirmed := <-done:
+							return confirmed, nil
+						case <-promptCtx.Done():
+							return false, promptCtx.Err()
+						}
+					})
+					hostAdapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+					done := make(chan struct{})
+					go func() {
+						defer close(done)
+						runWithAdapter(runCtx, hostAdapter)
+					}()
+					var runErr error
+					for event := range hostAdapter.Events() {
+						if event.Type == ui.StreamEventError {
+							runErr = event.Err
+						}
+						emit(event)
+					}
+					<-done
+					return runErr
+				},
+				Finalize: func(runErr error) {
+					if m.store == nil {
+						return
+					}
+					status := session.StatusComplete
+					if runErr != nil {
+						status = session.StatusError
+						if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+							status = session.StatusInterrupted
+						}
+					}
+					_ = m.store.UpdateStatus(context.Background(), runSessionID, status)
+				},
+				QueueInterjection: func(interjection llm.QueuedInterjection) llm.InterjectionQueueStatus {
+					_, status := m.engine.QueueInterjectionWithStatus(interjection)
+					return status
+				},
+				CancelInterjection: m.engine.CancelInterjection,
+				DiscardInterjections: func() {
+					m.engine.DiscardPendingInterjections()
+				},
+				ListInterjections:  m.engine.ListPendingInterjections,
+				DrainInterjections: m.engine.DrainInterjections,
+				AnchorMessageID:    m.activeBranchAnchorID,
+			})
+			if err != nil {
+				return streamEventMsg{event: ui.ErrorEvent(err), generation: streamGeneration}
+			}
+			cancel()
+			return mainRunStartedMsg{sessionID: runSessionID, runID: snapshot.RunID, generation: streamGeneration}
+		}
+
+		// Legacy model-owned execution remains for embedders that do not install a
+		// process-scoped manager.
+		done := make(chan struct{})
+		m.streamDone = done
+		go func() {
+			defer close(done)
+			runWithAdapter(ctx, adapter)
+		}()
 		return m.listenForStreamEventsSync(streamGeneration)
 	}
 }
 
+func (m *Model) attachMainRun(sessionID string) tea.Cmd {
+	if m.mainRunManager == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	if m.mainRunDetach != nil {
+		m.mainRunDetach()
+		m.mainRunDetach = nil
+	}
+	// A freshly relaunched model reconstructs the already-produced prefix from
+	// durable session messages. An in-process session switch can additionally
+	// transfer the exact tool/subagent presentation and its stream cursor; replay
+	// then starts immediately after that cursor. Without a retained presentation,
+	// skip the old event prefix and let durable messages remain authoritative.
+	reattach := !m.streaming && m.mainRunLastSeq == 0
+	afterSequence := m.mainRunLastSeq
+	var presentation *mainRunPresentation
+	if reattach {
+		presentation = m.mainRunManager.TakePresentation(sessionID)
+		if presentation != nil {
+			afterSequence = presentation.sequence
+		} else {
+			afterSequence = ^uint64(0)
+		}
+	}
+	replay, live, snapshotRequired, snapshot, detach := m.mainRunManager.Subscribe(sessionID, afterSequence)
+	if presentation != nil && snapshot.RunID != "" && presentation.runID != snapshot.RunID {
+		// The prior run completed and a new one started between taking its retained
+		// presentation and subscribing. Never apply the prior run's cursor to the
+		// replacement run.
+		detach()
+		presentation = nil
+		replay, live, snapshotRequired, snapshot, detach = m.mainRunManager.Subscribe(sessionID, ^uint64(0))
+	}
+	if snapshot.RunID == "" {
+		detach()
+		return nil
+	}
+	if !snapshot.Active {
+		detach()
+		if m.streaming {
+			if m.store != nil && m.sess != nil {
+				if loaded, compactionIdx, err := loadSessionMessagesForScrollback(context.Background(), m.store, m.sess); err == nil {
+					m.applyLoadedScrollback(loaded, compactionIdx)
+				}
+			}
+			generation := m.streamGeneration
+			runID := snapshot.RunID
+			subscription := m.mainRunSubscription
+			if snapshot.Err != nil {
+				return func() tea.Msg {
+					return streamEventMsg{event: ui.ErrorEvent(snapshot.Err), generation: generation, mainRunID: runID, mainRunSubscription: subscription}
+				}
+			}
+			return func() tea.Msg {
+				return streamEventMsg{event: ui.DoneEvent(0), generation: generation, mainRunID: runID, mainRunSubscription: subscription}
+			}
+		}
+		return nil
+	}
+	if reattach {
+		m.mainRunViewComplete = false
+		m.mainRunLastSeq = snapshot.LastSequence
+		if presentation != nil && presentation.runID == snapshot.RunID {
+			m.tracker = presentation.tracker
+			m.subagentTracker = presentation.subagentTracker
+			m.mainRunLastSeq = presentation.sequence
+			m.mainRunViewComplete = !snapshotRequired
+		}
+		m.activeBranchAnchorID = snapshot.AnchorMessageID
+		// Elapsed time belongs to the run, not the visible model: a relaunched
+		// model must resume the timer from the run's true start.
+		m.streamStartTime = snapshot.StartedAt
+		if m.phase == "" {
+			m.phase = "Responding"
+		}
+		if m.store != nil && m.sess != nil {
+			if loaded, compactionIdx, err := loadSessionMessagesForScrollback(context.Background(), m.store, m.sess); err == nil {
+				m.applyLoadedScrollback(loaded, compactionIdx)
+			}
+		}
+		for _, interjection := range m.mainRunManager.ListInterjections(sessionID) {
+			m.setPendingInterjection(interjection.ID, interjection.DisplayText)
+		}
+	}
+	m.mainRunID = snapshot.RunID
+	m.mainRunSubscription++
+	m.mainRunReplay = replay
+	m.mainRunLive = live
+	if live != nil {
+		m.mainRunCoalescer = &mainRunEventCoalescer{ch: live}
+	} else {
+		m.mainRunCoalescer = nil
+	}
+	m.mainRunDetach = detach
+	m.streaming = true
+	m.streamDone = snapshot.Done
+	m.streamCancelFunc = func() { m.mainRunManager.Cancel(sessionID) }
+	if snapshotRequired {
+		m.mainRunViewComplete = false
+	}
+	if snapshotRequired && m.store != nil && m.sess != nil {
+		if loaded, compactionIdx, err := loadSessionMessagesForScrollback(context.Background(), m.store, m.sess); err == nil {
+			m.applyLoadedScrollback(loaded, compactionIdx)
+		}
+	}
+	return m.listenForMainRunEvents()
+}
+
+func (m *Model) detachMainRun() {
+	if m.mainRunManager != nil && m.mainRunViewComplete {
+		m.mainRunManager.RetainPresentation(m.SessionID(), m.mainRunID, m.mainRunLastSeq, m.tracker, m.subagentTracker)
+	}
+	if m.mainRunDetach != nil {
+		m.mainRunDetach()
+	}
+	if m.mainRunUIDetach != nil {
+		m.mainRunUIDetach()
+	}
+	m.mainRunDetach = nil
+	m.mainRunUIDetach = nil
+	m.mainRunLive = nil
+	m.mainRunCoalescer = nil
+	m.mainRunReplay = nil
+	m.mainRunSubscription++
+}
+
+func (m *Model) resetMainRunSessionBinding() {
+	m.detachMainRun()
+	m.mainRunID = ""
+	m.mainRunLastSeq = 0
+}
+
+func (m *Model) attachVisibleMainRunUISink() {
+	if m.mainRunManager != nil && m.program != nil && m.SessionID() != "" {
+		m.AttachMainRunUISink(m.program.Send)
+	}
+}
+
+func (m *Model) listenForMainRunEvents() tea.Cmd {
+	replay := m.mainRunReplay
+	coalescer := m.mainRunCoalescer
+	generation := m.streamGeneration
+	sessionID := m.SessionID()
+	runID := m.mainRunID
+	subscription := m.mainRunSubscription
+	return func() tea.Msg {
+		if len(replay) > 0 {
+			event := replay[0]
+			for i := 1; i < len(replay) && i < maxCoalescedTextEvents && event.Event.Type == ui.StreamEventText && replay[i].Event.Type == ui.StreamEventText; i++ {
+				event.Event.Text += replay[i].Event.Text
+				event.Sequence = replay[i].Sequence
+			}
+			return streamEventMsg{event: event.Event, generation: generation, mainRunID: runID, mainRunSubscription: subscription, mainRunSeq: event.Sequence}
+		}
+		if coalescer == nil {
+			return nil
+		}
+		event, ok := coalescer.next()
+		if !ok {
+			return mainRunSubscriberClosedMsg{sessionID: sessionID, runID: runID, subscription: subscription}
+		}
+		return streamEventMsg{event: event.Event, generation: generation, mainRunID: runID, mainRunSubscription: subscription, mainRunSeq: event.Sequence}
+	}
+}
+
+type mainRunEventCoalescer struct {
+	ch      <-chan MainRunEvent
+	pending *MainRunEvent
+}
+
+func (c *mainRunEventCoalescer) next() (MainRunEvent, bool) {
+	if event := c.pending; event != nil {
+		c.pending = nil
+		return *event, true
+	}
+	event, ok := <-c.ch
+	if !ok {
+		return MainRunEvent{}, false
+	}
+	if event.Event.Type != ui.StreamEventText {
+		return event, true
+	}
+	for i := 1; i < maxCoalescedTextEvents; i++ {
+		select {
+		case next, open := <-c.ch:
+			if !open {
+				return event, true
+			}
+			if next.Event.Type != ui.StreamEventText {
+				c.pending = &next
+				return event, true
+			}
+			event.Event.Text += next.Event.Text
+			event.Sequence = next.Sequence
+		default:
+			return event, true
+		}
+	}
+	return event, true
+}
+
 // listenForStreamEvents returns a command that listens for the next stream event
 func (m *Model) listenForStreamEvents() tea.Cmd {
+	if m.mainRunManager != nil && (len(m.mainRunReplay) > 0 || m.mainRunLive != nil) {
+		return m.listenForMainRunEvents()
+	}
 	streamGeneration := m.streamGeneration
 	return func() tea.Msg {
 		return m.listenForStreamEventsSync(streamGeneration)

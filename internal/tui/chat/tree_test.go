@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -81,6 +82,24 @@ func newBranchChatModel() (*Model, *branchChatStore, []session.Message) {
 	return m, store, messages
 }
 
+func attachBlockingMainRun(t *testing.T, m *Model) *MainRunManager {
+	t.Helper()
+	manager := NewMainRunManager(context.Background())
+	_, err := manager.Start(m.SessionID(), MainRunExecution{
+		Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		AnchorMessageID: m.activeBranchAnchorID,
+	})
+	if err != nil {
+		t.Fatalf("start main run: %v", err)
+	}
+	m.SetMainRunManager(manager)
+	t.Cleanup(func() { manager.Close(time.Second) })
+	return manager
+}
+
 func TestTreeUserSelectionAtTipOffersOnlyCleanAndRelaunchesWithPrefill(t *testing.T) {
 	m, store, messages := newBranchChatModel()
 	updated, cmd := m.cmdTree(nil)
@@ -114,6 +133,99 @@ func TestTreeUserSelectionAtTipOffersOnlyCleanAndRelaunchesWithPrefill(t *testin
 	}
 	if store.currentID != "new-child" || len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != messages[1].ID {
 		t.Fatalf("store branch call/current = %#v / %q", store.createOpts, store.currentID)
+	}
+}
+
+func TestBranchCommandsNeverCancelActiveTUIWorkWithoutBackgroundRuntime(t *testing.T) {
+	for _, command := range []string{"/tree", "/thread continue elsewhere", "/fork try another direction"} {
+		t.Run(command, func(t *testing.T) {
+			m, store, _ := newBranchChatModel()
+			m.streaming = true
+			cancelled := false
+			m.streamCancelFunc = func() { cancelled = true }
+
+			updated, cmd := m.ExecuteCommand(command)
+			m = updated.(*Model)
+			if cmd == nil || cancelled || !m.streaming || m.quitting || len(store.createOpts) != 0 {
+				t.Fatalf("active command mutated work: cmd=%v cancelled=%v streaming=%v quitting=%v branches=%d", cmd != nil, cancelled, m.streaming, m.quitting, len(store.createOpts))
+			}
+			if !strings.Contains(m.footerMessage, "background TUI runs are not available") {
+				t.Fatalf("active command warning=%q", m.footerMessage)
+			}
+			if !isStreamingLocalSlashCommand(command) {
+				t.Fatalf("%s must be handled locally instead of entering the model stream", command)
+			}
+		})
+	}
+}
+
+func TestThreadCommandBranchesAtRootAndCarriesOnlyNonEmptyInstructions(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	updated, cmd := m.ExecuteCommand("/thread   investigate  the cache")
+	m = updated.(*Model)
+	if cmd != nil || !m.dialog.IsOpen() || m.dialog.Type() != DialogBranchContext {
+		t.Fatalf("thread chooser: cmd=%v open=%v type=%v", cmd != nil, m.dialog.IsOpen(), m.dialog.Type())
+	}
+	m.dialog.Close()
+	updated, cmd = m.handleBranchContextSelection("clean")
+	m = updated.(*Model)
+	if cmd == nil || m.RequestedBranchAutoSend() != "investigate  the cache" {
+		t.Fatalf("thread handoff: cmd=%v auto=%q", cmd != nil, m.RequestedBranchAutoSend())
+	}
+	if len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != 0 || store.createOpts[0].ExpectedState == nil {
+		t.Fatalf("thread branch options = %#v", store.createOpts)
+	}
+
+	m, _, _ = newBranchChatModel()
+	updated, _ = m.ExecuteCommand("/thread")
+	m = updated.(*Model)
+	m.dialog.Close()
+	updated, _ = m.handleBranchContextSelection("clean")
+	m = updated.(*Model)
+	if got := m.RequestedBranchAutoSend(); got != "" {
+		t.Fatalf("empty /thread scheduled message %q", got)
+	}
+}
+
+func TestForkCommandUsesLastSafeBoundaryWhileReplyIsActive(t *testing.T) {
+	m, store, messages := newBranchChatModel()
+	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: llm.RoleTool, TextContent: "complete result", Sequence: 3}
+	partial := session.Message{ID: 15, SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "partial", Sequence: 4}
+	store.messages[m.sess.ID] = append(store.messages[m.sess.ID], tool, partial)
+	m.messages = store.messages[m.sess.ID]
+	m.streaming = true
+	m.activeBranchAnchorID = messages[1].ID
+	manager := attachBlockingMainRun(t, m)
+
+	updated, cmd := m.ExecuteCommand("/fork try another direction")
+	m = updated.(*Model)
+	if cmd == nil || !m.quitting || m.RequestedBranchAutoSend() != "try another direction" {
+		t.Fatalf("active fork handoff: cmd=%v quitting=%v auto=%q", cmd != nil, m.quitting, m.RequestedBranchAutoSend())
+	}
+	if !manager.HasActive(m.SessionID()) {
+		t.Fatal("fork cancelled the source main run")
+	}
+	if len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != messages[1].ID || store.createOpts[0].ExpectedState != nil {
+		t.Fatalf("active fork options = %#v", store.createOpts)
+	}
+	if !isStreamingLocalSlashCommand("/fork try another direction") || !isStreamingLocalSlashCommand("/thread") {
+		t.Fatal("thread and fork must remain executable during streaming")
+	}
+}
+
+func TestForkCommandAtIdleIncludesCompletedToolTailAndEmptyCommandDoesNotSend(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: llm.RoleTool, TextContent: "complete result", Sequence: 3}
+	store.messages[m.sess.ID] = append(store.messages[m.sess.ID], tool)
+	store.state = session.TranscriptMutationState{Rev: 8, HeadID: tool.ID}
+
+	updated, _ := m.ExecuteCommand("/fork")
+	m = updated.(*Model)
+	if len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != tool.ID || store.createOpts[0].ExpectedState == nil {
+		t.Fatalf("idle fork options = %#v", store.createOpts)
+	}
+	if got := m.RequestedBranchAutoSend(); got != "" {
+		t.Fatalf("empty /fork scheduled message %q", got)
 	}
 }
 
@@ -251,6 +363,66 @@ func TestTreeCurrentPathSelectionDoesNotRelaunch(t *testing.T) {
 	m = updated.(*Model)
 	if cmd != nil || m.quitting || m.RequestedResumeSessionID() != "" || store.currentID != "" {
 		t.Fatalf("current path selection relaunched: cmd=%v quitting=%v resume=%q current=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID(), store.currentID)
+	}
+}
+
+func TestTreeMarksActivePathsGreenAndRefreshesWhileOpen(t *testing.T) {
+	m, _, _ := newBranchChatModel()
+	manager := NewMainRunManager(context.Background())
+	defer manager.Close(time.Second)
+	release := make(chan struct{})
+	snapshot, err := manager.Start("existing-child", MainRunExecution{Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetMainRunManager(manager)
+	updated, _ := m.cmdTree(nil)
+	m = updated.(*Model)
+
+	pathItem := func(id string) *DialogItem {
+		for i := range m.dialog.items {
+			if m.dialog.items[i].ID == "path:"+id {
+				return &m.dialog.items[i]
+			}
+		}
+		return nil
+	}
+	current := pathItem(m.SessionID())
+	working := pathItem("existing-child")
+	if current == nil || current.TreePathActive || !strings.HasPrefix(current.Description, "current · ") {
+		t.Fatalf("current path metadata = %#v", current)
+	}
+	if working == nil || !working.TreePathActive || strings.HasPrefix(working.Description, "current · ") {
+		t.Fatalf("working path metadata = %#v", working)
+	}
+	rendered := m.dialog.View()
+	activeCircle := lipgloss.NewStyle().Bold(true).Foreground(m.styles.Theme().Success).Render("●")
+	if !strings.Contains(rendered, activeCircle) {
+		t.Fatalf("tree did not render active path with success styling:\n%s", rendered)
+	}
+	plain := ui.StripANSI(rendered)
+	if !strings.Contains(plain, "○ Original") || !strings.Contains(plain, "●   Existing path") || !strings.Contains(plain, "current · #1") {
+		t.Fatalf("tree path markers/current cue missing:\n%s", plain)
+	}
+
+	close(release)
+	<-snapshot.Done
+	updated, _ = m.Update(BackgroundRunsMsg{Count: manager.ActiveCount(), owner: m})
+	m = updated.(*Model)
+	working = pathItem("existing-child")
+	if working == nil || working.TreePathActive {
+		t.Fatalf("completed path remained active = %#v", working)
+	}
+	plain = ui.StripANSI(m.dialog.View())
+	if !strings.Contains(plain, "○   Existing path") {
+		t.Fatalf("completed path marker did not refresh:\n%s", plain)
 	}
 }
 
@@ -436,13 +608,18 @@ func TestTreeBranchConflictStaysInSourceSession(t *testing.T) {
 	}
 }
 
-func TestTreeBusyGateAndBranchPrefillDoesNotAutoSend(t *testing.T) {
+func TestTreeRemainsAvailableDuringActiveWorkAndBranchPrefillDoesNotAutoSend(t *testing.T) {
 	m, _, _ := newBranchChatModel()
 	m.streaming = true
+	manager := attachBlockingMainRun(t, m)
 	updated, cmd := m.cmdTree(nil)
 	m = updated.(*Model)
-	if cmd == nil || m.dialog.IsOpen() {
-		t.Fatalf("busy tree opened dialog or omitted warning command: open=%v cmd=%v", m.dialog.IsOpen(), cmd != nil)
+	if cmd != nil || !m.dialog.IsOpen() || m.dialog.Type() != DialogBranchTree {
+		t.Fatalf("active tree dialog: open=%v type=%v cmd=%v", m.dialog.IsOpen(), m.dialog.Type(), cmd != nil)
+	}
+
+	if !manager.HasActive(m.SessionID()) {
+		t.Fatal("opening tree cancelled the source main run")
 	}
 
 	m2 := newTestChatModel(false)

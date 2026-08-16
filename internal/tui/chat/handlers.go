@@ -352,9 +352,7 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 			m.streamCancelFunc()
 			m.streamCancelFunc = nil
 		}
-		if m.engine != nil {
-			_ = m.engine.DrainInterjection()
-		}
+		_ = m.drainPendingInterjectionText()
 		m.clearPendingInterjection()
 		cmds = append(cmds, m.streamCancelTimeoutCmd())
 		cancelled = true
@@ -513,12 +511,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		// Allow viewport scroll keys to pass through; block everything else
 		if m.altScreen && (key.Matches(msg, m.keyMap.PageUp) || key.Matches(msg, m.keyMap.PageDown)) {
+			var loadCmd tea.Cmd
 			if key.Matches(msg, m.keyMap.PageUp) {
-				m.loadOlderScrollbackPrefix(context.Background())
+				loadCmd = m.loadOlderScrollbackPrefix(context.Background())
 			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
+			return m, tea.Batch(loadCmd, cmd)
 		}
 		return m, nil
 	}
@@ -927,7 +926,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.streamCancelFunc()
 
 			// Recover pending interjection text into textarea
-			if residual := m.engine.DrainInterjection(); residual != "" {
+			if residual := m.drainPendingInterjectionText(); residual != "" {
 				m.setTextareaValue(residual)
 			}
 			m.clearPendingInterjection()
@@ -1015,10 +1014,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Allow viewport scrolling even while streaming (in alt screen mode)
 	if m.altScreen {
 		if key.Matches(msg, m.keyMap.PageUp) {
-			m.loadOlderScrollbackPrefix(context.Background())
+			loadCmd := m.loadOlderScrollbackPrefix(context.Background())
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
+			return m, tea.Batch(loadCmd, cmd)
 		}
 		if key.Matches(msg, m.keyMap.PageDown) {
 			var cmd tea.Cmd
@@ -1035,9 +1034,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				scrollAmount = 5
 			}
 			if key.Matches(msg, m.keyMap.HistoryUp) {
-				m.loadOlderScrollbackPrefix(context.Background())
+				loadCmd := m.loadOlderScrollbackPrefix(context.Background())
 				m.viewport.ScrollUp(scrollAmount)
-				return m, nil
+				return m, loadCmd
 			}
 			if key.Matches(msg, m.keyMap.HistoryDown) {
 				m.viewport.ScrollDown(scrollAmount)
@@ -1743,7 +1742,13 @@ func (m *Model) cancelSelectedPendingInterjection() bool {
 		idx = len(m.pendingInterjections) - 1
 	}
 	entry := m.pendingInterjections[idx]
-	if !m.engine.CancelInterjection(entry.ID) {
+	cancelled := false
+	if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
+		cancelled = m.mainRunManager.CancelInterjection(m.SessionID(), entry.ID)
+	} else if m.engine != nil {
+		cancelled = m.engine.CancelInterjection(entry.ID)
+	}
+	if !cancelled {
 		return false
 	}
 	copy(m.pendingInterjections[idx:], m.pendingInterjections[idx+1:])
@@ -1767,7 +1772,9 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 
 	switch action {
 	case llm.InterruptCancel:
-		if m.engine != nil {
+		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
+			m.mainRunManager.DiscardInterjections(m.SessionID())
+		} else if m.engine != nil {
 			m.engine.DiscardPendingInterjections()
 		}
 		m.clearPendingInterjection()
@@ -1802,7 +1809,13 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 		if len(msg.Parts) == 0 {
 			msg = llm.UserText(content)
 		}
-		_, queueStatus := m.engine.QueueInterjectionWithStatus(llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: summary})
+		interjection := llm.QueuedInterjection{ID: interjectionID, Message: msg, DisplayText: summary}
+		queueStatus := llm.InterjectionQueueRunFinished
+		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
+			queueStatus = m.mainRunManager.QueueInterjection(m.SessionID(), interjection)
+		} else if m.engine != nil {
+			_, queueStatus = m.engine.QueueInterjectionWithStatus(interjection)
+		}
 		switch queueStatus {
 		case llm.InterjectionQueueQueued, llm.InterjectionQueueAlreadyQueued:
 			m.setPendingInterjection(interjectionID, summary)
@@ -1818,11 +1831,42 @@ func (m *Model) applyInterruptActionWithParts(interjectionID, content string, pa
 	}
 }
 
+func (m *Model) listPendingInterjections() []llm.QueuedInterjection {
+	if m.mainRunManager != nil && (m.streaming || m.mainRunManager.HasActive(m.SessionID())) {
+		return m.mainRunManager.ListInterjections(m.SessionID())
+	}
+	if m.engine == nil {
+		return nil
+	}
+	return m.engine.ListPendingInterjections()
+}
+
+func (m *Model) drainPendingInterjections() []llm.QueuedInterjection {
+	if m.mainRunManager != nil && (m.streaming || m.mainRunManager.HasActive(m.SessionID())) {
+		return m.mainRunManager.DrainInterjections(m.SessionID())
+	}
+	if m.engine == nil {
+		return nil
+	}
+	return m.engine.DrainInterjections()
+}
+
+func (m *Model) drainPendingInterjectionText() string {
+	entries := m.drainPendingInterjections()
+	texts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if text := strings.TrimSpace(entry.DisplayText); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
 func (m *Model) restorePendingInterjectionDraft() {
 	if strings.TrimSpace(m.textarea.Value()) != "" {
 		return
 	}
-	if entries := m.engine.DrainInterjections(); len(entries) > 0 {
+	if entries := m.drainPendingInterjections(); len(entries) > 0 {
 		var textParts []string
 		var images []ImageAttachment
 		for _, entry := range entries {

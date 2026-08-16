@@ -242,22 +242,25 @@ const createConversationBranch = async (draft, mode = 'clean', focus = '') => {
       localStorage.setItem('term_llm_branching_notice', '1');
       app.showToast?.('Conversation context branches; filesystem and tool side effects do not rewind.', { id: 'conversation-branch', tone: 'warning', duration: 7000 });
     }
-    elements.promptInput.value = String(draft.selectedText || '');
+    const autoSendPrompt = String(draft.autoSendPrompt || '').trim();
+    elements.promptInput.value = autoSendPrompt || String(draft.selectedText || '');
     app.autoGrowPrompt?.();
     app.renderMessages?.(true);
     const preparesContext = effectiveMode === 'notes' || effectiveMode === 'focused';
-    if (preparesContext) {
-      void startBranchContextPreparation(child, effectiveMode, focus, draft.laterMessageCount || 0);
-    }
-    try {
-      await app.refreshActiveSessionMessagesFromServer?.(child, {
-        force: true, useEtag: false, forceScroll: true, reason: 'branch-created'
-      });
-    } catch (_error) {
-      app.showToast?.('New path created; retrying its transcript…', { id: 'branch-transcript-refresh', tone: 'warning' });
-      setTimeout(() => app.refreshActiveSessionMessagesFromServer?.(child, {
-        force: true, useEtag: false, forceScroll: false, reason: 'branch-created-retry'
-      }).catch(() => {}), 1000);
+    if (preparesContext) void startBranchContextPreparation(child, effectiveMode, focus, draft.laterMessageCount || 0);
+    if (autoSendPrompt) {
+      void app.sendMessage?.({ prompt: autoSendPrompt });
+    } else {
+      try {
+        await app.refreshActiveSessionMessagesFromServer?.(child, {
+          force: true, useEtag: false, forceScroll: true, reason: 'branch-created'
+        });
+      } catch (_error) {
+        app.showToast?.('New path created; retrying its transcript…', { id: 'branch-transcript-refresh', tone: 'warning' });
+        setTimeout(() => app.refreshActiveSessionMessagesFromServer?.(child, {
+          force: true, useEtag: false, forceScroll: false, reason: 'branch-created-retry'
+        }).catch(() => {}), 1000);
+      }
     }
     app.renderSidebar?.();
     if (!preparesContext) elements.promptInput.focus?.();
@@ -311,7 +314,7 @@ const renderBranchTree = (tree) => {
     const title = document.createElement('span');
     title.textContent = node.title || `Session #${node.session_number || ''}`;
     const detail = document.createElement('small');
-    detail.textContent = node.anchor_preview ? `Forked after: ${node.anchor_preview}` : 'Original path';
+    detail.textContent = node.anchor_preview ? `Forked after: ${node.anchor_preview}` : (node.parent_session_id ? 'Started as a new thread' : 'Original path');
     copy.appendChild(title);
     copy.appendChild(detail);
     button.appendChild(marker);

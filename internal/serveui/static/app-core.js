@@ -2163,6 +2163,16 @@ const sanitizeMessage = (msg) => {
         created: asTimestamp(t.created)
       };
       if (t.resultStatus === 'success' || t.resultStatus === 'error') tool.resultStatus = t.resultStatus;
+      if (t.subagent && typeof t.subagent === 'object') {
+        tool.subagent = {
+          agentName: String(t.subagent.agentName || ''),
+          output: String(t.subagent.output || ''),
+          error: String(t.subagent.error || ''),
+          errorType: String(t.subagent.errorType || ''),
+          durationMs: Number(t.subagent.durationMs || 0),
+          childSessionId: String(t.subagent.childSessionId || '')
+        };
+      }
       if (Array.isArray(t.images) && t.images.length > 0) {
         tool.images = t.images.map((url) => rebaseHubAssetURL(url)).filter(Boolean);
       }

@@ -285,6 +285,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     const images = normalizeImages(part.images);
     const callId = part.tool_call_id || '';
     const failed = Boolean(part.tool_error || part.is_error);
+    const spawnAgent = part.spawn_agent && typeof part.spawn_agent === 'object' ? part.spawn_agent : null;
     const askUserSummary = !failed && String(part.tool_name || '') === 'ask_user'
       ? String(part.ask_user_summary || '').trim()
       : '';
@@ -310,6 +311,16 @@ const convertServerMessages = (serverMessages, options = {}) => {
     }
     tool.status = failed ? 'error' : 'done';
     tool.resultStatus = failed ? 'error' : 'success';
+    if (spawnAgent) {
+      tool.subagent = {
+        agentName: String(spawnAgent.agent_name || ''),
+        output: String(spawnAgent.output || ''),
+        error: String(spawnAgent.error || ''),
+        errorType: String(spawnAgent.type || ''),
+        durationMs: Number(spawnAgent.duration_ms || 0),
+        childSessionId: String(spawnAgent.session_id || '')
+      };
+    }
     appendUniqueImages(tool, images);
     if (askUserSummary) {
       const answers = askUserAnswersByGroup.get(group) || [];

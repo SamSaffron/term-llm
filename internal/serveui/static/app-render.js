@@ -2058,6 +2058,21 @@ const buildArgsNode = (tool) => {
   return argsDiv;
 };
 
+const buildSubagentResultNode = (tool) => {
+  const result = tool?.subagent;
+  if (!result || typeof result !== 'object') return null;
+  const body = createEl('div', 'subagent-result');
+  if (result.output) body.appendChild(createEl('pre', 'subagent-result-output', result.output));
+  if (result.error) body.appendChild(createEl('div', 'subagent-result-error', result.error));
+  if (result.durationMs > 0) body.appendChild(createEl('div', 'subagent-result-meta', `${(result.durationMs / 1000).toFixed(1)}s`));
+  if (result.childSessionId) {
+    const link = createEl('a', 'subagent-result-action', 'Open internal activity');
+    link.href = `${app.UI_PREFIX || '/ui'}/${encodeURIComponent(result.childSessionId)}`;
+    body.appendChild(link);
+  }
+  return body.children.length > 0 ? body : null;
+};
+
 const createToolEntryNode = (tool) => {
   const wrapper = document.createElement('div');
   wrapper.dataset.toolId = tool.id;
@@ -2077,6 +2092,8 @@ const createToolEntryNode = (tool) => {
 
   const argsNode = buildArgsNode(tool);
   if (argsNode) wrapper.appendChild(argsNode);
+  const subagentNode = buildSubagentResultNode(tool);
+  if (subagentNode) wrapper.appendChild(subagentNode);
 
   return wrapper;
 };
@@ -2093,6 +2110,11 @@ const syncGenericToolEntry = (entry, tool) => {
   if (existingArgs && newArgs) existingArgs.replaceWith(newArgs);
   else if (!existingArgs && newArgs) entry.appendChild(newArgs);
   else if (existingArgs && !newArgs) existingArgs.remove();
+  const existingSubagent = entry.querySelector('.subagent-result');
+  const newSubagent = buildSubagentResultNode(tool);
+  if (existingSubagent && newSubagent) existingSubagent.replaceWith(newSubagent);
+  else if (!existingSubagent && newSubagent) entry.appendChild(newSubagent);
+  else if (existingSubagent && !newSubagent) existingSubagent.remove();
 };
 
 const renderToolGroupDetails = (details, message) => {

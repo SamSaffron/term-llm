@@ -21,6 +21,7 @@ const composerSource = fs.readFileSync(path.join(dir, 'app-composer.js'), 'utf8'
 const skillsSource = fs.readFileSync(path.join(dir, 'app-skills.js'), 'utf8');
 const pathNotesSource = fs.readFileSync(path.join(dir, 'app-path-notes.js'), 'utf8');
 const branchingSource = fs.readFileSync(path.join(dir, 'app-branching.js'), 'utf8');
+const branchCommandsSource = fs.readFileSync(path.join(dir, 'app-branch-commands.js'), 'utf8');
 const conversation = require('./conversation.js');
 const projectedMessages = (session) => session?.transcript?.conversation
   ? conversation.sessionMessages(session)
@@ -859,6 +860,7 @@ function createHarness(options = {}) {
   vm.runInNewContext(skillsSource, context, { filename: 'app-skills.js' });
   vm.runInNewContext(pathNotesSource, context, { filename: 'app-path-notes.js' });
   vm.runInNewContext(branchingSource, context, { filename: 'app-branching.js' });
+  vm.runInNewContext(branchCommandsSource, context, { filename: 'app-branch-commands.js' });
 
   const applyResponseRecoverySnapshot = app.applyResponseRecoverySnapshot;
   app.applyResponseRecoverySnapshot = (session, payload = {}) => {
@@ -4527,6 +4529,29 @@ async function testBranchContextQueuesSendUntilReady() {
   await cleanup();
   if (body?.input?.[0]?.content !== 'send after context' || state.branchContextQueuedSend) {
     fail(name, 'released request did not preserve queued text', post?.body || JSON.stringify(state));
+    return;
+  }
+  pass(name);
+}
+
+async function testBranchShortcutSlashCommandsPreserveOptionalInstruction() {
+  const name = 'branch shortcut slash commands preserve instructions and do not send empty prompts';
+  const harness = createHarness();
+  const { app, elements, fetchCalls, cleanup } = harness;
+  const calls = [];
+  app.beginBranchCommand = (kind, message) => { calls.push({ kind, message }); return true; };
+
+  elements.promptInput.value = '/fork  try the cache  instead';
+  await app.sendMessage();
+  elements.promptInput.value = '/thread';
+  await app.sendMessage();
+  await cleanup();
+
+  if (JSON.stringify(calls) !== JSON.stringify([
+    { kind: 'fork', message: 'try the cache  instead' },
+    { kind: 'thread', message: '' },
+  ]) || fetchCalls.some((call) => call.url === '/ui/v1/responses' && call.method === 'POST')) {
+    fail(name, 'slash command parsing submitted or changed the optional message', JSON.stringify({ calls, fetchCalls }));
     return;
   }
   pass(name);
@@ -8457,6 +8482,7 @@ const runAppStreamTest = async (testCase) => {
   await runAppStreamTest(testSendMessageIncludesServerToolsForFirstPartyUI);
   await runAppStreamTest(testSendMessageBranchesAndTransfersStreamOwnership);
   await runAppStreamTest(testBranchContextQueuesSendUntilReady);
+  await runAppStreamTest(testBranchShortcutSlashCommandsPreserveOptionalInstruction);
   await runAppStreamTest(testSendMessageRecoversStaleContinuationAfterConflict);
   await runAppStreamTest(testSendMessageConsumesPostStreamWhenAvailable);
   await runAppStreamTest(testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker);

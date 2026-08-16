@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -210,9 +211,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	handoverAutoSend := ""
 	relaunchHandoff := chatRelaunchHandoff{}
+	mainRuns := chat.NewMainRunManager(ctx)
+	defer mainRuns.Close(5 * time.Second)
 	chatHandoverApprovalMode = nil
 	for {
-		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff)
+		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, mainRuns)
 		if err != nil {
 			return err
 		}
@@ -247,6 +250,7 @@ type chatProgramInput struct {
 type chatRelaunchHandoff struct {
 	branchPrefill   string
 	branchPathNotes *chat.BranchPathNotesRequest
+	branchAutoSend  string
 }
 
 func sessionIsConversationBranch(ctx context.Context, store session.Store, sessionID string) bool {
@@ -318,10 +322,50 @@ func toolManagerHasPathCapableTools(manager *tools.ToolManager) bool {
 	return false
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff) (string, string, error) {
+// chatSessionLaunch describes one session runtime to construct: the initial
+// launch, a quit-and-relaunch iteration, or an in-process session switch.
+type chatSessionLaunch struct {
+	initialText      string
+	cliAgent         string
+	resumeRequested  bool
+	resumeID         string
+	handoverAutoSend string
+	relaunchHandoff  *chatRelaunchHandoff
+}
+
+// chatSessionRuntime owns every per-session resource behind a visible chat
+// model. Exactly one runtime is wired to the Bubble Tea program at a time; an
+// in-process session switch builds a replacement runtime and disposes (or
+// transfers to the MainRunManager) the previous one without restarting the
+// program, so the terminal never leaves the alternate screen.
+type chatSessionRuntime struct {
+	model         *chat.Model
+	store         session.Store
+	storeCleanup  func()
+	storeWarnings *tuiWarningWriter
+	sess          *session.Session
+	toolMgr       *tools.ToolManager
+	approvalMgr   *tools.ApprovalManager
+	spawnRunner   *SpawnAgentRunner
+	useAltScreen  bool
+	// cleanupResources is once-guarded: drains sub-agents, stops MCP, closes
+	// Guardian and the debug logger, then closes the session store.
+	cleanupResources func()
+	// restoreTitle resets the terminal title once for this runtime's model.
+	restoreTitle func()
+}
+
+func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch chatSessionLaunch, mainRuns *chat.MainRunManager) (*chatSessionRuntime, error) {
+	initialText := launch.initialText
+	cliAgent := launch.cliAgent
+	resumeRequested := launch.resumeRequested
+	resumeID := launch.resumeID
+	handoverAutoSend := launch.handoverAutoSend
+	relaunchHandoff := launch.relaunchHandoff
+
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	rawConfigInstructions := cfg.Chat.Instructions
 
@@ -331,31 +375,28 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	storeWarnings := newTUIWarningWriter(cmd.ErrOrStderr())
 	store, storeCleanup := InitSessionStore(cfg, storeWarnings)
 	var spawnRunner *SpawnAgentRunner
-	var finalModel tea.Model
+	// Failure path: release everything constructed so far, newest first. The
+	// success path hands cleanup ownership to the returned runtime.
+	built := false
+	var failureCleanup []func()
 	defer func() {
-		// Drain in-flight sub-agent runs before closing the store to avoid
-		// "database is closed" warnings from callbacks that outlive the store.
-		if spawnRunner != nil {
-			spawnRunner.Wait()
+		if built {
+			return
 		}
-		// Wait briefly for the engine stream goroutine before closing the store.
-		// Engine callbacks use WithoutCancel and may fire after stream cancellation,
-		// but the wait is bounded so a provider/tool that ignores cancellation cannot
-		// hang shutdown indefinitely.
-		if m, ok := finalModel.(*chat.Model); ok {
-			m.WaitStreamDone()
+		for i := len(failureCleanup) - 1; i >= 0; i-- {
+			failureCleanup[i]()
 		}
-		storeCleanup()
 	}()
+	failureCleanup = append(failureCleanup, storeCleanup)
 
 	var sess *session.Session
 	if resumeRequested {
 		if store == nil {
-			return "", "", fmt.Errorf("session storage is disabled; cannot resume")
+			return nil, fmt.Errorf("session storage is disabled; cannot resume")
 		}
 		sess, err = resolveChatResumeSession(context.Background(), store, resumeID)
 		if err != nil {
-			return "", "", err
+			return nil, err
 		}
 		_ = store.SetCurrent(context.Background(), sess.ID)
 		// Normalize persisted directory metadata before resolving any prompt,
@@ -375,7 +416,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	agent, err := LoadAgent(effectiveAgent, cfg)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
@@ -394,7 +435,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		Platform:      "chat",
 	}, cfg.Chat.Provider, cfg.Chat.Model, rawConfigInstructions, cfg.Chat.MaxTurns, 200, runtimeDir)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	settings.PrimaryWorkspace = runtimeDir
 	applyChatSearchDefault(&settings, chatNoSearch, sess, agent != nil)
@@ -415,7 +456,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	cliApprovalMode, err := approvalModeFromCommand(cmd, chatApproval, chatAutoApproval, chatYolo)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	if cliApprovalMode == nil && chatHandoverApprovalMode != nil {
 		carriedMode := *chatHandoverApprovalMode
@@ -423,7 +464,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	resolvedApproval, err := resolveApprovalMode(approvalModeResolutionInput{Surface: approvalSurfaceChat, Config: cfg, CLI: cliApprovalMode, Session: persistedApprovalMode})
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	desiredApprovalMode := resolvedApproval.Mode
 	resolvedYolo := desiredApprovalMode == tools.ModeYolo
@@ -442,7 +483,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			providerOverride = resumeProvider + ":" + model
 		}
 		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, providerOverride, "", ""); err != nil {
-			return "", "", err
+			return nil, err
 		}
 	} else {
 		agentProvider, agentModel := "", ""
@@ -450,7 +491,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			agentProvider, agentModel = agent.Provider, agent.Model
 		}
 		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
-			return "", "", err
+			return nil, err
 		}
 	}
 
@@ -469,7 +510,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Create LLM provider and engine
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
 	if fastErr != nil {
@@ -487,16 +528,18 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if debugLogger != nil {
 		engine.SetDebugLogger(debugLogger)
 	}
+	failureCleanup = append(failureCleanup, func() {
+		if debugLogger != nil {
+			debugLogger.Close()
+		}
+	})
 
 	// Initialize tools if enabled (using possibly-updated settings from resume)
 	alignSettingsToActiveProvider(&settings, cfg, provider)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
-		if debugLogger != nil {
-			debugLogger.Close()
-		}
-		return "", "", err
+		return nil, err
 	}
 	if toolMgr != nil {
 		toolMgr.Registry.SetPlanStore(store)
@@ -505,7 +548,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			workspaceSessionID = sess.ID
 		}
 		if err := toolMgr.ConfigureWorkspacePersistence(context.Background(), store, workspaceSessionID); err != nil {
-			return "", "", err
+			return nil, err
 		}
 	}
 	if sess != nil && toolMgr != nil {
@@ -515,25 +558,23 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	approvalMgr, err := buildChatHandoverApprovalManager(cfg, settings)
 	if err != nil {
-		if debugLogger != nil {
-			debugLogger.Close()
-		}
-		return "", "", err
+		return nil, err
 	}
 	// Error-path safety net. The normal exit path closes Guardian explicitly
 	// before the debug logger so provider cleanup can still emit diagnostics.
-	defer func() {
+	// The closure reads approvalMgr so the toolMgr reassignment below is seen.
+	failureCleanup = append(failureCleanup, func() {
 		if approvalMgr != nil {
 			approvalMgr.Close()
 		}
-	}()
+	})
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
 		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
 			PrepareCallbacks: true,
 			WarningWriter:    cmd.ErrOrStderr(),
 		}); err != nil {
-			return "", "", err
+			return nil, err
 		}
 
 		// output_tool defines a single-shot return channel for ask. Chat has no
@@ -550,17 +591,14 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		var wireErr error
 		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, resolvedYolo, store, parentSessionID)
 		if wireErr != nil {
-			if debugLogger != nil {
-				debugLogger.Close()
-			}
-			return "", "", wireErr
+			return nil, wireErr
 		}
 	} else {
 		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
 			PrepareCallbacks: true,
 			WarningWriter:    cmd.ErrOrStderr(),
 		}); err != nil {
-			return "", "", err
+			return nil, err
 		}
 	}
 	reportApprovalMode(cmd.ErrOrStderr(), chatDebug, resolvedApproval, approvalMgr)
@@ -586,7 +624,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 		spawnRunner, err = NewSpawnAgentRunnerWithStore(cfg, resolvedYolo, approvalMgr, store, parentSessionID)
 		if err != nil {
-			return "", "", fmt.Errorf("initialize isolated skill runner: %w", err)
+			return nil, fmt.Errorf("initialize isolated skill runner: %w", err)
 		}
 		spawnRunner.SetBaseDirFunc(func() string {
 			if toolMgr != nil {
@@ -629,6 +667,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Create MCP manager
 	mcpManager := mcp.NewManager()
+	failureCleanup = append(failureCleanup, mcpManager.StopAll)
 	if err := mcpManager.LoadConfig(); err != nil {
 		// Non-fatal: continue without MCP
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
@@ -663,7 +702,6 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		terminalTitleRestored = true
 		model.RestoreTerminalTitle()
 	}
-	defer restoreTerminalTitle()
 	if agent != nil && agent.OutputTool.IsConfigured() {
 		model.SetFooterWarning("agent output_tool is ignored in chat; use ask for tool-captured output")
 	}
@@ -696,6 +734,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		ParentApprovalMgr:  approvalMgr,
 	}))
 	model.SetChildRunner(spawnRunner)
+	model.SetMainRunManager(mainRuns)
 
 	// Wire handover auto-send if pending from previous iteration
 	if handoverAutoSend != "" {
@@ -709,6 +748,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if relaunchHandoff.branchPathNotes != nil {
 			model.SetBranchPathNotes(relaunchHandoff.branchPathNotes)
 			relaunchHandoff.branchPathNotes = nil
+		}
+		if relaunchHandoff.branchAutoSend != "" {
+			model.SetBranchAutoSend(relaunchHandoff.branchAutoSend)
+			relaunchHandoff.branchAutoSend = ""
 		}
 	}
 	model.SetSideQuestionProviderFactory(func(providerKey, modelName string) (llm.Provider, error) {
@@ -745,33 +788,91 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		model.SetCurrentAgent(agent)
 	}
 
-	// Build program options. AltScreen and mouse mode are declarative on the View in v2.
-	programInput, err := buildChatProgramInput(autoSendMode)
-	if err != nil {
-		return "", "", err
+	var cleanupOnce sync.Once
+	cleanupResources := func() {
+		cleanupOnce.Do(func() {
+			if spawnRunner != nil {
+				spawnRunner.Wait()
+			}
+			mcpManager.StopAll()
+			if approvalMgr != nil {
+				approvalMgr.Close()
+			}
+			if debugLogger != nil {
+				debugLogger.Close()
+			}
+			storeCleanup()
+		})
 	}
-	defer programInput.cleanup()
 
-	var opts []tea.ProgramOption
-	opts = append(opts, tea.WithoutSignalHandler())
-	if programInput.disableInput {
-		opts = append(opts, tea.WithInput(nil))
-	} else if programInput.reader != nil {
-		opts = append(opts, tea.WithInput(programInput.reader))
+	built = true
+	return &chatSessionRuntime{
+		model:            model,
+		store:            store,
+		storeCleanup:     storeCleanup,
+		storeWarnings:    storeWarnings,
+		sess:             sess,
+		toolMgr:          toolMgr,
+		approvalMgr:      approvalMgr,
+		spawnRunner:      spawnRunner,
+		useAltScreen:     useAltScreen,
+		cleanupResources: cleanupResources,
+		restoreTitle:     restoreTerminalTitle,
+	}, nil
+}
+
+// disposeChatSessionRuntime releases a runtime replaced by an in-process
+// session switch. When the outgoing session still owns an active background
+// run, the MainRunManager adopts cleanup and runs it after execution stops;
+// otherwise cleanup happens off the UI goroutine after a bounded stream drain.
+func disposeChatSessionRuntime(rt *chatSessionRuntime, mainRuns *chat.MainRunManager) {
+	if rt == nil {
+		return
 	}
+	if mainRuns != nil && mainRuns.AdoptResources(rt.model.SessionID(), rt.cleanupResources) {
+		return
+	}
+	go func() {
+		rt.model.WaitStreamDone()
+		rt.cleanupResources()
+	}()
+}
 
-	// Run the TUI. Image bytes and their acknowledgements are attached directly
-	// to the tea.View that composed them; stdout remains renderer-owned.
-	p := tea.NewProgram(model, opts...)
-	model.SetProgram(p)
-	storeWarnings.attach(p)
-	defer storeWarnings.detach()
+// wireChatSessionUI points program-level UI callbacks at one session runtime.
+// Callbacks installed on runtime-owned managers (Guardian prompts, subagent
+// progress) stay bound to that runtime for its whole life so adopted
+// background runs keep routing prompts to their owning session; the returned
+// unwire only releases process-global hooks and the attached UI sink.
+//
+// attachSink installs the interactive-prompt sink immediately; it must be
+// false on the in-process switch path, where the sink is attached by the swap
+// handler only once the replacement model is the one the program renders.
+func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Program, mainRuns *chat.MainRunManager, attachSink bool) (unwire func()) {
+	model := rt.model
+	toolMgr := rt.toolMgr
+	approvalMgr := rt.approvalMgr
+	useAltScreen := rt.useAltScreen
+
+	rt.storeWarnings.attach(p)
+
+	sessionUIID := model.SessionID()
+	sendSessionUI := func(message tea.Msg) {
+		if mainRuns != nil {
+			if err := mainRuns.DeliverUI(sessionUIID, message); err == nil {
+				return
+			}
+		}
+		p.Send(message)
+	}
+	if mainRuns != nil && attachSink {
+		model.AttachMainRunUISink(p.Send)
+	}
 
 	// Set up spawn_agent event callback for subagent progress visibility
 	if toolMgr != nil {
 		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 			dispatcher := newSubagentProgressDispatcher(func(callID string, event tools.SubagentEvent) {
-				p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
+				sendSessionUI(chat.SubagentProgressMsg{CallID: callID, Event: event})
 			})
 			spawnTool.SetEventCallback(dispatcher.Callback)
 		}
@@ -781,13 +882,15 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// This also powers /handover script approvals even when no shell tool is enabled.
 	if approvalMgr != nil {
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
-			p.Send(chat.GuardianReviewMsg{Event: event})
+			sendSessionUI(chat.GuardianReviewMsg{Event: event})
 		}
 		approvalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
-			// In alt screen mode, use inline approval UI.
-			if useAltScreen {
+			// Process-scoped runs must never release or restore a stale Bubble Tea
+			// program after navigation. Route their prompts through the attachable
+			// in-program dialog even when the foreground uses inline rendering.
+			if useAltScreen || mainRuns != nil {
 				doneCh := make(chan tools.ApprovalResult, 1)
-				p.Send(chat.ApprovalRequestMsg{
+				sendSessionUI(chat.ApprovalRequestMsg{
 					Path: path, IsWrite: isWrite, IsShell: isShell, WorkDir: workDir, DoneCh: doneCh,
 				})
 				select {
@@ -800,12 +903,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 			// Inline mode: use external UI with terminal release.
 			done := make(chan struct{})
-			p.Send(chat.FlushBeforeApprovalMsg{Done: done})
+			sendSessionUI(chat.FlushBeforeApprovalMsg{Done: done})
 			<-done
 			p.ReleaseTerminal()
 			defer func() {
 				p.RestoreTerminal()
-				p.Send(chat.ResumeFromExternalUIMsg{})
+				sendSessionUI(chat.ResumeFromExternalUIMsg{})
 			}()
 			if isShell {
 				return tools.RunShellApprovalUI(path, workDir)
@@ -813,9 +916,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
 		approvalMgr.WorkspacePromptFunc = func(workspace string) (tools.WorkspaceApprovalResult, error) {
-			if useAltScreen {
+			if useAltScreen || mainRuns != nil {
 				doneCh := make(chan tools.ApprovalResult, 1)
-				p.Send(chat.ApprovalRequestMsg{Path: workspace, IsWorkspace: true, DoneCh: doneCh})
+				sendSessionUI(chat.ApprovalRequestMsg{Path: workspace, IsWorkspace: true, DoneCh: doneCh})
 				select {
 				case result := <-doneCh:
 					choice := result.Choice
@@ -830,12 +933,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			}
 
 			done := make(chan struct{})
-			p.Send(chat.FlushBeforeApprovalMsg{Done: done})
+			sendSessionUI(chat.FlushBeforeApprovalMsg{Done: done})
 			<-done
 			p.ReleaseTerminal()
 			defer func() {
 				p.RestoreTerminal()
-				p.Send(chat.ResumeFromExternalUIMsg{})
+				sendSessionUI(chat.ResumeFromExternalUIMsg{})
 			}()
 			return tools.RunWorkspaceApprovalUI(workspace)
 		}
@@ -852,7 +955,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		tools.SetAskUserUIFunc(func(questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
 			// Use buffered channel to prevent goroutine leak if TUI exits before responding
 			doneCh := make(chan []tools.AskUserAnswer, 1)
-			p.Send(chat.AskUserRequestMsg{
+			sendSessionUI(chat.AskUserRequestMsg{
 				Questions: questions,
 				DoneCh:    doneCh,
 			})
@@ -867,29 +970,27 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 				return nil, fmt.Errorf("cancelled: %w", ctx.Err())
 			}
 		})
-		defer tools.ClearAskUserUIFunc()
 	} else {
 		// In inline mode, use external UI with hooks
 		start, end := tools.CreateTUIHooks(p, func() {
 			done := make(chan struct{})
-			p.Send(chat.FlushBeforeAskUserMsg{Done: done})
+			sendSessionUI(chat.FlushBeforeAskUserMsg{Done: done})
 			<-done
 		})
 		// Wrap end hook to also send resume message after terminal is restored
 		originalEnd := end
 		end = func() {
 			originalEnd()
-			p.Send(chat.ResumeFromExternalUIMsg{})
+			sendSessionUI(chat.ResumeFromExternalUIMsg{})
 		}
 		tools.SetAskUserHooks(start, end)
-		defer tools.ClearAskUserHooks()
 	}
 
 	// Set up initiate_handover handling — works in both alt screen and inline modes
 	// because cmdHandover already handles both.
 	tools.SetHandoverUIFunc(func(toolCtx context.Context, agent string) (bool, error) {
 		doneCh := make(chan bool, 1)
-		p.Send(chat.HandoverRequestMsg{
+		sendSessionUI(chat.HandoverRequestMsg{
 			Agent:  agent,
 			DoneCh: doneCh,
 		})
@@ -900,7 +1001,151 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			return false, toolCtx.Err()
 		}
 	})
-	defer tools.ClearHandoverUIFunc()
+
+	return func() {
+		// Covers both attach paths: the model records the manager detach for
+		// sinks installed here and for sinks installed by the swap handler.
+		model.DetachMainRunUISink()
+		rt.storeWarnings.detach()
+		if useAltScreen {
+			tools.ClearAskUserUIFunc()
+		} else {
+			tools.ClearAskUserHooks()
+		}
+		tools.ClearHandoverUIFunc()
+	}
+}
+
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager) (string, string, error) {
+	rt, err := buildChatSessionRuntime(ctx, cmd, chatSessionLaunch{
+		initialText:      initialText,
+		cliAgent:         cliAgent,
+		resumeRequested:  resumeRequested,
+		resumeID:         resumeID,
+		handoverAutoSend: handoverAutoSend,
+		relaunchHandoff:  relaunchHandoff,
+	}, mainRuns)
+	if err != nil {
+		return "", "", err
+	}
+
+	// In-process session switches replace the active runtime while the program
+	// keeps running, so all teardown paths resolve the runtime late.
+	var runtimeMu sync.Mutex
+	activeRT := rt
+	var activeUnwire func()
+	programDone := false
+	currentRuntime := func() *chatSessionRuntime {
+		runtimeMu.Lock()
+		defer runtimeMu.Unlock()
+		return activeRT
+	}
+
+	var finalModel tea.Model
+	defer func() {
+		runtimeMu.Lock()
+		programDone = true
+		cur := activeRT
+		runtimeMu.Unlock()
+		// Transfer runtime ownership when this session still has an active
+		// background run; the manager invokes cleanup only after provider
+		// execution, persistence callbacks, and subscriber delivery stopped.
+		if mainRuns != nil && mainRuns.AdoptResources(cur.model.SessionID(), cur.cleanupResources) {
+			return
+		}
+		// Wait briefly for the engine stream goroutine before closing the store.
+		// Engine callbacks use WithoutCancel and may fire after stream
+		// cancellation, but the wait is bounded so a provider/tool that ignores
+		// cancellation cannot hang shutdown indefinitely.
+		cur.model.WaitStreamDone()
+		cur.cleanupResources()
+	}()
+	defer func() { currentRuntime().restoreTitle() }()
+	defer func() {
+		runtimeMu.Lock()
+		unwire := activeUnwire
+		runtimeMu.Unlock()
+		if unwire != nil {
+			unwire()
+		}
+	}()
+
+	// Build program options. AltScreen and mouse mode are declarative on the View in v2.
+	programInput, err := buildChatProgramInput(len(chatAutoSend) > 0)
+	if err != nil {
+		return "", "", err
+	}
+	defer programInput.cleanup()
+
+	var opts []tea.ProgramOption
+	opts = append(opts, tea.WithoutSignalHandler())
+	if programInput.disableInput {
+		opts = append(opts, tea.WithInput(nil))
+	} else if programInput.reader != nil {
+		opts = append(opts, tea.WithInput(programInput.reader))
+	}
+
+	// Run the TUI. Image bytes and their acknowledgements are attached directly
+	// to the tea.View that composed them; stdout remains renderer-owned. The host
+	// model keeps the Program stable across session-model replacements and drops
+	// delayed command results from models that are no longer visible.
+	programModel := newChatProgramModel(rt.model)
+	p := tea.NewProgram(programModel, opts...)
+	rt.model.SetProgram(p)
+
+	// In-process session switching: /fork, /thread, /tree branches, and
+	// /resume selections swap the visible model inside this running program
+	// instead of quitting and relaunching, so the terminal never flashes out
+	// of the alternate screen. /handover and /reload keep quit-and-relaunch.
+	var switcher chat.SessionSwitcher
+	switcher = func(request chat.SessionSwitchRequest) (*chat.Model, error) {
+		next, buildErr := buildChatSessionRuntime(ctx, cmd, chatSessionLaunch{
+			cliAgent:        cliAgent,
+			resumeRequested: true,
+			resumeID:        request.SessionID,
+			relaunchHandoff: &chatRelaunchHandoff{
+				branchPrefill:   request.BranchPrefill,
+				branchPathNotes: request.BranchPathNotes,
+				branchAutoSend:  request.BranchAutoSend,
+			},
+		}, mainRuns)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		next.model.SetProgram(p)
+		next.model.SetSessionSwitcher(switcher)
+
+		runtimeMu.Lock()
+		if programDone {
+			runtimeMu.Unlock()
+			next.cleanupResources()
+			return nil, errors.New("chat program already exited")
+		}
+		prev := activeRT
+		prevUnwire := activeUnwire
+		activeRT = next
+		activeUnwire = nil
+		runtimeMu.Unlock()
+
+		// Release process-global UI hooks before installing the replacements.
+		// Runtime-owned callbacks stay bound to prev so its adopted background
+		// run keeps routing prompts to the owning session.
+		if prevUnwire != nil {
+			prevUnwire()
+		}
+		unwire := wireChatSessionUI(ctx, next, p, mainRuns, false)
+		runtimeMu.Lock()
+		activeUnwire = unwire
+		runtimeMu.Unlock()
+
+		disposeChatSessionRuntime(prev, mainRuns)
+		return next.model, nil
+	}
+	rt.model.SetSessionSwitcher(switcher)
+
+	runtimeMu.Lock()
+	activeUnwire = wireChatSessionUI(ctx, rt, p, mainRuns, true)
+	runtimeMu.Unlock()
 
 	// Wire OS signal handling to kill the Bubble Tea program and restore the
 	// terminal. Ctrl+C in raw TUI mode is handled as a keypress by the model;
@@ -920,25 +1165,22 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 	}()
 
-	finalModel, err = p.Run()
-	restoreTerminalTitle()
-
-	// Cleanup MCP servers and Guardian-owned providers before closing logging.
-	mcpManager.StopAll()
-	approvalMgr.Close()
-
-	// Close debug logger
-	if debugLogger != nil {
-		debugLogger.Close()
+	programFinalModel, runErr := p.Run()
+	if host, ok := programFinalModel.(*chatProgramModel); ok && host.model != nil {
+		finalModel = host.model
+	} else {
+		finalModel = programFinalModel
 	}
+	currentRuntime().restoreTitle()
 
-	if err != nil {
-		if ctx.Err() != nil && errors.Is(err, tea.ErrProgramKilled) {
+	if runErr != nil {
+		if ctx.Err() != nil && errors.Is(runErr, tea.ErrProgramKilled) {
 			return "", "", exitcode.Cancel()
 		}
-		return "", "", fmt.Errorf("failed to run chat: %w", err)
+		return "", "", fmt.Errorf("failed to run chat: %w", runErr)
 	}
 
+	cur := currentRuntime()
 	var nextResumeID, nextHandoverAutoSend string
 	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
@@ -946,6 +1188,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if relaunchHandoff != nil {
 			relaunchHandoff.branchPrefill = m.RequestedBranchPrefill()
 			relaunchHandoff.branchPathNotes = m.RequestedBranchPathNotes()
+			relaunchHandoff.branchAutoSend = m.RequestedBranchAutoSend()
 		}
 		// Carry a user-selected mode only into an actual handover. Ordinary /resume
 		// and /new relaunches must resolve the target session/config independently.
@@ -956,12 +1199,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		chatAutoApproval = mode == tools.ModeAuto
 	}
 
-	// Handle /reload: close the store, then re-exec under the (potentially new) binary.
+	// Handle /reload: stop every runtime-owned resource, then re-exec under the
+	// potentially new binary. Successful exec does not run deferred cleanup.
 	if m, ok := finalModel.(*chat.Model); ok && m.WantsReload() {
-		if spawnRunner != nil {
-			spawnRunner.Wait()
-		}
-		storeCleanup() // flush & close DB before replacing the process
+		cur.cleanupResources()
 		sessionID := m.ReloadSessionID()
 		if execErr := execReload(sessionID); execErr != nil {
 			// exec failed (shouldn't happen on Unix) — fall through and exit normally
@@ -972,8 +1213,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Print resume hint after alt-screen has been dismissed.
 	// Re-fetch the session so we get the latest LLMTurns written during streaming.
-	if nextResumeID == "" && store != nil && sess != nil && sess.ID != "" {
-		if refreshed, fetchErr := store.Get(context.Background(), sess.ID); fetchErr == nil && refreshed != nil && refreshed.LLMTurns >= 1 {
+	if nextResumeID == "" && cur.store != nil && cur.sess != nil && cur.sess.ID != "" {
+		if refreshed, fetchErr := cur.store.Get(context.Background(), cur.sess.ID); fetchErr == nil && refreshed != nil && refreshed.LLMTurns >= 1 {
 			fmt.Fprintf(os.Stdout, "\n💬 Resume: %s\n", chatResumeCommand(refreshed))
 		}
 	}

@@ -21,10 +21,10 @@ vm.runInNewContext(source, { window, document, console }, { filename: 'slash-com
 promptInput.value = '/';
 promptInput.dispatch('input');
 assert(!slashCommandMenu.hidden, 'typing / did not show slash commands');
-assert(slashCommandMenu.children.length === 9, 'expected all matching slash commands');
+assert(slashCommandMenu.children.length === 11, 'expected all matching slash commands');
 const commandNames = slashCommandMenu.children.map((option) => option.children[0].textContent);
-assert(JSON.stringify(commandNames) === JSON.stringify(['/compact', '/goal', '/mcp', '/model', '/new', '/redo', '/side', '/tree', '/undo']), `commands were not alphabetized: ${JSON.stringify(commandNames)}`);
-assert(slashCommandMenu.children[6].children[1].textContent.includes('without interrupting'), '/side description was not useful');
+assert(JSON.stringify(commandNames) === JSON.stringify(['/compact', '/fork', '/goal', '/mcp', '/model', '/new', '/redo', '/side', '/thread', '/tree', '/undo']), `commands were not alphabetized: ${JSON.stringify(commandNames)}`);
+assert(slashCommandMenu.children[7].children[1].textContent.includes('without interrupting'), '/side description was not useful');
 assert(promptInput.attributes['aria-expanded'] === 'true', 'composer did not expose expanded autocomplete state');
 
 promptInput.value = '/si';
@@ -101,6 +101,7 @@ const streamingNames = slashCommandMenu.children.map((option) => option.children
 assert(streamingNames.includes('/review [scope]'), `isolated skill missing while streaming: ${JSON.stringify(streamingNames)}`);
 assert(streamingNames.includes('/side'), `streaming-safe /side missing: ${JSON.stringify(streamingNames)}`);
 assert(streamingNames.includes('/tree'), `streaming-safe /tree missing: ${JSON.stringify(streamingNames)}`);
+assert(streamingNames.includes('/thread') && streamingNames.includes('/fork'), `streaming-safe branch shortcuts missing: ${JSON.stringify(streamingNames)}`);
 assert(!streamingNames.includes('/explain') && !streamingNames.includes('/compact') && !streamingNames.includes('/undo'), `unsafe entries shown while streaming: ${JSON.stringify(streamingNames)}`);
 
 console.log('PASS: slash command discovery and keyboard completion');

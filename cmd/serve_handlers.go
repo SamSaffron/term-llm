@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
@@ -860,6 +861,38 @@ func parseSessionMessagesBeforeSeq(raw string) int {
 	return seq
 }
 
+const maxWebSpawnAgentOutputBytes = 64 * 1024
+
+func boundedWebSpawnAgentText(value string, maxBytes int, suffix string) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	end := maxBytes
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end] + suffix
+}
+
+func boundedWebSpawnAgentOutput(output string) string {
+	return boundedWebSpawnAgentText(output, maxWebSpawnAgentOutputBytes, "\n… (output truncated)")
+}
+
+func (s *serveServer) validatedSpawnChildID(parentSessionID, childSessionID string) string {
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	childSessionID = strings.TrimSpace(childSessionID)
+	if s == nil || s.store == nil || parentSessionID == "" || childSessionID == "" || childSessionID == parentSessionID {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	child, err := s.store.Get(ctx, childSessionID)
+	if err != nil || child == nil || child.ParentID != parentSessionID {
+		return ""
+	}
+	return childSessionID
+}
+
 type sessionMessagePartEntry struct {
 	Type            string                         `json:"type"`
 	Text            string                         `json:"text,omitempty"`
@@ -874,6 +907,7 @@ type sessionMessagePartEntry struct {
 	ImageURL        string                         `json:"image_url,omitempty"`
 	Images          []string                       `json:"images,omitempty"`
 	ToolError       bool                           `json:"tool_error,omitempty"`
+	SpawnAgent      *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
 	MimeType        string                         `json:"mime_type,omitempty"`
 	Width           int                            `json:"width,omitempty"`
 	Height          int                            `json:"height,omitempty"`
@@ -1416,10 +1450,20 @@ func askUserResultSummary(content string) string {
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
 	failedToolCalls := make(map[string]bool)
 	planToolCalls := make(map[string]bool)
+	spawnAgentToolCalls := make(map[string]bool)
+	parentSessionID := ""
 	for _, msg := range msgs {
+		if parentSessionID == "" {
+			parentSessionID = strings.TrimSpace(msg.SessionID)
+		}
 		for _, part := range msg.Parts {
-			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" && part.ToolCall.Name == "update_plan" {
-				planToolCalls[part.ToolCall.ID] = true
+			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+				if part.ToolCall.Name == "update_plan" {
+					planToolCalls[part.ToolCall.ID] = true
+				}
+				if part.ToolCall.Name == tools.SpawnAgentToolName {
+					spawnAgentToolCalls[part.ToolCall.ID] = true
+				}
 			}
 			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.IsError && part.ToolResult.ID != "" {
 				failedToolCalls[part.ToolResult.ID] = true
@@ -1556,15 +1600,35 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 				if p.ToolResult != nil {
 					isPlanResult := p.ToolResult.ID != "" && (p.ToolResult.Name == "update_plan" || planToolCalls[p.ToolResult.ID])
 					isAskUserResult := p.ToolResult.Name == tools.AskUserToolName
-					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || isPlanResult || isAskUserResult
+					isSpawnAgentResult := p.ToolResult.Name == tools.SpawnAgentToolName || spawnAgentToolCalls[p.ToolResult.ID]
+					var spawnResult *tools.SpawnAgentResult
+					if isSpawnAgentResult {
+						if parsed, err := tools.ParseSpawnAgentResult(p.ToolResult.Content); err == nil {
+							spawnResult = &parsed
+						} else if parsed, displayErr := tools.ParseSpawnAgentResult(p.ToolResult.Display); displayErr == nil {
+							spawnResult = &parsed
+						}
+						if spawnResult != nil {
+							spawnResult.Output = boundedWebSpawnAgentOutput(spawnResult.Output)
+							spawnResult.Error = boundedWebSpawnAgentText(spawnResult.Error, 16*1024, "… (error truncated)")
+							spawnResult.AgentName = boundedWebSpawnAgentText(spawnResult.AgentName, 256, "…")
+							spawnResult.SessionID = s.validatedSpawnChildID(parentSessionID, spawnResult.SessionID)
+						}
+					}
+					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
 					if !includeResult {
 						continue
 					}
+					toolName := p.ToolResult.Name
+					if toolName == "" && isSpawnAgentResult {
+						toolName = tools.SpawnAgentToolName
+					}
 					pe := sessionMessagePartEntry{
 						Type:       "tool_result",
-						ToolName:   p.ToolResult.Name,
+						ToolName:   toolName,
 						ToolCallID: p.ToolResult.ID,
-						ToolError:  p.ToolResult.IsError,
+						ToolError:  p.ToolResult.IsError || (spawnResult != nil && spawnResult.Error != ""),
+						SpawnAgent: spawnResult,
 					}
 					if isAskUserResult {
 						pe.AskUserSummary = askUserResultSummary(p.ToolResult.Content)

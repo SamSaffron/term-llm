@@ -133,6 +133,22 @@ func (m *Model) View() (view tea.View) {
 		renderedLines += lipgloss.Height(activity)
 	}
 
+	// Interactive prompts are embedded for manager-owned runs even in inline
+	// mode; this keeps prompt ownership with the currently attached session.
+	if m.approvalModel != nil {
+		prompt := m.approvalModel.View().Content
+		b.WriteString(prompt)
+		renderedLines += lipgloss.Height(prompt)
+		b.WriteString("\n")
+		renderedLines++
+	} else if m.askUserModel != nil {
+		prompt := m.askUserModel.View().Content
+		b.WriteString(prompt)
+		renderedLines += lipgloss.Height(prompt)
+		b.WriteString("\n")
+		renderedLines++
+	}
+
 	// Error display (if error occurred and not streaming)
 	if m.err != nil && !m.streaming {
 		errOutput := m.renderError()
@@ -1239,6 +1255,13 @@ func (m *Model) renderStatusLine() string {
 	if m.fastMode {
 		baseSegments = append(baseSegments, seg(successStyle.Render("fast"), 30, false))
 	}
+	backgroundRuns := m.backgroundRunCount
+	if backgroundRuns > 0 && m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {
+		backgroundRuns--
+	}
+	if backgroundRuns > 0 {
+		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d bg", backgroundRuns)), 15, false))
+	}
 	if m.directShellComposerActive() {
 		baseSegments = append(baseSegments, seg(errorStyle.Render("shell mode"), 0, true))
 	}
@@ -1988,6 +2011,7 @@ func (m *Model) renderHistory() string {
 		Width:                       m.width,
 		Height:                      m.height,
 		ReasoningExpansionOverrides: m.reasoningExpansionOverrides,
+		PersistedSubagents:          m.persistedSubagents,
 	}
 
 	var b strings.Builder

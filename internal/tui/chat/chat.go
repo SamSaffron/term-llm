@@ -27,6 +27,7 @@ import (
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/subagentview"
 
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
@@ -64,6 +65,8 @@ type conversationBranchPoint struct {
 	sourceRole          llm.Role
 	sourceMessageNumber int
 	sourcePreview       string
+	autoSend            string
+	skipExpectedState   bool
 }
 
 // BranchPathNotesRequest carries an abandoned-path suffix across the short TUI
@@ -85,6 +88,33 @@ type pendingBranchSend struct {
 	pasteChunks   map[int]string
 }
 
+// BackgroundRunsMsg reports process-scoped main runs to the attached model.
+type BackgroundRunsMsg struct {
+	Count int
+
+	// owner scopes the periodic status tick to the model that scheduled it, so
+	// a residual tick from a model replaced by an in-process session switch
+	// cannot start a second permanent tick loop. A zero owner is a broadcast.
+	owner *Model
+}
+
+type mainRunSubscriberClosedMsg struct {
+	sessionID    string
+	runID        string
+	subscription uint64
+}
+
+type mainRunStartedMsg struct {
+	sessionID  string
+	runID      string
+	generation uint64
+}
+
+type mainRunUIEnvelope struct {
+	sessionID string
+	sinkID    uint64
+	message   tea.Msg
+}
 type promptHistoryState struct {
 	active          bool
 	cursorID        int64
@@ -155,17 +185,19 @@ type Model struct {
 	reasoningRawWarned       bool
 
 	// Streaming state
-	currentResponse       strings.Builder
-	currentTokens         int
-	streamStartTime       time.Time
-	webSearchUsed         bool
-	retryStatus           string
-	streamCancelFunc      context.CancelFunc
-	streamDone            chan struct{}       // closed when the engine goroutine exits
-	streamGeneration      uint64              // increments for each stream; used to ignore stale listener messages
-	streamCancelRequested *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
-	tracker               *ui.ToolTracker     // Tool and segment tracking (shared component)
-	subagentTracker       *ui.SubagentTracker // Subagent progress tracking
+	currentResponse             strings.Builder
+	currentTokens               int
+	streamStartTime             time.Time
+	webSearchUsed               bool
+	retryStatus                 string
+	streamCancelFunc            context.CancelFunc
+	streamDone                  <-chan struct{}     // closed when the engine goroutine exits
+	streamGeneration            uint64              // increments for each stream; used to ignore stale listener messages
+	streamCancelRequested       *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
+	tracker                     *ui.ToolTracker     // Tool and segment tracking (shared component)
+	subagentTracker             *ui.SubagentTracker // Live subagent progress tracking
+	persistedSubagents          map[string]subagentview.CompletedRun
+	persistedSubagentGeneration uint64
 
 	// Persist-as-we-go: row ID and latest per-turn snapshot of the in-progress
 	// assistant message. Written from engine callbacks on a non-UI goroutine;
@@ -356,6 +388,7 @@ type Model struct {
 	pendingResumeSessionID string
 	pendingBranchPrefill   string
 	pendingBranchPathNotes *BranchPathNotesRequest
+	pendingBranchAutoSend  string
 	branchTreeChoices      map[string]conversationBranchPoint
 	pendingBranchPoint     *conversationBranchPoint
 	branchFocusCapture     bool
@@ -364,6 +397,24 @@ type Model struct {
 	branchOperationStarted time.Time
 	branchPathNotesRequest *BranchPathNotesRequest
 	queuedBranchSend       *pendingBranchSend
+	branchAutoSend         string
+	activeBranchAnchorID   int64
+
+	mainRunManager      *MainRunManager
+	mainRunLive         <-chan MainRunEvent
+	mainRunCoalescer    *mainRunEventCoalescer
+	mainRunReplay       []MainRunEvent
+	mainRunDetach       func()
+	mainRunUIDetach     func()
+	mainRunID           string
+	mainRunSubscription uint64
+	mainRunLastSeq      uint64
+	mainRunViewComplete bool
+	backgroundRunCount  int
+
+	// In-process session switching (nil switcher falls back to quit+relaunch).
+	sessionSwitcher      SessionSwitcher
+	sessionSwitchPending bool
 
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string
@@ -580,8 +631,11 @@ func (m *Model) isStreamCancelRequested() bool {
 type (
 	// streamEventMsg wraps ui.StreamEvent for bubbletea
 	streamEventMsg struct {
-		event      ui.StreamEvent
-		generation uint64
+		event               ui.StreamEvent
+		generation          uint64
+		mainRunID           string
+		mainRunSubscription uint64
+		mainRunSeq          uint64
 	}
 	streamCancelTimeoutMsg struct {
 		done       <-chan struct{}
@@ -760,28 +814,36 @@ func (m *Model) reloadMessagesFromStore(ctx context.Context) error {
 	return nil
 }
 
-func (m *Model) loadOlderScrollbackPrefix(ctx context.Context) {
-	if m == nil || m.store == nil || m.sess == nil || m.olderScrollbackLoaded || !session.HasCompactionBoundary(m.sess) {
+func (m *Model) applyLoadedScrollback(messages []session.Message, compactionIdx int) {
+	if m == nil {
 		return
+	}
+	m.messagesMu.Lock()
+	m.messages = messages
+	m.compactionIdx = compactionIdx
+	m.messagesMu.Unlock()
+	m.olderScrollbackLoaded = true
+	m.invalidateHistoryCache()
+}
+
+func (m *Model) loadOlderScrollbackPrefix(ctx context.Context) tea.Cmd {
+	if m == nil || m.store == nil || m.sess == nil || m.olderScrollbackLoaded || !session.HasCompactionBoundary(m.sess) {
+		return nil
 	}
 	// Streaming turns keep in-flight assistant state in m.messages while store
 	// callbacks are still assigning IDs/updating rows. Do not replace that slice
 	// with a persisted snapshot mid-stream; hydrate older display history after the
 	// stream completes or on a later scroll.
 	if m.streaming {
-		return
+		return nil
 	}
 	loadedMsgs, compactionIdx, err := loadSessionMessagesForScrollback(ctx, m.store, m.sess)
 	if err != nil || len(loadedMsgs) == 0 || compactionIdx <= 0 {
 		m.olderScrollbackLoaded = true
-		return
+		return nil
 	}
-	m.messagesMu.Lock()
-	m.messages = loadedMsgs
-	m.compactionIdx = compactionIdx
-	m.messagesMu.Unlock()
-	m.olderScrollbackLoaded = true
-	m.invalidateHistoryCache()
+	m.applyLoadedScrollback(loadedMsgs, compactionIdx)
+	return m.loadPersistedSubagentsCmd()
 }
 
 // New creates a new chat model.
@@ -1027,6 +1089,7 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		tracker:                  tracker,
 		toolMgr:                  toolMgr,
 		subagentTracker:          subagentTracker,
+		mainRunViewComplete:      true,
 		smoothBuffer:             ui.NewSmoothBuffer(),
 		completions:              completions,
 		dialog:                   dialog,
@@ -1506,6 +1569,10 @@ func (m *Model) preserveStreamingContentOnError() {
 	if !m.altScreen || m.tracker == nil {
 		return
 	}
+	if !m.mainRunViewComplete {
+		m.viewCache.completedStream = ""
+		return
+	}
 	m.tracker.CompleteTextSegments(func(text string) string {
 		return m.renderMarkdown(text)
 	})
@@ -1769,6 +1836,47 @@ func (m *Model) SetProgram(p *tea.Program) {
 	m.program = p
 }
 
+// SetMainRunManager attaches process-scoped execution ownership to this model.
+func (m *Model) SetMainRunManager(manager *MainRunManager) {
+	m.mainRunManager = manager
+}
+
+// AttachMainRunUISink routes session-owned prompts to the currently visible
+// Bubble Tea program. Navigation detaches it before the program exits so a
+// background run retains later prompts for the next attachment.
+func (m *Model) AttachMainRunUISink(sink func(tea.Msg)) func() {
+	if m.mainRunManager == nil || sink == nil {
+		return func() {}
+	}
+	if m.mainRunUIDetach != nil {
+		m.mainRunUIDetach()
+	}
+	detach := m.mainRunManager.AttachUISink(m.SessionID(), sink)
+	m.mainRunUIDetach = detach
+	return func() {
+		detach()
+		m.mainRunUIDetach = nil
+	}
+}
+
+// DetachMainRunUISink releases the attached prompt sink, if any. Later prompts
+// for this session are retained by the manager until the next attachment.
+func (m *Model) DetachMainRunUISink() {
+	if m == nil || m.mainRunUIDetach == nil {
+		return
+	}
+	m.mainRunUIDetach()
+	m.mainRunUIDetach = nil
+}
+
+// SessionID returns the persisted session owned by this visible model.
+func (m *Model) SessionID() string {
+	if m == nil || m.sess == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.sess.ID)
+}
+
 func (m *Model) rootContext() context.Context {
 	if m.rootCtx != nil {
 		return m.rootCtx
@@ -1796,6 +1904,15 @@ func (m *Model) startupWorkspaceApprovalCmd() tea.Cmd {
 }
 
 func (m *Model) initialAutoSendCmd() tea.Cmd {
+	// Branch command auto-send: submit only when the command included a message.
+	// When path notes are active Init moves this into queuedBranchSend instead.
+	if m.branchAutoSend != "" {
+		m.textarea.SetValue(m.branchAutoSend)
+		m.branchAutoSend = ""
+		m.updateTextareaHeight()
+		return func() tea.Msg { return autoSendMsg{} }
+	}
+
 	// Handover auto-send: send the target agent's default prompt after restart.
 	if m.handoverAutoSend != "" {
 		m.textarea.SetValue(m.handoverAutoSend)
@@ -1812,6 +1929,15 @@ func (m *Model) initialAutoSendCmd() tea.Cmd {
 		return func() tea.Msg { return autoSendMsg{} }
 	}
 	return nil
+}
+
+func (m *Model) mainRunStatusCmd() tea.Cmd {
+	if m.mainRunManager == nil {
+		return nil
+	}
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return BackgroundRunsMsg{Count: m.mainRunManager.ActiveCount(), owner: m}
+	})
 }
 
 // Init initializes the model.
@@ -1854,6 +1980,19 @@ func (m *Model) Init() tea.Cmd {
 		if footerCmd != nil {
 			baseCmds = append(baseCmds, footerCmd)
 		}
+	}
+	if m.branchAutoSend != "" && m.branchPathNotesRequest != nil {
+		m.queuedBranchSend = &pendingBranchSend{content: m.branchAutoSend, selectedImage: -1}
+		m.branchAutoSend = ""
+	}
+	if cmd := m.attachMainRun(m.SessionID()); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
+	if cmd := m.mainRunStatusCmd(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
+	}
+	if cmd := m.loadPersistedSubagentsCmd(); cmd != nil {
+		baseCmds = append(baseCmds, cmd)
 	}
 	if cmd := m.startPendingBranchPathNotes(); cmd != nil {
 		baseCmds = append(baseCmds, cmd)
@@ -1907,6 +2046,12 @@ func (m *Model) RequestedBranchPathNotes() *BranchPathNotesRequest {
 	request := *m.pendingBranchPathNotes
 	request.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
 	return &request
+}
+
+// RequestedBranchAutoSend returns the optional first message for a newly
+// created thread or fork. Empty commands deliberately produce no send.
+func (m *Model) RequestedBranchAutoSend() string {
+	return strings.TrimSpace(m.pendingBranchAutoSend)
 }
 
 // YoloModeActive returns the current effective yolo state, including approval
@@ -1986,6 +2131,11 @@ func (m *Model) SetBranchPathNotes(request *BranchPathNotesRequest) {
 	}
 	copyRequest.SourceMessages = append([]llm.Message(nil), request.SourceMessages...)
 	m.branchPathNotesRequest = &copyRequest
+}
+
+// SetBranchAutoSend schedules a non-empty first message after a branch relaunch.
+func (m *Model) SetBranchAutoSend(text string) {
+	m.branchAutoSend = strings.TrimSpace(text)
 }
 
 func chatMouseModeFromEnv() bool {
@@ -2132,6 +2282,18 @@ func (m *Model) flushBeforeExternalUI(done chan<- struct{}) (tea.Model, tea.Cmd)
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	if envelope, ok := msg.(mainRunUIEnvelope); ok {
+		if envelope.sessionID != m.SessionID() || m.mainRunManager == nil || !m.mainRunManager.IsUISinkCurrent(envelope.sessionID, envelope.sinkID) {
+			manager := m.mainRunManager
+			return m, func() tea.Msg {
+				if manager != nil {
+					manager.RetainUI(envelope.sessionID, envelope.sinkID, envelope.message)
+				}
+				return nil
+			}
+		}
+		msg = envelope.message
+	}
 	defer func() {
 		if reportCmd := m.takeTerminalWorkingDirectoryCmd(); reportCmd != nil {
 			cmd = tea.Batch(cmd, reportCmd)
@@ -2195,6 +2357,34 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	}
 	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
 		return m.handleStreamCancelTimeout(timeoutMsg)
+	}
+	if started, ok := msg.(mainRunStartedMsg); ok {
+		if started.generation != m.streamGeneration || started.sessionID != m.SessionID() {
+			return m, nil
+		}
+		m.mainRunID = started.runID
+		return m, m.attachMainRun(started.sessionID)
+	}
+	if closed, ok := msg.(mainRunSubscriberClosedMsg); ok {
+		if closed.sessionID != m.SessionID() || closed.runID != m.mainRunID || closed.subscription != m.mainRunSubscription {
+			return m, nil
+		}
+		return m, m.attachMainRun(closed.sessionID)
+	}
+	if runStatus, ok := msg.(BackgroundRunsMsg); ok {
+		if runStatus.owner != nil && runStatus.owner != m {
+			return m, nil
+		}
+		m.backgroundRunCount = runStatus.Count
+		m.refreshBranchTreeRunActivity()
+		return m, m.mainRunStatusCmd()
+	}
+	if switched, ok := msg.(sessionSwitchedMsg); ok {
+		return m.handleSessionSwitched(switched)
+	}
+	if loaded, ok := msg.(persistedSubagentsLoadedMsg); ok {
+		m.applyPersistedSubagents(loaded)
+		return m, nil
 	}
 	if handled, mentionCmd := m.handleMentionMessage(msg); handled {
 		return m, mentionCmd
@@ -2307,17 +2497,18 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// Do not let horizontal wheel/shift-wheel gestures modify the viewport's
 		// hidden x-offset; chat history is always rendered at column zero.
 		if m.altScreen {
+			var loadCmd tea.Cmd
 			if mouse := msg.Mouse(); mouse.Button == tea.MouseWheelUp {
-				m.loadOlderScrollbackPrefix(context.Background())
+				loadCmd = m.loadOlderScrollbackPrefix(context.Background())
 			}
 			if isHorizontalViewportScroll(msg) {
 				m.resetViewportHorizontalOffset()
-				return m, nil
+				return m, loadCmd
 			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			m.resetViewportHorizontalOffset()
-			return m, cmd
+			return m, tea.Batch(loadCmd, cmd)
 		}
 		return m, nil
 
@@ -2727,6 +2918,15 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case streamEventMsg:
 		streamEventStart := time.Now()
 		ev := msg.event
+		if msg.mainRunID != "" && (msg.mainRunID != m.mainRunID || msg.mainRunSubscription != m.mainRunSubscription) {
+			return m, nil
+		}
+		if msg.mainRunSeq > 0 {
+			m.mainRunLastSeq = msg.mainRunSeq
+			for len(m.mainRunReplay) > 0 && m.mainRunReplay[0].Sequence <= msg.mainRunSeq {
+				m.mainRunReplay = m.mainRunReplay[1:]
+			}
+		}
 		if m.shouldIgnoreStreamEvent(msg) {
 			return m, nil
 		}
@@ -2795,6 +2995,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 						}
 					} else {
 						m.mergeUnpersistedInterruptedAssistant(salvageResult)
+						if cmd := m.loadPersistedSubagentsCmd(); cmd != nil {
+							errorOutputCmds = append(errorOutputCmds, cmd)
+						}
 					}
 				}
 
@@ -2817,7 +3020,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				// If the engine queue is already empty but we never rendered the
 				// interjection inline, fall back to the visible pending draft.
 				m.restorePendingInterjectionDraft()
-				if m.engine == nil || len(m.engine.ListPendingInterjections()) == 0 {
+				if len(m.listPendingInterjections()) == 0 {
 					m.clearPendingInterjection()
 				}
 
@@ -3191,19 +3394,26 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				})
 
 				if m.altScreen {
-					// The stream is finished, so no tool should still be pending.
-					// Force any stragglers complete before rendering: the tracker
-					// is now retained after done (for reasoning click-toggling),
-					// and CompletedSegments() truncates at the first pending tool,
-					// so a stale pending tool would otherwise drop trailing content
-					// both here and in later rerenderCompletedStreamFromTracker calls.
-					m.tracker.ForceCompletePendingTools()
-					// In alt screen mode, save the full rendered content to completedStream.
-					// This preserves the correct position of images/diffs relative to text.
-					// The last assistant message will be skipped in renderHistory() to avoid duplication.
-					completed := m.tracker.CompletedSegments()
-					m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(completed, m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
-					m.bumpContentVersion()
+					if !m.mainRunViewComplete {
+						// A durable-prefix fallback may only contain events observed after
+						// reattachment. Do not let that partial tracker hide the complete
+						// persisted assistant/tool turn after the session reload below.
+						m.viewCache.completedStream = ""
+					} else {
+						// The stream is finished, so no tool should still be pending.
+						// Force any stragglers complete before rendering: the tracker
+						// is now retained after done (for reasoning click-toggling),
+						// and CompletedSegments() truncates at the first pending tool,
+						// so a stale pending tool would otherwise drop trailing content
+						// both here and in later rerenderCompletedStreamFromTracker calls.
+						m.tracker.ForceCompletePendingTools()
+						// In alt screen mode, save the full rendered content to completedStream.
+						// This preserves the correct position of images/diffs relative to text.
+						// The last assistant message will be skipped in renderHistory() to avoid duplication.
+						completed := m.tracker.CompletedSegments()
+						m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(completed, m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
+						m.bumpContentVersion()
+					}
 				} else {
 					// In inline mode, print remaining content to scrollback
 					m.tracker.ForceCompletePendingTools()
@@ -3231,6 +3441,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 					m.compactionIdx = compactionIdx
 					m.messagesMu.Unlock()
 					m.invalidateHistoryCache()
+					if cmd := m.loadPersistedSubagentsCmd(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
 				_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusComplete)
 			} else {
@@ -3363,7 +3576,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// engine queue is already empty but the UI still shows a pending
 			// interjection, restore that draft rather than letting it vanish.
 			m.restorePendingInterjectionDraft()
-			if m.engine == nil || len(m.engine.ListPendingInterjections()) == 0 {
+			if len(m.listPendingInterjections()) == 0 {
 				m.clearPendingInterjection()
 			}
 		}
@@ -3433,53 +3646,42 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		}
 
 		m.closeEmbeddedViewsForInteractivePrompt()
-		// In alt screen mode, render approval UI inline
-		if m.altScreen {
-			m.pausedForExternalUI = true
-			m.approvalDoneCh = msg.DoneCh
-			m.approvalIsWorkspace = msg.IsWorkspace
-			switch {
-			case msg.IsWorkspace:
-				m.approvalModel = tools.NewEmbeddedWorkspaceApprovalModel(msg.Path, m.width)
-			case msg.IsShell:
-				m.approvalModel = tools.NewEmbeddedShellApprovalModel(msg.Path, msg.WorkDir, m.width)
-			default:
-				m.approvalModel = tools.NewEmbeddedApprovalModel(msg.Path, msg.IsWrite, m.width)
-			}
-			// Mark current text as complete so it shows above the approval UI
-			if m.tracker != nil {
-				m.tracker.MarkCurrentTextComplete(func(text string) string {
-					return m.renderMarkdown(text)
-				})
-			}
-			// Scroll to bottom so the prompt is visible even if the user had scrolled up.
-			m.scrollToBottom = true
-			return m, m.terminalTitleCmd()
+		// Render the approval inside Bubble Tea in both alternate-screen and
+		// inline modes. Manager-owned runs cannot safely release a stale program's
+		// terminal after their session has moved into the background.
+		m.pausedForExternalUI = true
+		m.approvalDoneCh = msg.DoneCh
+		m.approvalIsWorkspace = msg.IsWorkspace
+		switch {
+		case msg.IsWorkspace:
+			m.approvalModel = tools.NewEmbeddedWorkspaceApprovalModel(msg.Path, m.width)
+		case msg.IsShell:
+			m.approvalModel = tools.NewEmbeddedShellApprovalModel(msg.Path, msg.WorkDir, m.width)
+		default:
+			m.approvalModel = tools.NewEmbeddedApprovalModel(msg.Path, msg.IsWrite, m.width)
 		}
-		// Non-alt screen mode: shouldn't happen, but fall back to immediate deny
-		msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceCancelled, Cancelled: true}
-		return m, nil
+		if m.tracker != nil {
+			m.tracker.MarkCurrentTextComplete(func(text string) string {
+				return m.renderMarkdown(text)
+			})
+		}
+		m.scrollToBottom = true
+		return m, m.terminalTitleCmd()
 
 	case AskUserRequestMsg:
 		m.closeEmbeddedViewsForInteractivePrompt()
-		// In alt screen mode, render ask_user UI inline
-		if m.altScreen {
-			m.pausedForExternalUI = true
-			m.askUserDoneCh = msg.DoneCh
-			m.askUserModel = tools.NewEmbeddedAskUserModel(msg.Questions, m.width)
-			// Mark current text as complete so it shows above the ask_user UI
-			if m.tracker != nil {
-				m.tracker.MarkCurrentTextComplete(func(text string) string {
-					return m.renderMarkdown(text)
-				})
-			}
-			// Scroll to bottom so the prompt is visible even if the user had scrolled up.
-			m.scrollToBottom = true
-			return m, m.terminalTitleCmd()
+		// As with approvals, the attached model owns this prompt regardless of
+		// screen mode so detached runs never manipulate a stale terminal.
+		m.pausedForExternalUI = true
+		m.askUserDoneCh = msg.DoneCh
+		m.askUserModel = tools.NewEmbeddedAskUserModel(msg.Questions, m.width)
+		if m.tracker != nil {
+			m.tracker.MarkCurrentTextComplete(func(text string) string {
+				return m.renderMarkdown(text)
+			})
 		}
-		// Non-alt screen mode: shouldn't happen, but fall back to cancelled
-		msg.DoneCh <- nil
-		return m, nil
+		m.scrollToBottom = true
+		return m, m.terminalTitleCmd()
 
 	case HandoverRequestMsg:
 		m.closeEmbeddedViewsForInteractivePrompt()

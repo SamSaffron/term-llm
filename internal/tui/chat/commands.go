@@ -115,6 +115,18 @@ func AllCommands() []Command {
 			Usage:       "/tree",
 		},
 		{
+			Name:         "thread",
+			Description:  "Start a related conversation with optional context",
+			Usage:        "/thread [message]",
+			ArgumentHint: "[message]",
+		},
+		{
+			Name:         "fork",
+			Description:  "Create a parallel continuation from the last safe point",
+			Usage:        "/fork [message]",
+			ArgumentHint: "[message]",
+		},
+		{
 			Name:        "undo",
 			Description: "Remove the latest user turn and everything after it",
 			Usage:       "/undo",
@@ -438,6 +450,9 @@ func isStreamingLocalSlashCommand(input string) bool {
 		"pro":       true,
 		"title":     true,
 		"autotitle": true,
+		"tree":      true,
+		"thread":    true,
+		"fork":      true,
 	}
 	return localCommands[name]
 }
@@ -544,6 +559,10 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdClear()
 	case "tree":
 		return m.cmdTree(args)
+	case "thread":
+		return m.cmdThread(rawArgs)
+	case "fork":
+		return m.cmdFork(rawArgs)
 	case "undo":
 		return m.cmdUndoRedo(false, args)
 	case "redo":
@@ -1093,18 +1112,19 @@ func (m *Model) handleTranscriptMutationDone(msg transcriptMutationDoneMsg) (tea
 	if m.tracker != nil {
 		m.resetTracker()
 	}
+	hydrate := m.loadPersistedSubagentsCmd()
 	if msg.redo {
 		m.setTextareaValue("")
 		updated, footer := m.showFooterSuccess("Restored the undone turn.")
-		return updated, tea.Batch(footer, m.terminalTitleCmd())
+		return updated, tea.Batch(footer, m.terminalTitleCmd(), hydrate)
 	}
 	m.setTextareaValue(msg.result.UserText)
 	if msg.result.AttachmentsOmitted {
 		updated, footer := m.showFooterWarning("Removed the latest turn; attachments were not restored.")
-		return updated, tea.Batch(footer, m.terminalTitleCmd())
+		return updated, tea.Batch(footer, m.terminalTitleCmd(), hydrate)
 	}
 	updated, footer := m.showFooterSuccess("Removed the latest turn.")
-	return updated, tea.Batch(footer, m.terminalTitleCmd())
+	return updated, tea.Batch(footer, m.terminalTitleCmd(), hydrate)
 }
 
 func (m *Model) cmdUndoRedo(redo bool, args []string) (tea.Model, tea.Cmd) {
@@ -1136,6 +1156,7 @@ func (m *Model) cmdUndoRedo(redo bool, args []string) (tea.Model, tea.Cmd) {
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.clearSideQuestionHistory()
 	m.clearPendingStreamModelSwitch()
+	m.resetMainRunSessionBinding()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
 		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
@@ -1212,6 +1233,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
 	m.resetTitleGenerationStateForSession()
+	m.attachVisibleMainRunUISink()
 
 	updated, footerCmd := m.showFooterSuccess("Started a new session.")
 	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
@@ -2115,6 +2137,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.clearSideQuestionHistory()
 	m.pauseGoalForLocalAction("paused because a new session was started")
 	m.clearPendingStreamModelSwitch()
+	m.resetMainRunSessionBinding()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
 		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
@@ -2190,6 +2213,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
 	m.resetTitleGenerationStateForSession()
+	m.attachVisibleMainRunUISink()
 
 	updated, footerCmd := m.showFooterSuccess("Started a new session.")
 	return updated, tea.Batch(footerCmd, m.terminalTitleCmd())
@@ -3362,10 +3386,7 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 	// text-only stream can finish with queued interjections that were never
 	// committed; applying a deferred effort switch must not strand them on the old
 	// engine before restorePendingInterjectionDraft has a chance to recover them.
-	var queuedInterjections []llm.QueuedInterjection
-	if m.engine != nil {
-		queuedInterjections = m.engine.ListPendingInterjections()
-	}
+	queuedInterjections := m.listPendingInterjections()
 
 	// switchModelWithOptions clears the composer because most model switches are
 	// explicit slash commands. A queued in-stream effort switch is applied
@@ -4036,6 +4057,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		m.streamCancelFunc()
 		m.streamCancelFunc = nil
 	}
+	m.detachMainRun()
 	m.quitting = true
 	return m, m.quitCmd()
 }

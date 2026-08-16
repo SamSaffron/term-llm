@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -1392,13 +1393,11 @@ func truncateID(id string) string {
 	return id[:8] + "..." + id[len(id)-4:]
 }
 
-// extractSessionIDFromSpawnAgentResult extracts the session_id from spawn_agent result JSON
+// extractSessionIDFromSpawnAgentResult extracts the child link through the
+// canonical durable spawn_agent result parser.
 func extractSessionIDFromSpawnAgentResult(content string) string {
-	// Try to parse as JSON and extract session_id
-	var result struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	result, err := tools.ParseSpawnAgentResult(content)
+	if err != nil {
 		return ""
 	}
 	return result.SessionID

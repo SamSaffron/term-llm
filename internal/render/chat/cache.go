@@ -11,10 +11,11 @@ const maxBlockCacheSize = 2000
 // strings. It is intentionally fixed-width/comparable so map lookups in the
 // hot View() path don't need strconv or string concatenation for every message.
 type blockCacheKey struct {
-	messageID      int64
-	width          int
-	toolsExpanded  bool
-	partsSignature uint64
+	messageID                  int64
+	width                      int
+	toolsExpanded              bool
+	partsSignature             uint64
+	persistedSubagentSignature uint64
 }
 
 // BlockCache is an LRU cache for rendered MessageBlocks.

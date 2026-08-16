@@ -32,6 +32,25 @@ type SpawnAgentResult struct {
 	SessionID string `json:"session_id,omitempty"` // Child session ID for inspector integration
 }
 
+// ParseSpawnAgentResult decodes the durable JSON contract returned by
+// spawn_agent. Callers should use the matching tool call/result identity to
+// decide whether content belongs to spawn_agent; this parser intentionally does
+// not accept arbitrary plain text as a legacy result.
+func ParseSpawnAgentResult(content string) (SpawnAgentResult, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return SpawnAgentResult{}, errors.New("empty spawn_agent result")
+	}
+	var result SpawnAgentResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return SpawnAgentResult{}, fmt.Errorf("decode spawn_agent result: %w", err)
+	}
+	if result.AgentName == "" && result.Output == "" && result.Error == "" && result.Type == "" && result.Duration == 0 && result.SessionID == "" {
+		return SpawnAgentResult{}, errors.New("spawn_agent result has no recognized fields")
+	}
+	return result, nil
+}
+
 // SubagentEventType identifies the type of subagent event.
 type SubagentEventType string
 

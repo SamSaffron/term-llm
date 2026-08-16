@@ -1,8 +1,10 @@
 package chat
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -22,6 +24,28 @@ func TestRenderStatusLineShowsConfiguredContextWindow(t *testing.T) {
 	line := ui.StripANSI(m.renderStatusLine())
 	if !strings.Contains(line, "~0/1M") {
 		t.Fatalf("status line %q does not show context window", line)
+	}
+}
+
+func TestRenderStatusLineShowsDetachedBackgroundRunCount(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 120
+	manager := NewMainRunManager(context.Background())
+	defer manager.Close(time.Second)
+	for _, sessionID := range []string{m.SessionID(), "detached-session"} {
+		if _, err := manager.Start(sessionID, MainRunExecution{Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.SetMainRunManager(manager)
+	m.backgroundRunCount = manager.ActiveCount()
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "1 bg") {
+		t.Fatalf("status line %q does not show detached run count", line)
 	}
 }
 

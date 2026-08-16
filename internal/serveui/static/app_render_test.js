@@ -1139,6 +1139,23 @@ async function run(name, fn) {
     assert(formatted.length === 2 && formatted.every((value) => value === created), 'formatters receive the normalized timestamp');
   });
 
+  await run('reloaded spawn_agent tools render durable output and child activity link', () => {
+    const { app } = createHarness();
+    const group = {
+      id: 'spawn_group', role: 'tool-group', status: 'done',
+      tools: [{
+        id: 'spawn_1', name: 'spawn_agent', status: 'done', arguments: '{"agent_name":"reviewer","prompt":"review"}',
+        subagent: { agentName: 'reviewer', output: 'durable review output', error: '', durationMs: 2500, childSessionId: 'child_1' }
+      }]
+    };
+    const node = app.createToolGroupNode(group);
+    const output = node.querySelector('.subagent-result-output');
+    const link = node.querySelector('.subagent-result-action');
+    assertEqual(output?.textContent, 'durable review output', 'subagent output survives reconstruction');
+    assertEqual(link?.textContent, 'Open internal activity', 'child activity action is visible');
+    assert(String(link?.href || '').includes('child_1'), 'child activity action targets persisted child session');
+  });
+
   await run('failed tools count as finished in tool group progress', () => {
     const { app, messages } = createHarness();
     const group = {

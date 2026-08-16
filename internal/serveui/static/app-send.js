@@ -128,7 +128,7 @@ const sendMessage = async (options = {}) => {
     app.openAuthModal('Connect before sending a message.', true);
     return;
   }
-
+  if (!batchingFollowUps && app.handleBranchSlashCommand?.(prompt)) return;
   if (!batchingFollowUps && /^\/(goal|mcp|model|new|tree)$/i.test(prompt)) {
     const command = prompt.toLowerCase();
     elements.promptInput.value = '';
@@ -153,7 +153,6 @@ const sendMessage = async (options = {}) => {
     }
     return;
   }
-
   if (!batchingFollowUps && /^\/(undo|redo)\b/i.test(prompt)) {
     const match = prompt.match(/^\/(undo|redo)$/i);
     elements.promptInput.value = '';

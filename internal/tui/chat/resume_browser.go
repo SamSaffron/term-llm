@@ -43,7 +43,10 @@ func (m *Model) requestResumeSession(sessionID string) (tea.Model, tea.Cmd) {
 	if m.store != nil {
 		_ = m.store.SetCurrent(context.Background(), sessionID)
 	}
-	m.pendingResumeSessionID = sessionID
-	m.quitting = true
-	return m, m.quitCmd()
+	if m.sessionSwitcher != nil {
+		// The switch replaces this model in place; leave browser mode so the
+		// interim frames render the conversation, not a stale list.
+		_, _ = m.closeResumeBrowser()
+	}
+	return m.beginSessionSwitch(SessionSwitchRequest{SessionID: sessionID})
 }
