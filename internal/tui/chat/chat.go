@@ -2589,6 +2589,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case chatGPTModelsLoadedMsg:
 		return m.applyChatGPTModelsLoaded(msg)
 
+	case providerUsageDoneMsg:
+		return m.handleProviderUsageDone(msg)
+
 	case transcriptMutationDoneMsg:
 		return m.handleTranscriptMutationDone(msg)
 

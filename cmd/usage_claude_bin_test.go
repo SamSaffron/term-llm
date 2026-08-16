@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestParseClaudeBinUsageOutput(t *testing.T) {
@@ -62,18 +64,44 @@ func TestWriteClaudeBinUsage(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"Claude subscription usage",
-		"Plan: Max · live from Claude Code",
+		"Claude",
+		"Max plan · Live from Claude Code",
 		"Current session",
+		"5 hour window",
 		"42% used",
-		"resets in 1h 30m · Mon 17 Aug, 1:30 PM",
+		"Resets in 1h 30m",
 		"Current week · all models",
+		"1 week window",
 		"81% used",
-		"██",
-		"░",
+		"│",
+		"Projected: >100%",
+		"▲ Limit likely before reset at current pace",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q\nfull output:\n%s", want, got)
+		}
+	}
+}
+
+func TestWriteClaudeBinUsageASCIIUsesSharedForecastLanguage(t *testing.T) {
+	plan := "max"
+	week := 63.5
+	reset := "2026-08-19T08:00:00Z"
+	report := claudeBinUsageReport{
+		SubscriptionType:    &plan,
+		RateLimitsAvailable: true,
+		RateLimits: &claudeBinRateLimits{
+			SevenDay: &claudeBinRateLimit{Utilization: &week, ResetsAt: &reset},
+		},
+	}
+	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := writeClaudeBinUsageWithOptions(&out, report, now, llm.ProviderUsageFormatOptions{ASCII: true}); err != nil {
+		t.Fatalf("writeClaudeBinUsageWithOptions: %v", err)
+	}
+	for _, want := range []string{"[##############-|------]", "Projected: ~89%"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("ASCII output missing %q:\n%s", want, out.String())
 		}
 	}
 }

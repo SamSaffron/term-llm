@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/pflag"
 )
 
@@ -67,10 +68,12 @@ type claudeBinExtraUsage struct {
 }
 
 type claudeBinUsageRow struct {
-	Label       string
-	Utilization *float64
-	ResetsAt    *string
-	Detail      string
+	Label           string
+	WindowLabel     string
+	DurationMinutes int
+	Utilization     *float64
+	ResetsAt        *string
+	Detail          string
 }
 
 func validateClaudeBinUsageFlags(cmd interface{ Flags() *pflag.FlagSet }) error {
@@ -113,7 +116,7 @@ func runClaudeBinUsage(parent context.Context, cmdOut io.Writer, jsonOutput bool
 	if err := json.Unmarshal(raw, &report); err != nil {
 		return fmt.Errorf("decode Claude Code usage response: %w", err)
 	}
-	return writeClaudeBinUsage(cmdOut, report, time.Now())
+	return writeClaudeBinUsageWithOptions(cmdOut, report, time.Now(), providerUsageFormatOptions(cmdOut))
 }
 
 func fetchClaudeBinUsage(ctx context.Context, binary string) (json.RawMessage, error) {
@@ -184,15 +187,19 @@ func withoutEnvironmentVariable(environment []string, name string) []string {
 }
 
 func writeClaudeBinUsage(out io.Writer, report claudeBinUsageReport, now time.Time) error {
-	fmt.Fprintln(out, "Claude subscription usage")
-	if report.SubscriptionType != nil && strings.TrimSpace(*report.SubscriptionType) != "" {
-		fmt.Fprintf(out, "Plan: %s · live from Claude Code\n", titleCaseASCII(*report.SubscriptionType))
-	} else {
-		fmt.Fprintln(out, "Live from Claude Code")
-	}
-	fmt.Fprintln(out)
+	return writeClaudeBinUsageWithOptions(out, report, now, llm.ProviderUsageFormatOptions{})
+}
 
+func writeClaudeBinUsageWithOptions(out io.Writer, report claudeBinUsageReport, now time.Time, opts llm.ProviderUsageFormatOptions) error {
 	if !report.RateLimitsAvailable || report.RateLimits == nil {
+		fmt.Fprintln(out, "Claude")
+		if report.SubscriptionType != nil && strings.TrimSpace(*report.SubscriptionType) != "" {
+			fmt.Fprintf(out, "%s plan · Live from Claude Code\n", titleCaseASCII(*report.SubscriptionType))
+			fmt.Fprintln(out)
+		} else {
+			fmt.Fprintln(out, "Live from Claude Code")
+			fmt.Fprintln(out)
+		}
 		fmt.Fprintln(out, "Plan usage is unavailable.")
 		fmt.Fprintln(out, "Claude Code needs claude.ai subscription OAuth with the user:profile scope;")
 		fmt.Fprintln(out, "API-key and third-party-provider sessions do not expose plan limits.")
@@ -201,41 +208,80 @@ func writeClaudeBinUsage(out io.Writer, report claudeBinUsageReport, now time.Ti
 
 	rows := claudeBinUsageRows(*report.RateLimits)
 	if len(rows) == 0 {
+		fmt.Fprintln(out, "Claude")
+		fmt.Fprintln(out, "Live from Claude Code")
+		fmt.Fprintln(out)
 		fmt.Fprintln(out, "No active usage windows were returned.")
 		return nil
 	}
-	for i, row := range rows {
-		if i > 0 {
-			fmt.Fprintln(out)
-		}
-		writeClaudeBinUsageRow(out, row, now)
+
+	providerReport := &llm.ProviderUsage{Provider: "claude", Source: "Live from Claude Code"}
+	if report.SubscriptionType != nil {
+		providerReport.Plan = strings.TrimSpace(*report.SubscriptionType)
 	}
-	return nil
+	providerReport.Limits = make([]llm.ProviderUsageLimit, 0, len(rows))
+	for _, row := range rows {
+		providerReport.Limits = append(providerReport.Limits, claudeBinProviderUsageLimit(row))
+	}
+	_, err := fmt.Fprintln(out, llm.FormatProviderUsageWithOptions(providerReport, now, opts))
+	return err
+}
+
+func claudeBinProviderUsageLimit(row claudeBinUsageRow) llm.ProviderUsageLimit {
+	window := &llm.ProviderUsageWindow{
+		Label:           row.WindowLabel,
+		DurationMinutes: row.DurationMinutes,
+		Detail:          row.Detail,
+	}
+	if row.Utilization != nil {
+		window.UsedPercent = *row.Utilization
+	}
+	if row.ResetsAt != nil && strings.TrimSpace(*row.ResetsAt) != "" {
+		if reset, err := time.Parse(time.RFC3339, *row.ResetsAt); err == nil {
+			window.ResetsAt = reset
+		} else {
+			resetDetail := "Resets " + strings.TrimSpace(*row.ResetsAt)
+			if window.Detail == "" {
+				window.Detail = resetDetail
+			} else {
+				window.Detail += " · " + resetDetail
+			}
+		}
+	}
+	return llm.ProviderUsageLimit{ID: strings.ToLower(strings.ReplaceAll(row.Label, " ", "_")), Name: row.Label, PrimaryWindow: window}
 }
 
 func claudeBinUsageRows(limits claudeBinRateLimits) []claudeBinUsageRow {
 	rows := make([]claudeBinUsageRow, 0, 8)
 	seen := make(map[string]bool)
-	add := func(label string, limit *claudeBinRateLimit) {
+	add := func(label, windowLabel string, durationMinutes int, limit *claudeBinRateLimit) {
 		if limit != nil && limit.Utilization != nil {
-			rows = append(rows, claudeBinUsageRow{Label: label, Utilization: limit.Utilization, ResetsAt: limit.ResetsAt})
+			rows = append(rows, claudeBinUsageRow{
+				Label:           label,
+				WindowLabel:     windowLabel,
+				DurationMinutes: durationMinutes,
+				Utilization:     limit.Utilization,
+				ResetsAt:        limit.ResetsAt,
+			})
 			seen[strings.ToLower(label)] = true
 		}
 	}
-	add("Current session", limits.FiveHour)
-	add("Current week · all models", limits.SevenDay)
-	add("Current week · OAuth apps", limits.SevenDayOAuthApps)
-	add("Current week · Opus", limits.SevenDayOpus)
-	add("Current week · Sonnet", limits.SevenDaySonnet)
+	add("Current session", "5 hour window", 5*60, limits.FiveHour)
+	add("Current week · all models", "1 week window", 7*24*60, limits.SevenDay)
+	add("Current week · OAuth apps", "1 week window", 7*24*60, limits.SevenDayOAuthApps)
+	add("Current week · Opus", "1 week window", 7*24*60, limits.SevenDayOpus)
+	add("Current week · Sonnet", "1 week window", 7*24*60, limits.SevenDaySonnet)
 	for _, limit := range limits.ModelScoped {
 		label := "Current week · " + limit.DisplayName
 		if limit.Utilization == nil || seen[strings.ToLower(label)] {
 			continue
 		}
 		rows = append(rows, claudeBinUsageRow{
-			Label:       label,
-			Utilization: limit.Utilization,
-			ResetsAt:    limit.ResetsAt,
+			Label:           label,
+			WindowLabel:     "1 week window",
+			DurationMinutes: 7 * 24 * 60,
+			Utilization:     limit.Utilization,
+			ResetsAt:        limit.ResetsAt,
 		})
 		seen[strings.ToLower(label)] = true
 	}
@@ -248,69 +294,14 @@ func claudeBinUsageRows(limits claudeBinRateLimits) []claudeBinUsageRow {
 			}
 			detail = fmt.Sprintf("%s of %s", formatUsageCurrency(currency, *extra.UsedCredits), formatUsageCurrency(currency, *extra.MonthlyLimit))
 		}
-		rows = append(rows, claudeBinUsageRow{Label: "Extra usage · this month", Utilization: extra.Utilization, Detail: detail})
+		rows = append(rows, claudeBinUsageRow{
+			Label:       "Extra usage · this month",
+			WindowLabel: "Monthly allowance",
+			Utilization: extra.Utilization,
+			Detail:      detail,
+		})
 	}
 	return rows
-}
-
-func writeClaudeBinUsageRow(out io.Writer, row claudeBinUsageRow, now time.Time) {
-	pct := math.Max(0, math.Min(100, *row.Utilization))
-	fmt.Fprintln(out, row.Label)
-	fmt.Fprintf(out, "%s  %3.0f%% used\n", claudeUsageBar(pct, 24), pct)
-	parts := make([]string, 0, 2)
-	if row.Detail != "" {
-		parts = append(parts, row.Detail)
-	}
-	if row.ResetsAt != nil && *row.ResetsAt != "" {
-		parts = append(parts, formatClaudeUsageReset(*row.ResetsAt, now))
-	}
-	if len(parts) > 0 {
-		fmt.Fprintln(out, strings.Join(parts, " · "))
-	}
-}
-
-func claudeUsageBar(percent float64, width int) string {
-	filled := int(math.Round(math.Max(0, math.Min(100, percent)) / 100 * float64(width)))
-	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-}
-
-func formatClaudeUsageReset(raw string, now time.Time) string {
-	reset, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return "resets " + raw
-	}
-	reset = reset.In(now.Location())
-	delta := reset.Sub(now)
-	if delta <= 0 {
-		return "reset due now"
-	}
-	return fmt.Sprintf("resets in %s · %s", conciseDuration(delta), reset.Format("Mon 2 Jan, 3:04 PM"))
-}
-
-func conciseDuration(duration time.Duration) string {
-	duration = duration.Round(time.Minute)
-	if duration < time.Minute {
-		return "<1m"
-	}
-	days := int(duration / (24 * time.Hour))
-	duration %= 24 * time.Hour
-	hours := int(duration / time.Hour)
-	minutes := int((duration % time.Hour) / time.Minute)
-	parts := make([]string, 0, 2)
-	if days > 0 {
-		parts = append(parts, strconv.Itoa(days)+"d")
-		if hours > 0 {
-			parts = append(parts, strconv.Itoa(hours)+"h")
-		}
-	} else if hours > 0 {
-		parts = append(parts, strconv.Itoa(hours)+"h")
-		if minutes > 0 {
-			parts = append(parts, strconv.Itoa(minutes)+"m")
-		}
-	} else {
-		parts = append(parts, strconv.Itoa(minutes)+"m")
-	}
-	return strings.Join(parts, " ")
 }
 
 func titleCaseASCII(value string) string {

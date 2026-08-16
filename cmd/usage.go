@@ -12,9 +12,12 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -43,9 +46,9 @@ var usageCmd = &cobra.Command{
 	Long: `Show token usage and costs from Claude Code, Codex CLI, Gemini CLI, and term-llm.
 
 By default, this command reads local usage data stored by these CLI tools and
-shows aggregated token counts and estimated costs. The claude-bin provider
-instead asks Claude Code for live claude.ai subscription limits; it does not
-invoke a model or consume tokens.
+shows aggregated token counts and estimated costs. The chatgpt, claude-bin,
+and opencode-go providers instead fetch live subscription limits without
+invoking a model or consuming tokens.
 
 For GitHub Copilot, it fetches AI Credit usage from GitHub's latest
 billing usage API. Set GITHUB_TOKEN or GH_TOKEN with billing permissions.
@@ -55,6 +58,8 @@ Examples:
   term-llm usage --provider claude-code       # filter local Claude Code history
   term-llm usage --provider claude-bin        # show live Claude subscription limits
   term-llm usage --provider claude-bin --json # output the structured Claude response
+  term-llm usage --provider chatgpt           # show live ChatGPT Codex plan usage
+  term-llm usage --provider opencode-go       # show live OpenCode Go plan usage
   term-llm usage --provider copilot           # show personal GitHub Copilot AI Credit usage
   term-llm usage --provider copilot --copilot-scope org --copilot-entity my-org
   term-llm usage --provider term-llm          # show term-llm direct API usage
@@ -66,7 +71,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-bin, claude-code, copilot, gemini-cli, term-llm, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (chatgpt, claude-bin, opencode-go, claude-code, copilot, gemini-cli, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
@@ -92,14 +97,16 @@ func init() {
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
-	// claude-bin reports live subscription limits directly from Claude Code.
+	// Subscription providers report live limits without consuming model tokens.
 	if usageProvider == "claude-bin" {
 		if err := validateClaudeBinUsageFlags(cmd); err != nil {
 			return err
 		}
 		return runClaudeBinUsage(cmd.Context(), cmd.OutOrStdout(), usageJSON)
 	}
-
+	if usageProvider == "chatgpt" || usageProvider == "opencode-go" {
+		return runDirectProviderUsage(cmd, usageProvider)
+	}
 	// Special handling for copilot - fetch latest AI Credit usage from GitHub's billing API
 	if usageProvider == "copilot" {
 		return runCopilotUsage()
@@ -152,7 +159,7 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use claude-bin, claude-code, copilot, gemini-cli, or term-llm)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use chatgpt, claude-bin, opencode-go, claude-code, copilot, gemini-cli, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
@@ -214,6 +221,83 @@ func copilotUsageFlagsChanged(cmd *cobra.Command) bool {
 		}
 	}
 	return false
+}
+
+var (
+	fetchDirectProviderUsage = llm.FetchProviderUsageWithAPIKey
+	loadProviderUsageConfig  = config.Load
+)
+
+func runDirectProviderUsage(cmd *cobra.Command, provider string) error {
+	if usageSince != "" || usageUntil != "" || usageBreakdown || usageIncludeExternal {
+		return fmt.Errorf("live %s usage does not support date, breakdown, or external-usage filters", provider)
+	}
+	if copilotUsageFlagsChanged(cmd) {
+		return fmt.Errorf("Copilot usage flags require --provider copilot")
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+	apiKey, err := resolvedProviderUsageAPIKey(provider)
+	if err != nil {
+		return err
+	}
+	report, err := fetchDirectProviderUsage(ctx, provider, apiKey)
+	if err != nil {
+		return fmt.Errorf("failed to fetch %s usage: %w", provider, err)
+	}
+	if usageJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	out := cmd.OutOrStdout()
+	opts := providerUsageFormatOptions(out)
+	fmt.Fprintln(out, llm.FormatProviderUsageWithOptions(report, time.Now(), opts))
+	return nil
+}
+
+func resolvedProviderUsageAPIKey(provider string) (string, error) {
+	if provider != "opencode-go" {
+		return "", nil
+	}
+	cfg, err := loadProviderUsageConfig()
+	if err != nil {
+		return "", fmt.Errorf("load config for %s usage: %w", provider, err)
+	}
+	if cfg == nil {
+		return "", nil
+	}
+	providerCfg, err := cfg.GetResolvedProviderConfig(provider)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s credentials: %w", provider, err)
+	}
+	if providerCfg == nil {
+		return "", nil
+	}
+	if err := providerCfg.ResolveForInference(); err != nil {
+		return "", fmt.Errorf("resolve %s API key: %w", provider, err)
+	}
+	return strings.TrimSpace(providerCfg.ResolvedAPIKey), nil
+}
+
+func providerUsageFormatOptions(w io.Writer) llm.ProviderUsageFormatOptions {
+	opts := llm.ProviderUsageFormatOptions{ASCII: strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb")}
+	fdWriter, ok := w.(interface{ Fd() uintptr })
+	if !ok || !term.IsTerminal(int(fdWriter.Fd())) {
+		return opts
+	}
+	if width, _, err := term.GetSize(int(fdWriter.Fd())); err == nil && width > 0 {
+		opts.Width = width
+	}
+	return opts
 }
 
 // jsonOutput represents the JSON output format

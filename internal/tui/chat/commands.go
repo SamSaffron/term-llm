@@ -70,6 +70,11 @@ func AllCommands() []Command {
 			Usage:       "/stats",
 		},
 		{
+			Name:        "usage",
+			Description: "Show live account usage for the current provider",
+			Usage:       "/usage",
+		},
+		{
 			Name:        "goal",
 			Aliases:     []string{"g"},
 			Description: "Set or manage a persistent objective",
@@ -446,6 +451,7 @@ func isStreamingLocalSlashCommand(input string) bool {
 		"?":         true,
 		"stats":     true,
 		"st":        true,
+		"usage":     true,
 		"effort":    true,
 		"pro":       true,
 		"title":     true,
@@ -553,6 +559,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdCopy(args)
 	case "stats":
 		return m.cmdStats()
+	case "usage":
+		return m.cmdProviderUsage(args)
 	case "goal":
 		return m.cmdGoal(args, rawArgs)
 	case "clear":
