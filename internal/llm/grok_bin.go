@@ -1048,7 +1048,7 @@ func (p *GrokBinProvider) CleanupMCP() {
 
 func (p *GrokBinProvider) CleanupTurn() { p.cleanupTempFilesIfIdle() }
 
-func renderGrokConfig(url, token string) string {
+func renderGrokConfig(url, token, grokHome string) string {
 	var b strings.Builder
 	for _, section := range []string{"claude", "cursor"} {
 		fmt.Fprintf(&b, "[compat.%s]\n", section)
@@ -1057,8 +1057,19 @@ func renderGrokConfig(url, token string) string {
 		}
 		b.WriteString("\n")
 	}
+	// Grok 1.0.x copies bundled skills into GROK_HOME and auto-appends the official
+	// marketplace unless both are pinned. The ACP profile also sets discoverSkills
+	// and inheritSkills false; this ignore is the inspect-visible guarantee that
+	// bundled skill descriptions stay out of the model request.
+	if home := strings.TrimSpace(grokHome); home != "" {
+		fmt.Fprintf(&b, "[skills]\nignore = [%s]\n\n", strconv.Quote(filepath.Join(home, "bundled", "skills")))
+	}
+	b.WriteString("[subagents]\nenabled = false\n\n")
+	b.WriteString("[marketplace]\n")
+	b.WriteString("official_marketplace_auto_installed = true\n")
+	b.WriteString("default_skills_installs_purged = true\n")
 	if strings.TrimSpace(url) != "" {
-		b.WriteString("[mcp_servers.term-llm]\n")
+		b.WriteString("\n[mcp_servers.term-llm]\n")
 		fmt.Fprintf(&b, "url = %s\n", strconv.Quote(url))
 		fmt.Fprintf(&b, "headers = { \"Authorization\" = %s }\n", strconv.Quote("Bearer "+token))
 	}
@@ -1069,7 +1080,7 @@ func (p *GrokBinProvider) writeConfig(url, token string) error {
 	if strings.TrimSpace(p.grokHome) == "" {
 		return fmt.Errorf("write grok-bin config: GROK_HOME is not initialized")
 	}
-	data := []byte(renderGrokConfig(url, token))
+	data := []byte(renderGrokConfig(url, token, p.grokHome))
 	tmp, err := os.CreateTemp(p.grokHome, ".config-*.toml")
 	if err != nil {
 		return fmt.Errorf("create grok-bin config: %w", err)

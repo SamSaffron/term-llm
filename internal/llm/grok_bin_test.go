@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -640,11 +641,19 @@ func TestGrokBinProviderSuccessfulExitWithoutEndDoesNotAdvanceState(t *testing.T
 }
 
 func TestRenderGrokConfig(t *testing.T) {
-	configText := renderGrokConfig("http://127.0.0.1:1234/mcp", `token"quoted`)
+	home := filepath.Join(t.TempDir(), "grok-home")
+	configText := renderGrokConfig("http://127.0.0.1:1234/mcp", `token"quoted`, home)
 	for _, want := range []string{
 		"[compat.claude]",
 		"skills = false",
 		"[compat.cursor]",
+		"[skills]",
+		`ignore = [` + strconv.Quote(filepath.Join(home, "bundled", "skills")) + `]`,
+		"[subagents]",
+		"enabled = false",
+		"[marketplace]",
+		"official_marketplace_auto_installed = true",
+		"default_skills_installs_purged = true",
 		"[mcp_servers.term-llm]",
 		`url = "http://127.0.0.1:1234/mcp"`,
 		`headers = { "Authorization" = "Bearer token\"quoted" }`,
@@ -669,8 +678,12 @@ func TestGrokBinProviderWritesConfigInsideDurableHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "http://127.0.0.1:4321/mcp") || !strings.Contains(string(data), "Bearer secret-token") {
+	got := string(data)
+	if !strings.Contains(got, "http://127.0.0.1:4321/mcp") || !strings.Contains(got, "Bearer secret-token") {
 		t.Fatalf("config.toml contents:\n%s", data)
+	}
+	if !strings.Contains(got, strconv.Quote(filepath.Join(p.grokHome, "bundled", "skills"))) {
+		t.Fatalf("config.toml missing bundled skill ignore:\n%s", data)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -697,6 +710,9 @@ func TestGrokBinProviderToolsWithoutExecutorStillWritesIsolationConfig(t *testin
 	configText := string(data)
 	if !strings.Contains(configText, "[compat.claude]") || !strings.Contains(configText, "[compat.cursor]") {
 		t.Fatalf("isolation config missing compatibility guards:\n%s", configText)
+	}
+	if !strings.Contains(configText, strconv.Quote(filepath.Join(p.grokHome, "bundled", "skills"))) || !strings.Contains(configText, "official_marketplace_auto_installed = true") || !strings.Contains(configText, "[subagents]") {
+		t.Fatalf("isolation config missing bundled-skill/marketplace/subagent pins:\n%s", configText)
 	}
 	if strings.Contains(configText, "[mcp_servers.term-llm]") {
 		t.Fatalf("isolation config unexpectedly exposed MCP bridge:\n%s", configText)
