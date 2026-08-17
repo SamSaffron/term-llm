@@ -413,10 +413,35 @@ func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 			m.ctrlCExitArmedUntil = time.Time{}
 			return m.resolveWorktreeRecoveryPrompt(false)
 		}
+		if m.dialog.Type() == DialogBranchContext {
+			m.pendingBranchPoint = nil
+		}
 		m.dialog.Close()
 	}
 	_, footerCmd := m.showFooterMessageWithToneFor("Press Ctrl-C again to exit.", "warning", ctrlCExitConfirmWindow)
 	return m, footerCmd
+}
+
+func (m *Model) handleSessionTransitionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keyMap.Quit) {
+		return m.handleCtrlC()
+	}
+	if key.Matches(msg, m.keyMap.Send) {
+		return m.showFooterMuted("Thread is still preparing; your draft is saved here.")
+	}
+	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+		return m.showFooterMuted("Thread is still preparing in the background.")
+	}
+
+	old := m.textarea.Value()
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	if m.textarea.Value() != old {
+		m.selection = Selection{}
+		m.resetPromptHistoryIfEdited()
+		m.updateTextareaHeight()
+	}
+	return m, cmd
 }
 
 func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -426,6 +451,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.showFooterMessageWithTone("Chaos monkey armed: simulating stream failure...", "warning")
 		}
 		return m.showFooterMessageWithTone("Chaos monkey is enabled; start streaming, then press ctrl+m/ctrl+g to fail the stream.", "muted")
+	}
+
+	if m.sessionTransition != nil {
+		return m.handleSessionTransitionKey(msg)
 	}
 
 	// Ctrl+C copies an active text selection, matching the status-line hint and
@@ -572,6 +601,46 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.dialog.Type() == DialogContent {
 			m.dialog.Update(msg)
 			return m, nil
+		}
+		if m.dialog.Type() == DialogBranchContext {
+			if m.dialog.BranchFocusEditing() {
+				switch {
+				case key.Matches(msg, m.keyMap.Send):
+					focus := strings.TrimSpace(m.dialog.BranchFocus())
+					if focus == "" {
+						m.dialog.SetBranchFocusError("Describe what the new path should retain.")
+						return m, nil
+					}
+					m.dialog.Close()
+					return m.startConversationBranchWithNotes(focus)
+				case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+					m.dialog.CancelBranchFocus()
+					return m, nil
+				default:
+					_, cmd := m.dialog.Update(msg)
+					return m, cmd
+				}
+			}
+
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):
+				selected := m.dialog.Selected()
+				if selected == nil {
+					return m, nil
+				}
+				if selected.ID == "focused" {
+					return m.handleBranchContextSelection(selected.ID)
+				}
+				m.dialog.Close()
+				return m.handleBranchContextSelection(selected.ID)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
+				m.pendingBranchPoint = nil
+				m.dialog.Close()
+				return m, nil
+			default:
+				_, cmd := m.dialog.Update(msg)
+				return m, cmd
+			}
 		}
 		// Conversation tree supports type-to-search while preserving arrow-key navigation.
 		if m.dialog.Type() == DialogBranchTree {
@@ -913,12 +982,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.branchOperationCancel()
 			m.branchOperationCancel = nil
 			return m.showFooterMuted("Cancelling new path…")
-		}
-		if m.branchFocusCapture {
-			m.branchFocusCapture = false
-			m.pendingBranchPoint = nil
-			m.setTextareaValue("")
-			return m.showFooterMuted("New path cancelled.")
 		}
 		if m.streaming && m.streamCancelFunc != nil {
 			m.setStreamCancelRequested(true)
@@ -1292,12 +1355,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keyMap.Send) {
 		rawInput := m.textarea.Value()
 		content := strings.TrimSpace(rawInput)
-		if m.branchFocusCapture {
-			if content == "" {
-				return m.showFooterWarning("Describe what the new path should retain, or press Esc to cancel.")
-			}
-			return m.startConversationBranchWithNotes(content)
-		}
 
 		if m.directShellRun != nil {
 			return m.showFooterWarning("Wait for the shell command to finish or press Esc to cancel it.")

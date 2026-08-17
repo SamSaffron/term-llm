@@ -83,6 +83,7 @@ type BranchPathNotesRequest struct {
 
 type pendingBranchSend struct {
 	content       string
+	composer      composerSnapshot
 	files         []FileAttachment
 	images        []ImageAttachment
 	selectedImage int
@@ -386,21 +387,22 @@ type Model struct {
 	program *tea.Program // Reference to program for tea.Println
 
 	// If set, the caller should relaunch chat with this session ID.
-	pendingResumeSessionID string
-	pendingBranchPrefill   string
-	pendingBranchPathNotes *BranchPathNotesRequest
-	pendingBranchAutoSend  string
-	branchTreeChoices      map[string]conversationBranchPoint
-	pendingBranchPoint     *conversationBranchPoint
-	branchFocusCapture     bool
-	branchOperationCancel  context.CancelFunc
-	branchOperationDone    chan struct{}
-	branchOperationStarted time.Time
-	branchPathNotesRequest *BranchPathNotesRequest
-	queuedBranchSend       *pendingBranchSend
-	branchAutoSend         string
-	activeBranchAnchorID   int64
-	runBoundary            *runboundary.Tracker
+	pendingResumeSessionID  string
+	pendingBranchPrefill    string
+	pendingBranchPathNotes  *BranchPathNotesRequest
+	pendingBranchAutoSend   string
+	branchTreeChoices       map[string]conversationBranchPoint
+	pendingBranchPoint      *conversationBranchPoint
+	runtimeOperations       operationGate
+	branchOperationCancel   context.CancelFunc
+	branchOperationStarted  time.Time
+	branchPathNotesRequest  *BranchPathNotesRequest
+	queuedBranchSend        *pendingBranchSend
+	pendingBranchNavigation *SessionSwitchRequest
+	transitionAutoSendDraft *pendingBranchSend
+	branchAutoSend          string
+	activeBranchAnchorID    int64
+	runBoundary             *runboundary.Tracker
 
 	mainRunManager      *MainRunManager
 	mainRunLive         <-chan MainRunEvent
@@ -417,6 +419,7 @@ type Model struct {
 	// In-process session switching (nil switcher falls back to quit+relaunch).
 	sessionSwitcher      SessionSwitcher
 	sessionSwitchPending bool
+	sessionTransition    *sessionTransition
 
 	// If set, the caller should auto-send this message after handover restart.
 	pendingHandoverAutoSend string
@@ -2091,22 +2094,37 @@ func (m *Model) PersistApprovalMode(mode tools.ApprovalMode) {
 	m.persistApprovalMode(mode)
 }
 
-// WaitStreamDone blocks until engine streaming and branch-helper goroutines have
-// exited. It is safe to call when neither was started (no-op). Shutdown must not
-// hang forever if a provider/tool ignores cancellation, so each wait is bounded
-// by the same hard stop budget used by the interactive cancel watchdog.
-func (m *Model) WaitStreamDone() {
-	wait := func(done <-chan struct{}) {
-		if done == nil {
-			return
-		}
+// WaitStreamDone waits briefly for engine streaming and seals the operation
+// gate. It reports whether every operation drained within the shutdown budget;
+// callers must not close runtime resources while it returns false.
+func (m *Model) WaitStreamDone() bool {
+	return m.waitStreamDone(false)
+}
+
+// CancelAndWaitStreamDone also cancels branch work. Final process shutdown uses
+// this variant; session switches let owned work finish in the background.
+func (m *Model) CancelAndWaitStreamDone() bool {
+	return m.waitStreamDone(true)
+}
+
+func (m *Model) waitStreamDone(cancelBranch bool) bool {
+	if cancelBranch && m.branchOperationCancel != nil {
+		m.branchOperationCancel()
+	}
+	if m.streamDone != nil {
 		select {
-		case <-done:
+		case <-m.streamDone:
 		case <-time.After(streamCancelMaxWait):
 		}
 	}
-	wait(m.streamDone)
-	wait(m.branchOperationDone)
+	return m.runtimeOperations.sealAndWait(streamCancelMaxWait)
+}
+
+// WaitRuntimeOperations waits without a deadline after the gate was sealed.
+// Session-switch disposal uses this off the UI goroutine so resources are
+// eventually released without ever closing SQLite underneath a worker.
+func (m *Model) WaitRuntimeOperations() {
+	m.runtimeOperations.wait()
 }
 
 // SetHandoverAutoSend sets a message to auto-send on Init (for handover restart).
@@ -2219,6 +2237,7 @@ func isParentChatMessage(msg tea.Msg) bool {
 		GuardianReviewMsg,
 		chatGPTModelsLoadedMsg,
 		transcriptMutationDoneMsg,
+		conversationBranchCreatedMsg,
 		conversationBranchNotesDoneMsg,
 		FlushBeforeAskUserMsg,
 		FlushBeforeApprovalMsg,
@@ -2460,6 +2479,18 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.sessionTransition != nil {
+			if m.handleTextareaMouse(msg) {
+				return m, nil
+			}
+			if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseMiddle {
+				text, err := readPrimarySelection()
+				if err == nil && text != "" {
+					return m.handlePasteMsg(tea.PasteMsg{Content: text})
+				}
+			}
+			return m, nil
+		}
 		if m.sideQuestion.Visible {
 			if m.handleSideQuestionMouseWheel(msg) {
 				return m, nil
@@ -2515,7 +2546,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if (m.streaming || m.directShellRun != nil || m.sideQuestion.Running || m.branchContextInFlight()) && !m.pausedForExternalUI {
+		if (m.streaming || m.directShellRun != nil || m.sideQuestion.Running || m.branchContextInFlight() || m.sessionTransition != nil) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
@@ -2596,6 +2627,9 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case transcriptMutationDoneMsg:
 		return m.handleTranscriptMutationDone(msg)
+
+	case conversationBranchCreatedMsg:
+		return m.handleConversationBranchCreated(msg)
 
 	case conversationBranchNotesDoneMsg:
 		return m.handleConversationBranchNotesDone(msg)
@@ -2881,6 +2915,17 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.quitting = true
 			_, footerCmd := m.showFooterError(err.Error())
 			return m, tea.Sequence(footerCmd, tea.Quit)
+		}
+		if draft := m.transitionAutoSendDraft; draft != nil {
+			m.transitionAutoSendDraft = nil
+			updated, cmd := m.sendMessage(m.textarea.Value())
+			model := updated.(*Model)
+			model.restoreComposerSnapshot(draft.composer)
+			model.files = draft.files
+			model.images = draft.images
+			model.selectedImage = draft.selectedImage
+			model.pasteChunks = draft.pasteChunks
+			return model, cmd
 		}
 		return m.sendMessage(m.textarea.Value())
 

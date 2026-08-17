@@ -3,10 +3,12 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -48,6 +50,78 @@ func TestBeginSessionSwitchWithoutSwitcherFallsBackToQuitRelaunch(t *testing.T) 
 	}
 }
 
+func TestFallbackSessionSwitchPreservesLiveTransitionDraft(t *testing.T) {
+	m := newTestChatModel(false)
+	m.sessionTransition = m.newSessionTransition(SessionSwitchRequest{BranchPrefill: "initial"})
+	m.setTextareaValue("edited while preparing")
+
+	_, _ = m.beginSessionSwitch(SessionSwitchRequest{SessionID: "child", BranchPrefill: "initial"})
+	if got := m.RequestedBranchPrefill(); got != "edited while preparing" {
+		t.Fatalf("fallback transition draft = %q", got)
+	}
+}
+
+func TestSessionTransitionCtrlCUsesNormalInterruptExit(t *testing.T) {
+	m := newTestChatModel(false)
+	m.keyMap = DefaultKeyMap()
+	m.sessionTransition = m.newSessionTransition(SessionSwitchRequest{SessionID: "child"})
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	if m.ctrlCExitArmedUntil.IsZero() || m.quitting {
+		t.Fatalf("first Ctrl+C did not arm exit: armed=%v quitting=%v", !m.ctrlCExitArmedUntil.IsZero(), m.quitting)
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	if cmd == nil || !m.quitting {
+		t.Fatalf("second Ctrl+C did not quit: cmd=%v quitting=%v", cmd != nil, m.quitting)
+	}
+}
+
+func TestBeginSessionSwitchImmediatelyShowsTargetAndKeepsComposerEditable(t *testing.T) {
+	m := newTestChatModel(false)
+	m.messages = []session.Message{{TextContent: "old conversation must be hidden"}}
+	m.SetSessionSwitcher(func(SessionSwitchRequest) (*Model, error) {
+		return newTestChatModel(false), nil
+	})
+
+	_, cmd := m.beginSessionSwitch(SessionSwitchRequest{
+		SessionID:     "child-session-1234",
+		TargetLabel:   "Fresh thread",
+		TargetNumber:  42,
+		BranchPrefill: "initial draft",
+	})
+	if cmd == nil || m.sessionTransition == nil {
+		t.Fatalf("switch did not enter transition immediately: cmd=%v transition=%v", cmd != nil, m.sessionTransition != nil)
+	}
+	activity := ui.StripANSI(m.renderSessionTransitionActivity())
+	if !strings.Contains(activity, "Fresh thread · #42") || strings.Contains(activity, "old conversation") {
+		t.Fatalf("transition activity = %q", activity)
+	}
+	m.scrollOffset = 1
+	frame := ui.StripANSI(m.View().Content)
+	if !strings.Contains(frame, "Fresh thread · #42") || strings.Contains(frame, "old conversation") {
+		t.Fatalf("transition frame = %q", frame)
+	}
+	if got := m.textarea.Value(); got != "initial draft" {
+		t.Fatalf("transition prefill = %q", got)
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '!', Text: "!"})
+	m = updated.(*Model)
+	if got := m.textarea.Value(); got != "initial draft!" {
+		t.Fatalf("transition draft after edit = %q", got)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if got := m.textarea.Value(); got != "initial draft!" {
+		t.Fatalf("Enter changed pending draft = %q", got)
+	}
+	if !strings.Contains(m.footerMessage, "still preparing") {
+		t.Fatalf("pending Enter footer = %q", m.footerMessage)
+	}
+}
+
 func TestBeginSessionSwitchSwapsModelInProcessWithoutQuitting(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width, m.height = 100, 30
@@ -58,19 +132,22 @@ func TestBeginSessionSwitchSwapsModelInProcessWithoutQuitting(t *testing.T) {
 		return next, nil
 	})
 
-	_, cmd := m.beginSessionSwitch(SessionSwitchRequest{SessionID: "child", BranchAutoSend: "first message"})
+	_, cmd := m.beginSessionSwitch(SessionSwitchRequest{SessionID: "child"})
 	if cmd == nil || m.quitting || m.RequestedResumeSessionID() != "" {
 		t.Fatalf("switch used quit path: cmd=%v quitting=%v resume=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID())
 	}
 	if !m.sessionSwitchPending {
 		t.Fatal("switch not marked pending")
 	}
+	m.setTextareaValue("drafted while preparing")
+	m.images = []ImageAttachment{{MediaType: "image/png", Data: []byte("image")}}
+	m.pasteChunks = map[int]string{1: "large paste"}
 
 	switched, ok := searchSessionSwitchedMsg(cmd)
 	if !ok || switched.err != nil || switched.model != next {
 		t.Fatalf("switch command result: ok=%v err=%v model=%p", ok, switched.err, switched.model)
 	}
-	if got.SessionID != "child" || got.BranchAutoSend != "first message" {
+	if got.SessionID != "child" {
 		t.Fatalf("switcher request = %#v", got)
 	}
 
@@ -81,8 +158,38 @@ func TestBeginSessionSwitchSwapsModelInProcessWithoutQuitting(t *testing.T) {
 	if swapCmd == nil {
 		t.Fatal("swap produced no init/resize commands")
 	}
-	if m.sessionSwitchPending {
-		t.Fatal("pending flag survived the swap")
+	if m.sessionSwitchPending || m.sessionTransition != nil {
+		t.Fatalf("pending transition survived swap: pending=%v transition=%v", m.sessionSwitchPending, m.sessionTransition != nil)
+	}
+	if got := next.textarea.Value(); got != "drafted while preparing" {
+		t.Fatalf("replacement draft = %q", got)
+	}
+	if len(next.images) != 1 || string(next.images[0].Data) != "image" || next.pasteChunks[1] != "large paste" {
+		t.Fatalf("replacement composer payload: images=%#v pastes=%#v", next.images, next.pasteChunks)
+	}
+}
+
+func TestSessionSwitchPreservesDraftBehindBranchAutoSend(t *testing.T) {
+	m := newTestChatModel(false)
+	next := newTestChatModel(false)
+	next.branchAutoSend = "send this first"
+	m.SetSessionSwitcher(func(SessionSwitchRequest) (*Model, error) { return next, nil })
+
+	_, cmd := m.beginSessionSwitch(SessionSwitchRequest{SessionID: "child"})
+	m.setTextareaValue("newer draft")
+	switched, ok := searchSessionSwitchedMsg(cmd)
+	if !ok {
+		t.Fatal("missing switch completion")
+	}
+	updated, _ := m.Update(switched)
+	if updated != next {
+		t.Fatalf("switch returned %T", updated)
+	}
+	if got := next.textarea.Value(); got != "send this first" {
+		t.Fatalf("auto-send composer = %q", got)
+	}
+	if next.transitionAutoSendDraft == nil || next.transitionAutoSendDraft.content != "newer draft" {
+		t.Fatalf("preserved transition draft = %#v", next.transitionAutoSendDraft)
 	}
 }
 
@@ -96,6 +203,7 @@ func TestBeginSessionSwitchFailureKeepsCurrentModel(t *testing.T) {
 		return nil, errors.New("boom")
 	})
 	_, cmd := m.beginSessionSwitch(SessionSwitchRequest{SessionID: "child"})
+	m.setTextareaValue("draft survives failure")
 	switched, ok := searchSessionSwitchedMsg(cmd)
 	if !ok || switched.err == nil {
 		t.Fatalf("expected failed switch message, got ok=%v err=%v", ok, switched.err)
@@ -105,8 +213,11 @@ func TestBeginSessionSwitchFailureKeepsCurrentModel(t *testing.T) {
 	if updated != m {
 		t.Fatalf("failed switch replaced the model: %T", updated)
 	}
-	if m.sessionSwitchPending || m.quitting {
-		t.Fatalf("failed switch left state pending=%v quitting=%v", m.sessionSwitchPending, m.quitting)
+	if m.sessionSwitchPending || m.sessionTransition != nil || m.quitting {
+		t.Fatalf("failed switch left state pending=%v transition=%v quitting=%v", m.sessionSwitchPending, m.sessionTransition != nil, m.quitting)
+	}
+	if got := m.textarea.Value(); got != "draft survives failure" {
+		t.Fatalf("failed switch draft = %q", got)
 	}
 	if m.mainRunUIDetach == nil {
 		t.Fatal("failed switch did not restore the visible session UI sink")
@@ -190,8 +301,8 @@ func TestFailedSessionSwitchPreservesTargetCompletionAttention(t *testing.T) {
 	}
 }
 
-func TestFinishConversationBranchUsesInProcessSwitch(t *testing.T) {
-	m, store, _ := newBranchChatModel()
+func TestPreparedConversationBranchUsesInProcessSwitch(t *testing.T) {
+	m, _, _ := newBranchChatModel()
 	next := newTestChatModel(false)
 	var got SessionSwitchRequest
 	m.SetSessionSwitcher(func(request SessionSwitchRequest) (*Model, error) {
@@ -201,13 +312,12 @@ func TestFinishConversationBranchUsesInProcessSwitch(t *testing.T) {
 	notes := &BranchPathNotesRequest{ChildSessionID: "new-child", SourceSessionID: m.sess.ID}
 	point := conversationBranchPoint{prefill: "edit this", autoSend: "run it"}
 
-	updated, cmd := m.finishConversationBranch(point, store.result, notes)
+	updated, cmd := m.handleConversationBranchCreated(conversationBranchCreatedMsg{point: point, result: session.BranchResult{
+		Session: &session.Session{ID: "new-child", Provider: "mock", Model: "mock"},
+	}, pathNotes: notes})
 	m = updated.(*Model)
 	if cmd == nil || m.quitting || m.RequestedResumeSessionID() != "" {
 		t.Fatalf("branch finish used quit path: cmd=%v quitting=%v resume=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID())
-	}
-	if store.currentID != "new-child" {
-		t.Fatalf("store current = %q, want new-child", store.currentID)
 	}
 	switched, ok := searchSessionSwitchedMsg(cmd)
 	if !ok || switched.model != next {

@@ -89,7 +89,9 @@ func (m *Model) View() (view tea.View) {
 	// Alt screen mode: use viewport for scrollable content
 	if m.altScreen {
 		var content string
-		if m.resizeReflowPending {
+		if m.sessionTransition != nil {
+			content = m.viewAltScreenSessionTransition()
+		} else if m.resizeReflowPending {
 			content = m.viewAltScreenResizeFrame()
 		} else {
 			content = m.viewAltScreen()
@@ -109,8 +111,9 @@ func (m *Model) View() (view tea.View) {
 	var b strings.Builder
 	renderedLines := 0
 
-	// History (if scrolling)
-	if m.scrollOffset > 0 {
+	// History (if scrolling). A session transition owns the content area so the
+	// outgoing transcript is never presented as part of the target thread.
+	if m.sessionTransition == nil && m.scrollOffset > 0 {
 		history := m.renderHistory()
 		b.WriteString(history)
 		renderedLines += lipgloss.Height(history)
@@ -118,8 +121,13 @@ func (m *Model) View() (view tea.View) {
 		renderedLines++
 	}
 
-	// Live direct-shell output, model/child-agent stream, or branch-context preparation.
-	if m.directShellRun != nil {
+	// Live direct-shell output, model/child-agent stream, session transition,
+	// or branch-context preparation.
+	if m.sessionTransition != nil {
+		activity := m.renderSessionTransitionActivity()
+		b.WriteString(activity)
+		renderedLines += lipgloss.Height(activity)
+	} else if m.directShellRun != nil {
 		shellOutput := m.renderDirectShellInline()
 		b.WriteString(shellOutput)
 		renderedLines += lipgloss.Height(shellOutput)
@@ -259,6 +267,63 @@ func (m *Model) imageSafeCursor() *tea.Cursor {
 	cur.Shape = tea.CursorBar
 	cur.Blink = false
 	return cur
+}
+
+func (m *Model) sessionTransitionLabel() string {
+	if m == nil || m.sessionTransition == nil {
+		return ""
+	}
+	request := m.sessionTransition.request
+	if label := strings.TrimSpace(request.TargetLabel); label != "" {
+		if request.TargetNumber > 0 {
+			return fmt.Sprintf("%s · #%d", label, request.TargetNumber)
+		}
+		return label
+	}
+	if request.TargetNumber > 0 {
+		return fmt.Sprintf("Thread #%d", request.TargetNumber)
+	}
+	if id := strings.TrimSpace(request.SessionID); id != "" {
+		return "Thread " + session.ShortID(id)
+	}
+	return "New thread"
+}
+
+func (m *Model) renderSessionTransitionActivity() string {
+	if m == nil || m.sessionTransition == nil {
+		return ""
+	}
+	muted := lipgloss.NewStyle().Foreground(m.styles.Theme().Muted)
+	label := lipgloss.NewStyle().Bold(true).Render(m.sessionTransitionLabel())
+	status := strings.TrimSpace(m.spinner.View() + " Preparing thread")
+	return label + "\n" + muted.Render(status) + "\n"
+}
+
+// viewAltScreenSessionTransition replaces the outgoing transcript immediately
+// while the target runtime is hydrated. The normal footer stays interactive so
+// the user can draft in the target thread during setup.
+func (m *Model) viewAltScreenSessionTransition() string {
+	footer := m.buildFooterLayout()
+	m.syncAltScreenViewportHeight(footer.height)
+	m.resetPostFrameCurrentImages()
+
+	width := max(1, m.width)
+	height := m.viewport.Height()
+	lines := strings.Split(strings.TrimRight(m.renderSessionTransitionActivity(), "\n"), "\n")
+	for i := range lines {
+		lines[i] = ansi.Cut(lines[i], 0, width)
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	blank := strings.Repeat(" ", width)
+	for len(lines) < height {
+		lines = append(lines, blank)
+	}
+
+	m.applyFooterLayout(height, footer)
+	frame := strings.Join(lines, "\n") + "\n" + footer.view
+	return m.overlayAltScreenPanels(frame, footer)
 }
 
 // viewAltScreenResizeFrame renders only the already-visible viewport rows and
@@ -1549,6 +1614,9 @@ func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string 
 	started := time.Time{}
 	tokens := 0
 	switch {
+	case m.sessionTransition != nil:
+		phase = "Preparing thread"
+		started = m.sessionTransition.startedAt
 	case m.directShellRun != nil:
 		phase = "Running shell · Esc cancels"
 		if m.directShellRun.cancelRequested {

@@ -17,13 +17,16 @@ import (
 
 type branchChatStore struct {
 	*mockStore
-	tree       session.BranchTree
-	state      session.TranscriptMutationState
-	result     session.BranchResult
-	createErr  error
-	createOpts []session.CreateBranchOptions
-	currentID  string
-	currentErr error
+	tree          session.BranchTree
+	state         session.TranscriptMutationState
+	result        session.BranchResult
+	createErr     error
+	createOpts    []session.CreateBranchOptions
+	createStarted chan struct{}
+	createRelease <-chan struct{}
+	addStarted    chan struct{}
+	addRelease    <-chan struct{}
+	currentID     string
 }
 
 func (s *branchChatStore) GetBranchTree(context.Context, string) (session.BranchTree, error) {
@@ -44,12 +47,28 @@ func (s *branchChatStore) RedoLastUserTurn(context.Context, string, session.Tran
 
 func (s *branchChatStore) CreateBranch(_ context.Context, _ string, opts session.CreateBranchOptions) (session.BranchResult, error) {
 	s.createOpts = append(s.createOpts, opts)
+	if s.createStarted != nil {
+		close(s.createStarted)
+	}
+	if s.createRelease != nil {
+		<-s.createRelease
+	}
 	return s.result, s.createErr
 }
 
 func (s *branchChatStore) SetCurrent(_ context.Context, id string) error {
 	s.currentID = id
-	return s.currentErr
+	return nil
+}
+
+func (s *branchChatStore) AddMessage(ctx context.Context, sessionID string, message *session.Message) error {
+	if s.addStarted != nil {
+		close(s.addStarted)
+	}
+	if s.addRelease != nil {
+		<-s.addRelease
+	}
+	return s.mockStore.AddMessage(ctx, sessionID, message)
 }
 
 func newBranchChatModel() (*Model, *branchChatStore, []session.Message) {
@@ -81,6 +100,35 @@ func newBranchChatModel() (*Model, *branchChatStore, []session.Message) {
 	m.sess = base.sessions[sourceID]
 	m.messages = messages
 	return m, store, messages
+}
+
+func branchCreationWorker(t *testing.T, cmd tea.Cmd) tea.Cmd {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("missing branch creation command")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		if len(batch) == 0 || batch[0] == nil {
+			t.Fatal("branch creation batch has no worker")
+		}
+		return batch[0]
+	}
+	return func() tea.Msg { return msg }
+}
+
+func runBranchCreationCmd(t *testing.T, m *Model, cmd tea.Cmd) (*Model, tea.Cmd) {
+	t.Helper()
+	msg, ok := branchCreationWorker(t, cmd)().(conversationBranchCreatedMsg)
+	if !ok {
+		t.Fatalf("branch creation command returned %T", msg)
+	}
+	updated, next := m.Update(msg)
+	model, ok := updated.(*Model)
+	if !ok {
+		t.Fatalf("branch creation update returned %T", updated)
+	}
+	return model, next
 }
 
 func attachBlockingMainRun(t *testing.T, m *Model) *MainRunManager {
@@ -139,11 +187,15 @@ func TestTreeUserSelectionAtTipOffersOnlyCleanAndRelaunchesWithPrefill(t *testin
 	m.dialog.Close()
 	updated, cmd = m.handleBranchContextSelection("clean")
 	m = updated.(*Model)
+	if m.sessionTransition == nil || m.quitting {
+		t.Fatalf("branch did not enter transition immediately: transition=%v quitting=%v", m.sessionTransition != nil, m.quitting)
+	}
+	m, cmd = runBranchCreationCmd(t, m, cmd)
 	if cmd == nil || !m.quitting || m.RequestedResumeSessionID() != "new-child" || m.RequestedBranchPrefill() != "edit this question" {
 		t.Fatalf("relaunch state: cmd=%v quitting=%v resume=%q prefill=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID(), m.RequestedBranchPrefill())
 	}
-	if store.currentID != "new-child" || len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != messages[1].ID {
-		t.Fatalf("store branch call/current = %#v / %q", store.createOpts, store.currentID)
+	if store.currentID != "" || len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != messages[1].ID {
+		t.Fatalf("branch worker selected a session: calls=%#v current=%q", store.createOpts, store.currentID)
 	}
 }
 
@@ -180,6 +232,10 @@ func TestThreadCommandBranchesAtRootAndCarriesOnlyNonEmptyInstructions(t *testin
 	m.dialog.Close()
 	updated, cmd = m.handleBranchContextSelection("clean")
 	m = updated.(*Model)
+	if m.sessionTransition == nil || m.RequestedBranchAutoSend() != "" {
+		t.Fatalf("thread did not enter transition first: transition=%v auto=%q", m.sessionTransition != nil, m.RequestedBranchAutoSend())
+	}
+	m, cmd = runBranchCreationCmd(t, m, cmd)
 	if cmd == nil || m.RequestedBranchAutoSend() != "investigate  the cache" {
 		t.Fatalf("thread handoff: cmd=%v auto=%q", cmd != nil, m.RequestedBranchAutoSend())
 	}
@@ -191,10 +247,204 @@ func TestThreadCommandBranchesAtRootAndCarriesOnlyNonEmptyInstructions(t *testin
 	updated, _ = m.ExecuteCommand("/thread")
 	m = updated.(*Model)
 	m.dialog.Close()
-	updated, _ = m.handleBranchContextSelection("clean")
+	updated, cmd = m.handleBranchContextSelection("clean")
 	m = updated.(*Model)
+	m, _ = runBranchCreationCmd(t, m, cmd)
 	if got := m.RequestedBranchAutoSend(); got != "" {
 		t.Fatalf("empty /thread scheduled message %q", got)
+	}
+}
+
+func TestThreadContextSelectionHidesSourceBeforeBranchStorageCompletes(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	m.provider = llm.NewMockProvider("mock")
+	m.completions = NewCompletionsModel(m.styles)
+	store.createStarted = make(chan struct{})
+	release := make(chan struct{})
+	store.createRelease = release
+
+	updated, _ := m.ExecuteCommand("/thread")
+	m = updated.(*Model)
+	m.dialog.Close()
+	updated, cmd := m.handleBranchContextSelection("notes")
+	m = updated.(*Model)
+	if cmd == nil || m.sessionTransition == nil {
+		t.Fatalf("selection did not enter transition before storage: cmd=%v transition=%v", cmd != nil, m.sessionTransition != nil)
+	}
+	m.scrollOffset = 1
+	frame := ui.StripANSI(m.View().Content)
+	if !strings.Contains(frame, "New thread") || strings.Contains(frame, "first question") {
+		t.Fatalf("transition frame still shows source: %q", frame)
+	}
+
+	done := make(chan tea.Msg, 1)
+	worker := branchCreationWorker(t, cmd)
+	go func() { done <- worker() }()
+	select {
+	case <-store.createStarted:
+	case <-time.After(time.Second):
+		t.Fatal("branch storage did not start")
+	}
+	if m.sessionTransition == nil {
+		t.Fatal("transition disappeared while branch storage was blocked")
+	}
+	close(release)
+	msg := <-done
+	updated, _ = m.Update(msg)
+	m = updated.(*Model)
+	if !m.quitting || m.RequestedResumeSessionID() != "new-child" {
+		t.Fatalf("prepared branch did not continue switch: quitting=%v resume=%q", m.quitting, m.RequestedResumeSessionID())
+	}
+}
+
+func TestBranchCreationGateKeepsRuntimeResourcesAliveUntilStorageCompletes(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	m.completions = NewCompletionsModel(m.styles)
+	store.createStarted = make(chan struct{})
+	releaseCreate := make(chan struct{})
+	store.createRelease = releaseCreate
+	m.pendingBranchPoint = &conversationBranchPoint{
+		sourceSessionID: m.sess.ID,
+		idempotencyKey:  session.NewID(),
+	}
+
+	updated, workerBatch := m.handleBranchContextSelection("clean")
+	m = updated.(*Model)
+	worker := branchCreationWorker(t, workerBatch)
+	workerDone := make(chan tea.Msg, 1)
+	go func() { workerDone <- worker() }()
+	<-store.createStarted
+	if active := m.runtimeOperations.activeCount(); active != 1 {
+		t.Fatalf("active runtime operations = %d, want 1", active)
+	}
+
+	waitStarted := make(chan struct{})
+	drained := make(chan struct{})
+	go func() {
+		close(waitStarted)
+		m.WaitStreamDone()
+		close(drained)
+	}()
+	<-waitStarted
+	select {
+	case <-drained:
+		t.Fatal("runtime cleanup passed the gate while branch storage was active")
+	default:
+	}
+
+	close(releaseCreate)
+	msg := <-workerDone
+	if created, ok := msg.(conversationBranchCreatedMsg); !ok || created.err != nil {
+		t.Fatalf("branch worker result = %#v", msg)
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("runtime cleanup did not proceed after branch storage completed")
+	}
+	if active := m.runtimeOperations.activeCount(); active != 0 {
+		t.Fatalf("active runtime operations after completion = %d", active)
+	}
+}
+
+func TestUndispatchedBranchCommandDoesNotBlockRuntimeCleanup(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	m.pendingBranchPoint = &conversationBranchPoint{
+		sourceSessionID: m.sess.ID,
+		idempotencyKey:  session.NewID(),
+	}
+
+	updated, cmd := m.handleBranchContextSelection("clean")
+	m = updated.(*Model)
+	if !m.WaitStreamDone() {
+		t.Fatal("undispatched branch command exhausted the cleanup budget")
+	}
+	msg := branchCreationWorker(t, cmd)()
+	created, ok := msg.(conversationBranchCreatedMsg)
+	if !ok || !errors.Is(created.err, context.Canceled) {
+		t.Fatalf("sealed branch command result = %#v", msg)
+	}
+	if len(store.createOpts) != 0 {
+		t.Fatalf("sealed command reached SQLite: %#v", store.createOpts)
+	}
+}
+
+func TestFocusedThreadContextStaysInDialogWhileSourceIsStreaming(t *testing.T) {
+	m, _, _ := newBranchChatModel()
+	m.provider = llm.NewMockProvider("mock")
+	m.completions = NewCompletionsModel(m.styles)
+	m.completions.Show()
+	m.keyMap = DefaultKeyMap()
+	m.streaming = true
+	m.pendingBranchPoint = &conversationBranchPoint{
+		sourceSessionID:   m.sess.ID,
+		idempotencyKey:    session.NewID(),
+		sourceMessages:    []llm.Message{llm.UserText("abandoned context")},
+		laterMessageCount: 1,
+		skipExpectedState: true,
+	}
+	m.dialog.SetSize(100, 30)
+	m.dialog.ShowBranchContext(1, llm.RoleUser, 1, "branch here")
+	m.dialog.SetCursor(2)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.dialog.BranchFocusEditing() {
+		t.Fatal("specific-context selection did not keep an input in the dialog")
+	}
+
+	const focus = "retain /parser constraints"
+	for _, r := range focus {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(*Model)
+	}
+	if got := m.dialog.BranchFocus(); got != focus {
+		t.Fatalf("dialog context input = %q", got)
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("main composer was repurposed for context input: %q", got)
+	}
+	view := ui.StripANSI(m.dialog.View())
+	if !strings.Contains(view, focus) || !strings.Contains(view, "enter continue · esc back") {
+		t.Fatalf("dialog does not render context input and instructions:\n%s", view)
+	}
+	if prompts := strings.Count(view, "❯"); prompts != 1 {
+		t.Fatalf("single-line dialog input rendered %d prompts, want 1:\n%s", prompts, view)
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil || m.sessionTransition == nil || m.dialog.IsOpen() {
+		t.Fatalf("focused submit: cmd=%v transition=%v dialog=%v", cmd != nil, m.sessionTransition != nil, m.dialog.IsOpen())
+	}
+	created, ok := branchCreationWorker(t, cmd)().(conversationBranchCreatedMsg)
+	if !ok || created.err != nil || created.pathNotes == nil || created.pathNotes.Focus != focus {
+		t.Fatalf("focused branch result = %#v", created)
+	}
+}
+
+func TestFocusedThreadContextValidatesInlineAndEscapeReturnsToChoices(t *testing.T) {
+	m, _, _ := newBranchChatModel()
+	m.keyMap = DefaultKeyMap()
+	m.pendingBranchPoint = &conversationBranchPoint{laterMessageCount: 1}
+	m.dialog.SetSize(100, 30)
+	m.dialog.ShowBranchContext(1, llm.RoleAssistant, 2, "use this point")
+	m.dialog.SetCursor(2)
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd != nil || !m.dialog.BranchFocusEditing() {
+		t.Fatalf("empty context escaped modal: cmd=%v editing=%v", cmd != nil, m.dialog.BranchFocusEditing())
+	}
+	if view := ui.StripANSI(m.dialog.View()); !strings.Contains(view, "Describe what the new path should retain.") {
+		t.Fatalf("inline validation missing:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(*Model)
+	if !m.dialog.IsOpen() || m.dialog.BranchFocusEditing() || m.pendingBranchPoint == nil {
+		t.Fatalf("escape did not return to choices: open=%v editing=%v pending=%v", m.dialog.IsOpen(), m.dialog.BranchFocusEditing(), m.pendingBranchPoint != nil)
 	}
 }
 
@@ -216,6 +466,10 @@ func TestForkCommandUsesLatestDurableCompletedBoundaryWhileReplyIsActive(t *test
 
 	updated, cmd := m.ExecuteCommand("/fork try another direction")
 	m = updated.(*Model)
+	if m.sessionTransition == nil || m.quitting {
+		t.Fatalf("active fork did not transition immediately: transition=%v quitting=%v", m.sessionTransition != nil, m.quitting)
+	}
+	m, cmd = runBranchCreationCmd(t, m, cmd)
 	if cmd == nil || !m.quitting || m.RequestedBranchAutoSend() != "try another direction" {
 		t.Fatalf("active fork handoff: cmd=%v quitting=%v auto=%q", cmd != nil, m.quitting, m.RequestedBranchAutoSend())
 	}
@@ -236,8 +490,9 @@ func TestForkCommandAtIdleIncludesCompletedToolTailAndEmptyCommandDoesNotSend(t 
 	store.messages[m.sess.ID] = append(store.messages[m.sess.ID], tool)
 	store.state = session.TranscriptMutationState{Rev: 8, HeadID: tool.ID}
 
-	updated, _ := m.ExecuteCommand("/fork")
+	updated, cmd := m.ExecuteCommand("/fork")
 	m = updated.(*Model)
+	m, _ = runBranchCreationCmd(t, m, cmd)
 	if len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != tool.ID || store.createOpts[0].ExpectedState == nil {
 		t.Fatalf("idle fork options = %#v", store.createOpts)
 	}
@@ -246,15 +501,43 @@ func TestForkCommandAtIdleIncludesCompletedToolTailAndEmptyCommandDoesNotSend(t 
 	}
 }
 
-func TestFinishConversationBranchDoesNotCarryPathNotesWhenSelectionFails(t *testing.T) {
+func TestConversationBranchDoesNotCarryPathNotesWhenCreationFails(t *testing.T) {
 	m, store, _ := newBranchChatModel()
-	store.currentErr = errors.New("database busy")
-	request := &BranchPathNotesRequest{ChildSessionID: "new-child", SourceSessionID: m.sess.ID}
+	store.createErr = errors.New("database busy")
+	m.pendingBranchPoint = &conversationBranchPoint{
+		sourceSessionID:   m.sess.ID,
+		idempotencyKey:    session.NewID(),
+		sourceMessages:    []llm.Message{llm.UserText("context")},
+		laterMessageCount: 1,
+	}
+	m.provider = llm.NewMockProvider("mock")
 
-	updated, _ := m.finishConversationBranch(conversationBranchPoint{}, store.result, request)
+	updated, cmd := m.startConversationBranchWithNotes("")
 	m = updated.(*Model)
+	m, _ = runBranchCreationCmd(t, m, cmd)
 	if m.RequestedBranchPathNotes() != nil || m.RequestedResumeSessionID() != "" {
 		t.Fatalf("failed selection leaked relaunch state: notes=%#v resume=%q", m.RequestedBranchPathNotes(), m.RequestedResumeSessionID())
+	}
+	if m.sessionTransition != nil {
+		t.Fatal("failed selection left transition visible")
+	}
+}
+
+func TestConversationBranchFailureRestoresSourceComposer(t *testing.T) {
+	m, store, _ := newBranchChatModel()
+	store.createErr = errors.New("database busy")
+	m.setTextareaValue("source draft")
+	m.pendingBranchPoint = &conversationBranchPoint{
+		sourceSessionID: m.sess.ID,
+		idempotencyKey:  session.NewID(),
+		prefill:         "target prefill",
+	}
+
+	updated, cmd := m.handleBranchContextSelection("clean")
+	m = updated.(*Model)
+	m, _ = runBranchCreationCmd(t, m, cmd)
+	if got := m.textarea.Value(); got != "source draft" {
+		t.Fatalf("source composer after failed branch = %q", got)
 	}
 }
 
@@ -288,8 +571,9 @@ func TestTreeUserSelectionAtTipOffersInheritedPathNoteContext(t *testing.T) {
 		t.Fatalf("branch context choices = %#v, want clean + useful + focused", m.dialog.filtered)
 	}
 	m.dialog.Close()
-	updated, _ = m.handleBranchContextSelection("notes")
+	updated, cmd := m.handleBranchContextSelection("notes")
 	m = updated.(*Model)
+	m, _ = runBranchCreationCmd(t, m, cmd)
 	request := m.RequestedBranchPathNotes()
 	if request == nil {
 		t.Fatal("path-note request missing")
@@ -359,6 +643,10 @@ func TestTreeAssistantSelectionOffersContextChoiceAndExistingPathSwitches(t *tes
 	m.dialog.Close()
 	updated, cmd = m.handleBranchContextSelection("clean")
 	m = updated.(*Model)
+	if m.sessionTransition == nil || m.quitting {
+		t.Fatalf("assistant selection did not enter transition: transition=%v quitting=%v", m.sessionTransition != nil, m.quitting)
+	}
+	m, cmd = runBranchCreationCmd(t, m, cmd)
 	if cmd == nil || !m.quitting || m.RequestedResumeSessionID() != "new-child" || m.RequestedBranchPrefill() != "" {
 		t.Fatalf("assistant selection did not immediately relaunch: quitting=%v resume=%q prefill=%q", m.quitting, m.RequestedResumeSessionID(), m.RequestedBranchPrefill())
 	}
@@ -660,8 +948,9 @@ func TestTreeBranchConflictStaysInSourceSession(t *testing.T) {
 	m.dialog.Close()
 	updated, cmd := m.handleBranchContextSelection("clean")
 	m = updated.(*Model)
-	if cmd == nil || m.quitting || m.RequestedResumeSessionID() != "" || store.currentID != "" {
-		t.Fatalf("conflict changed sessions: cmd=%v quitting=%v resume=%q current=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID(), store.currentID)
+	m, _ = runBranchCreationCmd(t, m, cmd)
+	if m.quitting || m.RequestedResumeSessionID() != "" || store.currentID != "" {
+		t.Fatalf("conflict changed sessions: quitting=%v resume=%q current=%q", m.quitting, m.RequestedResumeSessionID(), store.currentID)
 	}
 	if !strings.Contains(m.footerMessage, "changed in another client") {
 		t.Fatalf("conflict warning = %q", m.footerMessage)
@@ -722,6 +1011,10 @@ func TestTreeBringUsefulContextEntersChildBeforeGeneratingPathNotes(t *testing.T
 	m.dialog.Close()
 	updated, cmd := m.handleBranchContextSelection("notes")
 	m = updated.(*Model)
+	if m.sessionTransition == nil || m.quitting {
+		t.Fatalf("notes branch did not enter transition: transition=%v quitting=%v", m.sessionTransition != nil, m.quitting)
+	}
+	m, cmd = runBranchCreationCmd(t, m, cmd)
 	if cmd == nil || !m.quitting || m.RequestedResumeSessionID() != "new-child" {
 		t.Fatalf("notes branch did not immediately relaunch: cmd=%v quitting=%v resume=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID())
 	}
@@ -773,6 +1066,97 @@ func TestTreeBringUsefulContextEntersChildBeforeGeneratingPathNotes(t *testing.T
 	}
 	if len(provider.Requests) != 1 || !provider.Requests[0].Ephemeral {
 		t.Fatalf("helper requests = %#v", provider.Requests)
+	}
+}
+
+func TestPathNoteGateKeepsSQLiteAvailableDuringRapidNavigation(t *testing.T) {
+	_, store, _ := newBranchChatModel()
+	provider := llm.NewMockProvider("mock").AddTextResponse("- Retain the parser finding.")
+	store.addStarted = make(chan struct{})
+	releaseAdd := make(chan struct{})
+	store.addRelease = releaseAdd
+	child := newTestChatModel(false)
+	child.store = store
+	child.sess = store.result.Session
+	child.provider = provider
+	child.modelName = "mock-model"
+	child.SetBranchPathNotes(&BranchPathNotesRequest{
+		ChildSessionID:  child.sess.ID,
+		SourceSessionID: "tui-tree-source",
+		SourceMessages:  []llm.Message{llm.UserText("abandoned parser attempt")},
+	})
+
+	worker := child.startPendingBranchPathNotes()
+	workerDone := make(chan tea.Msg, 1)
+	go func() { workerDone <- worker() }()
+	select {
+	case <-store.addStarted:
+	case <-time.After(time.Second):
+		t.Fatal("path-note worker did not reach SQLite")
+	}
+	if active := child.runtimeOperations.activeCount(); active != 1 {
+		t.Fatalf("active runtime operations = %d, want 1", active)
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		child.WaitStreamDone()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		t.Fatal("rapid navigation could close SQLite during the path-note write")
+	default:
+	}
+
+	close(releaseAdd)
+	msg := <-workerDone
+	if done, ok := msg.(conversationBranchNotesDoneMsg); !ok || done.err != nil {
+		t.Fatalf("path-note worker result = %#v", msg)
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("runtime cleanup did not proceed after the path-note write")
+	}
+	if len(store.added) != 1 {
+		t.Fatalf("persisted path notes = %d, want 1", len(store.added))
+	}
+}
+
+func TestQueuedThreadMessageSurvivesImmediateNavigationBack(t *testing.T) {
+	_, store, _ := newBranchChatModel()
+	provider := llm.NewMockProvider("mock").AddTextResponse("- Carry the parser finding.")
+	child := newTestChatModel(false)
+	child.store = store
+	child.sess = store.result.Session
+	child.provider = provider
+	child.modelName = "mock-model"
+	child.keyMap = DefaultKeyMap()
+	child.SetSessionSwitcher(func(SessionSwitchRequest) (*Model, error) { return newTestChatModel(false), nil })
+	child.SetBranchPathNotes(&BranchPathNotesRequest{
+		ChildSessionID:  child.sess.ID,
+		SourceSessionID: "tui-tree-source",
+		SourceMessages:  []llm.Message{llm.UserText("abandoned parser attempt")},
+	})
+	child.queuedBranchSend = &pendingBranchSend{content: "abc", selectedImage: -1}
+	worker := child.startPendingBranchPathNotes()
+
+	updated, _ := child.requestResumeSession("tui-tree-source")
+	child = updated.(*Model)
+	if child.pendingBranchNavigation == nil || child.sessionTransition != nil {
+		t.Fatalf("navigation was not deferred: pending=%v transition=%v", child.pendingBranchNavigation != nil, child.sessionTransition != nil)
+	}
+
+	done := worker().(conversationBranchNotesDoneMsg)
+	updated, cmd := child.handleConversationBranchNotesDone(done)
+	child = updated.(*Model)
+	if cmd == nil || child.pendingBranchNavigation != nil || child.sessionTransition == nil {
+		t.Fatalf("deferred navigation did not resume: cmd=%v pending=%v transition=%v", cmd != nil, child.pendingBranchNavigation != nil, child.sessionTransition != nil)
+	}
+	stored := store.messages[store.result.Session.ID]
+	if len(stored) != 2 || stored[1].Role != llm.RoleUser || stored[1].TextContent != "abc" {
+		t.Fatalf("queued /thread message was lost: %#v", stored)
 	}
 }
 
@@ -887,6 +1271,10 @@ func TestTreeKeyboardSelectionStartsUsefulContextWorker(t *testing.T) {
 	}
 	updated, cmd = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(*Model)
+	if m.sessionTransition == nil || m.quitting {
+		t.Fatalf("notes selection did not enter transition: cmd:%v transition:%v quitting:%v", cmd != nil, m.sessionTransition != nil, m.quitting)
+	}
+	m, cmd = runBranchCreationCmd(t, m, cmd)
 	if cmd == nil || !m.quitting || m.RequestedResumeSessionID() != "new-child" || m.RequestedBranchPathNotes() == nil {
 		t.Fatalf("notes selection did not immediately enter child: cmd:%v quitting:%v resume:%q request:%#v", cmd != nil, m.quitting, m.RequestedResumeSessionID(), m.RequestedBranchPathNotes())
 	}

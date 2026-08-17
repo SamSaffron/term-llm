@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wrap"
@@ -63,6 +64,9 @@ type DialogModel struct {
 	branchSourceRole    llm.Role
 	branchSourceNumber  int
 	branchSourcePreview string
+	branchFocusEditing  bool
+	branchFocusInput    textarea.Model
+	branchFocusError    string
 }
 
 // DialogItem represents an item in a dialog list
@@ -126,6 +130,9 @@ func (d *DialogModel) Close() {
 	d.branchSourceRole = ""
 	d.branchSourceNumber = 0
 	d.branchSourcePreview = ""
+	d.branchFocusEditing = false
+	d.branchFocusInput = textarea.Model{}
+	d.branchFocusError = ""
 }
 
 // ShowModelPicker opens the model picker dialog.
@@ -215,6 +222,66 @@ func (d *DialogModel) ShowBranchContext(sourceMessages int, sourceRole llm.Role,
 	d.branchSourcePreview = strings.TrimSpace(sourcePreview)
 }
 
+// BeginBranchFocus replaces the context choices with an input owned by the
+// dialog, keeping the instructions and the value being entered together.
+func (d *DialogModel) BeginBranchFocus() tea.Cmd {
+	if d.dialogType != DialogBranchContext {
+		return nil
+	}
+	input := textarea.New()
+	input.Placeholder = "Describe what the new path should retain…"
+	input.Prompt = "❯ "
+	input.ShowLineNumbers = false
+	input.CharLimit = 2000
+	input.DynamicHeight = true
+	input.MinHeight = 1
+	input.MaxHeight = 3
+	input.MaxContentHeight = 2000
+	input.SetHeight(1)
+	input.SetVirtualCursor(true)
+	input.SetPromptFunc(lipgloss.Width(input.Prompt), func(textarea.PromptInfo) string {
+		return input.Prompt
+	})
+	theme := d.styles.Theme()
+	inputStyles := input.Styles()
+	inputStyles.Focused.CursorLine = lipgloss.NewStyle()
+	inputStyles.Focused.Base = lipgloss.NewStyle().Foreground(theme.Text)
+	inputStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(theme.Muted)
+	inputStyles.Focused.EndOfBuffer = lipgloss.NewStyle()
+	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	inputStyles.Blurred = inputStyles.Focused
+	input.SetStyles(inputStyles)
+	d.branchFocusInput = input
+	d.branchFocusEditing = true
+	d.branchFocusError = ""
+	return d.branchFocusInput.Focus()
+}
+
+// BranchFocusEditing reports whether the specific-context input is active.
+func (d *DialogModel) BranchFocusEditing() bool {
+	return d.dialogType == DialogBranchContext && d.branchFocusEditing
+}
+
+// BranchFocus returns the current specific-context instructions.
+func (d *DialogModel) BranchFocus() string {
+	if !d.BranchFocusEditing() {
+		return ""
+	}
+	return d.branchFocusInput.Value()
+}
+
+// SetBranchFocusError displays an inline validation message.
+func (d *DialogModel) SetBranchFocusError(message string) {
+	d.branchFocusError = strings.TrimSpace(message)
+}
+
+// CancelBranchFocus returns to the context choices without closing the dialog.
+func (d *DialogModel) CancelBranchFocus() {
+	d.branchFocusEditing = false
+	d.branchFocusInput = textarea.Model{}
+	d.branchFocusError = ""
+}
+
 func (d *DialogModel) showSessionItems(dialogType DialogType, title string, items []DialogItem, currentItemID string) {
 	d.dialogType = dialogType
 	d.title = title
@@ -225,6 +292,9 @@ func (d *DialogModel) showSessionItems(dialogType DialogType, title string, item
 	d.branchSourceRole = ""
 	d.branchSourceNumber = 0
 	d.branchSourcePreview = ""
+	d.branchFocusEditing = false
+	d.branchFocusInput = textarea.Model{}
+	d.branchFocusError = ""
 
 	for _, item := range items {
 		item.Selected = item.ID == currentItemID
@@ -556,6 +626,14 @@ func (d *DialogModel) Update(msg tea.Msg) (*DialogModel, tea.Cmd) {
 			return d, nil
 		}
 	case tea.KeyPressMsg:
+		if d.BranchFocusEditing() {
+			var cmd tea.Cmd
+			d.branchFocusInput, cmd = d.branchFocusInput.Update(msg)
+			if strings.TrimSpace(d.branchFocusInput.Value()) != "" {
+				d.branchFocusError = ""
+			}
+			return d, cmd
+		}
 		if d.dialogType == DialogContent {
 			visible := d.contentVisibleLines()
 			switch {
@@ -953,7 +1031,11 @@ func (d *DialogModel) viewStandardDialog() string {
 			b.WriteString(mutedStyle.Render(preview))
 		}
 		b.WriteString("\n\n")
-		b.WriteString(wrap.String("Choose what context to include in the new path.", bodyWidth))
+		instruction := "Choose what context to include in the new path."
+		if d.branchFocusEditing {
+			instruction = "What specific context should the new path retain?"
+		}
+		b.WriteString(wrap.String(instruction, bodyWidth))
 		b.WriteString("\n\n")
 	}
 
@@ -975,27 +1057,41 @@ func (d *DialogModel) viewStandardDialog() string {
 		b.WriteString("\n\n")
 	}
 
-	for i, item := range items {
-		actualIdx := startIdx + i
-		prefix := "  "
-		if actualIdx == d.cursor {
-			prefix = "❯ "
-		}
-
-		label := item.Label
-		if actualIdx == d.cursor {
-			b.WriteString(selectedStyle.Render(prefix + label))
-		} else {
-			b.WriteString(prefix + label)
-		}
-
-		if i < len(items)-1 {
+	if d.BranchFocusEditing() {
+		bodyWidth := max(12, dialogWidth-6)
+		d.branchFocusInput.SetWidth(bodyWidth)
+		b.WriteString(d.branchFocusInput.View())
+		if d.branchFocusError != "" {
 			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(theme.Warning).Render(d.branchFocusError))
+		}
+	} else {
+		for i, item := range items {
+			actualIdx := startIdx + i
+			prefix := "  "
+			if actualIdx == d.cursor {
+				prefix = "❯ "
+			}
+
+			label := item.Label
+			if actualIdx == d.cursor {
+				b.WriteString(selectedStyle.Render(prefix + label))
+			} else {
+				b.WriteString(prefix + label)
+			}
+
+			if i < len(items)-1 {
+				b.WriteString("\n")
+			}
 		}
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(mutedStyle.Render("j/k navigate · enter select · esc cancel"))
+	footer := "j/k navigate · enter select · esc cancel"
+	if d.BranchFocusEditing() {
+		footer = "enter continue · esc back"
+	}
+	b.WriteString(mutedStyle.Render(footer))
 
 	return borderStyle.Render(b.String())
 }

@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -40,8 +39,12 @@ func (m *Model) requestResumeSession(sessionID string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.clearSideQuestionHistory()
-	if m.store != nil {
-		_ = m.store.SetCurrent(context.Background(), sessionID)
+	if m.queuedBranchSend != nil && m.branchContextInFlight() {
+		m.pendingBranchNavigation = &SessionSwitchRequest{SessionID: sessionID}
+		if m.sessionSwitcher != nil {
+			_, _ = m.closeResumeBrowser()
+		}
+		return m.showFooterMuted("Finishing the new thread before switching sessions…")
 	}
 	if m.sessionSwitcher != nil {
 		// The switch replaces this model in place; leave browser mode so the

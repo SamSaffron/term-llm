@@ -398,7 +398,9 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 		if err != nil {
 			return nil, err
 		}
-		_ = store.SetCurrent(context.Background(), sess.ID)
+		if err := store.SetCurrent(context.Background(), sess.ID); err != nil {
+			return nil, fmt.Errorf("select resumed session: %w", err)
+		}
 		// Normalize persisted directory metadata before resolving any prompt,
 		// project instructions, or skills. A missing worktree falls back to the
 		// root/process directory through the same path used for tool binding.
@@ -833,7 +835,9 @@ func disposeChatSessionRuntime(rt *chatSessionRuntime, mainRuns *chat.MainRunMan
 		return
 	}
 	go func() {
-		rt.model.WaitStreamDone()
+		if !rt.model.WaitStreamDone() {
+			rt.model.WaitRuntimeOperations()
+		}
 		rt.cleanupResources()
 	}()
 }
@@ -1053,12 +1057,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if mainRuns != nil && mainRuns.AdoptResources(cur.model.SessionID(), cur.cleanupResources) {
 			return
 		}
-		// Wait briefly for the engine stream goroutine before closing the store.
-		// Engine callbacks use WithoutCancel and may fire after stream
-		// cancellation, but the wait is bounded so a provider/tool that ignores
-		// cancellation cannot hang shutdown indefinitely.
-		cur.model.WaitStreamDone()
-		cur.cleanupResources()
+		// Engine shutdown is bounded. Runtime-owned operations get the same
+		// cancellation budget, but resources are deliberately left open if one
+		// ignores cancellation; closing SQLite underneath it is never safe.
+		if cur.model.CancelAndWaitStreamDone() {
+			cur.cleanupResources()
+		}
 	}()
 	defer func() { currentRuntime().restoreTitle() }()
 	defer func() {
