@@ -89,6 +89,7 @@ type mainRunState struct {
 
 	mu                   sync.Mutex
 	active               bool
+	visited              bool
 	completedAt          time.Time
 	err                  error
 	nextSeq              uint64
@@ -105,6 +106,13 @@ type mainRunState struct {
 	listInterjections    func() []llm.QueuedInterjection
 	drainInterjections   func() []llm.QueuedInterjection
 	cleanupOnce          sync.Once
+}
+
+// MainRunStatus is an atomic activity and completion-attention snapshot for a session.
+type MainRunStatus struct {
+	RunID     string
+	Active    bool
+	Unvisited bool
 }
 
 // MainRunManager owns all process-lifetime TUI main runs. It is independent of
@@ -190,12 +198,20 @@ func (m *MainRunManager) execute(run *mainRunState, execution MainRunExecution) 
 	if execution.Finalize != nil {
 		execution.Finalize(err)
 	}
+	m.mu.RLock()
+	current := m.runs[run.sessionID] == run
+	_, visible := m.uiSinks[run.sessionID]
 	run.mu.Lock()
 	if run.active {
 		run.active = false
 		run.completedAt = time.Now()
 		run.err = err
+		// Attention belongs to a completed result, not to the run while it is
+		// executing. A result completed in the visible session is already seen;
+		// a detached/background result waits for an explicit visit.
+		run.visited = current && visible
 	}
+	m.mu.RUnlock()
 	run.presentation = nil
 	cleanup := run.cleanup
 	for id, subscriber := range run.subscribers {
@@ -479,20 +495,49 @@ func (m *MainRunManager) AdoptResources(sessionID string, cleanup func()) bool {
 	return true
 }
 
-// HasActive reports whether sessionID currently owns a running main execution.
-func (m *MainRunManager) HasActive(sessionID string) bool {
+// Status returns the current run and completion-attention state for sessionID.
+// Active takes rendering precedence over Unvisited.
+func (m *MainRunManager) Status(sessionID string) MainRunStatus {
 	if m == nil || sessionID == "" {
+		return MainRunStatus{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	run := m.runs[sessionID]
+	if run == nil {
+		return MainRunStatus{}
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return MainRunStatus{
+		RunID: run.id, Active: run.active, Unvisited: !run.active && !run.visited,
+	}
+}
+
+// Visit marks runID's terminal result as seen. Visits while a run is active do
+// not consume its future result, and a stale run ID cannot clear a newer run.
+func (m *MainRunManager) Visit(sessionID, runID string) bool {
+	if m == nil || sessionID == "" || runID == "" {
 		return false
 	}
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	run := m.runs[sessionID]
-	m.mu.RUnlock()
 	if run == nil {
 		return false
 	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	return run.active
+	if run.id != runID || run.active {
+		return false
+	}
+	run.visited = true
+	return true
+}
+
+// HasActive reports whether sessionID currently owns a running main execution.
+func (m *MainRunManager) HasActive(sessionID string) bool {
+	return m.Status(sessionID).Active
 }
 
 // ActiveCount returns the number of process-lifetime runs still executing.

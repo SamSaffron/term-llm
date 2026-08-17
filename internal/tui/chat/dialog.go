@@ -67,19 +67,20 @@ type DialogModel struct {
 
 // DialogItem represents an item in a dialog list
 type DialogItem struct {
-	ID             string
-	Label          string
-	Description    string
-	Selected       bool
-	Category       string
-	TreeUserTurn   bool
-	TreeTool       bool
-	TreeTurnID     string
-	TreeRole       llm.Role
-	TreeRoleLabel  string
-	TreePreview    string
-	TreePath       bool
-	TreePathActive bool
+	ID                string
+	Label             string
+	Description       string
+	Selected          bool
+	Category          string
+	TreeUserTurn      bool
+	TreeTool          bool
+	TreeTurnID        string
+	TreeRole          llm.Role
+	TreeRoleLabel     string
+	TreePreview       string
+	TreePath          bool
+	TreePathActive    bool
+	TreePathUnvisited bool
 }
 
 // NewDialogModel creates a new dialog model
@@ -792,6 +793,7 @@ func (d *DialogModel) viewBranchTree() string {
 	previewStyle := lipgloss.NewStyle().Foreground(theme.Text)
 	activePathStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Success)
 	activeSelectedPathStyle := activePathStyle.Background(theme.Primary)
+	unvisitedPathStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(d.title))
@@ -836,11 +838,15 @@ func (d *DialogModel) viewBranchTree() string {
 				marker := mutedStyle.Render("○")
 				if item.TreePathActive {
 					marker = activePathStyle.Render("●")
+				} else if item.TreePathUnvisited {
+					marker = unvisitedPathStyle.Render("●")
 				}
 				if actualIdx == d.cursor {
 					b.WriteString(selectedStyle.Render("❯ "))
 					if item.TreePathActive {
 						b.WriteString(activeSelectedPathStyle.Render("●"))
+					} else if item.TreePathUnvisited {
+						b.WriteString(selectedStyle.Bold(true).Render("●"))
 					} else {
 						b.WriteString(selectedStyle.Render("○"))
 					}

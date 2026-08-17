@@ -1,11 +1,13 @@
 package chat
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 // searchSessionSwitchedMsg walks a command tree in order and returns the first
@@ -110,6 +112,82 @@ func TestBeginSessionSwitchFailureKeepsCurrentModel(t *testing.T) {
 		t.Fatal("failed switch did not restore the visible session UI sink")
 	}
 	m.DetachMainRunUISink()
+}
+
+func completedUnvisitedRun(t *testing.T, manager *MainRunManager, sessionID string) MainRunSnapshot {
+	t.Helper()
+	snapshot, err := manager.Start(sessionID, MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-snapshot.Done
+	if !manager.Status(sessionID).Unvisited {
+		t.Fatalf("session %q was not marked unvisited", sessionID)
+	}
+	return snapshot
+}
+
+func TestSuccessfulSessionSwitchClearsTargetCompletionAttention(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	completedUnvisitedRun(t, manager, "target")
+
+	current := newTestChatModel(false)
+	next := newTestChatModel(false)
+	next.sess.ID = "target"
+	next.SetMainRunManager(manager)
+	updated, _ := current.handleSessionSwitched(sessionSwitchedMsg{model: next})
+	if updated != next {
+		t.Fatalf("successful switch returned %T", updated)
+	}
+	if manager.Status("target").Unvisited {
+		t.Fatal("successful switch preserved target completion attention")
+	}
+}
+
+func TestSuccessfulSessionSwitchToActiveRunDoesNotConsumeFutureAttention(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	release := make(chan struct{})
+	snapshot, err := manager.Start("target", MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error {
+		<-release
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := newTestChatModel(false)
+	current.SetProgram(tea.NewProgram(current))
+	next := newTestChatModel(false)
+	next.sess.ID = "target"
+	next.SetMainRunManager(manager)
+	updated, _ := current.handleSessionSwitched(sessionSwitchedMsg{model: next})
+	if updated != next {
+		t.Fatalf("successful switch returned %T", updated)
+	}
+	next.DetachMainRunUISink() // Leave before the active run produces its result.
+	close(release)
+	<-snapshot.Done
+	if !manager.Status("target").Unvisited {
+		t.Fatal("visiting an active run consumed its future completion")
+	}
+}
+
+func TestFailedSessionSwitchPreservesTargetCompletionAttention(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	completedUnvisitedRun(t, manager, "target")
+
+	current := newTestChatModel(false)
+	current.SetMainRunManager(manager)
+	updated, _ := current.handleSessionSwitched(sessionSwitchedMsg{err: errors.New("boom")})
+	if updated != current {
+		t.Fatalf("failed switch returned %T", updated)
+	}
+	if !manager.Status("target").Unvisited {
+		t.Fatal("failed switch cleared target completion attention")
+	}
 }
 
 func TestFinishConversationBranchUsesInProcessSwitch(t *testing.T) {

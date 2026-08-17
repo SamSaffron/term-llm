@@ -569,6 +569,27 @@ func TestAttachMainRunRestoresPresentationAndReplaysDetachedSuffix(t *testing.T)
 	}
 }
 
+func TestAttachCompletedMainRunConsumesVisibleCompletionAttention(t *testing.T) {
+	m := newTestChatModel(false)
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	snapshot, err := manager.Start(m.SessionID(), MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-snapshot.Done
+	if !manager.Status(m.SessionID()).Unvisited {
+		t.Fatal("completion did not request attention")
+	}
+	m.SetMainRunManager(manager)
+	if cmd := m.attachMainRun(m.SessionID()); cmd != nil {
+		t.Fatal("completed non-streaming run unexpectedly installed a listener")
+	}
+	if manager.Status(m.SessionID()).Unvisited {
+		t.Fatal("visible completed run retained attention")
+	}
+}
+
 func TestIncompleteMainRunPresentationDoesNotMaskDurableHistoryOnDone(t *testing.T) {
 	m := newTestChatModel(true)
 	m.streaming = true
@@ -660,4 +681,129 @@ func TestMainRunManagerPropagatesExecutionErrorInSnapshot(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("run did not become terminal")
+}
+
+func TestMainRunManagerMarksEveryBackgroundTerminalOutcomeUnvisited(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "success"},
+		{name: "error", err: errors.New("provider failed")},
+		{name: "interrupted", err: context.Canceled},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := NewMainRunManager(t.Context())
+			defer manager.Close(time.Second)
+			release := make(chan struct{})
+			snapshot, err := manager.Start("session", MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error {
+				<-release
+				return tc.err
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			close(release)
+			<-snapshot.Done
+			status := manager.Status("session")
+			if status.RunID != snapshot.RunID || status.Active || !status.Unvisited {
+				t.Fatalf("terminal status = %#v", status)
+			}
+			if !manager.Visit("session", snapshot.RunID) || manager.Status("session").Unvisited {
+				t.Fatal("terminal visit did not clear attention")
+			}
+		})
+	}
+}
+
+func TestMainRunManagerCancellationRequestsAttention(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	snapshot, err := manager.Start("session", MainRunExecution{Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manager.Cancel("session") {
+		t.Fatal("cancel did not find active run")
+	}
+	<-snapshot.Done
+	if status := manager.Status("session"); status.Active || !status.Unvisited {
+		t.Fatalf("cancelled terminal status = %#v", status)
+	}
+}
+
+func TestMainRunManagerVisibleCompletionIsAlreadyVisited(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	detach := manager.AttachUISink("session", func(tea.Msg) {})
+	defer detach()
+	release := make(chan struct{})
+	snapshot, err := manager.Start("session", MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error {
+		<-release
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-snapshot.Done
+	if status := manager.Status("session"); status.Active || status.Unvisited {
+		t.Fatalf("visible terminal status = %#v", status)
+	}
+}
+
+func TestMainRunManagerActiveVisitDoesNotConsumeFutureResult(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	detach := manager.AttachUISink("session", func(tea.Msg) {})
+	release := make(chan struct{})
+	snapshot, err := manager.Start("session", MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error {
+		<-release
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.Visit("session", snapshot.RunID) {
+		t.Fatal("active run was marked visited before it had a result")
+	}
+	detach()
+	close(release)
+	<-snapshot.Done
+	if status := manager.Status("session"); status.Active || !status.Unvisited {
+		t.Fatalf("background completion after active visit = %#v", status)
+	}
+}
+
+func TestMainRunManagerVisitIsRunAware(t *testing.T) {
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+
+	first, err := manager.Start("session", MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-first.Done
+	if !manager.Status("session").Unvisited {
+		t.Fatal("first completion was not marked unvisited")
+	}
+
+	second, err := manager.Start("session", MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-second.Done
+	if manager.Visit("session", first.RunID) {
+		t.Fatal("stale visit matched the replacement run")
+	}
+	if !manager.Status("session").Unvisited {
+		t.Fatal("stale visit cleared the replacement completion")
+	}
+	if !manager.Visit("session", second.RunID) || manager.Status("session").Unvisited {
+		t.Fatal("current completion visit did not clear attention")
+	}
 }

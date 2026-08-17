@@ -290,7 +290,10 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 	depths := branchTreeDepths(tree)
 	for _, node := range tree.Nodes {
 		current := node.SessionID == m.sess.ID
-		activeRun := m.mainRunManager != nil && m.mainRunManager.HasActive(node.SessionID)
+		status := MainRunStatus{}
+		if m.mainRunManager != nil {
+			status = m.mainRunManager.Status(node.SessionID)
+		}
 		label := strings.Repeat("  ", depths[node.SessionID]) + node.Title
 		description := fmt.Sprintf("#%d", node.SessionNumber)
 		if current {
@@ -303,7 +306,7 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 		}
 		items = append(items, DialogItem{
 			ID: "path:" + node.SessionID, Label: label, Description: description, Category: "Existing paths",
-			TreePath: true, TreePathActive: activeRun,
+			TreePath: true, TreePathActive: status.Active, TreePathUnvisited: !current && status.Unvisited,
 		})
 	}
 
@@ -407,9 +410,11 @@ func (m *Model) refreshBranchTreeRunActivity() {
 			continue
 		}
 		sessionID := strings.TrimPrefix(item.ID, "path:")
-		active := m.mainRunManager.HasActive(sessionID)
-		if item.TreePathActive != active {
-			item.TreePathActive = active
+		status := m.mainRunManager.Status(sessionID)
+		unvisited := sessionID != m.SessionID() && status.Unvisited
+		if item.TreePathActive != status.Active || item.TreePathUnvisited != unvisited {
+			item.TreePathActive = status.Active
+			item.TreePathUnvisited = unvisited
 			changed = true
 		}
 	}
@@ -422,6 +427,10 @@ func (m *Model) handleBranchTreeSelection(choiceID string) (tea.Model, tea.Cmd) 
 	if strings.HasPrefix(choiceID, "path:") {
 		sessionID := strings.TrimPrefix(choiceID, "path:")
 		if m.sess != nil && sessionID == m.sess.ID {
+			if m.mainRunManager != nil {
+				status := m.mainRunManager.Status(sessionID)
+				m.mainRunManager.Visit(sessionID, status.RunID)
+			}
 			m.textarea.Focus()
 			return m, nil
 		}

@@ -1069,6 +1069,7 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 	}
 	if !snapshot.Active {
 		detach()
+		m.mainRunManager.Visit(sessionID, snapshot.RunID)
 		if m.streaming {
 			if m.store != nil && m.sess != nil {
 				if loaded, compactionIdx, err := loadSessionMessagesForScrollback(context.Background(), m.store, m.sess); err == nil {

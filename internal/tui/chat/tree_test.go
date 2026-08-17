@@ -374,12 +374,34 @@ func TestTreeAssistantSelectionOffersContextChoiceAndExistingPathSwitches(t *tes
 	}
 }
 
-func TestTreeCurrentPathSelectionDoesNotRelaunch(t *testing.T) {
+func TestTreeCurrentPathSelectionDoesNotRelaunchAndClearsAttention(t *testing.T) {
 	m, store, _ := newBranchChatModel()
+	manager := NewMainRunManager(t.Context())
+	defer manager.Close(time.Second)
+	snapshot, err := manager.Start(m.sess.ID, MainRunExecution{Execute: func(context.Context, func(ui.StreamEvent)) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-snapshot.Done
+	m.SetMainRunManager(manager)
+	if !manager.Status(m.sess.ID).Unvisited {
+		t.Fatal("test completion did not request attention")
+	}
+	updated, _ := m.cmdTree(nil)
+	m = updated.(*Model)
+	for _, item := range m.dialog.items {
+		if item.ID == "path:"+m.sess.ID && item.TreePathUnvisited {
+			t.Fatal("current path rendered as unvisited")
+		}
+	}
+	m.dialog.Close()
 	updated, cmd := m.handleBranchTreeSelection("path:" + m.sess.ID)
 	m = updated.(*Model)
 	if cmd != nil || m.quitting || m.RequestedResumeSessionID() != "" || store.currentID != "" {
 		t.Fatalf("current path selection relaunched: cmd=%v quitting=%v resume=%q current=%q", cmd != nil, m.quitting, m.RequestedResumeSessionID(), store.currentID)
+	}
+	if manager.Status(m.sess.ID).Unvisited {
+		t.Fatal("current path selection did not clear completion attention")
 	}
 }
 
@@ -434,12 +456,33 @@ func TestTreeMarksActivePathsGreenAndRefreshesWhileOpen(t *testing.T) {
 	updated, _ = m.Update(BackgroundRunsMsg{Count: manager.ActiveCount(), owner: m})
 	m = updated.(*Model)
 	working = pathItem("existing-child")
-	if working == nil || working.TreePathActive {
-		t.Fatalf("completed path remained active = %#v", working)
+	if working == nil || working.TreePathActive || !working.TreePathUnvisited {
+		t.Fatalf("completed path attention metadata = %#v", working)
 	}
-	plain = ui.StripANSI(m.dialog.View())
-	if !strings.Contains(plain, "○   Existing path") {
-		t.Fatalf("completed path marker did not refresh:\n%s", plain)
+	rendered = m.dialog.View()
+	unvisitedCircle := lipgloss.NewStyle().Bold(true).Foreground(m.styles.Theme().Primary).Render("●")
+	if !strings.Contains(rendered, unvisitedCircle) {
+		t.Fatalf("tree did not render unvisited completion with accent styling:\n%s", rendered)
+	}
+	plain = ui.StripANSI(rendered)
+	if !strings.Contains(plain, "●   Existing path") {
+		t.Fatalf("completed path attention marker did not refresh:\n%s", plain)
+	}
+
+	m.dialog.Close()
+	updated, _ = m.cmdTree(nil)
+	m = updated.(*Model)
+	working = pathItem("existing-child")
+	if working == nil || !working.TreePathUnvisited {
+		t.Fatalf("reopening tree consumed completion attention = %#v", working)
+	}
+	for i := range m.dialog.filtered {
+		if m.dialog.filtered[i].ID == "path:existing-child" {
+			m.dialog.cursor = i
+		}
+	}
+	if plain = ui.StripANSI(m.dialog.View()); !strings.Contains(plain, "❯ ●   Existing path") {
+		t.Fatalf("selected unvisited path did not keep a filled marker:\n%s", plain)
 	}
 }
 

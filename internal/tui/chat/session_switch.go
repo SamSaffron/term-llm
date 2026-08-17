@@ -85,6 +85,12 @@ func (m *Model) handleSessionSwitched(msg sessionSwitchedMsg) (tea.Model, tea.Cm
 	// target session must reach the replacement, not the outgoing model.
 	// AttachUISink flushes those prompts asynchronously, so attaching from the
 	// update loop cannot deadlock on Program.Send.
+	if next.mainRunManager != nil {
+		status := next.mainRunManager.Status(next.SessionID())
+		if status.RunID != "" {
+			next.mainRunManager.Visit(next.SessionID(), status.RunID)
+		}
+	}
 	if next.mainRunManager != nil && next.program != nil {
 		next.AttachMainRunUISink(next.program.Send)
 	}
