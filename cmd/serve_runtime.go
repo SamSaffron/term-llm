@@ -1145,6 +1145,18 @@ func (rt *serveRuntime) applyRequestAllowedTools(req *llm.Request) func() {
 }
 
 func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+	leaseDir := strings.TrimSpace(req.WorkingDir)
+	if rt.toolMgr != nil {
+		if baseDir := strings.TrimSpace(rt.toolMgr.BaseDir()); baseDir != "" {
+			leaseDir = baseDir
+		}
+	}
+	releaseRootLease, err := processRootCheckoutLeases.acquireRun(ctx, leaseDir)
+	if err != nil {
+		return serveRunResult{}, fmt.Errorf("wait for root checkout mutation: %w", err)
+	}
+	defer releaseRootLease()
+
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}

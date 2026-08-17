@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
@@ -324,6 +325,144 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	}
 	if !strings.Contains(promoteRec.Body.String(), "root-active") {
 		t.Fatalf("promote body = %s, want active root session id", promoteRec.Body.String())
+	}
+}
+
+func TestServeWorktreeMutationsBlockNonWebRootRunLease(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "non-web-block"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true})
+	})
+
+	releaseRun, err := processRootCheckoutLeases.acquireRun(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("acquire root run lease: %v", err)
+	}
+	defer releaseRun()
+
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
+	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+wt.Dir+`","keep":true}`))
+	mergeRec := httptest.NewRecorder()
+	srv.handleWorktreeMerge(mergeRec, mergeReq)
+	if mergeRec.Code != http.StatusConflict {
+		t.Fatalf("merge status = %d body=%s", mergeRec.Code, mergeRec.Body.String())
+	}
+
+	promoteReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/promote", bytes.NewBufferString(`{"dir":"`+wt.Dir+`","branch":"blocked-non-web"}`))
+	promoteRec := httptest.NewRecorder()
+	srv.handleWorktreePromote(promoteRec, promoteReq)
+	if promoteRec.Code != http.StatusConflict {
+		t.Fatalf("promote status = %d body=%s", promoteRec.Code, promoteRec.Body.String())
+	}
+}
+
+func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-admission"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true})
+	})
+	if err := os.WriteFile(filepath.Join(wt.Dir, "lease.txt"), []byte("lease test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mutationAdmitted := make(chan struct{})
+	continueMutation := make(chan struct{})
+	defer func() {
+		select {
+		case <-continueMutation:
+		default:
+			close(continueMutation)
+		}
+	}()
+	srv := &serveServer{
+		worktreeRootFn: worktreeRootForTest(repo),
+		rootMutationAdmitted: func() {
+			close(mutationAdmitted)
+			<-continueMutation
+		},
+	}
+	requestBody, _ := json.Marshal(worktreeMergeRequest{Dir: wt.Dir, Keep: true})
+	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewReader(requestBody))
+	mergeRec := httptest.NewRecorder()
+	mergeDone := make(chan struct{})
+	go func() {
+		defer close(mergeDone)
+		srv.handleWorktreeMerge(mergeRec, mergeReq)
+	}()
+
+	select {
+	case <-mutationAdmitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("merge did not acquire the exclusive root lease")
+	}
+
+	platforms := []string{"web", "telegram", "jobs"}
+	started := make([]chan struct{}, len(platforms))
+	attempted := make([]chan struct{}, len(platforms))
+	runErrs := make(chan error, len(platforms))
+	for i, platform := range platforms {
+		started[i] = make(chan struct{})
+		attempted[i] = make(chan struct{})
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		runtime := &serveRuntime{
+			provider:     provider,
+			engine:       llm.NewEngine(provider, nil),
+			defaultModel: "mock-model",
+			platform:     platform,
+		}
+		go func(i int, rt *serveRuntime) {
+			close(attempted[i])
+			_, runErr := rt.RunWithEventsAndStart(
+				context.Background(),
+				false,
+				false,
+				[]llm.Message{llm.UserText("wait for merge")},
+				llm.Request{WorkingDir: repo},
+				func() { close(started[i]) },
+				nil,
+			)
+			runErrs <- runErr
+		}(i, runtime)
+	}
+	for i := range attempted {
+		<-attempted[i]
+	}
+	for i, platform := range platforms {
+		select {
+		case <-started[i]:
+			t.Fatalf("%s run became active while merge held the exclusive root lease", platform)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	close(continueMutation)
+	select {
+	case <-mergeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("merge did not complete")
+	}
+	if mergeRec.Code != http.StatusOK {
+		t.Fatalf("merge status = %d body=%s", mergeRec.Code, mergeRec.Body.String())
+	}
+	for i, platform := range platforms {
+		select {
+		case <-started[i]:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s run did not become active after merge released the lease", platform)
+		}
+	}
+	for range platforms {
+		if err := <-runErrs; err != nil {
+			t.Fatalf("root run failed: %v", err)
+		}
 	}
 }
 
