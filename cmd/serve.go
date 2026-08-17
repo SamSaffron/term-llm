@@ -1196,6 +1196,7 @@ type serveServer struct {
 	worktreeRootErr          error
 	fileTrackStoreFn         func() *filetrack.Store // test seam; nil → process-wide store from config
 	worktreeRootFn           func() (string, error)  // test seam; nil → os.Getwd
+	rootMutationAdmitted     func()                  // test seam; called while the exclusive root lease is held
 }
 
 // fileTrackStore returns the file-change history store, or nil when file

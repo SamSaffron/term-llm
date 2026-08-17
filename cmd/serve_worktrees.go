@@ -245,10 +245,11 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	if activeRootSessions := s.activeRootRunsForWorktreeMerge(r.Context(), root); len(activeRootSessions) > 0 {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(activeRootSessions, ", ")))
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	if !ok {
 		return
 	}
+	defer releaseMutation()
 	opts := worktree.MergeOptions{Commit: req.Commit, Message: req.Message}
 	var res worktree.MergeResult
 	var cleanup worktree.CleanupResult
@@ -274,6 +275,31 @@ func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": res, "cleanup": cleanup})
+}
+
+func (s *serveServer) acquireRootMutation(w http.ResponseWriter, ctx context.Context, root string) (func(), bool) {
+	release, admitted, err := processRootCheckoutLeases.tryAcquireMutation(root)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", fmt.Sprintf("coordinate root checkout mutation: %v", err))
+		return nil, false
+	}
+	if !admitted {
+		message := "root checkout has an active agent run or worktree mutation"
+		if active := s.activeRootRunsForWorktreeMerge(ctx, root); len(active) > 0 {
+			message = fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(active, ", "))
+		}
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", message)
+		return nil, false
+	}
+	if active := s.activeRootRunsForWorktreeMerge(ctx, root); len(active) > 0 {
+		release()
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(active, ", ")))
+		return nil, false
+	}
+	if s.rootMutationAdmitted != nil {
+		s.rootMutationAdmitted()
+	}
+	return release, true
 }
 
 func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root string) []string {
@@ -334,10 +360,11 @@ func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	if activeRootSessions := s.activeRootRunsForWorktreeMerge(r.Context(), root); len(activeRootSessions) > 0 {
-		writeOpenAIError(w, http.StatusConflict, "conflict_error", fmt.Sprintf("root checkout has active session run(s): %s", strings.Join(activeRootSessions, ", ")))
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	if !ok {
 		return
 	}
+	defer releaseMutation()
 	res, err := worktree.PromoteToRoot(r.Context(), wt.Dir, req.Branch, worktree.PromoteOptions{})
 	if errors.Is(err, worktree.ErrRootDirty) {
 		writeJSON(w, http.StatusConflict, map[string]any{"result": res, "error": "root_dirty", "message": err.Error()})
