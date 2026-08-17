@@ -733,6 +733,114 @@ func TestMergeBackRefusesDirtyRootByDefault(t *testing.T) {
 	}
 }
 
+func TestConcurrentMergeBackSerializesRootMutation(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	firstWorktree, err := Create(context.Background(), repo, CreateOptions{Name: "concurrent-first"})
+	if err != nil {
+		t.Fatalf("Create first worktree: %v", err)
+	}
+	cleanupWorktreeTest(t, firstWorktree.Dir)
+	secondWorktree, err := Create(context.Background(), repo, CreateOptions{Name: "concurrent-second"})
+	if err != nil {
+		t.Fatalf("Create second worktree: %v", err)
+	}
+	cleanupWorktreeTest(t, secondWorktree.Dir)
+
+	if err := os.WriteFile(filepath.Join(firstWorktree.Dir, "file.txt"), []byte("first merge\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile first worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secondWorktree.Dir, "file.txt"), []byte("second merge\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile second worktree: %v", err)
+	}
+
+	firstRootClean := make(chan struct{})
+	secondAttempted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	t.Cleanup(release)
+	var hookMu sync.Mutex
+	beforeLockCalls := 0
+	rootCleanCalls := 0
+	mergeBackTestHook = func(stage string) {
+		hookMu.Lock()
+		switch stage {
+		case "before-lock":
+			beforeLockCalls++
+			if beforeLockCalls == 2 {
+				close(secondAttempted)
+			}
+			hookMu.Unlock()
+		case "root-clean":
+			rootCleanCalls++
+			first := rootCleanCalls == 1
+			if first {
+				close(firstRootClean)
+			}
+			hookMu.Unlock()
+			if first {
+				<-releaseFirst
+			}
+		default:
+			hookMu.Unlock()
+		}
+	}
+	t.Cleanup(func() { mergeBackTestHook = nil })
+
+	type mergeCall struct {
+		result MergeResult
+		err    error
+	}
+	firstDone := make(chan mergeCall, 1)
+	go func() {
+		result, err := MergeBack(context.Background(), firstWorktree.Dir, MergeOptions{})
+		firstDone <- mergeCall{result: result, err: err}
+	}()
+	<-firstRootClean
+
+	secondDone := make(chan mergeCall, 1)
+	go func() {
+		result, err := MergeBack(context.Background(), secondWorktree.Dir, MergeOptions{})
+		secondDone <- mergeCall{result: result, err: err}
+	}()
+	<-secondAttempted
+
+	var earlySecond *mergeCall
+	select {
+	case call := <-secondDone:
+		earlySecond = &call
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+
+	first := <-firstDone
+	var second mergeCall
+	if earlySecond != nil {
+		second = *earlySecond
+	} else {
+		second = <-secondDone
+	}
+	if earlySecond != nil {
+		t.Fatalf("second merge completed while first root mutation was in flight: result=%+v err=%v", second.result, second.err)
+	}
+	if first.err != nil || !first.result.Applied {
+		t.Fatalf("first MergeBack result=%+v err=%v, want applied", first.result, first.err)
+	}
+	if !errors.Is(second.err, ErrRootDirty) {
+		t.Fatalf("second MergeBack result=%+v err=%v, want ErrRootDirty", second.result, second.err)
+	}
+	if got := runGitForWorktreeTest(t, repo, "status", "--porcelain"); !strings.Contains(got, "M  file.txt") {
+		t.Fatalf("root status = %q, want successful merge staged", got)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "file.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile root file: %v", err)
+	}
+	if got := string(data); got != "first merge\n" {
+		t.Fatalf("root file = %q, want successful merge content", got)
+	}
+}
+
 func TestMergeBackConflictCleansCherryPickState(t *testing.T) {
 	repo := newGitRepoForWorktreeTest(t)
 	wt, err := Create(context.Background(), repo, CreateOptions{Name: "conflict-test"})
@@ -776,6 +884,29 @@ func TestMergeBackConflictCleansCherryPickState(t *testing.T) {
 	}
 	if got := string(data); got != "root changed\n" {
 		t.Fatalf("root file = %q, want original root change", got)
+	}
+}
+
+func TestCleanupCherryPickStatePreservesChangesWithoutCherryPick(t *testing.T) {
+	repo := newGitRepoForWorktreeTest(t)
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("unrelated staged change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile root: %v", err)
+	}
+	runGitForWorktreeTest(t, repo, "add", "file.txt")
+	before := runGitForWorktreeTest(t, repo, "status", "--porcelain")
+
+	if err := cleanupCherryPickState(repo); err != nil {
+		t.Fatalf("cleanupCherryPickState: %v", err)
+	}
+	if after := runGitForWorktreeTest(t, repo, "status", "--porcelain"); after != before {
+		t.Fatalf("root status changed from %q to %q without cherry-pick state", before, after)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "file.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile root: %v", err)
+	}
+	if got := string(data); got != "unrelated staged change\n" {
+		t.Fatalf("root file = %q, want unrelated staged change preserved", got)
 	}
 }
 
