@@ -50,70 +50,58 @@ type prepareSessionPathNotesResponse struct {
 }
 
 func branchContextSourceMessage(message session.Message) bool {
-	if message.CompactionTail || llm.IsInternalCompactionSummaryText(message.TextContent) {
-		return false
-	}
-	switch message.Role {
-	case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+	if session.IsBranchableMessage(message) {
 		return true
-	case llm.RoleDeveloper:
+	}
+	if message.Role == llm.RoleDeveloper {
 		_, ok := message.PathNoteProvenance()
 		return ok
-	default:
-		return false
 	}
+	return false
 }
 
 func activeWebBranchAnchorRowID(messages []session.Message, activeResponseID string, sampledAnchorRowID int64) int64 {
-	activeResponseID = strings.TrimSpace(activeResponseID)
-	if activeResponseID == "" {
+	if strings.TrimSpace(activeResponseID) == "" {
 		return 0
 	}
-	if sampledAnchorRowID > 0 {
-		for _, message := range messages {
-			if message.ID != sampledAnchorRowID {
-				continue
-			}
-			if message.Role == llm.RoleUser || message.ResponseID != activeResponseID {
-				return sampledAnchorRowID
-			}
-			break
-		}
+	if sampledAnchorRowID <= 0 {
+		return -1
 	}
-	for i, message := range messages {
-		if message.Role == llm.RoleUser || message.ResponseID != activeResponseID {
-			continue
+	for _, message := range messages {
+		if message.ID == sampledAnchorRowID && session.IsBranchableMessage(message) {
+			return sampledAnchorRowID
 		}
-		if i == 0 {
-			return -1
-		}
-		anchorRowID := messages[i-1].ID
-		for j := i - 1; j >= 0 && messages[j].Role == llm.RoleUser; j-- {
-			anchorRowID = messages[j].ID
-		}
-		return anchorRowID
 	}
 	return -1
 }
 
-func pruneActiveWebBranchOutput(messages []session.Message, activeResponseID string) []session.Message {
-	activeResponseID = strings.TrimSpace(activeResponseID)
-	if activeResponseID == "" {
+func pruneActiveWebBranchOutput(messages []session.Message, activeResponseID string, activeAnchorRowID int64) []session.Message {
+	if strings.TrimSpace(activeResponseID) == "" {
 		return messages
 	}
-	filtered := make([]session.Message, 0, len(messages))
-	for _, message := range messages {
-		if message.Role != llm.RoleUser && message.ResponseID == activeResponseID {
-			continue
-		}
-		filtered = append(filtered, message)
+	if activeAnchorRowID <= 0 {
+		return nil
 	}
-	return filtered
+	for i := range messages {
+		if messages[i].ID == activeAnchorRowID {
+			return append([]session.Message(nil), messages[:i+1]...)
+		}
+	}
+	return nil
 }
 
-func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID string, sampledAnchorRowID, requestedAnchorRowID int64) (bool, bool) {
+type activeWebBranchAnchorStatus uint8
+
+const (
+	activeWebBranchAnchorSafe activeWebBranchAnchorStatus = iota
+	activeWebBranchAnchorMissing
+	activeWebBranchAnchorInvalid
+	activeWebBranchAnchorUnstable
+)
+
+func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID string, sampledAnchorRowID, requestedAnchorRowID int64) activeWebBranchAnchorStatus {
 	if requestedAnchorRowID == 0 {
-		return true, true
+		return activeWebBranchAnchorSafe
 	}
 	var requested *session.Message
 	for i := range messages {
@@ -123,11 +111,14 @@ func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID st
 		}
 	}
 	if requested == nil {
-		return false, false
+		return activeWebBranchAnchorMissing
+	}
+	if !session.IsBranchableMessage(*requested) {
+		return activeWebBranchAnchorInvalid
 	}
 	activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
 	if activeAnchorRowID <= 0 {
-		return false, true
+		return activeWebBranchAnchorUnstable
 	}
 	var activeAnchor *session.Message
 	for i := range messages {
@@ -136,13 +127,10 @@ func activeWebBranchAnchorSafety(messages []session.Message, activeResponseID st
 			break
 		}
 	}
-	if activeAnchor == nil {
-		return false, true
+	if activeAnchor == nil || requested.Sequence > activeAnchor.Sequence {
+		return activeWebBranchAnchorUnstable
 	}
-	if requested.Role != llm.RoleUser && requested.ResponseID == strings.TrimSpace(activeResponseID) {
-		return false, true
-	}
-	return requested.Sequence <= activeAnchor.Sequence, true
+	return activeWebBranchAnchorSafe
 }
 
 func webBranchTreePointsForActiveRun(messages []session.Message, activeAnchorRowID int64) []webBranchTreePoint {
@@ -229,17 +217,24 @@ func (s *serveServer) handleSessionTree(w http.ResponseWriter, r *http.Request, 
 		response := webBranchTreeResponse{BranchTree: tree}
 		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_branch_points")), "1") ||
 			strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_branch_points")), "true") {
+			activeResponseID, _, activeEpoch, _, sampledAnchorRowID := s.activeTranscriptRun(sessionID)
 			messages, messageErr := s.store.GetMessages(r.Context(), sessionID, 0, 0)
 			if messageErr != nil {
 				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load conversation branch points")
 				return
 			}
-			// Persistence and the response manager do not share a snapshot. Sample
-			// active ownership after reading rows so a run that finishes during this
-			// read can only make this tree temporarily conservative.
-			activeResponseID, _, _, _, activeAnchorRowID := s.activeTranscriptRun(sessionID)
-			activeAnchorRowID = activeWebBranchAnchorRowID(messages, activeResponseID, activeAnchorRowID)
-			messages = pruneActiveWebBranchOutput(messages, activeResponseID)
+			// Verify that row loading did not cross a moving-boundary publication.
+			checkResponseID, _, checkEpoch, _, checkAnchorRowID := s.activeTranscriptRun(sessionID)
+			if checkResponseID != activeResponseID || checkEpoch != activeEpoch || checkAnchorRowID != sampledAnchorRowID {
+				activeResponseID, activeEpoch, sampledAnchorRowID = checkResponseID, checkEpoch, checkAnchorRowID
+				messages, messageErr = s.store.GetMessages(r.Context(), sessionID, 0, 0)
+				if messageErr != nil {
+					writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to refresh moving conversation branch points")
+					return
+				}
+			}
+			activeAnchorRowID := activeWebBranchAnchorRowID(messages, activeResponseID, sampledAnchorRowID)
+			messages = pruneActiveWebBranchOutput(messages, activeResponseID, activeAnchorRowID)
 			response.BranchPoints = webBranchTreePointsForActiveRun(messages, activeAnchorRowID)
 		}
 		writeJSON(w, http.StatusOK, response)
@@ -307,12 +302,15 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to validate active conversation branch")
 			return
 		}
-		safe, found := activeWebBranchAnchorSafety(messages, activeResponseID, activeAnchorRowID, req.AnchorMessageID)
-		if !found {
+		status := activeWebBranchAnchorSafety(messages, activeResponseID, activeAnchorRowID, req.AnchorMessageID)
+		switch status {
+		case activeWebBranchAnchorMissing:
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
 			return
-		}
-		if !safe {
+		case activeWebBranchAnchorInvalid:
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch anchor is not a durable continuation boundary")
+			return
+		case activeWebBranchAnchorUnstable:
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", "branch point is not stable while source work is active")
 			return
 		}
@@ -355,6 +353,8 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "idempotency key was already used for a different branch point")
 	case errors.Is(err, session.ErrBranchingUnsupported):
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "conversation branching is unavailable")
+	case errors.Is(err, session.ErrNotFound) && activeSource:
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "the active branch boundary changed; refresh and try again")
 	case errors.Is(err, session.ErrNotFound):
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "branch source or anchor was not found")
 	case err != nil:

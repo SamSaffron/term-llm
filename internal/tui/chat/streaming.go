@@ -14,6 +14,7 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -121,12 +122,17 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 		streamSessionID = streamSess.ID
 	}
 	reasoningCfg := m.effectiveReasoningConfig()
+	boundary := m.runBoundary
+	boundaryRunID := ""
+	if boundary != nil {
+		boundaryRunID = boundary.RunID()
+	}
 	staleStreamSession := func() bool {
 		return streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID)
 	}
-	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message, finalizeText bool) {
+	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message, finalizeText bool) (int64, bool) {
 		if m.store == nil || streamSess == nil || staleStreamSession() {
-			return
+			return 0, false
 		}
 		sessionMsg := session.NewMessageWithReasoningPolicy(streamSess.ID, assistantMsg, -1, reasoningCfg)
 		sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
@@ -141,10 +147,10 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 				if finalizeText {
 					m.pendingAssistantTextSet = true
 				}
-				return
+				return sessionMsg.ID, true
 			}
 			if !errors.Is(err, session.ErrNotFound) {
-				return
+				return 0, false
 			}
 			m.pendingAssistantMsgID = 0
 			m.pendingAssistantTextSet = false
@@ -154,10 +160,11 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 			sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		}
 		if err := m.store.AddMessage(ctx, streamSess.ID, sessionMsg); err != nil {
-			return
+			return 0, false
 		}
 		m.pendingAssistantMsgID = sessionMsg.ID
 		m.pendingAssistantTextSet = finalizeText
+		return sessionMsg.ID, sessionMsg.ID > 0
 	}
 
 	assistantSnapshot := func(ctx context.Context, _ int, assistantMsg llm.Message) error {
@@ -165,7 +172,10 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 			return nil
 		}
 		m.updateStreamingContextAssistant(assistantMsg)
-		persistPendingAssistant(ctx, assistantMsg, false)
+		if boundary != nil {
+			boundary.UpdateAssistant(boundaryRunID, assistantMsg)
+		}
+		_, _ = persistPendingAssistant(ctx, assistantMsg, false)
 		return nil
 	}
 	responseCompleted := func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
@@ -173,31 +183,54 @@ func (m *Model) streamPersistenceCallbacks(streamStart time.Time) (llm.Assistant
 			return nil
 		}
 		m.updateStreamingContextAssistant(assistantMsg)
-		persistPendingAssistant(ctx, assistantMsg, true)
+		if boundary != nil {
+			boundary.UpdateAssistant(boundaryRunID, assistantMsg)
+		}
+		_, _ = persistPendingAssistant(ctx, assistantMsg, true)
 		return nil
 	}
-	turnCompleted := func(ctx context.Context, _ int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+	turnCompleted := func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
 		if staleStreamSession() {
 			return nil
 		}
 		m.appendStreamingContextTurnMessages(turnMessages)
 
 		appendStart := 0
+		persistComplete := m.store != nil && streamSess != nil
+		m.pendingMu.Lock()
+		lastDurableID := m.pendingAssistantMsgID
+		pendingAssistantPersisted := m.pendingAssistantTextSet
+		m.pendingMu.Unlock()
+		if len(turnMessages) == 0 && (!pendingAssistantPersisted || lastDurableID <= 0) {
+			persistComplete = false
+		}
 		if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
 			m.pendingMu.Lock()
 			finalizeText := !m.pendingAssistantTextSet
 			m.pendingMu.Unlock()
-			persistPendingAssistant(ctx, turnMessages[0], finalizeText)
+			var ok bool
+			lastDurableID, ok = persistPendingAssistant(ctx, turnMessages[0], finalizeText)
+			persistComplete = persistComplete && ok
 			appendStart = 1
 		}
 		if m.store != nil && streamSess != nil {
 			for _, msg := range turnMessages[appendStart:] {
 				if msg.Role == llm.RoleUser {
+					// Interjections are persisted by the UI event path. Until that write
+					// is coordinated, conservatively retain the preceding boundary.
+					persistComplete = false
 					continue
 				}
 				sessionMsg := session.NewMessageWithReasoningPolicy(streamSess.ID, msg, -1, reasoningCfg)
-				_ = m.store.AddMessage(ctx, streamSess.ID, sessionMsg)
+				if err := m.store.AddMessage(ctx, streamSess.ID, sessionMsg); err != nil || sessionMsg.ID <= 0 {
+					persistComplete = false
+					continue
+				}
+				lastDurableID = sessionMsg.ID
 			}
+		}
+		if boundary != nil && boundary.Commit(boundaryRunID, turnIndex, turnMessages) && persistComplete && lastDurableID > 0 {
+			boundary.PublishDurable(boundaryRunID, turnIndex, lastDurableID)
 		}
 		m.pendingMu.Lock()
 		m.pendingAssistantMsgID = 0
@@ -546,9 +579,9 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		displayText = "[" + strings.Join(imageLabels, ", ") + "]"
 	}
 
-	// Capture the last completed boundary before appending this user turn. A
-	// /fork issued while the response is active rewinds here, excluding partial
-	// assistant output and any tool activity that has not completed.
+	// Retain the preceding legal boundary until the active user row has been
+	// durably appended. A failed append must never turn row ID zero into a root
+	// fork fallback.
 	m.activeBranchAnchorID = lastSafeBranchMessageID(m.messages)
 
 	// Ensure system/platform context messages exist before the user turn.
@@ -571,10 +604,11 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, *userMsg)
 	m.invalidateHistoryCache()
 	if m.store != nil {
-		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
-		// Sync the assigned ID back to the copy in m.messages to avoid cache collisions
-		// (AddMessage sets userMsg.ID, but the copy was made before that)
-		m.messages[len(m.messages)-1].ID = userMsg.ID
+		if err := m.store.AddMessage(context.Background(), m.sess.ID, userMsg); err == nil && userMsg.ID > 0 {
+			// The active user is the first completed and durable boundary of this run.
+			m.messages[len(m.messages)-1].ID = userMsg.ID
+			m.activeBranchAnchorID = userMsg.ID
+		}
 		_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
 		m.sess.UserTurns++ // Keep in-memory value in sync
 		// Update session summary from first user message
@@ -751,6 +785,9 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// Build messages from conversation history
 		messages := m.buildMessagesForStream()
 		m.setStreamingContextMessages(messages)
+		boundaryRunID := fmt.Sprintf("%s:%d", sessionID, streamGeneration)
+		boundary := runboundary.New(boundaryRunID, messages, m.activeBranchAnchorID, m.activeBranchAnchorID > 0)
+		m.runBoundary = boundary
 
 		// The discovery planner registers MCP wrappers for execution and owns
 		// provider visibility. Start with non-MCP request tools only.
@@ -972,6 +1009,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 				ListInterjections:  m.engine.ListPendingInterjections,
 				DrainInterjections: m.engine.DrainInterjections,
 				AnchorMessageID:    m.activeBranchAnchorID,
+				Boundary:           boundary,
 			})
 			if err != nil {
 				return streamEventMsg{event: ui.ErrorEvent(err), generation: streamGeneration}
@@ -1060,7 +1098,14 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 			m.mainRunLastSeq = presentation.sequence
 			m.mainRunViewComplete = !snapshotRequired
 		}
-		m.activeBranchAnchorID = snapshot.AnchorMessageID
+		if snapshot.DurableAnchorValid {
+			m.activeBranchAnchorID = snapshot.DurableAnchorID
+		} else {
+			m.activeBranchAnchorID = snapshot.AnchorMessageID
+		}
+		if len(snapshot.CompletedMessages) > 0 {
+			m.runBoundary = runboundary.New(snapshot.RunID, snapshot.CompletedMessages, snapshot.DurableAnchorID, snapshot.DurableAnchorValid)
+		}
 		// Elapsed time belongs to the run, not the visible model: a relaunched
 		// model must resume the timer from the run's true start.
 		m.streamStartTime = snapshot.StartedAt

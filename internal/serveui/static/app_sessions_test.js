@@ -7453,7 +7453,7 @@ async function testBranchShortcutCommandsUseSafeActiveBoundaryAndSkipEmptySend()
   const fork = await makeHarness('fork', 'try another direction');
   if (fork.body?.anchor_message_id !== 72 || Object.prototype.hasOwnProperty.call(fork.body || {}, 'expected_rev')
       || fork.sends.length !== 1 || fork.sends[0]?.prompt !== 'try another direction') {
-    fail(name, 'active fork did not use its pre-run safe boundary and instruction', JSON.stringify(fork));
+    fail(name, 'active fork did not use its latest durable completed boundary and instruction', JSON.stringify(fork));
     return;
   }
   const thread = await makeHarness('thread', '');

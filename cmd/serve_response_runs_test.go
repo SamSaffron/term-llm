@@ -132,6 +132,37 @@ func TestResponseRunPersistenceIdentityDoesNotDependOnAssistantContent(t *testin
 	}
 }
 
+func TestConfigureResponseRunRevisionSkipsTrailingNonBranchableRows(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-run-anchor", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatal(err)
+	}
+	developer := session.NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "provider context"}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, developer); err != nil {
+		t.Fatal(err)
+	}
+
+	run := newResponseRun("resp-anchor-scan", sess.ID, "", "test", time.Now().Unix(), nil)
+	(&serveServer{store: store}).configureResponseRunRevision(run, sess.ID)
+	if run.anchorRowID != user.ID || !run.anchorAvailable {
+		t.Fatalf("initial anchor = (%d, %v), want (%d, true)", run.anchorRowID, run.anchorAvailable, user.ID)
+	}
+	boundary := run.boundary.CompletedSnapshot()
+	if !boundary.Durable || boundary.DurableAnchorID != user.ID {
+		t.Fatalf("initial boundary = %#v, want durable row %d", boundary, user.ID)
+	}
+}
+
 func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {

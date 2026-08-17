@@ -159,6 +159,7 @@ func TestTranscriptResponseIncludesExactActiveRunAnchor(t *testing.T) {
 	run := newResponseRun("resp-anchor-index", "sess-anchor-index", "", "mock", time.Now().Unix(), nil)
 	run.clientMessageID = "client-anchor-index"
 	run.anchorRowID = 77
+	run.anchorAvailable = true
 	created, duplicate, err := manager.createOrGetByIdempotency(run, "")
 	if err != nil || duplicate || created != run {
 		t.Fatalf("create run: created=%p duplicate=%v err=%v", created, duplicate, err)

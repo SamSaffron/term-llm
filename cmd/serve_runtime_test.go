@@ -843,6 +843,39 @@ func TestServeRuntimePersistSnapshotUpdatesUserTurns(t *testing.T) {
 	}
 }
 
+func TestServeRuntimePersistSnapshotDoesNotPublishPendingAssistantBoundary(t *testing.T) {
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &session.Session{ID: "sess-snapshot-boundary", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
+	rt := &serveRuntime{store: store, sessionMeta: sess}
+	run := newResponseRun("resp-snapshot-boundary", sess.ID, "", "test", time.Now().Unix(), nil)
+	ctx := withResponseRunContext(context.Background(), run)
+	initial := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "question")}
+	if !rt.persistInitialSnapshot(ctx, sess.ID, initial) {
+		t.Fatal("persistInitialSnapshot returned false")
+	}
+	if boundary := run.boundary.CompletedSnapshot(); !boundary.Durable || boundary.DurableAnchorID <= 0 {
+		t.Fatalf("initial boundary = %#v, want durable user row", boundary)
+	}
+
+	withPendingAssistant := append(append([]llm.Message(nil), initial...), serveRuntimeTextMessage(llm.RoleAssistant, "partial"))
+	if !rt.persistSnapshot(ctx, sess.ID, withPendingAssistant) {
+		t.Fatal("persistSnapshot returned false")
+	}
+	if boundary := run.boundary.CompletedSnapshot(); boundary.Durable || boundary.DurableAnchorID != 0 {
+		t.Fatalf("pending assistant published as durable boundary: %#v", boundary)
+	}
+	if run.anchorAvailable || run.anchorRowID != 0 {
+		t.Fatalf("run anchor = (%d, %v), want unavailable", run.anchorRowID, run.anchorAvailable)
+	}
+}
+
 func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	sess := &session.Session{ID: "sess-append-turns", Status: session.StatusActive}
@@ -851,13 +884,13 @@ func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
 	}
 	rt := &serveRuntime{store: store, sessionMeta: sess}
 
-	written := rt.appendMessages(context.Background(), sess.ID, []llm.Message{
+	result := rt.appendMessagesDetailed(context.Background(), sess.ID, []llm.Message{
 		serveRuntimeTextMessage(llm.RoleUser, "first user"),
 		serveRuntimeTextMessage(llm.RoleAssistant, "assistant"),
 		serveRuntimeTextMessage(llm.RoleUser, "second user"),
 	}, 3)
-	if written != 3 {
-		t.Fatalf("written = %d, want 3", written)
+	if result.Written != 3 || !result.Complete || result.LastRowID <= 0 {
+		t.Fatalf("append result = %#v, want three complete writes and assigned final ID", result)
 	}
 	if store.incrementCalls != 2 {
 		t.Fatalf("IncrementUserTurns calls = %d, want 2", store.incrementCalls)

@@ -757,6 +757,15 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	return true
 }
 
+func lastBranchableRowID(messages []session.Message) int64 {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if session.IsBranchableMessage(messages[i]) {
+			return messages[i].ID
+		}
+	}
+	return 0
+}
+
 func inlinePersistContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -765,6 +774,16 @@ func inlinePersistContext(ctx context.Context, timeout time.Duration) (context.C
 }
 
 func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
+	return rt.persistSnapshotWithInitialBoundary(ctx, sessionID, snapshot, false)
+}
+
+// persistInitialSnapshot replaces the transcript with provider-complete input
+// context and republishes its final branchable row under the new row identity.
+func (rt *serveRuntime) persistInitialSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
+	return rt.persistSnapshotWithInitialBoundary(ctx, sessionID, snapshot, true)
+}
+
+func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, sessionID string, snapshot []llm.Message, publishInitialBoundary bool) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
 	}
@@ -785,6 +804,14 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 	if err != nil {
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
 		return false
+	}
+	if run := responseRunFromContext(ctx); run != nil {
+		run.invalidateDurableBoundary()
+		if publishInitialBoundary {
+			if stored, loadErr := rt.store.GetMessages(dbCtx, sessionID, 0, 0); loadErr == nil {
+				run.setInitialDurableBoundary(lastBranchableRowID(stored))
+			}
+		}
 	}
 	userTurns := countUserMessages(snapshot)
 	if rt.sessionMeta != nil {
@@ -850,6 +877,9 @@ func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID 
 		log.Printf("[serve] session ReplaceCompactedMessages failed for %s: %v", sessionID, err)
 		return false
 	}
+	if run := responseRunFromContext(ctx); run != nil {
+		run.invalidateDurableBoundary()
+	}
 	if rt.sessionMeta != nil {
 		if refreshed, err := rt.store.Get(dbCtx, sessionID); err == nil && refreshed != nil {
 			rt.sessionMeta = refreshed
@@ -864,21 +894,25 @@ func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID 
 	return true
 }
 
-// appendMessages incrementally adds new messages to the DB using AddMessage.
-// Unlike persistSnapshot (which does a full DELETE+INSERT replace), this only
-// appends new messages, making each callback commit a small atomic write that
-// survives kill -9. Returns the number of messages successfully written so
-// callers can track progress accurately.
-func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, messages []llm.Message, turnIndex int) int {
+type appendMessagesResult struct {
+	Written   int
+	LastRowID int64
+	Complete  bool
+}
+
+// appendMessagesDetailed incrementally adds messages and returns the exact ID
+// assigned to the final successfully committed row.
+func (rt *serveRuntime) appendMessagesDetailed(ctx context.Context, sessionID string, messages []llm.Message, turnIndex int) appendMessagesResult {
+	result := appendMessagesResult{Complete: rt.store != nil && sessionID != ""}
 	if rt.store == nil || sessionID == "" || len(messages) == 0 {
-		return 0
+		result.Complete = len(messages) == 0 && rt.store != nil && sessionID != ""
+		return result
 	}
 	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
 	defer cancel()
-	written := 0
 	for _, msg := range messages {
 		if msg.Role == "" {
-			written++ // skip but count as consumed
+			result.Written++ // skip but count as consumed
 			continue
 		}
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
@@ -888,8 +922,10 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 		})
 		if err != nil {
 			log.Printf("[serve] session AddMessage failed for %s: %v", sessionID, err)
-			return written
+			result.Complete = false
+			return result
 		}
+		result.LastRowID = sessionMsg.ID
 		if msg.Role == llm.RoleUser {
 			if err := rt.store.IncrementUserTurns(dbCtx, sessionID); err != nil {
 				log.Printf("[serve] session IncrementUserTurns failed for %s: %v", sessionID, err)
@@ -897,9 +933,16 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 				rt.sessionMeta.UserTurns++
 			}
 		}
-		written++
+		result.Written++
 	}
-	return written
+	result.Complete = result.Written == len(messages) && result.LastRowID > 0
+	return result
+}
+
+// appendMessages preserves the historical count-only adapter for callers that
+// do not publish branch boundaries.
+func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, messages []llm.Message, turnIndex int) int {
+	return rt.appendMessagesDetailed(ctx, sessionID, messages, turnIndex).Written
 }
 
 func (rt *serveRuntime) persistTurnAccounting(ctx context.Context, persisted bool, sessionID string, messages []llm.Message, metrics llm.TurnMetrics) {
@@ -1335,6 +1378,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	}
 	initialMessages = append(initialMessages, inputMessages...)
 	initialAppendedIdx := 0
+	lastAppendResult := appendMessagesResult{}
 	appendOnlyCaughtUpLocked := func() bool {
 		return appendOnlyPersisted &&
 			initialPersisted &&
@@ -1348,8 +1392,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			initialPersisted = true
 			return true
 		}
-		written := rt.appendMessages(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
-		initialAppendedIdx += written
+		result := rt.appendMessagesDetailed(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
+		lastAppendResult = result
+		initialAppendedIdx += result.Written
 		if initialAppendedIdx < len(initialMessages) {
 			appendOnlyPersisted = false
 			rt.historyPersisted = false
@@ -1375,8 +1420,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			}
 			initialSnapshot = append(initialSnapshot, baseHistory...)
 			initialSnapshot = append(initialSnapshot, inputMessages...)
-			initialPersisted = rt.persistSnapshot(ctx, req.SessionID, initialSnapshot)
+			initialPersisted = rt.persistInitialSnapshot(ctx, req.SessionID, initialSnapshot)
 		}
+	}
+	if run := responseRunFromContext(runCtx); run != nil && lastAppendResult.Complete && lastAppendResult.LastRowID > 0 {
+		run.setInitialDurableBoundary(lastAppendResult.LastRowID)
 	}
 
 	// updateStateAndAppend updates in-memory history and incrementally appends
@@ -1396,8 +1444,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 					return
 				}
 				if lastAppendedIdx < len(produced) {
-					written := rt.appendMessages(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
-					lastAppendedIdx += written
+					result := rt.appendMessagesDetailed(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
+					lastAppendResult = result
+					lastAppendedIdx += result.Written
 					if lastAppendedIdx < len(produced) {
 						appendOnlyPersisted = false
 						rt.historyPersisted = false
@@ -1415,11 +1464,12 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 				}
 				initialSnapshot = append(initialSnapshot, baseHistory...)
 				initialSnapshot = append(initialSnapshot, inputMessages...)
-				initialPersisted = rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
+				initialPersisted = rt.persistInitialSnapshot(persistCtx, req.SessionID, initialSnapshot)
 			}
 			if initialPersisted && lastAppendedIdx < len(produced) {
-				written := rt.appendMessages(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
-				lastAppendedIdx += written
+				result := rt.appendMessagesDetailed(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
+				lastAppendResult = result
+				lastAppendedIdx += result.Written
 			}
 		}
 		persistPlatformInjectionLocked()
@@ -1535,7 +1585,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			}
 			initialSnapshot = append(initialSnapshot, baseHistory...)
 			initialSnapshot = append(initialSnapshot, inputMessages...)
-			initialPersisted = rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
+			initialPersisted = rt.persistInitialSnapshot(persistCtx, req.SessionID, initialSnapshot)
 			if !initialPersisted {
 				persistPlatformInjectionLocked()
 				return
@@ -1598,6 +1648,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// consumer cancellation mid-turn.
 	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message) error {
 		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
+		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
+			run.boundary.UpdateAssistant(run.id, assistantMsg)
+		}
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		upsertPendingAssistantLocked(cbCtx, assistantMsg, false)
@@ -1610,6 +1663,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
+		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
+			run.boundary.UpdateAssistant(run.id, assistantMsg)
+		}
 		producedMu.Lock()
 		defer producedMu.Unlock()
 		upsertPendingAssistantLocked(cbCtx, assistantMsg, true)
@@ -1630,6 +1686,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		func() {
 			producedMu.Lock()
 			defer producedMu.Unlock()
+			lastAppendResult = appendMessagesResult{}
 			appendStart := 0
 			if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
 				upsertPendingAssistantLocked(cbCtx, msgs[0], !pendingAssistantTextPersisted)
@@ -1638,6 +1695,15 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			if appendStart < len(msgs) {
 				produced = append(produced, msgs[appendStart:]...)
 				updateStateAndAppendLocked(cbCtx)
+			}
+			lastDurableID := pendingAssistantMsgID
+			durableComplete := persisted && initialPersisted && !assistantSnapshotDirty && !assistantSnapshotNeedsReconcile
+			if appendStart < len(msgs) {
+				lastDurableID = lastAppendResult.LastRowID
+				durableComplete = durableComplete && lastAppendResult.Complete
+			}
+			if run := responseRunFromContext(cbCtx); run != nil {
+				run.commitCompletedBoundary(callbackTurnIndex, msgs, lastDurableID, durableComplete)
 			}
 			pendingAssistantIdx = -1
 			pendingAssistantMsgID = 0

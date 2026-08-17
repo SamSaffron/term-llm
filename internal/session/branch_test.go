@@ -38,6 +38,17 @@ func addBranchTestMessage(t *testing.T, store *SQLiteStore, sessionID string, ms
 	return *stored
 }
 
+func TestIsBranchableMessageRejectsCompactionSummaryInParts(t *testing.T) {
+	message := Message{
+		Role:        llm.RoleUser,
+		TextContent: "visible replacement text",
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "[Context Compaction]\nhidden summary"}},
+	}
+	if IsBranchableMessage(message) {
+		t.Fatal("compaction summary stored in text parts was branchable")
+	}
+}
+
 func TestCreateBranchRequiresCurrentSchemaCapability(t *testing.T) {
 	store, source := newBranchTestStore(t)
 	store.hasSessionBranches = false

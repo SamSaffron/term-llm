@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -27,15 +28,18 @@ type MainRunEvent struct {
 
 // MainRunSnapshot describes an active or recently terminal session run.
 type MainRunSnapshot struct {
-	RunID           string
-	SessionID       string
-	Active          bool
-	StartedAt       time.Time
-	CompletedAt     time.Time
-	LastSequence    uint64
-	AnchorMessageID int64
-	Done            <-chan struct{}
-	Err             error
+	RunID              string
+	SessionID          string
+	Active             bool
+	StartedAt          time.Time
+	CompletedAt        time.Time
+	LastSequence       uint64
+	AnchorMessageID    int64 // Deprecated: immutable run-start anchor.
+	DurableAnchorID    int64
+	DurableAnchorValid bool
+	CompletedMessages  []llm.Message
+	Done               <-chan struct{}
+	Err                error
 }
 
 // MainRunExecution owns one session's execution after the visible TUI detaches.
@@ -52,6 +56,7 @@ type MainRunExecution struct {
 	ListInterjections    func() []llm.QueuedInterjection
 	DrainInterjections   func() []llm.QueuedInterjection
 	AnchorMessageID      int64
+	Boundary             *runboundary.Tracker
 }
 
 type mainRunSubscriber struct {
@@ -75,6 +80,7 @@ type mainRunState struct {
 	id              string
 	sessionID       string
 	anchorMessageID int64
+	boundary        *runboundary.Tracker
 	startedAt       time.Time
 
 	ctx    context.Context
@@ -163,6 +169,7 @@ func (m *MainRunManager) Start(sessionID string, execution MainRunExecution) (Ma
 	run := &mainRunState{
 		id: fmt.Sprintf("tui-run-%d", m.nextRun.Add(1)), sessionID: sessionID,
 		anchorMessageID: execution.AnchorMessageID,
+		boundary:        execution.Boundary,
 		startedAt:       time.Now(), ctx: runCtx, cancel: runCancel, done: make(chan struct{}),
 		active: true, subscribers: make(map[uint64]*mainRunSubscriber), cleanup: execution.Cleanup,
 		uiSink: sink.send, uiSinkID: sink.id, queueInterjection: execution.QueueInterjection,
@@ -698,6 +705,25 @@ func (m *MainRunManager) Close(timeout time.Duration) {
 	}
 }
 
+// ActiveBoundary returns the latest completed boundary for an active run.
+func (m *MainRunManager) ActiveBoundary(sessionID string) (runboundary.Snapshot, bool) {
+	if m == nil {
+		return runboundary.Snapshot{}, false
+	}
+	m.mu.RLock()
+	run := m.runs[sessionID]
+	m.mu.RUnlock()
+	if run == nil {
+		return runboundary.Snapshot{}, false
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if !run.active || run.boundary == nil {
+		return runboundary.Snapshot{}, false
+	}
+	return run.boundary.CompletedSnapshot(), true
+}
+
 func snapshotMainRun(run *mainRunState) MainRunSnapshot {
 	run.mu.Lock()
 	defer run.mu.Unlock()
@@ -705,9 +731,16 @@ func snapshotMainRun(run *mainRunState) MainRunSnapshot {
 }
 
 func snapshotMainRunLocked(run *mainRunState) MainRunSnapshot {
-	return MainRunSnapshot{
+	snapshot := MainRunSnapshot{
 		RunID: run.id, SessionID: run.sessionID, Active: run.active,
 		StartedAt: run.startedAt, CompletedAt: run.completedAt,
 		LastSequence: run.nextSeq, AnchorMessageID: run.anchorMessageID, Done: run.done, Err: run.err,
 	}
+	if run.boundary != nil {
+		boundary := run.boundary.CompletedSnapshot()
+		snapshot.DurableAnchorID = boundary.DurableAnchorID
+		snapshot.DurableAnchorValid = boundary.Durable
+		snapshot.CompletedMessages = boundary.Messages
+	}
+	return snapshot
 }

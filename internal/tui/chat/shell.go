@@ -725,6 +725,7 @@ func (m *Model) sendDirectShellResult(command, content string) (tea.Model, tea.C
 	m.recordCurrentModelUse()
 	m.ensureContextMessages()
 	m.appendPendingModelSwitchMarker()
+	m.activeBranchAnchorID = lastSafeBranchMessageID(m.messages)
 
 	userMsg := &session.Message{
 		SessionID:   m.sess.ID,
@@ -737,8 +738,10 @@ func (m *Model) sendDirectShellResult(command, content string) (tea.Model, tea.C
 	m.messages = append(m.messages, *userMsg)
 	m.invalidateHistoryCache()
 	if m.store != nil {
-		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
-		m.messages[len(m.messages)-1].ID = userMsg.ID
+		if err := m.store.AddMessage(context.Background(), m.sess.ID, userMsg); err == nil && userMsg.ID > 0 {
+			m.messages[len(m.messages)-1].ID = userMsg.ID
+			m.activeBranchAnchorID = userMsg.ID
+		}
 		_ = m.store.IncrementUserTurns(context.Background(), m.sess.ID)
 		m.sess.UserTurns++
 		if m.sess.Summary == "" {

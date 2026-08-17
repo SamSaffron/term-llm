@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -85,12 +86,22 @@ func newBranchChatModel() (*Model, *branchChatStore, []session.Message) {
 func attachBlockingMainRun(t *testing.T, m *Model) *MainRunManager {
 	t.Helper()
 	manager := NewMainRunManager(context.Background())
+	anchorID := m.activeBranchAnchorID
+	if anchorID <= 0 {
+		anchorID = lastSafeBranchMessageID(m.messages)
+	}
+	providerMessages := make([]llm.Message, 0, len(m.messages))
+	for i := range m.messages {
+		providerMessages = append(providerMessages, m.messages[i].ToLLMMessage())
+	}
+	boundary := runboundary.New("test-boundary", providerMessages, anchorID, anchorID > 0)
 	_, err := manager.Start(m.SessionID(), MainRunExecution{
 		Execute: func(ctx context.Context, _ func(ui.StreamEvent)) error {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-		AnchorMessageID: m.activeBranchAnchorID,
+		AnchorMessageID: anchorID,
+		Boundary:        boundary,
 	})
 	if err != nil {
 		t.Fatalf("start main run: %v", err)
@@ -187,7 +198,7 @@ func TestThreadCommandBranchesAtRootAndCarriesOnlyNonEmptyInstructions(t *testin
 	}
 }
 
-func TestForkCommandUsesLastSafeBoundaryWhileReplyIsActive(t *testing.T) {
+func TestForkCommandUsesLatestDurableCompletedBoundaryWhileReplyIsActive(t *testing.T) {
 	m, store, messages := newBranchChatModel()
 	tool := session.Message{ID: 14, SessionID: m.sess.ID, Role: llm.RoleTool, TextContent: "complete result", Sequence: 3}
 	partial := session.Message{ID: 15, SessionID: m.sess.ID, Role: llm.RoleAssistant, TextContent: "partial", Sequence: 4}
@@ -196,6 +207,12 @@ func TestForkCommandUsesLastSafeBoundaryWhileReplyIsActive(t *testing.T) {
 	m.streaming = true
 	m.activeBranchAnchorID = messages[1].ID
 	manager := attachBlockingMainRun(t, m)
+	manager.mu.RLock()
+	boundary := manager.runs[m.SessionID()].boundary
+	manager.mu.RUnlock()
+	if !boundary.Commit("test-boundary", 0, []llm.Message{tool.ToLLMMessage()}) || !boundary.PublishDurable("test-boundary", 0, tool.ID) {
+		t.Fatal("publish completed tool boundary")
+	}
 
 	updated, cmd := m.ExecuteCommand("/fork try another direction")
 	m = updated.(*Model)
@@ -205,7 +222,7 @@ func TestForkCommandUsesLastSafeBoundaryWhileReplyIsActive(t *testing.T) {
 	if !manager.HasActive(m.SessionID()) {
 		t.Fatal("fork cancelled the source main run")
 	}
-	if len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != messages[1].ID || store.createOpts[0].ExpectedState != nil {
+	if len(store.createOpts) != 1 || store.createOpts[0].AnchorMessageID != tool.ID || store.createOpts[0].ExpectedState != nil {
 		t.Fatalf("active fork options = %#v", store.createOpts)
 	}
 	if !isStreamingLocalSlashCommand("/fork try another direction") || !isStreamingLocalSlashCommand("/thread") {

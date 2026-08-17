@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -1094,6 +1095,61 @@ func TestStreamEventCoalescerMergesTextAndPreservesOrder(t *testing.T) {
 	close(ch)
 	if _, ok = co.next(); ok {
 		t.Fatal("expected closed channel to report ok=false")
+	}
+}
+
+func TestCompletedToolPersistenceAdvancesDurableRunBoundary(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sess := &session.Session{ID: "stream-boundary", Provider: "mock", ProviderKey: "mock", Model: "mock", Status: session.StatusActive}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTestChatModel(false)
+	m.store, m.sess = store, sess
+	m.activeBranchAnchorID = user.ID
+	m.runBoundary = runboundary.New("stream-run", []llm.Message{llm.UserText("question")}, user.ID, true)
+	_, responseCompleted, turnCompleted := m.streamPersistenceCallbacks(time.Now())
+	assistant := llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file"}}}}
+	if err := responseCompleted(ctx, 0, assistant, llm.TurnMetrics{}); err != nil {
+		t.Fatal(err)
+	}
+	tool := llm.ToolResultMessage("call-1", "read_file", "result", nil)
+	if err := turnCompleted(ctx, 0, []llm.Message{tool}, llm.TurnMetrics{}); err != nil {
+		t.Fatal(err)
+	}
+
+	boundary := m.runBoundary.CompletedSnapshot()
+	if !boundary.Durable || boundary.DurableAnchorID <= user.ID {
+		t.Fatalf("durable boundary = %#v, model anchor=%d", boundary, m.activeBranchAnchorID)
+	}
+	rows, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 || rows[len(rows)-1].ID != boundary.DurableAnchorID || rows[len(rows)-1].Role != llm.RoleTool {
+		t.Fatalf("persisted rows = %#v", rows)
+	}
+
+	finalAssistant := llm.AssistantText("final answer")
+	if err := responseCompleted(ctx, 1, finalAssistant, llm.TurnMetrics{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := turnCompleted(ctx, 1, nil, llm.TurnMetrics{}); err != nil {
+		t.Fatal(err)
+	}
+	finalBoundary := m.runBoundary.CompletedSnapshot()
+	if !finalBoundary.Durable || finalBoundary.DurableAnchorID <= boundary.DurableAnchorID || len(finalBoundary.Messages) == 0 || finalBoundary.Messages[len(finalBoundary.Messages)-1].Role != llm.RoleAssistant {
+		t.Fatalf("final assistant boundary = %#v", finalBoundary)
 	}
 }
 

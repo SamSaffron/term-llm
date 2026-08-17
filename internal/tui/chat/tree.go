@@ -117,13 +117,8 @@ func visibleAssistantBranchRow(message session.Message) bool {
 
 func lastSafeBranchMessageID(messages []session.Message) int64 {
 	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-		if hiddenBranchTreeMessage(message) {
-			continue
-		}
-		switch message.Role {
-		case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
-			return message.ID
+		if session.IsBranchableMessage(messages[i]) {
+			return messages[i].ID
 		}
 	}
 	return 0
@@ -164,6 +159,15 @@ func (m *Model) branchShortcutState() ([]session.Message, session.TranscriptMuta
 	return messages, state, active, nil
 }
 
+func (m *Model) activeDurableBranchAnchor() (int64, bool) {
+	if m.mainRunManager != nil {
+		if boundary, active := m.mainRunManager.ActiveBoundary(m.SessionID()); active {
+			return boundary.DurableAnchorID, boundary.Durable
+		}
+	}
+	return m.activeBranchAnchorID, m.activeBranchAnchorID > 0
+}
+
 func (m *Model) cmdThread(rawMessage string) (tea.Model, tea.Cmd) {
 	if len(m.files) > 0 || len(m.images) > 0 {
 		return m.showFooterWarning("Start the thread before attaching files or images.")
@@ -177,7 +181,11 @@ func (m *Model) cmdThread(rawMessage string) (tea.Model, tea.Cmd) {
 	}
 	contextMessages := messages
 	if active {
-		contextMessages = messagesThroughBranchAnchor(messages, m.activeBranchAnchorID)
+		anchorID, available := m.activeDurableBranchAnchor()
+		if !available {
+			return m.showFooterWarning("The active run does not yet have a durable completed boundary to branch from.")
+		}
+		contextMessages = messagesThroughBranchAnchor(messages, anchorID)
 	}
 	sourceMessages, err := session.MessagesAfterBranchAnchor(contextMessages, 0)
 	if err != nil {
@@ -213,9 +221,14 @@ func (m *Model) cmdFork(rawMessage string) (tea.Model, tea.Cmd) {
 	}
 	anchorID := lastSafeBranchMessageID(messages)
 	if active {
-		// Rewind the whole in-flight response. Its start anchor is the last
-		// boundary known to precede partial assistant output or unfinished tools.
-		anchorID = m.activeBranchAnchorID
+		var available bool
+		anchorID, available = m.activeDurableBranchAnchor()
+		if !available {
+			return m.showFooterWarning("The active run does not yet have a durable completed boundary to fork from.")
+		}
+		if len(messagesThroughBranchAnchor(messages, anchorID)) == 0 {
+			return m.showFooterWarning("The active branch boundary changed; retry after the transcript refreshes.")
+		}
 	}
 	point := conversationBranchPoint{
 		sourceSessionID:   m.sess.ID,
@@ -258,10 +271,11 @@ func (m *Model) cmdTree(args []string) (tea.Model, tea.Cmd) {
 		return m.showFooterWarning("Cannot switch paths while work is active because background TUI runs are not available.")
 	}
 	if active {
-		// Only expose the immutable prefix that predates the in-flight response.
-		// Partial assistant snapshots and unfinished tool activity remain on the
-		// source path and can never become branch anchors.
-		messages = messagesThroughBranchAnchor(messages, m.activeBranchAnchorID)
+		anchorID, available := m.activeDurableBranchAnchor()
+		if !available {
+			return m.showFooterWarning("The active run does not yet have a durable completed boundary to inspect.")
+		}
+		messages = messagesThroughBranchAnchor(messages, anchorID)
 	}
 	mutationStore, ok := m.store.(session.TranscriptUndoRedoStore)
 	if !ok {

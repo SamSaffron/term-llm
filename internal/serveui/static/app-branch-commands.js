@@ -17,16 +17,7 @@ const stableBranchCommandAnchor = (session, sourceActive) => {
   if (sourceActive) {
     const runAnchor = session.transcript?.conversation?.active?.anchor;
     const durableAnchor = Number(runAnchor?.durableRowId);
-    if (Number.isFinite(durableAnchor) && durableAnchor > 0) return durableAnchor;
-    const clientAnchor = String(runAnchor?.clientMessageId || '').trim();
-    const activeUserIndex = clientAnchor
-      ? messages.findIndex((message) => String(message?.clientMessageId || '').trim() === clientAnchor)
-      : -1;
-    for (let index = activeUserIndex - 1; index >= 0; index -= 1) {
-      const id = durableTailID(messages[index]);
-      if (id > 0) return id;
-    }
-    return 0;
+    return Number.isFinite(durableAnchor) && durableAnchor > 0 ? durableAnchor : 0;
   }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const id = durableTailID(messages[index]);
@@ -48,8 +39,12 @@ const beginBranchCommand = (kind, message = '') => {
   const sourceActive = Boolean(state.streaming || state.compressing || state.sideQuestion?.running
     || source.transcript?.activeRun || app.sessionHasInProgressState?.(source));
   const stableAnchor = stableBranchCommandAnchor(source, sourceActive);
-  const visibleMessages = window.TermLLMConversation.sessionMessages(source);
   const rootThread = kind === 'thread';
+  if (sourceActive && !rootThread && stableAnchor <= 0) {
+    app.showToast?.('The active response does not yet have a durable completed boundary to fork from.', { id: 'conversation-branch', tone: 'warning' });
+    return false;
+  }
+  const visibleMessages = window.TermLLMConversation.sessionMessages(source);
   const draft = {
     sourceSessionId: source.id,
     anchorMessageId: rootThread ? 0 : stableAnchor,

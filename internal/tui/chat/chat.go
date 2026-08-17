@@ -25,6 +25,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/mentions"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/subagentview"
@@ -399,6 +400,7 @@ type Model struct {
 	queuedBranchSend       *pendingBranchSend
 	branchAutoSend         string
 	activeBranchAnchorID   int64
+	runBoundary            *runboundary.Tracker
 
 	mainRunManager      *MainRunManager
 	mainRunLive         <-chan MainRunEvent

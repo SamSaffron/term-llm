@@ -50,6 +50,26 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 	return result, true, nil
 }
 
+// IsBranchableMessage reports whether message may be used as a durable branch
+// anchor. Provider-context-only rows (system, developer, and events) and
+// compaction artifacts are not continuation boundaries.
+func IsBranchableMessage(message Message) bool {
+	if message.CompactionTail || llm.IsInternalCompactionSummaryText(message.TextContent) {
+		return false
+	}
+	for _, part := range message.Parts {
+		if part.Type == llm.PartText && llm.IsInternalCompactionSummaryText(part.Text) {
+			return false
+		}
+	}
+	switch message.Role {
+	case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+		return true
+	default:
+		return false
+	}
+}
+
 // CreateBranch materializes a normal linear child session containing the source
 // transcript prefix through opts.AnchorMessageID. The dedicated edge table is
 // metadata only; provider state, redo state, plans, goals, and usage are not copied.
@@ -135,7 +155,8 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			} else if err != nil {
 				return fmt.Errorf("resolve branch anchor: %w", err)
 			}
-			if anchorCompactionTail || (anchorRole == string(llm.RoleUser) && llm.IsInternalCompactionSummaryText(anchorText)) {
+			anchor := Message{Role: llm.Role(anchorRole), TextContent: anchorText, CompactionTail: anchorCompactionTail}
+			if !IsBranchableMessage(anchor) {
 				return ErrNotFound
 			}
 			nullableAnchor = opts.AnchorMessageID

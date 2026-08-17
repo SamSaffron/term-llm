@@ -46,6 +46,30 @@ func TestWebBranchTreePointsIncludeEveryVisibleUserMessage(t *testing.T) {
 	}
 }
 
+func TestActiveWebBranchSafetyAcceptsPublishedCompletedToolBoundary(t *testing.T) {
+	const responseID = "resp-moving-boundary"
+	messages := []session.Message{
+		{ID: 1, Sequence: 0, Role: llm.RoleUser},
+		{ID: 2, Sequence: 1, Role: llm.RoleAssistant, ResponseID: responseID},
+		{ID: 3, Sequence: 2, Role: llm.RoleTool, ResponseID: responseID},
+		{ID: 4, Sequence: 3, Role: llm.RoleAssistant, ResponseID: responseID},
+	}
+	if status := activeWebBranchAnchorSafety(messages, responseID, 3, 3); status != activeWebBranchAnchorSafe {
+		t.Fatalf("published tool boundary status = %v, want safe", status)
+	}
+	if status := activeWebBranchAnchorSafety(messages, responseID, 3, 4); status != activeWebBranchAnchorUnstable {
+		t.Fatalf("partial row status = %v, want unstable", status)
+	}
+	messages = append(messages, session.Message{ID: 5, Sequence: 4, Role: llm.RoleSystem})
+	if status := activeWebBranchAnchorSafety(messages, responseID, 3, 5); status != activeWebBranchAnchorInvalid {
+		t.Fatalf("system row status = %v, want invalid", status)
+	}
+	pruned := pruneActiveWebBranchOutput(messages, responseID, 3)
+	if len(pruned) != 3 || pruned[len(pruned)-1].ID != 3 {
+		t.Fatalf("active prefix = %#v", pruned)
+	}
+}
+
 func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeInterjections(t *testing.T) {
 	ctx := context.Background()
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
@@ -63,8 +87,8 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeInterjections(t *t
 		{ID: 3, Role: llm.RoleUser},
 		{ID: 4, Role: llm.RoleAssistant, ResponseID: responseID},
 	}
-	if got := activeWebBranchAnchorRowID(fallbackMessages, responseID, 0); got != 2 {
-		t.Fatalf("fallback active anchor = %d, want initial user row 2", got)
+	if got := activeWebBranchAnchorRowID(fallbackMessages, responseID, 0); got != -1 {
+		t.Fatalf("missing published active anchor = %d, want fail-closed sentinel -1", got)
 	}
 	if got := activeWebBranchAnchorRowID([]session.Message{{ID: 1, Role: llm.RoleAssistant, ResponseID: responseID}}, responseID, 0); got != -1 {
 		t.Fatalf("unbounded active anchor = %d, want fail-closed sentinel -1", got)
@@ -96,6 +120,7 @@ func TestWebBranchTreePointsPruneActiveResponseOutputAndUnsafeInterjections(t *t
 	t.Cleanup(manager.Close)
 	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
 	run.anchorRowID = messages[2].ID
+	run.anchorAvailable = true
 	if err := manager.create(run); err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +188,7 @@ func TestSessionBranchEndpointAllowsActiveSourceAtStableAnchor(t *testing.T) {
 	t.Cleanup(manager.Close)
 	run := newResponseRun(responseID, sourceID, "", "mock-model", time.Now().Unix(), nil)
 	run.anchorRowID = messages[2].ID
+	run.anchorAvailable = true
 	if err := manager.create(run); err != nil {
 		t.Fatal(err)
 	}

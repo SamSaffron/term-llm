@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -106,7 +107,9 @@ type responseRun struct {
 	sessionID              string
 	previousResponseID     string
 	clientMessageID        string
-	anchorRowID            int64
+	anchorRowID            int64 // latest durable completed boundary; zero means unavailable
+	anchorAvailable        bool
+	boundary               *runboundary.Tracker
 	model                  string
 	reasoningEffort        string
 	reasoningEffortSet     bool
@@ -203,6 +206,60 @@ func tagResponseRunMessage(ctx context.Context, msg llm.Message, segmentOrdinal 
 	return msg
 }
 
+func (r *responseRun) setInitialDurableBoundary(rowID int64) bool {
+	if r == nil || rowID <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.boundary == nil || !r.boundary.SetInitialDurable(r.id, rowID) {
+		return false
+	}
+	r.anchorRowID, r.anchorAvailable = rowID, true
+	return true
+}
+
+func (r *responseRun) publishDurableBoundary(turnIndex int, rowID int64) bool {
+	if r == nil || rowID <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.boundary == nil || !r.boundary.PublishDurable(r.id, turnIndex, rowID) {
+		return false
+	}
+	r.anchorRowID, r.anchorAvailable = rowID, true
+	return true
+}
+
+func (r *responseRun) commitCompletedBoundary(turnIndex int, messages []llm.Message, rowID int64, durable bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	boundary := r.boundary
+	runID := r.id
+	r.mu.Unlock()
+	if boundary == nil || !boundary.Commit(runID, turnIndex, messages) {
+		return
+	}
+	if durable && rowID > 0 {
+		r.publishDurableBoundary(turnIndex, rowID)
+	}
+}
+
+func (r *responseRun) invalidateDurableBoundary() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.boundary != nil {
+		r.boundary.InvalidateDurable(r.id)
+	}
+	r.anchorRowID, r.anchorAvailable = 0, false
+}
+
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
 	return &responseRun{
 		id:                   respID,
@@ -217,6 +274,7 @@ func newResponseRun(respID, sessionID, previousResponseID, model string, created
 		currentToolGroup:     -1,
 		segmentRanges:        make(map[int]responseRunSegmentRange),
 		persistence:          newResponseRunPersistenceLedger(),
+		boundary:             runboundary.New(respID, nil, 0, false),
 		compactionEnabled:    true,
 		subscribers:          make(map[int]chan responseRunEvent),
 		subscriberWarned:     make(map[int]bool),
@@ -2534,8 +2592,19 @@ func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID s
 			run.startedRev = snapshot.Rev
 			run.startedCompactionSeq = snapshot.CompactionSeq
 			run.startedCompactionCount = snapshot.CompactionCount
-			if len(snapshot.Items) > 0 {
-				run.anchorRowID = snapshot.Items[len(snapshot.Items)-1].ID
+			for i := len(snapshot.Items) - 1; i >= 0; i-- {
+				item := snapshot.Items[i]
+				if item.ID <= 0 || item.Flags&session.TranscriptFlagCompactionTail != 0 {
+					continue
+				}
+				switch llm.Role(item.Role) {
+				case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+					run.setInitialDurableBoundary(item.ID)
+					break
+				default:
+					continue
+				}
+				break
 			}
 		}
 	}

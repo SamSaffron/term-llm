@@ -54,10 +54,12 @@ func (m *Model) SetSideQuestionProviderFactory(factory func(providerKey, model s
 }
 
 func (m *Model) sideSnapshot() []llm.Message {
-	// The streaming context tracks the exact completed provider boundary as the
-	// main turn advances through assistant/tool cycles. Fork from that boundary
-	// so side questions see tool results produced during the active user turn,
-	// while excluding only the assistant response that is still in progress.
+	if m.mainRunManager != nil {
+		if boundary, active := m.mainRunManager.ActiveBoundary(m.SessionID()); active && len(boundary.Messages) > 0 {
+			return sidequestion.CloneMessages(boundary.Messages)
+		}
+	}
+	// Legacy streams retain the prior streaming-context representation.
 	m.contextEstimateMu.Lock()
 	if m.streaming && len(m.streamingContextMessages) > 0 {
 		messages := sidequestion.CloneMessages(m.streamingContextMessages)

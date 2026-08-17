@@ -104,7 +104,11 @@ func (s *serveServer) activeTranscriptRun(sessionID string) (string, int64, int6
 	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	return id, run.startedRev, run.runEpoch, run.clientMessageID, run.anchorRowID
+	anchorRowID := int64(0)
+	if run.anchorAvailable {
+		anchorRowID = run.anchorRowID
+	}
+	return id, run.startedRev, run.runEpoch, run.clientMessageID, anchorRowID
 }
 
 func transcriptJSON(payload any) ([]byte, string, error) {
