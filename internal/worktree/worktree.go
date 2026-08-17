@@ -231,7 +231,16 @@ var (
 	ErrConflict           = errors.New("merge back has conflicts")
 	ErrRootDirty          = errors.New("root checkout has uncommitted changes")
 	ErrMergeCleanupFailed = errors.New("merge succeeded but worktree cleanup failed")
+	rootMutationLocks     sync.Map
 )
+
+func lockRootMutation(root string) func() {
+	key, _ := samePathKey(root)
+	value, _ := rootMutationLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 func (o *CreateOptions) progress(msg string) {
 	if o == nil {
@@ -1148,6 +1157,8 @@ func PromoteToRoot(ctx context.Context, dir, branch string, opts PromoteOptions)
 		return res, fmt.Errorf("branch is required")
 	}
 	root := wt.RepoRoot
+	unlockRoot := lockRootMutation(root)
+	defer unlockRoot()
 	worktreeHead := strings.TrimSpace(wt.HeadSHA)
 	if worktreeHead == "" {
 		worktreeHead, _ = revParseFull(wt.Dir, "HEAD")
@@ -1255,6 +1266,8 @@ func StartAssistedMerge(ctx context.Context, dir string, opts AssistedMergeOptio
 		return AssistedMergeResult{}, err
 	}
 	root := wt.RepoRoot
+	unlockRoot := lockRootMutation(root)
+	defer unlockRoot()
 	base := strings.TrimSpace(wt.Base)
 	if base == "" {
 		base = "HEAD"
@@ -1353,6 +1366,11 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 		return MergeResult{}, err
 	}
 	root := wt.RepoRoot
+	if mergeBackTestHook != nil {
+		mergeBackTestHook("before-lock")
+	}
+	unlockRoot := lockRootMutation(root)
+	defer unlockRoot()
 	base := strings.TrimSpace(wt.Base)
 	if base == "" {
 		base = "HEAD"
@@ -1373,6 +1391,9 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 	}
 	if !opts.AllowDirty && strings.TrimSpace(res.RootStatus) != "" {
 		return res, ErrRootDirty
+	}
+	if mergeBackTestHook != nil {
+		mergeBackTestHook("root-clean")
 	}
 	msg := strings.TrimSpace(opts.Message)
 	if msg == "" {
@@ -1415,6 +1436,8 @@ func MergeBack(ctx context.Context, dir string, opts MergeOptions) (MergeResult,
 	}
 	return res, nil
 }
+
+var mergeBackTestHook func(stage string)
 
 // MergeBackAndCleanup merges a worktree into root and removes it when no other
 // sessions are bound to it. The excluded session is normally the caller's own
@@ -1641,6 +1664,9 @@ func boundedLines(out string, max int) []string {
 }
 
 func cleanupCherryPickState(root string) error {
+	if !cherryPickStateExists(root) && len(conflictFiles(root)) == 0 {
+		return nil
+	}
 	var errs []string
 	if out, err := runGit(root, "reset", "--merge"); err != nil {
 		errs = append(errs, fmt.Sprintf("git reset --merge: %v: %s", err, strings.TrimSpace(out)))
