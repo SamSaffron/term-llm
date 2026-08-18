@@ -1314,7 +1314,10 @@ func configValueCompletions(key, toComplete string) []string {
 		parts := strings.Split(key, ".")
 		if len(parts) == 3 {
 			provider := parts[1]
-			models := llm.ResolveProviderModelIDs(provider)
+			models := ollamaModelCompletions(provider, cfg)
+			if len(models) == 0 {
+				models = llm.ResolveProviderModelIDs(provider)
+			}
 			var completions []string
 			for _, m := range models {
 				if strings.HasPrefix(m, toComplete) {
@@ -1330,7 +1333,10 @@ func configValueCompletions(key, toComplete string) []string {
 		parts := strings.Split(key, ".")
 		if len(parts) == 3 {
 			provider := parts[1]
-			models := llm.ResolveProviderModelIDs(provider)
+			models := ollamaModelCompletions(provider, cfg)
+			if len(models) == 0 {
+				models = llm.ResolveProviderModelIDs(provider)
+			}
 			var completions []string
 			for _, m := range models {
 				if strings.HasPrefix(m, toComplete) {

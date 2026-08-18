@@ -65,6 +65,7 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeVenice:       true,
 	config.ProviderTypeNearAI:       true,
 	config.ProviderTypeSambaNova:    true,
+	config.ProviderTypeOllama:       true,
 	config.ProviderTypeCursorBin:    true,
 	config.ProviderTypeGrokBin:      true,
 }
@@ -180,6 +181,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
 		}
 		lister = llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName)
+	case config.ProviderTypeOllama:
+		lister = llm.NewOllamaChatProvider(providerCfg.BaseURL, providerCfg.Model, llm.OllamaOptions{})
 	case config.ProviderTypeZen:
 		lister = llm.NewZenProvider(providerCfg.ResolvedAPIKey, "")
 	case config.ProviderTypeOpenCodeGo:
@@ -283,6 +286,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 		// Show input limit if known
 		if ctxStr := llm.FormatTokenCount(m.InputLimit); ctxStr != "" {
 			fmt.Printf(" [%s input]", ctxStr)
+		}
+		if len(m.ReasoningEfforts) > 0 {
+			fmt.Printf(" (effort: %s)", strings.Join(m.ReasoningEfforts, ", "))
 		}
 
 		// Show pricing info only if provider returns it

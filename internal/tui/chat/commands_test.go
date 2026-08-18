@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1278,6 +1280,44 @@ func TestCycleEffortShortcutHandlesBaseModelEndingInMax(t *testing.T) {
 		if strings.Contains(rm.footerMessage, "does not expose switchable reasoning efforts") {
 			t.Fatalf("Ctrl-R %d lost qwen reasoning metadata: %q", i+1, rm.footerMessage)
 		}
+	}
+}
+
+func TestCycleEffortShortcutUsesCachedOllamaCapabilities(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/tags":
+			fmt.Fprintln(w, `{"models":[{"name":"qwen3.8:27b-thinking","details":{"context_length":262144}}]}`)
+		case "/api/show":
+			fmt.Fprintln(w, `{"capabilities":["completion","thinking","tools"]}`)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	provider := llm.NewOllamaChatProvider(server.URL, "qwen3.8:27b-thinking", llm.OllamaOptions{})
+	if _, err := provider.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+
+	m, _ := newEffortCmdTestModel("ollama", "qwen3.8:27b-thinking-high")
+	m.config.Providers["ollama"] = config.ProviderConfig{
+		Type:    config.ProviderTypeOllama,
+		BaseURL: server.URL,
+		Model:   "qwen3.8:27b-thinking",
+	}
+	prepareEffortShortcutTestModel(m)
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if rm.modelName != "qwen3.8:27b-thinking-xhigh" {
+		t.Fatalf("modelName = %q, want xhigh variant; footer=%q", rm.modelName, rm.footerMessage)
+	}
+	if strings.Contains(rm.footerMessage, "does not expose switchable reasoning efforts") {
+		t.Fatalf("cached Ollama reasoning metadata was ignored: %q", rm.footerMessage)
 	}
 }
 

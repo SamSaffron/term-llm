@@ -19,18 +19,19 @@ type ModelCache struct {
 }
 
 type CachedModel struct {
-	ID               string           `json:"id"`
-	DisplayName      string           `json:"display_name,omitempty"`
-	Created          int64            `json:"created,omitempty"`
-	OwnedBy          string           `json:"owned_by,omitempty"`
-	InputLimit       int              `json:"input_limit,omitempty"`
-	OutputLimit      int              `json:"output_limit,omitempty"`
-	InputPrice       float64          `json:"input_price,omitempty"`
-	OutputPrice      float64          `json:"output_price,omitempty"`
-	ReasoningEfforts []string         `json:"reasoning_efforts,omitempty"`
-	ReasoningBudgets map[string]int64 `json:"reasoning_budgets,omitempty"`
-	Protocol         string           `json:"protocol,omitempty"`
-	Deprecated       bool             `json:"deprecated,omitempty"`
+	ID                string           `json:"id"`
+	DisplayName       string           `json:"display_name,omitempty"`
+	Created           int64            `json:"created,omitempty"`
+	OwnedBy           string           `json:"owned_by,omitempty"`
+	InputLimit        int              `json:"input_limit,omitempty"`
+	ConfiguredContext int              `json:"configured_context,omitempty"`
+	OutputLimit       int              `json:"output_limit,omitempty"`
+	InputPrice        float64          `json:"input_price,omitempty"`
+	OutputPrice       float64          `json:"output_price,omitempty"`
+	ReasoningEfforts  []string         `json:"reasoning_efforts,omitempty"`
+	ReasoningBudgets  map[string]int64 `json:"reasoning_budgets,omitempty"`
+	Protocol          string           `json:"protocol,omitempty"`
+	Deprecated        bool             `json:"deprecated,omitempty"`
 }
 
 func getCacheDir() (string, error) {

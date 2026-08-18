@@ -1,10 +1,18 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/spf13/viper"
 )
 
 func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
@@ -28,6 +36,80 @@ func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
 func TestModelListSupportedTypesIncludesNearAI(t *testing.T) {
 	if !modelListSupportedTypes[config.ProviderTypeNearAI] {
 		t.Fatal("NEAR AI should be wired for dynamic model listing")
+	}
+}
+
+func TestModelListSupportedTypesIncludesOllama(t *testing.T) {
+	if !modelListSupportedTypes[config.ProviderTypeOllama] {
+		t.Fatal("Ollama should be wired for dynamic model listing")
+	}
+}
+
+func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/tags":
+			fmt.Fprint(w, `{"models":[{"name":"remote-only:latest"},{"name":"embedding:4b"}]}`)
+		case "/api/show":
+			fmt.Fprint(w, `{"capabilities":["completion"]}`)
+		default:
+			t.Errorf("requested unexpected path %q", r.URL.Path)
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	configHome := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configYAML := fmt.Sprintf("default_provider: ollama\nproviders:\n  ollama:\n    type: ollama\n    base_url: %s\n    model: remote-only:latest\n", server.URL)
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldProvider, oldJSON := modelsProvider, modelsJSON
+	modelsProvider, modelsJSON = "ollama", true
+	t.Cleanup(func() {
+		modelsProvider, modelsJSON = oldProvider, oldJSON
+	})
+
+	readOut, writeOut, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = writeOut
+	err = runModels(modelsCmd, nil)
+	_ = writeOut.Close()
+	os.Stdout = oldStdout
+	if err != nil {
+		t.Fatalf("runModels: %v", err)
+	}
+	var models []llm.ModelInfo
+	if err := json.NewDecoder(readOut).Decode(&models); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	_ = readOut.Close()
+
+	got := make([]string, 0, len(models))
+	for _, model := range models {
+		got = append(got, model.ID)
+	}
+	want := []string{"remote-only:latest", "embedding:4b"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("listed models = %v, want %v", got, want)
+	}
+	if slices.Contains(got, "qwen2.5-coder:7b") {
+		t.Fatalf("listed models unexpectedly contain static fallback: %v", got)
 	}
 }
 

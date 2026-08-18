@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -192,6 +193,29 @@ func TestApprovalConfigValueCompletionsExcludeYolo(t *testing.T) {
 		if !reflect.DeepEqual(got, []string{"prompt", "auto"}) {
 			t.Fatalf("configValueCompletions(%q) = %v, want [prompt auto]", key, got)
 		}
+	}
+}
+
+func TestOllamaConfigModelCompletionFallsBackWhenEndpointUnavailable(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("providers:\n  ollama:\n    type: ollama\n    base_url: http://127.0.0.1:1\n")
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := configValueCompletions("providers.ollama.model", "qwen2.5-coder")
+	if !slices.Contains(got, "qwen2.5-coder:7b") {
+		t.Fatalf("offline Ollama model completions = %v, want curated fallback", got)
 	}
 }
 

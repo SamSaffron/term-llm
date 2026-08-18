@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -126,6 +127,11 @@ func TestOllamaProviderStream(t *testing.T) {
 
 func TestOllamaProviderStreamThink(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"capabilities":["completion","thinking"]}`)
+			return
+		}
 		var req ollamaChatRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		if value, ok := req.Think.(bool); !ok || !value {
@@ -215,6 +221,11 @@ func TestOllamaProviderStreamThinkFalse(t *testing.T) {
 func TestOllamaProviderStreamThinkLevel(t *testing.T) {
 	var capturedThink any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"capabilities":["completion","thinking"]}`)
+			return
+		}
 		var req ollamaChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -244,10 +255,10 @@ func TestOllamaProviderStreamThinkLevel(t *testing.T) {
 }
 
 func TestNormalizeOllamaThinkLevel(t *testing.T) {
-	for _, level := range []string{"low", "medium", "high", "max"} {
+	for level, want := range map[string]string{"low": "low", "medium": "medium", "high": "high", "max": "max", "xhigh": "max"} {
 		got, err := normalizeOllamaThinkLevel(level)
-		if err != nil || got != level {
-			t.Fatalf("normalizeOllamaThinkLevel(%q) = %q, %v", level, got, err)
+		if err != nil || got != want {
+			t.Fatalf("normalizeOllamaThinkLevel(%q) = %q, %v; want %q", level, got, err, want)
 		}
 	}
 	if _, err := normalizeOllamaThinkLevel("extreme"); err == nil {
@@ -260,6 +271,127 @@ func TestOllamaProviderStreamRejectsInvalidThinkLevel(t *testing.T) {
 	_, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
 	if err == nil || !strings.Contains(err.Error(), "invalid Ollama think_level") {
 		t.Fatalf("error = %v, want invalid think_level guidance", err)
+	}
+}
+
+func TestOllamaProviderStreamReasoningSuffixes(t *testing.T) {
+	for suffix, wantThink := range map[string]string{
+		"low": "low", "medium": "medium", "high": "high", "xhigh": "max",
+	} {
+		t.Run(suffix, func(t *testing.T) {
+			var captured ollamaChatRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/show":
+					var req struct {
+						Model string `json:"model"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "bad request", http.StatusBadRequest)
+						return
+					}
+					if req.Model != "qwen3.8:27b" {
+						http.Error(w, "model not found", http.StatusNotFound)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprintln(w, `{"capabilities":["completion","thinking","tools"]}`)
+				case "/api/chat":
+					if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+						t.Fatalf("decode chat request: %v", err)
+					}
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					fmt.Fprintln(w, `{"message":{"role":"assistant","content":"ok"},"done":true}`)
+				default:
+					http.Error(w, "not found", http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			p := NewOllamaChatProvider(srv.URL, "qwen3.8:27b-"+suffix, OllamaOptions{})
+			stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			defer stream.Close()
+			for {
+				if _, err := stream.Recv(); err != nil {
+					break
+				}
+			}
+			if captured.Model != "qwen3.8:27b" || captured.Think != wantThink {
+				t.Fatalf("chat request model/think = %q/%#v, want qwen3.8:27b/%q", captured.Model, captured.Think, wantThink)
+			}
+		})
+	}
+}
+
+func TestOllamaProviderStreamPreservesExactModelEndingInEffort(t *testing.T) {
+	var captured ollamaChatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"capabilities":["completion"]}`)
+		case "/api/chat":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode chat request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			fmt.Fprintln(w, `{"message":{"role":"assistant","content":"ok"},"done":true}`)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	provider := NewOllamaChatProvider(srv.URL, "natural-high", OllamaOptions{})
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+	if captured.Model != "natural-high" || captured.Think != nil {
+		t.Fatalf("chat request model/think = %q/%#v, want exact model with no inferred effort", captured.Model, captured.Think)
+	}
+}
+
+func TestOllamaProviderRejectsReasoningSuffixForNonThinkingModel(t *testing.T) {
+	var chatCalled atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if req.Model == "plain:7b-high" {
+				http.Error(w, "model not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"capabilities":["completion"]}`)
+			return
+		}
+		chatCalled.Store(true)
+		http.Error(w, "unexpected chat", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p := NewOllamaChatProvider(srv.URL, "plain:7b-high", OllamaOptions{})
+	_, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err == nil || !strings.Contains(err.Error(), "does not advertise thinking support") {
+		t.Fatalf("error = %v", err)
+	}
+	if chatCalled.Load() {
+		t.Fatal("chat request was sent for unsupported reasoning suffix")
 	}
 }
 
@@ -767,13 +899,28 @@ func TestBuildOllamaMessagesMalformedToolResultImagesAreVisible(t *testing.T) {
 }
 
 func TestOllamaProviderListModels(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tags" {
-			http.Error(w, "not found", 404)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"models":[{"name":"qwen2.5-coder:7b"},{"name":"qwen3:14b"}]}`)
+		switch r.URL.Path {
+		case "/api/tags":
+			fmt.Fprintln(w, `{"models":[{"name":"qwen2.5-coder:7b"},{"name":"qwen3:14b"}]}`)
+		case "/api/show":
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if req.Model == "qwen3:14b" {
+				fmt.Fprintln(w, `{"capabilities":["completion","thinking","tools"],"parameters":"num_ctx 65536\n","model_info":{"qwen3.context_length":131072}}`)
+			} else {
+				fmt.Fprintln(w, `{"capabilities":["completion","tools"],"parameters":"num_ctx 8192\n","model_info":{"qwen2.context_length":32768}}`)
+			}
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
 	}))
 	defer srv.Close()
 
@@ -788,8 +935,57 @@ func TestOllamaProviderListModels(t *testing.T) {
 	if models[0].ID != "qwen2.5-coder:7b" {
 		t.Errorf("expected qwen2.5-coder:7b, got %q", models[0].ID)
 	}
+	if models[0].InputLimit != 32768 {
+		t.Errorf("expected qwen2.5-coder:7b context 32768, got %d", models[0].InputLimit)
+	}
 	if models[1].ID != "qwen3:14b" {
 		t.Errorf("expected qwen3:14b, got %q", models[1].ID)
+	}
+	if models[1].InputLimit != 131072 {
+		t.Errorf("expected qwen3:14b context 131072, got %d", models[1].InputLimit)
+	}
+	if models[0].ConfiguredContext != 8192 || models[1].ConfiguredContext != 65536 {
+		t.Errorf("configured contexts = %d/%d, want 8192/65536", models[0].ConfiguredContext, models[1].ConfiguredContext)
+	}
+	if len(models[0].ReasoningEfforts) != 0 {
+		t.Errorf("non-thinking model efforts = %v, want none", models[0].ReasoningEfforts)
+	}
+	if !equalSlice(models[1].ReasoningEfforts, ollamaReasoningEfforts) {
+		t.Errorf("thinking model efforts = %v, want %v", models[1].ReasoningEfforts, ollamaReasoningEfforts)
+	}
+}
+
+func TestOllamaProviderListModelsDoesNotOverwriteCacheOnShowFailure(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var failShow atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/tags":
+			fmt.Fprintln(w, `{"models":[{"name":"thinking:7b"}]}`)
+		case "/api/show":
+			if failShow.Load() {
+				http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+				return
+			}
+			fmt.Fprintln(w, `{"capabilities":["completion","thinking"],"parameters":"num_ctx 16384\n","model_info":{"test.context_length":32768}}`)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	provider := NewOllamaChatProvider(srv.URL, "thinking:7b", OllamaOptions{})
+	if _, err := provider.ListModels(context.Background()); err != nil {
+		t.Fatalf("initial ListModels: %v", err)
+	}
+	failShow.Store(true)
+	if _, err := provider.ListModels(context.Background()); err != nil {
+		t.Fatalf("tags-only ListModels after show failure: %v", err)
+	}
+	cached := GetCachedOllamaModelInfos(srv.URL)
+	if len(cached) != 1 || !equalSlice(cached[0].ReasoningEfforts, ollamaReasoningEfforts) || cached[0].ConfiguredContext != 16384 {
+		t.Fatalf("show failure replaced complete cache: %#v", cached)
 	}
 }
 

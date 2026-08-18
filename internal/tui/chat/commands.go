@@ -1354,8 +1354,25 @@ func (m *Model) currentProviderAndModelForEffortCycle() (provider, model string)
 	return provider, model
 }
 
+func (m *Model) cachedOllamaModelEffort(provider, model string) (base, effort string, efforts []string, ok bool) {
+	if m == nil || m.config == nil {
+		return "", "", nil, false
+	}
+	pc, exists := m.config.Providers[strings.TrimSpace(provider)]
+	if !exists || config.InferProviderType(provider, pc.Type) != config.ProviderTypeOllama {
+		return "", "", nil, false
+	}
+	if err := pc.ResolveForInference(); err != nil {
+		return "", "", nil, false
+	}
+	return llm.CachedOllamaModelEffort(pc.BaseURL, model)
+}
+
 func (m *Model) baseModelAndEffort(provider, model string) (string, string) {
 	if base, effort, _, ok := m.configuredModelEffort(provider, model); ok {
+		return base, effort
+	}
+	if base, effort, _, ok := m.cachedOllamaModelEffort(provider, model); ok {
 		return base, effort
 	}
 	model = strings.TrimSpace(model)
@@ -1403,6 +1420,9 @@ func (m *Model) configuredEffortForCycle(provider, model string) (string, bool) 
 func (m *Model) reasoningEffortsForModel(provider, model string) []string {
 	if _, _, efforts, ok := m.configuredModelEffort(provider, model); ok {
 		return efforts
+	}
+	if _, _, efforts, ok := m.cachedOllamaModelEffort(provider, model); ok {
+		return normalizedModelReasoningEfforts(efforts)
 	}
 	base, _ := m.baseModelAndEffort(provider, model)
 	for _, metadata := range m.modelMetadata {

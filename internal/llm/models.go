@@ -836,6 +836,9 @@ func ConfiguredProviderReasoningEfforts(cfg *config.Config, provider string) []s
 	if entry, ok := config.ModelConfigForProviderModel(cfg, provider, pc.Model); ok && len(entry.ReasoningEfforts) > 0 {
 		return normalizeReasoningEfforts(entry.ReasoningEfforts)
 	}
+	if config.InferProviderType(provider, pc.Type) == config.ProviderTypeOllama {
+		return normalizeReasoningEfforts(CachedOllamaReasoningEfforts(pc.BaseURL, pc.Model))
+	}
 	switch strings.ToLower(strings.TrimSpace(pc.Reasoning)) {
 	case "enabled", "enable", "on", "true", "yes":
 		providerType := string(config.InferProviderType(provider, pc.Type))
@@ -905,10 +908,14 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		// Check if config has a models list for this provider
 		var configModels []string
 		var configModel string
+		var configBaseURL string
+		var configuredProviderType config.ProviderType
 		if cfg != nil {
 			if providerCfg, ok := cfg.Providers[provider]; ok {
 				configModels = providerCfg.Models
 				configModel = providerCfg.Model
+				configBaseURL = providerCfg.BaseURL
+				configuredProviderType = providerCfg.Type
 			}
 		}
 
@@ -926,8 +933,8 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 				}
 			}
 		} else {
-			// Resolve provider type, including custom aliases (e.g., "acme" → "venice")
-			providerType := resolveProviderType(provider)
+			// Resolve provider type, including configured custom aliases.
+			providerType := string(config.InferProviderType(provider, configuredProviderType))
 
 			// For LLM (non-image) openrouter, fetch models from API cache
 			if !isImage && (providerType == "openrouter" || provider == "openrouter") {
@@ -946,6 +953,12 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			} else if !isImage && providerType == "opencode-go" {
 				apiKey := resolvedProviderAPIKey(cfg, provider)
 				models = GetCachedOpenCodeGoModelsForAPIKey(apiKey)
+				if len(models) == 0 && configModel != "" {
+					models = []string{configModel}
+				}
+			} else if !isImage && providerType == "ollama" {
+				models = GetCachedOllamaModels(configBaseURL)
+				models = ExpandCachedOllamaReasoningVariants(configBaseURL, models)
 				if len(models) == 0 && configModel != "" {
 					models = []string{configModel}
 				}

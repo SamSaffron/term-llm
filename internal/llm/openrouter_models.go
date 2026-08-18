@@ -89,13 +89,15 @@ func modelInfosFromCache(cached *cache.ModelCache) []ModelInfo {
 				continue
 			}
 			models = append(models, ModelInfo{
-				ID:          m.ID,
-				DisplayName: m.DisplayName,
-				Created:     m.Created,
-				OwnedBy:     m.OwnedBy,
-				InputLimit:  m.InputLimit,
-				InputPrice:  m.InputPrice,
-				OutputPrice: m.OutputPrice,
+				ID:                m.ID,
+				DisplayName:       m.DisplayName,
+				Created:           m.Created,
+				OwnedBy:           m.OwnedBy,
+				InputLimit:        m.InputLimit,
+				ConfiguredContext: m.ConfiguredContext,
+				InputPrice:        m.InputPrice,
+				OutputPrice:       m.OutputPrice,
+				ReasoningEfforts:  cloneEfforts(m.ReasoningEfforts),
 			})
 		}
 		return models
@@ -116,13 +118,15 @@ func modelInfosToCache(models []ModelInfo) []cache.CachedModel {
 			continue
 		}
 		cached = append(cached, cache.CachedModel{
-			ID:          m.ID,
-			DisplayName: m.DisplayName,
-			Created:     m.Created,
-			OwnedBy:     m.OwnedBy,
-			InputLimit:  m.InputLimit,
-			InputPrice:  m.InputPrice,
-			OutputPrice: m.OutputPrice,
+			ID:                m.ID,
+			DisplayName:       m.DisplayName,
+			Created:           m.Created,
+			OwnedBy:           m.OwnedBy,
+			InputLimit:        m.InputLimit,
+			ConfiguredContext: m.ConfiguredContext,
+			InputPrice:        m.InputPrice,
+			OutputPrice:       m.OutputPrice,
+			ReasoningEfforts:  cloneEfforts(m.ReasoningEfforts),
 		})
 	}
 	return cached

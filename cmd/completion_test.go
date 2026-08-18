@@ -2,9 +2,15 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +58,94 @@ func TestRefreshGrokBinCompletionCache(t *testing.T) {
 	refreshGrokBinCompletionCache("openai:gpt", cfg)
 	if calls != 2 {
 		t.Fatalf("inapplicable completion unexpectedly refreshed: calls = %d", calls)
+	}
+}
+
+func TestOllamaModelCompletionsUseLiveEndpoint(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/tags":
+			fmt.Fprint(w, `{"models":[{"name":"remote-only:latest"},{"name":"remote-vision:latest"}]}`)
+		case "/api/show":
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode show request: %v", err)
+				return
+			}
+			if req.Model == "remote-only:latest" {
+				fmt.Fprint(w, `{"capabilities":["completion","thinking"]}`)
+			} else {
+				fmt.Fprint(w, `{"capabilities":["completion"]}`)
+			}
+		default:
+			t.Errorf("requested unexpected path %q", r.URL.Path)
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"remote": {
+			Type:    config.ProviderTypeOllama,
+			BaseURL: server.URL,
+			Model:   "remote-only:latest",
+		},
+	}}
+
+	refreshOllamaCompletionCache("remote:remote-", cfg)
+	got := llm.GetProviderCompletions("remote:remote-", false, cfg)
+	want := []string{
+		"remote:remote-only:latest",
+		"remote:remote-only:latest-low",
+		"remote:remote-only:latest-medium",
+		"remote:remote-only:latest-high",
+		"remote:remote-only:latest-xhigh",
+		"remote:remote-vision:latest",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("provider completions = %v, want %v", got, want)
+	}
+	if slices.Contains(got, "remote:qwen2.5-coder:7b") {
+		t.Fatalf("provider completions unexpectedly contain static fallback: %v", got)
+	}
+
+	wantModels := []string{
+		"remote-only:latest",
+		"remote-only:latest-low",
+		"remote-only:latest-medium",
+		"remote-only:latest-high",
+		"remote-only:latest-xhigh",
+		"remote-vision:latest",
+	}
+	if gotModels := ollamaModelCompletions("remote", cfg); !slices.Equal(gotModels, wantModels) {
+		t.Fatalf("config model completions = %v, want %v", gotModels, wantModels)
+	}
+	wantProviderEfforts := []string{"remote-high", "remote-low", "remote-medium", "remote-xhigh"}
+	if gotProviders := llm.GetProviderCompletions("remote-", false, cfg); !slices.Equal(gotProviders, wantProviderEfforts) {
+		t.Fatalf("provider effort completions = %v, want %v", gotProviders, wantProviderEfforts)
+	}
+}
+
+func TestRefreshOllamaCompletionCacheUsesLongestProviderPrefix(t *testing.T) {
+	original := refreshOllamaModelsForCompletion
+	t.Cleanup(func() { refreshOllamaModelsForCompletion = original })
+
+	var gotBaseURL string
+	refreshOllamaModelsForCompletion = func(_ context.Context, baseURL, _ string) error {
+		gotBaseURL = baseURL
+		return nil
+	}
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"ollama":        {Type: config.ProviderTypeOllama, BaseURL: "http://short.example"},
+		"ollama-remote": {Type: config.ProviderTypeOllama, BaseURL: "http://long.example"},
+	}}
+	refreshOllamaCompletionCache("ollama-remote-high", cfg)
+	if gotBaseURL != "http://long.example" {
+		t.Fatalf("refreshed base URL = %q, want longest matching provider", gotBaseURL)
 	}
 }
 

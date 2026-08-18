@@ -61,6 +61,48 @@ func TestResolveBenchmarkTargetsAllActualOllamaModelsFromOpenAICompatibleConfig(
 	}
 }
 
+func TestResolveBenchmarkTargetsInfersExplicitOllamaModelContextFromShow(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/tags":
+			fmt.Fprintln(w, `{"models":[{"name":"qwen38:latest"}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/show":
+			fmt.Fprintln(w, `{"capabilities":["completion","thinking","tools"],"parameters":"num_ctx 32768\n","model_info":{"qwen35.context_length":262144}}`)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("OLLAMA_HOST", server.URL)
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"ollama": {
+			Type:  config.ProviderTypeOllama,
+			Model: "qwen38:latest",
+		},
+	}}
+	scenarios := []benchmark.Scenario{
+		{InputTokens: 4_000, OutputTokens: 128, Workload: "prefill"},
+		{InputTokens: 16_000, OutputTokens: 128, Workload: "prefill"},
+		{InputTokens: 64_000, OutputTokens: 128, Workload: "prefill"},
+	}
+	plans, warnings, err := resolveBenchmarkTargets(context.Background(), cfg, "ollama:qwen38:latest", scenarios, "balanced", false, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 || len(plans[0].scenarios) != 2 {
+		t.Fatalf("plans = %#v", plans)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "64000") || !strings.Contains(warnings[0], "num_ctx 32768") {
+		t.Fatalf("warnings = %v, want 64K target rejected by runtime num_ctx", warnings)
+	}
+	if plans[0].target.InputLimit != 262144 || plans[0].target.ConfiguredNumCtx != 32768 {
+		t.Fatalf("target context metadata = %#v", plans[0].target)
+	}
+}
+
 func TestResolveBenchmarkTargetsAliasesAndManagedOptIn(t *testing.T) {
 	cfg := &config.Config{Providers: map[string]config.ProviderConfig{}}
 	scenarios := []benchmark.Scenario{{InputTokens: 2_000, OutputTokens: 128, Workload: "decode"}}

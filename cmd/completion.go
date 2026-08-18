@@ -15,15 +15,22 @@ import (
 
 // Keep completion refreshes short: stale cached or curated models remain
 // available when the local CLI or its remote catalog is slow.
-const grokBinCompletionRefreshTimeout = 5 * time.Second
+const (
+	grokBinCompletionRefreshTimeout = 5 * time.Second
+	ollamaCompletionRefreshTimeout  = 2 * time.Second
+)
 
-var refreshGrokBinModelsForCompletion = llm.RefreshGrokBinModelsIfStale
+var (
+	refreshGrokBinModelsForCompletion = llm.RefreshGrokBinModelsIfStale
+	refreshOllamaModelsForCompletion  = llm.RefreshOllamaModelsIfStale
+)
 
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
 func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Try to load config for custom provider completions; nil is OK if it fails
 	cfg, _ := config.Load()
 	refreshGrokBinCompletionCache(toComplete, cfg)
+	refreshOllamaCompletionCache(toComplete, cfg)
 	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 
 	// A bare provider may still be extended with ":model", so suppress the
@@ -54,6 +61,64 @@ func refreshGrokBinCompletionCache(toComplete string, cfg *config.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), grokBinCompletionRefreshTimeout)
 	defer cancel()
 	_ = refreshGrokBinModelsForCompletion(ctx, providerCfg.Model, providerCfg.Env)
+}
+
+func refreshOllamaCompletionCache(toComplete string, cfg *config.Config) {
+	provider, _, completingModel := strings.Cut(toComplete, ":")
+	if !completingModel {
+		provider = ""
+		if cfg != nil {
+			for name, providerCfg := range cfg.Providers {
+				if strings.HasPrefix(toComplete, name+"-") && len(name) > len(provider) && config.InferProviderType(name, providerCfg.Type) == config.ProviderTypeOllama {
+					provider = name
+				}
+			}
+		}
+		if provider == "" {
+			return
+		}
+	}
+
+	var providerCfg config.ProviderConfig
+	if cfg != nil {
+		providerCfg = cfg.Providers[provider]
+		if len(providerCfg.Models) > 0 {
+			return
+		}
+	}
+	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeOllama {
+		return
+	}
+	if err := providerCfg.ResolveForInference(); err != nil {
+		return
+	}
+	if cfg != nil {
+		cfg.Providers[provider] = providerCfg
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ollamaCompletionRefreshTimeout)
+	defer cancel()
+	_ = refreshOllamaModelsForCompletion(ctx, providerCfg.BaseURL, providerCfg.Model)
+}
+
+func ollamaModelCompletions(provider string, cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	providerCfg, ok := cfg.Providers[provider]
+	if !ok || config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeOllama {
+		return nil
+	}
+	refreshOllamaCompletionCache(provider+":", cfg)
+	prefixed := llm.GetProviderCompletions(provider+":", false, cfg)
+	models := make([]string, 0, len(prefixed))
+	prefix := provider + ":"
+	for _, completion := range prefixed {
+		if model, ok := strings.CutPrefix(completion, prefix); ok {
+			models = append(models, model)
+		}
+	}
+	return models
 }
 
 func providerFlagCompletionDirective(cfg *config.Config, toComplete string) cobra.ShellCompDirective {

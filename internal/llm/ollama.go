@@ -9,7 +9,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerhttp"
@@ -18,6 +21,7 @@ import (
 var (
 	ollamaChatDefaultModel   = config.DefaultProviderModel("ollama")
 	ollamaChatDefaultBaseURL = config.DefaultOllamaBaseURL
+	ollamaReasoningEfforts   = []string{"low", "medium", "high", "xhigh"}
 )
 
 // OllamaOptions holds Ollama-native generation knobs that have no equivalent
@@ -39,6 +43,9 @@ type OllamaProvider struct {
 	baseURL string
 	model   string
 	opts    OllamaOptions
+
+	capabilitiesMu  sync.RWMutex
+	thinkingByModel map[string]bool
 }
 
 func normalizeOllamaThinkLevel(level string) (string, error) {
@@ -46,8 +53,10 @@ func normalizeOllamaThinkLevel(level string) (string, error) {
 	switch level {
 	case "", "low", "medium", "high", "max":
 		return level, nil
+	case "xhigh":
+		return "max", nil
 	default:
-		return "", fmt.Errorf("invalid Ollama think_level %q: expected low, medium, high, or max", level)
+		return "", fmt.Errorf("invalid Ollama think_level %q: expected low, medium, high, xhigh, or max", level)
 	}
 }
 
@@ -74,7 +83,12 @@ func NewOllamaChatProvider(baseURL, model string, opts OllamaOptions) *OllamaPro
 	if model == "" {
 		model = ollamaChatDefaultModel
 	}
-	return &OllamaProvider{baseURL: baseURL, model: model, opts: opts}
+	return &OllamaProvider{
+		baseURL:         baseURL,
+		model:           model,
+		opts:            opts,
+		thinkingByModel: make(map[string]bool),
+	}
 }
 
 func (p *OllamaProvider) Name() string {
@@ -306,25 +320,191 @@ func buildOllamaTools(specs []ToolSpec) ([]ollamaTool, error) {
 	return tools, nil
 }
 
+func hasOllamaCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), want) {
+			return true
+		}
+	}
+	return false
+}
+
+type ollamaShowResponse struct {
+	Capabilities []string       `json:"capabilities"`
+	Parameters   string         `json:"parameters"`
+	ModelInfo    map[string]any `json:"model_info"`
+}
+
+func ollamaShowContextLength(show ollamaShowResponse) int {
+	for key, value := range show.ModelInfo {
+		if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(key)), ".context_length") {
+			continue
+		}
+		switch n := value.(type) {
+		case float64:
+			if n > 0 {
+				return int(n)
+			}
+		case json.Number:
+			if parsed, err := strconv.Atoi(n.String()); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func ollamaShowNumCtx(show ollamaShowResponse) int {
+	for _, line := range strings.Split(show.Parameters, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "num_ctx" {
+			continue
+		}
+		if parsed, err := strconv.Atoi(strings.Trim(fields[1], `"`)); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func (p *OllamaProvider) showModel(ctx context.Context, model string) (ollamaShowResponse, error) {
+	body, err := json.Marshal(map[string]string{"model": model})
+	if err != nil {
+		return ollamaShowResponse{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/show", bytes.NewReader(body))
+	if err != nil {
+		return ollamaShowResponse{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := defaultHTTPClient.Do(httpReq)
+	if err != nil {
+		return ollamaShowResponse{}, fmt.Errorf("Ollama show request failed for %q: %w", model, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ollamaShowResponse{}, fmt.Errorf("read Ollama show response for %q: %w", model, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ollamaShowResponse{}, newHTTPStatusError("Ollama", resp, raw)
+	}
+	var show ollamaShowResponse
+	if err := json.Unmarshal(raw, &show); err != nil {
+		return ollamaShowResponse{}, fmt.Errorf("parse Ollama show response for %q: %w", model, err)
+	}
+	return show, nil
+}
+
+func (p *OllamaProvider) rememberThinkingSupport(model string, supported bool) {
+	p.capabilitiesMu.Lock()
+	p.thinkingByModel[model] = supported
+	p.capabilitiesMu.Unlock()
+}
+
+func (p *OllamaProvider) supportsThinking(ctx context.Context, model string) (bool, error) {
+	p.capabilitiesMu.RLock()
+	supported, ok := p.thinkingByModel[model]
+	p.capabilitiesMu.RUnlock()
+	if ok {
+		return supported, nil
+	}
+	show, err := p.showModel(ctx, model)
+	if err != nil {
+		return false, err
+	}
+	supported = hasOllamaCapability(show.Capabilities, "thinking")
+	p.rememberThinkingSupport(model, supported)
+	return supported, nil
+}
+
+func splitOllamaReasoningSuffix(model string) (string, string) {
+	for _, effort := range []string{"xhigh", "medium", "high", "low"} {
+		if strings.HasSuffix(model, "-"+effort) {
+			return strings.TrimSuffix(model, "-"+effort), effort
+		}
+	}
+	return model, ""
+}
+
+func (p *OllamaProvider) resolveReasoningSuffix(ctx context.Context, model string) (string, string, error) {
+	for _, info := range GetCachedOllamaModelInfos(p.baseURL) {
+		if strings.EqualFold(strings.TrimSpace(info.ID), strings.TrimSpace(model)) {
+			return model, "", nil
+		}
+	}
+	if base, effort, _, ok := CachedOllamaModelEffort(p.baseURL, model); ok && effort != "" {
+		p.rememberThinkingSupport(base, true)
+		return base, effort, nil
+	}
+
+	base, effort := splitOllamaReasoningSuffix(model)
+	if effort == "" {
+		return model, "", nil
+	}
+	// On a cold cache, prefer a real installed tag whose natural name ends in an
+	// effort word. Only reinterpret the suffix when the exact tag does not exist.
+	if show, err := p.showModel(ctx, model); err == nil {
+		p.rememberThinkingSupport(model, hasOllamaCapability(show.Capabilities, "thinking"))
+		return model, "", nil
+	}
+	supported, err := p.supportsThinking(ctx, base)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve Ollama reasoning suffix for %q: %w", model, err)
+	}
+	if !supported {
+		return "", "", fmt.Errorf("Ollama model %q does not advertise thinking support", base)
+	}
+	return base, effort, nil
+}
+
+func ollamaWireThinkLevel(effort string) (string, error) {
+	return normalizeOllamaThinkLevel(effort)
+}
+
 func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	// Strip a -think suffix from the model name and enable thinking automatically.
 	model := chooseModel(req.Model, p.model)
 	var think any
 	if p.opts.Think != nil {
 		think = *p.opts.Think
 	}
+
 	thinkLevel, err := normalizeOllamaThinkLevel(p.opts.ThinkLevel)
 	if err != nil {
 		return nil, err
 	}
-	if thinkLevel != "" {
-		think = thinkLevel
+	resolvedModel, suffixEffort, err := p.resolveReasoningSuffix(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+	model = resolvedModel
+	if suffixEffort != "" {
+		thinkLevel, err = ollamaWireThinkLevel(suffixEffort)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if requestEffort := strings.TrimSpace(req.ReasoningEffort); requestEffort != "" {
+		thinkLevel, err = ollamaWireThinkLevel(requestEffort)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if strings.HasSuffix(model, "-think") {
 		model = strings.TrimSuffix(model, "-think")
 		if thinkLevel == "" {
 			think = true
 		}
+	}
+	if thinkLevel != "" {
+		supported, err := p.supportsThinking(ctx, model)
+		if err != nil {
+			return nil, fmt.Errorf("check Ollama thinking support for %q: %w", model, err)
+		}
+		if !supported {
+			return nil, fmt.Errorf("Ollama model %q does not advertise thinking support", model)
+		}
+		think = thinkLevel
 	}
 
 	messages := buildOllamaMessages(req.Messages)
@@ -520,7 +700,11 @@ func (p *OllamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 	var tagsResp struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name         string   `json:"name"`
+			Capabilities []string `json:"capabilities"`
+			Details      struct {
+				ContextLength int `json:"context_length"`
+			} `json:"details"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(raw, &tagsResp); err != nil {
@@ -529,7 +713,55 @@ func (p *OllamaProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 	models := make([]ModelInfo, len(tagsResp.Models))
 	for i, m := range tagsResp.Models {
-		models[i] = ModelInfo{ID: m.Name, OwnedBy: "ollama"}
+		models[i] = ModelInfo{ID: m.Name, OwnedBy: "ollama", InputLimit: m.Details.ContextLength}
+		if hasOllamaCapability(m.Capabilities, "thinking") {
+			models[i].ReasoningEfforts = cloneEfforts(ollamaReasoningEfforts)
+		}
+	}
+
+	// /api/tags currently uses a reduced capability scanner and can omit
+	// capabilities that /api/show detects from the model's GGUF chat template.
+	// Enrich models concurrently so completion and model pickers do not advertise
+	// reasoning controls for models that do not support them.
+	var wg sync.WaitGroup
+	var enrichmentFailed atomic.Bool
+	semaphore := make(chan struct{}, 8)
+	for i := range models {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				enrichmentFailed.Store(true)
+				return
+			}
+			show, err := p.showModel(ctx, models[i].ID)
+			if err != nil {
+				enrichmentFailed.Store(true)
+				return
+			}
+			if contextLength := ollamaShowContextLength(show); contextLength > 0 {
+				models[i].InputLimit = contextLength
+			}
+			models[i].ConfiguredContext = ollamaShowNumCtx(show)
+			supported := hasOllamaCapability(show.Capabilities, "thinking")
+			p.rememberThinkingSupport(models[i].ID, supported)
+			if supported {
+				models[i].ReasoningEfforts = cloneEfforts(ollamaReasoningEfforts)
+			} else {
+				models[i].ReasoningEfforts = nil
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return models, err
+	}
+	if !enrichmentFailed.Load() {
+		refreshOllamaModelCache(p.baseURL, models)
 	}
 	return models, nil
 }

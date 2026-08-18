@@ -384,22 +384,32 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 
 	models := []string{model}
 	modelInfoByID := make(map[string]llm.ModelInfo)
-	if model == "" && localOllama {
+	var skipped []string
+	listOllamaModels := localOllama && (model == "" || providerType == config.ProviderTypeOllama)
+	if listOllamaModels {
 		listed, err := listBenchmarkModels(ctx, cfg, providerKey)
 		if err != nil {
-			return nil, nil, fmt.Errorf("list local Ollama models for %q: %w", providerKey, err)
-		}
-		models = models[:0]
-		for _, info := range listed {
-			id := strings.TrimSpace(info.ID)
-			if id == "" {
-				continue
+			if model == "" {
+				return nil, nil, fmt.Errorf("list local Ollama models for %q: %w", providerKey, err)
 			}
-			models = append(models, id)
-			modelInfoByID[id] = info
-		}
-		if len(models) == 0 {
-			return nil, nil, fmt.Errorf("local Ollama provider %q returned no installed models", providerKey)
+			skipped = append(skipped, fmt.Sprintf("could not inspect local Ollama model metadata for %s:%s: %v", providerKey, model, err))
+		} else {
+			if model == "" {
+				models = models[:0]
+			}
+			for _, info := range listed {
+				id := strings.TrimSpace(info.ID)
+				if id == "" {
+					continue
+				}
+				if model == "" {
+					models = append(models, id)
+				}
+				modelInfoByID[id] = info
+			}
+			if model == "" && len(models) == 0 {
+				return nil, nil, fmt.Errorf("local Ollama provider %q returned no installed models", providerKey)
+			}
 		}
 	}
 	if len(models) == 0 || (len(models) == 1 && strings.TrimSpace(models[0]) == "") {
@@ -418,15 +428,20 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 	}
 
 	var plans []benchmarkTargetPlan
-	var skipped []string
 	if assumedContextLimit > 0 {
 		skipped = append(skipped, benchmark.AssumedContextLimitLimitation(assumedContextLimit))
 	}
 	for _, selectedModel := range models {
 		selectedModel = config.UpstreamModelForProviderModel(cfg, providerKey, selectedModel)
 		inputLimit := llm.InputLimitForProviderModel(providerKey, selectedModel)
-		if info := modelInfoByID[selectedModel]; info.InputLimit > 0 {
-			inputLimit = info.InputLimit
+		discoveredNumCtx := 0
+		if info := modelInfoByID[selectedModel]; info.ID != "" {
+			if info.InputLimit > 0 {
+				inputLimit = info.InputLimit
+			}
+			if localOllama {
+				discoveredNumCtx = info.ConfiguredContext
+			}
 		}
 		configuredContext := providerCfg.ContextWindow
 		if modelConfig, ok := config.ModelConfigForProviderModel(cfg, providerKey, selectedModel); ok && modelConfig.ContextWindow > 0 {
@@ -441,6 +456,10 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 		}
 		effectiveOllamaContext := configuredContext
 		contextLimitSource := "configured Ollama context"
+		if effectiveOllamaContext == 0 && discoveredNumCtx > 0 {
+			effectiveOllamaContext = discoveredNumCtx
+			contextLimitSource = "Ollama model num_ctx"
+		}
 		if assumedContextLimit > 0 && (effectiveOllamaContext == 0 || assumedContextLimit < effectiveOllamaContext) {
 			effectiveOllamaContext = assumedContextLimit
 			contextLimitSource = "assumed Ollama context limit"
@@ -478,6 +497,9 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 		reportedNumCtx := 0
 		if localOllama {
 			reportedNumCtx = configuredContext
+			if reportedNumCtx == 0 {
+				reportedNumCtx = discoveredNumCtx
+			}
 		}
 		target := benchmark.Target{
 			ProviderKey:         providerKey,
