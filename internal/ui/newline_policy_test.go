@@ -1,6 +1,9 @@
 package ui
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestCountTrailingNewlines(t *testing.T) {
 	tests := []struct {
@@ -48,48 +51,64 @@ func TestNewlinePadding(t *testing.T) {
 
 func TestScrollbackPrintlnCommands_FinalSpacerPolicy(t *testing.T) {
 	tests := []struct {
-		name        string
-		content     string
-		withSpacer  bool
-		wantCmdsLen int
+		name       string
+		content    string
+		withSpacer bool
+		wantBody   string
+		wantCmds   int
 	}{
 		{
-			name:        "no content with spacer",
-			content:     "",
-			withSpacer:  true,
-			wantCmdsLen: 1,
+			name:       "no content with spacer",
+			content:    "",
+			withSpacer: true,
+			wantBody:   "\n",
+			wantCmds:   1,
 		},
 		{
-			name:        "no content without spacer",
-			content:     "",
-			withSpacer:  false,
-			wantCmdsLen: 0,
+			name:       "no content without spacer",
+			content:    "",
+			withSpacer: false,
+			wantCmds:   0,
 		},
 		{
-			name:        "content without trailing newline needs extra spacer",
-			content:     "hello",
-			withSpacer:  true,
-			wantCmdsLen: 2,
+			name:       "content without trailing newline gets atomic spacer",
+			content:    "hello",
+			withSpacer: true,
+			wantBody:   "hello\n",
+			wantCmds:   1,
 		},
 		{
-			name:        "content with one trailing newline already has spacer after println",
-			content:     "hello\n",
-			withSpacer:  true,
-			wantCmdsLen: 1,
+			name:       "content with one trailing newline already has spacer",
+			content:    "hello\n",
+			withSpacer: true,
+			wantBody:   "hello\n",
+			wantCmds:   1,
 		},
 		{
-			name:        "content with two trailing newlines preserves markdown spacing",
-			content:     "hello\n\n",
-			withSpacer:  true,
-			wantCmdsLen: 1,
+			name:       "content with two trailing newlines preserves markdown spacing",
+			content:    "hello\n\n",
+			withSpacer: true,
+			wantBody:   "hello\n\n",
+			wantCmds:   1,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmds := ScrollbackPrintlnCommands(tc.content, tc.withSpacer)
-			if got := len(cmds); got != tc.wantCmdsLen {
-				t.Fatalf("ScrollbackPrintlnCommands(%q, %v) len = %d, want %d", tc.content, tc.withSpacer, got, tc.wantCmdsLen)
+			if got := len(cmds); got != tc.wantCmds {
+				t.Fatalf("ScrollbackPrintlnCommands(%q, %v) len = %d, want %d", tc.content, tc.withSpacer, got, tc.wantCmds)
+			}
+			if tc.wantCmds == 0 {
+				return
+			}
+			msg := reflect.ValueOf(cmds[0]())
+			body := msg.FieldByName("messageBody")
+			if !body.IsValid() {
+				t.Fatalf("command returned %T, want Bubble Tea printLineMessage", cmds[0]())
+			}
+			if got := body.String(); got != tc.wantBody {
+				t.Fatalf("print body = %q, want %q", got, tc.wantBody)
 			}
 		})
 	}

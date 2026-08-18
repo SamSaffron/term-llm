@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/runboundary"
@@ -58,6 +59,101 @@ func (s *updateMessageFailStore) GetMessages(ctx context.Context, sessionID stri
 		return nil, err
 	}
 	return append([]session.Message(nil), msgs...), nil
+}
+
+func TestInlineCompletionDefersImmediateSendUntilScrollbackRendered(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = nil
+	m.streaming = true
+	m.currentResponse.WriteString("final answer")
+	m.tracker.AddTextSegment("final answer", m.width)
+
+	updated, completionCmd := m.Update(streamEventMsg{
+		event:      ui.DoneEvent(0),
+		generation: m.streamGeneration,
+	})
+	m = updated.(*Model)
+	if completionCmd == nil || !m.inlineCompletionPending {
+		t.Fatalf("stream completion did not establish scrollback barrier: cmd=%v pending=%v", completionCmd != nil, m.inlineCompletionPending)
+	}
+
+	m.setTextareaValue("next question")
+	updated, sendCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if sendCmd != nil {
+		t.Fatal("send command escaped before completed response reached scrollback")
+	}
+	if m.streaming || m.inlineCompletionPendingKey == nil {
+		t.Fatalf("next turn intent was not deferred: streaming=%v pendingKey=%v", m.streaming, m.inlineCompletionPendingKey != nil)
+	}
+	if got := m.textarea.Value(); got != "next question" {
+		t.Fatalf("composer changed before scrollback acknowledgement: %q", got)
+	}
+	updated, repeatedCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if repeatedCmd != nil || m.inlineCompletionPendingKey == nil {
+		t.Fatalf("repeated Enter escaped or dropped deferred intent: cmd=%v pendingKey=%v", repeatedCmd != nil, m.inlineCompletionPendingKey != nil)
+	}
+
+	updated, releasedCmd := m.Update(inlineCompletionRenderedMsg{})
+	m = updated.(*Model)
+	if releasedCmd == nil || !m.streaming {
+		t.Fatalf("scrollback acknowledgement did not start deferred send: cmd=%v streaming=%v", releasedCmd != nil, m.streaming)
+	}
+	if m.inlineCompletionPending || m.inlineCompletionPendingKey != nil {
+		t.Fatalf("scrollback barrier was not cleared: pending=%v pendingKey=%v", m.inlineCompletionPending, m.inlineCompletionPendingKey != nil)
+	}
+}
+
+func TestInlineCompletionPendingSendCanBeCancelled(t *testing.T) {
+	m := newTestChatModel(false)
+	m.inlineCompletionPending = true
+	m.setTextareaValue("keep this draft")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if m.inlineCompletionPendingKey == nil {
+		t.Fatal("send intent was not captured")
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(*Model)
+	if m.inlineCompletionPendingKey != nil || m.streaming {
+		t.Fatalf("pending send was not cancelled: pendingKey=%v streaming=%v", m.inlineCompletionPendingKey != nil, m.streaming)
+	}
+	if got := m.textarea.Value(); got != "keep this draft" {
+		t.Fatalf("cancelled draft = %q, want preserved", got)
+	}
+
+	updated, releasedCmd := m.Update(inlineCompletionRenderedMsg{})
+	m = updated.(*Model)
+	if releasedCmd != nil || m.streaming {
+		t.Fatalf("acknowledgement released cancelled send: cmd=%v streaming=%v", releasedCmd != nil, m.streaming)
+	}
+}
+
+func TestInlineStreamErrorDefersSendUntilPartialOutputRendered(t *testing.T) {
+	m := newTestChatModel(false)
+	m.store = nil
+	m.streaming = true
+	m.currentResponse.WriteString("partial answer")
+	m.tracker.AddTextSegment("partial answer", m.width)
+
+	updated, errorCmd := m.Update(streamEventMsg{
+		event:      ui.ErrorEvent(errors.New("provider failed")),
+		generation: m.streamGeneration,
+	})
+	m = updated.(*Model)
+	if errorCmd == nil || !m.inlineCompletionPending {
+		t.Fatalf("stream error did not establish scrollback barrier: cmd=%v pending=%v", errorCmd != nil, m.inlineCompletionPending)
+	}
+
+	m.setTextareaValue("retry question")
+	updated, sendCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if sendCmd != nil || m.inlineCompletionPendingKey == nil || m.streaming {
+		t.Fatalf("send escaped error barrier: cmd=%v pendingKey=%v streaming=%v", sendCmd != nil, m.inlineCompletionPendingKey != nil, m.streaming)
+	}
 }
 
 func TestCompactionBoundaryAppliesAtResumePhaseBarrier(t *testing.T) {

@@ -116,24 +116,22 @@ func NewlinePadding(currentTrailing, targetTrailing int) string {
 	return strings.Repeat("\n", NewlinesNeededForTrailing(currentTrailing, targetTrailing))
 }
 
-// ScrollbackPrintlnCommands returns tea.Println command(s) for content and an
-// optional final spacer line. It preserves content while avoiding synthetic
-// double-newline inflation from unconditional blank-line commands.
+// ScrollbackPrintlnCommands returns one atomic tea.Println command for content
+// and an optional final spacer line. Keeping the boundary in one print message
+// prevents adjacent scrollback writes from interleaving between the content and
+// its spacer.
 func ScrollbackPrintlnCommands(content string, includeFinalSpacer bool) []tea.Cmd {
-	if content == "" {
-		if includeFinalSpacer {
-			return []tea.Cmd{tea.Println("")}
-		}
+	if content == "" && !includeFinalSpacer {
 		return nil
 	}
 
-	cmds := []tea.Cmd{tea.Println(content)}
 	if includeFinalSpacer {
-		// tea.Println always appends one newline of its own.
-		postPrintTrailing := CountTrailingNewlines(content) + 1
-		if postPrintTrailing < FinalSpacerTrailingNewlines {
-			cmds = append(cmds, tea.Println(""))
-		}
+		// Bubble Tea ignores an empty printLineMessage, so the spacer must be
+		// represented by a newline in the message body. insertAbove splits that
+		// body into lines; one trailing newline therefore reserves the empty line
+		// below content (and "\n" reserves a spacer even when content is empty).
+		padding := NewlinePadding(CountTrailingNewlines(content)+1, FinalSpacerTrailingNewlines)
+		content += padding
 	}
-	return cmds
+	return []tea.Cmd{tea.Println(content)}
 }

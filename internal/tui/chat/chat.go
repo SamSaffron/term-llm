@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -384,7 +385,9 @@ type Model struct {
 	dialog      *DialogModel
 
 	// Inline mode state
-	program *tea.Program // Reference to program for tea.Println
+	program                    *tea.Program // Reference to program for tea.Println
+	inlineCompletionPending    bool
+	inlineCompletionPendingKey *tea.KeyPressMsg
 
 	// If set, the caller should relaunch chat with this session ID.
 	pendingResumeSessionID  string
@@ -737,6 +740,10 @@ type FooterNoticeMsg struct {
 
 // autoSendMsg triggers automatic message send (for benchmarking mode)
 type autoSendMsg struct{}
+
+// inlineCompletionRenderedMsg acknowledges that Bubble Tea has inserted the
+// completed assistant turn (including its spacer) into inline scrollback.
+type inlineCompletionRenderedMsg struct{}
 
 type chatGPTModelsLoadedMsg struct {
 	models []llm.ModelInfo
@@ -2336,6 +2343,16 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
 
+	if _, ok := msg.(inlineCompletionRenderedMsg); ok {
+		m.inlineCompletionPending = false
+		pendingKey := m.inlineCompletionPendingKey
+		m.inlineCompletionPendingKey = nil
+		if pendingKey != nil {
+			return m.handleKeyMsg(*pendingKey)
+		}
+		return m, nil
+	}
+
 	if resizeMsg, ok := msg.(resizeReflowMsg); ok {
 		if resizeMsg.generation == m.resizeReflowGeneration {
 			m.resizeReflowPending = false
@@ -2465,9 +2482,29 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, tea.ClearScreen
 
 	case tea.KeyPressMsg:
+		if m.inlineCompletionPending {
+			if m.inlineCompletionPendingKey != nil {
+				// Enter has already been accepted for submission. Keep the captured
+				// composer state stable until the scrollback acknowledgement, while
+				// still allowing the user to cancel that pending submission.
+				if key.Matches(msg, m.keyMap.Cancel) || key.Matches(msg, m.keyMap.Quit) {
+					m.inlineCompletionPendingKey = nil
+					return m.showFooterMuted("Pending send cancelled.")
+				}
+				return m, nil
+			}
+			if key.Matches(msg, m.keyMap.Send) {
+				pendingKey := msg
+				m.inlineCompletionPendingKey = &pendingKey
+				return m, nil
+			}
+		}
 		return m.handleKeyMsg(msg)
 
 	case tea.PasteMsg:
+		if m.inlineCompletionPendingKey != nil {
+			return m, nil
+		}
 		return m.handlePasteMsg(msg)
 
 	case tea.MouseMsg:
@@ -3006,6 +3043,7 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
 				errorOutputCmds := m.flushStreamingContentOnErrorToScrollback()
+				hadScrollbackOutput := len(errorOutputCmds) > 0
 				salvageResult := m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
@@ -3083,6 +3121,11 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 				if footerCmd != nil {
 					errorOutputCmds = append(errorOutputCmds, footerCmd)
+				}
+				if hadScrollbackOutput {
+					m.inlineCompletionPending = true
+					m.inlineCompletionPendingKey = nil
+					errorOutputCmds = append(errorOutputCmds, func() tea.Msg { return inlineCompletionRenderedMsg{} })
 				}
 				return m, tea.Sequence(errorOutputCmds...)
 			}
@@ -3465,13 +3508,19 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 						m.bumpContentVersion()
 					}
 				} else {
-					// In inline mode, print remaining content to scrollback
+					// In inline mode, print remaining content to scrollback before
+					// acknowledging that the normal composer may submit another turn.
 					m.tracker.ForceCompletePendingTools()
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
-					cmds = append(cmds, ui.ScrollbackPrintlnCommands(result.ToPrint, true)...)
+					flushCmds = append(flushCmds, ui.ScrollbackPrintlnCommands(result.ToPrint, true)...)
 				}
 			} else if !m.altScreen {
-				cmds = append(cmds, ui.ScrollbackPrintlnCommands("", true)...)
+				flushCmds = append(flushCmds, ui.ScrollbackPrintlnCommands("", true)...)
+			}
+			if !m.altScreen {
+				m.inlineCompletionPending = true
+				m.inlineCompletionPendingKey = nil
+				flushCmds = append(flushCmds, func() tea.Msg { return inlineCompletionRenderedMsg{} })
 			}
 
 			// Sync in-memory messages with persisted state.
@@ -3591,25 +3640,27 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 						if messageStatsCmd != nil {
 							failureCmds = append([]tea.Cmd{messageStatsCmd}, failureCmds...)
 						}
-						return m, tea.Sequence(failureCmds...)
+						return m, ui.ComposeFlushFirstCommands(flushCmds, []tea.Cmd{tea.Sequence(failureCmds...)})
 					}
 					m.textarea.SetValue(next)
 					m.updateTextareaHeight()
 					model, sendCmd := m.sendMessage(next)
 					m.autoSendQueue = m.autoSendQueue[1:]
-					if messageStatsCmd != nil {
-						return model, tea.Sequence(messageStatsCmd, sendCmd)
-					}
-					return model, sendCmd
+					followupCmd := tea.Sequence(messageStatsCmd, sendCmd)
+					return model, ui.ComposeFlushFirstCommands(flushCmds, []tea.Cmd{followupCmd})
 				}
 
 				if m.autoSendExitOnDone {
-					// Queue exhausted and exit requested, quit
+					// Queue exhausted and exit requested, quit after the final inline
+					// response and spacer have reached scrollback.
 					m.quitting = true
+					var quitCmd tea.Cmd
 					if summary := m.exitStatsSummary(); summary != "" {
-						return m, m.quitCmd(messageStatsCmd, tea.Println(summary))
+						quitCmd = m.quitCmd(messageStatsCmd, tea.Println(summary))
+					} else {
+						quitCmd = m.quitCmd(messageStatsCmd)
 					}
-					return m, m.quitCmd(messageStatsCmd)
+					return m, ui.ComposeFlushFirstCommands(flushCmds, []tea.Cmd{quitCmd})
 				}
 
 				// Queue exhausted, continue in interactive mode

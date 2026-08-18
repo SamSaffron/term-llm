@@ -742,15 +742,15 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 		m.appendTerminalTitleCmd(&cmds)
 		return m, tea.Batch(cmds...)
 	}
-	cmds := []tea.Cmd{
-		tea.Println(userDisplay),
+	asyncCmds := []tea.Cmd{
 		m.startStream(content),
 		m.spinner.Tick,
 		m.tickEvery(),
 	}
-	cmds = append(preSendCmds, cmds...)
-	m.appendTerminalTitleCmd(&cmds)
-	return m, tea.Batch(cmds...)
+	asyncCmds = append(preSendCmds, asyncCmds...)
+	m.appendTerminalTitleCmd(&asyncCmds)
+	cmd := ui.ComposeFlushFirstCommands([]tea.Cmd{tea.Println(userDisplay)}, asyncCmds)
+	return m, cmd
 }
 
 func (m *Model) startStream(content string) tea.Cmd {
