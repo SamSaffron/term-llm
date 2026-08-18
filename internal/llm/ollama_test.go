@@ -218,6 +218,44 @@ func TestOllamaProviderStreamThinkFalse(t *testing.T) {
 	}
 }
 
+func TestOllamaProviderStreamDefaultsNonThinkingModelToFalse(t *testing.T) {
+	var capturedThink any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"capabilities":["completion","tools"]}`)
+		case "/api/chat":
+			var req ollamaChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			capturedThink = req.Think
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			fmt.Fprintln(w, `{"model":"direct:7b","message":{"role":"assistant","content":"ok"},"done":true}`)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewOllamaChatProvider(srv.URL, "direct:7b", OllamaOptions{})
+	p.rememberThinkingSupport("direct:7b", false)
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	defer stream.Close()
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+	if capturedThink != false {
+		t.Fatalf("think = %#v, want false from non-thinking model capabilities", capturedThink)
+	}
+}
+
 func TestOllamaProviderStreamThinkLevel(t *testing.T) {
 	var capturedThink any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -356,8 +394,8 @@ func TestOllamaProviderStreamPreservesExactModelEndingInEffort(t *testing.T) {
 			break
 		}
 	}
-	if captured.Model != "natural-high" || captured.Think != nil {
-		t.Fatalf("chat request model/think = %q/%#v, want exact model with no inferred effort", captured.Model, captured.Think)
+	if captured.Model != "natural-high" || captured.Think != false {
+		t.Fatalf("chat request model/think = %q/%#v, want exact non-thinking model with think=false", captured.Model, captured.Think)
 	}
 }
 

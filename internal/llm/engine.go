@@ -782,13 +782,37 @@ func (e *Engine) SetContextTracking(inputLimit int) {
 // Both inputLimit and compactionConfig are set atomically under a single lock.
 func (e *Engine) ConfigureContextManagement(provider Provider, providerName, modelName string, autoCompact bool) {
 	limit := 0
+	var err error
 	var compactionConfig *CompactionConfig
 
 	if provider != nil && !provider.Capabilities().ManagesOwnContext {
-		limit = InputLimitForProviderModel(providerName, modelName)
-		if limit == 0 {
-			refreshDynamicModelLimitsForContext(provider, providerName, modelName)
+		runtimeProvider := provider
+		if retry, ok := provider.(*RetryProvider); ok {
+			runtimeProvider = retry.inner
+		}
+		if limiter, ok := runtimeProvider.(interface {
+			effectiveInputLimit(context.Context, string) (int, error)
+		}); ok {
+			// Runtime-aware providers must win over canonical model-prefix tables.
+			// Ollama's GGUF metadata can advertise a much larger architectural
+			// context than the live Modelfile allocates.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			limit, err = limiter.effectiveInputLimit(ctx, modelName)
+			cancel()
+			if err != nil {
+				slog.Debug("failed to inspect provider runtime context limit", "provider", providerName, "model", modelName, "error", err)
+				limit = InputLimitForProviderModel(providerName, modelName)
+				if limit == 0 {
+					refreshDynamicModelLimitsForContext(provider, providerName, modelName)
+					limit = InputLimitForProviderModel(providerName, modelName)
+				}
+			}
+		} else {
 			limit = InputLimitForProviderModel(providerName, modelName)
+			if limit == 0 {
+				refreshDynamicModelLimitsForContext(provider, providerName, modelName)
+				limit = InputLimitForProviderModel(providerName, modelName)
+			}
 		}
 		if limit > 0 && autoCompact {
 			cfg := DefaultCompactionConfig()

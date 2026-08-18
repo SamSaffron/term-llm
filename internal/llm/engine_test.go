@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -6393,5 +6395,49 @@ func TestSelfAssertedProviderControlToolCannotEscapeAllowlist(t *testing.T) {
 	}
 	if len(messages) != 1 || len(messages[0].Parts) != 1 || messages[0].Parts[0].ToolResult == nil || !strings.Contains(messages[0].Parts[0].ToolResult.Content, "allowed-tools") {
 		t.Fatalf("denied execution result = %#v", messages)
+	}
+}
+
+func TestConfigureContextManagementUsesOllamaRuntimeWindow(t *testing.T) {
+	var showRequests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/show" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		showRequests = append(showRequests, req.Model)
+		if req.Model == "qwen3.8:27b-thinking-low" {
+			http.Error(w, "model not found", http.StatusNotFound)
+			return
+		}
+		if req.Model != "qwen3.8:27b-thinking" {
+			http.Error(w, "unexpected model", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"capabilities":["completion","thinking","tools"],"parameters":"num_ctx 65536\nnum_predict 16384\n","model_info":{"qwen35.context_length":262144}}`)
+	}))
+	defer srv.Close()
+
+	provider := NewOllamaChatProvider(srv.URL, "qwen3.8:27b-thinking", OllamaOptions{})
+	wrapped := WrapWithRetry(provider, RetryConfig{MaxAttempts: 1})
+	engine := NewEngine(wrapped, nil)
+	engine.ConfigureContextManagement(wrapped, "chatgpt", "qwen3.8:27b-thinking-low", true)
+
+	if got := engine.InputLimit(); got != 49152 {
+		t.Fatalf("InputLimit() = %d, want 49152 (65536 num_ctx - 16384 num_predict)", got)
+	}
+	soft, hard, enabled := engine.CompactionThresholds()
+	if !enabled || soft != 44236 || hard != 46694 {
+		t.Fatalf("CompactionThresholds() = (%d, %d, %v), want (44236, 46694, true)", soft, hard, enabled)
+	}
+	if len(showRequests) < 2 || showRequests[0] != "qwen3.8:27b-thinking-low" {
+		t.Fatalf("show requests = %v, want exact effort variant checked before base model", showRequests)
 	}
 }
