@@ -354,10 +354,10 @@ func ollamaShowContextLength(show ollamaShowResponse) int {
 	return 0
 }
 
-func ollamaShowNumCtx(show ollamaShowResponse) int {
+func ollamaShowParameterInt(show ollamaShowResponse, name string) int {
 	for _, line := range strings.Split(show.Parameters, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "num_ctx" {
+		if len(fields) < 2 || fields[0] != name {
 			continue
 		}
 		if parsed, err := strconv.Atoi(strings.Trim(fields[1], `"`)); err == nil && parsed > 0 {
@@ -365,6 +365,36 @@ func ollamaShowNumCtx(show ollamaShowResponse) int {
 		}
 	}
 	return 0
+}
+
+func ollamaShowNumCtx(show ollamaShowResponse) int {
+	return ollamaShowParameterInt(show, "num_ctx")
+}
+
+// effectiveInputLimit returns the request input budget for the model as it is
+// actually configured on this Ollama endpoint. GGUF metadata can advertise a
+// much larger architectural context than the Modelfile allocates; using that
+// number prevents auto-compaction from ever firing on the live runner. Reserve
+// num_predict from the configured window because Ollama shares that window
+// between prompt and generation.
+func (p *OllamaProvider) effectiveInputLimit(ctx context.Context, model string) (int, error) {
+	resolved, _, err := p.resolveReasoningSuffix(ctx, model)
+	if err != nil {
+		return 0, err
+	}
+	show, err := p.showModel(ctx, resolved)
+	if err != nil {
+		return 0, err
+	}
+
+	limit := ollamaShowContextLength(show)
+	if configured := ollamaShowNumCtx(show); configured > 0 && (limit == 0 || configured < limit) {
+		limit = configured
+	}
+	if reserve := ollamaShowParameterInt(show, "num_predict"); reserve > 0 && reserve < limit {
+		limit -= reserve
+	}
+	return limit, nil
 }
 
 func (p *OllamaProvider) showModel(ctx context.Context, model string) (ollamaShowResponse, error) {
@@ -402,6 +432,13 @@ func (p *OllamaProvider) rememberThinkingSupport(model string, supported bool) {
 	p.capabilitiesMu.Unlock()
 }
 
+func (p *OllamaProvider) knownThinkingSupport(model string) (bool, bool) {
+	p.capabilitiesMu.RLock()
+	supported, ok := p.thinkingByModel[model]
+	p.capabilitiesMu.RUnlock()
+	return supported, ok
+}
+
 func (p *OllamaProvider) supportsThinking(ctx context.Context, model string) (bool, error) {
 	p.capabilitiesMu.RLock()
 	supported, ok := p.thinkingByModel[model]
@@ -430,6 +467,7 @@ func splitOllamaReasoningSuffix(model string) (string, string) {
 func (p *OllamaProvider) resolveReasoningSuffix(ctx context.Context, model string) (string, string, error) {
 	for _, info := range GetCachedOllamaModelInfos(p.baseURL) {
 		if strings.EqualFold(strings.TrimSpace(info.ID), strings.TrimSpace(model)) {
+			p.rememberThinkingSupport(model, len(info.ReasoningEfforts) > 0)
 			return model, "", nil
 		}
 	}
@@ -505,6 +543,14 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 			return nil, fmt.Errorf("Ollama model %q does not advertise thinking support", model)
 		}
 		think = thinkLevel
+	} else if p.opts.Think == nil {
+		// Explicitly disable thinking when live discovery has already established
+		// that this is a non-thinking model. Do not add a blocking /api/show call
+		// on the ordinary stream path: offline/custom Ollama-compatible servers
+		// may not implement it, and unknown models retain legacy nil semantics.
+		if supported, known := p.knownThinkingSupport(model); known && !supported {
+			think = false
+		}
 	}
 
 	messages := buildOllamaMessages(req.Messages)
