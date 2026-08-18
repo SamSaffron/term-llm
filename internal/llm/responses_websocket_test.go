@@ -125,6 +125,9 @@ func TestResponsesWebSocketRequestOmitsTransportFields(t *testing.T) {
 	if _, ok := decoded["stream"]; ok {
 		t.Fatalf("WebSocket response.create must not include stream: %s", body)
 	}
+	if _, ok := decoded["service_tier"]; ok {
+		t.Fatalf("empty service_tier must be omitted: %s", body)
+	}
 	if decoded["generate"] != false {
 		t.Fatalf("generate = %#v, want false", decoded["generate"])
 	}
@@ -485,10 +488,11 @@ func TestResponsesClientStreamWebSocket(t *testing.T) {
 		},
 	}
 	stream, err := client.Stream(context.Background(), ResponsesRequest{
-		Model:  "gpt-test",
-		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
-		Tools:  []any{ResponsesTool{Type: "function", Name: "tool", Parameters: map[string]any{"type": "object"}}},
-		Stream: true,
+		Model:       "gpt-test",
+		Input:       []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Tools:       []any{ResponsesTool{Type: "function", Name: "tool", Parameters: map[string]any{"type": "object"}}},
+		Stream:      true,
+		ServiceTier: ServiceTierFast,
 	}, false)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -519,6 +523,9 @@ func TestResponsesClientStreamWebSocket(t *testing.T) {
 			}
 			if gotReq["type"] != "response.create" || gotReq["model"] != "gpt-test" {
 				t.Fatalf("request fields = %#v", gotReq)
+			}
+			if gotReq["service_tier"] != ServiceTierFast {
+				t.Fatalf("service_tier = %#v, want %q", gotReq["service_tier"], ServiceTierFast)
 			}
 			if _, ok := gotReq["stream"]; ok {
 				t.Fatalf("WebSocket request must not include transport-only stream field: %#v", gotReq)

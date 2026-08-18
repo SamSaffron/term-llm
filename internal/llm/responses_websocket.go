@@ -58,6 +58,7 @@ type responsesWSRequest struct {
 	Generate           *bool                        `json:"generate,omitempty"`
 	StreamOptions      *ResponsesStreamOptions      `json:"stream_options,omitempty"`
 	PreviousResponseID string                       `json:"previous_response_id,omitempty"`
+	ServiceTier        string                       `json:"service_tier,omitempty"`
 }
 
 func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
@@ -81,6 +82,7 @@ func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
 		Generate:           req.Generate,
 		StreamOptions:      req.StreamOptions,
 		PreviousResponseID: req.PreviousResponseID,
+		ServiceTier:        req.ServiceTier,
 	}
 }
 
