@@ -187,7 +187,7 @@ func TestMainRunManagerDetachDoesNotBackpressureExecutionAndReplayIsOrdered(t *t
 	manager := NewMainRunManager(context.Background())
 	defer manager.Close(time.Second)
 	release := make(chan struct{})
-	_, err := manager.Start("session-a", MainRunExecution{Execute: func(ctx context.Context, emit func(ui.StreamEvent)) error {
+	startedSnapshot, err := manager.Start("session-a", MainRunExecution{Execute: func(ctx context.Context, emit func(ui.StreamEvent)) error {
 		for i := 0; i < 600; i++ {
 			emit(ui.StreamEvent{Type: ui.StreamEventText, Text: "x"})
 		}
@@ -201,6 +201,11 @@ func TestMainRunManagerDetachDoesNotBackpressureExecutionAndReplayIsOrdered(t *t
 	case <-release:
 	case <-time.After(time.Second):
 		t.Fatal("detached execution blocked without a subscriber")
+	}
+	select {
+	case <-startedSnapshot.Done:
+	case <-time.After(time.Second):
+		t.Fatal("detached execution did not finish")
 	}
 
 	replay, live, snapshotRequired, snapshot, detach := manager.Subscribe("session-a", 0)

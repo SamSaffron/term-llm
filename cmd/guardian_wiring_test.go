@@ -213,10 +213,27 @@ func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.
 func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *testing.T) {
 	started := make(chan struct{}, guardianReviewerPoolSize)
 	release := make(chan struct{})
+	peerFactoryEntered := make(chan struct{})
 	var factoryCalls atomic.Int32
+	var activeFactoryCalls atomic.Int32
+	var maxActiveFactoryCalls atomic.Int32
 	var cleaned atomic.Int32
 	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) {
-		factoryCalls.Add(1)
+		call := factoryCalls.Add(1)
+		active := activeFactoryCalls.Add(1)
+		defer activeFactoryCalls.Add(-1)
+		for max := maxActiveFactoryCalls.Load(); active > max && !maxActiveFactoryCalls.CompareAndSwap(max, active); max = maxActiveFactoryCalls.Load() {
+		}
+		// Hold the first lazy expansion briefly to give the other expansion a
+		// deterministic chance to overlap if provider construction is not serialized.
+		if call == 2 {
+			select {
+			case <-peerFactoryEntered:
+			case <-time.After(100 * time.Millisecond):
+			}
+		} else if call == 3 {
+			close(peerFactoryEntered)
+		}
 		return &delayedGuardianProvider{
 			delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`),
 			started:  started,
@@ -254,6 +271,9 @@ func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *test
 	}
 	if got := factoryCalls.Load(); got != guardianReviewerPoolSize {
 		t.Fatalf("provider factory calls under contention = %d, want %d", got, guardianReviewerPoolSize)
+	}
+	if got := maxActiveFactoryCalls.Load(); got != 1 {
+		t.Fatalf("concurrent provider factory calls = %d, want serialized construction", got)
 	}
 	close(release)
 	for i := 0; i < guardianReviewerPoolSize; i++ {

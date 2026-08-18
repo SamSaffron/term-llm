@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -100,8 +101,14 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		return fail(fmt.Errorf("load guardian policy: %w", err))
 	}
 
+	var providerFactoryMu sync.Mutex
 	newReviewer := func() (*guardian.Reviewer, error) {
+		// NewProviderByName resolves and caches credentials in cfg. ReviewerPool
+		// may expand from multiple goroutines, so provider construction must not
+		// access that shared config map concurrently.
+		providerFactoryMu.Lock()
 		provider, err := newGuardianProviderByName(cfg, target.Provider, target.Model)
+		providerFactoryMu.Unlock()
 		if err != nil {
 			return nil, fmt.Errorf("guardian provider: %w", err)
 		}
