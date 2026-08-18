@@ -157,6 +157,15 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		if idleTimeout == 0 {
 			idleTimeout = 5 * time.Minute
 		}
+		if !reused {
+			pingHandler := conn.PingHandler()
+			conn.SetPingHandler(func(appData string) error {
+				if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+					return err
+				}
+				return pingHandler(appData)
+			})
+		}
 		conn.SetPongHandler(func(string) error {
 			return conn.SetReadDeadline(time.Now().Add(idleTimeout))
 		})

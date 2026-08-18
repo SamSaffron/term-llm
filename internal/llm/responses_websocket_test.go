@@ -533,6 +533,95 @@ func TestResponsesClientStreamWebSocket(t *testing.T) {
 	}
 }
 
+func TestResponsesClientWebSocketServerPingsKeepStreamAlive(t *testing.T) {
+	const (
+		idleTimeout  = 100 * time.Millisecond
+		pingInterval = 20 * time.Millisecond
+		pingCount    = 15
+	)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.created", "response": map[string]any{"id": "resp_1"}}); err != nil {
+			t.Errorf("write response.created: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "started"}); err != nil {
+			t.Errorf("write initial delta: %v", err)
+			return
+		}
+
+		pongs := make(chan struct{}, 1)
+		conn.SetPongHandler(func(string) error {
+			pongs <- struct{}{}
+			return nil
+		})
+		go func() {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+		for i := 0; i < pingCount; i++ {
+			time.Sleep(pingInterval)
+			if err := conn.WriteControl(websocket.PingMessage, []byte("heartbeat"), time.Now().Add(time.Second)); err != nil {
+				return
+			}
+			select {
+			case <-pongs:
+			case <-time.After(time.Second):
+				t.Errorf("timed out waiting for pong %d", i)
+				return
+			}
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_1"}})
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	client := &ResponsesClient{
+		BaseURL:              server.URL,
+		UseWebSocket:         true,
+		WebSocketIdleTimeout: idleTimeout,
+	}
+	stream, err := client.Stream(ctx, ResponsesRequest{
+		Model:          "gpt-test",
+		Input:          []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream:         true,
+		ForceWebSocket: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		switch event.Type {
+		case EventDone:
+			return
+		case EventError:
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+}
+
 func TestResponsesClientWebSocketAuthRetryUsesFreshHeaderAndTimeout(t *testing.T) {
 	var attempts atomic.Int32
 	upgrader := websocket.Upgrader{}
