@@ -598,6 +598,12 @@ func (r *cmdRunner) runProgressive(ctx context.Context, runtime *serveRuntime, e
 		defer cancel()
 	}
 
+	releaseRootLease, err := runtime.acquireRootCheckoutRunLease(ctx, llmReq)
+	if err != nil {
+		return runpkg.Result{}, err
+	}
+	defer releaseRootLease()
+
 	messages := append([]llm.Message(nil), inputMessages...)
 	if runtime.systemPrompt != "" && !containsSystemMessage(messages) {
 		messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)

@@ -1144,16 +1144,24 @@ func (rt *serveRuntime) applyRequestAllowedTools(req *llm.Request) func() {
 	}
 }
 
-func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) acquireRootCheckoutRunLease(ctx context.Context, req llm.Request) (func(), error) {
 	leaseDir := strings.TrimSpace(req.WorkingDir)
 	if rt.toolMgr != nil {
 		if baseDir := strings.TrimSpace(rt.toolMgr.BaseDir()); baseDir != "" {
 			leaseDir = baseDir
 		}
 	}
-	releaseRootLease, err := processRootCheckoutLeases.acquireRun(ctx, leaseDir)
+	release, err := processRootCheckoutLeases.acquireRun(ctx, leaseDir)
 	if err != nil {
-		return serveRunResult{}, fmt.Errorf("wait for root checkout mutation: %w", err)
+		return nil, fmt.Errorf("wait for root checkout mutation: %w", err)
+	}
+	return release, nil
+}
+
+func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+	releaseRootLease, err := rt.acquireRootCheckoutRunLease(ctx, req)
+	if err != nil {
+		return serveRunResult{}, err
 	}
 	defer releaseRootLease()
 
