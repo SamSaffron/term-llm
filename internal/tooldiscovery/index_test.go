@@ -144,7 +144,10 @@ func TestIndexUsesCanonicalNamespacedNameAsKey(t *testing.T) {
 }
 
 func TestAnnotationHintsUseNormalTokenization(t *testing.T) {
-	terms := annotationTerms(mcp.ToolAnnotations{ReadOnly: true})
+	if terms := annotationTerms(mcp.ToolAnnotations{}); terms != nil {
+		t.Fatalf("annotationTerms(absent) = %#v, want nil", terms)
+	}
+	terms := annotationTerms(mcp.ToolAnnotations{Present: true, ReadOnly: true})
 	if !reflect.DeepEqual(terms, []string{"read", "readonly", "read", "only"}) {
 		t.Fatalf("annotationTerms(read-only) = %#v", terms)
 	}

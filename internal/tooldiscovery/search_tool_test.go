@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
 func TestDecodeSearchInputSelectorHandling(t *testing.T) {
@@ -77,6 +79,15 @@ func TestSearchToolSpecExplainsSelectorChoice(t *testing.T) {
 		if !strings.Contains(description, "Do not supply both") {
 			t.Errorf("%s description does not explain selector choice: %q", property, description)
 		}
+	}
+}
+
+func TestAnnotationSummaryDistinguishesMissingHintsFromWrites(t *testing.T) {
+	if got := annotationSummary(mcp.CatalogTool{}); got != " Behavior hints unspecified." {
+		t.Fatalf("missing annotation summary = %q", got)
+	}
+	if got := annotationSummary(mcp.CatalogTool{Annotations: mcp.ToolAnnotations{Present: true}}); got != " Write operation." {
+		t.Fatalf("explicit write annotation summary = %q", got)
 	}
 }
 

@@ -266,6 +266,9 @@ func schemaTerms(schema map[string]any, depth int) []string {
 }
 
 func annotationTerms(annotations mcp.ToolAnnotations) []string {
+	if !annotations.Present {
+		return nil
+	}
 	var hints []string
 	if annotations.ReadOnly {
 		hints = append(hints, "read readonly read-only")

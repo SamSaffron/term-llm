@@ -230,6 +230,45 @@ func TestDefaultDynamicWorkingSetHandlesLargeCatalogue(t *testing.T) {
 	}
 }
 
+func TestExactNameActivationLoadsValidToolsWhenOneNameIsUnavailable(t *testing.T) {
+	manager := startDiscoveryTestManager(t)
+	defer manager.StopAll()
+	provider := llm.NewMockProvider("partial-exact")
+	engine := llm.NewEngine(provider, nil)
+	planner, err := NewPlanner(config.ToolDiscoveryConfig{Mode: "deferred"}, manager, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{SessionID: "partial-exact", MaxTurns: 3}
+	if _, err := planner.BeginRun(context.Background(), provider, &req, "partial-exact-run"); err != nil {
+		t.Fatal(err)
+	}
+	defer planner.EndRun("partial-exact-run")
+
+	ctx := llm.ContextWithToolRunID(context.Background(), "partial-exact-run")
+	args := json.RawMessage(`{
+		"tool_names": ["realistic_operation_00", "discourse_list_categories"]
+	}`)
+	output, err := (&SearchTool{planner: planner}).Execute(ctx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.Content, "Loaded 1 tools") ||
+		!strings.Contains(output.Content, "federation__realistic_operation_00") ||
+		!strings.Contains(output.Content, "Unavailable or denied requested tool(s): discourse_list_categories.") {
+		t.Fatalf("first partial activation output = %q", output.Content)
+	}
+
+	output, err = (&SearchTool{planner: planner}).Execute(ctx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.Content, "Already active: federation__realistic_operation_00.") ||
+		!strings.Contains(output.Content, "Unavailable or denied requested tool(s): discourse_list_categories.") {
+		t.Fatalf("repeated partial activation output = %q", output.Content)
+	}
+}
+
 func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
 	manager := startDiscoveryTestManager(t)
 	defer manager.StopAll()
@@ -245,7 +284,7 @@ func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
 	}
 	defer planner.EndRun("eviction-run")
 
-	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_00", "realistic_operation_01"}, MaxResults: 5}); err != nil || len(evicted) != 0 || omitted != 0 {
+	if _, _, evicted, omitted, _, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_00", "realistic_operation_01"}, MaxResults: 5}); err != nil || len(evicted) != 0 || omitted != 0 {
 		t.Fatalf("initial activation: evicted=%v omitted=%d err=%v", evicted, omitted, err)
 	}
 	if reset, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 0, 5); err != nil || reset != "" {
@@ -253,7 +292,7 @@ func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
 	}
 	planner.ToolExecuted("eviction", "eviction-run", "federation__realistic_operation_00")
 
-	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_02"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_01" {
+	if _, _, evicted, omitted, _, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_02"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_01" {
 		t.Fatalf("never-executed eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
 	}
 	reset, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 1, 5)
@@ -261,14 +300,14 @@ func TestDynamicWorkingSetEvictsNeverExecutedBeforeLRU(t *testing.T) {
 		t.Fatalf("eviction surface reset: reset=%q err=%v", reset, err)
 	}
 
-	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_03"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_02" {
+	if _, _, evicted, omitted, _, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_03"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_02" {
 		t.Fatalf("second never-executed eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
 	}
 	if reset, err := planner.PrepareTurn(context.Background(), provider, &req, "eviction-run", 2, 5); err != nil || !strings.Contains(reset, "LRU-evicted") {
 		t.Fatalf("prepare second eviction: reset=%q err=%v", reset, err)
 	}
 	planner.ToolExecuted("eviction", "eviction-run", "federation__realistic_operation_03")
-	if _, _, evicted, omitted, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_04"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_00" {
+	if _, _, evicted, omitted, _, _, err := planner.activate("eviction-run", searchInput{ToolNames: []string{"realistic_operation_04"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_00" {
 		t.Fatalf("executed LRU eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
 	}
 	got := toolNames(planner.ActiveToolSpecs("eviction"))
@@ -333,16 +372,16 @@ func TestDynamicWorkingSetPrefersUnsentEvictionVictim(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer planner.EndRun("unsent-eviction-run")
-	if _, _, _, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_00", "realistic_operation_01"}, MaxResults: 5}); err != nil {
+	if _, _, _, _, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_00", "realistic_operation_01"}, MaxResults: 5}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := planner.PrepareTurn(context.Background(), provider, &req, "unsent-eviction-run", 0, 5); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_02"}, MaxResults: 5}); err != nil {
+	if _, _, _, _, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_02"}, MaxResults: 5}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, evicted, omitted, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_03"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_02" {
+	if _, _, evicted, omitted, _, _, err := planner.activate("unsent-eviction-run", searchInput{ToolNames: []string{"realistic_operation_03"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_02" {
 		t.Fatalf("unsent eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
 	}
 	planner.mu.Lock()
@@ -367,10 +406,10 @@ func TestDynamicWorkingSetNeverEvictsPinnedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer planner.EndRun("pinned-eviction-run")
-	if _, _, _, _, _, err := planner.activate("pinned-eviction-run", searchInput{ToolNames: []string{"realistic_operation_00"}, MaxResults: 5}); err != nil {
+	if _, _, _, _, _, _, err := planner.activate("pinned-eviction-run", searchInput{ToolNames: []string{"realistic_operation_00"}, MaxResults: 5}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, evicted, omitted, _, err := planner.activate("pinned-eviction-run", searchInput{ToolNames: []string{"realistic_operation_01"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_00" {
+	if _, _, evicted, omitted, _, _, err := planner.activate("pinned-eviction-run", searchInput{ToolNames: []string{"realistic_operation_01"}, MaxResults: 5}); err != nil || omitted != 0 || len(evicted) != 1 || evicted[0] != "federation__realistic_operation_00" {
 		t.Fatalf("pinned eviction: evicted=%v omitted=%d err=%v", evicted, omitted, err)
 	}
 	got := toolNames(planner.ActiveToolSpecs("pinned-eviction"))

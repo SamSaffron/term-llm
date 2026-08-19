@@ -815,7 +815,7 @@ func (p *Planner) ResolveNativeToolDiscovery(_ context.Context, runID string, ca
 	if err != nil {
 		return llm.ToolDiscoveryOutput{}, err
 	}
-	loaded, already, _, _, _, err := p.activate(runID, input)
+	loaded, already, _, _, _, _, err := p.activate(runID, input)
 	if err != nil {
 		return llm.ToolDiscoveryOutput{}, err
 	}

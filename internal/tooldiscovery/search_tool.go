@@ -24,13 +24,13 @@ type SearchTool struct {
 func (t *SearchTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        ToolSearchName,
-		Description: "Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use query when the exact tool name is unknown, or tool_names when it is known. Do not supply both. If both are supplied, tool_names takes precedence. Use this before the final turn when the needed MCP capability is not already available.",
+		Description: "Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use query when the exact tool name is unknown, or tool_names when it is known. Keep semantic queries short and focused on one capability; use separate searches for unrelated capabilities. Do not supply both. If both are supplied, tool_names takes precedence. Exact-name batches load valid tools even when another requested name is unavailable. Use this before the final turn when the needed MCP capability is not already available.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Describe the capability needed when exact tool names are unknown. Omit this when using tool_names. Do not supply both.",
+					"description": "Describe one capability with a short focused query when the exact tool name is unknown. Use separate searches for unrelated capabilities. Omit this when using tool_names. Do not supply both.",
 				},
 				"tool_names": map[string]any{
 					"type":        "array",
@@ -120,7 +120,7 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.Too
 	if runID == "" {
 		return llm.ToolOutput{}, fmt.Errorf("tool_search is not attached to an active agentic run")
 	}
-	loaded, already, evicted, omitted, label, err := t.planner.activate(runID, input)
+	loaded, already, evicted, omitted, unavailable, label, err := t.planner.activate(runID, input)
 	if err != nil {
 		return llm.ToolOutput{}, err
 	}
@@ -142,6 +142,12 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.Too
 		}
 		fmt.Fprintf(&b, "Already active: %s.", strings.Join(already, ", "))
 	}
+	if len(unavailable) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "Unavailable or denied requested tool(s): %s.", strings.Join(unavailable, ", "))
+	}
 	if len(evicted) > 0 {
 		fmt.Fprintf(&b, "\n\nEvicted %d inactive/LRU tool(s) from the visible working set: %s.", len(evicted), strings.Join(evicted, ", "))
 	}
@@ -151,21 +157,21 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (llm.Too
 	return llm.TextOutput(b.String()), nil
 }
 
-func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.CatalogTool, already []string, evicted []string, omitted int, label string, err error) {
+func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.CatalogTool, already []string, evicted []string, omitted int, unavailable []string, label string, err error) {
 	p.mu.Lock()
 	key := p.runs[runID]
 	state := p.sessions[key]
 	p.mu.Unlock()
 	if key == "" || state == nil {
-		return nil, nil, nil, 0, "", fmt.Errorf("tool_search run is no longer active")
+		return nil, nil, nil, 0, nil, "", fmt.Errorf("tool_search run is no longer active")
 	}
 	snapshot := p.manager.CatalogueSnapshot()
 	if snapshot == nil {
-		return nil, nil, nil, 0, "", fmt.Errorf("tool catalogue is unavailable")
+		return nil, nil, nil, 0, nil, "", fmt.Errorf("tool catalogue is unavailable")
 	}
 	engine := p.currentEngine()
 	if engine == nil {
-		return nil, nil, nil, 0, "", fmt.Errorf("tool discovery engine is unavailable")
+		return nil, nil, nil, 0, nil, "", fmt.Errorf("tool discovery engine is unavailable")
 	}
 	byName := make(map[string]mcp.CatalogTool, len(snapshot.Tools))
 	byOriginal := make(map[string][]string)
@@ -195,15 +201,19 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 			sort.Strings(matches)
 			switch len(matches) {
 			case 0:
-				return nil, nil, nil, 0, label, fmt.Errorf("requested tool %q is unavailable or denied", requested)
+				unavailable = append(unavailable, requested)
+				continue
 			case 1:
 				if !seen[matches[0]] {
 					candidateIDs = append(candidateIDs, matches[0])
 					seen[matches[0]] = true
 				}
 			default:
-				return nil, nil, nil, 0, label, fmt.Errorf("original tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
+				return nil, nil, nil, 0, unavailable, label, fmt.Errorf("original tool name %q is ambiguous; use one of: %s", requested, strings.Join(matches, ", "))
 			}
+		}
+		if len(candidateIDs) == 0 && len(unavailable) > 0 {
+			return nil, nil, nil, 0, unavailable, label, fmt.Errorf("requested tool(s) are unavailable or denied: %s", strings.Join(unavailable, ", "))
 		}
 	} else {
 		ranked = p.index.search(input.Query, input.MaxResults, func(name string) bool {
@@ -243,7 +253,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	defer p.mu.Unlock()
 	state = p.sessions[key]
 	if state == nil || p.runs[runID] != key {
-		return nil, nil, nil, 0, label, fmt.Errorf("tool_search run ended before activation")
+		return nil, nil, nil, 0, unavailable, label, fmt.Errorf("tool_search run ended before activation")
 	}
 
 	requested := make(map[string]bool, len(candidateIDs))
@@ -362,14 +372,14 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 		loaded = append(loaded, tool)
 	}
 	if len(candidateIDs) > 0 && len(loaded) == 0 && len(already) == 0 && omitted == 0 {
-		return nil, nil, nil, 0, label, fmt.Errorf("no requested tools remain available in the current catalogue; search again")
+		return nil, nil, nil, 0, unavailable, label, fmt.Errorf("no requested tools remain available in the current catalogue; search again")
 	}
 	loadedNames := make([]string, 0, len(loaded))
 	for _, tool := range loaded {
 		loadedNames = append(loadedNames, tool.Name)
 	}
 	slog.Debug("MCP tool catalogue activation", "run_id", runID, "loaded", loadedNames, "already_active", already, "evicted", evicted, "working_set_omitted", omitted, "dynamic_active", dynamicCount-len(evicted)+len(loaded), "dynamic_limit", p.maxActiveTools)
-	return loaded, already, evicted, omitted, label, nil
+	return loaded, already, evicted, omitted, unavailable, label, nil
 }
 
 var timeNowUTC = func() time.Time { return time.Now().UTC() }
@@ -393,6 +403,9 @@ func conciseDescription(description string) string {
 }
 
 func annotationSummary(tool mcp.CatalogTool) string {
+	if !tool.Annotations.Present {
+		return " Behavior hints unspecified."
+	}
 	if tool.Annotations.ReadOnly {
 		return " Read-only."
 	}

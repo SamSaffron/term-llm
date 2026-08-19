@@ -28,6 +28,7 @@ const (
 // ToolAnnotations preserves MCP tool behavior hints for retrieval and diagnostics.
 // These are untrusted hints, not an execution-policy boundary.
 type ToolAnnotations struct {
+	Present     bool   `json:"present,omitempty"`
 	Title       string `json:"title,omitempty"`
 	ReadOnly    bool   `json:"read_only,omitempty"`
 	Destructive *bool  `json:"destructive,omitempty"`
@@ -107,6 +108,7 @@ func catalogToolFromSDK(server string, tool *sdkmcp.Tool) (CatalogTool, error) {
 	}
 	if tool.Annotations != nil {
 		ct.Annotations = ToolAnnotations{
+			Present:     true,
 			Title:       tool.Annotations.Title,
 			ReadOnly:    tool.Annotations.ReadOnlyHint,
 			Destructive: cloneBool(tool.Annotations.DestructiveHint),

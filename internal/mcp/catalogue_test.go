@@ -44,6 +44,9 @@ func TestBuildToolSnapshotCanonicalHashAndMetadata(t *testing.T) {
 	if first.Hash != second.Hash || first.Tools[0].SchemaHash != second.Tools[0].SchemaHash {
 		t.Fatalf("canonical hashes differ: snapshot %q/%q tool %q/%q", first.Hash, second.Hash, first.Tools[0].SchemaHash, second.Tools[0].SchemaHash)
 	}
+	if !first.Tools[0].Annotations.Present || !first.Tools[0].Annotations.ReadOnly {
+		t.Fatalf("annotations were not preserved: %#v", first.Tools[0].Annotations)
+	}
 	if first.Tools[0].EstimatedTokens <= 0 {
 		t.Fatal("expected positive schema token estimate")
 	}
@@ -56,6 +59,9 @@ func TestBuildToolSnapshotCanonicalHashAndMetadata(t *testing.T) {
 	}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if changed.Tools[0].Annotations.Present {
+		t.Fatalf("missing SDK annotations were marked present: %#v", changed.Tools[0].Annotations)
 	}
 	if changed.Tools[0].SchemaHash == first.Tools[0].SchemaHash {
 		t.Fatal("description change did not alter schema hash")
