@@ -153,6 +153,75 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	}
 }
 
+func TestSQLiteResponseRunStartStateMatchesTranscriptSnapshot(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	compacted := []Message{
+		*NewMessage(sess.ID, llm.UserText("[Context Compaction]\nsummary"), -1),
+		*NewMessage(sess.ID, llm.AssistantText("retained answer"), -1),
+	}
+	compacted[1].CompactionTail = true
+	if err := store.CompactMessages(ctx, sess.ID, compacted); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	for _, message := range []*Message{
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "visible event"}}}, -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "provider context"}}}, -1),
+	} {
+		if err := store.AddMessage(ctx, sess.ID, message); err != nil {
+			t.Fatalf("AddMessage(%s): %v", message.Role, err)
+		}
+	}
+
+	assertMatchesSnapshot := func() ResponseRunStartState {
+		t.Helper()
+		snapshot, err := store.GetTranscriptSnapshot(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("GetTranscriptSnapshot: %v", err)
+		}
+		var wantBoundary int64
+		for i := len(snapshot.Items) - 1; i >= 0; i-- {
+			item := snapshot.Items[i]
+			if item.Flags&TranscriptFlagCompactionTail != 0 {
+				continue
+			}
+			switch llm.Role(item.Role) {
+			case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+				wantBoundary = item.ID
+			}
+			if wantBoundary != 0 {
+				break
+			}
+		}
+		state, err := store.GetResponseRunStartState(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("GetResponseRunStartState: %v", err)
+		}
+		if state.Rev != snapshot.Rev ||
+			state.CompactionSeq != snapshot.CompactionSeq ||
+			state.CompactionCount != snapshot.CompactionCount ||
+			state.DurableBoundaryID != wantBoundary {
+			t.Fatalf("start state = %#v, snapshot = %#v, want boundary %d", state, snapshot, wantBoundary)
+		}
+		return state
+	}
+
+	compactedState := assertMatchesSnapshot()
+	if compactedState.CompactionSeq < 0 || compactedState.CompactionCount != 1 {
+		t.Fatalf("compaction state = %#v, want active first compaction", compactedState)
+	}
+	tool := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
+		Type:       llm.PartToolResult,
+		ToolResult: &llm.ToolResult{ID: "call-latest", Name: "shell", Content: "done"},
+	}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, tool); err != nil {
+		t.Fatalf("AddMessage(tool): %v", err)
+	}
+	if state := assertMatchesSnapshot(); state.DurableBoundaryID != tool.ID {
+		t.Fatalf("boundary = %d, want latest tool row %d", state.DurableBoundaryID, tool.ID)
+	}
+}
+
 func TestSQLiteCompactionPreservesResponseIdentity(t *testing.T) {
 	store, sess := newTranscriptTestStore(t)
 	ctx := context.Background()

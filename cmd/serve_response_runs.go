@@ -2590,24 +2590,38 @@ func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID s
 		return
 	}
 	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
-	if indexer, ok := s.transcriptIndexerForWeb(); ok {
-		if snapshot, err := indexer.GetTranscriptSnapshot(startedCtx, sessionID); err == nil {
-			run.startedRev = snapshot.Rev
-			run.startedCompactionSeq = snapshot.CompactionSeq
-			run.startedCompactionCount = snapshot.CompactionCount
-			for i := len(snapshot.Items) - 1; i >= 0; i-- {
-				item := snapshot.Items[i]
-				if item.ID <= 0 || item.Flags&session.TranscriptFlagCompactionTail != 0 {
-					continue
-				}
-				switch llm.Role(item.Role) {
-				case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
-					run.setInitialDurableBoundary(item.ID)
+	configured := false
+	if reader, ok := s.store.(session.ResponseRunStartStateReader); ok {
+		if state, err := reader.GetResponseRunStartState(startedCtx, sessionID); err == nil {
+			run.startedRev = state.Rev
+			run.startedCompactionSeq = state.CompactionSeq
+			run.startedCompactionCount = state.CompactionCount
+			if state.DurableBoundaryID > 0 {
+				run.setInitialDurableBoundary(state.DurableBoundaryID)
+			}
+			configured = true
+		}
+	}
+	if !configured {
+		if indexer, ok := s.transcriptIndexerForWeb(); ok {
+			if snapshot, err := indexer.GetTranscriptSnapshot(startedCtx, sessionID); err == nil {
+				run.startedRev = snapshot.Rev
+				run.startedCompactionSeq = snapshot.CompactionSeq
+				run.startedCompactionCount = snapshot.CompactionCount
+				for i := len(snapshot.Items) - 1; i >= 0; i-- {
+					item := snapshot.Items[i]
+					if item.ID <= 0 || item.Flags&session.TranscriptFlagCompactionTail != 0 {
+						continue
+					}
+					switch llm.Role(item.Role) {
+					case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+						run.setInitialDurableBoundary(item.ID)
+						break
+					default:
+						continue
+					}
 					break
-				default:
-					continue
 				}
-				break
 			}
 		}
 	}

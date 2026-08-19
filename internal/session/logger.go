@@ -357,6 +357,19 @@ func (s *LoggingStore) SessionSummariesIncludeTranscriptRev() bool {
 	return ok && reporter.SessionSummariesIncludeTranscriptRev()
 }
 
+// GetResponseRunStartState delegates compact response-run transcript reads.
+func (s *LoggingStore) GetResponseRunStartState(ctx context.Context, sessionID string) (ResponseRunStartState, error) {
+	reader, ok := s.Store.(ResponseRunStartStateReader)
+	if !ok {
+		return ResponseRunStartState{}, ErrTranscriptRevisionUnsupported
+	}
+	state, err := reader.GetResponseRunStartState(ctx, sessionID)
+	if !errors.Is(err, ErrTranscriptRevisionUnsupported) {
+		s.logOnce("GetResponseRunStartState", err)
+	}
+	return state, err
+}
+
 // GetTranscriptSnapshot delegates coherent transcript envelope reads.
 func (s *LoggingStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
 	indexer, ok := s.Store.(TranscriptIndexer)

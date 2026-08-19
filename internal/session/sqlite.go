@@ -3946,6 +3946,53 @@ func (s *SQLiteStore) transcriptReadDB() *sql.DB {
 	return s.db
 }
 
+// GetResponseRunStartState returns the response-run transcript envelope in one
+// indexed scalar query. It deliberately uses the primary connection so a new
+// provider run is not queued behind body materialization on the dedicated
+// transcript reader.
+func (s *SQLiteStore) GetResponseRunStartState(ctx context.Context, sessionID string) (ResponseRunStartState, error) {
+	if !s.hasTranscriptRev || !s.hasMessagesTable {
+		return ResponseRunStartState{}, ErrTranscriptRevisionUnsupported
+	}
+	compactionSeqExpr := "-1"
+	if s.hasCompactionSeq {
+		compactionSeqExpr = "COALESCE(compaction_seq, -1)"
+	}
+	compactionCountExpr := "0"
+	if s.hasCompactionCount {
+		compactionCountExpr = "COALESCE(compaction_count, 0)"
+	}
+	compactionTailFilter := ""
+	if s.hasMessageCompactionTail {
+		compactionTailFilter = "AND NOT COALESCE(compaction_tail, FALSE)"
+	}
+	state := ResponseRunStartState{CompactionSeq: -1}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT transcript_rev, `+compactionSeqExpr+`, `+compactionCountExpr+`, COALESCE((
+			SELECT id
+			FROM messages
+			WHERE session_id = sessions.id
+				AND role IN ('user', 'assistant', 'tool')
+				`+compactionTailFilter+`
+			ORDER BY sequence DESC, id DESC
+			LIMIT 1
+		), 0)
+		FROM sessions
+		WHERE id = ?`, sessionID).Scan(
+		&state.Rev,
+		&state.CompactionSeq,
+		&state.CompactionCount,
+		&state.DurableBoundaryID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResponseRunStartState{}, ErrNotFound
+	}
+	if err != nil {
+		return ResponseRunStartState{}, fmt.Errorf("get response run start state: %w", err)
+	}
+	return state, nil
+}
+
 // GetTranscriptSnapshot returns the complete transcript envelope from one
 // SQLite read transaction.
 func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
