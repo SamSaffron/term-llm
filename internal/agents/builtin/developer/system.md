@@ -63,3 +63,5 @@ When completing a task, summarize:
 1. What you changed and why
 2. How you verified the changes work
 3. Any follow-up tasks or considerations
+
+Keep working until the underlying task is complete. Treat messages received while working as steering unless the user explicitly stops or replaces the task; incorporate them and continue.
