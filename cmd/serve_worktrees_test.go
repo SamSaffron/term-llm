@@ -360,6 +360,30 @@ func TestServeWorktreeMutationsBlockNonWebRootRunLease(t *testing.T) {
 	}
 }
 
+func TestRootCheckoutLeaseIgnoresLinkedWorktreeInsideMainRoot(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	linkedDir := filepath.Join(repo, "nested-worktree")
+	runGitForBindingTest(t, repo, "worktree", "add", "--detach", linkedDir, "HEAD")
+	t.Cleanup(func() {
+		runGitForBindingTest(t, repo, "worktree", "remove", "--force", linkedDir)
+	})
+
+	var leases rootCheckoutLeaseRegistry
+	releaseMutation, ok, err := leases.tryAcquireMutation(repo)
+	if err != nil || !ok {
+		t.Fatalf("acquire mutation lease: ok=%v err=%v", ok, err)
+	}
+	defer releaseMutation()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	releaseRun, err := leases.acquireRun(ctx, linkedDir)
+	if err != nil {
+		t.Fatalf("linked-worktree run was blocked by main checkout mutation: %v", err)
+	}
+	releaseRun()
+}
+
 func TestServeWorktreeMergeExclusiveLeaseBlocksNewRootRuns(t *testing.T) {
 	repo := newGitRepoForBindingTest(t)
 	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "merge-admission"})

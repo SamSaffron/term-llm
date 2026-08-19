@@ -266,6 +266,31 @@ func IsGitRepo(dir string) bool {
 // MainRepoRoot returns the canonical main checkout root for any worktree in the repo.
 func MainRepoRoot(dir string) (string, error) { return canonicalRepoRoot(dir) }
 
+// CheckoutRoot returns the canonical root of the specific checkout containing dir.
+func CheckoutRoot(dir string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("empty repo dir")
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	out, err := runGit(abs, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("worktree: resolve checkout root: %w", err)
+	}
+	root := strings.TrimSpace(out)
+	if root == "" {
+		return "", fmt.Errorf("worktree: empty checkout root")
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	} else if absRoot, err := filepath.Abs(root); err == nil {
+		root = absRoot
+	}
+	return filepath.Clean(root), nil
+}
+
 // ManagedRoot returns the bucket for managed worktrees for repoRoot.
 func ManagedRoot(repoRoot string) (string, error) {
 	dataDir, err := appdata.GetDataDir()

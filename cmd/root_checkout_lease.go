@@ -33,24 +33,32 @@ func (r *rootCheckoutLeaseRegistry) acquireRun(ctx context.Context, dir string) 
 		return func() {}, nil
 	}
 
+	mainRoot, gitErr := worktree.MainRepoRoot(dir)
+	checkoutRoot, checkoutErr := worktree.CheckoutRoot(dir)
+	if gitErr == nil && checkoutErr == nil {
+		mainRoot, err = canonicalRootLeasePath(mainRoot)
+		if err == nil {
+			checkoutRoot, err = canonicalRootLeasePath(checkoutRoot)
+		}
+		if err == nil {
+			if checkoutRoot != mainRoot {
+				// The directory belongs to a linked worktree, not the main checkout.
+				return func() {}, nil
+			}
+			return r.lease(mainRoot).acquireRead(ctx)
+		}
+	}
+
 	// Mutation admission registers its root before changing HEAD or the index.
-	// Consult registered roots first so a run cannot bypass the lease merely
-	// because Git inspection happens while that mutation is in progress.
+	// If Git inspection fails while that mutation is in progress, fall back to a
+	// registered containing root so the run cannot bypass the admitted writer.
 	if lease := r.knownRootLease(dir); lease != nil {
 		return lease.acquireRead(ctx)
 	}
 
-	mainRoot, err := worktree.MainRepoRoot(dir)
-	if err != nil {
-		// Non-Git working directories have no checkout to coordinate.
-		return func() {}, nil
-	}
-	mainRoot, err = canonicalRootLeasePath(mainRoot)
-	if err != nil || !pathWithinRoot(dir, mainRoot) {
-		// The directory belongs to a linked worktree, not the main checkout.
-		return func() {}, nil
-	}
-	return r.lease(mainRoot).acquireRead(ctx)
+	// Non-Git working directories have no checkout to coordinate. Canonical path
+	// failures are likewise non-actionable here because there is no root key.
+	return func() {}, nil
 }
 
 func (r *rootCheckoutLeaseRegistry) tryAcquireMutation(root string) (func(), bool, error) {
