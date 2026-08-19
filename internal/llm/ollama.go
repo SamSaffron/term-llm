@@ -686,13 +686,15 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 			return fmt.Errorf("Ollama streaming error: %w", err)
 		}
 
-		for i, tc := range pendingToolCalls {
+		for _, tc := range pendingToolCalls {
 			args := tc.Function.Arguments
 			if !json.Valid(args) {
 				args = json.RawMessage("{}")
 			}
 			call := ToolCall{
-				ID:        fmt.Sprintf("call_%d", i),
+				// Ollama omits tool-call IDs. Use a collision-resistant internal ID:
+				// call history and UI deduplication can outlive this provider instance.
+				ID:        newSyntheticToolCallID(),
 				Name:      tc.Function.Name,
 				Arguments: args,
 			}

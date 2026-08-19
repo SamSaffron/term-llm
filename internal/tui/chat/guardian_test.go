@@ -89,6 +89,47 @@ func TestGuardianReviewBeforeToolStartIsBuffered(t *testing.T) {
 	}
 }
 
+func TestLiveToolTurnsRemainVisibleAndGuardianAttachesToMatchingCall(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.streaming = true
+
+	for _, event := range []ui.StreamEvent{
+		ui.ToolStartEvent("call-first", "write_file", "(bob)", nil),
+		ui.ToolEndEvent("call-first", "write_file", "(bob)", true),
+		ui.ToolStartEvent("call-second", "shell", "(Sleep 3 seconds)", nil),
+	} {
+		updated, _ := m.Update(streamEventMsg{event: event, generation: m.streamGeneration})
+		m = updated.(*Model)
+	}
+	updated, _ := m.Update(GuardianReviewMsg{Event: tools.GuardianEvent{
+		ToolCallID: "call-second",
+		Message:    "guardian: approved (low risk)",
+		Outcome:    tools.GuardianApproved,
+	}})
+	m = updated.(*Model)
+	updated, _ = m.Update(streamEventMsg{
+		event:      ui.ToolEndEvent("call-second", "shell", "(Sleep 3 seconds)", true),
+		generation: m.streamGeneration,
+	})
+	m = updated.(*Model)
+
+	if len(m.tracker.Segments) != 2 {
+		t.Fatalf("live tool segments = %d, want 2: %#v", len(m.tracker.Segments), m.tracker.Segments)
+	}
+	if m.tracker.Segments[0].Guardian != nil {
+		t.Fatalf("guardian attached to first tool: %#v", m.tracker.Segments[0].Guardian)
+	}
+	if guardian := m.tracker.Segments[1].Guardian; guardian == nil || guardian.ToolCallID != "call-second" {
+		t.Fatalf("guardian on second tool = %#v, want call-second", guardian)
+	}
+	plain := ui.StripANSI(m.tracker.RenderUnflushed(80, ui.RenderMarkdown, false))
+	if !strings.Contains(plain, "write_file (bob)") || !strings.Contains(plain, "shell (Sleep 3 seconds)") ||
+		strings.Count(plain, "Guardian: approved") != 1 {
+		t.Fatalf("live tool rendering or guardian placement is wrong: %q", plain)
+	}
+}
+
 func TestUncorrelatedGuardianStatusRemainsDurable(t *testing.T) {
 	m := newTestChatModel(true)
 	message := "guardian: circuit breaker tripped after repeated denials; auto mode disabled"

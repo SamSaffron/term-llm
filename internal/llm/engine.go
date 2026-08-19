@@ -3485,15 +3485,27 @@ turnLoop:
 					event.Tool = &resolved
 					event.ToolName = resolved.Name
 				}
+				// Normalize every provider path before snapshotting, forwarding, or
+				// execution. Tool.ID is canonical because it is persisted, executed,
+				// and echoed to provider protocols; synthesize it only when the
+				// provider omitted both representations. Copy the provider-owned value
+				// before normalizing it.
+				toolCall := *event.Tool
+				toolCallID := toolCall.ID
+				if strings.TrimSpace(toolCallID) == "" {
+					toolCallID = event.ToolCallID
+				}
+				if strings.TrimSpace(toolCallID) == "" {
+					toolCallID = newSyntheticToolCallID()
+				}
+				toolCall.ID = toolCallID
+				event.Tool = &toolCall
+				event.ToolCallID = toolCallID
 				if err := flushScratchpad(); err != nil {
 					return err
 				}
 				// Check if this is a synchronous tool execution request from a provider bridge.
 				if event.ToolResponse != nil {
-					// Normalize Tool.ID from ToolCallID if the provider didn't set it.
-					if event.Tool.ID == "" && event.ToolCallID != "" {
-						event.Tool.ID = event.ToolCallID
-					}
 					// Forward the EventToolCall so consumers can see tool calls (e.g., exec.go needs
 					// to see suggest_commands calls to parse suggestions from the arguments).
 					// Create a copy without ToolResponse to avoid confusion.
@@ -3535,21 +3547,6 @@ turnLoop:
 					continue
 				}
 				// Normal async collection for other providers.
-				// Resolve a canonical tool call ID: prefer event.ToolCallID, fall back
-				// to Tool.ID, and generate a stable synthetic ID if both are empty.
-				toolCallID := event.ToolCallID
-				if toolCallID == "" {
-					toolCallID = event.Tool.ID
-				}
-				if toolCallID == "" {
-					toolCallID = fmt.Sprintf("stream-toolcall-%d", len(toolCalls)+1)
-				}
-				// Normalize: ensure Tool.ID is always populated so downstream
-				// consumers (serve handlers, API responses) get the correct ID.
-				if event.Tool.ID == "" {
-					event.Tool.ID = toolCallID
-				}
-
 				info := event.ToolInfo
 				if info == "" {
 					info = event.Tool.ToolInfo
@@ -4454,10 +4451,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 // Returns the tool call, result content string, and any error that occurred during execution.
 func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send eventSender, debug bool, debugRaw bool) (ToolCall, ToolOutput, error) {
 	call := event.Tool
-	callID := event.ToolCallID
-	if callID == "" {
-		callID = call.ID
-	}
+	callID := call.ID
 
 	// Get tool preview info
 	info := e.getToolPreview(*call)
@@ -4553,7 +4547,7 @@ func (e *Engine) withToolPreview(calls []ToolCall) []ToolCall {
 func ensureToolCallIDs(calls []ToolCall) []ToolCall {
 	for i := range calls {
 		if strings.TrimSpace(calls[i].ID) == "" {
-			calls[i].ID = fmt.Sprintf("toolcall-%d", i+1)
+			calls[i].ID = newSyntheticToolCallID()
 		}
 	}
 	return calls

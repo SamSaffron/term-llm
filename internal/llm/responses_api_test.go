@@ -1568,6 +1568,28 @@ func TestResponsesToolState_FinishCallCreatesNewEntry(t *testing.T) {
 	}
 }
 
+func TestResponsesToolState_MissingCallIDGetsStableUniqueFallback(t *testing.T) {
+	first := newResponsesToolState()
+	first.FinishCall(1, "", "", "search", `{}`)
+	firstCalls := first.Calls()
+	if len(firstCalls) != 1 || !strings.HasPrefix(firstCalls[0].ID, "call_") {
+		t.Fatalf("first fallback calls = %+v", firstCalls)
+	}
+	if repeated := first.Calls(); len(repeated) != 1 || repeated[0].ID != firstCalls[0].ID {
+		t.Fatalf("fallback ID changed across Calls: first=%+v repeated=%+v", firstCalls, repeated)
+	}
+
+	second := newResponsesToolState()
+	second.FinishCall(1, "", "", "search", `{}`)
+	secondCalls := second.Calls()
+	if len(secondCalls) != 1 {
+		t.Fatalf("second fallback calls = %+v", secondCalls)
+	}
+	if secondCalls[0].ID == firstCalls[0].ID {
+		t.Fatalf("fallback ID was reused across states: %q", firstCalls[0].ID)
+	}
+}
+
 func TestResponsesToolState_MultipleToolCalls(t *testing.T) {
 	// Test tracking multiple concurrent tool calls with different output_index values
 	state := newResponsesToolState()

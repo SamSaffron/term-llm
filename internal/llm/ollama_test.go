@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -570,7 +571,7 @@ func TestOllamaProviderStreamToolCalls(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		for _, chunk := range []string{
-			`{"model":"qwen2.5-coder:7b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"location":"Paris"}}}]},"done":false}`,
+			`{"model":"qwen2.5-coder:7b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"location":"Paris"}}},{"function":{"name":"get_weather","arguments":{"location":"London"}}}]},"done":false}`,
 			`{"model":"qwen2.5-coder:7b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`,
 		} {
 			fmt.Fprintln(w, chunk)
@@ -578,44 +579,58 @@ func TestOllamaProviderStreamToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOllamaChatProvider(srv.URL, "qwen2.5-coder:7b", OllamaOptions{})
-	stream, err := p.Stream(context.Background(), Request{
-		Messages: []Message{UserText("weather in Paris?")},
-		Tools: []ToolSpec{{
-			Name:        "get_weather",
-			Description: "Get weather for a location",
-			Schema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"location": map[string]interface{}{"type": "string"},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("Stream error: %v", err)
-	}
-	defer stream.Close()
-
 	var calls []ToolCall
-	for {
-		event, err := stream.Recv()
+	for range 2 {
+		// A provider can be reconstructed while persisted messages and downstream
+		// call-ID deduplication outlive the old instance.
+		p := NewOllamaChatProvider(srv.URL, "qwen2.5-coder:7b", OllamaOptions{})
+		stream, err := p.Stream(context.Background(), Request{
+			Messages: []Message{UserText("weather in Paris?")},
+			Tools: []ToolSpec{{
+				Name:        "get_weather",
+				Description: "Get weather for a location",
+				Schema: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"location": map[string]interface{}{"type": "string"},
+					},
+				},
+			}},
+		})
 		if err != nil {
-			break
+			t.Fatalf("Stream error: %v", err)
 		}
-		if event.Type == EventToolCall && event.Tool != nil {
-			calls = append(calls, *event.Tool)
+
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("Recv: %v", err)
+			}
+			if event.Type == EventToolCall && event.Tool != nil {
+				calls = append(calls, *event.Tool)
+			}
 		}
+		stream.Close()
 	}
 
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 tool calls across two streams, got %d", len(calls))
 	}
-	if calls[0].Name != "get_weather" {
-		t.Errorf("expected 'get_weather', got %q", calls[0].Name)
-	}
-	if calls[0].ID == "" {
-		t.Error("expected non-empty synthetic ID")
+	seenIDs := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		if call.Name != "get_weather" {
+			t.Errorf("expected 'get_weather', got %q", call.Name)
+		}
+		if call.ID == "" {
+			t.Error("expected non-empty synthetic ID")
+		}
+		if _, exists := seenIDs[call.ID]; exists {
+			t.Errorf("synthetic tool call ID was reused: %q", call.ID)
+		}
+		seenIDs[call.ID] = struct{}{}
 	}
 }
 

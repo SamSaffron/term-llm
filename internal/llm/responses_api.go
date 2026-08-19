@@ -1647,8 +1647,10 @@ func (s *responsesToolState) Calls() []ToolCall {
 		// callID should always be set from the done event if not from added
 		id := state.callID
 		if id == "" {
-			// Fallback: generate a placeholder ID (shouldn't happen in practice)
-			id = fmt.Sprintf("call_%d", outputIndex)
+			// Defensive fallback for malformed/incomplete streams. It remains the
+			// correlation ID echoed in the subsequent tool result.
+			id = newSyntheticToolCallID()
+			state.callID = id
 		}
 		call := ToolCall{
 			ID:        id,

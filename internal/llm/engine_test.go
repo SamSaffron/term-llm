@@ -5501,10 +5501,15 @@ func TestEngineNormalizesToolCallID(t *testing.T) {
 			switch call {
 			case 0:
 				return []Event{
-					// Simulate a provider that sets ToolCallID but not Tool.ID
+					// Simulate a provider that sets ToolCallID but not Tool.ID.
 					{Type: EventToolCall, ToolCallID: "call-1", Tool: &ToolCall{Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
-					// Also test the synthetic fallback: both ToolCallID and Tool.ID empty
+					// Tool.ID is canonical when both representations disagree because it
+					// is the ID persisted and echoed in the provider's tool result.
+					{Type: EventToolCall, ToolCallID: "event-id", Tool: &ToolCall{ID: "tool-id", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					// Also test the synthetic fallback: both ToolCallID and Tool.ID empty.
 					{Type: EventToolCall, Tool: &ToolCall{Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					// Whitespace-only IDs are omitted IDs, not valid correlation keys.
+					{Type: EventToolCall, ToolCallID: "\t", Tool: &ToolCall{ID: "  ", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
 					{Type: EventDone},
 				}
 			default:
@@ -5542,11 +5547,11 @@ func TestEngineNormalizesToolCallID(t *testing.T) {
 		}
 	}
 
-	if len(toolCallEvents) < 2 {
-		t.Fatalf("expected at least 2 EventToolCall events, got %d", len(toolCallEvents))
+	if len(toolCallEvents) < 4 {
+		t.Fatalf("expected at least 4 EventToolCall events, got %d", len(toolCallEvents))
 	}
 
-	// First tool call: ToolCallID was "call-1", Tool.ID should be normalized to "call-1"
+	// First tool call: ToolCallID was "call-1", Tool.ID should be normalized to "call-1".
 	ev0 := toolCallEvents[0]
 	if ev0.ToolCallID != "call-1" {
 		t.Errorf("event[0].ToolCallID = %q, want %q", ev0.ToolCallID, "call-1")
@@ -5555,16 +5560,83 @@ func TestEngineNormalizesToolCallID(t *testing.T) {
 		t.Errorf("event[0].Tool.ID = %q, want %q", ev0.Tool.ID, "call-1")
 	}
 
-	// Second tool call: both were empty, should get a synthetic ID
+	// Second tool call: Tool.ID is canonical when the event-level ID disagrees.
 	ev1 := toolCallEvents[1]
-	if ev1.ToolCallID == "" {
-		t.Error("event[1].ToolCallID should not be empty (should be synthetic)")
+	if ev1.ToolCallID != "tool-id" || ev1.Tool.ID != "tool-id" {
+		t.Errorf("event[1] IDs = %q/%q, want tool-id/tool-id", ev1.ToolCallID, ev1.Tool.ID)
 	}
-	if ev1.Tool.ID == "" {
-		t.Error("event[1].Tool.ID should not be empty (should be synthetic)")
+
+	// Third tool call: both were empty, so both should get the same synthetic ID.
+	ev2 := toolCallEvents[2]
+	if ev2.ToolCallID == "" {
+		t.Error("event[2].ToolCallID should not be empty (should be synthetic)")
 	}
-	if ev1.ToolCallID != ev1.Tool.ID {
-		t.Errorf("event[1].ToolCallID (%q) != event[1].Tool.ID (%q)", ev1.ToolCallID, ev1.Tool.ID)
+	if ev2.Tool.ID == "" {
+		t.Error("event[2].Tool.ID should not be empty (should be synthetic)")
+	}
+	if ev2.ToolCallID != ev2.Tool.ID {
+		t.Errorf("event[2].ToolCallID (%q) != event[2].Tool.ID (%q)", ev2.ToolCallID, ev2.Tool.ID)
+	}
+
+	// Fourth tool call: whitespace-only representations also get a synthetic ID.
+	ev3 := toolCallEvents[3]
+	if strings.TrimSpace(ev3.ToolCallID) == "" || ev3.ToolCallID != ev3.Tool.ID {
+		t.Errorf("event[3] IDs = %q/%q, want matching non-blank synthetic IDs", ev3.ToolCallID, ev3.Tool.ID)
+	}
+}
+
+func TestEngineNormalizesEmptySyncToolCallID(t *testing.T) {
+	t.Parallel()
+
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	responseCh := make(chan ToolExecutionResponse, 1)
+	provider := &fakeProvider{script: func(call int, _ Request) []Event {
+		if call == 0 {
+			return []Event{{
+				Type:         EventToolCall,
+				Tool:         &ToolCall{Name: "count_tool", Arguments: json.RawMessage(`{}`)},
+				ToolResponse: responseCh,
+			}, {Type: EventDone}}
+		}
+		return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+	}}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var callID, startID, endID string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			callID = event.ToolCallID
+			if event.Tool == nil || event.Tool.ID != callID {
+				t.Fatalf("tool call IDs are inconsistent: %+v", event)
+			}
+		case EventToolExecStart:
+			startID = event.ToolCallID
+		case EventToolExecEnd:
+			endID = event.ToolCallID
+		}
+	}
+
+	if callID == "" || startID != callID || endID != callID {
+		t.Fatalf("sync tool IDs: call=%q start=%q end=%q", callID, startID, endID)
 	}
 }
 
