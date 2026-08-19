@@ -249,7 +249,7 @@ const handleFileChangeEvent = (session, payload) => {
 
   ds.files.set(path, {
     path,
-    kind: String(payload.kind || 'modify'),
+    kind: normalizeDiffKind(payload.kind),
     adds: Number(payload.adds) || 0,
     dels: Number(payload.dels) || 0,
     truncated: Boolean(payload.truncated),
@@ -376,7 +376,7 @@ const fetchSessionFileChanges = async (sessionId) => {
       const prev = ds.files.get(path);
       next.set(path, {
         path,
-        kind: String(entry.kind || 'modify'),
+        kind: normalizeDiffKind(entry.kind),
         adds: Number(entry.adds) || 0,
         dels: Number(entry.dels) || 0,
         truncated: Boolean(entry.truncated),
@@ -482,7 +482,7 @@ const fileDirName = (path) => {
 };
 
 const kindBadgeLabel = { create: 'A', modify: 'M', delete: 'D' };
-
+const normalizeDiffKind = (kind) => kindBadgeLabel[kind] ? kind : 'modify';
 const diffTotals = (ds) => {
   if (!ds) return { fileCount: 0, adds: 0, dels: 0 };
   if (!ds.listLoaded && ds.summaryKnown) return ds.summary;
@@ -671,7 +671,7 @@ const copyDiffText = (button, text) => {
 const imageDiffContentURL = (sessionId, path, side) => `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/content?path=${encodeURIComponent(path)}&side=${side}`;
 
 const renderImageDiff = (sessionId, path, data) => {
-  const comparison = createEl('div', `diff-image-comparison diff-image-${data.kind || 'modify'}`);
+  const comparison = createEl('div', `diff-image-comparison diff-image-${normalizeDiffKind(data.kind)}`);
   const sides = data.kind === 'create' ? ['after'] : data.kind === 'delete' ? ['before'] : ['before', 'after'];
   sides.forEach((side) => {
     const panel = createEl('div', 'diff-image-side');
@@ -739,7 +739,7 @@ const renderDiffFileBody = (sessionId, ds, path) => {
   const lang = visibleRows.length <= DIFF_HIGHLIGHT_MAX_ROWS ? (cached.data.lang || '') : '';
   if (lang) requestDiffHighlight();
 
-  const table = createEl('div', 'diff-rows');
+  const table = createEl('div', `diff-rows diff-rows-kind-${normalizeDiffKind(ds.files.get(path)?.kind)}`);
   visibleRows.forEach((row) => {
     const rowEl = createEl('div', `diff-row ${row.type}`);
     if (row.type === 'hunk') {

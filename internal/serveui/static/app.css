@@ -54,6 +54,8 @@
       --diff-add-ln-bg: rgba(46, 160, 67, 0.30);
       --diff-del-bg: rgba(248, 81, 73, 0.16);
       --diff-del-ln-bg: rgba(248, 81, 73, 0.30);
+      --diff-file-del-bg: rgba(248, 81, 73, 0.07);
+      --diff-file-del-ln-bg: rgba(248, 81, 73, 0.12);
     }
 
     @media (prefers-color-scheme: light) {
@@ -89,6 +91,8 @@
         --diff-add-ln-bg: rgba(31, 136, 61, 0.22);
         --diff-del-bg: rgba(207, 34, 46, 0.10);
         --diff-del-ln-bg: rgba(207, 34, 46, 0.20);
+        --diff-file-del-bg: rgba(207, 34, 46, 0.05);
+        --diff-file-del-ln-bg: rgba(207, 34, 46, 0.08);
       }
     }
 
@@ -460,9 +464,9 @@
       font-weight: 700;
     }
 
-    .diff-kind-create { background: var(--diff-add-ln-bg); color: var(--accent-green); }
-    .diff-kind-modify { background: var(--surface-3); color: var(--accent-amber); }
-    .diff-kind-delete { background: var(--diff-del-ln-bg); color: var(--danger); }
+    .diff-kind-badge.diff-kind-create { background: var(--diff-add-ln-bg); color: var(--accent-green); }
+    .diff-kind-badge.diff-kind-modify { background: var(--surface-3); color: var(--accent-amber); }
+    .diff-kind-badge.diff-kind-delete { background: var(--diff-del-ln-bg); color: var(--danger); }
 
     .diff-file-name {
       flex: 1;
@@ -574,6 +578,15 @@
 
     .diff-row.add { background: var(--diff-add-bg); }
     .diff-row.del { background: var(--diff-del-bg); }
+
+    /* A file-level badge and per-line markers already identify a created file,
+       so keep its contents readable instead of tinting every line green. */
+    .diff-rows.diff-rows-kind-create .diff-row.add { background: transparent; }
+    .diff-rows.diff-rows-kind-create .diff-row.add .diff-ln { background: transparent; }
+
+    /* Deleted files retain a subdued red cue without the full diff wash. */
+    .diff-rows.diff-rows-kind-delete .diff-row.del { background: var(--diff-file-del-bg); }
+    .diff-rows.diff-rows-kind-delete .diff-row.del .diff-ln { background: var(--diff-file-del-ln-bg); }
 
     .diff-row.hunk {
       padding: 0.15rem 0.6rem;

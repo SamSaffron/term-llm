@@ -488,6 +488,8 @@ async function run(name, fn) {
     await flushTimers();
 
     assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 400, 'rows capped at the render limit');
+    const rows = elements.diffFileList.querySelector('.diff-rows');
+    assert(rows?.classList.contains('diff-rows-kind-create'), 'created text diff rows carry their namespaced kind class');
     const more = elements.diffFileList.querySelector('.diff-show-more');
     assert(more, 'show-more control rendered');
     assertEqual(more.textContent, 'Show 50 more lines', 'control reports hidden row count');
@@ -517,6 +519,43 @@ async function run(name, fn) {
     assert(renders <= 5, `20 events should coalesce to a few renders, got ${renders}`);
   });
 
+  await run('deleted text diffs carry their kind-specific styling class', async () => {
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/old.txt', kind: 'create', lang: '', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'del', s: 'old' }] }] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/old.txt', kind: 'delete', adds: 0, dels: 1, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const rows = elements.diffFileList.querySelector('.diff-rows');
+    assert(rows?.classList.contains('diff-rows-kind-delete'), 'current file-list kind wins over stale cached diff kind');
+  });
+
+  await run('unknown file kinds safely fall back to modify styling', async () => {
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/odd.txt', kind: 'create diff-error', lang: '', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: 'line' }] }] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/odd.txt', kind: 'create diff-error', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const rows = elements.diffFileList.querySelector('.diff-rows');
+    assert(rows?.classList.contains('diff-rows-kind-modify'), 'unknown kind uses modify styling');
+    assert(!rows?.classList.contains('diff-error'), 'kind value cannot inject an additional class');
+  });
+
   await run('syntax highlighting applies when hljs is available', async () => {
     const fakeHljs = {
       getLanguage: (name) => name === 'go',
@@ -536,6 +575,8 @@ async function run(name, fn) {
     await flushTimers();
     await flushTimers();
 
+    const rows = elements.diffFileList.querySelector('.diff-rows');
+    assert(rows?.classList.contains('diff-rows-kind-modify'), 'modified text diff rows carry their namespaced kind class');
     const codes = elements.diffFileList.querySelectorAll('.diff-code');
     assert(codes.length > 0, 'diff rows rendered');
     assert(String(codes[0].innerHTML || '').includes('hljs-keyword'), 'code cell is hljs-highlighted');

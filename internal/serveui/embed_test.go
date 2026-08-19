@@ -1055,6 +1055,13 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 		".app.diff-open",
 		"--diff-add-bg",
 		"--diff-del-bg",
+		"--diff-file-del-bg",
+		"--diff-file-del-ln-bg",
+		".diff-kind-badge.diff-kind-create",
+		".diff-kind-badge.diff-kind-modify",
+		".diff-kind-badge.diff-kind-delete",
+		".diff-rows.diff-rows-kind-create .diff-row.add",
+		".diff-rows.diff-rows-kind-delete .diff-row.del",
 		".diff-file-row",
 		".diff-file-body",
 		".diff-chevron",
@@ -1068,6 +1075,12 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 	} {
 		if !strings.Contains(cssSrc, want) {
 			t.Fatalf("app.css missing %q", want)
+		}
+	}
+	for _, kind := range []string{"create", "modify", "delete"} {
+		bareRule := "\n    .diff-kind-" + kind + " {"
+		if strings.Contains(cssSrc, bareRule) {
+			t.Fatalf("app.css contains unscoped diff kind rule %q", bareRule)
 		}
 	}
 
