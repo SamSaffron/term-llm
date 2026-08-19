@@ -16,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestResponseRunTimerExcludesInteractiveWait(t *testing.T) {
@@ -631,6 +632,45 @@ func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) 
 	snapshot := run.snapshot()
 	if snapshot["model"] != "gpt-5.4" || snapshot["reasoning_effort"] != "high" {
 		t.Fatalf("snapshot runtime = %#v/%#v, want gpt-5.4/high", snapshot["model"], snapshot["reasoning_effort"])
+	}
+}
+
+func TestAppendResponseRunEventEmitsAskUserPromptWhenServerToolMetadataIsSuppressed(t *testing.T) {
+	registry := llm.NewToolRegistry()
+	registry.Register(tools.NewAskUserTool())
+	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
+	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
+	run := newResponseRun("resp_ask_user", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(runtime, run, state, llm.Event{
+		Type:       llm.EventToolExecStart,
+		ToolCallID: "call-ask",
+		ToolName:   tools.AskUserToolName,
+		ToolArgs:   json.RawMessage(`{"questions":[{"header":"Theme","question":"Pick a theme","options":[{"label":"Dark","description":"Use dark mode"},{"label":"Light","description":"Use light mode"}]}]}`),
+	}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 1 || run.events[0].Event != "response.ask_user.prompt" {
+		var names []string
+		for _, ev := range run.events {
+			names = append(names, ev.Event)
+		}
+		t.Fatalf("events = %v, want only response.ask_user.prompt", names)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal prompt: %v", err)
+	}
+	if payload["call_id"] != "call-ask" {
+		t.Fatalf("call_id = %#v, want call-ask", payload["call_id"])
+	}
+	questions, ok := payload["questions"].([]any)
+	if !ok || len(questions) != 1 {
+		t.Fatalf("questions = %#v, want one question", payload["questions"])
 	}
 }
 

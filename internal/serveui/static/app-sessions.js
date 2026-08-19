@@ -415,7 +415,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     startedRev: Math.max(0, Number(session.transcript?.activeRun?.startedRev) || 0), terminal: Boolean(session.transcript?.activeRun?.terminal),
   };
   const sampledSessionResponseId = String(session.activeResponseId || '').trim();
-  const sampledTransport = {
+  const sampledTransport = { askUser: state.askUser, approval: state.approval,
     controller: state.abortController,
     generation: Number(state.streamGeneration || 0),
     sessionId: String(state.currentStreamSessionId || '').trim(),
@@ -483,28 +483,28 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     : (runtimeState.pending_ask_user ? [runtimeState.pending_ask_user] : []);
   const prompt = prompts[0] || null;
 
-  if (prompt && prompt.call_id && Array.isArray(prompt.questions) && prompt.questions.length > 0) {
-    const samePrompt = state.askUser
-      && state.askUser.sessionId === session.id
+  // Do not let state sampled before a live stream prompt opened overwrite it.
+  const askUserStateApplies = isStillActive() && state.askUser === sampledTransport.askUser;
+  if (askUserStateApplies && prompt && prompt.call_id && Array.isArray(prompt.questions) && prompt.questions.length > 0) {
+    const samePrompt = state.askUser && state.askUser.sessionId === requestSessionId
       && state.askUser.callId === prompt.call_id;
     if (!samePrompt) {
-      openAskUserModal(session.id, prompt.call_id, prompt.questions);
+      openAskUserModal(requestSessionId, prompt.call_id, prompt.questions);
     }
-  } else if (state.askUser?.sessionId === session.id) {
+  } else if (askUserStateApplies && state.askUser?.sessionId === requestSessionId) {
     closeAskUserModal();
   }
 
   const pendingApproval = runtimeState.pending_approval || null;
-  if (pendingApproval && pendingApproval.approval_id && Array.isArray(pendingApproval.options) && pendingApproval.options.length > 0) {
-    const sameApproval = state.approval
-      && state.approval.sessionId === session.id
+  const approvalStateApplies = isStillActive() && state.approval === sampledTransport.approval;
+  if (approvalStateApplies && pendingApproval && pendingApproval.approval_id && Array.isArray(pendingApproval.options) && pendingApproval.options.length > 0) {
+    const sameApproval = state.approval && state.approval.sessionId === requestSessionId
       && state.approval.approvalId === pendingApproval.approval_id;
     if (!sameApproval) {
-      openApprovalModal(session.id, pendingApproval.approval_id, pendingApproval.path,
-        pendingApproval.is_shell, pendingApproval.is_workspace, pendingApproval.title, pendingApproval.options,
-        pendingApproval.resume_auto_available);
+      openApprovalModal(requestSessionId, pendingApproval.approval_id, pendingApproval.path, pendingApproval.is_shell,
+        pendingApproval.is_workspace, pendingApproval.title, pendingApproval.options, pendingApproval.resume_auto_available);
     }
-  } else if (state.approval?.sessionId === session.id) {
+  } else if (approvalStateApplies && state.approval?.sessionId === requestSessionId) {
     closeApprovalModal();
   }
 

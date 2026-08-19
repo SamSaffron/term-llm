@@ -2072,9 +2072,9 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		state.outputIndex++
 		return nil
 	case llm.EventToolExecStart:
-		if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {
-			return nil
-		}
+		// ask_user is a user-facing control event, not tool metadata. Emit its
+		// prompt even when server-executed tool details are hidden; otherwise the
+		// live web stream stalls until a reload recovers the pending prompt.
 		if ev.ToolName == tools.AskUserToolName && runtime != nil {
 			if prompt, err := runtime.prepareAskUserFromToolArgs(ev.ToolCallID, ev.ToolArgs); err == nil {
 				if err := run.appendEvent("response.ask_user.prompt", map[string]any{
@@ -2085,6 +2085,9 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 					return err
 				}
 			}
+		}
+		if s.suppressResponseRunServerToolEvent(runtime, ev.ToolName) {
+			return nil
 		}
 		return run.appendEvent("response.tool_exec.start", map[string]any{
 			"call_id":        ev.ToolCallID,

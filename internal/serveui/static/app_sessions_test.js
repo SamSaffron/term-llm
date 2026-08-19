@@ -1703,6 +1703,110 @@ async function testRapidSidebarSwitchRejectsStaleSelectedTranscriptAndState() {
   pass(name);
 }
 
+async function testSessionStateDoesNotClosePromptOpenedAfterRequestStarted() {
+  const name = 'stale session state does not close interactive prompts opened by the live stream';
+  let markStateStarted;
+  let releaseState;
+  let appRef;
+  let askUserCloseCalls = 0;
+  let approvalCloseCalls = 0;
+  const stateStarted = new Promise((resolve) => { markStateStarted = resolve; });
+  const stateGate = new Promise((resolve) => { releaseState = resolve; });
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/sess_prompt_race/state') {
+        markStateStarted();
+        await stateGate;
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 0 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      openAskUserModal(sessionId, callId, questions) {
+        appRef.state.askUser = { sessionId, callId, questions };
+      },
+      closeAskUserModal() {
+        askUserCloseCalls += 1;
+        appRef.state.askUser = null;
+      },
+      openApprovalModal(sessionId, approvalId) {
+        appRef.state.approval = { sessionId, approvalId };
+      },
+      closeApprovalModal() {
+        approvalCloseCalls += 1;
+        appRef.state.approval = null;
+      },
+    },
+  });
+  appRef = app;
+  app.stopSidebarStatusPoll();
+  const session = { id: 'sess_prompt_race', messages: [], created: 1 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const sync = app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+  await stateStarted;
+  app.openAskUserModal(session.id, 'call-live', [{ question: 'Pick one' }]);
+  app.openApprovalModal(session.id, 'approval-live');
+  releaseState();
+  await sync;
+
+  if (askUserCloseCalls !== 0 || app.state.askUser?.callId !== 'call-live'
+      || approvalCloseCalls !== 0 || app.state.approval?.approvalId !== 'approval-live') {
+    fail(name, 'late state response closed a live interactive prompt', JSON.stringify({
+      askUserCloseCalls, askUser: app.state.askUser, approvalCloseCalls, approval: app.state.approval,
+    }));
+    return;
+  }
+  pass(name);
+}
+
+async function testSessionStateStillClosesUnchangedResolvedPrompt() {
+  const name = 'session state still closes an unchanged ask_user prompt after server resolution';
+  let appRef;
+  let closeCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/sessions/sess_prompt_resolved/state') {
+        return new Response(JSON.stringify({ active_run: false, transcript_rev: 0 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    appOverrides: {
+      closeAskUserModal() {
+        closeCalls += 1;
+        appRef.state.askUser = null;
+      },
+    },
+  });
+  appRef = app;
+  app.stopSidebarStatusPoll();
+  const session = { id: 'sess_prompt_resolved', messages: [], created: 1 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.askUser = { sessionId: session.id, callId: 'call-resolved', questions: [{ question: 'Pick one' }] };
+
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  if (closeCalls !== 1 || app.state.askUser !== null) {
+    fail(name, 'authoritative resolved state did not close the unchanged prompt', JSON.stringify({ closeCalls, askUser: app.state.askUser }));
+    return;
+  }
+  pass(name);
+}
+
 async function testRapidSidebarSwitchRejectsLateRuntimeResponse() {
   const name = 'rapid sidebar switch rejects late runtime response from the previous selection';
   let releaseAState;
@@ -7546,6 +7650,8 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testStartupActiveSideloadAvoidsDuplicateStateAfterScheduledStatus);
   await runAppSessionsTest(testSidebarSwitchAppliesSelectedTranscriptBeforeAsyncStateAndSkills);
   await runAppSessionsTest(testRapidSidebarSwitchRejectsStaleSelectedTranscriptAndState);
+  await runAppSessionsTest(testSessionStateDoesNotClosePromptOpenedAfterRequestStarted);
+  await runAppSessionsTest(testSessionStateStillClosesUnchangedResolvedPrompt);
   await runAppSessionsTest(testRapidSidebarSwitchRejectsLateRuntimeResponse);
   await runAppSessionsTest(testSidebarSwitchMalformedSideloadFallsBackExactlyOnce);
   await runAppSessionsTest(testSidebarSwitchActiveSideloadReconcilesNewerStartedRevision);
