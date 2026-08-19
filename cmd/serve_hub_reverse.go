@@ -39,6 +39,8 @@ const (
 	hubReverseFrameResponseEnd   = "response_end"
 )
 
+var errHubReverseSlowConsumer = errors.New("reverse response consumer is too slow")
+
 type hubReverseRequest struct {
 	Type   string      `json:"type,omitempty"`
 	ID     string      `json:"id"`
@@ -138,20 +140,20 @@ func (p *hubReversePending) abort(err error) {
 	}
 }
 
-func (p *hubReversePending) enqueue(resp hubReverseResponse) bool {
+func (p *hubReversePending) enqueue(resp hubReverseResponse) (queued, full bool) {
 	if p == nil {
-		return false
+		return false, false
 	}
-	// Apply per-request backpressure instead of dropping body frames for a
-	// slower downstream consumer. Because one websocket reader multiplexes all
-	// requests for a node, a full per-request queue can temporarily stall sibling
-	// requests on the same reverse connection until this request drains or is
-	// canceled.
+	// Never block the sole websocket reader behind one request. A full queue
+	// means this consumer has stopped draining; the caller can isolate it while
+	// continuing to dispatch sibling responses and process control frames.
 	select {
 	case p.ch <- resp:
-		return true
+		return true, false
 	case <-p.done:
-		return false
+		return false, false
+	default:
+		return false, true
 	}
 }
 
@@ -287,7 +289,11 @@ func (c *hubReverseConnection) readLoop(done func()) {
 		terminal := hubReverseResponseFrameTerminal(resp)
 		c.pendingMu.Unlock()
 		if pending != nil {
-			if !pending.enqueue(resp) {
+			queued, full := pending.enqueue(resp)
+			if full {
+				c.abortPending(resp.ID, pending, errHubReverseSlowConsumer, true)
+			}
+			if !queued {
 				continue
 			}
 			if terminal {
