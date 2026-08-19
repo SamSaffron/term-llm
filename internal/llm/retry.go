@@ -496,6 +496,14 @@ func isRetryable(err error) bool {
 		return true
 	}
 
+	// ChatGPT occasionally rejects a backend-injected prompt cache retention
+	// setting for an otherwise supported model. The request itself does not carry
+	// that field, so retry the turn and allow backend routing to recover.
+	var promptCacheRetentionErr *chatGPTPromptCacheRetentionError
+	if errors.As(err, &promptCacheRetentionErr) {
+		return true
+	}
+
 	// Structured HTTP status errors from providers.
 	var statusErr interface{ HTTPStatusCode() int }
 	if errors.As(err, &statusErr) {

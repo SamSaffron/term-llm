@@ -357,6 +357,34 @@ func (p *ChatGPTProvider) isolateHelperConversation() Provider {
 // its continuation state is WebSocket-connection-local and cannot be safely
 // resumed by an independently cloned helper client.
 
+type chatGPTPromptCacheRetentionError struct {
+	statusCode int
+	body       string
+}
+
+func (e *chatGPTPromptCacheRetentionError) Error() string {
+	if e == nil {
+		return "ChatGPT prompt cache retention error"
+	}
+	return fmt.Sprintf("Responses API error (status %d): %s", e.statusCode, e.body)
+}
+
+func isChatGPTPromptCacheRetentionError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	var payload struct {
+		Error struct {
+			Code  string `json:"code"`
+			Param string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return payload.Error.Code == "invalid_parameter" && payload.Error.Param == "prompt_cache_retention"
+}
+
 // NewChatGPTResponsesClient builds a ResponsesClient pre-configured for the
 // chatgpt.com backend endpoint, handling auth, refresh, and rate-limit error
 // parsing. Shared by the LLM provider and the image provider so both pick up
@@ -379,6 +407,9 @@ func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *Responses
 		HTTPClient:         chatGPTHTTPClient,
 		DisableServerState: true,
 		HandleError: func(statusCode int, body []byte, headers http.Header) error {
+			if isChatGPTPromptCacheRetentionError(statusCode, body) {
+				return &chatGPTPromptCacheRetentionError{statusCode: statusCode, body: string(body)}
+			}
 			if statusCode == http.StatusTooManyRequests {
 				return parseChatGPTRateLimitError(body, headers)
 			}

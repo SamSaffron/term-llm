@@ -61,6 +61,85 @@ func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
 	}
 }
 
+func TestChatGPTPromptCacheRetentionErrorDetection(t *testing.T) {
+	t.Parallel()
+
+	matchingBody := []byte(`{"error":{"message":"prompt_cache_retention is not supported on this model","type":"invalid_request_error","param":"prompt_cache_retention","code":"invalid_parameter"}}`)
+	if !isChatGPTPromptCacheRetentionError(http.StatusBadRequest, matchingBody) {
+		t.Fatal("expected prompt_cache_retention invalid_parameter response to match")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "wrong status", status: http.StatusInternalServerError, body: string(matchingBody)},
+		{name: "wrong parameter", status: http.StatusBadRequest, body: `{"error":{"param":"service_tier","code":"invalid_parameter"}}`},
+		{name: "wrong code", status: http.StatusBadRequest, body: `{"error":{"param":"prompt_cache_retention","code":"invalid_value"}}`},
+		{name: "malformed body", status: http.StatusBadRequest, body: `{`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if isChatGPTPromptCacheRetentionError(tc.status, []byte(tc.body)) {
+				t.Fatal("unexpected match")
+			}
+		})
+	}
+}
+
+func TestChatGPTRetryProviderRetriesPromptCacheRetentionError(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	attempts := 0
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Body: io.NopCloser(strings.NewReader(
+					`{"error":{"message":"prompt_cache_retention is not supported on this model","type":"invalid_request_error","param":"prompt_cache_retention","code":"invalid_parameter"}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}, "gpt-5.6-sol-medium")
+	wrapped := WrapWithRetry(provider, RetryConfig{
+		MaxAttempts: 2,
+		BaseBackoff: time.Nanosecond,
+		MaxBackoff:  time.Nanosecond,
+	})
+
+	stream, err := wrapped.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestNewChatGPTResponsesClientUsesCurrentCodexHeaders(t *testing.T) {
 	t.Parallel()
 
