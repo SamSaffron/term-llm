@@ -378,7 +378,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy rejected oversized expanded request", http.StatusBadGateway)
 			return
 		}
-		filtered, err := FilterGenerationRequest(expanded, requireMCP)
+		filtered, verified, err := filterGenerationRequest(expanded, requireMCP)
 		if err != nil {
 			http.Error(w, "agy tool-filter proxy rejected request: "+err.Error(), http.StatusBadGateway)
 			return
@@ -392,7 +392,13 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 		req.Header.Del("Content-Encoding")
 		req.Header.Del("Transfer-Encoding")
 		req.TransferEncoding = nil
-		s.filtered.Add(1)
+		// Tool-enabled agy turns may make auxiliary model requests (for example,
+		// context summarization) without a tools field before the actual agent
+		// generation. Forward those safely with an empty tool list, but do not let
+		// them satisfy the provider's evidence that call_mcp_tool was exposed.
+		if !requireMCP || verified {
+			s.filtered.Add(1)
+		}
 	}
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
@@ -691,27 +697,37 @@ func readAgyArtifact(rawURL, artifactRoot string) (string, bool) {
 }
 
 // FilterGenerationRequest removes every function declaration except the real
-// agy MCP dispatcher. Unknown fields are preserved.
+// agy MCP dispatcher. Unknown fields are preserved. Requests without a tools
+// field are auxiliary generations and are forwarded with an empty tool list.
 func FilterGenerationRequest(body []byte, requireMCP bool) ([]byte, error) {
+	out, _, err := filterGenerationRequest(body, requireMCP)
+	return out, err
+}
+
+// filterGenerationRequest also reports whether the request exposed the MCP
+// dispatcher. Callers use that evidence to distinguish an agent generation
+// from agy's tool-less auxiliary generations.
+func filterGenerationRequest(body []byte, requireMCP bool) ([]byte, bool, error) {
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, fmt.Errorf("decode generation request: %w", err)
+		return nil, false, fmt.Errorf("decode generation request: %w", err)
 	}
 	request, ok := root["request"].(map[string]any)
 	if !ok {
-		return nil, errors.New("generation request missing request object")
+		return nil, false, errors.New("generation request missing request object")
 	}
-	tools, ok := request["tools"].([]any)
-	if !ok {
-		if requireMCP {
-			return nil, errors.New("generation request missing tools array")
-		}
+	rawTools, exists := request["tools"]
+	if !exists {
 		request["tools"] = []any{}
 		out, err := json.Marshal(root)
 		if err != nil {
-			return nil, fmt.Errorf("encode generation request: %w", err)
+			return nil, false, fmt.Errorf("encode generation request: %w", err)
 		}
-		return out, nil
+		return out, false, nil
+	}
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return nil, false, errors.New("generation request has invalid tools array")
 	}
 	found := false
 	filtered := make([]any, 0, 1)
@@ -731,7 +747,7 @@ func FilterGenerationRequest(body []byte, requireMCP bool) ([]byte, error) {
 			}
 			if name, _ := decl["name"].(string); name == "call_mcp_tool" {
 				if found {
-					return nil, errors.New("generation request contains duplicate call_mcp_tool declarations")
+					return nil, false, errors.New("generation request contains duplicate call_mcp_tool declarations")
 				}
 				found = true
 				filtered = append(filtered, map[string]any{"functionDeclarations": []any{decl}})
@@ -739,12 +755,12 @@ func FilterGenerationRequest(body []byte, requireMCP bool) ([]byte, error) {
 		}
 	}
 	if requireMCP && !found {
-		return nil, errors.New("generation request missing call_mcp_tool")
+		return nil, false, errors.New("generation request missing call_mcp_tool")
 	}
 	request["tools"] = filtered
 	out, err := json.Marshal(root)
 	if err != nil {
-		return nil, fmt.Errorf("encode generation request: %w", err)
+		return nil, false, fmt.Errorf("encode generation request: %w", err)
 	}
-	return out, nil
+	return out, found, nil
 }

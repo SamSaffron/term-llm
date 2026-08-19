@@ -161,7 +161,7 @@ func TestFilterGenerationRequestFailClosed(t *testing.T) {
 	}{
 		{"malformed", []byte("{")},
 		{"missing request", []byte(`{"requestId":"x"}`)},
-		{"missing tools", []byte(`{"request":{}}`)},
+		{"invalid tools", []byte(`{"request":{"tools":{}}}`)},
 		{"missing dispatcher", generationBody("run_command")},
 		{"duplicate dispatcher", generationBody("call_mcp_tool", "call_mcp_tool")},
 	} {
@@ -188,6 +188,33 @@ func TestFilterGenerationRequestAllowsNoDispatcherWhenNotRequired(t *testing.T) 
 	}
 	if len(root.Request.Tools) != 0 {
 		t.Fatalf("tools = %#v, want empty", root.Request.Tools)
+	}
+}
+
+func TestFilterGenerationRequestAllowsToollessAuxiliaryWhenMCPRequired(t *testing.T) {
+	out, verified, err := filterGenerationRequest([]byte(`{"request":{"contents":["preserved"]}}`), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root struct {
+		Request struct {
+			Tools    []any `json:"tools"`
+			Contents []any `json:"contents"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(out, &root); err != nil {
+		t.Fatal(err)
+	}
+	if verified || len(root.Request.Tools) != 0 || len(root.Request.Contents) != 1 {
+		t.Fatalf("verified = %v, request = %#v", verified, root.Request)
+	}
+
+	_, verified, err = filterGenerationRequest(generationBody("call_mcp_tool"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verified {
+		t.Fatal("MCP dispatcher generation was not verified")
 	}
 }
 
