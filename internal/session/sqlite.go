@@ -4382,15 +4382,17 @@ func (s *SQLiteStore) NextUserPrompt(ctx context.Context, agent string, afterID 
 
 // PreviousUserPromptOutsideSession returns the newest persisted user prompt older
 // than the cursor, ordered by message timestamp across all agents, excluding the
-// current session.
+// current session and machine-generated subagent sessions.
 func (s *SQLiteStore) PreviousUserPromptOutsideSession(ctx context.Context, excludeSessionID string, beforeID int64, beforeCreatedAt time.Time) (*PromptHistoryEntry, error) {
 	query := `
 		SELECT m.id, m.text_content, m.created_at
 		FROM messages m
+		JOIN sessions sess ON sess.id = m.session_id
 		WHERE m.role = 'user'
 		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
 		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
 		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+		  AND sess.parent_id IS NULL
 		  AND (? = '' OR m.session_id <> ?)`
 	args := []any{len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, excludeSessionID, excludeSessionID}
 	if beforeID > 0 {
@@ -4407,15 +4409,17 @@ func (s *SQLiteStore) PreviousUserPromptOutsideSession(ctx context.Context, excl
 
 // NextUserPromptOutsideSession returns the oldest persisted user prompt newer
 // than the cursor, ordered by message timestamp across all agents, excluding the
-// current session.
+// current session and machine-generated subagent sessions.
 func (s *SQLiteStore) NextUserPromptOutsideSession(ctx context.Context, excludeSessionID string, afterID int64, afterCreatedAt time.Time) (*PromptHistoryEntry, error) {
 	query := `
 		SELECT m.id, m.text_content, m.created_at
 		FROM messages m
+		JOIN sessions sess ON sess.id = m.session_id
 		WHERE m.role = 'user'
 		  AND TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)) <> ''
 		  AND substr(TRIM(COALESCE(m.text_content, ''), char(9) || char(10) || char(11) || char(12) || char(13) || char(32)), 1, ?) <> ?
 		  AND COALESCE(m.compaction_tail, FALSE) = FALSE
+		  AND sess.parent_id IS NULL
 		  AND (? = '' OR m.session_id <> ?)`
 	args := []any{len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix, excludeSessionID, excludeSessionID}
 	if afterID > 0 {

@@ -158,6 +158,69 @@ func TestPromptHistoryOutsideSessionTraversalByDateAcrossAgents(t *testing.T) {
 	}
 }
 
+func TestPromptHistoryOutsideSessionExcludesSubagentPrompts(t *testing.T) {
+	store, err := NewStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	current := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "jarvis"}
+	if err := store.Create(ctx, current); err != nil {
+		t.Fatalf("Create current: %v", err)
+	}
+	other := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "reviewer"}
+	if err := store.Create(ctx, other); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	// A machine-generated subagent session: it has a parent_id set, so its
+	// prompts must never surface in the up-button (cross-session) history.
+	subagent := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat, ParentID: other.ID, IsSubagent: true}
+	if err := store.Create(ctx, subagent); err != nil {
+		t.Fatalf("Create subagent: %v", err)
+	}
+
+	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	addPrompt := func(sess *Session, text string, at time.Time) int64 {
+		t.Helper()
+		msg := NewMessage(sess.ID, llm.UserText(text), -1)
+		msg.CreatedAt = at
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%q): %v", text, err)
+		}
+		return msg.ID
+	}
+
+	// Put subagent prompts on both sides of the human-authored prompt so the
+	// backward and forward queries each leak one without the parent_id filter.
+	_ = addPrompt(subagent, "older machine generated subagent prompt", base.Add(2*time.Minute))
+	newerID := addPrompt(other, "human authored", base.Add(3*time.Minute))
+	_ = addPrompt(subagent, "newer machine generated subagent prompt", base.Add(4*time.Minute))
+
+	history, ok := store.(PromptHistoryOutsideSessionStore)
+	if !ok {
+		t.Fatal("store does not implement PromptHistoryOutsideSessionStore")
+	}
+
+	latest, err := history.PreviousUserPromptOutsideSession(ctx, current.ID, 0, time.Time{})
+	if err != nil {
+		t.Fatalf("PreviousUserPromptOutsideSession newest: %v", err)
+	}
+	if latest == nil || latest.ID != newerID || latest.Text != "human authored" {
+		t.Fatalf("latest = %#v, want id=%d text=%q (subagent prompt leaked)", latest, newerID, "human authored")
+	}
+
+	// Forward traversal must likewise skip the subagent prompt.
+	next, err := history.NextUserPromptOutsideSession(ctx, current.ID, 0, time.Time{})
+	if err != nil {
+		t.Fatalf("NextUserPromptOutsideSession: %v", err)
+	}
+	if next == nil || next.ID != newerID || next.Text != "human authored" {
+		t.Fatalf("next = %#v, want id=%d text=%q (subagent prompt leaked)", next, newerID, "human authored")
+	}
+}
+
 func TestPromptHistoryOutsideSessionNextSkipsCursorWithRealStoredTimestamps(t *testing.T) {
 	store, err := NewStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {
