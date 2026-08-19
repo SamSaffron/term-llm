@@ -9,10 +9,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true                   # caches module download + build cache keyed on module sums
@@ -23,9 +23,9 @@ jobs:
             internal/terminal/renderer/go.sum
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           # no npm install in this repo — node binary caching is handled by the action itself
 
       - name: Check gofmt
@@ -71,7 +71,7 @@ jobs:
 
       - name: Install Playwright Chromium
         timeout-minutes: 10
-        run: npx --yes --package @playwright/test@1.54.1 playwright install --with-deps chromium
+        run: npx --yes --package @playwright/test@1.62.1 playwright install --with-deps chromium
 
       - name: Browser lifecycle smoke
         timeout-minutes: 5
@@ -80,10 +80,10 @@ jobs:
   cross-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
