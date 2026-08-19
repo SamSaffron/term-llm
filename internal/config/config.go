@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
-	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +23,6 @@ const (
 	ProviderTypeChatGPT      ProviderType = "chatgpt"
 	ProviderTypeCopilot      ProviderType = "copilot"
 	ProviderTypeGemini       ProviderType = "gemini"
-	ProviderTypeGeminiCLI    ProviderType = "gemini-cli"
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
 	ProviderTypeZen          ProviderType = "zen"
 	ProviderTypeOpenCodeGo   ProviderType = "opencode-go"
@@ -49,7 +47,6 @@ var builtInProviderTypes = map[string]ProviderType{
 	"chatgpt":     ProviderTypeChatGPT,
 	"copilot":     ProviderTypeCopilot,
 	"gemini":      ProviderTypeGemini,
-	"gemini-cli":  ProviderTypeGeminiCLI,
 	"openrouter":  ProviderTypeOpenRouter,
 	"zen":         ProviderTypeZen,
 	"opencode-go": ProviderTypeOpenCodeGo,
@@ -152,7 +149,7 @@ type ProviderConfig struct {
 	Models       []string              `mapstructure:"models"`        // Available model names/aliases for autocomplete
 	ModelConfigs []ProviderModelConfig `mapstructure:"-"`             // Metadata for object entries in models
 	Reasoning    string                `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
-	Credentials  string                `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
+	Credentials  string                `mapstructure:"credentials"`   // Provider-specific credential mode (for example "api_key" or "claude")
 	Env          map[string]string     `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 	EnableHooks  bool                  `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 	UseWebSocket bool                  `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
@@ -200,10 +197,9 @@ type ProviderConfig struct {
 	NumPredict      *int     `mapstructure:"num_predict"`      // Max tokens to generate (-1 = unlimited)
 
 	// Runtime fields (populated after credential resolution)
-	ResolvedAPIKey string                              `mapstructure:"-"`
-	AccountID      string                              `mapstructure:"-"`
-	OAuthCreds     *credentials.GeminiOAuthCredentials `mapstructure:"-"`
-	ResolvedURL    string                              `mapstructure:"-"` // Resolved full `url` (after srv://, $(), etc.)
+	ResolvedAPIKey string `mapstructure:"-"`
+	AccountID      string `mapstructure:"-"`
+	ResolvedURL    string `mapstructure:"-"` // Resolved full `url` (after srv://, $(), etc.)
 
 	// Resolution tracking - provider credential discovery is deferred until needed,
 	// and expensive values are resolved lazily before inference.
@@ -1817,7 +1813,7 @@ func needsLazyResolve(value string) bool {
 // resolveProviderCredentials resolves credentials for a provider based on its type.
 // Expensive operations (op://, file://, srv://, $()) are deferred - call ResolveForInference() before use.
 func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
-	if cfg.credentialsResolved || cfg.ResolvedAPIKey != "" || cfg.ResolvedURL != "" || cfg.OAuthCreds != nil {
+	if cfg.credentialsResolved || cfg.ResolvedAPIKey != "" || cfg.ResolvedURL != "" {
 		cfg.credentialsResolved = true
 		return nil
 	}
@@ -1872,13 +1868,6 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		if cfg.ResolvedAPIKey == "" {
 			cfg.ResolvedAPIKey = os.Getenv("GEMINI_API_KEY")
 		}
-
-	case ProviderTypeGeminiCLI:
-		creds, err := credentials.GetGeminiOAuthCredentials()
-		if err != nil {
-			return err
-		}
-		cfg.OAuthCreds = creds
 
 	case ProviderTypeOpenRouter:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
@@ -2048,11 +2037,6 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return describeEnvKeyCredential(cfg, "OPENAI_API_KEY")
 	case ProviderTypeGemini:
 		return describeEnvKeyCredential(cfg, "GEMINI_API_KEY")
-	case ProviderTypeGeminiCLI:
-		if _, err := credentials.GetGeminiOAuthCredentials(); err == nil {
-			return "gemini-cli OAuth (~/.gemini/oauth_creds.json)", true
-		}
-		return "gemini-cli OAuth (not found)", false
 	case ProviderTypeOpenRouter:
 		return describeEnvKeyCredential(cfg, "OPENROUTER_API_KEY")
 	case ProviderTypeZen:

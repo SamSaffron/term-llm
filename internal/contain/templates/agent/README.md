@@ -15,7 +15,6 @@ into an existing workspace with the built-in exec recipes:
 ```sh
 term-llm contain exec {{name}} seed-chatgpt-auth
 term-llm contain exec {{name}} seed-copilot-auth
-term-llm contain exec {{name}} seed-gemini-cli-auth
 ```
 
 These recipes use `x-term-llm.exec_recipes[].copy_files` to copy host-side

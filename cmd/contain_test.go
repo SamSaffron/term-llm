@@ -539,21 +539,6 @@ func TestContainNewCopilotAdvertisesSeedRecipe(t *testing.T) {
 	}
 }
 
-func TestContainNewGeminiCLIAdvertisesSeedRecipe(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	containNewTemplate = "agent"
-	if err := containNewCmd.Flags().Set("template", "agent"); err != nil {
-		t.Fatal(err)
-	}
-	stdout, stderr, err := executeRootForContainTest(t, "contain", "new", "geminibox", "--no-input", "--set", "provider=gemini-cli", "--set", "web_port=8486")
-	if err != nil {
-		t.Fatalf("contain new error = %v stderr=%s", err, stderr)
-	}
-	if !strings.Contains(stdout, "term-llm contain exec geminibox seed-gemini-cli-auth") {
-		t.Fatalf("stdout missing gemini-cli seed recipe command: %q", stdout)
-	}
-}
-
 func TestContainImageSyncCommand(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	containImageSyncForce = false

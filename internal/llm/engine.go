@@ -4678,7 +4678,7 @@ type loggingStream struct {
 	logger          *usage.Logger
 	providerName    string
 	model           string
-	trackedExternal string // "claude-code", "codex", "gemini-cli", or "" for direct API
+	trackedExternal string // "claude-code", "codex", or "" for direct API
 
 	// mu guards the accumulator/logged fields against concurrent Recv/Close.
 	mu              sync.Mutex

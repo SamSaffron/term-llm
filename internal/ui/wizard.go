@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"charm.land/huh/v2"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -70,12 +69,6 @@ func detectAvailableProviders() []providerOption {
 			value:     "gemini",
 			available: os.Getenv("GEMINI_API_KEY") != "",
 			hint:      "set GEMINI_API_KEY",
-		},
-		{
-			name:      "Gemini Code Assist - ~/.gemini/oauth_creds.json",
-			value:     "codeassist",
-			available: isGeminiOAuthAvailable(),
-			hint:      "run 'gemini' to login",
 		},
 		{
 			name:      "xAI - XAI_API_KEY",
@@ -150,17 +143,6 @@ func isAgyBinaryAvailable() bool {
 	return err == nil
 }
 
-// isGeminiOAuthAvailable checks if gemini-cli OAuth credentials exist
-func isGeminiOAuthAvailable() bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	credPath := filepath.Join(home, ".gemini", "oauth_creds.json")
-	_, err = os.Stat(credPath)
-	return err == nil
-}
-
 func validateProviderSelection(providers []providerOption, provider string) (*providerOption, error) {
 	for i := range providers {
 		if providers[i].value != provider {
@@ -193,7 +175,7 @@ func detectAvailableImageProviders() []imageProviderOption {
 		{
 			name:      "Gemini - GEMINI_API_KEY (recommended)",
 			value:     "gemini",
-			available: os.Getenv("GEMINI_API_KEY") != "" || isGeminiOAuthAvailable(),
+			available: os.Getenv("GEMINI_API_KEY") != "",
 			hint:      "set GEMINI_API_KEY",
 		},
 		{
@@ -249,13 +231,12 @@ func HasTTY() bool {
 	return true
 }
 
-func defaultWizardProviderConfigs(codeAssistModel string) map[string]config.ProviderConfig {
+func defaultWizardProviderConfigs() map[string]config.ProviderConfig {
 	providers := make(map[string]config.ProviderConfig)
 	for _, name := range []string{"chatgpt", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen"} {
 		providers[name] = config.ProviderConfig{Model: config.DefaultProviderModel(name)}
 	}
 	providers["openrouter"] = config.ProviderConfig{Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"}
-	providers["codeassist"] = config.ProviderConfig{Model: codeAssistModel}
 	return providers
 }
 
@@ -288,7 +269,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 
 	cfg := &config.Config{
 		DefaultProvider: provider,
-		Providers:       defaultWizardProviderConfigs("gemini-3.1-pro"),
+		Providers:       defaultWizardProviderConfigs(),
 		Exec: config.ExecConfig{
 			Suggestions: 3,
 		},
@@ -448,7 +429,7 @@ func RunSetupWizard() (*config.Config, error) {
 
 	cfg := &config.Config{
 		DefaultProvider: provider,
-		Providers:       defaultWizardProviderConfigs("gemini-2.5-pro"),
+		Providers:       defaultWizardProviderConfigs(),
 		Exec: config.ExecConfig{
 			Suggestions: 3,
 		},

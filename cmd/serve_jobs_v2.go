@@ -3042,7 +3042,7 @@ func cloneConfigForServeJob(src *config.Config) *config.Config {
 			// Deep copy the slice/pointer fields so per-run provider/model
 			// overrides never mutate the shared base config (mirrors the
 			// deep-copy discipline in spawn_runner.go). A shallow copy would
-			// alias Models, UseNativeSearch and OAuthCreds across runs.
+			// alias Models and UseNativeSearch across runs.
 			if pc.Models != nil {
 				pc.Models = append([]string(nil), pc.Models...)
 			}
@@ -3055,10 +3055,6 @@ func cloneConfigForServeJob(src *config.Config) *config.Config {
 			if pc.UseNativeSearch != nil {
 				v := *pc.UseNativeSearch
 				pc.UseNativeSearch = &v
-			}
-			if pc.OAuthCreds != nil {
-				creds := *pc.OAuthCreds
-				pc.OAuthCreds = &creds
 			}
 			clone.Providers[name] = pc
 		}

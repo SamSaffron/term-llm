@@ -30,7 +30,7 @@ Use `providers` when you want to know what is available and how it is configured
 term-llm supports a mix of provider types:
 
 - hosted API providers such as Anthropic, AWS Bedrock, OpenAI, xAI, Gemini, NEAR AI Cloud, SambaNova, and OpenRouter
-- subscription-backed OAuth providers such as ChatGPT, Copilot, and Gemini CLI
+- subscription-backed OAuth providers such as ChatGPT and Copilot
 - local or self-hosted OpenAI-compatible providers such as Ollama, LM Studio, vLLM, or custom endpoints
 
 ## Credentials
@@ -45,7 +45,6 @@ Most providers use API keys via environment variables. Some use OAuth credential
 | `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
 | `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
 | `gemini` | `GEMINI_API_KEY` | Google AI Studio key |
-| `gemini-cli` | `~/.gemini/oauth_creds.json` | gemini-cli OAuth |
 | `xai` | `XAI_API_KEY` | xAI API key |
 | `venice` | `VENICE_API_KEY` | Venice OpenAI-compatible API key |
 | `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud OpenAI-compatible TEE inference key |
@@ -71,7 +70,6 @@ Examples:
 term-llm ask --provider anthropic "question"
 term-llm ask --provider chatgpt "question"
 term-llm ask --provider copilot "question"
-term-llm ask --provider gemini-cli "question"
 ```
 
 ### Anthropic-compatible endpoints
@@ -572,7 +570,7 @@ See [Search](/guides/search/) for the full routing model.
 - **Claude models via AWS billing:** `bedrock`
 - **broad model access:** `openrouter`
 - **local inference:** `ollama` or another OpenAI-compatible endpoint
-- **subscription-backed consumer access:** `chatgpt`, `copilot`, or `gemini-cli`
+- **subscription-backed consumer access:** `chatgpt` or `copilot`
 
 ## Related pages
 

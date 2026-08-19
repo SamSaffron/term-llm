@@ -681,3 +681,26 @@ func equalSlice(a, b []string) bool {
 	}
 	return true
 }
+
+func TestGeminiCLIProviderIsNotBuiltIn(t *testing.T) {
+	if containsModelID(GetBuiltInProviderNames(), "gemini-cli") {
+		t.Fatal("GetBuiltInProviderNames unexpectedly contains removed gemini-cli provider")
+	}
+
+	cfg := &config.Config{
+		DefaultProvider: "gemini-cli",
+		Providers: map[string]config.ProviderConfig{
+			"gemini-cli": {Model: "gemini-2.5-pro"},
+		},
+	}
+	wantErr := `provider "gemini-cli" is no longer supported; use provider "gemini" with GEMINI_API_KEY`
+	if _, _, err := ParseProviderModel("gemini-cli", cfg); err == nil || err.Error() != wantErr {
+		t.Fatalf("ParseProviderModel error = %v, want %q", err, wantErr)
+	}
+	if _, err := NewProvider(cfg); err == nil || err.Error() != wantErr {
+		t.Fatalf("NewProvider error = %v, want %q", err, wantErr)
+	}
+	if _, err := NewProviderByName(cfg, "gemini-cli", ""); err == nil || err.Error() != wantErr {
+		t.Fatalf("NewProviderByName error = %v, want %q", err, wantErr)
+	}
+}

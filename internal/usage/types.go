@@ -5,7 +5,6 @@ import "time"
 // Provider constants for identifying data sources
 const (
 	ProviderClaudeCode = "claude-code"
-	ProviderGeminiCLI  = "gemini-cli"
 	ProviderTermLLM    = "term-llm"
 )
 
@@ -17,11 +16,11 @@ type UsageEntry struct {
 	InputTokens         int
 	OutputTokens        int
 	CacheWriteTokens    int     // cache_creation for Claude
-	CacheReadTokens     int     // cache_read for Claude, cached for Gemini
-	ReasoningTokens     int     // Codex reasoning_output, Gemini thoughts
+	CacheReadTokens     int     // cache_read tokens
+	ReasoningTokens     int     // provider-reported reasoning tokens
 	CostUSD             float64 // Pre-calculated cost if available
-	Provider            string  // ProviderClaudeCode, ProviderCodex, ProviderGeminiCLI, or ProviderTermLLM
-	TrackedExternallyBy string  // For term-llm entries: "claude-code", "codex", "gemini-cli", or "" for direct API
+	Provider            string  // Usage data source, such as ProviderClaudeCode or ProviderTermLLM
+	TrackedExternallyBy string  // External tracker name, or empty for direct API usage
 }
 
 // TotalTokens returns the sum of all token types

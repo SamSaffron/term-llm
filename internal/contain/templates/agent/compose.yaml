@@ -33,16 +33,6 @@ x-term-llm:
       post_run_hint: "Restart long-running serve/jobs processes if they cached auth state: term-llm contain restart {{name}}"
       command:
         - true
-    seed-gemini-cli-auth:
-      description: "Copy host Gemini CLI OAuth credentials into this workspace"
-      copy_files:
-        - from: "{{home}}/.gemini/oauth_creds.json"
-          to: "{{workspace}}/.gemini/oauth_creds.json"
-          mode: "0600"
-          missing_hint: "Run `gemini` on the host to authenticate first."
-      post_run_hint: "Restart long-running serve/jobs processes if they cached auth state: term-llm contain restart {{name}}"
-      command:
-        - true
 
 services:
   app:

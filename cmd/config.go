@@ -1374,8 +1374,6 @@ func configValueCompletions(key, toComplete string) []string {
 			switch providerType {
 			case config.ProviderTypeAnthropic:
 				creds = []string{"api_key", "claude"}
-			case config.ProviderTypeGemini:
-				creds = []string{"api_key", "gemini-cli"}
 			default:
 				creds = []string{"api_key"}
 			}

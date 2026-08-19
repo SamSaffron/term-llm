@@ -1,7 +1,7 @@
 ---
 title: "Usage tracking"
 weight: 4
-description: "Inspect token usage and local cost data for term-llm, Claude Code, and Gemini CLI."
+description: "Inspect token usage and local cost data for term-llm and Claude Code."
 featured: true
 kicker: "Accounting"
 source_readme_heading: "Usage Tracking"
@@ -20,7 +20,7 @@ term-llm usage --breakdown               # Per-model breakdown
 term-llm usage --json                    # JSON output
 ```
 
-Supported sources: Claude Code, Gemini CLI, and term-llm's own usage logs.
+Supported sources: Claude Code and term-llm's own usage logs.
 
 ## What it covers
 
@@ -28,7 +28,6 @@ Supported sources:
 
 - term-llm
 - Claude Code
-- Gemini CLI
 
 Useful patterns:
 

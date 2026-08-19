@@ -24,9 +24,6 @@ func builtinHasOAuthCredentials(name string) bool {
 		return credentials.ChatGPTCredentialsExist()
 	case "copilot":
 		return credentials.CopilotCredentialsExist()
-	case "gemini-cli":
-		_, err := credentials.GetGeminiOAuthCredentials()
-		return err == nil
 	case "grok-bin":
 		authPath := strings.TrimSpace(os.Getenv("GROK_AUTH_PATH"))
 		if authPath == "" {
@@ -114,13 +111,6 @@ var builtinProviderMeta = map[string]struct {
 		requiresKey:        true,
 		supportsListModels: false,
 		description:        "Google Gemini API (consumer API key)",
-	},
-	"gemini-cli": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: false,
-		description:        "Google Code Assist API (gemini-cli OAuth)",
 	},
 	"openrouter": {
 		credential:         "api_key",

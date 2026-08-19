@@ -477,10 +477,6 @@ var providerSpecs = []ProviderSpec{
 		Defaults: []DefaultField{{"model", "gpt-4.1"}, {"fast_model", "gpt-4.1"}},
 	},
 	{
-		Name: "gemini-cli", Type: ProviderTypeGeminiCLI,
-		Defaults: []DefaultField{{"model", "gemini-3-flash-preview"}, {"fast_model", "gemini-2.5-flash-lite"}},
-	},
-	{
 		Name: "claude-bin", Type: ProviderTypeClaudeBin,
 		Defaults: []DefaultField{{"model", "sonnet"}, {"fast_model", "haiku"}},
 	},

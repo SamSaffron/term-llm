@@ -114,14 +114,6 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gemini-2.5-flash", InputLimit: 983_000, OutputLimit: 65_536},
 		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
 	},
-	"gemini-cli": {
-		{ID: "gemini-3-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
-		{ID: "gemini-3-pro-preview-thinking", InputLimit: 936_000, OutputLimit: 65_536},
-		{ID: "gemini-3-flash-preview", InputLimit: 983_000, OutputLimit: 65_536},
-		{ID: "gemini-3-flash-preview-thinking", InputLimit: 983_000, OutputLimit: 65_536},
-		{ID: "gemini-2.5-flash", InputLimit: 983_000, OutputLimit: 65_536},
-		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
-	},
 	"zen": {
 		{ID: "minimax-m2.5-free", InputLimit: 168_000, OutputLimit: 32_000},
 		{ID: "big-pickle", InputLimit: 168_000, OutputLimit: 32_000},
@@ -793,7 +785,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "opencode-go", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "zen", "opencode-go", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

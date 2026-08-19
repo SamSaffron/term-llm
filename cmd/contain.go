@@ -423,10 +423,6 @@ func printContainAuthSeedHints(cmd *cobra.Command, name string) {
 		if hasContainExecRecipe(name, "seed-copilot-auth") {
 			fmt.Fprintf(cmd.OutOrStdout(), "  To seed host Copilot auth, run: term-llm contain exec %s seed-copilot-auth\n", name)
 		}
-	case "gemini-cli":
-		if hasContainExecRecipe(name, "seed-gemini-cli-auth") {
-			fmt.Fprintf(cmd.OutOrStdout(), "  To seed host Gemini CLI auth, run: term-llm contain exec %s seed-gemini-cli-auth\n", name)
-		}
 	}
 }
 

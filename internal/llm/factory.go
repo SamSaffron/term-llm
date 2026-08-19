@@ -7,8 +7,14 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
 )
+
+func removedProviderError(name string) error {
+	if name == "gemini-cli" {
+		return fmt.Errorf("provider %q is no longer supported; use provider %q with GEMINI_API_KEY", name, "gemini")
+	}
+	return nil
+}
 
 // ParseProviderModel parses "provider:model" or just "provider" from a flag value.
 // Returns (provider, model, error). Model will be empty if not specified.
@@ -19,6 +25,9 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 		return "", "", fmt.Errorf("invalid provider format: %q", s)
 	}
 	provider := strings.TrimSpace(parts[0])
+	if err := removedProviderError(provider); err != nil {
+		return "", "", err
+	}
 	model := ""
 	if len(parts) == 2 {
 		model = strings.TrimSpace(parts[1])
@@ -149,6 +158,10 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 // If the provider is a built-in type but not explicitly configured,
 // it will be created with default settings.
 func NewProviderByName(cfg *config.Config, name string, model string) (Provider, error) {
+	if err := removedProviderError(name); err != nil {
+		return nil, err
+	}
+
 	// Handle hidden debug provider first
 	if name == "debug" {
 		provider := NewDebugProvider(model)
@@ -259,14 +272,6 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 				return nil, fmt.Errorf("provider copilot: %w", err)
 			}
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeGeminiCLI:
-			// gemini-cli uses OAuth credentials from ~/.gemini/oauth_creds.json
-			creds, err := credentials.GetGeminiOAuthCredentials()
-			if err != nil {
-				return nil, fmt.Errorf("provider gemini-cli: %w", err)
-			}
-			provider := NewGeminiCLIProvider(creds, model)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeOllama:
 			// ollama connects to a local server; no credentials needed
 			provider := NewOllamaChatProvider("", model, OllamaOptions{})
@@ -343,6 +348,10 @@ func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
 
 // newProviderInternal creates the underlying provider without retry wrapper.
 func newProviderInternal(cfg *config.Config) (Provider, error) {
+	if err := removedProviderError(cfg.DefaultProvider); err != nil {
+		return nil, err
+	}
+
 	// Handle hidden debug provider first
 	if cfg.DefaultProvider == "debug" {
 		variant := ""
@@ -419,13 +428,6 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 				return nil, fmt.Errorf("provider %q requires GEMINI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
 			}
 			return NewGeminiProvider(apiKey, ""), nil
-		case config.ProviderTypeGeminiCLI:
-			// gemini-cli uses OAuth credentials from ~/.gemini/oauth_creds.json
-			creds, err := credentials.GetGeminiOAuthCredentials()
-			if err != nil {
-				return nil, fmt.Errorf("provider gemini-cli: %w", err)
-			}
-			return NewGeminiCLIProvider(creds, ""), nil
 		case config.ProviderTypeOllama:
 			// ollama connects to a local server; no credentials needed
 			return NewOllamaChatProvider("", "", OllamaOptions{}), nil
@@ -474,18 +476,6 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	case config.ProviderTypeGemini:
 		return NewGeminiProvider(cfg.ResolvedAPIKey, cfg.Model), nil
-
-	case config.ProviderTypeGeminiCLI:
-		// Fetch credentials from ~/.gemini/oauth_creds.json if not explicitly configured
-		oauthCreds := cfg.OAuthCreds
-		if oauthCreds == nil {
-			creds, err := credentials.GetGeminiOAuthCredentials()
-			if err != nil {
-				return nil, fmt.Errorf("gemini-cli: %w", err)
-			}
-			oauthCreds = creds
-		}
-		return NewGeminiCLIProvider(oauthCreds, cfg.Model), nil
 
 	case config.ProviderTypeZen:
 		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil

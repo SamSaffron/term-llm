@@ -9,7 +9,7 @@ next:
   label: Usage guide
   url: /guides/usage/
 ---
-On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, NEAR AI Cloud, SambaNova, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, NEAR AI Cloud, SambaNova, OpenRouter, Gemini, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -481,29 +481,13 @@ providers:
 - `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#json.path`, `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 12: Use existing CLI credentials (gemini-cli)
-
-If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
-
-```bash
-# Use gemini-cli credentials (no config needed)
-term-llm ask --provider gemini-cli "explain this code"
-```
-
-Or configure as default:
-
-```yaml
-# In ~/.config/term-llm/config.yaml
-default_provider: gemini-cli  # uses ~/.gemini/oauth_creds.json
-```
-
 OpenAI-compatible providers support two URL options:
 - `base_url`: Base URL (e.g., `https://api.cerebras.ai/v1`) - `/chat/completions` is appended automatically
 - `url`: Full URL (e.g., `https://api.cerebras.ai/v1/chat/completions`) - used as-is without appending
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 13: Use GitHub Copilot
+### Option 12: Use GitHub Copilot
 
 If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
 

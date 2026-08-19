@@ -25,9 +25,6 @@ func TestProviderConstructorsUseConfigDefaultModels(t *testing.T) {
 	if got := NewGeminiProvider("", "").model; got != config.DefaultProviderModel("gemini") {
 		t.Fatalf("gemini default model = %q, want %q", got, config.DefaultProviderModel("gemini"))
 	}
-	if got := NewGeminiCLIProvider(nil, "").model; got != config.DefaultProviderModel("gemini-cli") {
-		t.Fatalf("gemini-cli default model = %q, want %q", got, config.DefaultProviderModel("gemini-cli"))
-	}
 	if got := NewVeniceProvider("", "").model; got != config.DefaultProviderModel("venice") {
 		t.Fatalf("venice default model = %q, want %q", got, config.DefaultProviderModel("venice"))
 	}

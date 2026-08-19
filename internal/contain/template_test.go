@@ -19,6 +19,16 @@ func TestLoadTemplateDefaultIsAgent(t *testing.T) {
 	if tmpl.Name != "agent" || !tmpl.Builtin {
 		t.Fatalf("default template = %+v, want built-in agent", tmpl)
 	}
+	for _, prompt := range tmpl.Descriptor.Prompts {
+		if prompt.ID != "provider" {
+			continue
+		}
+		for _, option := range prompt.Options {
+			if option == "gemini-cli" {
+				t.Fatal("agent template offers removed gemini-cli provider")
+			}
+		}
+	}
 }
 
 func TestCreateWorkspaceBuiltinBasic(t *testing.T) {

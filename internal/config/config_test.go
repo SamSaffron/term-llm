@@ -195,6 +195,7 @@ func TestLoad_OnlyResolvesDefaultProviderCredentials(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-anthropic-test")
 
 	configDir := filepath.Join(configHome, "term-llm")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -205,8 +206,8 @@ func TestLoad_OnlyResolvesDefaultProviderCredentials(t *testing.T) {
 providers:
   openai:
     model: gpt-5.2
-  gemini-cli:
-    model: gemini-2.5-pro
+  anthropic:
+    model: claude-sonnet-4-6
 `
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -219,11 +220,14 @@ providers:
 	if got := cfg.Providers["openai"].ResolvedAPIKey; got != "sk-openai-test" {
 		t.Fatalf("openai ResolvedAPIKey = %q, want %q", got, "sk-openai-test")
 	}
-	if cfg.Providers["gemini-cli"].OAuthCreds != nil {
-		t.Fatal("expected gemini-cli OAuth creds to remain unresolved until used")
+	if got := cfg.Providers["anthropic"].ResolvedAPIKey; got != "" {
+		t.Fatalf("anthropic ResolvedAPIKey = %q before resolution, want empty", got)
 	}
-	if err := cfg.ResolveProviderCredentials("gemini-cli"); err == nil {
-		t.Fatal("expected deferred gemini-cli credential resolution to fail without oauth creds")
+	if err := cfg.ResolveProviderCredentials("anthropic"); err != nil {
+		t.Fatalf("ResolveProviderCredentials(anthropic): %v", err)
+	}
+	if got := cfg.Providers["anthropic"].ResolvedAPIKey; got != "sk-anthropic-test" {
+		t.Fatalf("anthropic ResolvedAPIKey = %q, want %q", got, "sk-anthropic-test")
 	}
 }
 

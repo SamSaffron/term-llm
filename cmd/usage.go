@@ -43,7 +43,7 @@ var (
 var usageCmd = &cobra.Command{
 	Use:   "usage",
 	Short: "Show usage, costs, and subscription limits",
-	Long: `Show token usage and costs from Claude Code, Codex CLI, Gemini CLI, and term-llm.
+	Long: `Show token usage and costs from Claude Code, Codex CLI, and term-llm.
 
 By default, this command reads local usage data stored by these CLI tools and
 shows aggregated token counts and estimated costs. The chatgpt, claude-bin,
@@ -73,12 +73,12 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (chatgpt, claude-bin, cursor-bin, opencode-go, claude-code, copilot, gemini-cli, term-llm, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (chatgpt, claude-bin, cursor-bin, opencode-go, claude-code, copilot, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
 	usageCmd.Flags().BoolVar(&usageBreakdown, "breakdown", false, "Show per-model breakdown")
-	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin, codex, gemini-cli calls)")
+	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin and codex calls)")
 	usageCmd.Flags().StringVar(&usageCopilotScope, "copilot-scope", "user", "Copilot billing scope (user, org, enterprise)")
 	usageCmd.Flags().StringVar(&usageCopilotEntity, "copilot-entity", "", "Copilot billing entity (username, organization, or enterprise slug; defaults to authenticated user for user scope)")
 	usageCmd.Flags().IntVar(&usageCopilotYear, "year", 0, "Copilot usage year (YYYY; defaults to GitHub API current year)")
@@ -160,14 +160,12 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	switch usageProvider {
 	case "claude-code", "claude":
 		providerFilter = usage.ProviderClaudeCode
-	case "gemini-cli", "gemini":
-		providerFilter = usage.ProviderGeminiCLI
 	case "term-llm":
 		providerFilter = usage.ProviderTermLLM
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use chatgpt, claude-bin, cursor-bin, opencode-go, claude-code, copilot, gemini-cli, or term-llm)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use chatgpt, claude-bin, cursor-bin, opencode-go, claude-code, copilot, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
@@ -557,8 +555,6 @@ func formatProviderName(provider string) string {
 	switch provider {
 	case usage.ProviderClaudeCode:
 		return "Claude Code"
-	case usage.ProviderGeminiCLI:
-		return "Gemini CLI"
 	case usage.ProviderTermLLM:
 		return "term-llm"
 	default:
