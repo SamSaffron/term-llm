@@ -27,8 +27,8 @@ func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
-	if len(models) != 5 { // deprecated-model is intentionally hidden
-		t.Fatalf("models = %#v, want five active models", models)
+	if len(models) != 6 { // deprecated-model is intentionally hidden
+		t.Fatalf("models = %#v, want six active models", models)
 	}
 	byID := make(map[string]ModelInfo)
 	for _, model := range models {
@@ -46,7 +46,7 @@ func TestOpenCodeGoListModelsMergesLiveCatalog(t *testing.T) {
 	if got := byID["unknown-preview"].DisplayName; got != "" {
 		t.Fatalf("unknown preview display name = %q, want empty fallback metadata", got)
 	}
-	if ids := GetCachedOpenCodeGoModels(); strings.Join(ids, ",") != "chat-model,messages-model,qwen3.8-max,responses-model,unknown-preview" {
+	if ids := GetCachedOpenCodeGoModels(); strings.Join(ids, ",") != "chat-model,messages-model,muse-spark-1.2,qwen3.8-max,responses-model,unknown-preview" {
 		t.Fatalf("cached IDs = %v", ids)
 	}
 	cachedInfos, fresh, err := CachedOpenCodeGoModels()
@@ -180,7 +180,7 @@ func TestOpenCodeGoCatalogFailureUsesAvailabilityThenStaleMetadata(t *testing.T)
 	recorder.setCatalogFailure(true)
 	fallbackProvider := newOpenCodeGoProvider("test-key", "responses-model", server.URL, server.URL+"/catalog", server.Client())
 	models, fresh, err := fallbackProvider.ListModelsWithFreshness(context.Background())
-	if err != nil || len(models) != 6 || fresh {
+	if err != nil || len(models) != 7 || fresh {
 		t.Fatalf("availability-only ListModels = %d, fresh %v, %v", len(models), fresh, err)
 	}
 	requestsBeforeStream := recorder.metadataRequestCount()
@@ -352,6 +352,7 @@ func TestOpenCodeGoRoutesProtocolsAuthLimitsAndDeprecatedModel(t *testing.T) {
 		{model: "qwen3.8-max", wantPath: "/v1/messages", wantHeader: "x-api-key", wantValue: "test-key", wantBaseModel: "qwen3.8-max"},
 		{model: "qwen3.8-max-high", wantPath: "/v1/messages", wantHeader: "x-api-key", wantValue: "test-key", wantThinking: true, wantBaseModel: "qwen3.8-max"},
 		{model: "responses-model", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key"},
+		{model: "muse-spark-1.2", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key"},
 		{model: "responses-model", reasoning: "none", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key"},
 		{model: "responses-model-high", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key", wantBaseModel: "responses-model"},
 		{model: "responses-model", wantPath: "/responses", wantHeader: "Authorization", wantValue: "Bearer test-key", maxOutput: 1000, wantMaxOutput: 100},
@@ -571,7 +572,7 @@ func newOpenCodeGoTestServer(t *testing.T) (*httptest.Server, *openCodeGoTestRec
 		switch r.URL.Path {
 		case "/models":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"object":"list","data":[{"id":"chat-model"},{"id":"messages-model"},{"id":"qwen3.8-max"},{"id":"responses-model"},{"id":"deprecated-model"},{"id":"unknown-preview"}]}`)
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"chat-model"},{"id":"messages-model"},{"id":"muse-spark-1.2"},{"id":"qwen3.8-max"},{"id":"responses-model"},{"id":"deprecated-model"},{"id":"unknown-preview"}]}`)
 		case "/catalog":
 			if recorder.catalogFailure() {
 				http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
