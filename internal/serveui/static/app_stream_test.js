@@ -8444,6 +8444,111 @@ const runAppStreamTest = async (testCase) => {
   if (appStreamShard === null || index % 2 === appStreamShard) await testCase();
 };
 
+async function testInlineSendPreservesUnrelatedComposerForIdleAndActiveRuns() {
+  const name = 'inline send preserves unrelated composer and carries typed metadata when idle or active';
+  const metadata = { type: 'diff_comment', diff_comment: {
+    id: 'dc1', path: 'main.go', side: 'old', line: 7, file_change_seq: 11,
+    line_text: 'old()', instruction: 'Keep this call.'
+  }};
+
+  const idle = createHarness();
+  const idleSession = { id: 'session_inline_idle', title: 'Inline', messages: [], activeResponseId: '', lastResponseId: 'resp_prior', lastSequenceNumber: 0 };
+  idle.state.sessions.push(idleSession);
+  idle.state.activeSessionId = idleSession.id;
+  idle.state.draftSessionActive = false;
+  idle.elements.promptInput.value = 'unrelated idle draft';
+  idle.state.attachments = [{ name: 'unrelated.txt', type: 'text/plain' }];
+  await idle.app.sendMessage({ prompt: 'provider anchored prompt', displayPrompt: 'Keep this call.', contentParts: [metadata], attachments: [], preserveComposer: true });
+  const post = idle.fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const postBody = post?.body ? JSON.parse(post.body) : null;
+  if (idle.elements.promptInput.value !== 'unrelated idle draft'
+      || idle.state.attachments.length !== 1
+      || postBody?.input?.[0]?.content?.length !== 2
+      || postBody?.input?.[0]?.content?.[0]?.type !== 'diff_comment'
+      || postBody?.input?.[0]?.content?.[1]?.text !== 'provider anchored prompt') {
+    fail(name, 'idle inline send consumed composer or lost metadata', JSON.stringify({ composer: idle.elements.promptInput.value, postBody }));
+    await idle.cleanup();
+    return;
+  }
+  await idle.cleanup();
+
+  const active = createHarness({ interruptPayload: { action: 'interject' } });
+  const activeSession = { id: 'session_inline_active', title: 'Inline active', messages: [], activeResponseId: 'resp_active', lastSequenceNumber: 0 };
+  active.state.sessions.push(activeSession);
+  active.state.activeSessionId = activeSession.id;
+  active.state.draftSessionActive = false;
+  active.elements.promptInput.value = 'unrelated active draft';
+  active.state.attachments = [{ name: 'unrelated.txt', type: 'text/plain' }];
+  await active.app.sendMessage({ prompt: 'provider anchored prompt', displayPrompt: 'Keep this call.', contentParts: [metadata], attachments: [], preserveComposer: true });
+  const interrupt = active.fetchCalls.find((call) => call.url.endsWith('/interrupt'));
+  const interruptBody = interrupt?.body ? JSON.parse(interrupt.body) : null;
+  if (active.elements.promptInput.value !== 'unrelated active draft'
+      || active.state.attachments.length !== 1
+      || interruptBody?.content?.length !== 2
+      || interruptBody?.content?.[0]?.type !== 'diff_comment'
+      || interruptBody?.content?.[1]?.text !== 'provider anchored prompt') {
+    fail(name, 'active inline send consumed composer or lost metadata', JSON.stringify({ composer: active.elements.promptInput.value, interruptBody }));
+    await active.cleanup();
+    return;
+  }
+  await active.cleanup();
+  pass(name);
+}
+
+async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp() {
+  const name = 'uncommitted inline interjection keeps full provider anchor when drained as a follow-up';
+  const harness = createHarness({ interruptPayload: { action: 'interject' } });
+  const { app, state, fetchCalls, cleanup } = harness;
+  const session = { id: 'session_inline_orphan', title: 'Inline orphan', messages: [], activeResponseId: 'resp_active', lastResponseId: 'resp_prior', lastSequenceNumber: 0 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.draftSessionActive = false;
+  const fullPrompt = '[Inline diff instruction]\nPath: internal/a.go\nSide: old\nLine: 7\n\nCaptured context:\n> old 7 | old()\n\nInstruction:\nKeep this call.';
+  const metadata = { type: 'diff_comment', diff_comment: {
+    id: 'dc-orphan', path: 'internal/a.go', side: 'old', line: 7, file_change_seq: 11,
+    line_text: 'old()', context_before: [{ side: 'old', line: 6, text: 'before()' }],
+    context_after: [{ side: 'new', line: 7, text: 'after()' }], instruction: 'Keep this call.'
+  }};
+
+  await app.sendMessage({
+    prompt: fullPrompt,
+    displayPrompt: 'Keep this call.',
+    contentParts: [metadata],
+    diffComment: metadata.diff_comment,
+    attachments: [],
+    preserveComposer: true
+  });
+  const pending = state.pendingInterruptCommits.find((entry) => entry.messageId);
+  if (!pending || pending.prompt !== fullPrompt || pending.displayPrompt !== 'Keep this call.') {
+    fail(name, 'pending commit replaced the provider prompt with display text', JSON.stringify(pending));
+    await cleanup();
+    return;
+  }
+
+  session.activeResponseId = '';
+  app.requeueUncommittedInterrupts(session);
+  const queued = state.queuedInterrupts.find((entry) => entry.messageId === pending.messageId);
+  if (!queued || queued.prompt !== fullPrompt || queued.contentParts?.[0]?.diff_comment?.context_before?.[0]?.text !== 'before()') {
+    fail(name, 'orphan requeue lost the full anchor or captured context', JSON.stringify(queued));
+    await cleanup();
+    return;
+  }
+
+  await app.sendMessage({ followUps: [queued] });
+  const post = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = post?.body ? JSON.parse(post.body) : null;
+  const content = body?.input?.[0]?.content;
+  if (!Array.isArray(content)
+      || content[0]?.diff_comment?.context_after?.[0]?.text !== 'after()'
+      || content[content.length - 1]?.text !== fullPrompt) {
+    fail(name, 'follow-up transport lost provider-facing anchor/context', JSON.stringify(body));
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await runAppStreamTest(testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch);
   await runAppStreamTest(testUnknownSlashTextRemainsNormalMessage);
@@ -8480,6 +8585,8 @@ const runAppStreamTest = async (testCase) => {
   await runAppStreamTest(testSendMessageDoesNotResumeAfterStalePostStream);
   await runAppStreamTest(testSendMessageUsesLocalContinuationIdWithoutPreflightSync);
   await runAppStreamTest(testSendMessageIncludesServerToolsForFirstPartyUI);
+  await runAppStreamTest(testInlineSendPreservesUnrelatedComposerForIdleAndActiveRuns);
+  await runAppStreamTest(testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp);
   await runAppStreamTest(testSendMessageBranchesAndTransfersStreamOwnership);
   await runAppStreamTest(testBranchContextQueuesSendUntilReady);
   await runAppStreamTest(testBranchShortcutSlashCommandsPreserveOptionalInstruction);

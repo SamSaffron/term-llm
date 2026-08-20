@@ -398,6 +398,17 @@ async function run(name, fn) {
     assertEqual(counts.textContent, '+5', 'older replayed event did not overwrite newer state');
   });
 
+  await run('live operation metadata does not replace cumulative file metadata before refresh', () => {
+    const { app, elements } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/new.txt', kind: 'create', adds: 20, dels: 0, seq: 1 });
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/new.txt', kind: 'modify', adds: 1, dels: 1, seq: 2 });
+
+    assertEqual(elements.diffFileList.querySelector('.diff-kind-badge').textContent, 'A', 'incremental modify did not relabel a cumulative create');
+    assertEqual(elements.diffFileList.querySelector('.diff-count-add').textContent, '+20', 'incremental counts did not replace cumulative additions');
+    assert(!elements.diffFileList.querySelector('.diff-count-del'), 'incremental deletion count did not flash before canonical refresh');
+  });
+
   await run('events for inactive sessions update data without DOM', () => {
     const { app, elements } = createHarness();
     app.handleFileChangeEvent({ id: 'other' }, { path: '/b', kind: 'create', adds: 1, dels: 0, seq: 1 });
@@ -1061,29 +1072,6 @@ async function run(name, fn) {
     await elements.diffResizeHandle.dispatchEvent({ type: 'dblclick' });
     assertEqual(localStorage.getItem('term_llm_diff_sidebar_width'), null, 'stored width cleared');
     assertEqual(elements.appShell.style.getPropertyValue('--diff-sidebar-user-width'), '', 'width override removed');
-  });
-
-  await run('live count updates patch the existing header instead of rebuilding', async () => {
-    const { app, elements, flushTimers } = createHarness();
-    app.toggleDiffSidebar();
-    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
-    await flushTimers();
-
-    const before = elements.diffFileList.querySelectorAll('.diff-file-row')[0];
-    let listRebuilds = 0;
-    const original = elements.diffFileList.replaceChildren.bind(elements.diffFileList);
-    elements.diffFileList.replaceChildren = (...nodes) => {
-      listRebuilds += 1;
-      return original(...nodes);
-    };
-
-    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 7, dels: 2, seq: 2 });
-    await flushTimers();
-
-    const after = elements.diffFileList.querySelectorAll('.diff-file-row')[0];
-    assert(before === after, 'header node identity preserved across live updates');
-    assertEqual(listRebuilds, 0, 'list container not rebuilt for an in-place update');
-    assertEqual(elements.diffFileList.querySelector('.diff-count-add').textContent, '+7', 'counts updated in place');
   });
 
   await run('buildUnifiedDiff reconstructs a patch from cached hunks', () => {

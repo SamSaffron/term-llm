@@ -294,6 +294,19 @@ func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID 
 	return 0, nil
 }
 
+// GetDiffCommentMessages delegates the targeted typed inline-comment lookup.
+func (s *LoggingStore) GetDiffCommentMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	lister, ok := s.Store.(DiffCommentMessageLister)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	messages, err := lister.GetDiffCommentMessages(ctx, sessionID)
+	if err != nil {
+		s.logOnce("GetDiffCommentMessages", err)
+	}
+	return messages, err
+}
+
 // GetMessagesPageDescending returns a reverse-ordered page of messages. It
 // delegates when the wrapped store supports efficient paging; otherwise it falls
 // back to in-memory paging over GetMessages.

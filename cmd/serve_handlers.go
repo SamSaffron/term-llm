@@ -898,6 +898,7 @@ type sessionMessagePartEntry struct {
 	Text            string                         `json:"text,omitempty"`
 	SkillActivation *llm.SkillActivationProvenance `json:"skill_activation,omitempty"`
 	PathNote        *llm.PathNoteProvenance        `json:"path_note,omitempty"`
+	DiffComment     *llm.DiffComment               `json:"diff_comment,omitempty"`
 	ToolName        string                         `json:"tool_name,omitempty"`
 	ToolInfo        string                         `json:"tool_info,omitempty"`
 	ToolArgs        string                         `json:"tool_arguments,omitempty"`
@@ -925,6 +926,66 @@ type sessionMessageEntry struct {
 	AssistantSegmentOrdinal *int                      `json:"assistant_segment_ordinal,omitempty"`
 	SegmentStartSequence    int64                     `json:"segment_start_sequence,omitempty"`
 	SegmentEndSequence      int64                     `json:"segment_end_sequence,omitempty"`
+}
+
+type sessionDiffCommentEntry struct {
+	MessageID       int64            `json:"message_id"`
+	ClientMessageID string           `json:"client_message_id,omitempty"`
+	CreatedAt       int64            `json:"created_at"`
+	Comment         *llm.DiffComment `json:"diff_comment"`
+}
+
+func (s *serveServer) handleSessionDiffComments(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
+		return
+	}
+	sess, err := s.store.Get(r.Context(), sessionID)
+	if err != nil || sess == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+	lister, ok := s.store.(session.DiffCommentMessageLister)
+	if !ok {
+		writeOpenAIError(w, http.StatusNotImplemented, "server_error", "session history does not support inline comment lookup")
+		return
+	}
+	revision := int64(-1)
+	if reader, ok := s.store.(interface {
+		TranscriptRev(context.Context, string) (int64, error)
+	}); ok {
+		revision, err = reader.TranscriptRev(r.Context(), sessionID)
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get diff comment revision")
+			return
+		}
+	}
+	messages, err := lister.GetDiffCommentMessages(r.Context(), sessionID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get diff comments")
+		return
+	}
+	comments := make([]sessionDiffCommentEntry, 0)
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Type != llm.PartDiffComment || part.DiffComment == nil {
+				continue
+			}
+			comment := *part.DiffComment
+			comment.ContextBefore = append([]llm.DiffCommentContextLine(nil), part.DiffComment.ContextBefore...)
+			comment.ContextAfter = append([]llm.DiffCommentContextLine(nil), part.DiffComment.ContextAfter...)
+			comments = append(comments, sessionDiffCommentEntry{
+				MessageID:       message.ID,
+				ClientMessageID: message.ClientMessageID,
+				CreatedAt:       message.CreatedAt.UnixMilli(),
+				Comment:         &comment,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"comments":       comments,
+		"transcript_rev": revision,
+	})
 }
 
 type sessionMessagesResponse struct {
@@ -1535,6 +1596,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		embeddedFiles := make(map[string]bool)
 		for _, p := range msg.Parts {
 			switch p.Type {
+			case llm.PartDiffComment:
+				if p.DiffComment != nil {
+					copyComment := *p.DiffComment
+					copyComment.ContextBefore = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextBefore...)
+					copyComment.ContextAfter = append([]llm.DiffCommentContextLine(nil), p.DiffComment.ContextAfter...)
+					entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "diff_comment", DiffComment: &copyComment})
+				}
 			case llm.PartText:
 				text := p.Text
 				if msg.Role == llm.RoleUser {
@@ -1847,6 +1915,16 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		s.handleSessionMCP(w, r, sessionID)
+		return
+	}
+
+	if suffix == "diff-comments" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleSessionDiffComments(w, r, sessionID)
 		return
 	}
 

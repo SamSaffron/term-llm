@@ -5571,6 +5571,29 @@ function testSanitizeMessagePreservesSkillRunState() {
   });
 }
 
+function testSanitizeMessagePreservesDiffComment() {
+  const name = 'sanitizeMessage preserves typed inline diff comment metadata';
+  return createSessionsHarness().then(({ app }) => {
+    const sanitized = app.sanitizeMessage({
+      id: 'diff-message', role: 'user', content: 'provider prompt', created: 1,
+      diffComment: {
+        id: 'comment-1', parent_id: 'comment-0', path: 'internal/a.go', side: 'old', line: 7,
+        file_change_seq: 12, line_text: 'old()', instruction: 'Keep this.',
+        context_before: [{ side: 'old', line: 6, text: 'before' }],
+        context_after: [{ side: 'new', line: 7, text: 'after' }],
+      },
+    });
+    if (sanitized?.diffComment?.id !== 'comment-1'
+        || sanitized.diffComment.parent_id !== 'comment-0'
+        || sanitized.diffComment.context_before?.[0]?.text !== 'before'
+        || sanitized.diffComment.context_after?.[0]?.side !== 'new') {
+      fail(name, 'diff comment metadata was discarded', JSON.stringify(sanitized));
+      return;
+    }
+    pass(name);
+  });
+}
+
 function testSanitizeMessagePreservesAskUserCallIdentity() {
   const name = 'sanitizeMessage preserves ask_user call identity';
   return createSessionsHarness().then(({ app }) => {
@@ -7608,6 +7631,28 @@ async function testMarkedPathNoteConvertsToVisibleArtifact() {
   pass(name);
 }
 
+async function testDiffCommentConvertsToReadableTypedUserMessage() {
+  const name = 'typed diff comment survives transcript conversion without parsing provider prose';
+  const { app } = await createSessionsHarness();
+  const converted = app.convertServerMessages([{
+    id: 71,
+    sequence: 9,
+    role: 'user',
+    client_message_id: 'comment-client-1',
+    created_at: 1000,
+    parts: [
+      { type: 'diff_comment', diff_comment: { id: 'dc1', path: 'a.go', side: 'old', line: 4, file_change_seq: 8, line_text: 'old()', instruction: 'Keep it.' } },
+      { type: 'text', text: '[Inline diff instruction]\nprovider detail' }
+    ]
+  }]);
+  const message = converted[0];
+  if (converted.length !== 1 || message?.diffComment?.instruction !== 'Keep it.' || message?.diffComment?.side !== 'old' || message?.content.indexOf('provider detail') < 0) {
+    fail(name, 'typed diff comment was not projected', JSON.stringify(converted));
+    return;
+  }
+  pass(name);
+}
+
 const appSessionsShardValue = process.env.TERM_LLM_APP_SESSIONS_TEST_SHARD;
 const appSessionsShard = appSessionsShardValue === undefined ? null : Number(appSessionsShardValue);
 let appSessionsTestIndex = 0;
@@ -7623,7 +7668,9 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testBranchShortcutCommandsUseSafeActiveBoundaryAndSkipEmptySend);
   await runAppSessionsTest(testPendingBranchProjectionHidesVirtualTranscriptGaps);
   await runAppSessionsTest(testMarkedPathNoteConvertsToVisibleArtifact);
+  await runAppSessionsTest(testDiffCommentConvertsToReadableTypedUserMessage);
   await runAppSessionsTest(testSanitizeMessagePreservesSkillRunState);
+  await runAppSessionsTest(testSanitizeMessagePreservesDiffComment);
   await runAppSessionsTest(testSanitizeMessagePreservesAskUserCallIdentity);
   await runAppSessionsTest(testSanitizeMessagePreservesPlanExecutionEvidence);
   await runAppSessionsTest(testSkillProvenanceEventConvertsToLinkedRunBlock);

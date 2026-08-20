@@ -31,3 +31,17 @@ func TestPrepareProviderRequestConvertsOnlyTypedAgentMentionContext(t *testing.T
 		t.Fatalf("human message text included typed provider context: %q", got)
 	}
 }
+
+func TestPrepareProviderRequestStripsDiffCommentMetadata(t *testing.T) {
+	original := []Message{{Role: RoleUser, Parts: []Part{
+		{Type: PartDiffComment, DiffComment: &DiffComment{ID: "comment-1", Path: "main.go", Side: "new", Line: 3, FileChangeSeq: 7, Instruction: "rename this"}},
+		{Type: PartText, Text: "provider-facing anchored instruction"},
+	}}}
+	prepared := NewEngine(NewMockProvider("mock"), nil).prepareProviderRequest(Request{Messages: original})
+	if len(prepared.Messages) != 1 || len(prepared.Messages[0].Parts) != 1 || prepared.Messages[0].Parts[0].Type != PartText {
+		t.Fatalf("prepared messages = %#v", prepared.Messages)
+	}
+	if original[0].Parts[0].Type != PartDiffComment || original[0].Parts[0].DiffComment == nil {
+		t.Fatalf("provider preparation mutated stored metadata: %#v", original)
+	}
+}

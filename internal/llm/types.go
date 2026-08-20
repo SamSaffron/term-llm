@@ -261,6 +261,7 @@ const (
 	PartSkillActivation PartType = "skill_activation" // Persisted direct-activation provenance; never sent to providers.
 	PartAgentMention    PartType = "agent_mention"    // Provider-visible delegation instruction; excluded from human-visible text surfaces.
 	PartPathNote        PartType = "path_note"        // Persisted branch-context provenance; adjacent text is sent as developer context.
+	PartDiffComment     PartType = "diff_comment"     // Persisted inline-diff anchor metadata; never sent to providers.
 )
 
 // Message holds a role with structured parts.
@@ -378,6 +379,31 @@ type Part struct {
 	DiscoveryOutput           *ToolDiscoveryOutput       // Planner-selected trusted schemas paired to a discovery call.
 	SkillActivation           *SkillActivationProvenance // Direct user activation metadata; persisted but not provider content.
 	PathNote                  *PathNoteProvenance        // Branch-context metadata; persisted but not sent to providers.
+	DiffComment               *DiffComment               // Inline-diff comment anchor; persisted but not sent to providers.
+}
+
+// DiffCommentContextLine preserves one exact nearby line from the diff that the
+// user saw when submitting an inline instruction.
+type DiffCommentContextLine struct {
+	Side string `json:"side"`
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// DiffComment is durable, display-only metadata for an instruction anchored to
+// a particular retained file-change snapshot. The adjacent text part carries
+// the actual provider-facing instruction.
+type DiffComment struct {
+	ID            string                   `json:"id"`
+	ParentID      string                   `json:"parent_id,omitempty"`
+	Path          string                   `json:"path"`
+	Side          string                   `json:"side"`
+	Line          int                      `json:"line"`
+	FileChangeSeq int64                    `json:"file_change_seq"`
+	LineText      string                   `json:"line_text"`
+	ContextBefore []DiffCommentContextLine `json:"context_before,omitempty"`
+	ContextAfter  []DiffCommentContextLine `json:"context_after,omitempty"`
+	Instruction   string                   `json:"instruction"`
 }
 
 // PathNoteProvenance identifies generated context carried from the suffix that
