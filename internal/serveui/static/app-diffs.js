@@ -135,7 +135,7 @@ const pinDiffFileExpanded = (sessionId, path) => {
 };
 
 const setDiffBackgroundInert = (inert) => {
-  for (const element of [elements.sidebar, elements.appMain]) {
+  for (const element of [elements.sidebar, elements.appMain, elements.planPanel]) {
     if (!element) continue;
     element.inert = Boolean(inert);
     if (inert) element.setAttribute?.('inert', '');

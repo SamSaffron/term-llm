@@ -177,6 +177,7 @@ function createHarness(options = {}) {
     appShell: new Element('div'),
     appMain: new Element('main'),
     sidebar: new Element('aside'),
+    planPanel: new Element('aside'),
     diffSidebar: new Element('aside'),
     diffSidebarTotals: new Element('span'),
     diffSidebarCloseBtn: new Element('button'),
@@ -345,7 +346,7 @@ function createHarness(options = {}) {
   document.body = document.createElement('body');
   document.appendChild(document.body);
   document.body.appendChild(elements.appShell);
-  elements.appShell.append(elements.appMain, elements.sidebar, elements.diffSidebar);
+  elements.appShell.append(elements.appMain, elements.sidebar, elements.planPanel, elements.diffSidebar);
   elements.appMain.appendChild(elements.diffToggleBtn);
   elements.diffSidebar.append(
     elements.diffSidebarTotals,
@@ -1369,14 +1370,18 @@ async function run(name, fn) {
     await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
     assert(elements.diffSidebar.classList.contains('maximized') && elements.appShell.classList.contains('diff-maximized'), 'narrow maximize request was ignored');
     assert(elements.diffSidebar.classList.contains('open'), 'maximizing closed the drawer');
-    assert(elements.appMain.getAttribute('inert') === '', 'narrow maximize did not inert the background');
+    assert(elements.appMain.getAttribute('inert') === '' && elements.planPanel.getAttribute('inert') === '', 'narrow maximize did not inert the background panels');
     assert(!/@media\s*\(max-width:\s*1099px\)[\s\S]*?\.diff-sidebar-maximize\s*\{\s*display:\s*none/.test(cssSource), 'responsive CSS hides the narrow maximize control');
     assert(cssSource.includes('.diff-sidebar.open.maximized'), 'responsive CSS does not override the drawer transform when maximized');
+    assert(/\.diff-sidebar\.open\.maximized::before\s*\{[^}]*display:\s*none/.test(cssSource), 'maximized drawer leaves its edge grip visible');
+    const maximizedRule = cssSource.match(/\.diff-sidebar\.maximized\s*\{([^}]*)\}/);
+    const maximizedZIndex = Number(maximizedRule?.[1].match(/z-index:\s*(\d+)/)?.[1]);
+    assert(maximizedZIndex > 60, 'maximized Changes panel does not stack above the plan drawer');
 
     await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
     assert(!elements.diffSidebar.classList.contains('maximized'), 'narrow restore left maximize state behind');
     assert(elements.diffSidebar.classList.contains('open'), 'restoring closed the narrow drawer');
-    assert(elements.appMain.getAttribute('inert') === null, 'narrow restore left the background inert');
+    assert(elements.appMain.getAttribute('inert') === null && elements.planPanel.getAttribute('inert') === null, 'narrow restore left the background panels inert');
   });
 
   await run('desktop maximize preserves same DOM, draft focus, scroll anchor, and restores cleanly', async () => {
@@ -1395,7 +1400,7 @@ async function run(name, fn) {
 
     await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
     assert(elements.diffSidebar.classList.contains('maximized') && elements.appShell.classList.contains('diff-maximized'), 'maximize classes missing');
-    assert(elements.sidebar.getAttribute('inert') === '' && elements.appMain.getAttribute('inert') === '', 'background was not inert');
+    assert(elements.sidebar.getAttribute('inert') === '' && elements.appMain.getAttribute('inert') === '' && elements.planPanel.getAttribute('inert') === '', 'background panels were not inert');
     assert(document.activeElement === textarea, 'focus inside Changes moved during maximize');
     assert(textarea.value === 'draft survives' && elements.diffFileList.scrollTop === 77, 'draft or scroll state changed');
     assert(spatialRow.lastScrollIntoView?.block === 'nearest', 'maximize did not restore a reflow-safe spatial anchor');
@@ -1405,7 +1410,7 @@ async function run(name, fn) {
 
     await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
     assert(!elements.diffSidebar.classList.contains('maximized') && !elements.appShell.classList.contains('diff-maximized'), 'restore classes remained');
-    assert(elements.sidebar.getAttribute('inert') === null && elements.appMain.getAttribute('inert') === null, 'restore left background inert');
+    assert(elements.sidebar.getAttribute('inert') === null && elements.appMain.getAttribute('inert') === null && elements.planPanel.getAttribute('inert') === null, 'restore left background panels inert');
     assert(document.activeElement === textarea, 'restore moved panel focus');
   });
 

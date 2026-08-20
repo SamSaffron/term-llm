@@ -363,7 +363,7 @@
       bottom: auto;
       width: 100%;
       height: var(--app-height);
-      z-index: 55;
+      z-index: 70;
       border-left: 0;
       box-shadow: none;
       opacity: 1;
@@ -1018,6 +1018,10 @@
       .diff-sidebar.open.maximized {
         transform: none;
         box-shadow: none;
+      }
+
+      .diff-sidebar.open.maximized::before {
+        display: none;
       }
     }
 
