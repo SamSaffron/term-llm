@@ -71,6 +71,7 @@ var (
 	serveEnableWidgets          bool
 	serveWidgetsDir             string
 	serveResponseTimeout        time.Duration
+	serveEnableFileTracking     bool
 	serveHubURL                 string
 	serveHubNodeID              string
 	serveHubNodeName            string
@@ -164,6 +165,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum active execution time per response; pauses while waiting for interactive input")
+	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
 	serveCmd.Flags().StringVar(&serveHubURL, "hub-url", "", "URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI)")
 	serveCmd.Flags().StringVar(&serveHubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
 	serveCmd.Flags().StringVar(&serveHubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
@@ -303,6 +305,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if err != nil {
 		return err
 	}
+	applyServeFileTrackingOverride(cfg, serveEnableFileTracking)
 	resolvedApproval, err := resolveCommandApprovalMode(cmd, approvalSurfaceServe, cfg, nil, serveApproval, serveAuto, serveYolo)
 	if err != nil {
 		return err

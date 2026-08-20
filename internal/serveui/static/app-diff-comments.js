@@ -13,6 +13,7 @@ const pruneDiffCommentState = (retainedIDs = liveSessionIDs()) => {
   for (const sessionId of commentStateBySession.keys()) {
     if (!retained.has(sessionId)) commentStateBySession.delete(sessionId);
   }
+  app.pruneDiffCommentQueues?.(retained);
 };
 
 const sessionCommentState = (sessionId) => {
@@ -20,7 +21,7 @@ const sessionCommentState = (sessionId) => {
   if (!value) {
     value = {
       comments: [], loaded: false, inflight: null, lastLoadedAt: 0, serverRevision: -1,
-      revisionsByPath: new Map(), editorDrafts: new Map(), openPanel: null
+      revisionsByPath: new Map(), editorDrafts: new Map(), retryIDs: new Map(), openPanel: null, pendingFocusKey: ''
     };
     commentStateBySession.set(sessionId, value);
   }
@@ -141,6 +142,23 @@ const invalidateDiffComments = (sessionId) => {
 };
 
 const diffCommentRevision = (sessionId, path) => commentStateBySession.get(sessionId)?.revisionsByPath.get(path) || 0;
+const bumpDiffCommentPathRevision = (sessionId, path) => {
+  const revisions = sessionCommentState(sessionId).revisionsByPath;
+  revisions.set(path, (revisions.get(path) || 0) + 1);
+};
+const diffCommentPanelOpen = (sessionId) => Boolean(commentStateBySession.get(String(sessionId || ''))?.openPanel);
+const clearDiffCommentPanel = (sessionId, path = '') => {
+  const cs = commentStateBySession.get(String(sessionId || ''));
+  if (!cs?.openPanel || (path && cs.openPanel.path !== path)) return false;
+  cs.openPanel = null;
+  return true;
+};
+const reconcileDiffCommentPanel = (sessionId, retainedPaths) => {
+  const cs = commentStateBySession.get(String(sessionId || ''));
+  if (!cs?.openPanel) return false;
+  const retained = retainedPaths instanceof Set ? retainedPaths : new Set(retainedPaths || []);
+  return retained.has(cs.openPanel.path) ? false : clearDiffCommentPanel(sessionId);
+};
 
 const rowAnchor = (path, row, fileChangeSeq) => {
   const side = row?.type === 'del' ? 'old' : (row?.newNo ? 'new' : 'old');
@@ -204,7 +222,7 @@ const addOptimisticComment = (sessionId, comment) => {
   const cs = sessionCommentState(sessionId);
   const before = cs.comments;
   if (!before.some((existing) => existing.id === comment.id)) {
-    cs.comments = [...before, { ...comment, client_message_id: comment.id, created_at: Date.now(), optimistic: true }];
+    cs.comments = [...before, { ...comment, client_message_id: comment.client_message_id || comment.id, created_at: Date.now(), optimistic: true }];
     bumpChangedPathRevisions(cs, before, cs.comments);
   }
   app.renderDiffSidebar?.(sessionId);
@@ -241,7 +259,10 @@ const closePanel = (panel, focusTarget, options = {}) => {
   const sessionId = String(options.sessionId || panel?._diffCommentSessionId || '');
   const key = String(options.key || panel?._diffCommentKey || '');
   const cs = commentStateBySession.get(sessionId);
-  if (options.clearDraft && cs && key) cs.editorDrafts.delete(key);
+  if (options.clearDraft && cs && key) {
+    cs.editorDrafts.delete(key);
+    cs.retryIDs.delete(key);
+  }
   if (cs?.openPanel?.key === key) cs.openPanel = null;
   const trigger = focusTarget || panel?._diffCommentTrigger;
   trigger?.setAttribute?.('aria-expanded', 'false');
@@ -249,10 +270,10 @@ const closePanel = (panel, focusTarget, options = {}) => {
   trigger?.focus?.();
 };
 
-const showEditor = (panel, sessionId, anchor, rows, rowIndex, trigger, prior) => {
+const showEditor = (panel, sessionId, anchor, rows, rowIndex, trigger, prior, options = {}) => {
   const existingEditor = panel.querySelector?.('.diff-comment-editor');
   if (existingEditor) {
-    existingEditor.querySelector?.('textarea')?.focus?.();
+    if (options.focus !== false) existingEditor.querySelector?.('textarea')?.focus?.();
     return;
   }
   const cs = sessionCommentState(sessionId);
@@ -268,40 +289,112 @@ const showEditor = (panel, sessionId, anchor, rows, rowIndex, trigger, prior) =>
   const actions = document.createElement('div');
   actions.className = 'diff-comment-editor-actions';
   const cancel = makeButton('diff-comment-cancel', 'Cancel inline comment', 'Cancel');
-  const send = makeButton('diff-comment-send', 'Send inline comment now', 'Send now');
-  actions.append(cancel, send);
+  const split = document.createElement('div');
+  split.className = 'diff-comment-send-split';
+  const send = makeButton('diff-comment-send', 'Send now', 'Send now');
+  const more = makeButton('diff-comment-send-more', 'More send options', '▾');
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  const menu = document.createElement('div');
+  menu.className = 'diff-comment-send-menu';
+  menu.id = `${panel.id}-send-menu`;
+  menu.setAttribute('role', 'menu');
+  menu.hidden = true;
+  more.setAttribute('aria-controls', menu.id);
+  const sendNowOption = makeButton('diff-comment-send-option', 'Send now', 'Send now');
+  sendNowOption.setAttribute('role', 'menuitem');
+  sendNowOption.tabIndex = -1;
+  const queueOption = makeButton('diff-comment-send-option', 'Queue comment — Deliver later as one batch', 'Queue comment');
+  queueOption.setAttribute('role', 'menuitem');
+  queueOption.tabIndex = -1;
+  const queueDescription = document.createElement('small');
+  queueDescription.textContent = 'Deliver later as one batch';
+  queueOption.appendChild(queueDescription);
+  menu.append(sendNowOption, queueOption);
+  split.append(send, more, menu);
+  actions.append(cancel, split);
   editor.append(textarea, actions);
   panel.appendChild(editor);
 
-  const submit = async () => {
+  const menuItems = [sendNowOption, queueOption];
+  const setMenuOpen = (open, focusIndex = -1) => {
+    menu.hidden = !open;
+    if (open) menu.removeAttribute?.('hidden'); else menu.setAttribute?.('hidden', '');
+    more.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open && focusIndex >= 0) menuItems[focusIndex]?.focus?.();
+  };
+  const moveMenuFocus = (direction) => {
+    const current = Math.max(0, menuItems.indexOf(document.activeElement));
+    menuItems[(current + direction + menuItems.length) % menuItems.length]?.focus?.();
+  };
+  const updatePrimary = () => {
+    const queueMode = app.diffCommentSendMode?.(sessionId) === 'queue';
+    const label = queueMode ? 'Queue comment' : 'Send now';
+    send.textContent = label;
+    send.setAttribute('aria-label', label);
+    send.title = `${label} (Ctrl/⌘+Enter)`;
+  };
+  const submit = async (requestedMode = app.diffCommentSendMode?.(sessionId) || 'send') => {
+    const mode = requestedMode === 'queue' ? 'queue' : 'send';
     const instruction = String(textarea.value || '').trim();
-    if (!instruction || send.disabled) return;
+    if (!instruction || send.disabled) return false;
     cs.editorDrafts.set(key, textarea.value);
-    if (!state.connected) {
+    if (mode === 'send' && !state.connected) {
       app.openAuthModal?.('Connect before sending an inline instruction.', true);
-      return;
+      return false;
     }
-    if (state.branchContextQueuedSend) {
+    if (mode === 'send' && state.branchContextQueuedSend) {
       app.showToast?.('A message is already queued for this conversation path.', { id: 'diff-comment-send', tone: 'warning' });
-      return;
+      return false;
+    }
+    if (mode === 'queue' && (app.queuedDiffComments?.(sessionId) || []).length >= (app.MAX_QUEUED_DIFF_COMMENTS || 20)) {
+      app.showToast?.('Queue is full (20). Send or discard queued comments first.', { id: 'diff-comment-queue-full', tone: 'warning' });
+      return false;
     }
     const context = captureContext(rows, rowIndex);
     const comment = normalizeComment({
       ...anchor,
-      id: makeID(),
+      id: cs.retryIDs.get(key) || makeID(),
       parent_id: prior.length > 0 ? prior[prior.length - 1].id : '',
       context_before: context.before,
       context_after: context.after,
       instruction,
-      optimistic: true
+      optimistic: mode === 'send'
     });
-    if (!comment) return;
+    if (!comment) return false;
+    app.pinDiffFileExpanded?.(sessionId, anchor.path);
+    cs.pendingFocusKey = key;
+    if (mode === 'queue') {
+      if (!app.queueDiffComment?.(sessionId, comment)) {
+        cs.pendingFocusKey = '';
+        textarea.focus?.();
+        return false;
+      }
+      send.disabled = true;
+      more.disabled = true;
+      textarea.disabled = true;
+      closePanel(panel);
+      cs.editorDrafts.delete(key);
+      cs.retryIDs.delete(key);
+      return true;
+    }
     send.disabled = true;
+    more.disabled = true;
     textarea.disabled = true;
     closePanel(panel);
     addOptimisticComment(sessionId, comment);
     let transportStarted = false;
+    let transportQueued = false;
     let transportFailed = false;
+    let failureHandled = false;
+    const keepRetryDraft = (tone = 'error') => {
+      if (failureHandled) return;
+      failureHandled = true;
+      transportFailed = true;
+      cs.retryIDs.set(key, comment.id);
+      removeOptimisticComment(sessionId, comment.id);
+      app.showToast?.('Inline instruction was not sent. Your draft is still available.', { id: 'diff-comment-send', tone });
+    };
     try {
       await app.sendMessage?.({
         prompt: formatAgentInstruction(comment),
@@ -322,37 +415,89 @@ const showEditor = (panel, sessionId, anchor, rows, rowIndex, trigger, prior) =>
         attachments: [],
         preserveComposer: true,
         reuseMessageId: comment.id,
-        _onTransportStarted() { transportStarted = true; },
-        _onTransportFailed() { transportFailed = true; }
+        _onTransportStarted(detail = {}) {
+          if (detail.queued) {
+            transportQueued = true;
+            return;
+          }
+          transportStarted = true;
+          cs.retryIDs.delete(key);
+          cs.editorDrafts.delete(key);
+          void Promise.resolve().then(() => hydrateDiffComments(sessionId, { force: true }));
+        },
+        _onTransportFailed() { keepRetryDraft(); },
+        _onTransportCanceled() { keepRetryDraft('warning'); }
       });
     } catch {
-      transportFailed = true;
+      keepRetryDraft();
     }
+    if (transportQueued && !transportStarted && !transportFailed) return true;
     if (!transportStarted || transportFailed) {
-      removeOptimisticComment(sessionId, comment.id);
-      app.showToast?.('Inline instruction was not sent. Your draft is still available.', { id: 'diff-comment-send', tone: 'error' });
-      return;
+      keepRetryDraft();
+      return false;
     }
-    cs.editorDrafts.delete(key);
-    void hydrateDiffComments(sessionId, { force: true });
+    return true;
+  };
+  const choose = async (mode) => {
+    app.setDiffCommentSendMode?.(sessionId, mode);
+    updatePrimary();
+    setMenuOpen(false);
+    if (!String(textarea.value || '').trim()) { textarea.focus?.(); return; }
+    await submit(mode);
   };
   textarea.addEventListener('input', () => cs.editorDrafts.set(key, textarea.value));
   cancel.addEventListener('click', () => closePanel(panel, trigger, { clearDraft: true, sessionId, key }));
-  send.addEventListener('click', submit);
+  send.addEventListener('click', () => submit());
+  more.addEventListener('click', (event) => {
+    event.stopPropagation?.();
+    const opening = menu.hidden;
+    setMenuOpen(opening, opening ? 0 : -1);
+  });
+  more.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Escape') return;
+    event.preventDefault?.();
+    event.stopImmediatePropagation?.();
+    if (event.key === 'Escape') setMenuOpen(false);
+    else setMenuOpen(true, event.key === 'ArrowUp' ? menuItems.length - 1 : 0);
+  });
+  sendNowOption.addEventListener('click', () => choose('send'));
+  queueOption.addEventListener('click', () => choose('queue'));
+  menu.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault?.();
+      moveMenuFocus(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault?.();
+      menuItems[event.key === 'Home' ? 0 : menuItems.length - 1]?.focus?.();
+      return;
+    }
+    if (event.key !== 'Escape' && event.key !== 'Tab') return;
+    if (event.key === 'Escape') {
+      event.preventDefault?.();
+      event.stopImmediatePropagation?.();
+      more.focus?.();
+    }
+    setMenuOpen(false);
+  });
   textarea.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault?.();
+      event.stopImmediatePropagation?.();
       closePanel(panel, trigger, { sessionId, key });
     } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault?.();
       void submit();
     }
   });
-  textarea.focus?.();
+  updatePrimary();
+  if (options.focus !== false) textarea.focus?.();
 };
 
 const openCommentPanel = (sessionId, anchor, rows, rowIndex, rowElement, trigger, options = {}) => {
   const cs = sessionCommentState(sessionId);
+  app.pinDiffFileExpanded?.(sessionId, anchor.path);
   const key = anchorKey(anchor);
   const current = rowElement.parentNode?.querySelector?.('.diff-comment-panel');
   if (current) current.remove?.();
@@ -367,33 +512,62 @@ const openCommentPanel = (sessionId, anchor, rows, rowIndex, rowElement, trigger
   trigger?.setAttribute?.('aria-controls', panel.id);
   trigger?.setAttribute?.('aria-expanded', 'true');
   rowElement.parentNode?.insertBefore?.(panel, rowElement.nextSibling || null);
-  const prior = commentsForAnchor(sessionId, anchor);
-  const wasEditing = options.restore && cs.openPanel?.key === key ? Boolean(cs.openPanel.editing) : prior.length === 0;
+  const queued = app.queuedDiffComments?.(sessionId, anchor) || [];
+  const queuedIDs = new Set(queued.map((comment) => comment.id));
+  const prior = commentsForAnchor(sessionId, anchor).filter((comment) => !queuedIDs.has(comment.id));
+  const history = [...prior, ...queued].sort((a, b) => (a.created_at - b.created_at) || a.id.localeCompare(b.id));
+  const wasEditing = options.restore && cs.openPanel?.key === key ? Boolean(cs.openPanel.editing) : history.length === 0;
   cs.openPanel = { key, path: anchor.path, side: anchor.side, line: anchor.line, editing: wasEditing };
-  if (prior.length > 0) {
+  if (history.length > 0) {
     const heading = document.createElement('div');
     heading.className = 'diff-comment-heading';
     heading.textContent = `Line ${anchor.line} · ${anchor.side === 'old' ? 'original' : 'current'} version`;
     panel.appendChild(heading);
-    for (const comment of prior) {
+    for (const comment of history) {
+      const isQueued = queued.some((entry) => entry.id === comment.id);
       const item = document.createElement('div');
-      item.className = 'diff-comment-history-item';
+      item.className = `diff-comment-history-item${isQueued ? ' queued' : ''}`;
       const text = document.createElement('div');
       text.className = 'diff-comment-history-text';
       text.textContent = comment.instruction;
       const meta = document.createElement('div');
       meta.className = 'diff-comment-history-meta';
-      meta.textContent = comment.file_change_seq === anchor.file_change_seq
-        ? (comment.optimistic ? 'Sending…' : 'Sent')
-        : `File changed after this instruction${comment.optimistic ? ' · sending…' : ''}`;
+      meta.textContent = isQueued
+        ? (comment.file_change_seq === anchor.file_change_seq ? 'Queued — not sent' : 'File changed after this was queued')
+        : (comment.file_change_seq === anchor.file_change_seq ? (comment.optimistic ? 'Sending…' : 'Sent') : `File changed after this instruction${comment.optimistic ? ' · sending…' : ''}`);
       item.append(text, meta);
+      if (isQueued) {
+        const itemActions = document.createElement('div');
+        itemActions.className = 'diff-comment-history-actions';
+        const edit = makeButton('diff-comment-history-edit', 'Edit queued inline instruction', 'Edit');
+        const remove = makeButton('diff-comment-history-remove', 'Remove queued inline instruction', 'Remove');
+        const queueSending = Boolean(app.diffCommentQueueSending?.(sessionId));
+        edit.disabled = queueSending;
+        remove.disabled = queueSending;
+        edit.addEventListener('click', () => {
+          if (app.diffCommentQueueSending?.(sessionId)) return;
+          const removed = app.removeQueuedDiffComment?.(sessionId, comment.id);
+          if (!removed) return;
+          cs.editorDrafts.set(key, comment.instruction);
+          cs.retryIDs.delete(key);
+          if (cs.openPanel?.key === key) cs.openPanel.editing = true;
+          app.pinDiffFileExpanded?.(sessionId, comment.path);
+          app.scrollDiffFileIntoView?.(comment.path);
+        });
+        remove.addEventListener('click', () => {
+          if (app.diffCommentQueueSending?.(sessionId)) return;
+          app.removeQueuedDiffComment?.(sessionId, comment.id);
+        });
+        itemActions.append(edit, remove);
+        item.appendChild(itemActions);
+      }
       panel.appendChild(item);
     }
     const followUp = makeButton('diff-comment-follow-up', 'Add follow-up inline instruction', 'Add follow-up');
-    followUp.addEventListener('click', () => showEditor(panel, sessionId, anchor, rows, rowIndex, trigger, prior));
+    followUp.addEventListener('click', () => showEditor(panel, sessionId, anchor, rows, rowIndex, trigger, history));
     panel.appendChild(followUp);
   }
-  if (wasEditing) showEditor(panel, sessionId, anchor, rows, rowIndex, trigger, prior);
+  if (wasEditing) showEditor(panel, sessionId, anchor, rows, rowIndex, trigger, history, { focus: options.focus !== false });
 };
 
 const focusAdjacentCommentRow = (rowElement, direction) => {
@@ -406,18 +580,22 @@ const focusAdjacentCommentRow = (rowElement, direction) => {
   next.focus?.();
 };
 
-const decorateDiffCommentRow = ({ sessionId, path, row, rows, rowIndex, rowElement, fileChangeSeq }) => {
+const decorateDiffCommentRow = ({ sessionId, path, row, rows, rowIndex, rowElement, fileChangeSeq, initialTabStop = rowIndex === 0 }) => {
   if (!rowElement || !row || row.type === 'hunk') return null;
   const anchor = rowAnchor(path, row, fileChangeSeq);
   if (!anchor.line || !anchor.file_change_seq) return null;
-  const prior = commentsForAnchor(sessionId, anchor);
-  const hasComments = prior.length > 0;
-  const label = hasComments ? `Show ${prior.length} inline instruction${prior.length === 1 ? '' : 's'} for ${anchor.side} line ${anchor.line}` : `Comment on ${anchor.side} line ${anchor.line}`;
-  const button = makeButton(`diff-comment-affordance${hasComments ? ' has-comments' : ''}`, label, hasComments ? '' : '+');
+  const queued = app.queuedDiffComments?.(sessionId, anchor) || [];
+  const queuedIDs = new Set(queued.map((comment) => comment.id));
+  const prior = commentsForAnchor(sessionId, anchor).filter((comment) => !queuedIDs.has(comment.id));
+  const total = prior.length + queued.length;
+  const hasComments = total > 0;
+  const queuedSuffix = queued.length > 0 ? ` (${queued.length} queued, not sent)` : '';
+  const label = hasComments ? `Show ${total} inline instruction${total === 1 ? '' : 's'} for ${anchor.side} line ${anchor.line}${queuedSuffix}` : `Comment on ${anchor.side} line ${anchor.line}`;
+  const button = makeButton(`diff-comment-affordance${hasComments ? ' has-comments' : ''}${queued.length > 0 ? ' queued' : ''}`, label, hasComments ? '' : '+');
   button.tabIndex = -1;
   button.setAttribute('aria-expanded', 'false');
   button.setAttribute('aria-controls', panelIDForAnchor(sessionId, anchor));
-  if (hasComments && prior.some((comment) => comment.file_change_seq !== anchor.file_change_seq)) {
+  if (hasComments && [...prior, ...queued].some((comment) => comment.file_change_seq !== anchor.file_change_seq)) {
     button.classList.add('stale');
     button.title = `${label} (one or more anchors are outdated)`;
   }
@@ -434,7 +612,7 @@ const decorateDiffCommentRow = ({ sessionId, path, row, rows, rowIndex, rowEleme
   };
   button.addEventListener('click', open);
   rowElement.dataset.commentable = 'true';
-  rowElement.tabIndex = rows.slice(0, rowIndex).some((candidate) => candidate?.type !== 'hunk' && contextLine(candidate)) ? -1 : 0;
+  rowElement.tabIndex = initialTabStop ? 0 : -1;
   rowElement.setAttribute?.('aria-label', `${anchor.side} line ${anchor.line}. ${label}`);
   rowElement.addEventListener?.('keydown', (event) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -446,31 +624,77 @@ const decorateDiffCommentRow = ({ sessionId, path, row, rows, rowIndex, rowEleme
     }
   });
   rowElement.appendChild(button);
-  const shouldRestore = sessionCommentState(sessionId).openPanel?.key === anchorKey(anchor);
-  return shouldRestore ? () => openCommentPanel(sessionId, anchor, rows, rowIndex, rowElement, button, { restore: true }) : null;
+  const cs = sessionCommentState(sessionId);
+  const key = anchorKey(anchor);
+  button._diffCommentKey = key; rowElement._diffCommentKey = key;
+  const shouldRestorePanel = cs.openPanel?.key === key, shouldRestoreFocus = cs.pendingFocusKey === key;
+  return (options = {}) => {
+    const ownedFocus = options.commentFocus?.key === key ? options.commentFocus : null;
+    if (shouldRestorePanel) openCommentPanel(sessionId, anchor, rows, rowIndex, rowElement, button, { restore: true, focus: false });
+    const restoreFocus = () => {
+      // Explicit submission/queue focus takes precedence over preserving the old control.
+      if (shouldRestoreFocus) {
+        cs.pendingFocusKey = ''; button.focus?.(); return;
+      }
+      if (!ownedFocus) return;
+      if (ownedFocus.kind === 'marker') {
+        (ownedFocus.target === 'row' ? rowElement : button).focus?.(); return;
+      }
+      const panel = rowElement.parentNode?.querySelector?.(`#${panelIDForAnchor(sessionId, anchor)}`);
+      (panel?.querySelector?.('textarea') || button).focus?.();
+    };
+    if (options.deferFocus) return restoreFocus;
+    restoreFocus(); return null;
+  };
 };
 
 const createDiffCommentMessageNode = (message, createMetaNode) => {
-  const comment = normalizeComment(message.diffComment) || { path: '', side: '', line: 0, line_text: '', instruction: String(message.content || '') };
+  const raw = Array.isArray(message.diffComments) && message.diffComments.length > 0
+    ? message.diffComments
+    : [message.diffComment];
+  const comments = raw.map(normalizeComment).filter(Boolean);
+  if (comments.length === 0) comments.push({ path: '', side: '', line: 0, line_text: '', instruction: String(message.content || '') });
   const article = document.createElement('article');
   article.className = 'message user diff-comment-message';
   article.dataset.messageId = message.id;
   const body = document.createElement('div');
   body.className = 'message-body diff-comment-message-body';
-  const heading = document.createElement('div');
-  heading.className = 'diff-comment-message-heading';
-  heading.textContent = `Inline comment · ${comment.path}:${comment.line} (${comment.side})`;
-  const instruction = document.createElement('div');
-  instruction.className = 'diff-comment-message-instruction';
-  instruction.textContent = comment.instruction;
-  const exact = document.createElement('code');
-  exact.className = 'diff-comment-message-line';
-  exact.textContent = `${comment.side} ${comment.line} | ${comment.line_text}`;
-  body.append(heading, instruction, exact);
+  if (comments.length > 1) {
+    const summary = document.createElement('div');
+    summary.className = 'diff-comment-message-summary';
+    summary.textContent = `${comments.length} inline comments`;
+    body.appendChild(summary);
+  }
+  comments.forEach((comment) => {
+    const block = document.createElement('div');
+    block.className = 'diff-comment-message-block';
+    const heading = document.createElement('div');
+    heading.className = 'diff-comment-message-heading';
+    heading.textContent = `Inline comment · ${comment.path}:${comment.line} (${comment.side})`;
+    const instruction = document.createElement('div');
+    instruction.className = 'diff-comment-message-instruction';
+    instruction.textContent = comment.instruction;
+    const exact = document.createElement('code');
+    exact.className = 'diff-comment-message-line';
+    exact.textContent = `${comment.side} ${comment.line} | ${comment.line_text}`;
+    if (comments.length === 1) body.append(heading, instruction, exact);
+    else { block.append(heading, instruction, exact); body.appendChild(block); }
+  });
   article.appendChild(body);
   if (typeof createMetaNode === 'function') article.appendChild(createMetaNode(message.created, message));
   return article;
 };
+
+const closeOpenSendMenus = (event) => {
+  for (const menu of document.querySelectorAll?.('.diff-comment-send-menu') || []) {
+    if (!menu.hidden && !event.target?.closest?.('.diff-comment-send-split')) {
+      menu.hidden = true;
+      menu.setAttribute?.('hidden', '');
+      menu.parentNode?.querySelector?.('.diff-comment-send-more')?.setAttribute?.('aria-expanded', 'false');
+    }
+  }
+};
+document.addEventListener?.('pointerdown', closeOpenSendMenus);
 
 window.addEventListener?.('keydown', (event) => {
   if (event.key !== 'Escape') return;
@@ -491,6 +715,12 @@ Object.assign(app, {
   invalidateDiffComments,
   pruneDiffCommentState,
   diffCommentRevision,
+  bumpDiffCommentPathRevision,
+  diffCommentPanelOpen,
+  clearDiffCommentPanel,
+  reconcileDiffCommentPanel,
+  addOptimisticDiffComment: addOptimisticComment,
+  removeOptimisticDiffComment: removeOptimisticComment,
   decorateDiffCommentRow,
   createDiffCommentMessageNode
 });

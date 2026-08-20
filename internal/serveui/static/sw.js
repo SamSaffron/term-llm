@@ -37,6 +37,7 @@ const SHELL_ASSETS = [
   './intent-storage.js',
   './app-session-admin.js',
   './app-diff-comments.js',
+  './app-diff-queue.js',
   './app-diffs.js',
   './app-worktrees.js',
   // term-llm:webrtc-shell-asset

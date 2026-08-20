@@ -426,7 +426,11 @@ Enable it with:
 term-llm config set file_tracking.enabled true
 ```
 
-or by adding the YAML above to your config file.
+or by adding the YAML above to your config file. To enable tracking only for one server invocation without changing the saved config, use:
+
+```bash
+term-llm serve web --enable-file-tracking
+```
 
 **Privacy note:** this persists actual file contents (not just paths) to a local SQLite database at `~/.local/share/term-llm/file_history.db`, separate from `sessions.db`. Contents are gzip-compressed and content-addressed. Files larger than `max_file_bytes`, binary files, and changes beyond the per-session budget are recorded as metadata only ("content not retained"). History for deleted sessions is swept on startup, following `sessions.max_age_days`; if the database still exceeds `max_total_bytes`, the least recently changed sessions' history is pruned until it fits.
 

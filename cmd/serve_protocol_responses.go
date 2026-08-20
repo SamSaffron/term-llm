@@ -35,29 +35,30 @@ type responsesBranchContextRequest struct {
 }
 
 type responsesCreateRequest struct {
-	Model              string                         `json:"model"`
-	Provider           string                         `json:"provider"`
-	Input              json.RawMessage                `json:"input"`
-	Tools              []json.RawMessage              `json:"tools,omitempty"`
-	IncludeServerTools bool                           `json:"include_server_tools,omitempty"`
-	ToolChoice         json.RawMessage                `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool                          `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    int                            `json:"max_output_tokens,omitempty"`
-	Temperature        *float32                       `json:"temperature,omitempty"`
-	TopP               *float32                       `json:"top_p,omitempty"`
-	Stream             bool                           `json:"stream,omitempty"`
-	PreviousResponseID string                         `json:"previous_response_id,omitempty"`
-	Branch             bool                           `json:"branch,omitempty"`
-	BranchContext      *responsesBranchContextRequest `json:"branch_context,omitempty"`
-	ExpectedRev        *int64                         `json:"expected_rev,omitempty"`
-	IdempotencyKey     string                         `json:"idempotency_key,omitempty"`
-	ClientMessageID    string                         `json:"client_message_id,omitempty"`
-	ReasoningEffort    string                         `json:"reasoning_effort,omitempty"`
-	Reasoning          *responsesReasoningRequest     `json:"reasoning,omitempty"`
-	MultiAgent         *responsesMultiAgentRequest    `json:"multi_agent,omitempty"`
-	PromptCacheOptions *responsesPromptCacheRequest   `json:"prompt_cache_options,omitempty"`
-	WorktreeDir        string                         `json:"worktree_dir,omitempty"`
-	ModelSwap          *responsesModelSwapRequest     `json:"model_swap,omitempty"`
+	Model               string                         `json:"model"`
+	Provider            string                         `json:"provider"`
+	Input               json.RawMessage                `json:"input"`
+	Tools               []json.RawMessage              `json:"tools,omitempty"`
+	IncludeServerTools  bool                           `json:"include_server_tools,omitempty"`
+	ToolChoice          json.RawMessage                `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool                          `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens     int                            `json:"max_output_tokens,omitempty"`
+	Temperature         *float32                       `json:"temperature,omitempty"`
+	TopP                *float32                       `json:"top_p,omitempty"`
+	Stream              bool                           `json:"stream,omitempty"`
+	PreviousResponseID  string                         `json:"previous_response_id,omitempty"`
+	Branch              bool                           `json:"branch,omitempty"`
+	BranchContext       *responsesBranchContextRequest `json:"branch_context,omitempty"`
+	ExpectedRev         *int64                         `json:"expected_rev,omitempty"`
+	IdempotencyKey      string                         `json:"idempotency_key,omitempty"`
+	ClientMessageID     string                         `json:"client_message_id,omitempty"`
+	ReasoningEffort     string                         `json:"reasoning_effort,omitempty"`
+	Reasoning           *responsesReasoningRequest     `json:"reasoning,omitempty"`
+	MultiAgent          *responsesMultiAgentRequest    `json:"multi_agent,omitempty"`
+	PromptCacheOptions  *responsesPromptCacheRequest   `json:"prompt_cache_options,omitempty"`
+	UseDefaultWorkspace bool                           `json:"use_default_workspace,omitempty"`
+	WorktreeDir         string                         `json:"worktree_dir,omitempty"`
+	ModelSwap           *responsesModelSwapRequest     `json:"model_swap,omitempty"`
 }
 
 func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {

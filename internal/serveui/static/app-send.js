@@ -296,9 +296,12 @@ const sendMessage = async (options = {}) => {
       attachments: pendingAttachments.map((attachment) => cloneAttachmentForMessage(attachment)),
       contentParts: customContentParts,
       diffComment: options.diffComment || null,
+      diffComments: Array.isArray(options.diffComments) ? options.diffComments : [],
       displayPrompt,
       preserveComposer,
-      onTransportFailed: options._onTransportFailed
+      onTransportStarted: options._onTransportStarted,
+      onTransportFailed: options._onTransportFailed,
+      onTransportCanceled: options._onTransportCanceled
     };
     if (!preserveComposer) {
       elements.promptInput.value = '';
@@ -369,11 +372,13 @@ const sendMessage = async (options = {}) => {
     app.trackPendingInterruptCommit(session.id, prompt, pendingMessageId, pendingAttachments, {
       contentParts: customContentParts,
       diffComment: options.diffComment,
+      diffComments: options.diffComments,
       displayPrompt
     });
     app.trackPendingInterjection(session.id, displayPrompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'interject', pendingAttachments, {
       contentParts: customContentParts,
       diffComment: options.diffComment,
+      diffComments: options.diffComments,
       displayPrompt
     });
     persistAndRefreshShell();
@@ -391,6 +396,7 @@ const sendMessage = async (options = {}) => {
           const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId, pendingAttachments, {
             contentParts: customContentParts,
             diffComment: options.diffComment,
+            diffComments: options.diffComments,
             displayPrompt,
             preserveComposer,
             _onTransportFailed: options._onTransportFailed
@@ -485,8 +491,9 @@ const sendMessage = async (options = {}) => {
     requestParts: batchAttachmentParts.get(entry.messageId) || [],
     contentParts: Array.isArray(entry.contentParts) ? entry.contentParts : [],
     diffComment: entry.diffComment || null,
+    diffComments: Array.isArray(entry.diffComments) ? entry.diffComments : [],
     displayPrompt: String(entry.displayPrompt || '').trim(),
-  })) : [{ prompt, attachments: pendingAttachments, messageId: reuseMessageId, requestParts: requestAttachmentParts, contentParts: customContentParts, diffComment: options.diffComment || null, displayPrompt }];
+  })) : [{ prompt, attachments: pendingAttachments, messageId: reuseMessageId, requestParts: requestAttachmentParts, contentParts: customContentParts, diffComment: options.diffComment || null, diffComments: Array.isArray(options.diffComments) ? options.diffComments : [], displayPrompt }];
   for (const spec of messageSpecs) {
     if (!spec.messageId) continue;
     app.removePendingInterjectionById?.(spec.messageId, batchingFollowUps ? { refresh: false } : undefined);
@@ -506,6 +513,7 @@ const sendMessage = async (options = {}) => {
       delete message.interruptState;
     }
     if (spec.diffComment) message.diffComment = spec.diffComment;
+    if (spec.diffComments.length > 0) message.diffComments = spec.diffComments;
     message.clientMessageId = String(message.clientMessageId || message.id || '').trim();
     if (spec.attachments.length > 0) message.attachments = spec.attachments.map(cloneAttachmentForMessage);
     else delete message.attachments;
@@ -525,6 +533,7 @@ const sendMessage = async (options = {}) => {
       app.trackPendingInterjection?.(session.id, spec.displayPrompt || spec.prompt, spec.messageId, 'queue', spec.attachments, {
         contentParts: spec.contentParts,
         diffComment: spec.diffComment,
+        diffComments: spec.diffComments,
         displayPrompt: spec.displayPrompt
       });
       app.retirePendingIntent?.(session, spec.messageId);
@@ -589,6 +598,8 @@ const sendMessage = async (options = {}) => {
       : String(session.lastResponseId || '').trim();
     if (!previousResponseId && session.worktreeDir) {
       body.worktree_dir = session.worktreeDir;
+    } else if (!previousResponseId) {
+      body.use_default_workspace = true;
     }
     if (previousResponseId) {
       body.previous_response_id = previousResponseId;
@@ -945,11 +956,14 @@ const releaseBranchContextQueuedSend = (sessionId) => {
     attachments: queued.attachments,
     contentParts: queued.contentParts,
     diffComment: queued.diffComment,
+    diffComments: queued.diffComments,
     displayPrompt: queued.displayPrompt,
     preserveComposer: queued.preserveComposer,
     _onTransportFailed: queued.onTransportFailed,
+    _onTransportCanceled: queued.onTransportCanceled,
     _releaseBranchContextSend: true,
-    _onTransportStarted() {
+    _onTransportStarted(detail) {
+      queued.onTransportStarted?.(detail);
       elements.promptInput.value = newerDraft;
       state.attachments = newerAttachments;
       renderAttachments();
@@ -963,6 +977,7 @@ const restoreBranchContextQueuedSend = (sessionId) => {
   const queued = state.branchContextQueuedSend;
   if (!queued || queued.sessionId !== sessionId) return false;
   state.branchContextQueuedSend = null;
+  queued.onTransportCanceled?.({ queued: true, canceled: true });
   if (state.activeSessionId !== sessionId) return false;
   if (queued.preserveComposer) return true;
   const current = String(elements.promptInput.value || '').trim();

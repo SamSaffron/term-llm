@@ -457,10 +457,12 @@ func tiffOrientation(tiff []byte) int {
 }
 
 const (
-	diffCommentMaxPathBytes        = 1024
-	diffCommentMaxLineBytes        = 8 * 1024
-	diffCommentMaxInstructionBytes = 8 * 1024
-	diffCommentMaxPayloadBytes     = 32 * 1024
+	diffCommentMaxPathBytes             = 1024
+	diffCommentMaxLineBytes             = 8 * 1024
+	diffCommentMaxInstructionBytes      = 8 * 1024
+	diffCommentMaxPayloadBytes          = 32 * 1024
+	diffCommentMaxPartsPerMessage       = 25
+	diffCommentMaxAggregatePayloadBytes = 256 * 1024
 )
 
 func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
@@ -535,10 +537,20 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 	if err := json.Unmarshal(content, &parts); err == nil && len(parts) > 0 {
 		var llmParts []llm.Part
 		fileCount := 0
+		diffCommentCount := 0
+		diffCommentAggregateBytes := 0
 		for _, part := range parts {
 			partType := strings.ToLower(strings.TrimSpace(jsonString(part["type"])))
 			switch partType {
 			case "diff_comment":
+				diffCommentCount++
+				if diffCommentCount > diffCommentMaxPartsPerMessage {
+					return llm.Message{}, fmt.Errorf("too many diff_comment parts (max %d)", diffCommentMaxPartsPerMessage)
+				}
+				diffCommentAggregateBytes += len(part["diff_comment"])
+				if diffCommentAggregateBytes > diffCommentMaxAggregatePayloadBytes {
+					return llm.Message{}, fmt.Errorf("diff_comment parts exceed aggregate payload limit (%d bytes)", diffCommentMaxAggregatePayloadBytes)
+				}
 				comment, err := parseDiffCommentPart(part["diff_comment"])
 				if err != nil {
 					return llm.Message{}, err

@@ -6,6 +6,8 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-diffs.js'), 'utf8');
+const cssSource = fs.readFileSync(path.join(__dirname, 'app.css'), 'utf8');
+const commentSource = fs.readFileSync(path.join(__dirname, 'app-diff-comments.js'), 'utf8');
 let failures = 0;
 
 function fail(name, message, details) {
@@ -65,7 +67,18 @@ class Element {
     this.title = '';
     this.hidden = false;
     this.scrollTop = 0;
+    this._connectedOverride = null;
+    this.focusCount = 0;
+    this.rect = { width: 320, height: 40, top: 0, left: 0, right: 320, bottom: 40 };
   }
+  get isConnected() {
+    if (this._connectedOverride === false) return false;
+    let root = this;
+    while (root.parentNode) root = root.parentNode;
+    return root.tagName === 'DOCUMENT';
+  }
+  set isConnected(value) { this._connectedOverride = value === false ? false : null; }
+  append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
   appendChild(child) {
     if (child.parentNode) {
       const idx = child.parentNode.children.indexOf(child);
@@ -75,7 +88,29 @@ class Element {
     this.children.push(child);
     return child;
   }
+  insertBefore(child, reference) {
+    if (child.parentNode) {
+      const idx = child.parentNode.children.indexOf(child);
+      if (idx !== -1) child.parentNode.children.splice(idx, 1);
+    }
+    const index = reference ? this.children.indexOf(reference) : -1;
+    child.parentNode = this;
+    if (index === -1) this.children.push(child); else this.children.splice(index, 0, child);
+    return child;
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const document = this.ownerDocument;
+    if (document?.activeElement && this.contains(document.activeElement)) document.activeElement = document.body;
+    const index = this.parentNode.children.indexOf(this);
+    if (index !== -1) this.parentNode.children.splice(index, 1);
+    this.parentNode = null;
+  }
   replaceChildren(...nodes) {
+    const document = this.ownerDocument;
+    if (document?.activeElement && this.children.some((child) => child.contains(document.activeElement))) {
+      document.activeElement = document.body;
+    }
     this.children.forEach((child) => { child.parentNode = null; });
     this.children = [];
     nodes.forEach((node) => { if (node) this.appendChild(node); });
@@ -94,6 +129,7 @@ class Element {
     for (const listener of listeners) await listener(evt);
   }
   matches(selector) {
+    if (selector.startsWith('#')) return this.id === selector.slice(1);
     if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
     return this.tagName.toLowerCase() === selector.toLowerCase();
   }
@@ -109,7 +145,29 @@ class Element {
     return results;
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  getBoundingClientRect() { return { width: 320, height: 600, top: 0, left: 0, right: 320, bottom: 600 }; }
+  closest(selector) {
+    let current = this;
+    while (current) {
+      if (current.matches?.(selector)) return current;
+      current = current.parentNode;
+    }
+    return null;
+  }
+  contains(node) {
+    if (node === this) return true;
+    return this.children.some((child) => child.contains(node));
+  }
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const index = this.parentNode.children.indexOf(this);
+    return this.parentNode.children[index + 1] || null;
+  }
+  focus() {
+    this.focusCount += 1;
+    if (this.ownerDocument && this.isConnected) this.ownerDocument.activeElement = this;
+  }
+  scrollIntoView(options) { this.lastScrollIntoView = options || {}; }
+  getBoundingClientRect() { return this.rect; }
   setPointerCapture() {}
   releasePointerCapture() {}
 }
@@ -117,6 +175,8 @@ class Element {
 function createHarness(options = {}) {
   const elements = {
     appShell: new Element('div'),
+    appMain: new Element('main'),
+    sidebar: new Element('aside'),
     diffSidebar: new Element('aside'),
     diffSidebarTotals: new Element('span'),
     diffSidebarCloseBtn: new Element('button'),
@@ -125,22 +185,24 @@ function createHarness(options = {}) {
     diffToggleBtn: new Element('button'),
     diffToggleBadge: new Element('span'),
     diffBulkToggleBtn: new Element('button'),
+    diffMaximizeBtn: new Element('button'),
+    diffQueueBar: new Element('div'),
     diffFilterRow: new Element('div'),
     diffFilterInput: new Element('input')
   };
   elements.diffSidebar.hidden = true;
   elements.diffToggleBtn.hidden = true;
   elements.diffFilterRow.hidden = true;
-  const diffBulkToggleLabel = new Element('span');
-  diffBulkToggleLabel.className = 'diff-bulk-toggle-label';
-  const diffBulkToggleAction = new Element('span');
-  diffBulkToggleAction.className = 'diff-bulk-toggle-action';
-  diffBulkToggleLabel.appendChild(diffBulkToggleAction);
-  elements.diffBulkToggleBtn.appendChild(diffBulkToggleLabel);
 
   const state = {
     token: '',
-    activeSessionId: 's1'
+    activeSessionId: 's1',
+    connected: true,
+    sessions: [{ id: 's1', transcriptRev: 1 }],
+    pendingInterjections: [],
+    pendingInterruptCommits: [],
+    queuedInterrupts: [],
+    branchContextQueuedSend: null
   };
 
   const storage = new Map();
@@ -182,6 +244,8 @@ function createHarness(options = {}) {
     mediaListeners.slice().forEach((listener) => listener({ matches: drawerMatches }));
   };
 
+  const queuedComments = [];
+  const commentSendModes = new Map();
   const app = {
     createEl(tag, className, text) {
       const element = document.createElement(tag);
@@ -195,6 +259,21 @@ function createHarness(options = {}) {
     elements,
     clipboardWrites: [],
     closeCurrentPlanSurface() { planCloseCalls += 1; },
+    diffCommentSendMode(sessionId) { return commentSendModes.get(sessionId) || 'send'; },
+    setDiffCommentSendMode(sessionId, mode) {
+      commentSendModes.set(sessionId, mode === 'queue' ? 'queue' : 'send');
+    },
+    queuedDiffComments(sessionId, anchor = null) {
+      const comments = queuedComments.filter((entry) => entry.sessionId === sessionId).map((entry) => entry.comment);
+      if (!anchor) return comments;
+      return comments.filter((comment) => comment.path === anchor.path && comment.side === anchor.side && comment.line === anchor.line);
+    },
+    queueDiffComment(sessionId, comment) {
+      queuedComments.push({ sessionId, comment });
+      this.bumpDiffCommentPathRevision?.(sessionId, comment.path);
+      this.renderDiffSidebar?.(sessionId);
+      return true;
+    },
     getClipboardWriter() {
       const writes = this.clipboardWrites;
       return { writeText: (text) => { writes.push(String(text)); return Promise.resolve(); } };
@@ -256,7 +335,36 @@ function createHarness(options = {}) {
   };
 
   const document = new Element('document');
-  document.createElement = (tag) => new Element(tag);
+  document.ownerDocument = document;
+  document.activeElement = null;
+  document.createElement = (tag) => {
+    const element = new Element(tag);
+    element.ownerDocument = document;
+    return element;
+  };
+  document.body = document.createElement('body');
+  document.appendChild(document.body);
+  document.body.appendChild(elements.appShell);
+  elements.appShell.append(elements.appMain, elements.sidebar, elements.diffSidebar);
+  elements.appMain.appendChild(elements.diffToggleBtn);
+  elements.diffSidebar.append(
+    elements.diffSidebarTotals,
+    elements.diffSidebarCloseBtn,
+    elements.diffResizeHandle,
+    elements.diffFileList,
+    elements.diffBulkToggleBtn,
+    elements.diffMaximizeBtn,
+    elements.diffQueueBar,
+    elements.diffFilterRow
+  );
+  elements.diffFilterRow.appendChild(elements.diffFilterInput);
+  const elementIDs = {
+    appMain: elements.appMain,
+    diffMaximizeBtn: elements.diffMaximizeBtn,
+    diffQueueBar: elements.diffQueueBar
+  };
+  document.getElementById = (id) => elementIDs[id] || null;
+  Object.values(elements).forEach((element) => { element.ownerDocument = document; });
 
   const context = {
     window: {
@@ -301,6 +409,7 @@ function createHarness(options = {}) {
   };
   context.globalThis = context;
   app.apiFetch = (...args) => context.fetch(...args);
+  if (options.diffComments) vm.runInNewContext(commentSource, context, { filename: 'app-diff-comments.js' });
   vm.runInNewContext(source, context, { filename: 'app-diffs.js' });
 
   const flushTimers = async () => {
@@ -312,7 +421,7 @@ function createHarness(options = {}) {
   };
 
   return {
-    app, elements, state, localStorage, storage, timers, fetchCalls, flushTimers, setDrawer, media, windowObj: context.window,
+    app, elements, state, document, localStorage, storage, timers, fetchCalls, queuedComments, flushTimers, setDrawer, media, windowObj: context.window,
     get planCloseCalls() { return planCloseCalls; }
   };
 }
@@ -375,6 +484,36 @@ async function run(name, fn) {
     assert(!elements.diffSidebar.hidden, 'explicit toggle reveals sidebar');
     assert(elements.appShell.classList.contains('diff-open'), 'explicit toggle opens third column');
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'one file row rendered after toggle');
+  });
+
+  await run('collapsing or removing an anchor clears stale comment-panel state', async () => {
+    const harness = createHarness({ fetch: async (url) => ({
+      ok: true,
+      json: async () => (String(url).includes('/diff?')
+        ? { path: '/a', kind: 'modify', lang: 'go', truncated: false, hunks: [] }
+        : { file_changes: [] })
+    }) });
+    const { app } = harness;
+    let openPath = '/a';
+    const cleared = [];
+    app.diffCommentPanelOpen = () => Boolean(openPath);
+    app.clearDiffCommentPanel = (_sessionId, pathName = '') => {
+      if (pathName && pathName !== openPath) return false;
+      cleared.push(pathName || openPath);
+      openPath = '';
+      return true;
+    };
+    app.reconcileDiffCommentPanel = (_sessionId, retained) => {
+      if (openPath && !retained.has(openPath)) app.clearDiffCommentPanel(_sessionId);
+    };
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    app.toggleDiffSidebar();
+    app.toggleDiffFile('s1', '/a');
+    assert(cleared.includes('/a') && !app.diffCommentPanelOpen('s1'), 'explicit collapse retained stale openPanel state');
+
+    openPath = '/a';
+    await app.fetchSessionFileChanges('s1');
+    assert(!app.diffCommentPanelOpen('s1'), 'authoritative anchor removal retained stale openPanel state');
   });
 
   await run('opening Changes closes the Plan surface in wide and drawer modes', () => {
@@ -463,6 +602,177 @@ async function run(name, fn) {
     await flushTimers();
 
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 2, 'pinned file stays open while live-follow moves on');
+  });
+
+  await run('comment interaction pins a live-followed file while explicit collapse still wins', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    assert(app.pinDiffFileExpanded('s1', '/a'), 'comment pin did not recognize the file');
+    app.renderDiffSidebar('s1');
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/b', kind: 'create', adds: 1, dels: 0, seq: 2 });
+    await flushTimers();
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 2, 'commented file collapsed when live-follow moved');
+    app.toggleDiffFile('s1', '/a');
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 2, dels: 0, seq: 3 });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 1, 'live edit overrode explicit user collapse');
+  });
+
+  await run('open comment panel suppresses and consumes live-follow pending scroll', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.diffCommentPanelOpen = () => true;
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    const row = elements.diffFileList.querySelector('.diff-file-row');
+    assert(!row.lastScrollIntoView, 'live-follow scrolled away while a comment panel was open');
+    app.diffCommentPanelOpen = () => false;
+    app.renderDiffSidebar('s1');
+    assert(!row.lastScrollIntoView, 'suppressed pending scroll fired later');
+  });
+
+  await run('expanded diff refetch restores only focus owned by rebuilt inline comment UI', async () => {
+    const files = ['/shipping.rb', '/receipt.rb', '/loyalty.rb'];
+    const harness = createHarness({
+      diffComments: true,
+      fetch: async (url) => {
+        if (String(url).includes('/diff?')) {
+          const params = new URLSearchParams(String(url).split('?')[1] || '');
+          const pathName = params.get('path') || '/loyalty.rb';
+          return { ok: true, json: async () => ({
+            path: pathName, kind: 'modify', lang: 'ruby', truncated: false,
+            hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: `change in ${pathName}` }] }]
+          }) };
+        }
+        return { ok: true, json: async () => ({ file_changes: files.map((pathName, index) => ({
+          path: pathName, kind: 'modify', adds: 1, dels: 0, truncated: false, seq: index + 1
+        })) }) };
+      }
+    });
+    const { app, elements, document, flushTimers, queuedComments } = harness;
+    const event = (type, target) => ({
+      type, target, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {}
+    });
+
+    app.toggleDiffSidebar();
+    files.forEach((pathName, index) => app.handleFileChangeEvent(
+      { id: 's1' },
+      { path: pathName, kind: 'modify', adds: 1, dels: 0, seq: index + 1 }
+    ));
+    await flushTimers();
+    await flushTimers();
+    await elements.diffBulkToggleBtn.dispatchEvent(event('click', elements.diffBulkToggleBtn));
+    await elements.diffMaximizeBtn.dispatchEvent(event('click', elements.diffMaximizeBtn));
+
+    const loyaltyFile = elements.diffFileList.querySelectorAll('.diff-file-row')
+      .find((row) => row.dataset.path === '/loyalty.rb')?.parentNode;
+    const marker = loyaltyFile?.querySelector('.diff-comment-affordance');
+    assert(marker, 'loyalty comment marker was not rendered');
+    await marker.dispatchEvent(event('click', marker));
+    const textarea = loyaltyFile.querySelector('textarea');
+    textarea.value = 'Double points during ';
+    await textarea.dispatchEvent(event('input', textarea));
+    assert(document.activeElement === textarea && textarea.isConnected, 'editor did not begin with real connected focus');
+
+    const oldBody = loyaltyFile.querySelector('.diff-file-body');
+    app.refreshFileChangesAfterRun({ id: 's1' });
+    await flushTimers();
+    await flushTimers();
+
+    const rebuiltLoyaltyFile = elements.diffFileList.querySelectorAll('.diff-file-row')
+      .find((row) => row.dataset.path === '/loyalty.rb')?.parentNode;
+    const restored = rebuiltLoyaltyFile?.querySelector('textarea');
+    assert(rebuiltLoyaltyFile?.querySelector('.diff-file-body') !== oldBody, 'test did not replace the loyalty body');
+    assert(rebuiltLoyaltyFile?.querySelectorAll('.diff-comment-panel').length === 1
+      && rebuiltLoyaltyFile.querySelectorAll('.diff-comment-editor').length === 1, 'rebuilt comment UI was duplicated or lost');
+    assert(restored?.value === 'Double points during ', 'rebuilt editor lost its draft');
+    assert(document.activeElement === restored && restored.isConnected, `rebuilt connected editor did not regain owned focus (active=${document.activeElement?.tagName}.${document.activeElement?.className}, restoredFocusCount=${restored?.focusCount}, connected=${restored?.isConnected})`);
+
+    const outside = document.createElement('button');
+    elements.appMain.appendChild(outside);
+    outside.focus();
+    app.bumpDiffCommentPathRevision('s1', '/loyalty.rb');
+    app.renderDiffSidebar('s1');
+    assert(document.activeElement === outside, 'open editor stole focus after the user moved elsewhere');
+
+    const currentEditor = rebuiltLoyaltyFile.querySelector('textarea');
+    currentEditor.value = 'Double points during holidays';
+    await currentEditor.dispatchEvent(event('input', currentEditor));
+    app.setDiffCommentSendMode('s1', 'queue');
+    const queueButton = rebuiltLoyaltyFile.querySelector('.diff-comment-send');
+    queueButton.focus();
+    await queueButton.dispatchEvent(event('click', queueButton));
+    const rebuiltMarker = rebuiltLoyaltyFile.querySelector('.diff-comment-affordance');
+    assert(queuedComments.length === 1, 'queue submission did not complete');
+    assert(document.activeElement === rebuiltMarker && rebuiltMarker.isConnected, 'queue submission did not focus the attached rebuilt marker');
+  });
+
+  await run('file-list reorder preserves exact focus and draft in an untouched third-file editor', async () => {
+    const initialFiles = [
+      { path: '/loyalty.rb', seq: 1 },
+      { path: '/shipping.rb', seq: 2 },
+      { path: '/receipt.rb', seq: 3 }
+    ];
+    const harness = createHarness({
+      diffComments: true,
+      fetch: async (url) => {
+        if (String(url).includes('/diff?')) {
+          const params = new URLSearchParams(String(url).split('?')[1] || '');
+          const pathName = params.get('path') || '/loyalty.rb';
+          return { ok: true, json: async () => ({
+            path: pathName, kind: 'modify', lang: 'ruby', truncated: false,
+            hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: `change in ${pathName}` }] }]
+          }) };
+        }
+        return { ok: true, json: async () => ({ file_changes: initialFiles.map((file) => ({
+          path: file.path, kind: 'modify', adds: 1, dels: 0, truncated: false, seq: file.seq
+        })) }) };
+      }
+    });
+    const { app, elements, document, flushTimers } = harness;
+    const event = (type, target) => ({
+      type, target, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {}
+    });
+
+    app.toggleDiffSidebar();
+    initialFiles.forEach((file) => app.handleFileChangeEvent(
+      { id: 's1' },
+      { path: file.path, kind: 'modify', adds: 1, dels: 0, seq: file.seq }
+    ));
+    await flushTimers();
+    await flushTimers();
+
+    app.toggleDiffFile('s1', '/loyalty.rb');
+    await flushTimers();
+    await flushTimers();
+    const loyaltyFile = elements.diffFileList.querySelectorAll('.diff-file-row')
+      .find((row) => row.dataset.path === '/loyalty.rb')?.parentNode;
+    const marker = loyaltyFile?.querySelector('.diff-comment-affordance');
+    assert(marker, 'third-file loyalty comment marker was not rendered');
+    await marker.dispatchEvent(event('click', marker));
+    const textarea = loyaltyFile.querySelector('textarea');
+    textarea.value = 'Keep the exact focused draft';
+    await textarea.dispatchEvent(event('input', textarea));
+    assert(document.activeElement === textarea, 'loyalty editor did not own focus before reorder');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').map((row) => row.dataset.path).join(','),
+      '/receipt.rb,/shipping.rb,/loyalty.rb', 'loyalty editor was not in the untouched third file');
+
+    app.handleFileChangeEvent(
+      { id: 's1' },
+      { path: '/shipping.rb', kind: 'modify', adds: 2, dels: 0, seq: 4 }
+    );
+    await flushTimers();
+
+    const reorderedLoyaltyFile = elements.diffFileList.querySelectorAll('.diff-file-row')
+      .find((row) => row.dataset.path === '/loyalty.rb')?.parentNode;
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').map((row) => row.dataset.path).join(','),
+      '/shipping.rb,/receipt.rb,/loyalty.rb', 'agent edit did not change file sort order');
+    assert(reorderedLoyaltyFile === loyaltyFile, 'untouched loyalty block was rebuilt instead of reused');
+    assert(reorderedLoyaltyFile.querySelector('textarea') === textarea, 'reorder replaced the exact loyalty textarea');
+    assert(textarea.value === 'Keep the exact focused draft', 'reorder lost the loyalty draft');
+    assert(document.activeElement === textarea && textarea.isConnected,
+      `reorder did not restore exact connected textarea focus (active=${document.activeElement?.tagName})`);
   });
 
   await run('explicit collapse sticks while the agent keeps editing', async () => {
@@ -1021,26 +1331,25 @@ async function run(name, fn) {
 
   await run('adaptive bulk toggle expands, collapses, and sticks', async () => {
     const { app, elements, flushTimers } = createHarness();
-    const bulkLabel = () => `${elements.diffBulkToggleBtn.querySelector('.diff-bulk-toggle-action')?.textContent} all`;
     app.toggleDiffSidebar();
     for (let i = 1; i <= 3; i += 1) {
       app.handleFileChangeEvent({ id: 's1' }, { path: `/f${i}`, kind: 'modify', adds: 1, dels: 0, seq: i });
     }
     await flushTimers();
 
-    assertEqual(bulkLabel(), 'Expand all', 'mixed accordion offers to expand all');
+    assertEqual(elements.diffBulkToggleBtn.getAttribute('title'), 'Expand all', 'mixed accordion offers to expand all');
     assertEqual(elements.diffBulkToggleBtn.dataset.action, 'expand', 'expand icon state selected');
     assertEqual(elements.diffBulkToggleBtn.getAttribute('aria-label'), 'Expand all files', 'expand action announced');
 
     await elements.diffBulkToggleBtn.dispatchEvent({ type: 'click' });
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 3, 'first click opens every body');
-    assertEqual(bulkLabel(), 'Collapse all', 'fully expanded accordion offers to collapse all');
+    assertEqual(elements.diffBulkToggleBtn.getAttribute('title'), 'Collapse all', 'fully expanded accordion offers to collapse all');
     assertEqual(elements.diffBulkToggleBtn.dataset.action, 'collapse', 'collapse icon state selected');
     assertEqual(elements.diffBulkToggleBtn.getAttribute('aria-label'), 'Collapse all files', 'collapse action announced');
 
     await elements.diffBulkToggleBtn.dispatchEvent({ type: 'click' });
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'second click closes every body');
-    assertEqual(bulkLabel(), 'Expand all', 'collapsed accordion returns to expand action');
+    assertEqual(elements.diffBulkToggleBtn.getAttribute('title'), 'Expand all', 'collapsed accordion returns to expand action');
 
     app.handleFileChangeEvent({ id: 's1' }, { path: '/f1', kind: 'modify', adds: 2, dels: 0, seq: 4 });
     await flushTimers();
@@ -1048,6 +1357,119 @@ async function run(name, fn) {
 
     await elements.diffBulkToggleBtn.dispatchEvent({ type: 'click' });
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 3, 'expand action remains available after live updates');
+  });
+
+  await run('narrow drawer can maximize and restore without closing', async () => {
+    const { app, elements, flushTimers } = createHarness({ drawer: true });
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    app.toggleDiffSidebar();
+    await flushTimers();
+    assert(elements.diffSidebar.classList.contains('open'), 'narrow Changes drawer did not open');
+
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(elements.diffSidebar.classList.contains('maximized') && elements.appShell.classList.contains('diff-maximized'), 'narrow maximize request was ignored');
+    assert(elements.diffSidebar.classList.contains('open'), 'maximizing closed the drawer');
+    assert(elements.appMain.getAttribute('inert') === '', 'narrow maximize did not inert the background');
+    assert(!/@media\s*\(max-width:\s*1099px\)[\s\S]*?\.diff-sidebar-maximize\s*\{\s*display:\s*none/.test(cssSource), 'responsive CSS hides the narrow maximize control');
+    assert(cssSource.includes('.diff-sidebar.open.maximized'), 'responsive CSS does not override the drawer transform when maximized');
+
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(!elements.diffSidebar.classList.contains('maximized'), 'narrow restore left maximize state behind');
+    assert(elements.diffSidebar.classList.contains('open'), 'restoring closed the narrow drawer');
+    assert(elements.appMain.getAttribute('inert') === null, 'narrow restore left the background inert');
+  });
+
+  await run('desktop maximize preserves same DOM, draft focus, scroll anchor, and restores cleanly', async () => {
+    const { app, elements, document, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    const body = elements.diffFileList.querySelector('.diff-file-body');
+    const spatialRow = elements.diffFileList.querySelector('.diff-file-row');
+    const textarea = document.createElement('textarea');
+    textarea.value = 'draft survives';
+    body.appendChild(textarea);
+    textarea.focus();
+    elements.diffFileList.scrollTop = 77;
+    const beforeChildren = elements.diffFileList.children.slice();
+
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(elements.diffSidebar.classList.contains('maximized') && elements.appShell.classList.contains('diff-maximized'), 'maximize classes missing');
+    assert(elements.sidebar.getAttribute('inert') === '' && elements.appMain.getAttribute('inert') === '', 'background was not inert');
+    assert(document.activeElement === textarea, 'focus inside Changes moved during maximize');
+    assert(textarea.value === 'draft survives' && elements.diffFileList.scrollTop === 77, 'draft or scroll state changed');
+    assert(spatialRow.lastScrollIntoView?.block === 'nearest', 'maximize did not restore a reflow-safe spatial anchor');
+    assert(beforeChildren.every((child, index) => elements.diffFileList.children[index] === child), 'maximize rebuilt or reparented the list DOM');
+    assertEqual(elements.diffMaximizeBtn.getAttribute('aria-label'), 'Restore changes', 'restore action not announced');
+    assert(!elements.diffMaximizeBtn.getAttribute('aria-pressed'), 'maximize incorrectly exposed aria-pressed');
+
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(!elements.diffSidebar.classList.contains('maximized') && !elements.appShell.classList.contains('diff-maximized'), 'restore classes remained');
+    assert(elements.sidebar.getAttribute('inert') === null && elements.appMain.getAttribute('inert') === null, 'restore left background inert');
+    assert(document.activeElement === textarea, 'restore moved panel focus');
+  });
+
+  await run('filter Escape clears the filter before restoring maximize', async () => {
+    const { app, elements, windowObj } = createHarness();
+    app.toggleDiffSidebar();
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    elements.diffFilterInput.value = 'test.txt';
+    await elements.diffFilterInput.dispatchEvent({ type: 'input', target: elements.diffFilterInput });
+    windowObj.dispatchEvent({ type: 'keydown', key: 'Escape', target: elements.diffFilterInput, preventDefault() {} });
+    assert(elements.diffFilterInput.value === '', 'filter Escape did not clear the filter');
+    assert(elements.diffSidebar.classList.contains('maximized'), 'filter Escape unexpectedly restored the panel');
+  });
+
+  await run('maximize falls back to the captured file path when an open panel anchor disconnects', async () => {
+    const { app, elements, document, flushTimers } = createHarness();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    app.toggleDiffSidebar();
+    await flushTimers();
+    const body = elements.diffFileList.querySelector('.diff-file-body');
+    const row = elements.diffFileList.querySelector('.diff-file-row');
+    const panel = document.createElement('div');
+    panel.className = 'diff-comment-panel';
+    body.appendChild(panel);
+    panel.isConnected = false;
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(row.lastScrollIntoView?.block === 'nearest', 'disconnected panel lost its file-path spatial fallback');
+  });
+
+  await run('maximize focus, Escape, viewport, session, and close cleanup are layered', async () => {
+    const { app, elements, state, document, windowObj, setDrawer } = createHarness();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    app.toggleDiffSidebar();
+    const backgroundControl = document.createElement('button');
+    elements.appMain.appendChild(backgroundControl);
+    backgroundControl.focus();
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(document.activeElement === elements.diffMaximizeBtn, 'focus in inerted background did not move to maximize control');
+    windowObj.dispatchEvent({ type: 'keydown', key: 'Escape', target: elements.diffMaximizeBtn, preventDefault() { this.defaultPrevented = true; } });
+    assert(!elements.diffSidebar.classList.contains('maximized') && document.activeElement === backgroundControl, 'Escape did not restore maximize and prior focus');
+
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    setDrawer(true);
+    assert(elements.diffSidebar.classList.contains('maximized') && elements.appMain.getAttribute('inert') === '', 'drawer breakpoint collapsed active maximize state');
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    assert(!elements.diffSidebar.classList.contains('maximized') && elements.appMain.getAttribute('inert') === null, 'narrow restore left maximize residue');
+    assert(elements.diffSidebar.classList.contains('open') && !elements.diffSidebar.hidden, 'narrow restore did not reconcile to an open drawer');
+    setDrawer(false);
+    assert(!elements.diffSidebar.classList.contains('open') && elements.appShell.classList.contains('diff-open'), 'wide breakpoint did not reconcile the restored drawer to a grid column');
+    app.toggleDiffSidebar();
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    app.activateDiffSidebar('s2');
+    assert(!elements.diffSidebar.classList.contains('maximized') && elements.sidebar.getAttribute('inert') === null, 'session activation left inert residue');
+    state.activeSessionId = 's1';
+    app.activateDiffSidebar('s1');
+    app.toggleDiffSidebar();
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    await elements.diffSidebarCloseBtn.dispatchEvent({ type: 'click' });
+    assert(!elements.diffSidebar.classList.contains('maximized') && elements.appMain.getAttribute('inert') === null, 'close left maximize residue');
+
+    app.toggleDiffSidebar();
+    await elements.diffMaximizeBtn.dispatchEvent({ type: 'click' });
+    app.closeDiffSidebar();
+    assert(!elements.diffSidebar.classList.contains('maximized') && elements.appMain.getAttribute('inert') === null, 'programmatic close left the application inert');
   });
 
   await run('escape closes the diff drawer but leaves inputs alone', async () => {

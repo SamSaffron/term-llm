@@ -107,6 +107,86 @@ func TestBindWorktreeSessionUsesToolManagerBaseDir(t *testing.T) {
 	}
 }
 
+func TestSyncPersistedSessionRuntimeDefaultsWebUIToGitRoot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newGitRepoForBindingTest(t)
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	toolCfg := tools.DefaultToolConfig()
+	toolCfg.Enabled = []string{tools.ShellToolName}
+	toolCfg.ShellAllow = []string{"pwd"}
+	toolCfg.RequireExplicitWorkingDir = true
+	mgr, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatalf("NewToolManager: %v", err)
+	}
+
+	srv := &serveServer{
+		cfg:            serveServerConfig{ui: true},
+		store:          store,
+		worktreeRootFn: func() (string, error) { return repo, nil },
+	}
+	rt := &serveRuntime{toolMgr: mgr, defaultModel: "tiny", providerKey: "mock"}
+	srv.syncPersistedSessionRuntime(ctx, "sess-root-default", rt, "tiny", "", "", false, "", true)
+
+	persisted, err := store.Get(ctx, "sess-root-default")
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if persisted == nil {
+		t.Fatal("session was not created")
+	}
+	if persisted.WorktreeDir != "" || !sameServePath(persisted.CWD, repo) {
+		t.Fatalf("persisted worktree/cwd = %q/%q, want empty/%q", persisted.WorktreeDir, persisted.CWD, repo)
+	}
+	if !sameServePath(mgr.BaseDir(), repo) {
+		t.Fatalf("tool manager BaseDir = %q, want %q", mgr.BaseDir(), repo)
+	}
+	shellTool, ok := mgr.Registry.Get(tools.ShellToolName)
+	if !ok {
+		t.Fatal("shell tool is not registered")
+	}
+	result, err := shellTool.Execute(ctx, []byte(`{"command":"pwd"}`))
+	if err != nil || result.IsError || !strings.Contains(result.Content, repo) {
+		t.Fatalf("pwd result = %#v, %v; want output containing %q", result, err, repo)
+	}
+}
+
+func TestSyncPersistedSessionRuntimeKeepsOmittedAPIWorkspaceUnbound(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := newGitRepoForBindingTest(t)
+	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	toolCfg := tools.DefaultToolConfig()
+	toolCfg.Enabled = []string{tools.ReadFileToolName}
+	toolCfg.RequireExplicitWorkingDir = true
+	mgr, err := tools.NewToolManager(&toolCfg, &config.Config{})
+	if err != nil {
+		t.Fatalf("NewToolManager: %v", err)
+	}
+	srv := &serveServer{cfg: serveServerConfig{ui: true}, store: store, worktreeRootFn: func() (string, error) { return repo, nil }}
+	rt := &serveRuntime{toolMgr: mgr, defaultModel: "tiny", providerKey: "mock"}
+	srv.syncPersistedSessionRuntime(ctx, "sess-api-unbound", rt, "tiny", "", "", false, "", false)
+
+	persisted, err := store.Get(ctx, "sess-api-unbound")
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if persisted == nil || persisted.CWD != "" || persisted.WorktreeDir != "" || mgr.BaseDir() != "" {
+		t.Fatalf("omitted API workspace was bound: session=%#v BaseDir=%q", persisted, mgr.BaseDir())
+	}
+}
+
 func TestSyncPersistedSessionRuntimeBindsWorktreeDir(t *testing.T) {
 	t.Parallel()
 
@@ -135,7 +215,7 @@ func TestSyncPersistedSessionRuntimeBindsWorktreeDir(t *testing.T) {
 
 	srv := &serveServer{store: store}
 	rt := &serveRuntime{toolMgr: mgr, defaultModel: "tiny", providerKey: "mock"}
-	srv.syncPersistedSessionRuntime(ctx, "sess-sync-wt", rt, "tiny", "", "", false, worktreeDir)
+	srv.syncPersistedSessionRuntime(ctx, "sess-sync-wt", rt, "tiny", "", "", false, worktreeDir, false)
 
 	persisted, err := store.Get(ctx, "sess-sync-wt")
 	if err != nil {
@@ -202,7 +282,7 @@ func TestSyncPersistedSessionRuntimeDoesNotRetargetConflictingWorktree(t *testin
 
 	srv := &serveServer{store: store}
 	rt := &serveRuntime{toolMgr: mgr, defaultModel: "tiny", providerKey: "mock"}
-	srv.syncPersistedSessionRuntime(ctx, "sess-conflict", rt, "tiny", "", "", false, second)
+	srv.syncPersistedSessionRuntime(ctx, "sess-conflict", rt, "tiny", "", "", false, second, false)
 
 	persisted, err := store.Get(ctx, "sess-conflict")
 	if err != nil {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -46,6 +47,59 @@ func TestParseUserMessageContentAcceptsDiffCommentMetadata(t *testing.T) {
 	}
 	if got := message.Parts[0].DiffComment; got.Path != comment.Path || got.Side != "old" || got.Line != 17 || got.FileChangeSeq != 42 {
 		t.Fatalf("diff comment = %#v", got)
+	}
+}
+
+func TestParseUserMessageContentAcceptsDiffCommentBatchAndEnforcesCap(t *testing.T) {
+	parts := make([]any, 0, diffCommentMaxPartsPerMessage+1)
+	for i := 0; i < diffCommentMaxPartsPerMessage; i++ {
+		comment := *testDiffComment()
+		comment.ID = fmt.Sprintf("diff-comment-%d", i)
+		parts = append(parts, map[string]any{"type": "diff_comment", "diff_comment": &comment})
+	}
+	parts = append(parts, map[string]any{"type": "input_text", "text": "one provider-facing batch"})
+	content, err := json.Marshal(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parse batch at cap: %v", err)
+	}
+	if len(message.Parts) != diffCommentMaxPartsPerMessage+1 {
+		t.Fatalf("parts = %d, want %d", len(message.Parts), diffCommentMaxPartsPerMessage+1)
+	}
+
+	extra := *testDiffComment()
+	extra.ID = "diff-comment-over-cap"
+	parts = append(parts[:len(parts)-1], map[string]any{"type": "diff_comment", "diff_comment": &extra}, parts[len(parts)-1])
+	content, err = json.Marshal(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseUserMessageContent(content); err == nil || !strings.Contains(err.Error(), "too many diff_comment parts (max 25)") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseUserMessageContentRejectsDiffCommentAggregatePayloadOverCap(t *testing.T) {
+	parts := make([]any, 0, 12)
+	for i := 0; i < 11; i++ {
+		comment := *testDiffComment()
+		comment.ID = fmt.Sprintf("large-diff-comment-%d", i)
+		comment.LineText = strings.Repeat("a", diffCommentMaxLineBytes)
+		comment.Instruction = strings.Repeat("b", diffCommentMaxInstructionBytes)
+		comment.ContextBefore = []llm.DiffCommentContextLine{{Side: "old", Line: 16, Text: strings.Repeat("c", diffCommentMaxLineBytes)}}
+		comment.ContextAfter = nil
+		parts = append(parts, map[string]any{"type": "diff_comment", "diff_comment": &comment})
+	}
+	parts = append(parts, map[string]any{"type": "input_text", "text": "provider-facing batch"})
+	content, err := json.Marshal(parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseUserMessageContent(content); err == nil || !strings.Contains(err.Error(), "aggregate payload limit (262144 bytes)") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

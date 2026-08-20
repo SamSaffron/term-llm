@@ -1699,7 +1699,7 @@ const applyAttachmentImageDimensions = (img, attachment) => {
 };
 
 const createMessageNode = (message) => {
-  if (message.diffComment && typeof app.createDiffCommentMessageNode === 'function') return app.createDiffCommentMessageNode(message, createMetaNode);
+  if ((message.diffComments?.length || message.diffComment) && typeof app.createDiffCommentMessageNode === 'function') return app.createDiffCommentMessageNode(message, createMetaNode);
   if (message.role === 'transcript-gap') return createTranscriptGapNode(message);
   if (message.role === 'skill-run') return createSkillRunNode(message);
   if (message.role === 'tool') return createToolCard(message);

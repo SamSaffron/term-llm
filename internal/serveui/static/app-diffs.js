@@ -38,6 +38,14 @@ const DIFF_FEEDBACK_MS = 700;
 // Per-session diff state lives here, NOT on session objects: sessions persist
 // to localStorage and this data is server-backed and rebuildable.
 const diffStateBySession = new Map();
+let diffMaximized = false;
+let diffMaximizeReturnFocus = null;
+
+Object.assign(elements, {
+  appMain: document.getElementById?.('appMain'),
+  diffMaximizeBtn: document.getElementById?.('diffMaximizeBtn'),
+  diffQueueBar: document.getElementById?.('diffQueueBar')
+});
 
 const sessionDiffState = (sessionId) => {
   let ds = diffStateBySession.get(sessionId);
@@ -91,7 +99,7 @@ const applySessionDiffSummary = (sessionId, value) => {
   if (summary.fileCount === 0) {
     ds.files.clear();
     ds.listLoaded = true;
-    reconcileDiffPathState(ds);
+    reconcileDiffPathState(owner, ds);
   } else if (ds.files.size === 0) {
     ds.listLoaded = false;
   }
@@ -113,6 +121,76 @@ const isDiffDrawerViewport = () => {
 };
 
 const currentDiffState = () => (state.activeSessionId ? diffStateBySession.get(state.activeSessionId) || null : null);
+
+// Opening or submitting a line comment is an explicit expand. Live-follow may
+// keep following newer files, but it must not collapse this anchor's file.
+const pinDiffFileExpanded = (sessionId, path) => {
+  const ds = sessionDiffState(sessionId);
+  if (!ds.files.has(path)) return false;
+  ds.expanded.add(path);
+  ds.userCollapsed.delete(path);
+  ds.userExpanded.add(path);
+  if (ds.dirtyPaths.has(path) || !ds.diffCache.has(path)) void fetchFileDiff(sessionId, path);
+  return true;
+};
+
+const setDiffBackgroundInert = (inert) => {
+  for (const element of [elements.sidebar, elements.appMain]) {
+    if (!element) continue;
+    element.inert = Boolean(inert);
+    if (inert) element.setAttribute?.('inert', '');
+    else element.removeAttribute?.('inert');
+  }
+};
+
+const captureDiffSpatialAnchor = () => {
+  const list = elements.diffFileList;
+  const scrollTop = Number(list?.scrollTop) || 0;
+  const panel = list?.querySelector?.('.diff-comment-panel');
+  if (panel) {
+    const path = panel.closest?.('.diff-file')?.querySelector?.('.diff-file-row')?.dataset?.path || '';
+    return { element: panel, path, scrollTop };
+  }
+  const listTop = Number(list?.getBoundingClientRect?.().top) || 0;
+  const rows = Array.from(list?.querySelectorAll?.('.diff-file-row') || []);
+  const row = rows.find((entry) => Number(entry.getBoundingClientRect?.().bottom) >= listTop) || rows[0];
+  return { path: row?.dataset?.path || '', scrollTop };
+};
+
+const setDiffMaximized = (on) => {
+  const next = Boolean(on);
+  if (next === diffMaximized) return false;
+  const spatial = captureDiffSpatialAnchor();
+  const active = document.activeElement;
+  if (next && (elements.sidebar?.contains?.(active) || elements.appMain?.contains?.(active))) {
+    diffMaximizeReturnFocus = active;
+  }
+  diffMaximized = next;
+  elements.appShell?.classList.toggle('diff-maximized', next);
+  elements.diffSidebar?.classList.toggle('maximized', next);
+  setDiffBackgroundInert(next);
+  const button = elements.diffMaximizeBtn;
+  if (button) {
+    button.setAttribute?.('aria-label', next ? 'Restore changes' : 'Maximize changes');
+    button.setAttribute?.('title', next ? 'Restore' : 'Maximize');
+    button.dataset.action = next ? 'restore' : 'maximize';
+  }
+  if (elements.diffFileList) elements.diffFileList.scrollTop = spatial.scrollTop;
+  if (spatial.element && spatial.element.isConnected !== false) spatial.element.scrollIntoView?.({ block: 'nearest' });
+  else if (spatial.path) scrollFileIntoView(spatial.path);
+  if (next && diffMaximizeReturnFocus) button?.focus?.();
+  if (!next) {
+    const ds = currentDiffState();
+    if (ds) {
+      if (isDiffDrawerViewport() && !ds.hidden) elements.diffSidebar?.classList.add('open');
+      applyDiffSidebarVisibility(ds);
+    }
+    const returnFocus = diffMaximizeReturnFocus;
+    diffMaximizeReturnFocus = null;
+    if (returnFocus?.isConnected !== false) returnFocus?.focus?.();
+  }
+  return true;
+};
 
 // ===== Pure model building (node-tested) =====
 
@@ -321,7 +399,7 @@ const scheduleDiffRefresh = (sessionId) => {
 // server list replaced ds.files: live rows can carry non-canonical paths
 // (e.g. relative) that the replace renames, and without pruning their
 // expansion/cache/limit state both leaks and detaches live-follow.
-const reconcileDiffPathState = (ds) => {
+const reconcileDiffPathState = (sessionId, ds) => {
   const prune = (collection) => {
     collection.forEach((_, key) => {
       // Sets iterate as (value, value); Maps as (value, key) — key works for both.
@@ -354,6 +432,7 @@ const reconcileDiffPathState = (ds) => {
       }
     }
   }
+  app.reconcileDiffCommentPanel?.(sessionId, new Set(ds.files.keys()));
 };
 
 const fetchSessionFileChanges = async (sessionId) => {
@@ -401,7 +480,7 @@ const fetchSessionFileChanges = async (sessionId) => {
       ds.summary.adds += entry.adds;
       ds.summary.dels += entry.dels;
     });
-    reconcileDiffPathState(ds);
+    reconcileDiffPathState(sessionId, ds);
     // Cached diffs predating the authoritative seq are stale even though no
     // live event bumped them (the tab may have missed events while detached).
     ds.files.forEach((entry, path) => {
@@ -700,7 +779,16 @@ const renderImageDiff = (sessionId, path, data) => {
   return comparison;
 };
 
-const renderDiffFileBody = (sessionId, ds, path) => {
+const captureDiffCommentFocus = (body) => {
+  const focused = document.activeElement;
+  if (!focused || !body?.contains?.(focused)) return null;
+  const panel = focused.closest?.('.diff-comment-panel');
+  const key = panel?._diffCommentKey || focused._diffCommentKey;
+  if (!key) return null;
+  return panel ? { key, kind: 'editor' } : { key, kind: 'marker', target: focused.classList?.contains?.('diff-comment-affordance') ? 'button' : 'row' };
+};
+
+const renderDiffFileBody = (sessionId, ds, path, commentFocus = null) => {
   const body = createEl('div', 'diff-file-body');
   const cached = ds.diffCache.get(path);
   if (!cached) {
@@ -746,6 +834,8 @@ const renderDiffFileBody = (sessionId, ds, path) => {
   if (lang) requestDiffHighlight();
 
   const table = createEl('div', `diff-rows diff-rows-kind-${normalizeDiffKind(ds.files.get(path)?.kind)}`);
+  const postAttachCommentFocus = [];
+  const firstCommentableRowIndex = visibleRows.findIndex((row) => row.type !== 'hunk');
   visibleRows.forEach((row, rowIndex) => {
     const rowEl = createEl('div', `diff-row ${row.type}`);
     if (row.type === 'hunk') {
@@ -761,15 +851,19 @@ const renderDiffFileBody = (sessionId, ds, path) => {
         rows,
         rowIndex,
         rowElement: rowEl,
-        fileChangeSeq: Number(ds.files.get(path)?.lastSeq) || Number(cached.seq) || 0
+        fileChangeSeq: Number(ds.files.get(path)?.lastSeq) || Number(cached.seq) || 0,
+        initialTabStop: rowIndex === firstCommentableRowIndex
       });
       table.appendChild(rowEl);
-      restoreCommentPanel?.();
+      const restoreFocus = restoreCommentPanel?.({ deferFocus: true, commentFocus });
+      if (restoreFocus) postAttachCommentFocus.push(restoreFocus);
       return;
     }
     table.appendChild(rowEl);
   });
+  if (!table.querySelector?.('.diff-comment-panel')) app.clearDiffCommentPanel?.(sessionId, path);
   body.appendChild(table);
+  if (postAttachCommentFocus.length > 0) body._restoreDiffCommentFocus = () => postAttachCommentFocus.forEach((restoreFocus) => restoreFocus());
 
   if (hiddenCount > 0) {
     // Reveal in chunks: rendering thousands of rows in one synchronous pass
@@ -922,9 +1016,11 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     app.diffCommentRevision?.(sessionId, path) || 0
   ].join('|');
   if (!block.body || block.bodyKey !== bodyKey) {
-    block.body = renderDiffFileBody(sessionId, ds, path);
+    const commentFocus = captureDiffCommentFocus(block.body);
+    block.body = renderDiffFileBody(sessionId, ds, path, commentFocus);
     block.bodyKey = bodyKey;
     block.el.replaceChildren(block.header, block.body);
+    block.body._restoreDiffCommentFocus?.();
   }
   return block;
 };
@@ -953,17 +1049,18 @@ const renderDiffAccordion = (sessionId, ds) => {
   });
 
   const paths = sortDiffPaths(Array.from(ds.files.values())).filter((path) => diffFilterMatches(ds, path));
+  app.reconcileDiffCommentPanel?.(sessionId, new Set(paths));
   const desired = paths.map((path) => syncDiffFileBlock(sessionId, ds, path).el);
 
-  if (desired.length === 0 && ds.filter) {
-    list.replaceChildren(createEl('div', 'diff-note', 'No files match the filter.'));
-  } else {
-    // Only touch the list when membership or order actually changed; count
-    // updates and body swaps patch reused nodes above without any list-level
-    // DOM churn (preserving scroll position, text selection, and focus).
-    const current = list.children || [];
-    const unchanged = current.length === desired.length && desired.every((el, i) => current[i] === el);
-    if (!unchanged) list.replaceChildren(...desired);
+  const desiredChildren = desired.length === 0 && ds.filter
+    ? [createEl('div', 'diff-note', 'No files match the filter.')] : desired;
+  // Avoid list churn unless membership/order changed, preserving exact surviving focus across necessary replacements.
+  const current = list.children || [];
+  const unchanged = current.length === desiredChildren.length && desiredChildren.every((el, i) => current[i] === el);
+  if (!unchanged) {
+    const focused = list.contains?.(document.activeElement) ? document.activeElement : null;
+    list.replaceChildren(...desiredChildren);
+    if (focused && document.activeElement !== focused && focused.isConnected && list.contains?.(focused)) focused.focus?.();
   }
   list.scrollTop = keepScroll;
   updateDiffFilterVisibility(ds);
@@ -998,8 +1095,6 @@ const updateDiffBulkToggle = (ds) => {
   button.dataset.action = action;
   button.setAttribute('aria-label', `${label} files`);
   button.setAttribute('title', label);
-  const actionElement = button.querySelector?.('.diff-bulk-toggle-action');
-  if (actionElement) actionElement.textContent = collapse ? 'Collapse' : 'Expand';
 };
 
 const renderDiffSidebarContent = (sessionId, ds) => {
@@ -1007,9 +1102,10 @@ const renderDiffSidebarContent = (sessionId, ds) => {
   updateDiffBulkToggle(ds);
   renderDiffAccordion(sessionId, ds);
   if (ds.pendingScrollPath) {
-    scrollFileIntoView(ds.pendingScrollPath);
+    if (!app.diffCommentPanelOpen?.(sessionId)) scrollFileIntoView(ds.pendingScrollPath);
     ds.pendingScrollPath = '';
   }
+  app.renderDiffCommentQueueBar?.(sessionId);
 };
 
 const renderDiffSidebar = (sessionId) => {
@@ -1020,13 +1116,14 @@ const renderDiffSidebar = (sessionId) => {
   applyDiffSidebarVisibility(ds);
   updateDiffBulkToggle(ds);
   renderDiffTotals(ds);
+  app.renderDiffCommentQueueBar?.(sessionId);
   if (ds.files.size === 0) return;
   // Skip the accordion (and its lazy diff fetches) while hidden; it renders
   // on reveal.
   if (elements.diffSidebar?.hidden) return;
   renderDiffAccordion(sessionId, ds);
   if (ds.pendingScrollPath) {
-    scrollFileIntoView(ds.pendingScrollPath);
+    if (!app.diffCommentPanelOpen?.(sessionId)) scrollFileIntoView(ds.pendingScrollPath);
     ds.pendingScrollPath = '';
   }
 };
@@ -1037,6 +1134,7 @@ const toggleDiffFile = (sessionId, path) => {
   const ds = sessionDiffState(sessionId);
   if (ds.expanded.has(path)) {
     ds.expanded.delete(path);
+    app.clearDiffCommentPanel?.(sessionId, path);
     // Remember the explicit collapse so live changes stop re-opening it.
     ds.userCollapsed.add(path);
     ds.userExpanded.delete(path);
@@ -1070,6 +1168,7 @@ const collapseAllDiffFiles = () => {
   if (!sessionId) return;
   const ds = sessionDiffState(sessionId);
   ds.expanded.clear();
+  app.clearDiffCommentPanel?.(sessionId);
   ds.userExpanded.clear();
   ds.autoExpandedPath = '';
   // Live changes must not immediately re-open what the user just closed.
@@ -1098,6 +1197,7 @@ const setDiffFilter = (value) => {
 const setDiffSidebarHidden = (hidden) => {
   const sessionId = state.activeSessionId;
   if (!sessionId) return;
+  if (hidden) setDiffMaximized(false);
   const ds = sessionDiffState(sessionId);
   ds.hidden = Boolean(hidden);
   if (!ds.hidden && !ds.listLoaded && (ds.summaryKnown || ds.files.size === 0)) void fetchSessionFileChanges(sessionId);
@@ -1137,6 +1237,7 @@ const toggleDiffSidebar = () => {
 };
 
 const closeDiffDrawer = () => {
+  setDiffMaximized(false);
   setPanelOpen({
     panel: elements.diffSidebar,
     open: false,
@@ -1151,6 +1252,7 @@ const closeDiffDrawer = () => {
 };
 
 const closeDiffSidebar = () => {
+  setDiffMaximized(false);
   const ds = currentDiffState();
   if (!ds) return false;
   const wasOpen = elements.diffSidebar?.classList.contains('open') || !ds.hidden;
@@ -1170,6 +1272,7 @@ const closeDiffSidebar = () => {
 // ===== Session lifecycle =====
 
 const activateDiffSidebar = (sessionId) => {
+  setDiffMaximized(false);
   if (!sessionId) {
     elements.appShell?.classList.remove('diff-open');
     if (elements.diffSidebar) {
@@ -1254,13 +1357,14 @@ const initDiffResize = () => {
   let draggedWidth = 0;
 
   handle.addEventListener('pointerdown', (event) => {
+    if (diffMaximized) return;
     event.preventDefault?.();
     handle.setPointerCapture?.(event.pointerId);
     elements.appShell?.classList.add('diff-resizing');
   });
 
   handle.addEventListener('pointermove', (event) => {
-    if (!elements.appShell?.classList.contains('diff-resizing')) return;
+    if (diffMaximized || !elements.appShell?.classList.contains('diff-resizing')) return;
     // The panel is anchored to the right edge in both grid and drawer modes.
     draggedWidth = clampDiffWidth(window.innerWidth - event.clientX, window.innerWidth);
     applyDiffSidebarWidth(draggedWidth);
@@ -1316,13 +1420,18 @@ const handleDiffGlobalKeydown = (event) => {
   if (event.key !== 'Escape') return;
   const input = elements.diffFilterInput;
   if (input && event.target === input) {
-    // First escape clears the filter, keeping the panel open.
+    // First escape clears the filter, keeping the panel and maximize state.
     const ds = currentDiffState();
     if (ds?.filter) {
       input.value = '';
       setDiffFilter('');
     }
     input.blur?.();
+    return;
+  }
+  if (diffMaximized) {
+    event.preventDefault?.();
+    setDiffMaximized(false);
     return;
   }
   if (isEditableTarget(event.target)) return;
@@ -1370,6 +1479,12 @@ const handleDiffViewportChange = () => {
     return;
   }
 
+  if (diffMaximized) {
+    renderDiffSidebarContent(state.activeSessionId, ds);
+    if (!ds.hidden) scheduleDiffRefresh(state.activeSessionId);
+    return;
+  }
+
   // Drawer mode (narrow) and grid-column mode (wide) use different visibility
   // mechanics. Re-apply immediately when crossing the breakpoint so a drawer
   // opened on mobile becomes a real column on desktop, and a desktop column
@@ -1405,6 +1520,7 @@ elements.diffSidebarCloseBtn?.addEventListener?.('click', () => {
   else setDiffSidebarHidden(true);
 });
 elements.diffBulkToggleBtn?.addEventListener?.('click', toggleAllDiffFiles);
+elements.diffMaximizeBtn?.addEventListener?.('click', () => setDiffMaximized(!diffMaximized));
 elements.diffFilterInput?.addEventListener?.('input', (event) => {
   setDiffFilter(event.target?.value ?? elements.diffFilterInput.value ?? '');
 });
@@ -1424,6 +1540,9 @@ Object.assign(app, {
   closeDiffSidebar,
   toggleDiffSidebar,
   toggleDiffFile,
+  pinDiffFileExpanded,
+  scrollDiffFileIntoView: scrollFileIntoView,
+  setDiffMaximized,
   fetchSessionFileChanges,
   renderDiffSidebar
 });

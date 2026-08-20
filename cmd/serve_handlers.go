@@ -3046,9 +3046,20 @@ func (s *serveServer) ensureRuntimeBaseDirForSession(ctx context.Context, sessio
 		return err
 	}
 	if strings.TrimSpace(sess.WorktreeDir) == "" {
-		// A long-lived web runtime may contain a historical daemon CWD. Only an
-		// explicit request/session workspace is eligible even as a proposal.
-		if err := rt.toolMgr.ClearPrimaryWorkspace(ctx); err != nil {
+		// Restore only a root that was explicitly persisted by a prior web request.
+		// Empty, ambient, and stale directories remain ineligible.
+		cwd := strings.TrimSpace(sess.CWD)
+		trustedRoot := ""
+		if s.cfg.ui && sess.Origin == session.OriginWeb && cwd != "" {
+			if root, rootErr := s.currentGitRoot(); rootErr == nil && sameServePath(cwd, root) {
+				trustedRoot = root
+			}
+		}
+		if trustedRoot != "" {
+			if err := BindRootSession(ctx, s.store, sess, rt.toolMgr, trustedRoot); err != nil {
+				return err
+			}
+		} else if err := rt.toolMgr.ClearPrimaryWorkspace(ctx); err != nil {
 			return err
 		}
 	} else if err := RestoreWorktreeBinding(ctx, s.store, sess, rt.toolMgr); err != nil {
@@ -3172,7 +3183,7 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 // does not yet exist, it is created here so the client-supplied model and
 // effort are persisted (rather than the runtime defaults that rt would
 // otherwise use when Run creates the row).
-func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, clientEffort, reasoningMode string, syncReasoningMode bool, worktreeDir string) {
+func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, clientEffort, reasoningMode string, syncReasoningMode bool, worktreeDir string, useDefaultWorkspace bool) {
 	if s.store == nil || sessionID == "" || rt == nil {
 		return
 	}
@@ -3198,9 +3209,14 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	}
 
 	requestedWorktree := strings.TrimSpace(worktreeDir)
+	requestedRoot := ""
 	if requestedWorktree != "" {
 		if wt, wtErr := worktree.Get(requestedWorktree); wtErr == nil {
 			requestedWorktree = wt.Dir
+			if root, rootErr := s.currentGitRoot(); rootErr == nil && sameServePath(requestedWorktree, root) {
+				requestedRoot = root
+				requestedWorktree = ""
+			}
 		} else {
 			log.Printf("[serve] invalid worktree_dir %q for %s: %v", requestedWorktree, sessionID, wtErr)
 			requestedWorktree = ""
@@ -3210,6 +3226,13 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	sess, err := s.store.Get(ctx, sessionID)
 	if err != nil {
 		return
+	}
+	// The first-party web UI explicitly requests the validated Git root for a
+	// new root-checkout session. Omission remains unbound for API clients.
+	if requestedRoot == "" && requestedWorktree == "" && useDefaultWorkspace && s.cfg.ui && (sess == nil || (sess.Origin == session.OriginWeb && strings.TrimSpace(sess.CWD) == "" && strings.TrimSpace(sess.WorktreeDir) == "")) {
+		if root, rootErr := s.currentGitRoot(); rootErr == nil {
+			requestedRoot = root
+		}
 	}
 	if sess == nil {
 		sess = &session.Session{
@@ -3236,6 +3259,8 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		if requestedWorktree != "" {
 			sess.WorktreeDir = requestedWorktree
 			sess.CWD = requestedWorktree
+		} else if requestedRoot != "" {
+			sess.CWD = requestedRoot
 		}
 		if createErr := s.store.Create(ctx, sess); createErr != nil {
 			if existing, getErr := s.store.Get(ctx, sessionID); getErr == nil && existing != nil {
@@ -3245,7 +3270,11 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 				return
 			}
 		} else {
-			applyRuntimeWorktreeBaseDir(ctx, s.store, sessionID, rt, sess.WorktreeDir)
+			if sess.WorktreeDir != "" {
+				applyRuntimeWorktreeBaseDir(ctx, s.store, sessionID, rt, sess.WorktreeDir)
+			} else if sess.CWD != "" {
+				applyRuntimeRootBaseDir(ctx, s.store, sessionID, rt, sess.CWD)
+			}
 			rt.mu.Lock()
 			rt.sessionMeta = sess
 			rt.mu.Unlock()
@@ -3275,6 +3304,21 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		changed = true
 	}
 	acceptedWorktree := strings.TrimSpace(sess.WorktreeDir)
+	acceptedRoot := ""
+	if requestedRoot != "" {
+		switch {
+		case acceptedWorktree != "":
+			log.Printf("[serve] ignoring conflicting root directory %q for %s already bound to worktree %q", requestedRoot, sessionID, acceptedWorktree)
+		case strings.TrimSpace(sess.CWD) == "" || sameServePath(sess.CWD, requestedRoot):
+			acceptedRoot = requestedRoot
+			if strings.TrimSpace(sess.CWD) == "" || filepath.Clean(sess.CWD) != filepath.Clean(requestedRoot) {
+				sess.CWD = requestedRoot
+				changed = true
+			}
+		default:
+			log.Printf("[serve] ignoring conflicting root directory %q for %s already bound to %q", requestedRoot, sessionID, sess.CWD)
+		}
+	}
 	if requestedWorktree != "" {
 		switch {
 		case acceptedWorktree == "":
@@ -3302,7 +3346,11 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 			return
 		}
 	}
-	applyRuntimeWorktreeBaseDir(ctx, s.store, sessionID, rt, acceptedWorktree)
+	if acceptedWorktree != "" {
+		applyRuntimeWorktreeBaseDir(ctx, s.store, sessionID, rt, acceptedWorktree)
+	} else if acceptedRoot != "" {
+		applyRuntimeRootBaseDir(ctx, s.store, sessionID, rt, acceptedRoot)
+	}
 	rt.mu.Lock()
 	rt.sessionMeta = sess
 	rt.mu.Unlock()
@@ -3326,6 +3374,20 @@ func (s *serveServer) syncPersistedSessionReasoningMode(ctx context.Context, ses
 		rt.mu.Lock()
 		rt.sessionMeta = sess
 		rt.mu.Unlock()
+	}
+}
+
+func applyRuntimeRootBaseDir(ctx context.Context, store session.Store, sessionID string, rt *serveRuntime, dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || rt == nil || rt.toolMgr == nil {
+		return
+	}
+	if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, store, sessionID); err != nil {
+		log.Printf("[serve] configure workspace persistence failed for %s: %v", sessionID, err)
+		return
+	}
+	if err := rt.toolMgr.SetBaseDirWithContext(ctx, dir); err != nil {
+		log.Printf("[serve] set root BaseDir failed for %s: %v", sessionID, err)
 	}
 }
 

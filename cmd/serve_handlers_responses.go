@@ -615,7 +615,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		modelSwapExec.plan.requestedReasoningMode = reasoningMode
 	}
 	if freshConversation {
-		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir)
+		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir, req.UseDefaultWorkspace)
 	}
 	if err := claimUIFollowUp(followUpOwner, followUpOwnerStateful); err != nil {
 		if modelSwapExec != nil {

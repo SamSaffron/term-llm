@@ -20,6 +20,12 @@ var (
 	fileTrackKey   string
 )
 
+func applyServeFileTrackingOverride(cfg *config.Config, enabled bool) {
+	if cfg != nil && enabled {
+		cfg.FileTracking.Enabled = true
+	}
+}
+
 // resolvedFileTrackConfig returns the effective store path/options and a stable
 // key for comparing config changes. Empty path means tracking is disabled.
 func resolvedFileTrackConfig(cfg *config.Config) (path, key string, opts filetrack.Options) {

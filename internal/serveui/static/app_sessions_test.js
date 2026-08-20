@@ -5576,6 +5576,7 @@ function testSanitizeMessagePreservesDiffComment() {
   return createSessionsHarness().then(({ app }) => {
     const sanitized = app.sanitizeMessage({
       id: 'diff-message', role: 'user', content: 'provider prompt', created: 1,
+      diffComments: [],
       diffComment: {
         id: 'comment-1', parent_id: 'comment-0', path: 'internal/a.go', side: 'old', line: 7,
         file_change_seq: 12, line_text: 'old()', instruction: 'Keep this.',
@@ -5583,10 +5584,10 @@ function testSanitizeMessagePreservesDiffComment() {
         context_after: [{ side: 'new', line: 7, text: 'after' }],
       },
     });
-    if (sanitized?.diffComment?.id !== 'comment-1'
-        || sanitized.diffComment.parent_id !== 'comment-0'
-        || sanitized.diffComment.context_before?.[0]?.text !== 'before'
-        || sanitized.diffComment.context_after?.[0]?.side !== 'new') {
+    if (sanitized?.diffComments?.[0]?.id !== 'comment-1'
+        || sanitized.diffComments[0].parent_id !== 'comment-0'
+        || sanitized.diffComments[0].context_before?.[0]?.text !== 'before'
+        || sanitized.diffComments[0].context_after?.[0]?.side !== 'new') {
       fail(name, 'diff comment metadata was discarded', JSON.stringify(sanitized));
       return;
     }
@@ -7642,11 +7643,14 @@ async function testDiffCommentConvertsToReadableTypedUserMessage() {
     created_at: 1000,
     parts: [
       { type: 'diff_comment', diff_comment: { id: 'dc1', path: 'a.go', side: 'old', line: 4, file_change_seq: 8, line_text: 'old()', instruction: 'Keep it.' } },
+      { type: 'diff_comment', diff_comment: { id: 'dc2', path: 'b.go', side: 'new', line: 9, file_change_seq: 10, line_text: 'new()', instruction: 'Use this.' } },
       { type: 'text', text: '[Inline diff instruction]\nprovider detail' }
     ]
   }]);
   const message = converted[0];
-  if (converted.length !== 1 || message?.diffComment?.instruction !== 'Keep it.' || message?.diffComment?.side !== 'old' || message?.content.indexOf('provider detail') < 0) {
+  if (converted.length !== 1 || message?.diffComments?.length !== 2
+      || message.diffComments[0]?.instruction !== 'Keep it.' || message.diffComments[0]?.side !== 'old'
+      || message.diffComments[1]?.instruction !== 'Use this.' || message?.content.indexOf('provider detail') < 0) {
     fail(name, 'typed diff comment was not projected', JSON.stringify(converted));
     return;
   }

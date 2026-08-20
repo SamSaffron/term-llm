@@ -93,11 +93,11 @@ A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_fil
 
 Use `/worktree promote --branch` to avoid applying onto the current root branch. This mode creates and checks out a new root branch named after the managed worktree at the worktree HEAD, applies dirty and untracked changes there as staged and uncommitted changes, rebinds the session to root, and leaves the original worktree in place. To promote another worktree in either mode, switch to it first with `/worktree switch` or select it in `/worktree browse`.
 
-In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request. The Web UI merge action removes the worktree by default and asks for confirmation before forcing removal when sessions still use it.
+In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request. Leaving the chip on **root** makes the first-party UI explicitly request the server's validated startup repository; generic API requests that omit both fields remain unbound. The Web UI merge action removes the worktree by default and asks for confirmation before forcing removal when sessions still use it.
 
 ## File change history
 
-When `file_tracking.enabled` is true, term-llm records file changes made by agent tools and exposes them in the web UI as a per-session **Changes** panel. The panel opens automatically on wide screens when the active session changes files; on narrower screens it stays behind the file-changes button so it does not crush the chat column.
+When `file_tracking.enabled` is true, term-llm records file changes made by agent tools and exposes them in the web UI as a per-session **Changes** panel. Changed sessions expose a Changes button; on narrower screens the panel opens as a drawer so it does not crush the chat column.
 
 ```yaml
 file_tracking:
