@@ -110,6 +110,8 @@ const restoreQueuedFollowUps = (entries, sessionId) => {
   }
 };
 const sendMessage = async (options = {}) => {
+  const preserveComposer = Boolean(options.preserveComposer);
+  const customContentParts = Array.isArray(options.contentParts) ? options.contentParts.filter(Boolean) : [];
   let followUps = Array.isArray(options.followUps)
     ? options.followUps.filter((entry) => entry && String(entry.messageId || '').trim()) : [];
   const cancellableFollowUpIDs = new Set(state.pendingInterjections
@@ -118,6 +120,7 @@ const sendMessage = async (options = {}) => {
   const promptSource = batchingFollowUps ? followUps[followUps.length - 1].prompt
     : (typeof options.prompt === 'string' ? options.prompt : elements.promptInput.value);
   const prompt = String(promptSource || '').trim();
+  const displayPrompt = String(typeof options.displayPrompt === 'string' ? options.displayPrompt : prompt).trim();
   const pendingAttachments = batchingFollowUps ? []
     : (Array.isArray(options.attachments) ? [...options.attachments] : [...state.attachments]);
 
@@ -193,6 +196,8 @@ const sendMessage = async (options = {}) => {
         reason: operation
       });
       await app.syncActiveSessionFromServer?.(session, false, { skipMessagesFetch: true });
+      app.invalidateDiffComments?.(session.id);
+      await app.hydrateDiffComments?.(session.id, { force: true, revision: Number(payload?.rev) || -1 });
       const sameActiveSession = !state.draftSessionActive
         && state.activeSessionId === session.id
         && getActiveSession() === session;
@@ -288,14 +293,22 @@ const sendMessage = async (options = {}) => {
     state.branchContextQueuedSend = {
       sessionId: state.activeSessionId,
       prompt,
-      attachments: pendingAttachments.map((attachment) => cloneAttachmentForMessage(attachment))
+      attachments: pendingAttachments.map((attachment) => cloneAttachmentForMessage(attachment)),
+      contentParts: customContentParts,
+      diffComment: options.diffComment || null,
+      displayPrompt,
+      preserveComposer,
+      onTransportFailed: options._onTransportFailed
     };
-    elements.promptInput.value = '';
-    state.attachments = [];
-    renderAttachments();
-    app.autoGrowPrompt?.();
+    if (!preserveComposer) {
+      elements.promptInput.value = '';
+      state.attachments = [];
+      renderAttachments();
+      app.autoGrowPrompt?.();
+    }
     const active = getActiveSession();
     if (active?.branchContextStatus) active.branchContextStatus.queued = true;
+    options._onTransportStarted?.({ queued: true });
     app.renderMessages?.(false);
     return;
   }
@@ -339,7 +352,7 @@ const sendMessage = async (options = {}) => {
     return;
   }
   if (activeSessionBusy && !retryingHeartbeatPost) {
-    const pendingMessageId = generateId('msg');
+    const pendingMessageId = String(options.reuseMessageId || '').trim() || generateId('msg');
     let requestAttachmentParts = [];
     if (pendingAttachments.length > 0) {
       const controller = new AbortController();
@@ -351,21 +364,37 @@ const sendMessage = async (options = {}) => {
         return;
       }
     }
-    stageDraftMessage(prompt, session.id);
-    app.trackPendingInterruptCommit(session.id, prompt, pendingMessageId, pendingAttachments);
-    app.trackPendingInterjection(session.id, prompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'interject', pendingAttachments);
+    requestAttachmentParts = customContentParts.concat(requestAttachmentParts);
+    if (!preserveComposer) stageDraftMessage(prompt, session.id);
+    app.trackPendingInterruptCommit(session.id, prompt, pendingMessageId, pendingAttachments, {
+      contentParts: customContentParts,
+      diffComment: options.diffComment,
+      displayPrompt
+    });
+    app.trackPendingInterjection(session.id, displayPrompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'interject', pendingAttachments, {
+      contentParts: customContentParts,
+      diffComment: options.diffComment,
+      displayPrompt
+    });
     persistAndRefreshShell();
-    elements.promptInput.value = '';
-    state.attachments = [];
+    options._onTransportStarted?.({ interjection: true });
+    if (!preserveComposer) elements.promptInput.value = '';
+    state.attachments = preserveComposer ? state.attachments : [];
     renderAttachments();
     app.autoGrowPrompt();
     try {
       await app.interruptActiveRun(session, prompt, pendingMessageId, requestAttachmentParts, pendingAttachments);
-      clearDraftMessageForSession(session.id);
+      if (!preserveComposer) clearDraftMessageForSession(session.id);
     } catch (err) {
       if (err?.status && err.status !== 401) {
         try {
-          const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId, pendingAttachments);
+          const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId, pendingAttachments, {
+            contentParts: customContentParts,
+            diffComment: options.diffComment,
+            displayPrompt,
+            preserveComposer,
+            _onTransportFailed: options._onTransportFailed
+          });
           if (recovered) {
             return;
           }
@@ -375,15 +404,18 @@ const sendMessage = async (options = {}) => {
       }
       app.discardPendingInterruptCommit(pendingMessageId);
       app.setInterjectionPhase(session, pendingMessageId, 'failed');
+      options._onTransportFailed?.(err);
       const message = err?.message || 'Failed to interrupt active run.';
       addErrorMessage(message, session);
       if (err?.status === 401) {
         app.handleAuthFailure();
       }
-      elements.promptInput.value = prompt;
-      state.attachments = pendingAttachments;
-      renderAttachments();
-      app.autoGrowPrompt();
+      if (!preserveComposer) {
+        elements.promptInput.value = prompt;
+        state.attachments = pendingAttachments;
+        renderAttachments();
+        app.autoGrowPrompt();
+      }
       persistAndRefreshShell();
       scrollVisibleStreamToBottom(session, true);
     }
@@ -397,9 +429,11 @@ const sendMessage = async (options = {}) => {
     if (batchingFollowUps) {
       for (const entry of followUps) {
         const attachments = Array.isArray(entry.attachments) ? entry.attachments : [];
-        batchAttachmentParts.set(entry.messageId, attachments.length > 0
+        const attachmentParts = attachments.length > 0
           ? await buildAttachmentInputParts(attachments, controller.signal)
-          : []);
+          : [];
+        const entryContentParts = Array.isArray(entry.contentParts) ? entry.contentParts : [];
+        batchAttachmentParts.set(entry.messageId, entryContentParts.concat(attachmentParts));
       }
     } else if (pendingAttachments.length > 0) {
       requestAttachmentParts = await buildAttachmentInputParts(pendingAttachments, controller.signal);
@@ -413,6 +447,8 @@ const sendMessage = async (options = {}) => {
   if (batchingFollowUps) {
     followUps = followUps.filter((queued) => !cancellableFollowUpIDs.has(queued.messageId) || state.pendingInterjections.some((pending) => pending.messageId === queued.messageId && !pending.cancelRequested));
     if (followUps.length === 0) return;
+  } else if (customContentParts.length > 0) {
+    requestAttachmentParts = customContentParts.concat(requestAttachmentParts);
   }
   const wasDraftSessionSend = !session || state.draftSessionActive;
   if (!session) {
@@ -447,14 +483,17 @@ const sendMessage = async (options = {}) => {
     attachments: Array.isArray(entry.attachments) ? entry.attachments : [],
     messageId: String(entry.messageId || '').trim(),
     requestParts: batchAttachmentParts.get(entry.messageId) || [],
-  })) : [{ prompt, attachments: pendingAttachments, messageId: reuseMessageId, requestParts: requestAttachmentParts }];
+    contentParts: Array.isArray(entry.contentParts) ? entry.contentParts : [],
+    diffComment: entry.diffComment || null,
+    displayPrompt: String(entry.displayPrompt || '').trim(),
+  })) : [{ prompt, attachments: pendingAttachments, messageId: reuseMessageId, requestParts: requestAttachmentParts, contentParts: customContentParts, diffComment: options.diffComment || null, displayPrompt }];
   for (const spec of messageSpecs) {
     if (!spec.messageId) continue;
     app.removePendingInterjectionById?.(spec.messageId, batchingFollowUps ? { refresh: false } : undefined);
     app.discardPendingInterruptCommit?.(spec.messageId);
   }
   if (batchingFollowUps) app.refreshPendingInterjectionBanner?.();
-  if (!batchingFollowUps) stageDraftMessage(prompt, session.id);
+  if (!batchingFollowUps && !preserveComposer) stageDraftMessage(prompt, session.id);
   const userMessages = [];
   for (const spec of messageSpecs) {
     let message = spec.messageId ? window.TermLLMConversation.sessionMessages(session)
@@ -466,6 +505,7 @@ const sendMessage = async (options = {}) => {
       message.content = spec.prompt;
       delete message.interruptState;
     }
+    if (spec.diffComment) message.diffComment = spec.diffComment;
     message.clientMessageId = String(message.clientMessageId || message.id || '').trim();
     if (spec.attachments.length > 0) message.attachments = spec.attachments.map(cloneAttachmentForMessage);
     else delete message.attachments;
@@ -482,7 +522,11 @@ const sendMessage = async (options = {}) => {
     followUpBatchRestored = true;
     restoreQueuedFollowUps(followUps, session.id);
     for (const spec of messageSpecs) {
-      app.trackPendingInterjection?.(session.id, spec.prompt, spec.messageId, 'queue', spec.attachments);
+      app.trackPendingInterjection?.(session.id, spec.displayPrompt || spec.prompt, spec.messageId, 'queue', spec.attachments, {
+        contentParts: spec.contentParts,
+        diffComment: spec.diffComment,
+        displayPrompt: spec.displayPrompt
+      });
       app.retirePendingIntent?.(session, spec.messageId);
     }
     app.refreshSessionMessagesFromTranscript?.(session);
@@ -500,7 +544,7 @@ const sendMessage = async (options = {}) => {
   }
   setSessionOptimisticBusy(session, true);
   persistAndRefreshShell();
-  if (!batchingFollowUps) {
+  if (!batchingFollowUps && !preserveComposer) {
     elements.promptInput.value = '';
     app.hideSlashCommands?.();
     if (!Array.isArray(options.attachments)) {
@@ -655,7 +699,7 @@ const sendMessage = async (options = {}) => {
       updateURL(sessionSlug(session));
     }
     setConnectionState('', '');
-    clearDraftMessageForSession(session.id);
+    if (!preserveComposer) clearDraftMessageForSession(session.id);
     if (wasDraftSessionSend) {
       clearDraftMessageForSession('');
     }
@@ -718,7 +762,7 @@ const sendMessage = async (options = {}) => {
       app.refreshPendingInterjectionBanner?.();
       app.refreshSessionMessagesFromTranscript?.(session);
       if (isSessionVisible(session)) app.renderMessages?.();
-      clearDraftMessageForSession(session.id);
+      if (!preserveComposer) clearDraftMessageForSession(session.id);
       try {
         await app.syncActiveSessionFromServer?.(session, false);
       } catch {
@@ -847,11 +891,12 @@ const sendMessage = async (options = {}) => {
     app.refreshSidebarStatusPoll?.();
     restoreFollowUpBatch();
     const message = err?.message || 'Network error. Please try again.';
+    options._onTransportFailed?.(err);
     addErrorMessage(message, session);
     if (err?.status === 401) {
       app.handleAuthFailure();
     }
-    if (!batchingFollowUps && !String(elements.promptInput.value || '').trim()) {
+    if (!batchingFollowUps && !preserveComposer && !String(elements.promptInput.value || '').trim()) {
       elements.promptInput.value = prompt;
       app.autoGrowPrompt();
     }
@@ -898,6 +943,11 @@ const releaseBranchContextQueuedSend = (sessionId) => {
   void sendMessage({
     prompt: queued.prompt,
     attachments: queued.attachments,
+    contentParts: queued.contentParts,
+    diffComment: queued.diffComment,
+    displayPrompt: queued.displayPrompt,
+    preserveComposer: queued.preserveComposer,
+    _onTransportFailed: queued.onTransportFailed,
     _releaseBranchContextSend: true,
     _onTransportStarted() {
       elements.promptInput.value = newerDraft;
@@ -914,6 +964,7 @@ const restoreBranchContextQueuedSend = (sessionId) => {
   if (!queued || queued.sessionId !== sessionId) return false;
   state.branchContextQueuedSend = null;
   if (state.activeSessionId !== sessionId) return false;
+  if (queued.preserveComposer) return true;
   const current = String(elements.promptInput.value || '').trim();
   elements.promptInput.value = current ? `${queued.prompt}\n\n${current}` : queued.prompt;
   state.attachments = [...queued.attachments, ...state.attachments];

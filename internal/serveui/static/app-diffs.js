@@ -740,7 +740,7 @@ const renderDiffFileBody = (sessionId, ds, path) => {
   if (lang) requestDiffHighlight();
 
   const table = createEl('div', `diff-rows diff-rows-kind-${normalizeDiffKind(ds.files.get(path)?.kind)}`);
-  visibleRows.forEach((row) => {
+  visibleRows.forEach((row, rowIndex) => {
     const rowEl = createEl('div', `diff-row ${row.type}`);
     if (row.type === 'hunk') {
       rowEl.appendChild(createEl('span', 'diff-hunk-sep', '⋯'));
@@ -748,6 +748,18 @@ const renderDiffFileBody = (sessionId, ds, path) => {
       rowEl.appendChild(createEl('span', 'diff-ln old', row.oldNo ? String(row.oldNo) : ''));
       rowEl.appendChild(createEl('span', 'diff-ln new', row.newNo ? String(row.newNo) : ''));
       rowEl.appendChild(renderDiffCode(row.type, row.text, lang, row.emph));
+      const restoreCommentPanel = app.decorateDiffCommentRow?.({
+        sessionId,
+        path,
+        row,
+        rows,
+        rowIndex,
+        rowElement: rowEl,
+        fileChangeSeq: Number(ds.files.get(path)?.lastSeq) || Number(cached.seq) || 0
+      });
+      table.appendChild(rowEl);
+      restoreCommentPanel?.();
+      return;
     }
     table.appendChild(rowEl);
   });
@@ -900,7 +912,8 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     cached ? cached.rev : 'none',
     ds.rowLimits.get(path) || 0,
     ds.fetchErrors.has(path) ? 1 : 0,
-    typeof window.hljs !== 'undefined' ? 1 : 0
+    typeof window.hljs !== 'undefined' ? 1 : 0,
+    app.diffCommentRevision?.(sessionId, path) || 0
   ].join('|');
   if (!block.body || block.bodyKey !== bodyKey) {
     block.body = renderDiffFileBody(sessionId, ds, path);
@@ -995,6 +1008,8 @@ const renderDiffSidebarContent = (sessionId, ds) => {
 
 const renderDiffSidebar = (sessionId) => {
   if (sessionId !== state.activeSessionId) return;
+  const session = state.sessions?.find?.((item) => String(item?.id || '') === String(sessionId));
+  void app.hydrateDiffComments?.(sessionId, { revision: Math.max(Number(session?.transcriptRev) || 0, Number(session?.transcript?.rev) || 0) });
   const ds = sessionDiffState(sessionId);
   applyDiffSidebarVisibility(ds);
   updateDiffBulkToggle(ds);
@@ -1163,8 +1178,9 @@ const activateDiffSidebar = (sessionId) => {
     return;
   }
   const ds = sessionDiffState(sessionId);
+  const session = state.sessions?.find?.((item) => String(item?.id || '').trim() === String(sessionId));
+  void app.hydrateDiffComments?.(sessionId, { revision: Math.max(Number(session?.transcriptRev) || 0, Number(session?.transcript?.rev) || 0) });
   if (!ds.summaryKnown) {
-    const session = state.sessions?.find?.((item) => String(item?.id || '').trim() === String(sessionId));
     if (session?.fileChangeSummary) applySessionDiffSummary(sessionId, session.fileChangeSummary);
   }
   if (elements.diffFilterInput) elements.diffFilterInput.value = ds.filter || '';

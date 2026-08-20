@@ -2097,6 +2097,8 @@ const sanitizeMessage = (msg) => {
         const askUserCallId = String(msg.askUserCallId || msg.ask_user_call_id || '').trim();
         if (askUserCallId) base.askUserCallId = askUserCallId;
       }
+      const diffComment = msg.diffComment || msg.diff_comment;
+      if (diffComment && typeof diffComment === 'object') { try { base.diffComment = JSON.parse(JSON.stringify(diffComment)); } catch {} }
       if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
         base.attachments = msg.attachments.map(a => ({
           name: String(a.name || 'file'),
@@ -2311,6 +2313,7 @@ const saveSessions = () => {
   for (const removed of sessionsBeforePrune) {
     if (!retainedSessionIDs.has(removed.id)) removed.transcript?.destroy?.();
   }
+  app.pruneDiffCommentState?.(retainedSessionIDs);
   evictStaleSessionMessages();
   const nextActiveId = state.activeSessionId || '';
   const nextDraftActive = state.draftSessionActive ? '1' : '0';

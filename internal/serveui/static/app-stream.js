@@ -1378,7 +1378,7 @@ const refreshSessionFromServerTruth = async (session, pollOnActive = false) => {
   return app.syncActiveSessionFromServer(session, pollOnActive);
 };
 
-const recoverInterruptFailure = async (session, prompt, messageId, attachments = []) => {
+const recoverInterruptFailure = async (session, prompt, messageId, attachments = [], sendOptions = {}) => {
   const pending = state.pendingInterjections.find((entry) => entry.messageId === messageId);
   if (pending?.cancelRequested) {
     app.removePendingInterjectionById(messageId);
@@ -1396,9 +1396,9 @@ const recoverInterruptFailure = async (session, prompt, messageId, attachments =
   if (app.runtimeHasActiveRun(runtimeState)) {
     app.discardPendingInterruptCommit(messageId);
     app.updatePendingInterjectionAction(messageId, 'queue');
-    app.queueInterruptFollowUp(session.id, prompt, messageId, attachments);
+    app.queueInterruptFollowUp(session.id, prompt, messageId, attachments, sendOptions);
     persistAndRefreshShell();
-    app.clearDraftMessageForSession(session.id);
+    if (!sendOptions.preserveComposer) app.clearDraftMessageForSession(session.id);
     return true;
   }
 
@@ -1407,6 +1407,7 @@ const recoverInterruptFailure = async (session, prompt, messageId, attachments =
   app.discardPendingInterruptCommit(messageId);
   app.removePendingInterjectionById(messageId);
   await app.sendMessage({
+    ...sendOptions,
     prompt,
     attachments,
     reuseMessageId: messageId,

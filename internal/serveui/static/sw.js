@@ -36,6 +36,7 @@ const SHELL_ASSETS = [
   './app-message-convert.js',
   './intent-storage.js',
   './app-session-admin.js',
+  './app-diff-comments.js',
   './app-diffs.js',
   './app-worktrees.js',
   // term-llm:webrtc-shell-asset

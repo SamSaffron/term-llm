@@ -456,6 +456,69 @@ func tiffOrientation(tiff []byte) int {
 	return 0
 }
 
+const (
+	diffCommentMaxPathBytes        = 1024
+	diffCommentMaxLineBytes        = 8 * 1024
+	diffCommentMaxInstructionBytes = 8 * 1024
+	diffCommentMaxPayloadBytes     = 32 * 1024
+)
+
+func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
+	var comment llm.DiffComment
+	if err := json.Unmarshal(raw, &comment); err != nil {
+		return nil, fmt.Errorf("invalid diff_comment metadata: %w", err)
+	}
+	comment.ID = strings.TrimSpace(comment.ID)
+	comment.ParentID = strings.TrimSpace(comment.ParentID)
+	comment.Path = strings.TrimSpace(comment.Path)
+	comment.Side = strings.ToLower(strings.TrimSpace(comment.Side))
+	comment.Instruction = strings.TrimSpace(comment.Instruction)
+	if comment.ID == "" || len(comment.ID) > 200 {
+		return nil, fmt.Errorf("diff_comment.id is required and must be at most 200 characters")
+	}
+	if len(comment.ParentID) > 200 {
+		return nil, fmt.Errorf("diff_comment.parent_id must be at most 200 characters")
+	}
+	if comment.Path == "" || len(comment.Path) > diffCommentMaxPathBytes {
+		return nil, fmt.Errorf("diff_comment.path is required and must be at most %d bytes", diffCommentMaxPathBytes)
+	}
+	if comment.Side != "old" && comment.Side != "new" {
+		return nil, fmt.Errorf("diff_comment.side must be old or new")
+	}
+	if comment.Line <= 0 {
+		return nil, fmt.Errorf("diff_comment.line must be positive")
+	}
+	if comment.FileChangeSeq <= 0 {
+		return nil, fmt.Errorf("diff_comment.file_change_seq must be positive")
+	}
+	if len(comment.LineText) > diffCommentMaxLineBytes {
+		return nil, fmt.Errorf("diff_comment.line_text must be at most %d bytes", diffCommentMaxLineBytes)
+	}
+	if comment.Instruction == "" || len(comment.Instruction) > diffCommentMaxInstructionBytes {
+		return nil, fmt.Errorf("diff_comment.instruction is required and must be at most %d bytes", diffCommentMaxInstructionBytes)
+	}
+	if len(comment.ContextBefore) > 4 || len(comment.ContextAfter) > 4 {
+		return nil, fmt.Errorf("diff_comment context is limited to four lines on each side")
+	}
+	totalBytes := len(comment.ID) + len(comment.ParentID) + len(comment.Path) + len(comment.Side) + len(comment.LineText) + len(comment.Instruction)
+	for _, contextLines := range [][]llm.DiffCommentContextLine{comment.ContextBefore, comment.ContextAfter} {
+		for i := range contextLines {
+			contextLines[i].Side = strings.ToLower(strings.TrimSpace(contextLines[i].Side))
+			if contextLines[i].Side != "old" && contextLines[i].Side != "new" || contextLines[i].Line <= 0 {
+				return nil, fmt.Errorf("diff_comment context lines require an old/new side and positive line")
+			}
+			if len(contextLines[i].Text) > diffCommentMaxLineBytes {
+				return nil, fmt.Errorf("diff_comment context line text must be at most %d bytes", diffCommentMaxLineBytes)
+			}
+			totalBytes += len(contextLines[i].Side) + len(contextLines[i].Text)
+		}
+	}
+	if totalBytes > diffCommentMaxPayloadBytes {
+		return nil, fmt.Errorf("diff_comment text payload must be at most %d bytes", diffCommentMaxPayloadBytes)
+	}
+	return &comment, nil
+}
+
 // parseUserMessageContent builds a user llm.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
 // Chat Completions-style text/image_url parts are also accepted.
@@ -475,6 +538,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 		for _, part := range parts {
 			partType := strings.ToLower(strings.TrimSpace(jsonString(part["type"])))
 			switch partType {
+			case "diff_comment":
+				comment, err := parseDiffCommentPart(part["diff_comment"])
+				if err != nil {
+					return llm.Message{}, err
+				}
+				llmParts = append(llmParts, llm.Part{Type: llm.PartDiffComment, DiffComment: comment})
 			case "input_text", "text", "output_text":
 				text := jsonString(part["text"])
 				if text != "" {
@@ -594,6 +663,15 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			}
 		}
 		if len(llmParts) > 0 {
+			hasDiffComment := false
+			hasProviderContent := false
+			for _, part := range llmParts {
+				hasDiffComment = hasDiffComment || part.Type == llm.PartDiffComment
+				hasProviderContent = hasProviderContent || ((part.Type == llm.PartText || part.Type == llm.PartFile) && strings.TrimSpace(part.Text) != "") || part.Type == llm.PartImage
+			}
+			if hasDiffComment && !hasProviderContent {
+				return llm.Message{}, fmt.Errorf("diff_comment requires adjacent provider-facing content")
+			}
 			return llm.Message{Role: llm.RoleUser, Parts: llmParts}, nil
 		}
 	}

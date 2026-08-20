@@ -540,6 +540,13 @@ type SessionSummaryTranscriptRevisionReporter interface {
 	SessionSummariesIncludeTranscriptRev() bool
 }
 
+// DiffCommentMessageLister is an optional targeted lookup capability for stores
+// that can select only messages carrying typed inline-diff comment metadata.
+// Web comment hydration uses it to avoid loading and decoding an entire session.
+type DiffCommentMessageLister interface {
+	GetDiffCommentMessages(ctx context.Context, sessionID string) ([]Message, error)
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.

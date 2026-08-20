@@ -424,8 +424,11 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
       const attachments = [];
       const textParts = [];
+      let diffComment = null;
       for (const part of parts) {
-        if (part.type === 'image' && part.image_url) {
+        if (part.type === 'diff_comment' && part.diff_comment) {
+          diffComment = part.diff_comment;
+        } else if (part.type === 'image' && part.image_url) {
           const width = Number(part.width), height = Number(part.height), validDimensions = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
           attachments.push({ name: 'image', type: part.mime_type || 'image/*', dataURL: rebaseMessageAssetURL(part.image_url), ...(validDimensions ? { width: Math.round(width), height: Math.round(height) } : {}) });
         } else if (part.type === 'file' && part.text) {
@@ -460,7 +463,8 @@ const convertServerMessages = (serverMessages, options = {}) => {
         content,
         created,
         ...(seq !== null ? { serverSeq: seq } : {}),
-        ...(attachments.length > 0 ? { attachments } : {})
+        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(diffComment ? { diffComment } : {})
       }, msg));
       continue;
     }

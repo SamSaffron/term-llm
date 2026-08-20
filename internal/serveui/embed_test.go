@@ -54,6 +54,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	completionLines := 0
 	branchingLines := 0
 	branchCommandLines := 0
+	diffLines := map[string]int{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
@@ -72,12 +73,14 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			branchingLines = lineCount
 		} else if name == "app-branch-commands.js" {
 			branchCommandLines = lineCount
+		} else if name == "app-diffs.js" || name == "app-diff-comments.js" {
+			diffLines[name] = lineCount
 		} else {
 			legacyProductionLines += lineCount
 		}
 	}
-	// Keep focused transport/completion/branching boundaries from weakening the
-	// pre-existing ratchet: legacy production code must still decrease, while each
+	// Keep focused transport/completion/branching/diff boundaries from weakening
+	// the pre-existing ratchet: legacy production code must still decrease, while each
 	// extracted module gets a narrow independent ceiling.
 	if legacyProductionLines >= 20729 {
 		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20729", legacyProductionLines)
@@ -93,6 +96,9 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	}
 	if branchCommandLines == 0 || branchCommandLines > 100 {
 		t.Fatalf("conversation branch command controller=%d lines, budget=100", branchCommandLines)
+	}
+	if diffLines["app-diffs.js"] == 0 || diffLines["app-diff-comments.js"] == 0 || diffLines["app-diffs.js"]+diffLines["app-diff-comments.js"] > 1950 {
+		t.Fatalf("diff controllers grew beyond focused budget: %v", diffLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -1006,6 +1012,23 @@ func TestStaticAssetsSupportCurrentPlanSurface(t *testing.T) {
 	}
 }
 
+func TestAppDiffCommentsJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-diff-comments tests")
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_diff_comments_test.js")
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_diff_comments_test.js failed: %v", err)
+	}
+}
+
 func TestAppDiffsJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1039,6 +1062,7 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 		`id="diffToggleBtn"`,
 		`id="diffFileList"`,
 		`id="diffResizeHandle"`,
+		`src="app-diff-comments.js"`,
 		`src="app-diffs.js"`,
 	} {
 		if !strings.Contains(indexSrc, want) {
@@ -1102,17 +1126,23 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StaticAsset(sw.js): %v", err)
 	}
-	if !strings.Contains(string(swJS), "'./app-diffs.js'") {
-		t.Fatal("sw.js SHELL_ASSETS missing app-diffs.js")
+	for _, asset := range []string{"app-diff-comments.js", "app-diffs.js"} {
+		if !strings.Contains(string(swJS), "'./"+asset+"'") {
+			t.Fatalf("sw.js SHELL_ASSETS missing %s", asset)
+		}
 	}
 
 	rendered := RenderIndexHTML("/ui", "", RenderOptions{})
-	if !strings.Contains(string(rendered), `src="app-diffs.js?v=`) {
-		t.Fatal("RenderIndexHTML does not version app-diffs.js")
+	for _, asset := range []string{"app-diff-comments.js", "app-diffs.js"} {
+		if !strings.Contains(string(rendered), `src="`+asset+`?v=`) {
+			t.Fatalf("RenderIndexHTML does not version %s", asset)
+		}
 	}
 	renderedSW := RenderServiceWorker(RenderOptions{})
-	if !strings.Contains(string(renderedSW), "'./app-diffs.js?v=") {
-		t.Fatal("RenderServiceWorker does not version app-diffs.js")
+	for _, asset := range []string{"app-diff-comments.js", "app-diffs.js"} {
+		if !strings.Contains(string(renderedSW), "'./"+asset+"?v=") {
+			t.Fatalf("RenderServiceWorker does not version %s", asset)
+		}
 	}
 }
 

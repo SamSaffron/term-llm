@@ -4476,6 +4476,23 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 	return scanMessageRows(rows)
 }
 
+// GetDiffCommentMessages retrieves only messages whose serialized parts can
+// contain typed inline-diff comment metadata. The final typed-part check remains
+// with the caller; LIKE is used only as a conservative SQLite row prefilter.
+func (s *SQLiteStore) GetDiffCommentMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+s.messageSelectCols()+`
+		FROM messages
+		WHERE session_id = ? AND parts LIKE ?
+		ORDER BY sequence ASC`, sessionID, `%"Type":"diff_comment"%`)
+	if err != nil {
+		return nil, fmt.Errorf("query diff comment messages: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessageRows(rows)
+}
+
 // SetCurrent marks a session as the current one.
 func (s *SQLiteStore) SetCurrent(ctx context.Context, sessionID string) error {
 	_, err := s.db.ExecContext(ctx, `

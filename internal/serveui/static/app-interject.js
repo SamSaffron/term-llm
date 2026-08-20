@@ -11,7 +11,7 @@ const {
   requestHeaders, normalizeError, isSessionVisible, sendMessage
 } = app;
 
-const queueInterruptFollowUp = (sessionId, prompt, messageId, attachments = []) => {
+const queueInterruptFollowUp = (sessionId, prompt, messageId, attachments = [], sendOptions = {}) => {
   const normalizedSessionId = String(sessionId || '').trim();
   if (!normalizedSessionId) return;
   const normalizedMessageId = String(messageId || '').trim();
@@ -20,12 +20,28 @@ const queueInterruptFollowUp = (sessionId, prompt, messageId, attachments = []) 
   ))) {
     return;
   }
-  state.queuedInterrupts.push({ sessionId: normalizedSessionId, prompt, messageId, attachments: Array.isArray(attachments) ? attachments : [] });
+  state.queuedInterrupts.push({
+    sessionId: normalizedSessionId,
+    prompt,
+    messageId,
+    attachments: Array.isArray(attachments) ? attachments : [],
+    contentParts: Array.isArray(sendOptions.contentParts) ? sendOptions.contentParts : [],
+    diffComment: sendOptions.diffComment || null,
+    displayPrompt: String(sendOptions.displayPrompt || '')
+  });
 };
 
-const trackPendingInterruptCommit = (sessionId, prompt, messageId, attachments = []) => {
+const trackPendingInterruptCommit = (sessionId, prompt, messageId, attachments = [], sendOptions = {}) => {
   state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.messageId !== messageId);
-  state.pendingInterruptCommits.push({ sessionId, prompt, messageId, attachments: Array.isArray(attachments) ? attachments : [] });
+  state.pendingInterruptCommits.push({
+    sessionId,
+    prompt,
+    messageId,
+    attachments: Array.isArray(attachments) ? attachments : [],
+    contentParts: Array.isArray(sendOptions.contentParts) ? sendOptions.contentParts : [],
+    diffComment: sendOptions.diffComment || null,
+    displayPrompt: String(sendOptions.displayPrompt || '')
+  });
 };
 
 const resolvePendingInterruptCommitById = (messageId) => {
@@ -83,7 +99,11 @@ const requeueUncommittedInterrupts = (session) => {
       continue;
     }
     if (cancelled.has(entry.messageId)) continue;
-    queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments);
+    queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments, {
+      contentParts: entry.contentParts,
+      diffComment: entry.diffComment,
+      displayPrompt: entry.displayPrompt
+    });
   }
   state.pendingInterruptCommits = remaining;
 };
@@ -165,6 +185,7 @@ const materializeCommittedInterjection = (session, messageId, committedMessage =
   const committedAttachments = Array.isArray(committedMessage?.attachments) ? committedMessage.attachments : [], localAttachments = Array.isArray(pending?.attachments) ? pending.attachments : [];
   const attachments = mergeCommittedInterjectionAttachments(localAttachments, committedAttachments);
   if (attachments.length > 0) message.attachments = attachments;
+  if (pending?.diffComment) message.diffComment = pending.diffComment;
   return app.trackPendingIntent?.(session, message) || message;
 };
 
@@ -243,15 +264,21 @@ const refreshPendingInterjectionBanner = () => {
   banner.scrollTop = banner.scrollHeight;
 };
 
-const trackPendingInterjection = (sessionId, prompt, messageId, action, attachments = []) => {
+const trackPendingInterjection = (sessionId, prompt, messageId, action, attachments = [], sendOptions = {}) => {
   if (!sessionId || !messageId) return;
   const existing = state.pendingInterjections.find(entry => entry.messageId === messageId);
+  const extra = {
+    contentParts: Array.isArray(sendOptions.contentParts) ? sendOptions.contentParts : [],
+    diffComment: sendOptions.diffComment || null,
+    displayPrompt: String(sendOptions.displayPrompt || '')
+  };
   if (existing) {
     existing.prompt = prompt;
     existing.action = action;
     existing.attachments = Array.isArray(attachments) ? attachments : [];
+    Object.assign(existing, extra);
   } else {
-    state.pendingInterjections.push({ sessionId, prompt, messageId, action, attachments: Array.isArray(attachments) ? attachments : [] });
+    state.pendingInterjections.push({ sessionId, prompt, messageId, action, attachments: Array.isArray(attachments) ? attachments : [], ...extra });
   }
   refreshPendingInterjectionBanner();
 };
@@ -321,7 +348,11 @@ const requeuePendingInterjections = (session) => {
     if (entry.sessionId !== session.id || entry.cancelRequested) continue;
     entry.action = 'queue';
     discardPendingInterruptCommit(entry.messageId);
-    queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments);
+    queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments, {
+      contentParts: entry.contentParts,
+      diffComment: entry.diffComment,
+      displayPrompt: entry.displayPrompt
+    });
   }
   refreshPendingInterjectionBanner();
 };
@@ -372,7 +403,11 @@ const interruptActiveRunNow = async (session, prompt, messageId, contentParts = 
   }
 
   if (action === 'cancel' || action === 'queue') {
-    queueInterruptFollowUp(session.id, prompt, messageId, attachments);
+    queueInterruptFollowUp(session.id, prompt, messageId, attachments, {
+      contentParts: pendingEntry?.contentParts,
+      diffComment: pendingEntry?.diffComment,
+      displayPrompt: pendingEntry?.displayPrompt
+    });
   }
   if (action === 'cancel') {
     state.expectCanceledRun = true;
