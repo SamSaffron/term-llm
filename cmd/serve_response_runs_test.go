@@ -242,6 +242,51 @@ func TestResponseRunCarriesStartedAndFinalTranscriptRevisions(t *testing.T) {
 	}
 }
 
+type countingResponseRunStartStore struct {
+	*session.SQLiteStore
+	startStateCalls int
+	snapshotCalls   int
+}
+
+func (s *countingResponseRunStartStore) GetResponseRunStartState(ctx context.Context, sessionID string) (session.ResponseRunStartState, error) {
+	s.startStateCalls++
+	return s.SQLiteStore.GetResponseRunStartState(ctx, sessionID)
+}
+
+func (s *countingResponseRunStartStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (session.TranscriptSnapshot, error) {
+	s.snapshotCalls++
+	return s.SQLiteStore.GetTranscriptSnapshot(ctx, sessionID)
+}
+
+func TestConfigureResponseRunRevisionUsesCompactStartStateThroughLoggingStore(t *testing.T) {
+	base, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer base.Close()
+	ctx := context.Background()
+	sess := &session.Session{ID: "sess-compact-start-state", Provider: "test", Model: "test", Mode: session.ModeChat}
+	if err := base.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	user := session.NewMessage(sess.ID, llm.UserText("question"), -1)
+	if err := base.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	counting := &countingResponseRunStartStore{SQLiteStore: base}
+	store := session.NewLoggingStore(counting, t.Logf)
+	run := newResponseRun("resp-compact-start-state", sess.ID, "", "test", time.Now().Unix(), nil)
+
+	(&serveServer{store: store}).configureResponseRunRevision(run, sess.ID)
+
+	if counting.startStateCalls != 1 || counting.snapshotCalls != 0 {
+		t.Fatalf("start state calls = %d, snapshot calls = %d; want 1, 0", counting.startStateCalls, counting.snapshotCalls)
+	}
+	if run.startedRev != 1 || !run.anchorAvailable || run.anchorRowID != user.ID {
+		t.Fatalf("configured run = rev %d anchor (%d, %v), want rev 1 anchor %d", run.startedRev, run.anchorRowID, run.anchorAvailable, user.ID)
+	}
+}
+
 type deadlineTranscriptStore struct {
 	*serveRuntimeTestStore
 	deadlineSeen chan bool

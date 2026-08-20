@@ -418,6 +418,22 @@ type TranscriptSnapshot struct {
 	Items           []TranscriptIndexItem
 }
 
+// ResponseRunStartState is the compact transcript envelope needed when a
+// stateful response run starts. DurableBoundaryID is the latest non-compaction
+// user, assistant, or tool row, or zero when no such row exists.
+type ResponseRunStartState struct {
+	Rev               int64
+	CompactionSeq     int
+	CompactionCount   int
+	DurableBoundaryID int64
+}
+
+// ResponseRunStartStateReader is an optional Store capability for reading the
+// response-run transcript envelope without materializing historical bodies.
+type ResponseRunStartStateReader interface {
+	GetResponseRunStartState(ctx context.Context, sessionID string) (ResponseRunStartState, error)
+}
+
 // TranscriptRange identifies one complete, contiguous UI transcript segment by
 // its inclusive durable ordering bounds. Sequence alone is not assumed unique,
 // so IDs disambiguate both endpoints.
