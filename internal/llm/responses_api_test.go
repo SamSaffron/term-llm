@@ -2353,8 +2353,79 @@ func TestResponsesClient_NoOnAuthRetry_Returns401Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on 401 without OnAuthRetry")
 	}
-	if !strings.Contains(err.Error(), "authentication failed") {
-		t.Fatalf("expected authentication failed error, got: %v", err)
+	const want = "Responses API authentication failed (status 401): token may be invalid or expired"
+	if err.Error() != want {
+		t.Fatalf("unexpected authentication error:\n got: %q\nwant: %q", err.Error(), want)
+	}
+}
+
+func TestResponsesClient_NoOnAuthRetry_UsesJSONErrorMessage(t *testing.T) {
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Status:     "403 Forbidden",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"type": "error",
+					"error": {
+						"type": "RegionError",
+						"message": "This model is not available in your country."
+					}
+				}`)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err == nil {
+		t.Fatal("expected error on 403 without OnAuthRetry")
+	}
+	const want = "Responses API error (status 403): This model is not available in your country."
+	if err.Error() != want {
+		t.Fatalf("unexpected authentication error:\n got: %q\nwant: %q", err.Error(), want)
+	}
+}
+
+func TestResponsesAPIErrorMessage_ExtractsSupportedShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "nested message",
+			body: `{"error":{"message":" unavailable in region "}}`,
+			want: "unavailable in region",
+		},
+		{
+			name: "top-level message",
+			body: `{"message":"service unavailable"}`,
+			want: "service unavailable",
+		},
+		{
+			name: "invalid JSON",
+			body: `{"error":`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := responsesAPIErrorMessage([]byte(tt.body)); got != tt.want {
+				t.Fatalf("responsesAPIErrorMessage() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2912,5 +2983,49 @@ func TestResponsesClientStream_EmitsToolCallBeforeIncompleteError(t *testing.T) 
 	var incomplete *StreamIncompleteError
 	if !errors.As(event.Err, &incomplete) {
 		t.Fatalf("expected StreamIncompleteError, got %T %v", event.Err, event.Err)
+	}
+}
+
+func TestResponsesClient_OnAuthRetry_UsesJSONErrorMessageAfterReauth(t *testing.T) {
+	callCount := 0
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			status := http.StatusUnauthorized
+			body := `{"error":{"message":"expired token"}}`
+			if callCount == 2 {
+				status = http.StatusForbidden
+				body = `{"type":"error","error":{"type":"RegionError","message":"This model is not available in your country."}}`
+			}
+			return &http.Response{
+				StatusCode: status,
+				Status:     http.StatusText(status),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+		OnAuthRetry:   func(context.Context) error { return nil },
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err == nil {
+		t.Fatal("expected error after unsuccessful re-authentication")
+	}
+	if callCount != 2 {
+		t.Fatalf("HTTP calls = %d, want 2", callCount)
+	}
+	const want = "Responses API error after re-auth (status 403): This model is not available in your country."
+	if err.Error() != want {
+		t.Fatalf("unexpected re-authentication error:\n got: %q\nwant: %q", err.Error(), want)
 	}
 }

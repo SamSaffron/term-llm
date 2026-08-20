@@ -143,7 +143,7 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 	approvalMgr.SetPolicyReviewFunc(reviewFunc, reviewerPool.Close)
 	if approvalMgr.GuardianEventFunc == nil {
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
-			fmt.Fprintln(os.Stderr, event.Message)
+			writeGuardianStatus(os.Stderr, event)
 		}
 	}
 	return nil

@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/samsaffron/term-llm/internal/terminaltext"
+
 // ToolPhase contains display strings for a tool execution phase.
 type ToolPhase struct {
 	// Active is the phase text shown during execution (e.g., "web_search(cats)")
@@ -12,7 +14,7 @@ type ToolPhase struct {
 // Uses unified format: name + info (where info contains parenthesized args).
 // Example: web_search(cats), read_file(/src/main.go)
 func FormatToolPhase(name, info string) ToolPhase {
-	display := name + info
+	display := terminaltext.SanitizeSingleLine(name + info)
 	return ToolPhase{
 		Active:    display,
 		Completed: display,

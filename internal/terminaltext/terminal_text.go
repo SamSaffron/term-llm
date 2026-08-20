@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	xansi "github.com/charmbracelet/x/ansi"
 )
@@ -12,10 +13,56 @@ import (
 // preserving its printable text, tabs, and line structure. Trusted TUI styling
 // should be applied only after this boundary.
 func Sanitize(s string) string {
-	if s == "" {
-		return ""
+	if !stringNeedsSanitizing(s) {
+		return s
 	}
+	return sanitize(s)
+}
 
+// SanitizeBytes is the byte-slice form of Sanitize. It returns the original
+// slice when no sanitization is needed, avoiding copies in rendering hot paths.
+func SanitizeBytes(input []byte) []byte {
+	if !bytesNeedSanitizing(input) {
+		return input
+	}
+	return []byte(sanitize(string(input)))
+}
+
+func stringNeedsSanitizing(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func bytesNeedSanitizing(input []byte) bool {
+	for i := 0; i < len(input); {
+		if input[i] < utf8.RuneSelf {
+			b := input[i]
+			if b != '\n' && b != '\t' && (b < ' ' || b == 0x7f) {
+				return true
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(input[i:])
+		if r == utf8.RuneError && size == 1 {
+			return true
+		}
+		if unicode.IsControl(r) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+func sanitize(s string) string {
 	// x/ansi handles the common 7-bit ESC-prefixed forms. Expand C1 control
 	// introducers first so their 8-bit equivalents are stripped as well.
 	if strings.ContainsAny(s, "\u0090\u0098\u009b\u009d\u009e\u009f") {

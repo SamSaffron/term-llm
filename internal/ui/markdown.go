@@ -5,6 +5,7 @@ import (
 	"image/color"
 
 	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 )
 
 // colorHex converts a color.Color to a hex string (#rrggbb) for use with
@@ -51,7 +52,7 @@ func currentMarkdownPalette() rendermarkdown.Palette {
 }
 
 // RenderMarkdown renders markdown content with the shared terminal renderer.
-// On error, returns the original content unchanged.
+// On error, returns sanitized unrendered content.
 func RenderMarkdown(content string, width int) string {
 	if content == "" {
 		return ""
@@ -59,7 +60,7 @@ func RenderMarkdown(content string, width int) string {
 
 	rendered, err := RenderMarkdownWithError(content, width)
 	if err != nil {
-		return content
+		return terminaltext.Sanitize(content)
 	}
 	return rendered
 }
@@ -70,7 +71,7 @@ func RenderMarkdownWithError(content string, width int) (string, error) {
 }
 
 // RenderMarkdownWithOptions renders markdown with caller-specific compatibility options.
-// On error, returns the original content unchanged.
+// On error, returns sanitized unrendered content.
 func RenderMarkdownWithOptions(content string, width int, options MarkdownRenderOptions) string {
 	if content == "" {
 		return ""
@@ -78,7 +79,7 @@ func RenderMarkdownWithOptions(content string, width int, options MarkdownRender
 
 	rendered, err := RenderMarkdownWithOptionsError(content, width, options)
 	if err != nil {
-		return content
+		return terminaltext.Sanitize(content)
 	}
 	return rendered
 }

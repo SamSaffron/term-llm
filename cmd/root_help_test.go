@@ -2,9 +2,19 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestWriteRootErrorSanitizesTerminalControls(t *testing.T) {
+	var output bytes.Buffer
+	writeRootError(&output, fmt.Errorf("remote \x1b[31mfailure\x1b[0m\u009b2J"))
+
+	if got, want := output.String(), "Error: remote failure\n"; got != want {
+		t.Fatalf("writeRootError() = %q, want %q", got, want)
+	}
+}
 
 func TestRootHelpShowsExamplesAtBottom(t *testing.T) {
 	var output bytes.Buffer

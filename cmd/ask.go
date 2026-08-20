@@ -29,6 +29,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/terminalpolicy"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tooldiscovery"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -1545,7 +1546,7 @@ func writeGuardianStatus(w io.Writer, event tools.GuardianEvent) {
 	if w == nil {
 		return
 	}
-	if message := strings.TrimSpace(event.Message); message != "" {
+	if message := strings.TrimSpace(terminaltext.SanitizeSingleLine(event.Message)); message != "" {
 		fmt.Fprintln(w, message)
 	}
 }
@@ -1657,7 +1658,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 			case ui.StreamEventPhase:
 				// Print WARNING phases to stderr, skip others
 				if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) {
-					fmt.Fprintf(stderr, "\n%s\n", ev.Phase)
+					fmt.Fprintf(stderr, "\n%s\n", terminaltext.SanitizeSingleLine(ev.Phase))
 				}
 				continue
 
@@ -1714,7 +1715,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 				writeGuardianStatus(stderr, ev.Guardian)
 
 			case ui.StreamEventText:
-				text := newlineCompactor.CompactChunk(ev.Text)
+				text := newlineCompactor.CompactChunk(terminaltext.Sanitize(ev.Text))
 				if text != "" {
 					pendingText.WriteString(text)
 				}

@@ -243,3 +243,19 @@ func TestStreamPlainText_DiscardDropsUncommittedText(t *testing.T) {
 		t.Fatalf("committed retry text missing from stdout: %q", plain)
 	}
 }
+
+func TestStreamPlainTextSanitizesTerminalControls(t *testing.T) {
+	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
+		ui.TextEvent("before\x1b"),
+		ui.TextEvent("[2Jafter\u009b"),
+		ui.TextEvent("2K\nnext\x07"),
+		ui.DoneEvent(0),
+	}, true)
+
+	if strings.ContainsRune(output, '\x1b') || strings.ContainsRune(output, '\u009b') || strings.ContainsRune(output, '\x07') {
+		t.Fatalf("plain output retained terminal controls: %q", output)
+	}
+	if !strings.Contains(output, "before[2Jafter2K\nnext") {
+		t.Fatalf("plain output = %q", output)
+	}
+}

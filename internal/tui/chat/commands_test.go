@@ -5548,3 +5548,10 @@ func TestHandleShareDonePublicUpdateExplainsVisibility(t *testing.T) {
 		t.Fatalf("dialog did not explain visibility: %q", m.dialog.Content())
 	}
 }
+
+func TestSanitizeFooterMessageRemovesTerminalControls(t *testing.T) {
+	got := sanitizeFooterMessage(" **remote**\x1b[31m failure\x1b[0m\u009b2J\nspoofed\tline ")
+	if want := "remote failure spoofed line"; got != want {
+		t.Fatalf("sanitizeFooterMessage() = %q, want %q", got, want)
+	}
+}

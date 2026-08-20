@@ -318,6 +318,27 @@ type responsesError struct {
 	Message string `json:"message"`
 }
 
+func responsesAPIErrorMessage(body []byte) string {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if apiError, ok := payload["error"].(map[string]any); ok {
+		if message, ok := apiError["message"].(string); ok && strings.TrimSpace(message) != "" {
+			return strings.TrimSpace(message)
+		}
+	}
+	message, _ := payload["message"].(string)
+	return strings.TrimSpace(message)
+}
+
+func responsesAPIErrorDetail(body []byte) string {
+	if message := responsesAPIErrorMessage(body); message != "" {
+		return message
+	}
+	return string(body)
+}
+
 type responsesAPIEventError struct {
 	Status   int
 	APIError *responsesError
@@ -1176,7 +1197,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 			}
 			if resp.StatusCode != http.StatusOK {
 				retryBody := readResponsesAPIErrorBody(resp)
-				return nil, newHTTPStatusErrorMessagef(resp, retryBody, "Responses API error (status %d): %s", resp.StatusCode, string(retryBody))
+				return nil, newHTTPStatusErrorMessagef(resp, retryBody, "Responses API error (status %d): %s", resp.StatusCode, responsesAPIErrorDetail(retryBody))
 			}
 		} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			if c.OnAuthRetry != nil {
@@ -1203,13 +1224,16 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 				}
 				if resp.StatusCode != http.StatusOK {
 					retryBody := readResponsesAPIErrorBody(resp)
-					return nil, newHTTPStatusErrorMessagef(resp, retryBody, "Responses API error after re-auth (status %d): %s", resp.StatusCode, string(retryBody))
+					return nil, newHTTPStatusErrorMessagef(resp, retryBody, "Responses API error after re-auth (status %d): %s", resp.StatusCode, responsesAPIErrorDetail(retryBody))
 				}
 			} else {
-				return nil, fmt.Errorf("Responses API authentication failed (status %d): token may be invalid or expired", resp.StatusCode)
+				if apiMessage := responsesAPIErrorMessage(respBody); apiMessage != "" {
+					return nil, newHTTPStatusErrorMessagef(resp, respBody, "Responses API error (status %d): %s", resp.StatusCode, apiMessage)
+				}
+				return nil, newHTTPStatusErrorMessagef(resp, respBody, "Responses API authentication failed (status %d): token may be invalid or expired", resp.StatusCode)
 			}
 		} else {
-			return nil, newHTTPStatusErrorMessagef(resp, respBody, "Responses API error (status %d): %s", resp.StatusCode, string(respBody))
+			return nil, newHTTPStatusErrorMessagef(resp, respBody, "Responses API error (status %d): %s", resp.StatusCode, responsesAPIErrorDetail(respBody))
 		}
 	}
 

@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -644,6 +645,7 @@ var footerMessageSanitizer = strings.NewReplacer(
 )
 
 func sanitizeFooterMessage(content string) string {
+	content = terminaltext.SanitizeSingleLine(content)
 	return strings.TrimSpace(footerMessageSanitizer.Replace(content))
 }
 

@@ -642,6 +642,7 @@ func formatTokensCompact(n int) string {
 // renderAskUserResult renders an ask_user result with styling applied at render time.
 // Input format: "Header: Value" or "Header: Value | Header2: Value2"
 func renderAskUserResult(text string, width int) string {
+	text = terminaltext.SanitizeSingleLine(text)
 	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
@@ -914,7 +915,7 @@ func renderSegmentsWithLeadingState(leading *Segment, leadingPlan bool, segments
 				if seg.Complete && renderMarkdown != nil {
 					rendered = renderMarkdown(text, width)
 				} else {
-					rendered = text
+					rendered = terminaltext.Sanitize(text)
 				}
 			}
 

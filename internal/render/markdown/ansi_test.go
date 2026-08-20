@@ -666,3 +666,16 @@ func assertLinesWithinWidth(t *testing.T, rendered string, width int) {
 		}
 	}
 }
+
+func TestANSIRenderSanitizesSourceTerminalControls(t *testing.T) {
+	rendered, err := NewANSI(Config{Width: 80}).Render([]byte("before\x1b[2Jafter\u009b2K\nnext\x07"))
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if bytes.Contains(rendered, []byte("\x1b[2J")) || bytes.Contains(rendered, []byte("\x1b[2K")) {
+		t.Fatalf("rendered output retained source terminal controls: %q", rendered)
+	}
+	if got := xansi.Strip(string(rendered)); !strings.Contains(got, "beforeafter next") {
+		t.Fatalf("rendered text = %q", got)
+	}
+}

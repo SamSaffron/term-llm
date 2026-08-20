@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/exitcode"
 	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/update"
 	"github.com/spf13/cobra"
@@ -58,6 +60,7 @@ var rootCmd = &cobra.Command{
 	Long: `Chat with models, delegate work to agents, generate commands, edit code,
 create media, and automate recurring work—from your terminal or browser.`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
+	SilenceErrors:     true,
 	SilenceUsage:      true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return startProfiling()
@@ -182,11 +185,16 @@ func stopProfiling() error {
 
 func Execute() {
 	if err := executeWithArgs(os.Args[1:]); err != nil {
+		writeRootError(rootCmd.ErrOrStderr(), err)
 		if exitErr, ok := err.(exitcode.ExitError); ok {
 			os.Exit(exitErr.Code)
 		}
 		os.Exit(1)
 	}
+}
+
+func writeRootError(w io.Writer, err error) {
+	fmt.Fprintf(w, "Error: %s\n", terminaltext.Sanitize(err.Error()))
 }
 
 func executeWithArgs(args []string) error {

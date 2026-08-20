@@ -17,6 +17,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
+	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -84,7 +85,7 @@ var markdownParser = goldmark.New(
 
 // Render renders markdown to ANSI bytes.
 func (r *ANSI) Render(source []byte) ([]byte, error) {
-	renderSource := source
+	renderSource := terminaltext.SanitizeBytes(source)
 	if r.config.NormalizeTabs && bytes.IndexByte(renderSource, '\t') >= 0 {
 		// Deliberately 2 spaces, not the CommonMark-spec 4.
 		// Keeps terminal output compact while remaining readable.
