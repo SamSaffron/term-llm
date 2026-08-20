@@ -247,14 +247,20 @@ const handleFileChangeEvent = (session, payload) => {
   // Replayed events (stream reconnect) arrive with stale sequence numbers.
   if (existing && seq && existing.lastSeq && seq <= existing.lastSeq) return;
 
-  ds.files.set(path, {
+  const incoming = {
     path,
     kind: normalizeDiffKind(payload.kind),
     adds: Number(payload.adds) || 0,
     dels: Number(payload.dels) || 0,
     truncated: Boolean(payload.truncated),
     lastSeq: seq
-  });
+  };
+  // Tool events describe only the latest before→after operation, while this
+  // panel shows the cumulative session-baseline diff. Once canonical metadata
+  // exists, retain it until the scheduled server refresh replaces it. Otherwise
+  // a second write to a newly-created file briefly relabels the whole file as a
+  // modification and flashes every added row green.
+  ds.files.set(path, existing ? { ...existing, lastSeq: seq } : incoming);
   ds.dirtyPaths.add(path);
 
   // Live follow: keep only the file being edited open. The previously
