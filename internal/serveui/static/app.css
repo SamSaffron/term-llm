@@ -619,6 +619,7 @@
     .diff-row.del .diff-ln { background: var(--diff-del-ln-bg); }
 
     .diff-code {
+      order: 2;
       flex: 1;
       min-width: 0;
       padding-left: 0.55em;
@@ -631,6 +632,7 @@
     }
 
     .diff-comment-affordance {
+      order: 1;
       flex: none;
       align-self: center;
       width: 1.65rem;
