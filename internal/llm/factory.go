@@ -481,14 +481,14 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewZenProvider(cfg.ResolvedAPIKey, cfg.Model), nil
 
 	case config.ProviderTypeOpenCodeGo:
-		if strings.TrimSpace(cfg.BaseURL) != "" || strings.TrimSpace(cfg.URL) != "" {
-			return nil, fmt.Errorf("provider %q does not support base_url or url overrides", name)
+		if strings.TrimSpace(cfg.URL) != "" {
+			return nil, fmt.Errorf("provider %q does not support url overrides; use base_url", name)
 		}
 		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
 		if apiKey == "" {
 			return nil, fmt.Errorf("provider %q requires OPENCODE_API_KEY or explicit config", name)
 		}
-		return NewOpenCodeGoProvider(apiKey, cfg.Model), nil
+		return NewOpenCodeGoProviderWithBaseURL(apiKey, cfg.Model, cfg.BaseURL), nil
 
 	case config.ProviderTypeXAI:
 		apiKey := cfg.ResolvedAPIKey
