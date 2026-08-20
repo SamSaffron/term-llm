@@ -251,10 +251,16 @@ func (c *opencodeGoModelCatalog) model(ctx context.Context, client *http.Client,
 }
 
 func unknownOpenCodeGoModel(id string) opencodeGoModel {
+	id = strings.TrimSpace(id)
 	// The availability endpoint can lead the metadata catalog. Its provider-level
 	// default is OpenAI-compatible chat, which the Go gateway translates to the
-	// selected upstream protocol.
-	return opencodeGoModel{ModelInfo: ModelInfo{ID: strings.TrimSpace(id), InputPrice: -1, OutputPrice: -1}, Protocol: opencodeGoProtocolChat}
+	// selected upstream protocol. Muse Spark is the exception: OpenCode Go exposes
+	// preview IDs before their catalog metadata and serves them on Responses.
+	protocol := opencodeGoProtocolChat
+	if strings.HasPrefix(strings.ToLower(id), "muse-spark-") {
+		protocol = opencodeGoProtocolResponses
+	}
+	return opencodeGoModel{ModelInfo: ModelInfo{ID: id, InputPrice: -1, OutputPrice: -1}, Protocol: protocol}
 }
 
 func fetchOpenCodeGoModels(ctx context.Context, client *http.Client, apiKey, baseURL, catalogURL string) (opencodeGoFetchResult, error) {
