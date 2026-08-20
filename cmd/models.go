@@ -192,7 +192,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 		}
 		// The Go model and metadata endpoints are public; a key is required only
 		// when the returned provider is used for inference.
-		lister = llm.NewOpenCodeGoProvider(apiKey, providerCfg.Model)
+		lister = llm.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL)
 	case config.ProviderTypeXAI:
 		apiKey := providerCfg.ResolvedAPIKey
 		if apiKey == "" {

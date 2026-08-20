@@ -201,14 +201,33 @@ func TestCreateProviderFromConfigOpenCodeGo(t *testing.T) {
 	}
 }
 
-func TestCreateProviderFromConfigOpenCodeGoRejectsURLOverrides(t *testing.T) {
+func TestCreateProviderFromConfigOpenCodeGoUsesBaseURLOverride(t *testing.T) {
+	provider, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
+		Type:           config.ProviderTypeOpenCodeGo,
+		ResolvedAPIKey: "test-key",
+		Model:          "muse-spark-1.2-contributor",
+		BaseURL:        "https://example.test/muse/v1/",
+	})
+	if err != nil {
+		t.Fatalf("createProviderFromConfig: %v", err)
+	}
+	openCodeGo, ok := provider.(*OpenCodeGoProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *OpenCodeGoProvider", provider)
+	}
+	if openCodeGo.baseURL != "https://example.test/muse/v1" {
+		t.Fatalf("baseURL = %q", openCodeGo.baseURL)
+	}
+}
+
+func TestCreateProviderFromConfigOpenCodeGoRejectsURLOverride(t *testing.T) {
 	_, err := createProviderFromConfig("opencode-go", &config.ProviderConfig{
 		Type:           config.ProviderTypeOpenCodeGo,
 		ResolvedAPIKey: "test-key",
-		BaseURL:        "https://example.test/v1",
+		URL:            "https://example.test/responses",
 	})
-	if err == nil || !strings.Contains(err.Error(), "does not support base_url or url overrides") {
-		t.Fatalf("error = %v, want URL override guidance", err)
+	if err == nil || !strings.Contains(err.Error(), "use base_url") {
+		t.Fatalf("error = %v, want base_url guidance", err)
 	}
 }
 
