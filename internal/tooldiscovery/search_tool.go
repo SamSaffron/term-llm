@@ -15,6 +15,11 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
+const (
+	maxSearchQueryRunes         = 1000
+	recommendedSearchQueryRunes = 100
+)
+
 // SearchTool is the automatically allowed local control-plane tool used to load
 // complete MCP schemas for the next provider turn.
 type SearchTool struct {
@@ -24,13 +29,17 @@ type SearchTool struct {
 func (t *SearchTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        ToolSearchName,
-		Description: "Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use query when the exact tool name is unknown, or tool_names when it is known. Keep semantic queries short and focused on one capability; use separate searches for unrelated capabilities. Do not supply both. If both are supplied, tool_names takes precedence. Exact-name batches load valid tools even when another requested name is unavailable. Use this before the final turn when the needed MCP capability is not already available.",
+		Description: fmt.Sprintf("Search the authorised MCP tool catalogue and load matching tool schemas for the next turn. Use query when the exact tool name is unknown, or tool_names when it is known. Keep semantic queries short and focused on one capability—usually 5–15 words and under %d Unicode code points; use separate searches for unrelated capabilities. Do not supply both. If both are supplied, tool_names takes precedence. Exact-name batches load valid tools even when another requested name is unavailable. Use this before the final turn when the needed MCP capability is not already available.", recommendedSearchQueryRunes),
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{
-					"type":        "string",
-					"description": "Describe one capability with a short focused query when the exact tool name is unknown. Use separate searches for unrelated capabilities. Omit this when using tool_names. Do not supply both.",
+					"type":      "string",
+					"maxLength": maxSearchQueryRunes,
+					"description": fmt.Sprintf(
+						"Describe one capability with a short focused query when the exact tool name is unknown. Usually use 5–15 words and stay under %d Unicode code points. The hard limit is %d. Use separate searches for unrelated capabilities. Omit this when using tool_names. Do not supply both.",
+						recommendedSearchQueryRunes, maxSearchQueryRunes,
+					),
 				},
 				"tool_names": map[string]any{
 					"type":        "array",
@@ -92,8 +101,8 @@ func decodeSearchInput(args json.RawMessage) (searchInput, error) {
 	} else if input.Query == "" {
 		return searchInput{}, fmt.Errorf("provide a non-empty query or non-empty tool_names")
 	}
-	if utf8.RuneCountInString(input.Query) > 500 {
-		return searchInput{}, fmt.Errorf("query is too long: maximum is 500 Unicode code points")
+	if utf8.RuneCountInString(input.Query) > maxSearchQueryRunes {
+		return searchInput{}, fmt.Errorf("query is too long: maximum is %d Unicode code points", maxSearchQueryRunes)
 	}
 	if len(input.ToolNames) > 8 {
 		return searchInput{}, fmt.Errorf("too many tool_names: maximum is 8")

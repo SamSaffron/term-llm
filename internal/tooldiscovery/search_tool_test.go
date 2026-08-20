@@ -60,6 +60,40 @@ func TestDecodeSearchInputSelectorHandling(t *testing.T) {
 	}
 }
 
+func TestDecodeSearchInputQueryLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		runes   int
+		wantErr bool
+	}{
+		{name: "accepts hard limit", runes: maxSearchQueryRunes},
+		{name: "rejects above hard limit", runes: maxSearchQueryRunes + 1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, err := json.Marshal(map[string]string{"query": strings.Repeat("界", tt.runes)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := decodeSearchInput(args)
+			if tt.wantErr {
+				want := "maximum is 1000 Unicode code points"
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("decodeSearchInput() error = %v, want containing %q", err, want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeSearchInput() error = %v", err)
+			}
+			if got.Query != strings.Repeat("界", tt.runes) {
+				t.Fatalf("Query rune length = %d, want %d", len([]rune(got.Query)), tt.runes)
+			}
+		})
+	}
+}
+
 func TestSearchToolSpecExplainsSelectorChoice(t *testing.T) {
 	spec := (&SearchTool{}).Spec()
 	if !strings.Contains(spec.Description, "If both are supplied") || !strings.Contains(spec.Description, "tool_names takes precedence") {
@@ -78,6 +112,14 @@ func TestSearchToolSpecExplainsSelectorChoice(t *testing.T) {
 		description, _ := propertySchema["description"].(string)
 		if !strings.Contains(description, "Do not supply both") {
 			t.Errorf("%s description does not explain selector choice: %q", property, description)
+		}
+		if property == "query" {
+			if !strings.Contains(description, "5–15 words") || !strings.Contains(description, "under 100 Unicode code points") {
+				t.Errorf("query description does not give concise length guidance: %q", description)
+			}
+			if got := propertySchema["maxLength"]; got != maxSearchQueryRunes {
+				t.Errorf("query maxLength = %v, want %d", got, maxSearchQueryRunes)
+			}
 		}
 	}
 }
