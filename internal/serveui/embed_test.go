@@ -73,7 +73,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			branchingLines = lineCount
 		} else if name == "app-branch-commands.js" {
 			branchCommandLines = lineCount
-		} else if name == "app-diffs.js" || name == "app-diff-comments.js" {
+		} else if name == "app-diffs.js" || name == "app-diff-comments.js" || name == "app-diff-queue.js" {
 			diffLines[name] = lineCount
 		} else {
 			legacyProductionLines += lineCount
@@ -97,8 +97,9 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	if branchCommandLines == 0 || branchCommandLines > 100 {
 		t.Fatalf("conversation branch command controller=%d lines, budget=100", branchCommandLines)
 	}
-	if diffLines["app-diffs.js"] == 0 || diffLines["app-diff-comments.js"] == 0 || diffLines["app-diffs.js"]+diffLines["app-diff-comments.js"] > 1950 {
-		t.Fatalf("diff controllers grew beyond focused budget: %v", diffLines)
+	diffControllerLines := diffLines["app-diffs.js"] + diffLines["app-diff-comments.js"] + diffLines["app-diff-queue.js"]
+	if diffLines["app-diffs.js"] == 0 || diffLines["app-diff-comments.js"] == 0 || diffLines["app-diff-queue.js"] == 0 || diffControllerLines > 2650 {
+		t.Fatalf("diff sidebar, comments, and queue controllers grew beyond focused budget: %v", diffLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -1029,6 +1030,23 @@ func TestAppDiffCommentsJS(t *testing.T) {
 	}
 }
 
+func TestAppDiffQueueJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS app-diff-queue tests")
+	}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "app_diff_queue_test.js")
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("app_diff_queue_test.js failed: %v", err)
+	}
+}
+
 func TestAppDiffsJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1062,7 +1080,11 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 		`id="diffToggleBtn"`,
 		`id="diffFileList"`,
 		`id="diffResizeHandle"`,
+		`id="diffMaximizeBtn"`,
+		`id="diffQueueBar"`,
+		`id="diffQueueStatus"`,
 		`src="app-diff-comments.js"`,
+		`src="app-diff-queue.js"`,
 		`src="app-diffs.js"`,
 	} {
 		if !strings.Contains(indexSrc, want) {
@@ -1093,6 +1115,11 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 		".diff-sidebar.open",
 		".diff-resize-handle",
 		".app.diff-resizing",
+		".diff-sidebar.maximized",
+		".app.diff-maximized",
+		".diff-queue-bar",
+		".diff-comment-send-split",
+		".diff-toggle.has-queued",
 		"--diff-sidebar-user-width",
 		".diff-toggle[hidden]",
 		"pre-wrap",
@@ -1126,20 +1153,20 @@ func TestStaticAssetsSupportDiffSidebar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StaticAsset(sw.js): %v", err)
 	}
-	for _, asset := range []string{"app-diff-comments.js", "app-diffs.js"} {
+	for _, asset := range []string{"app-diff-comments.js", "app-diff-queue.js", "app-diffs.js"} {
 		if !strings.Contains(string(swJS), "'./"+asset+"'") {
 			t.Fatalf("sw.js SHELL_ASSETS missing %s", asset)
 		}
 	}
 
 	rendered := RenderIndexHTML("/ui", "", RenderOptions{})
-	for _, asset := range []string{"app-diff-comments.js", "app-diffs.js"} {
+	for _, asset := range []string{"app-diff-comments.js", "app-diff-queue.js", "app-diffs.js"} {
 		if !strings.Contains(string(rendered), `src="`+asset+`?v=`) {
 			t.Fatalf("RenderIndexHTML does not version %s", asset)
 		}
 	}
 	renderedSW := RenderServiceWorker(RenderOptions{})
-	for _, asset := range []string{"app-diff-comments.js", "app-diffs.js"} {
+	for _, asset := range []string{"app-diff-comments.js", "app-diff-queue.js", "app-diffs.js"} {
 		if !strings.Contains(string(renderedSW), "'./"+asset+"?v=") {
 			t.Fatalf("RenderServiceWorker does not version %s", asset)
 		}

@@ -16,7 +16,7 @@ import (
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
 //go:embed static/app-core.js static/toast.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-path-notes.js static/app-branching.js static/app-branch-commands.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-sidebar.js
-//go:embed static/app-attachments.js static/app-stream.js static/app-response-effects.js static/app-send.js static/app-runtime.js static/app-interject.js static/app-modals.js static/app-composer.js static/app-skills.js static/side-question.js static/app-webrtc.js static/app-diff-comments.js static/app-diffs.js static/app-worktrees.js
+//go:embed static/app-attachments.js static/app-stream.js static/app-response-effects.js static/app-send.js static/app-runtime.js static/app-interject.js static/app-modals.js static/app-composer.js static/app-skills.js static/side-question.js static/app-webrtc.js static/app-diff-comments.js static/app-diff-queue.js static/app-diffs.js static/app-worktrees.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js static/transcript-window.js static/active-response.js static/conversation.js
 //go:embed static/vendor
 var staticFiles embed.FS
@@ -121,6 +121,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="intent-storage.js"`, `href="` + versioned("intent-storage.js") + `"`},
 		{`href="app-session-admin.js"`, `href="` + versioned("app-session-admin.js") + `"`},
 		{`href="app-diff-comments.js"`, `href="` + versioned("app-diff-comments.js") + `"`},
+		{`href="app-diff-queue.js"`, `href="` + versioned("app-diff-queue.js") + `"`},
 		{`href="app-diffs.js"`, `href="` + versioned("app-diffs.js") + `"`},
 		{`href="app-worktrees.js"`, `href="` + versioned("app-worktrees.js") + `"`},
 		{`src="markdown-setup.js"`, `src="` + versioned("markdown-setup.js") + `"`},
@@ -157,6 +158,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="intent-storage.js"`, `src="` + versioned("intent-storage.js") + `"`},
 		{`src="app-session-admin.js"`, `src="` + versioned("app-session-admin.js") + `"`},
 		{`src="app-diff-comments.js"`, `src="` + versioned("app-diff-comments.js") + `"`},
+		{`src="app-diff-queue.js"`, `src="` + versioned("app-diff-queue.js") + `"`},
 		{`src="app-diffs.js"`, `src="` + versioned("app-diffs.js") + `"`},
 		{`src="app-worktrees.js"`, `src="` + versioned("app-worktrees.js") + `"`},
 	}
@@ -247,6 +249,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./intent-storage.js'", "'./" + versioned("intent-storage.js") + "'"},
 		{"'./app-session-admin.js'", "'./" + versioned("app-session-admin.js") + "'"},
 		{"'./app-diff-comments.js'", "'./" + versioned("app-diff-comments.js") + "'"},
+		{"'./app-diff-queue.js'", "'./" + versioned("app-diff-queue.js") + "'"},
 		{"'./app-diffs.js'", "'./" + versioned("app-diffs.js") + "'"},
 		{"'./app-worktrees.js'", "'./" + versioned("app-worktrees.js") + "'"},
 	}

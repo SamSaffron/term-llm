@@ -1346,7 +1346,9 @@ const setStreaming = (streaming) => {
     flushStreamPersistence();
     const shouldRestoreFocus = state.restorePromptFocus;
     state.restorePromptFocus = false;
-    if (shouldRestoreFocus) {
+    // A completed run must not pull focus out of a control the user moved into.
+    const active = document.activeElement;
+    if (shouldRestoreFocus && (!active || active === document.body || active === elements.promptInput)) {
       elements.promptInput.focus();
     }
   }

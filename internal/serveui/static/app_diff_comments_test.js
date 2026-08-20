@@ -55,7 +55,8 @@ const createDOM = () => {
         if (name === 'id') this.id = String(value);
         if (name === 'tabindex') this.tabIndex = Number(value);
       },
-      getAttribute(name) { return attrs.has(name) ? attrs.get(name) : null; },
+       getAttribute(name) { return attrs.has(name) ? attrs.get(name) : null; },
+       removeAttribute(name) { attrs.delete(name); },
       addEventListener(type, listener) {
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push(listener);
@@ -114,8 +115,30 @@ const createHarness = (initialPayloads = {}) => {
     activeSessionId: 's1', token: '', connected: true, sessions: [{ id: 's1', transcriptRev: 1 }],
     pendingInterjections: [], pendingInterruptCommits: [], queuedInterrupts: [], branchContextQueuedSend: null
   };
+  const pinCalls = [];
+  const scrollCalls = [];
+  const queued = [];
+  const modes = new Map();
+  let queueSending = false;
   const app = {
     UI_PREFIX: '/ui', state,
+    MAX_QUEUED_DIFF_COMMENTS: 20,
+    diffCommentSendMode: (id) => modes.get(id) || 'send',
+    diffCommentQueueSending: () => queueSending,
+    setDiffCommentSendMode(id, mode) { modes.set(id, mode); return mode; },
+    queuedDiffComments(id, anchor = null) {
+      const items = queued.filter((item) => item.sessionId === id).map((item) => item.comment);
+      if (!anchor) return items;
+      const key = `${anchor.path}\0${anchor.side}\0${anchor.line}`;
+      return items.filter((item) => `${item.path}\0${item.side}\0${item.line}` === key);
+    },
+    queueDiffComment(id, comment) { queued.push({ sessionId: id, comment }); return true; },
+    removeQueuedDiffComment(id, commentId) {
+      const index = queued.findIndex((item) => item.sessionId === id && item.comment.id === commentId);
+      return index >= 0 ? queued.splice(index, 1)[0].comment : null;
+    },
+    scrollDiffFileIntoView(pathName) { scrollCalls.push(pathName); },
+    pinDiffFileExpanded(sessionId, pathName) { pinCalls.push([sessionId, pathName]); },
     requestHeaders: (id) => ({ 'X-Session': id }),
     apiFetch: async (url) => {
       calls.push(url);
@@ -151,7 +174,10 @@ const createHarness = (initialPayloads = {}) => {
     encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout
   };
   vm.runInNewContext(source, context, { filename: 'app-diff-comments.js' });
-  return { app, state, calls, payloads, document, window };
+  return {
+    app, state, calls, payloads, pinCalls, scrollCalls, queued, modes, document, window,
+    setQueueSending(value) { queueSending = Boolean(value); }
+  };
 };
 
 const commentEntry = (id, pathName, instruction, revision = 1) => ({ created_at: revision, client_message_id: id, diff_comment: {
@@ -236,6 +262,112 @@ const decorateRow = (harness, options = {}) => {
     assert(second.button.getAttribute('aria-expanded') === 'true', 'restored trigger lost expanded state');
   });
 
+  await run('opening and submitting pin the file and restore rebuilt marker focus', async () => {
+    const harness = createHarness();
+    harness.app.sendMessage = async (options) => { options._onTransportStarted(); };
+    const first = decorateRow(harness);
+    await first.button.click();
+    assert(harness.app.diffCommentPanelOpen('s1'), 'open panel state was not exposed');
+    assert(harness.pinCalls.some(([id, pathName]) => id === 's1' && pathName === 'a.go'), 'opening did not pin the anchor file');
+    const textarea = first.table.querySelector('textarea');
+    textarea.value = 'keep this pinned';
+    await textarea.dispatch('input');
+    await first.table.querySelector('.diff-comment-send').click();
+    const rebuilt = decorateRow(harness);
+    assert(harness.document.activeElement === rebuilt.button, 'submit did not restore focus to the rebuilt marker');
+    assert(harness.pinCalls.length >= 2, 'submit did not reaffirm the explicit expansion');
+  });
+
+  await run('split send mode switches without text and alternate selection acts immediately with text', async () => {
+    const harness = createHarness();
+    const first = decorateRow(harness);
+    await first.button.click();
+    const textarea = first.table.querySelector('textarea');
+    const more = first.table.querySelector('.diff-comment-send-more');
+    await more.click();
+    const options = first.table.querySelectorAll('.diff-comment-send-option');
+    await options[1].click();
+    assert(harness.app.diffCommentSendMode('s1') === 'queue', 'empty alternate selection did not switch default');
+    assert(harness.queued.length === 0 && harness.document.activeElement === textarea, 'empty selection acted or lost editor focus');
+    assert(first.table.querySelector('.diff-comment-send').textContent === 'Queue comment', 'visible primary did not follow mode');
+
+    textarea.value = 'queue this now';
+    await textarea.dispatch('input');
+    await more.click();
+    await options[1].click();
+    assert(harness.queued.length === 1 && harness.queued[0].comment.instruction === 'queue this now', 'non-empty alternate did not act immediately');
+    const rebuilt = decorateRow(harness);
+    assert(harness.document.activeElement === rebuilt.button, 'queue did not restore focus to rebuilt marker');
+    assert(rebuilt.button.classList.contains('queued') && rebuilt.button.getAttribute('aria-label').includes('queued, not sent'), 'queued marker is not visually/accessibly distinct');
+  });
+
+  await run('primary Queue comment shortcut follows visible mode and menu Escape closes only menu', async () => {
+    const harness = createHarness();
+    harness.app.setDiffCommentSendMode('s1', 'queue');
+    const decorated = decorateRow(harness);
+    await decorated.button.click();
+    const textarea = decorated.table.querySelector('textarea');
+    const send = decorated.table.querySelector('.diff-comment-send');
+    assert(send.textContent === 'Queue comment' && send.title === 'Queue comment (Ctrl/⌘+Enter)', 'queue primary copy/shortcut changed');
+    const more = decorated.table.querySelector('.diff-comment-send-more');
+    await more.click();
+    const menu = decorated.table.querySelector('.diff-comment-send-menu');
+    const options = decorated.table.querySelectorAll('.diff-comment-send-option');
+    assert(harness.document.activeElement === options[0], 'opening the menu did not focus its first item');
+    await menu.dispatch('keydown', { key: 'ArrowDown' });
+    assert(harness.document.activeElement === options[1], 'ArrowDown did not move menu focus');
+    await menu.dispatch('keydown', { key: 'ArrowUp' });
+    assert(harness.document.activeElement === options[0], 'ArrowUp did not wrap menu focus');
+    const escape = await menu.dispatch('keydown', { key: 'Escape' });
+    assert(menu.hidden && escape.immediateStopped && !decorated.table.querySelector('.diff-comment-panel').removed, 'menu Escape leaked to panel close');
+    textarea.value = 'keyboard queued';
+    await textarea.dispatch('keydown', { key: 'Enter', metaKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(harness.queued.some((item) => item.comment.instruction === 'keyboard queued'), 'shortcut did not run visible queue primary');
+  });
+
+  await run('Send now sends only current comment when a queue already exists', async () => {
+    const harness = createHarness();
+    harness.app.queueDiffComment('s1', { ...commentEntry('queued', 'a.go', 'wait').diff_comment, created_at: 1 });
+    let sent;
+    harness.app.sendMessage = async (options) => { sent = options; options._onTransportStarted(); };
+    const decorated = decorateRow(harness);
+    await decorated.button.click();
+    await decorated.table.querySelector('.diff-comment-follow-up').click();
+    const textarea = decorated.table.querySelector('textarea');
+    textarea.value = 'jump the queue';
+    await textarea.dispatch('input');
+    await decorated.table.querySelector('.diff-comment-send').click();
+    assert(sent.contentParts.length === 1 && sent.contentParts[0].diff_comment.instruction === 'jump the queue', 'Send now auto-attached queued items');
+    assert(harness.queued.length === 1, 'Send now mutated unsent queue');
+  });
+
+  await run('queued history shows stale status and Edit pins, scrolls, removes, and prefills', async () => {
+    const harness = createHarness();
+    const queued = { ...commentEntry('queued', 'a.go', 'edit me', 1).diff_comment, created_at: 1 };
+    harness.app.queueDiffComment('s1', queued);
+    const decorated = decorateRow(harness, { fileChangeSeq: 2 });
+    await decorated.button.click();
+    assert(decorated.table.querySelector('.diff-comment-history-meta')?.textContent === 'File changed after this was queued', 'stale queued microcopy changed');
+    await decorated.table.querySelector('.diff-comment-history-edit').click();
+    assert(harness.queued.length === 0, 'Edit did not remove item from queue');
+    assert(harness.pinCalls.some(([, pathName]) => pathName === 'a.go') && harness.scrollCalls.includes('a.go'), 'Edit did not pin and restore spatial context');
+  });
+
+  await run('queued Edit and Remove remain locked throughout batch send', async () => {
+    const harness = createHarness();
+    harness.app.queueDiffComment('s1', { ...commentEntry('queued', 'a.go', 'do not mutate', 1).diff_comment, created_at: 1 });
+    harness.setQueueSending(true);
+    const decorated = decorateRow(harness);
+    await decorated.button.click();
+    const edit = decorated.table.querySelector('.diff-comment-history-edit');
+    const remove = decorated.table.querySelector('.diff-comment-history-remove');
+    assert(edit.disabled && remove.disabled, 'sending queue actions were not disabled');
+    await edit.click();
+    await remove.click();
+    assert(harness.queued.length === 1 && harness.pinCalls.length === 1 && harness.scrollCalls.length === 0, 'locked action mutated queue, draft, or spatial state');
+  });
+
   await run('early send return removes optimistic instruction and keeps retry draft', async () => {
     const harness = createHarness();
     harness.app.sendMessage = async () => undefined;
@@ -250,6 +382,34 @@ const decorateRow = (harness, options = {}) => {
     assert(!second.button.classList.contains('has-comments'), 'unsent optimistic instruction remained visible forever');
     await second.button.click();
     assert(second.table.querySelector('textarea')?.value === 'retry me', 'failed send discarded retry draft');
+  });
+
+  await run('branch-context cancellation retains a single draft and retry identity', async () => {
+    const harness = createHarness();
+    let parked;
+    harness.app.sendMessage = async (options) => {
+      parked = options;
+      options._onTransportStarted({ queued: true });
+    };
+    const first = decorateRow(harness);
+    await first.button.click();
+    const textarea = first.table.querySelector('textarea');
+    textarea.value = 'retry after branch cancellation';
+    await textarea.dispatch('input');
+    await first.table.querySelector('.diff-comment-send').click();
+    const originalID = parked.reuseMessageId;
+    parked._onTransportCanceled({ queued: true, canceled: true });
+
+    const second = decorateRow(harness);
+    await second.button.click();
+    const retry = second.table.querySelector('textarea');
+    assert(retry?.value === 'retry after branch cancellation', 'branch cancellation discarded the inline draft');
+    harness.app.sendMessage = async (options) => {
+      parked = options;
+      options._onTransportStarted();
+    };
+    await second.table.querySelector('.diff-comment-send').click();
+    assert(parked.reuseMessageId === originalID, 'retry created a duplicate failed transcript identity');
   });
 
   await run('server hydration reconciles an accepted optimistic instruction', async () => {
@@ -316,6 +476,22 @@ const decorateRow = (harness, options = {}) => {
     assert(body.children[0].textContent.includes('<img src=x>'), 'path was not kept as text');
     assert(body.children[1].textContent === '<b>do not parse</b>', 'instruction was not kept as text');
     assert(body.children[2].textContent.includes('<script>x</script>'), 'line was not kept as text');
+  });
+
+  await run('plural transcript projection renders one summary and every untrusted anchor as text', () => {
+    const { app } = createHarness();
+    const node = app.createDiffCommentMessageNode({
+      id: 'm2', role: 'user', created: 1,
+      diffComments: [
+        { id: 'c1', path: 'a.go', side: 'new', line: 4, file_change_seq: 8, line_text: '<one>', instruction: 'First' },
+        { id: 'c2', path: '<b.go>', side: 'old', line: 9, file_change_seq: 9, line_text: '<two>', instruction: '<Second>' }
+      ]
+    });
+    const body = node.children[0];
+    assert(body.children[0].textContent === '2 inline comments', 'plural summary missing');
+    assert(body.querySelectorAll('.diff-comment-message-block').length === 2, 'not every diff comment rendered');
+    assert(body.querySelectorAll('.diff-comment-message-heading')[1].textContent.includes('<b.go>'), 'plural path was not kept as text');
+    assert(body.querySelectorAll('.diff-comment-message-instruction')[1].textContent === '<Second>', 'plural instruction was not kept as text');
   });
 
   if (failures > 0) process.exit(1);

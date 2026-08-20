@@ -28,6 +28,7 @@ const STORAGE_BASE_KEYS = {
   lastNotifiedResponseId: 'term_llm_last_notified_response_id',
   draftMessages: 'term_llm_draft_messages',
   pendingIntents: 'term_llm_pending_intent',
+  diffCommentQueue: 'term_llm_diff_comment_queue',
   optimisticTranscript: 'term_llm_optimistic_transcript'
 };
 
@@ -2097,8 +2098,8 @@ const sanitizeMessage = (msg) => {
         const askUserCallId = String(msg.askUserCallId || msg.ask_user_call_id || '').trim();
         if (askUserCallId) base.askUserCallId = askUserCallId;
       }
-      const diffComment = msg.diffComment || msg.diff_comment;
-      if (diffComment && typeof diffComment === 'object') { try { base.diffComment = JSON.parse(JSON.stringify(diffComment)); } catch {} }
+      const diffComments = [].concat(Array.isArray(msg.diffComments) && msg.diffComments.length > 0 ? msg.diffComments : (msg.diffComment || msg.diff_comment || [])).filter((entry) => entry && typeof entry === 'object');
+      if (diffComments.length > 0) { try { base.diffComments = JSON.parse(JSON.stringify(diffComments)); } catch {} }
       if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
         base.attachments = msg.attachments.map(a => ({
           name: String(a.name || 'file'),

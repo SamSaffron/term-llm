@@ -27,6 +27,7 @@ const queueInterruptFollowUp = (sessionId, prompt, messageId, attachments = [], 
     attachments: Array.isArray(attachments) ? attachments : [],
     contentParts: Array.isArray(sendOptions.contentParts) ? sendOptions.contentParts : [],
     diffComment: sendOptions.diffComment || null,
+    diffComments: Array.isArray(sendOptions.diffComments) ? sendOptions.diffComments : [],
     displayPrompt: String(sendOptions.displayPrompt || '')
   });
 };
@@ -40,6 +41,7 @@ const trackPendingInterruptCommit = (sessionId, prompt, messageId, attachments =
     attachments: Array.isArray(attachments) ? attachments : [],
     contentParts: Array.isArray(sendOptions.contentParts) ? sendOptions.contentParts : [],
     diffComment: sendOptions.diffComment || null,
+    diffComments: Array.isArray(sendOptions.diffComments) ? sendOptions.diffComments : [],
     displayPrompt: String(sendOptions.displayPrompt || '')
   });
 };
@@ -102,6 +104,7 @@ const requeueUncommittedInterrupts = (session) => {
     queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments, {
       contentParts: entry.contentParts,
       diffComment: entry.diffComment,
+      diffComments: entry.diffComments,
       displayPrompt: entry.displayPrompt
     });
   }
@@ -186,6 +189,7 @@ const materializeCommittedInterjection = (session, messageId, committedMessage =
   const attachments = mergeCommittedInterjectionAttachments(localAttachments, committedAttachments);
   if (attachments.length > 0) message.attachments = attachments;
   if (pending?.diffComment) message.diffComment = pending.diffComment;
+  if (pending?.diffComments?.length) message.diffComments = pending.diffComments;
   return app.trackPendingIntent?.(session, message) || message;
 };
 
@@ -270,6 +274,7 @@ const trackPendingInterjection = (sessionId, prompt, messageId, action, attachme
   const extra = {
     contentParts: Array.isArray(sendOptions.contentParts) ? sendOptions.contentParts : [],
     diffComment: sendOptions.diffComment || null,
+    diffComments: Array.isArray(sendOptions.diffComments) ? sendOptions.diffComments : [],
     displayPrompt: String(sendOptions.displayPrompt || '')
   };
   if (existing) {
@@ -351,6 +356,7 @@ const requeuePendingInterjections = (session) => {
     queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments, {
       contentParts: entry.contentParts,
       diffComment: entry.diffComment,
+      diffComments: entry.diffComments,
       displayPrompt: entry.displayPrompt
     });
   }
@@ -406,6 +412,7 @@ const interruptActiveRunNow = async (session, prompt, messageId, contentParts = 
     queueInterruptFollowUp(session.id, prompt, messageId, attachments, {
       contentParts: pendingEntry?.contentParts,
       diffComment: pendingEntry?.diffComment,
+      diffComments: pendingEntry?.diffComments,
       displayPrompt: pendingEntry?.displayPrompt
     });
   }

@@ -894,6 +894,7 @@ function createHarness(options = {}) {
     app,
     elements,
     state,
+    document,
     fetchCalls,
     localStorage,
     getEventsStarted: () => getEventsStarted,
@@ -4534,6 +4535,46 @@ async function testBranchContextQueuesSendUntilReady() {
   pass(name);
 }
 
+async function testBranchContextCancellationPreservesDiffCallbacksAndPayload() {
+  const name = 'branch context cancellation preserves parked inline payload and signals cancellation';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'branch_context_inline', title: 'Inline path', provider: 'mock', activeModel: 'test-model',
+    messages: [], lastResponseId: 'resp_prior', activeResponseId: null,
+    branchContextStatus: { phase: 'running', mode: 'notes' },
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'mock';
+  state.selectedModel = 'test-model';
+  state.branchContextOperation = { sessionId: session.id, phase: 'running' };
+  const comment = { id: 'dc-parked', path: 'a.go', side: 'new', line: 2, file_change_seq: 3, instruction: 'keep draft' };
+  const starts = [];
+  let canceled = null;
+  await app.sendMessage({
+    prompt: 'provider inline payload',
+    displayPrompt: 'keep draft',
+    contentParts: [{ type: 'diff_comment', diff_comment: comment }],
+    diffComment: comment,
+    diffComments: [comment],
+    attachments: [],
+    preserveComposer: true,
+    _onTransportStarted(detail) { starts.push(detail); },
+    _onTransportCanceled(detail) { canceled = detail; }
+  });
+  const parked = state.branchContextQueuedSend;
+  app.restoreBranchContextQueuedSend(session.id);
+  await cleanup();
+  if (starts.length !== 1 || starts[0]?.queued !== true || !canceled?.canceled
+      || parked?.contentParts?.[0]?.diff_comment?.id !== comment.id
+      || parked?.diffComments?.[0]?.instruction !== 'keep draft') {
+    fail(name, 'park/cancel lifecycle lost callback detail or inline data', JSON.stringify({ starts, canceled, parked }));
+    return;
+  }
+  pass(name);
+}
+
 async function testBranchShortcutSlashCommandsPreserveOptionalInstruction() {
   const name = 'branch shortcut slash commands preserve instructions and do not send empty prompts';
   const harness = createHarness();
@@ -7225,6 +7266,44 @@ async function testSendMessageKeepsComposerWhenAttachmentMaterializationFails() 
   pass(name);
 }
 
+async function testCompletedResponsePreservesDeliberateFocus() {
+  const name = 'completed response preserves deliberate focus and legitimate composer restore';
+  const harness = createHarness();
+  const { app, elements, state, document, cleanup } = harness;
+  let focusCount = 0;
+  elements.promptInput.focus = () => { focusCount += 1; document.activeElement = elements.promptInput; };
+
+  document.activeElement = elements.promptInput;
+  app.setStreaming(true);
+  const commentEditor = { tagName: 'TEXTAREA' };
+  document.activeElement = commentEditor;
+  app.setStreaming(false);
+  if (focusCount !== 0 || document.activeElement !== commentEditor) {
+    fail(name, 'completion stole focus from a deliberately focused control');
+    await cleanup();
+    return;
+  }
+
+  document.activeElement = elements.promptInput;
+  app.setStreaming(true);
+  app.setStreaming(false);
+  if (focusCount !== 1 || document.activeElement !== elements.promptInput) {
+    fail(name, 'untouched composer focus was not legitimately restored');
+    await cleanup();
+    return;
+  }
+
+  // Repeated non-terminal idle transitions have no captured focus to restore.
+  app.setStreaming(false);
+  if (focusCount !== 1) {
+    fail(name, 'repeated idle transition moved focus');
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
+}
+
 async function testSendButtonMorphsToInterjectWhileBusyAndTyping() {
   const name = 'send button morphs to interject while busy and typing';
   const harness = createHarness();
@@ -8450,6 +8529,10 @@ async function testInlineSendPreservesUnrelatedComposerForIdleAndActiveRuns() {
     id: 'dc1', path: 'main.go', side: 'old', line: 7, file_change_seq: 11,
     line_text: 'old()', instruction: 'Keep this call.'
   }};
+  const metadata2 = { type: 'diff_comment', diff_comment: {
+    id: 'dc2', path: 'other.go', side: 'new', line: 9, file_change_seq: 12,
+    line_text: 'new()', instruction: 'Keep this too.'
+  }};
 
   const idle = createHarness();
   const idleSession = { id: 'session_inline_idle', title: 'Inline', messages: [], activeResponseId: '', lastResponseId: 'resp_prior', lastSequenceNumber: 0 };
@@ -8458,14 +8541,18 @@ async function testInlineSendPreservesUnrelatedComposerForIdleAndActiveRuns() {
   idle.state.draftSessionActive = false;
   idle.elements.promptInput.value = 'unrelated idle draft';
   idle.state.attachments = [{ name: 'unrelated.txt', type: 'text/plain' }];
-  await idle.app.sendMessage({ prompt: 'provider anchored prompt', displayPrompt: 'Keep this call.', contentParts: [metadata], attachments: [], preserveComposer: true });
+  await idle.app.sendMessage({ prompt: 'provider anchored prompt', displayPrompt: '2 inline comments', contentParts: [metadata, metadata2], diffComments: [metadata.diff_comment, metadata2.diff_comment], attachments: [], preserveComposer: true });
   const post = idle.fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   const postBody = post?.body ? JSON.parse(post.body) : null;
+  const idleUser = projectedMessages(idleSession).find((entry) => entry.role === 'user');
   if (idle.elements.promptInput.value !== 'unrelated idle draft'
+      || idleUser?.diffComments?.length !== 2
       || idle.state.attachments.length !== 1
-      || postBody?.input?.[0]?.content?.length !== 2
+      || postBody?.input?.length !== 1
+      || postBody?.input?.[0]?.content?.length !== 3
       || postBody?.input?.[0]?.content?.[0]?.type !== 'diff_comment'
-      || postBody?.input?.[0]?.content?.[1]?.text !== 'provider anchored prompt') {
+      || postBody?.input?.[0]?.content?.[1]?.diff_comment?.id !== 'dc2'
+      || postBody?.input?.[0]?.content?.[2]?.text !== 'provider anchored prompt') {
     fail(name, 'idle inline send consumed composer or lost metadata', JSON.stringify({ composer: idle.elements.promptInput.value, postBody }));
     await idle.cleanup();
     return;
@@ -8479,14 +8566,16 @@ async function testInlineSendPreservesUnrelatedComposerForIdleAndActiveRuns() {
   active.state.draftSessionActive = false;
   active.elements.promptInput.value = 'unrelated active draft';
   active.state.attachments = [{ name: 'unrelated.txt', type: 'text/plain' }];
-  await active.app.sendMessage({ prompt: 'provider anchored prompt', displayPrompt: 'Keep this call.', contentParts: [metadata], attachments: [], preserveComposer: true });
+  await active.app.sendMessage({ prompt: 'provider anchored prompt', displayPrompt: '2 inline comments', contentParts: [metadata, metadata2], diffComments: [metadata.diff_comment, metadata2.diff_comment], attachments: [], preserveComposer: true });
   const interrupt = active.fetchCalls.find((call) => call.url.endsWith('/interrupt'));
   const interruptBody = interrupt?.body ? JSON.parse(interrupt.body) : null;
   if (active.elements.promptInput.value !== 'unrelated active draft'
+      || active.state.pendingInterjections?.[0]?.diffComments?.length !== 2
       || active.state.attachments.length !== 1
-      || interruptBody?.content?.length !== 2
+      || interruptBody?.content?.length !== 3
       || interruptBody?.content?.[0]?.type !== 'diff_comment'
-      || interruptBody?.content?.[1]?.text !== 'provider anchored prompt') {
+      || interruptBody?.content?.[1]?.diff_comment?.id !== 'dc2'
+      || interruptBody?.content?.[2]?.text !== 'provider anchored prompt') {
     fail(name, 'active inline send consumed composer or lost metadata', JSON.stringify({ composer: active.elements.promptInput.value, interruptBody }));
     await active.cleanup();
     return;
@@ -8589,6 +8678,7 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp);
   await runAppStreamTest(testSendMessageBranchesAndTransfersStreamOwnership);
   await runAppStreamTest(testBranchContextQueuesSendUntilReady);
+  await runAppStreamTest(testBranchContextCancellationPreservesDiffCallbacksAndPayload);
   await runAppStreamTest(testBranchShortcutSlashCommandsPreserveOptionalInstruction);
   await runAppStreamTest(testSendMessageRecoversStaleContinuationAfterConflict);
   await runAppStreamTest(testSendMessageConsumesPostStreamWhenAvailable);
@@ -8610,6 +8700,7 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testDraftMessageLimitIsTen);
   await runAppStreamTest(testRestoreDraftMessageForSessionIsSessionBound);
   await runAppStreamTest(testRestoreLatestDraftMessageDoesNotCrossSessionBoundary);
+  await runAppStreamTest(testCompletedResponsePreservesDeliberateFocus);
   await runAppStreamTest(testSendButtonMorphsToInterjectWhileBusyAndTyping);
   await runAppStreamTest(testAutoGrowPromptUsesNativeFieldSizingWithoutLayoutReads);
   await runAppStreamTest(testAutoGrowPromptFallbackCoalescesLayoutWork);

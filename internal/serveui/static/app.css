@@ -333,47 +333,21 @@
       white-space: nowrap;
     }
 
-    .diff-bulk-toggle {
-      min-height: 34px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.35rem;
-      padding: 0 0.65rem;
-      border: 1px solid color-mix(in srgb, var(--link) 32%, var(--border));
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--link) 8%, var(--surface-2));
-      color: var(--text);
-      font: inherit;
-      font-size: 0.78rem;
-      font-weight: 650;
-      line-height: 1;
-      white-space: nowrap;
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: background 0.15s ease, border-color 0.15s ease;
-    }
-
-    .diff-bulk-toggle:hover {
-      border-color: color-mix(in srgb, var(--link) 48%, var(--border-strong));
-      background: color-mix(in srgb, var(--link) 13%, var(--surface-2));
-    }
-
-    .diff-bulk-toggle:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }
-
-    .diff-bulk-toggle svg {
+    .diff-bulk-toggle,
+    .diff-sidebar-maximize {
       flex: none;
+      border-radius: 50%;
     }
 
     .diff-bulk-collapse-icon,
-    .diff-bulk-toggle[data-action="collapse"] .diff-bulk-expand-icon {
+    .diff-bulk-toggle[data-action="collapse"] .diff-bulk-expand-icon,
+    .diff-restore-icon,
+    .diff-sidebar-maximize[data-action="restore"] .diff-maximize-icon {
       display: none;
     }
 
-    .diff-bulk-toggle[data-action="collapse"] .diff-bulk-collapse-icon {
+    .diff-bulk-toggle[data-action="collapse"] .diff-bulk-collapse-icon,
+    .diff-sidebar-maximize[data-action="restore"] .diff-restore-icon {
       display: inline;
     }
 
@@ -381,18 +355,25 @@
       border-radius: 50%;
     }
 
-    @media (max-width: 360px) {
-      .diff-sidebar-header {
-        gap: 0.35rem;
-      }
+    .diff-sidebar.maximized {
+      position: fixed;
+      top: var(--app-offset-top);
+      left: 0;
+      right: 0;
+      bottom: auto;
+      width: 100%;
+      height: var(--app-height);
+      z-index: 55;
+      border-left: 0;
+      box-shadow: none;
+      opacity: 1;
+      pointer-events: auto;
+      transform: none;
+      padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+    }
 
-      .diff-bulk-toggle {
-        padding-inline: 0.5rem;
-      }
-
-      .diff-bulk-toggle-all {
-        display: none;
-      }
+    .app.diff-maximized .diff-resize-handle {
+      display: none;
     }
 
     .diff-file-list {
@@ -400,6 +381,36 @@
       min-height: 0;
       overflow-y: auto;
     }
+
+    .diff-queue-status {
+      flex: none;
+      min-height: 1.15rem;
+      padding: 0.25rem 0.75rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.72rem;
+    }
+
+    .diff-queue-bar {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.6rem 0.75rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      box-shadow: 0 -6px 16px color-mix(in srgb, black 8%, transparent);
+    }
+
+    .diff-queue-bar[hidden] { display: none; }
+    .diff-queue-count { flex: 1; color: var(--text-muted); font-size: 0.78rem; font-weight: 650; }
+    .diff-queue-send,
+    .diff-queue-discard { min-height: 34px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 0.75rem; }
+    .diff-queue-send { padding: 0.35rem 0.65rem; border: 1px solid var(--accent); background: var(--accent); color: white; font-weight: 650; }
+    .diff-queue-discard { padding: 0.35rem 0.45rem; border: 0; background: transparent; color: var(--text-muted); }
+    .diff-queue-discard:hover { color: var(--text); }
+    .diff-queue-send:disabled,
+    .diff-queue-discard:disabled { opacity: 0.55; cursor: default; }
 
     .diff-file-row {
       position: sticky;
@@ -649,6 +660,8 @@
     }
 
     .diff-comment-affordance.has-comments { position: relative; color: var(--text-muted); }
+    .diff-comment-affordance.queued { color: var(--accent); }
+    .diff-comment-affordance.queued::before { border-style: dashed; }
     .diff-comment-affordance.has-comments::before {
       content: "";
       display: inline-block;
@@ -697,11 +710,28 @@
       font: inherit;
     }
     .diff-comment-editor-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.4rem; }
+    .diff-comment-send-split { position: relative; display: inline-flex; }
     .diff-comment-cancel,
     .diff-comment-send,
-    .diff-comment-follow-up { padding: 0.28rem 0.55rem; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 0.75rem; }
-    .diff-comment-send { border-color: var(--accent); background: var(--accent); color: white; }
+    .diff-comment-send-more,
+    .diff-comment-follow-up { min-height: 34px; padding: 0.28rem 0.55rem; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 0.75rem; }
+    .diff-comment-send { border-color: var(--accent); border-radius: 5px 0 0 5px; background: var(--accent); color: white; }
+    .diff-comment-send-more { min-width: 34px; padding-inline: 0.4rem; border-left: 1px solid color-mix(in srgb, white 35%, transparent); border-color: var(--accent); border-radius: 0 5px 5px 0; background: var(--accent); color: white; }
+    .diff-comment-send-menu { position: absolute; right: 0; bottom: calc(100% + 0.3rem); z-index: 5; min-width: 13rem; padding: 0.3rem; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-elevated, var(--surface)); box-shadow: var(--shadow-strong); }
+    .diff-comment-send-menu[hidden] { display: none; }
+    .diff-comment-send-option { display: grid; width: 100%; gap: 0.15rem; min-height: 34px; padding: 0.42rem 0.5rem; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .diff-comment-send-option:hover,
+    .diff-comment-send-option:focus-visible { background: var(--surface-2); }
+    .diff-comment-send-option small { color: var(--text-muted); font-size: 0.68rem; }
     .diff-comment-follow-up { margin-top: 0.5rem; }
+    .diff-comment-history-item.queued { border-left: 2px dashed var(--accent); padding-left: 0.45rem; }
+    .diff-comment-history-actions { display: flex; gap: 0.45rem; margin-top: 0.3rem; }
+    .diff-comment-history-edit,
+    .diff-comment-history-remove { min-height: 34px; padding: 0.2rem 0.35rem; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: 0.7rem; text-decoration: underline; }
+    .diff-comment-history-edit:hover,
+    .diff-comment-history-remove:hover { color: var(--text); }
+    .diff-comment-history-edit:disabled,
+    .diff-comment-history-remove:disabled { color: var(--text-muted); cursor: default; opacity: 0.55; }
 
     @media (hover: none), (pointer: coarse) {
       .diff-comment-affordance { opacity: 1; min-width: 2rem; min-height: 2rem; }
@@ -709,6 +739,9 @@
     }
 
     .diff-comment-message-body { display: grid; gap: 0.38rem; }
+    .diff-comment-message-summary { font-weight: 700; }
+    .diff-comment-message-block { display: grid; gap: 0.38rem; }
+    .diff-comment-message-block + .diff-comment-message-block { margin-top: 0.45rem; padding-top: 0.55rem; border-top: 1px solid var(--border); }
     .diff-comment-message-heading { color: var(--text-muted); font-size: 0.78rem; font-weight: 600; }
     .diff-comment-message-instruction { white-space: pre-wrap; overflow-wrap: anywhere; }
     .diff-comment-message-line { display: block; padding: 0.32rem 0.45rem; border-radius: 5px; background: var(--surface-2); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -768,6 +801,18 @@
       margin-left: 0;
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
+    }
+
+    .diff-toggle.has-queued .diff-toggle-badge::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 7px;
+      height: 7px;
+      border: 2px solid var(--surface);
+      border-radius: 50%;
+      background: var(--accent);
     }
 
     .diff-filter-row {
@@ -911,6 +956,10 @@
        so the diff panel becomes a right-side drawer opened via the toggle.
        No backdrop: the chat stays visible and interactive beside the drawer. */
     @media (max-width: 1099px) {
+      .diff-sidebar-maximize {
+        display: none;
+      }
+
       .app.diff-open,
       .app.sidebar-collapsed.diff-open {
         grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0px;
