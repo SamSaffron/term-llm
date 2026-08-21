@@ -19,6 +19,225 @@ import (
 
 const responsesWebSocketBetaHeader = "responses_websockets=2026-02-06"
 
+type responsesWebSocketFrameTypeError struct {
+	messageType int
+}
+
+func (e *responsesWebSocketFrameTypeError) Error() string {
+	return fmt.Sprintf("Responses WebSocket returned unsupported frame type %d", e.messageType)
+}
+
+type responsesWebSocketConnection struct {
+	conn *websocket.Conn
+
+	readMu         sync.Mutex
+	readQueue      [][]byte
+	readErr        error
+	readReady      chan struct{}
+	responseActive bool
+	idleTimeout    time.Duration
+	idleTimer      *time.Timer
+	idleGeneration uint64
+}
+
+func newResponsesWebSocketConnection(conn *websocket.Conn, idleTimeout time.Duration) *responsesWebSocketConnection {
+	if idleTimeout == 0 {
+		idleTimeout = 5 * time.Minute
+	}
+	ws := &responsesWebSocketConnection{
+		conn:        conn,
+		readReady:   make(chan struct{}, 1),
+		idleTimeout: idleTimeout,
+	}
+
+	pingHandler := conn.PingHandler()
+	conn.SetPingHandler(func(appData string) error {
+		ws.noteReadActivity()
+		return pingHandler(appData)
+	})
+	conn.SetPongHandler(func(string) error {
+		ws.noteReadActivity()
+		return nil
+	})
+
+	go ws.readPump()
+	return ws
+}
+
+func (c *responsesWebSocketConnection) readPump() {
+	for {
+		messageType, data, err := c.conn.ReadMessage()
+		if err != nil {
+			c.finishReading(err)
+			_ = c.conn.Close()
+			return
+		}
+		if messageType != websocket.TextMessage {
+			err := &responsesWebSocketFrameTypeError{messageType: messageType}
+			c.finishReading(err)
+			_ = c.conn.Close()
+			return
+		}
+
+		c.readMu.Lock()
+		if !c.responseActive {
+			err := errors.New("Responses WebSocket received an application frame while no response was active")
+			c.failReadingLocked(err)
+			c.readMu.Unlock()
+			c.signalReadReady()
+			_ = c.conn.Close()
+			return
+		}
+		c.armIdleTimerLocked()
+		c.readQueue = append(c.readQueue, data)
+		c.readMu.Unlock()
+		c.signalReadReady()
+	}
+}
+
+func (c *responsesWebSocketConnection) startResponse() error {
+	c.readMu.Lock()
+	if c.readErr != nil {
+		err := c.readErr
+		c.readMu.Unlock()
+		return err
+	}
+	if c.responseActive {
+		c.readMu.Unlock()
+		return errors.New("Responses WebSocket response already active")
+	}
+	if len(c.readQueue) != 0 {
+		err := errors.New("Responses WebSocket had stale application frames before response start")
+		c.failReadingLocked(err)
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+		return err
+	}
+	c.responseActive = true
+	c.armIdleTimerLocked()
+	c.readMu.Unlock()
+	return nil
+}
+
+func (c *responsesWebSocketConnection) finishResponse() {
+	c.readMu.Lock()
+	if !c.responseActive {
+		c.readMu.Unlock()
+		return
+	}
+	c.responseActive = false
+	c.disarmIdleTimerLocked()
+	stale := len(c.readQueue) != 0
+	if stale {
+		c.readQueue = nil
+		c.failReadingLocked(errors.New("Responses WebSocket received trailing application frames after response completion"))
+	}
+	c.readMu.Unlock()
+	if stale {
+		c.signalReadReady()
+		_ = c.conn.Close()
+	}
+}
+
+func (c *responsesWebSocketConnection) noteReadActivity() {
+	c.readMu.Lock()
+	if c.responseActive && c.readErr == nil {
+		c.armIdleTimerLocked()
+	}
+	c.readMu.Unlock()
+}
+
+func (c *responsesWebSocketConnection) armIdleTimerLocked() {
+	c.idleGeneration++
+	generation := c.idleGeneration
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+	}
+	c.idleTimer = time.AfterFunc(c.idleTimeout, func() {
+		c.readMu.Lock()
+		if !c.responseActive || c.readErr != nil || c.idleGeneration != generation {
+			c.readMu.Unlock()
+			return
+		}
+		c.failReadingLocked(fmt.Errorf("Responses WebSocket response idle timeout after %s", c.idleTimeout))
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+	})
+}
+
+func (c *responsesWebSocketConnection) disarmIdleTimerLocked() {
+	c.idleGeneration++
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+		c.idleTimer = nil
+	}
+}
+
+func (c *responsesWebSocketConnection) failReadingLocked(err error) {
+	if c.readErr == nil {
+		c.readErr = err
+	}
+	c.responseActive = false
+	c.disarmIdleTimerLocked()
+}
+
+func (c *responsesWebSocketConnection) finishReading(err error) {
+	c.readMu.Lock()
+	c.failReadingLocked(err)
+	c.readMu.Unlock()
+	c.signalReadReady()
+}
+
+func (c *responsesWebSocketConnection) signalReadReady() {
+	select {
+	case c.readReady <- struct{}{}:
+	default:
+	}
+}
+
+func (c *responsesWebSocketConnection) nextMessage(ctx context.Context) ([]byte, error) {
+	for {
+		c.readMu.Lock()
+		if len(c.readQueue) > 0 {
+			data := c.readQueue[0]
+			c.readQueue[0] = nil
+			c.readQueue = c.readQueue[1:]
+			if len(c.readQueue) == 0 {
+				c.readQueue = nil
+			}
+			c.readMu.Unlock()
+			return data, nil
+		}
+		err := c.readErr
+		c.readMu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.readReady:
+		}
+	}
+}
+
+func (c *responsesWebSocketConnection) healthy() bool {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	return c.readErr == nil
+}
+
+func (c *responsesWebSocketConnection) close() error {
+	c.readMu.Lock()
+	c.failReadingLocked(errors.New("Responses WebSocket connection closed"))
+	c.readMu.Unlock()
+	c.signalReadReady()
+	return c.conn.Close()
+}
+
 func responsesWebSocketURL(baseURL string) (string, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -86,49 +305,79 @@ func newResponsesWSRequest(req ResponsesRequest) responsesWSRequest {
 	}
 }
 
-func (c *ResponsesClient) writeResponsesWebSocketRequestLocked(conn *websocket.Conn, req ResponsesRequest, reused bool, debugRaw bool) error {
+func prepareResponsesWebSocketRequest(req ResponsesRequest, reused bool, debugRaw bool) ([]byte, error) {
 	wsReq := newResponsesWSRequest(req)
 	body, err := json.Marshal(wsReq)
 	if err != nil {
-		return fmt.Errorf("failed to marshal Responses WebSocket request: %w", err)
+		return nil, fmt.Errorf("failed to marshal Responses WebSocket request: %w", err)
 	}
 	if debugRaw {
 		var prettyBody bytes.Buffer
 		json.Indent(&prettyBody, body, "", "  ")
 		DebugRawSection(debugRaw, fmt.Sprintf("Responses WebSocket Request (reused=%t)", reused), prettyBody.String())
 	}
+	return body, nil
+}
+
+func (c *ResponsesClient) writeResponsesWebSocketRequestLocked(conn *responsesWebSocketConnection, body []byte) error {
 	writeTimeout := c.WebSocketWriteTimeout
 	if writeTimeout == 0 {
 		writeTimeout = 30 * time.Second
 	}
-	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+	if err := conn.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return fmt.Errorf("set Responses WebSocket write deadline: %w", err)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, body); err != nil {
+	if err := conn.conn.WriteMessage(websocket.TextMessage, body); err != nil {
 		return fmt.Errorf("write Responses WebSocket request: %w", err)
 	}
-	_ = conn.SetWriteDeadline(time.Time{})
+	_ = conn.conn.SetWriteDeadline(time.Time{})
 	return nil
 }
 
 func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem, debugRaw bool, responseStateGeneration uint64) (Stream, error) {
 	c.wsMu.Lock()
-	wireReq := c.prepareWebSocketContinuationLocked(req, buildContinuationInput, buildFullInput)
 
-	conn, reused, err := c.ensureWebSocket(ctx, wireReq)
+	conn, reused, err := c.ensureWebSocket(ctx, req)
 	if err != nil {
 		c.wsMu.Unlock()
 		return nil, err
 	}
 
-	if err := c.writeResponsesWebSocketRequestLocked(conn, wireReq, reused, debugRaw); err != nil {
-		c.discardWebSocketLocked()
+	wireReq := c.prepareWebSocketContinuationLocked(req, buildContinuationInput, buildFullInput)
+	if c.WebSocketServerState && !reused {
+		// ChatGPT's previous_response_id chain is local to a WebSocket. A fresh
+		// connection cannot continue state created by the socket it replaced.
+		c.clearLastResponseIDIfGeneration(responseStateGeneration, wireReq.SessionID, wireReq.PreviousResponseID)
+		c.wsLastRequest = nil
+		wireReq.PreviousResponseID = ""
+		wireReq.Input = buildFullInput()
+	}
+
+	body, err := prepareResponsesWebSocketRequest(wireReq, reused, debugRaw)
+	if err != nil {
 		c.wsMu.Unlock()
 		return nil, err
 	}
 
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer c.wsMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := conn.startResponse(); err != nil {
+			c.discardWebSocketLocked()
+			return err
+		}
+		responseActive := true
+		defer func() {
+			if responseActive {
+				conn.finishResponse()
+			}
+		}()
+		if err := c.writeResponsesWebSocketRequestLocked(conn, body); err != nil {
+			c.discardWebSocketLocked()
+			return err
+		}
 
 		ctxDone := make(chan struct{})
 		var stopCtxWatcher sync.Once
@@ -147,7 +396,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 					return
 				default:
 				}
-				_ = conn.Close()
+				_ = conn.close()
 			case <-ctxDone:
 			}
 		}()
@@ -155,39 +404,22 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 
 		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled(), wireReq.SessionID, wireReq.suppressReasoningSummaryDeltas())
 		retriedFullState := false
-		idleTimeout := c.WebSocketIdleTimeout
-		if idleTimeout == 0 {
-			idleTimeout = 5 * time.Minute
-		}
-		if !reused {
-			pingHandler := conn.PingHandler()
-			conn.SetPingHandler(func(appData string) error {
-				if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
-					return err
-				}
-				return pingHandler(appData)
-			})
-		}
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(idleTimeout))
-		})
 
 		for {
-			_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
-			messageType, data, err := conn.ReadMessage()
+			data, err := conn.nextMessage(ctx)
 			if err != nil {
 				c.discardWebSocketLocked()
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				var frameTypeErr *responsesWebSocketFrameTypeError
+				if errors.As(err, &frameTypeErr) {
+					return frameTypeErr
+				}
 				if finishErr := handler.FinishIncomplete(send); finishErr != nil {
 					return &StreamIncompleteError{Transport: "Responses WebSocket", Terminal: "response.completed", Err: finishErr}
 				}
 				return &StreamIncompleteError{Transport: "Responses WebSocket", Terminal: "response.completed", Err: err}
-			}
-			if messageType != websocket.TextMessage {
-				c.discardWebSocketLocked()
-				return fmt.Errorf("Responses WebSocket returned unsupported frame type %d", messageType)
 			}
 
 			eventType, err := responsesJSONEventType(data)
@@ -227,7 +459,12 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 					if debugRaw {
 						DebugRawSection(debugRaw, "Responses WebSocket Full-State Retry", err.Error())
 					}
-					if err := c.writeResponsesWebSocketRequestLocked(conn, wireReq, true, debugRaw); err != nil {
+					retryBody, prepareErr := prepareResponsesWebSocketRequest(wireReq, true, debugRaw)
+					if prepareErr != nil {
+						c.discardWebSocketLocked()
+						return prepareErr
+					}
+					if err := c.writeResponsesWebSocketRequestLocked(conn, retryBody); err != nil {
 						c.discardWebSocketLocked()
 						return err
 					}
@@ -240,6 +477,12 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 				break
 			}
 		}
+
+		// Park the pump before publishing EventDone. Any already-queued trailing
+		// application frame invalidates the connection, and subsequent pings/closes
+		// remain serviced without an inference idle timer.
+		conn.finishResponse()
+		responseActive = false
 
 		// Stop the cancellation watcher before emitting the terminal EventDone.
 		// Consumers commonly call Close immediately after receiving EventDone; if the
@@ -272,7 +515,8 @@ func isPreviousResponseIDRejected(err error) bool {
 		}
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "previous_response_id") && (strings.Contains(msg, "unsupported") || strings.Contains(msg, "not found"))
+	return strings.Contains(msg, "previous_response_id") &&
+		(strings.Contains(msg, "invalid") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "not found"))
 }
 
 func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, buildContinuationInput func() []ResponsesInputItem, buildFullInput func() []ResponsesInputItem) ResponsesRequest {
@@ -297,11 +541,15 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 	}
 
 	if c.wsLastRequest == nil {
+		if c.WebSocketServerState {
+			// Connection-local continuation has no baseline on this socket.
+			return useFullInput()
+		}
+		// Other Responses providers may expose durable previous_response_id state
+		// that predates this client connection.
 		if req.Input != nil {
 			return req
 		}
-		// Reuse the already-incremental continuation when available so a resumed
-		// previous_response_id chain does not rebuild the full transcript locally.
 		if continuation := buildContinuationInput(); len(continuation) > 0 {
 			req.Input = continuation
 			return req
@@ -616,7 +864,7 @@ func jsonStringValueForCompare(v reflect.Value) (string, bool) {
 	return v.String(), true
 }
 
-func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*websocket.Conn, bool, error) {
+func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*responsesWebSocketConnection, bool, error) {
 	betaHeader := ""
 	if c.ExtraHeaders != nil {
 		betaHeader = c.ExtraHeaders["OpenAI-Beta"]
@@ -626,12 +874,12 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	}
 	betaHeader = composeBetaHeader(betaHeader, responsesWebSocketBetaHeader)
 	if c.wsConn != nil {
-		if c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader {
+		if c.wsConn.healthy() && c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader {
 			return c.wsConn, true, nil
 		}
-		// SessionID is sent as a WebSocket handshake header for providers that bind
-		// session state to the connection (notably ChatGPT). Reconnect rather than
-		// reusing a socket authenticated for a different session.
+		// SessionID and feature betas are WebSocket handshake state. A read
+		// error also makes the connection ineligible for reuse, even when it
+		// arrived while no response stream was consuming application frames.
 		c.discardWebSocketLocked()
 	}
 	wsURL := c.WebSocketURL
@@ -682,10 +930,10 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 					defer retryCancel()
 					conn, retryResp, retryErr := dialOnce(retryCtx, headerWithFreshAuth(header, c))
 					if retryErr == nil {
-						c.wsConn = conn
+						c.wsConn = newResponsesWebSocketConnection(conn, c.WebSocketIdleTimeout)
 						c.wsConnSessionID = req.SessionID
 						c.wsConnBetaHeader = betaHeader
-						return conn, false, nil
+						return c.wsConn, false, nil
 					}
 					if retryResp != nil {
 						defer closeWebSocketHandshakeResponse(retryResp)
@@ -701,10 +949,10 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 		}
 		return nil, false, fmt.Errorf("connect Responses WebSocket: %w", err)
 	}
-	c.wsConn = conn
+	c.wsConn = newResponsesWebSocketConnection(conn, c.WebSocketIdleTimeout)
 	c.wsConnSessionID = req.SessionID
 	c.wsConnBetaHeader = betaHeader
-	return conn, false, nil
+	return c.wsConn, false, nil
 }
 
 func closeWebSocketHandshakeResponse(resp *http.Response) {
@@ -734,9 +982,9 @@ func (c *ResponsesClient) discardWebSocketLocked() {
 		return
 	}
 	closeTimeout := 5 * time.Second
-	_ = c.wsConn.SetWriteDeadline(time.Now().Add(closeTimeout))
-	_ = c.wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	_ = c.wsConn.Close()
+	_ = c.wsConn.conn.SetWriteDeadline(time.Now().Add(closeTimeout))
+	_ = c.wsConn.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	_ = c.wsConn.close()
 	c.wsConn = nil
 	c.wsConnSessionID = ""
 	c.wsConnBetaHeader = ""

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -341,15 +342,15 @@ func TestResponsesWebSocketCompletionStoresLightweightLastRequest(t *testing.T) 
 		t.Fatalf("Close: %v", err)
 	}
 
-	if fullInputCalls.Load() != 0 {
-		t.Fatalf("buildFullInput calls = %d, want 0", fullInputCalls.Load())
+	if fullInputCalls.Load() != 1 {
+		t.Fatalf("buildFullInput calls = %d, want 1 for fresh connection", fullInputCalls.Load())
 	}
-	if gotReq["previous_response_id"] != "resp_prev" {
-		t.Fatalf("previous_response_id = %#v, want resp_prev", gotReq["previous_response_id"])
+	if _, ok := gotReq["previous_response_id"]; ok {
+		t.Fatalf("fresh connection sent previous_response_id: %#v", gotReq)
 	}
 	input, ok := gotReq["input"].([]any)
-	if !ok || len(input) != 1 || !strings.Contains(toJSON(input[0]), "two") {
-		t.Fatalf("input = %#v, want only continuation input", gotReq["input"])
+	if !ok || len(input) != 3 || !strings.Contains(toJSON(input[0]), "one") || !strings.Contains(toJSON(input[2]), "two") {
+		t.Fatalf("input = %#v, want full transcript on fresh connection", gotReq["input"])
 	}
 
 	client.wsMu.Lock()
@@ -626,6 +627,583 @@ func TestResponsesClientWebSocketServerPingsKeepStreamAlive(t *testing.T) {
 		case EventError:
 			t.Fatalf("stream error: %v", event.Err)
 		}
+	}
+}
+
+func TestResponsesClientWebSocketServerPingReceivesPongWhileIdle(t *testing.T) {
+	const idleTimeout = 40 * time.Millisecond
+
+	var handshakeCount atomic.Int32
+	pingWhileIdle := make(chan struct{}, 1)
+	pongReceived := make(chan string, 1)
+	serverDone := make(chan struct{})
+	var serverDoneOnce sync.Once
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer serverDoneOnce.Do(func() { close(serverDone) })
+		handshakeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read first request: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_1"}}); err != nil {
+			t.Errorf("write first completion: %v", err)
+			return
+		}
+
+		<-pingWhileIdle
+		conn.SetPongHandler(func(appData string) error {
+			select {
+			case pongReceived <- appData:
+			default:
+			}
+			return nil
+		})
+		if err := conn.WriteControl(websocket.PingMessage, []byte("idle-heartbeat"), time.Now().Add(5*time.Second)); err != nil {
+			t.Errorf("write idle ping: %v", err)
+			return
+		}
+
+		// ReadMessage drives the server-side pong handler and then returns the
+		// second response.create on the same connection.
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read second request: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_2"}}); err != nil {
+			t.Errorf("write second completion: %v", err)
+		}
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case pingWhileIdle <- struct{}{}:
+		default:
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := &ResponsesClient{
+		BaseURL:              server.URL,
+		UseWebSocket:         true,
+		WebSocketIdleTimeout: idleTimeout,
+	}
+	first, err := client.Stream(ctx, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("first Stream: %v", err)
+	}
+	drainStreamToDone(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first stream: %v", err)
+	}
+
+	parked := time.NewTimer(5 * idleTimeout)
+	select {
+	case <-parked.C:
+	case <-ctx.Done():
+		parked.Stop()
+		t.Fatalf("waiting beyond the active-response idle timeout: %v", ctx.Err())
+	}
+	pingWhileIdle <- struct{}{}
+	select {
+	case pong := <-pongReceived:
+		if pong != "idle-heartbeat" {
+			t.Fatalf("pong payload = %q, want idle-heartbeat", pong)
+		}
+	case <-ctx.Done():
+		t.Fatalf("idle ping was not answered: %v", ctx.Err())
+	}
+
+	second, err := client.Stream(ctx, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "second"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	drainStreamToDone(t, second)
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second stream: %v", err)
+	}
+	select {
+	case <-serverDone:
+	case <-ctx.Done():
+		t.Fatalf("server did not finish: %v", ctx.Err())
+	}
+	if got := handshakeCount.Load(); got != 1 {
+		t.Fatalf("WebSocket handshakes = %d, want 1 reused connection", got)
+	}
+}
+
+func TestResponsesClientWebSocketIdleCloseReconnectsNextRequest(t *testing.T) {
+	var handshakeCount atomic.Int32
+	closeWhileIdle := make(chan struct{}, 1)
+	closeObserved := make(chan error, 1)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshake := handshakeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade %d: %v", handshake, err)
+			return
+		}
+		defer conn.Close()
+
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read request %d: %v", handshake, err)
+			return
+		}
+		var wireReq map[string]any
+		if err := json.Unmarshal(msg, &wireReq); err != nil {
+			t.Errorf("decode request %d: %v", handshake, err)
+			return
+		}
+		if handshake == 2 {
+			if previousResponseID, ok := wireReq["previous_response_id"]; ok {
+				_ = conn.WriteJSON(map[string]any{
+					"type":   "response.failed",
+					"status": 400,
+					"response": map[string]any{
+						"error": map[string]any{"code": "invalid_request_error", "message": "Invalid previous_response_id"},
+					},
+				})
+				t.Errorf("reconnected request sent connection-local previous_response_id %#v", previousResponseID)
+				return
+			}
+			input, ok := wireReq["input"].([]any)
+			if !ok || len(input) != 3 || !strings.Contains(toJSON(input[0]), "first") || !strings.Contains(toJSON(input[2]), "second") {
+				t.Errorf("reconnected input = %#v, want full three-item transcript", wireReq["input"])
+				return
+			}
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp_%d", handshake)}}); err != nil {
+			t.Errorf("write completion %d: %v", handshake, err)
+			return
+		}
+		if handshake != 1 {
+			return
+		}
+
+		<-closeWhileIdle
+		if err := conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "idle close"), time.Now().Add(5*time.Second)); err != nil {
+			t.Errorf("write idle close: %v", err)
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _, readErr := conn.ReadMessage() // Wait until the client's read pump replies to the close.
+		closeObserved <- readErr
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case closeWhileIdle <- struct{}{}:
+		default:
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := &ResponsesClient{
+		BaseURL:              server.URL,
+		UseWebSocket:         true,
+		DisableServerState:   true,
+		WebSocketServerState: true,
+	}
+	first, err := client.Stream(ctx, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("first Stream: %v", err)
+	}
+	drainStreamToDone(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first stream: %v", err)
+	}
+
+	closeWhileIdle <- struct{}{}
+	select {
+	case closeErr := <-closeObserved:
+		if !websocket.IsCloseError(closeErr, websocket.CloseNormalClosure) {
+			t.Fatalf("client did not service idle close with a close reply: %v", closeErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("idle close was not serviced: %v", ctx.Err())
+	}
+
+	second, err := client.Stream(ctx, ResponsesRequest{
+		Model: "gpt-test",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "first"},
+			{Type: "message", Role: "assistant", Content: "first response"},
+			{Type: "message", Role: "user", Content: "second"},
+		},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	drainStreamToDone(t, second)
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second stream: %v", err)
+	}
+	if got := handshakeCount.Load(); got != 2 {
+		t.Fatalf("WebSocket handshakes = %d, want reconnect after idle close", got)
+	}
+}
+
+func TestResponsesClientWebSocketApplicationFrameWhileIdleReconnects(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame map[string]any
+	}{
+		{
+			name: "generic error",
+			frame: map[string]any{
+				"type":  "error",
+				"error": map[string]any{"code": "server_error", "message": "idle server error"},
+			},
+		},
+		{
+			name: "connection limit reached",
+			frame: map[string]any{
+				"type":  "error",
+				"error": map[string]any{"code": "websocket_connection_limit_reached", "message": "connection expired"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var handshakeCount atomic.Int32
+			sendIdleFrame := make(chan struct{})
+			idleConnectionClosed := make(chan error, 1)
+			secondRequest := make(chan map[string]any, 1)
+
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handshake := handshakeCount.Add(1)
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("upgrade %d: %v", handshake, err)
+					return
+				}
+				defer conn.Close()
+
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					t.Errorf("read request %d: %v", handshake, err)
+					return
+				}
+				if handshake == 1 {
+					if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_1"}}); err != nil {
+						t.Errorf("write first completion: %v", err)
+						return
+					}
+					<-sendIdleFrame
+					if err := conn.WriteJSON(tt.frame); err != nil {
+						t.Errorf("write idle frame: %v", err)
+						return
+					}
+					_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					_, _, err = conn.ReadMessage()
+					idleConnectionClosed <- err
+					return
+				}
+
+				var wireReq map[string]any
+				if err := json.Unmarshal(msg, &wireReq); err != nil {
+					t.Errorf("decode reconnected request: %v", err)
+					return
+				}
+				secondRequest <- wireReq
+				if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_2"}}); err != nil {
+					t.Errorf("write second completion: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			client := &ResponsesClient{
+				BaseURL:              server.URL,
+				UseWebSocket:         true,
+				DisableServerState:   true,
+				WebSocketServerState: true,
+			}
+			defer client.closeWebSocket()
+
+			first, err := client.Stream(ctx, ResponsesRequest{
+				Model:  "gpt-test",
+				Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}},
+				Stream: true,
+			}, false)
+			if err != nil {
+				t.Fatalf("first Stream: %v", err)
+			}
+			drainStreamToDone(t, first)
+			if err := first.Close(); err != nil {
+				t.Fatalf("close first stream: %v", err)
+			}
+
+			close(sendIdleFrame)
+			select {
+			case closeErr := <-idleConnectionClosed:
+				if closeErr == nil {
+					t.Fatal("idle application frame did not make the connection close")
+				}
+			case <-ctx.Done():
+				t.Fatalf("idle application frame was not discarded: %v", ctx.Err())
+			}
+
+			second, err := client.Stream(ctx, ResponsesRequest{
+				Model: "gpt-test",
+				Input: []ResponsesInputItem{
+					{Type: "message", Role: "user", Content: "first"},
+					{Type: "message", Role: "assistant", Content: "first response"},
+					{Type: "message", Role: "user", Content: "second"},
+				},
+				Stream: true,
+			}, false)
+			if err != nil {
+				t.Fatalf("second Stream: %v", err)
+			}
+			drainStreamToDone(t, second)
+			if err := second.Close(); err != nil {
+				t.Fatalf("close second stream: %v", err)
+			}
+
+			var wireReq map[string]any
+			select {
+			case wireReq = <-secondRequest:
+			case <-ctx.Done():
+				t.Fatalf("reconnected request was not observed: %v", ctx.Err())
+			}
+			if _, ok := wireReq["previous_response_id"]; ok {
+				t.Fatalf("reconnected request sent connection-local previous_response_id: %#v", wireReq)
+			}
+			input, ok := wireReq["input"].([]any)
+			if !ok || len(input) != 3 || !strings.Contains(toJSON(input[0]), "first") || !strings.Contains(toJSON(input[2]), "second") {
+				t.Fatalf("reconnected input = %#v, want full three-item transcript", wireReq["input"])
+			}
+			if got := handshakeCount.Load(); got != 2 {
+				t.Fatalf("WebSocket handshakes = %d, want reconnect after idle application frame", got)
+			}
+		})
+	}
+}
+
+func TestResponsesClientWebSocketTrailingFrameAfterCompletionReconnects(t *testing.T) {
+	var handshakeCount atomic.Int32
+	firstConnectionClosed := make(chan error, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshake := handshakeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade %d: %v", handshake, err)
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read request %d: %v", handshake, err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp_%d", handshake)}}); err != nil {
+			t.Errorf("write completion %d: %v", handshake, err)
+			return
+		}
+		if handshake != 1 {
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"code": "server_error", "message": "trailing error"},
+		}); err != nil {
+			t.Errorf("write trailing frame: %v", err)
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _, err = conn.ReadMessage()
+		firstConnectionClosed <- err
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	defer client.closeWebSocket()
+	request := ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "request"}},
+		Stream: true,
+	}
+
+	first, err := client.Stream(ctx, request, false)
+	if err != nil {
+		t.Fatalf("first Stream: %v", err)
+	}
+	drainStreamToDone(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first stream: %v", err)
+	}
+	select {
+	case closeErr := <-firstConnectionClosed:
+		if closeErr == nil {
+			t.Fatal("trailing application frame did not make the connection close")
+		}
+	case <-ctx.Done():
+		t.Fatalf("trailing application frame was not discarded: %v", ctx.Err())
+	}
+
+	second, err := client.Stream(ctx, request, false)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	drainStreamToDone(t, second)
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second stream: %v", err)
+	}
+	if got := handshakeCount.Load(); got != 2 {
+		t.Fatalf("WebSocket handshakes = %d, want reconnect after trailing frame", got)
+	}
+}
+
+func TestResponsesClientWebSocketWriteFailureReconnectSendsFullState(t *testing.T) {
+	withResponsesWebSocketBaseBackoff(t, 0)
+
+	var handshakeCount atomic.Int32
+	releaseFirstConnection := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshake := handshakeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade %d: %v", handshake, err)
+			return
+		}
+		defer conn.Close()
+
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read request %d: %v", handshake, err)
+			return
+		}
+		var wireReq map[string]any
+		if err := json.Unmarshal(msg, &wireReq); err != nil {
+			t.Errorf("decode request %d: %v", handshake, err)
+			return
+		}
+		if handshake == 2 {
+			if previousResponseID, ok := wireReq["previous_response_id"]; ok {
+				t.Errorf("write-failure reconnect sent connection-local previous_response_id %#v", previousResponseID)
+				return
+			}
+			input, ok := wireReq["input"].([]any)
+			if !ok || len(input) != 3 || !strings.Contains(toJSON(input[0]), "first") || !strings.Contains(toJSON(input[2]), "second") {
+				t.Errorf("write-failure reconnect input = %#v, want full three-item transcript", wireReq["input"])
+				return
+			}
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp_%d", handshake)}}); err != nil {
+			t.Errorf("write completion %d: %v", handshake, err)
+			return
+		}
+		if handshake == 1 {
+			<-releaseFirstConnection
+		}
+	}))
+	defer server.Close()
+	defer close(releaseFirstConnection)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := &ResponsesClient{
+		BaseURL:              server.URL,
+		UseWebSocket:         true,
+		DisableServerState:   true,
+		WebSocketServerState: true,
+	}
+	first, err := client.Stream(ctx, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("first Stream: %v", err)
+	}
+	drainStreamToDone(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first stream: %v", err)
+	}
+
+	client.wsMu.Lock()
+	conn := client.wsConn
+	if conn != nil {
+		err = conn.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "poison next write"), time.Now().Add(5*time.Second))
+	}
+	client.wsMu.Unlock()
+	if conn == nil {
+		t.Fatal("WebSocket connection was not retained after first stream")
+	}
+	if err != nil {
+		t.Fatalf("poison WebSocket write path: %v", err)
+	}
+
+	second, err := client.Stream(ctx, ResponsesRequest{
+		Model: "gpt-test",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "first"},
+			{Type: "message", Role: "assistant", Content: "first response"},
+			{Type: "message", Role: "user", Content: "second"},
+		},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	retries := 0
+	for {
+		event, recvErr := second.Recv()
+		if recvErr != nil {
+			t.Fatalf("second Recv: %v", recvErr)
+		}
+		switch event.Type {
+		case EventRetry:
+			retries++
+		case EventDone:
+			goto secondDone
+		case EventError:
+			t.Fatalf("second stream error: %v", event.Err)
+		}
+	}
+
+secondDone:
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second stream: %v", err)
+	}
+	if retries != 1 {
+		t.Fatalf("retry events = %d, want 1 for reused write failure", retries)
+	}
+	if got := handshakeCount.Load(); got != 2 {
+		t.Fatalf("WebSocket handshakes = %d, want one write-failure reconnect", got)
 	}
 }
 
@@ -1146,93 +1724,128 @@ func TestResponsesClientHTTPFallbackWithWebSocketOnlyServerStateSendsFullInput(t
 }
 
 func TestResponsesClientWebSocketPreviousResponseRejectedRetriesFullState(t *testing.T) {
-	var secondRequest map[string]any
-	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrade: %v", err)
-			return
-		}
-		defer conn.Close()
-
-		// First stream establishes a response id.
-		_, _, err = conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read first request: %v", err)
-			return
-		}
-		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_1"}})
-
-		// Second stream first attempts previous_response_id.
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read incremental request: %v", err)
-			return
-		}
-		var incremental map[string]any
-		_ = json.Unmarshal(msg, &incremental)
-		if incremental["previous_response_id"] != "resp_1" {
-			t.Errorf("incremental previous_response_id = %#v", incremental["previous_response_id"])
-		}
-		_ = conn.WriteJSON(map[string]any{
-			"type":   "response.failed",
-			"status": 400,
-			"response": map[string]any{
-				"error": map[string]any{"code": "previous_response_not_found", "message": "Previous response not found", "param": "previous_response_id"},
+	tests := []struct {
+		name     string
+		apiError map[string]any
+	}{
+		{
+			name: "structured previous response not found",
+			apiError: map[string]any{
+				"code":    "previous_response_not_found",
+				"message": "Previous response not found",
+				"param":   "previous_response_id",
 			},
+		},
+		{
+			name: "invalid previous response id",
+			apiError: map[string]any{
+				"code":    "invalid_request_error",
+				"message": "Invalid previous_response_id",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			secondRequest := make(chan map[string]any, 1)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("upgrade: %v", err)
+					return
+				}
+				defer conn.Close()
+
+				// First stream establishes a response id.
+				if _, _, err := conn.ReadMessage(); err != nil {
+					t.Errorf("read first request: %v", err)
+					return
+				}
+				if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_1"}}); err != nil {
+					t.Errorf("write first completion: %v", err)
+					return
+				}
+
+				// Second stream first attempts connection-local continuation.
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					t.Errorf("read incremental request: %v", err)
+					return
+				}
+				var incremental map[string]any
+				if err := json.Unmarshal(msg, &incremental); err != nil {
+					t.Errorf("decode incremental request: %v", err)
+					return
+				}
+				if incremental["previous_response_id"] != "resp_1" {
+					t.Errorf("incremental previous_response_id = %#v", incremental["previous_response_id"])
+					return
+				}
+				if err := conn.WriteJSON(map[string]any{
+					"type":   "response.failed",
+					"status": 400,
+					"response": map[string]any{
+						"error": tt.apiError,
+					},
+				}); err != nil {
+					t.Errorf("write continuation rejection: %v", err)
+					return
+				}
+
+				// Client should retry the same turn as full state on this connection.
+				_, msg, err = conn.ReadMessage()
+				if err != nil {
+					t.Errorf("read full-state retry: %v", err)
+					return
+				}
+				var fullState map[string]any
+				if err := json.Unmarshal(msg, &fullState); err != nil {
+					t.Errorf("decode full-state retry: %v", err)
+					return
+				}
+				secondRequest <- fullState
+				if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_2"}}); err != nil {
+					t.Errorf("write second completion: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true, WebSocketServerState: true, DisableServerState: true}
+			defer client.closeWebSocket()
+			discoveryCall := ResponsesInputItem{Raw: json.RawMessage(`{"type":"tool_search_call","execution":"client","call_id":"search-1","status":"completed","arguments":{"query":"eta"}}`)}
+			discoveryOutput := ResponsesInputItem{Raw: json.RawMessage(`{"type":"tool_search_output","execution":"client","call_id":"search-1","status":"completed","tools":[{"type":"function","name":"eta","description":"eta","defer_loading":true,"parameters":{"type":"object"}}]}`)}
+			for _, input := range [][]ResponsesInputItem{
+				{{Type: "message", Role: "user", Content: "one"}},
+				{{Type: "message", Role: "user", Content: "one"}, discoveryCall, discoveryOutput, {Type: "message", Role: "user", Content: "two"}},
+			} {
+				stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: input, Stream: true}, false)
+				if err != nil {
+					t.Fatalf("Stream: %v", err)
+				}
+				drainStreamToDone(t, stream)
+				if err := stream.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+			}
+
+			fullState := <-secondRequest
+			if _, ok := fullState["previous_response_id"]; ok {
+				t.Fatalf("full-state retry still had previous_response_id: %#v", fullState)
+			}
+			input, ok := fullState["input"].([]any)
+			if !ok || len(input) != 4 {
+				t.Fatalf("full-state retry input = %#v, want message plus discovery call/output plus continuation", fullState["input"])
+			}
+			var types []string
+			for _, value := range input {
+				item, _ := value.(map[string]any)
+				types = append(types, fmt.Sprint(item["type"]))
+			}
+			if got := strings.Join(types, ","); got != "message,tool_search_call,tool_search_output,message" {
+				t.Fatalf("full-state retry item types = %s", got)
+			}
 		})
-
-		// Client should retry the same turn as full state on the same connection.
-		_, msg, err = conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read full-state retry: %v", err)
-			return
-		}
-		_ = json.Unmarshal(msg, &secondRequest)
-		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_2"}})
-	}))
-	defer server.Close()
-
-	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true, WebSocketServerState: true, DisableServerState: true}
-	discoveryCall := ResponsesInputItem{Raw: json.RawMessage(`{"type":"tool_search_call","execution":"client","call_id":"search-1","status":"completed","arguments":{"query":"eta"}}`)}
-	discoveryOutput := ResponsesInputItem{Raw: json.RawMessage(`{"type":"tool_search_output","execution":"client","call_id":"search-1","status":"completed","tools":[{"type":"function","name":"eta","description":"eta","defer_loading":true,"parameters":{"type":"object"}}]}`)}
-	for _, input := range [][]ResponsesInputItem{
-		{{Type: "message", Role: "user", Content: "one"}},
-		{{Type: "message", Role: "user", Content: "one"}, discoveryCall, discoveryOutput, {Type: "message", Role: "user", Content: "two"}},
-	} {
-		stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: input, Stream: true}, false)
-		if err != nil {
-			t.Fatalf("Stream: %v", err)
-		}
-		for {
-			event, err := stream.Recv()
-			if err != nil {
-				t.Fatalf("Recv: %v", err)
-			}
-			if event.Type == EventDone {
-				break
-			}
-			if event.Type == EventError {
-				t.Fatalf("stream error: %v", event.Err)
-			}
-		}
-		_ = stream.Close()
-	}
-	if _, ok := secondRequest["previous_response_id"]; ok {
-		t.Fatalf("full-state retry still had previous_response_id: %#v", secondRequest)
-	}
-	input, ok := secondRequest["input"].([]any)
-	if !ok || len(input) != 4 {
-		t.Fatalf("full-state retry input = %#v, want message plus discovery call/output plus continuation", secondRequest["input"])
-	}
-	var types []string
-	for _, value := range input {
-		item, _ := value.(map[string]any)
-		types = append(types, fmt.Sprint(item["type"]))
-	}
-	if got := strings.Join(types, ","); got != "message,tool_search_call,tool_search_output,message" {
-		t.Fatalf("full-state retry item types = %s", got)
 	}
 }
 

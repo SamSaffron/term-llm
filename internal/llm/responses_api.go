@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const maxResponsesAPIErrorBodyBytes = 64 * 1024
@@ -54,7 +52,7 @@ type ResponsesClient struct {
 	WebSocketIdleTimeout    time.Duration
 	websocketDisabled       bool
 	wsMu                    sync.Mutex
-	wsConn                  *websocket.Conn
+	wsConn                  *responsesWebSocketConnection
 	wsConnSessionID         string
 	wsConnBetaHeader        string
 	wsLastRequest           *ResponsesRequest
