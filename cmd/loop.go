@@ -325,14 +325,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		defer toolMgr.ApprovalMgr.Close()
 	}
 	if toolMgr != nil {
-		providerCfg := cfg.GetActiveProviderConfig()
-		model := ""
-		if providerCfg != nil {
-			model = providerCfg.Model
-		}
 		// Loop auto is treated as unattended: Guardian must initialize before the
 		// loop starts rather than degrading to an interactive prompt policy.
-		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, cfg.DefaultProvider, model, approvalRuntimeOptions{Headless: true}); err != nil {
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, approvalRuntimeOptions{Headless: true}); err != nil {
 			return err
 		}
 		reportApprovalMode(cmd.ErrOrStderr(), loopDebug, resolvedApproval, toolMgr.ApprovalMgr)

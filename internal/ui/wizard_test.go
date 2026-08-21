@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestHasTTYRejectsCI(t *testing.T) {
@@ -87,5 +89,25 @@ func TestValidateProviderSelectionRejectsUnavailableAPIKeyProvider(t *testing.T)
 	_, err := validateProviderSelection(providers, "openai")
 	if err == nil {
 		t.Fatal("expected unavailable OpenAI provider to be rejected")
+	}
+}
+
+func TestDefaultWizardProviderConfigsIncludeFastModelsForEveryProvider(t *testing.T) {
+	providers := defaultWizardProviderConfigs()
+	for _, option := range detectAvailableProviders() {
+		provider, model := wizardGuardianDefault(option.value, providers)
+		if provider == "" || model == "" {
+			t.Fatalf("wizard Guardian default for %q = %s:%s", option.value, provider, model)
+		}
+	}
+}
+
+func TestWizardGuardianDefaultUsesSelectedProviderFastModel(t *testing.T) {
+	providers := map[string]config.ProviderConfig{
+		"main": {Model: "large", FastProvider: "control", FastModel: "small"},
+	}
+	provider, model := wizardGuardianDefault("main", providers)
+	if provider != "control" || model != "small" {
+		t.Fatalf("wizardGuardianDefault() = %s:%s, want control:small", provider, model)
 	}
 }

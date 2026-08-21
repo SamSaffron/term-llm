@@ -188,12 +188,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		// edit runs without a session ID, so file-change recording no-ops;
 		// wiring is kept so recording activates if this flow gains sessions.
 		wireFileRecorder(toolMgr.Registry, cfg)
-		providerCfg := cfg.GetActiveProviderConfig()
-		model := ""
-		if providerCfg != nil {
-			model = providerCfg.Model
-		}
-		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, cfg.DefaultProvider, model, approvalRuntimeOptions{WarningWriter: cmd.ErrOrStderr()}); err != nil {
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, approvalRuntimeOptions{}); err != nil {
 			return err
 		}
 		reportApprovalMode(cmd.ErrOrStderr(), editDebug, resolvedApproval, toolMgr.ApprovalMgr)

@@ -572,7 +572,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	})
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
-		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
+		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{
 			PrepareCallbacks: true,
 			WarningWriter:    cmd.ErrOrStderr(),
 		}); err != nil {
@@ -596,7 +596,7 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 			return nil, wireErr
 		}
 	} else {
-		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{
+		if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{
 			PrepareCallbacks: true,
 			WarningWriter:    cmd.ErrOrStderr(),
 		}); err != nil {
@@ -781,9 +781,6 @@ func buildChatSessionRuntime(ctx context.Context, cmd *cobra.Command, launch cha
 	}, currentRuntimeContext)
 	model.SetHandoverSystemPromptResolver(func(targetAgent *agents.Agent, providerKey, modelName string) (string, error) {
 		return resolveChatHandoverSystemPrompt(cmd, targetAgent, providerKey, modelName)
-	})
-	model.SetGuardianReviewerRefresh(func(providerKey, modelName string) error {
-		return installGuardianReviewerCallbacks(cfg, approvalMgr, providerKey, modelName, false)
 	})
 	model.SetAgentLister(ListAgentNames)
 	if agent != nil {

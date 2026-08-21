@@ -445,7 +445,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	}
 
 	modelName := activeModel(cfg)
-	if err := preflightHeadlessApproval(cfg, resolvedApproval, cfg.DefaultProvider, modelName); err != nil {
+	if err := preflightHeadlessApproval(cfg, resolvedApproval); err != nil {
 		return err
 	}
 	var approvalErrWriter io.Writer = io.Discard
@@ -858,7 +858,7 @@ func newServeEngineWithToolsMode(cfg *config.Config, settings SessionSettings, p
 		return nil, nil, err
 	}
 	if toolMgr != nil {
-		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolved, providerName, modelName, runtimeOpts); err != nil {
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolved, runtimeOpts); err != nil {
 			return nil, nil, err
 		}
 		if wireSpawn != nil {
