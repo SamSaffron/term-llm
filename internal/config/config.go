@@ -475,6 +475,10 @@ type Config struct {
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
 	Serve           ServeConfig               `mapstructure:"serve"`
 	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
+
+	// baseProvider preserves the user's global provider when per-surface,
+	// agent, or CLI overrides mutate DefaultProvider at runtime.
+	baseProvider string
 }
 
 // ApprovalConfig configures default approval behavior.
@@ -1737,9 +1741,13 @@ func GetBuiltInProviderNames() []string {
 }
 
 // ApplyOverrides applies provider and model overrides to the config.
-// If provider is non-empty, it overrides the global provider.
+// If provider is non-empty, it overrides the runtime provider while preserving
+// the configured global default for control-plane services such as Guardian.
 // If model is non-empty, it overrides the model for the active provider.
 func (c *Config) ApplyOverrides(provider, model string) {
+	if c.baseProvider == "" {
+		c.baseProvider = c.DefaultProvider
+	}
 	if provider != "" {
 		c.DefaultProvider = provider
 	}
@@ -1755,6 +1763,18 @@ func (c *Config) ApplyOverrides(provider, model string) {
 		}
 		c.Providers[c.DefaultProvider] = cfg
 	}
+}
+
+// GuardianDefaultProvider returns the global default_provider before temporary
+// per-surface, agent, or CLI overrides were applied.
+func (c *Config) GuardianDefaultProvider() string {
+	if c == nil {
+		return ""
+	}
+	if provider := strings.TrimSpace(c.baseProvider); provider != "" {
+		return provider
+	}
+	return strings.TrimSpace(c.DefaultProvider)
 }
 
 // ResolveProviderCredentials resolves and caches credentials for the named provider.

@@ -98,7 +98,8 @@ chat:
 
 guardian:
   # Optional: override the provider/model used for auto approval review.
-  # Without a model override, Guardian prefers a configured fast provider/model.
+  # Without overrides, Guardian uses the fast model on default_provider.
+  # It never inherits per-command, per-surface, session, or agent overrides.
   # provider: anthropic
   # model: claude-sonnet-4-6
   # policy_path: ~/.config/term-llm/guardian-policy.md
@@ -193,7 +194,7 @@ guardian:
   classify_all_shell: false # true sends every shell pattern through Guardian
 ```
 
-Without explicit `guardian.model`, resolution selects a provider/model pair: the selected provider's `fast_model` (and its `fast_provider`, when set), then its normal model, then the provider type's built-in fast model. The active model is used only when it belongs to the resolved Guardian provider; otherwise setup reports a clear error instead of mixing a provider with another provider's model. This changes the default from inheriting the main/large model to preferring the fast model. Pin `guardian.model` to retain the main model; an explicit model never implicitly switches to `fast_provider`.
+Without explicit Guardian overrides, resolution uses the configured `fast_model` for the global `default_provider`, switching to its `fast_provider` when configured. Per-command, per-surface, session, and agent provider/model overrides do not change that target. `guardian.provider` explicitly selects another provider and its fast model without following that provider's `fast_provider`; `guardian.model` pins the model on `guardian.provider` or, when omitted, on the global default provider. For compatibility, a custom or local provider with no `fast_model` uses its configured `model` before considering a built-in fast default.
 
 In auto mode, arbitrary-execution shell patterns are suspended before matching. The mechanical set includes executable globs (`*`, `*/bin/*`) plus wildcard arguments to interpreters, shells, elevation tools, and common dispatchers. Examples include `python *`, `python *.py`, `/usr/bin/python3 *`, `node *.js`, `bash *`, `env *`, `sudo *`, `uv run *`, `npx *`, and `pipx run *`. Existing generated rules of this form continue to work after an explicit switch to prompt mode but are intentionally ignored while auto is requested. Narrow fixed commands such as `git status`, `go test *`, `npm test`, `python script.py`, `uv run pytest`, `npx eslint`, and `pipx run black` remain deterministic unless `classify_all_shell` is true. Exact configured scripts, exact session commands, and exact Guardian command/workdir approvals remain active either way.
 

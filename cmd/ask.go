@@ -396,12 +396,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	var outputTool *tools.SetOutputTool
 	if toolMgr != nil {
-		providerCfg := cfg.GetActiveProviderConfig()
-		model := ""
-		if providerCfg != nil {
-			model = providerCfg.Model
-		}
-		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, cfg.DefaultProvider, model, approvalRuntimeOptions{WarningWriter: cmd.ErrOrStderr()}); err != nil {
+		if err := applyResolvedApprovalMode(cfg, toolMgr.ApprovalMgr, resolvedApproval, approvalRuntimeOptions{}); err != nil {
 			return err
 		}
 		reportApprovalMode(cmd.ErrOrStderr(), askDebug, resolvedApproval, toolMgr.ApprovalMgr)

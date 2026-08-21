@@ -19,20 +19,20 @@ var newGuardianProviderByName = llm.NewProviderByName
 
 const guardianReviewerPoolSize = 3
 
-func preflightHeadlessApproval(cfg *config.Config, resolved resolvedApprovalMode, providerName, modelName string) error {
+func preflightHeadlessApproval(cfg *config.Config, resolved resolvedApprovalMode) error {
 	if resolved.Mode != tools.ModeAuto {
 		return nil
 	}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	defer mgr.Close()
-	return applyResolvedApprovalMode(cfg, mgr, resolved, providerName, modelName, approvalRuntimeOptions{Headless: true})
+	return applyResolvedApprovalMode(cfg, mgr, resolved, approvalRuntimeOptions{Headless: true})
 }
 
 // applyResolvedApprovalMode applies requested policy to the actual runtime
 // manager. Interactive auto setup degrades to prompt with one warning; headless
 // setup fails before work begins. The resolved value remains unchanged so
 // callers can persist the requested policy rather than a temporary fallback.
-func applyResolvedApprovalMode(cfg *config.Config, approvalMgr *tools.ApprovalManager, resolved resolvedApprovalMode, providerName, modelName string, opts approvalRuntimeOptions) error {
+func applyResolvedApprovalMode(cfg *config.Config, approvalMgr *tools.ApprovalManager, resolved resolvedApprovalMode, opts approvalRuntimeOptions) error {
 	if approvalMgr == nil {
 		// A runtime with no approval-bearing tools has nothing to initialize or
 		// review, so even headless auto can start without a manager.
@@ -48,7 +48,7 @@ func applyResolvedApprovalMode(cfg *config.Config, approvalMgr *tools.ApprovalMa
 	needsGuardian := resolved.Mode == tools.ModeAuto || opts.PrepareCallbacks
 	guardianAvailable := true
 	if needsGuardian {
-		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, providerName, modelName, opts.Headless); err != nil {
+		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, opts.Headless); err != nil {
 			guardianAvailable = false
 			if resolved.Mode == tools.ModeAuto {
 				if opts.Headless {
@@ -77,7 +77,7 @@ func addGuardianUsage(stats *ui.SessionStats, event tools.GuardianEvent) bool {
 	return true
 }
 
-func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.ApprovalManager, providerName string, modelName string, headless bool) error {
+func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.ApprovalManager, headless bool) error {
 	if approvalMgr == nil {
 		return nil
 	}
@@ -92,7 +92,7 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		return fail(fmt.Errorf("auto approval requires configuration and an LLM provider"))
 	}
 	approvalMgr.SetAutoHeadless(headless)
-	target, err := resolveGuardianTarget(cfg, providerName, modelName)
+	target, err := resolveGuardianTarget(cfg)
 	if err != nil {
 		return fail(err)
 	}
@@ -154,25 +154,22 @@ type guardianTarget struct {
 	Model    string
 }
 
-func resolveGuardianTarget(cfg *config.Config, activeProvider, activeModel string) (guardianTarget, error) {
+func resolveGuardianTarget(cfg *config.Config) (guardianTarget, error) {
 	if cfg == nil {
 		return guardianTarget{}, fmt.Errorf("auto approval requires configuration and an LLM provider")
 	}
-	activeProvider = strings.TrimSpace(activeProvider)
-	activeModel = strings.TrimSpace(activeModel)
+
+	// Guardian overrides are authoritative. Otherwise Guardian is deliberately
+	// independent of the active chat/session model: it always uses the fast
+	// model configured for the default provider.
+	explicitProvider := strings.TrimSpace(cfg.Guardian.Provider) != ""
 	providerName := strings.TrimSpace(cfg.Guardian.Provider)
 	if providerName == "" {
-		providerName = activeProvider
+		providerName = cfg.GuardianDefaultProvider()
 	}
 	if providerName == "" {
-		providerName = strings.TrimSpace(cfg.DefaultProvider)
+		return guardianTarget{}, fmt.Errorf("auto approval requires a default LLM provider or guardian.provider")
 	}
-	if providerName == "" {
-		return guardianTarget{}, fmt.Errorf("auto approval requires an LLM provider")
-	}
-
-	// An explicit model is authoritative and remains paired with the explicitly
-	// selected Guardian provider, or with the active/default provider.
 	if model := strings.TrimSpace(cfg.Guardian.Model); model != "" {
 		return guardianTarget{Provider: providerName, Model: model}, nil
 	}
@@ -181,11 +178,16 @@ func resolveGuardianTarget(cfg *config.Config, activeProvider, activeModel strin
 	if providerConfig != nil {
 		if model := strings.TrimSpace(providerConfig.FastModel); model != "" {
 			targetProvider := providerName
-			if fastProvider := strings.TrimSpace(providerConfig.FastProvider); fastProvider != "" {
-				targetProvider = fastProvider
+			if !explicitProvider {
+				if fastProvider := strings.TrimSpace(providerConfig.FastProvider); fastProvider != "" {
+					targetProvider = fastProvider
+				}
 			}
 			return guardianTarget{Provider: targetProvider, Model: model}, nil
 		}
+		// A configured model is the user's only known-good option for custom and
+		// local providers that predate fast_model. Keep it as a compatibility
+		// fallback rather than selecting an uninstalled built-in model.
 		if model := strings.TrimSpace(providerConfig.Model); model != "" {
 			return guardianTarget{Provider: providerName, Model: model}, nil
 		}
@@ -199,8 +201,5 @@ func resolveGuardianTarget(cfg *config.Config, activeProvider, activeModel strin
 	if model := strings.TrimSpace(llm.ProviderFastModels[string(providerType)]); model != "" {
 		return guardianTarget{Provider: providerName, Model: model}, nil
 	}
-	if providerName == activeProvider && activeModel != "" {
-		return guardianTarget{Provider: providerName, Model: activeModel}, nil
-	}
-	return guardianTarget{}, fmt.Errorf("guardian provider %q has no configured model or built-in fast model; set guardian.model", providerName)
+	return guardianTarget{}, fmt.Errorf("guardian provider %q has no fast model; set guardian.model or providers.%s.fast_model", providerName, providerName)
 }

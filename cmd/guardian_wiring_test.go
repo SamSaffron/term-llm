@@ -75,14 +75,14 @@ func TestPreflightHeadlessApproval(t *testing.T) {
 		calls++
 		return nil, errors.New("guardian unavailable")
 	})
-	cfg := &config.Config{DefaultProvider: "mock"}
-	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}, "mock", "model"); err != nil {
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}
+	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModePrompt}); err != nil {
 		t.Fatalf("prompt preflight: %v", err)
 	}
 	if calls != 0 {
 		t.Fatalf("prompt preflight initialized guardian %d times", calls)
 	}
-	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModeAuto}, "mock", "model"); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
+	if err := preflightHeadlessApproval(cfg, resolvedApprovalMode{Mode: tools.ModeAuto}); err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
 		t.Fatalf("auto preflight error = %v", err)
 	}
 	if calls != 1 {
@@ -100,7 +100,7 @@ func TestApplyResolvedApprovalModeInteractiveFailureWarnsOnceAndFallsBack(t *tes
 	var warnings bytes.Buffer
 	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceBuiltinDefault}
 
-	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock"}, mgr, resolved, "mock", "model", approvalRuntimeOptions{WarningWriter: &warnings}); err != nil {
+	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, approvalRuntimeOptions{WarningWriter: &warnings}); err != nil {
 		t.Fatalf("applyResolvedApprovalMode() error = %v", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
@@ -122,7 +122,7 @@ func TestApplyResolvedApprovalModePromptPreparationFailureWarnsOnce(t *testing.T
 	var warnings bytes.Buffer
 	resolved := resolvedApprovalMode{Mode: tools.ModePrompt, Source: approvalModeSourceSession}
 
-	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock"}, mgr, resolved, "mock", "model", approvalRuntimeOptions{PrepareCallbacks: true, WarningWriter: &warnings}); err != nil {
+	if err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, approvalRuntimeOptions{PrepareCallbacks: true, WarningWriter: &warnings}); err != nil {
 		t.Fatalf("applyResolvedApprovalMode() error = %v", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
@@ -140,7 +140,7 @@ func TestApplyResolvedApprovalModeHeadlessFailureIsStartupError(t *testing.T) {
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	resolved := resolvedApprovalMode{Mode: tools.ModeAuto, Source: approvalModeSourceBuiltinDefault}
 
-	err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock"}, mgr, resolved, "mock", "model", approvalRuntimeOptions{Headless: true})
+	err := applyResolvedApprovalMode(&config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}, mgr, resolved, approvalRuntimeOptions{Headless: true})
 	if err == nil || !strings.Contains(err.Error(), "auto approval unavailable") {
 		t.Fatalf("applyResolvedApprovalMode() error = %v, want startup error", err)
 	}
@@ -153,9 +153,9 @@ func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAuto
 	provider := llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"credential probing"}`)
 	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model", FastModel: "mock-fast"}}}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
@@ -182,10 +182,10 @@ func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) 
 	cfg := &config.Config{
 		DefaultProvider: "mock",
 		Guardian:        config.GuardianConfig{TimeoutSeconds: 7},
-		Providers:       map[string]config.ProviderConfig{"mock": {Model: "mock-model"}},
+		Providers:       map[string]config.ProviderConfig{"mock": {Model: "mock-model", FastModel: "mock-fast"}},
 	}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if _, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
@@ -198,9 +198,9 @@ func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.
 	provider := &deadlineCapturingProvider{delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
 	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model", FastModel: "mock-fast"}}}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	defer mgr.Close()
@@ -242,8 +242,8 @@ func TestInstallGuardianReviewerCallbacksRunsParallelReviewsConcurrently(t *test
 		}, nil
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model", FastModel: "mock-fast"}}}
+	if err := installGuardianReviewerCallbacks(cfg, mgr, true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if got := factoryCalls.Load(); got != 1 {
@@ -298,11 +298,11 @@ func TestInstallGuardianReviewerCallbacksCleansReplacedPool(t *testing.T) {
 		}, nil
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	cfg := &config.Config{DefaultProvider: "mock"}
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "first", false); err != nil {
+	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {FastModel: "mock-fast"}}}
+	if err := installGuardianReviewerCallbacks(cfg, mgr, false); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "second", false); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, false); err != nil {
 		t.Fatalf("second install: %v", err)
 	}
 	if got := cleaned.Load(); got != 1 {
@@ -320,7 +320,7 @@ func closedChannel() <-chan struct{} {
 	return ch
 }
 
-func TestInstallGuardianReviewerCallbacksUsesPassedProviderNameWhenGuardianUnset(t *testing.T) {
+func TestInstallGuardianReviewerCallbacksUsesDefaultProviderFastModelWhenGuardianUnset(t *testing.T) {
 	guardianProvider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
 	var gotName, gotModel string
 	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
@@ -332,16 +332,16 @@ func TestInstallGuardianReviewerCallbacksUsesPassedProviderNameWhenGuardianUnset
 	cfg := &config.Config{
 		DefaultProvider: "configured-default",
 		Providers: map[string]config.ProviderConfig{
-			"configured-default": {Model: "default-model"},
-			"active-provider":    {Model: "active-model"},
+			"configured-default": {Model: "default-model", FastModel: "default-fast"},
+			"active-provider":    {Model: "active-model", FastModel: "active-fast"},
 		},
 	}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "active-provider", "active-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
-	if gotName != "active-provider" || gotModel != "active-model" {
-		t.Fatalf("factory called with (%q, %q), want (active-provider, active-model)", gotName, gotModel)
+	if gotName != "configured-default" || gotModel != "default-fast" {
+		t.Fatalf("factory called with (%q, %q), want (configured-default, default-fast)", gotName, gotModel)
 	}
 }
 
@@ -355,16 +355,16 @@ func TestInstallGuardianReviewerCallbacksUsesDedicatedProviderInstance(t *testin
 		return guardianProvider, nil
 	})
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	cfg := &config.Config{DefaultProvider: "claude-bin", Providers: map[string]config.ProviderConfig{"claude-bin": {Type: config.ProviderTypeClaudeBin, Model: "sonnet"}}}
+	cfg := &config.Config{DefaultProvider: "claude-bin", Providers: map[string]config.ProviderConfig{"claude-bin": {Type: config.ProviderTypeClaudeBin, Model: "sonnet", FastModel: "haiku"}}}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "claude-bin", "sonnet", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if _, err := mgr.ReviewPolicy(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
-	if gotName != "claude-bin" || gotModel != "sonnet" {
-		t.Fatalf("factory called with (%q, %q), want (claude-bin, sonnet)", gotName, gotModel)
+	if gotName != "claude-bin" || gotModel != "haiku" {
+		t.Fatalf("factory called with (%q, %q), want (claude-bin, haiku)", gotName, gotModel)
 	}
 	if len(mainProvider.Requests) != 0 {
 		t.Fatalf("main provider received guardian request: %#v", mainProvider.Requests)
@@ -397,10 +397,11 @@ func TestApplyResolvedApprovalModeWiresClassifyAllShell(t *testing.T) {
 	}
 	mgr := tools.NewApprovalManager(perms)
 	cfg := &config.Config{
-		Guardian:  config.GuardianConfig{ClassifyAllShell: true},
-		Providers: map[string]config.ProviderConfig{"active": {Model: "main", FastModel: "fast"}},
+		DefaultProvider: "active",
+		Guardian:        config.GuardianConfig{ClassifyAllShell: true},
+		Providers:       map[string]config.ProviderConfig{"active": {Model: "main", FastModel: "fast"}},
 	}
-	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, "active", "main", approvalRuntimeOptions{}); err != nil {
+	if err := applyResolvedApprovalMode(cfg, mgr, resolvedApprovalMode{Mode: tools.ModeAuto}, approvalRuntimeOptions{}); err != nil {
 		t.Fatalf("applyResolvedApprovalMode: %v", err)
 	}
 	if outcome, err := mgr.CheckShellApproval("git status", t.TempDir()); err != nil || outcome != tools.ProceedAlways {
@@ -411,7 +412,7 @@ func TestApplyResolvedApprovalModeWiresClassifyAllShell(t *testing.T) {
 	}
 }
 
-func TestInstallGuardianReviewerCallbacksUsesFastProviderPair(t *testing.T) {
+func TestInstallGuardianReviewerCallbacksExplicitProviderDoesNotHopToFastProvider(t *testing.T) {
 	provider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
 	var gotName, gotModel string
 	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
@@ -426,43 +427,51 @@ func TestInstallGuardianReviewerCallbacksUsesFastProviderPair(t *testing.T) {
 		},
 	}
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
-	if err := installGuardianReviewerCallbacks(cfg, mgr, "main", "large", false); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, false); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
-	if gotName != "fast" || gotModel != "small" {
-		t.Fatalf("factory target = %s:%s, want fast:small", gotName, gotModel)
+	if gotName != "main" || gotModel != "small" {
+		t.Fatalf("factory target = %s:%s, want main:small", gotName, gotModel)
 	}
 }
 
 func TestResolveGuardianTarget(t *testing.T) {
 	tests := []struct {
-		name           string
-		cfg            *config.Config
-		activeProvider string
-		activeModel    string
-		want           guardianTarget
-		wantErr        string
+		name    string
+		cfg     *config.Config
+		want    guardianTarget
+		wantErr string
 	}{
 		{
-			name: "explicit model prevents fast provider switch",
+			name: "explicit provider and model win",
 			cfg: &config.Config{
-				Guardian:  config.GuardianConfig{Provider: "main", Model: "pinned"},
-				Providers: map[string]config.ProviderConfig{"main": {FastProvider: "fast", FastModel: "small"}},
+				DefaultProvider: "default",
+				Guardian:        config.GuardianConfig{Provider: "main", Model: "pinned"},
+				Providers:       map[string]config.ProviderConfig{"main": {FastProvider: "fast", FastModel: "small"}},
 			},
 			want: guardianTarget{Provider: "main", Model: "pinned"},
 		},
 		{
-			name: "same-provider fast model",
+			name: "explicit model uses default provider",
 			cfg: &config.Config{
-				Guardian:  config.GuardianConfig{Provider: "main"},
-				Providers: map[string]config.ProviderConfig{"main": {Model: "large", FastModel: "small"}},
+				DefaultProvider: "default",
+				Guardian:        config.GuardianConfig{Model: "pinned"},
+			},
+			want: guardianTarget{Provider: "default", Model: "pinned"},
+		},
+		{
+			name: "explicit provider uses its fast model",
+			cfg: &config.Config{
+				DefaultProvider: "default",
+				Guardian:        config.GuardianConfig{Provider: "main"},
+				Providers:       map[string]config.ProviderConfig{"main": {Model: "large", FastModel: "small"}},
 			},
 			want: guardianTarget{Provider: "main", Model: "small"},
 		},
 		{
-			name: "fast provider pair",
+			name: "configured fast provider pair wins",
 			cfg: &config.Config{
-				Guardian: config.GuardianConfig{Provider: "main"},
+				DefaultProvider: "main",
 				Providers: map[string]config.ProviderConfig{
 					"main": {Model: "large", FastProvider: "fast", FastModel: "small"},
 					"fast": {Model: "other"},
@@ -471,44 +480,35 @@ func TestResolveGuardianTarget(t *testing.T) {
 			want: guardianTarget{Provider: "fast", Model: "small"},
 		},
 		{
-			name: "normal model fallback",
+			name: "configured normal model is compatibility fallback",
 			cfg: &config.Config{
-				Guardian:  config.GuardianConfig{Provider: "custom"},
-				Providers: map[string]config.ProviderConfig{"custom": {Model: "normal"}},
+				DefaultProvider: "custom",
+				Providers:       map[string]config.ProviderConfig{"custom": {Model: "normal"}},
 			},
 			want: guardianTarget{Provider: "custom", Model: "normal"},
 		},
 		{
 			name: "built-in fast fallback",
-			cfg:  &config.Config{Guardian: config.GuardianConfig{Provider: "openai"}},
+			cfg:  &config.Config{DefaultProvider: "openai"},
 			want: guardianTarget{Provider: "openai", Model: llm.ProviderFastModels["openai"]},
 		},
 		{
-			name:           "compatible active fallback",
-			cfg:            &config.Config{},
-			activeProvider: "custom-active",
-			activeModel:    "active-model",
-			want:           guardianTarget{Provider: "custom-active", Model: "active-model"},
-		},
-		{
-			name:           "incompatible provider error",
-			cfg:            &config.Config{Guardian: config.GuardianConfig{Provider: "custom-guardian"}},
-			activeProvider: "custom-active",
-			activeModel:    "active-model",
-			wantErr:        "guardian provider \"custom-guardian\" has no configured model",
-		},
-		{
-			name: "default provider selected when active absent",
+			name: "active session model is ignored",
 			cfg: &config.Config{
 				DefaultProvider: "default",
 				Providers:       map[string]config.ProviderConfig{"default": {FastModel: "default-fast"}},
 			},
 			want: guardianTarget{Provider: "default", Model: "default-fast"},
 		},
+		{
+			name:    "missing default provider fails",
+			cfg:     &config.Config{},
+			wantErr: "default LLM provider",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveGuardianTarget(tt.cfg, tt.activeProvider, tt.activeModel)
+			got, err := resolveGuardianTarget(tt.cfg)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
@@ -519,6 +519,26 @@ func TestResolveGuardianTarget(t *testing.T) {
 				t.Fatalf("target = %#v, err=%v; want %#v", got, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveGuardianTargetIgnoresRuntimeProviderOverride(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "trusted",
+		Providers: map[string]config.ProviderConfig{
+			"trusted": {FastModel: "trusted-fast"},
+			"weak":    {FastModel: "weak-fast"},
+		},
+	}
+	cfg.ApplyOverrides("weak", "weak-chat")
+
+	got, err := resolveGuardianTarget(cfg)
+	if err != nil {
+		t.Fatalf("resolveGuardianTarget() error = %v", err)
+	}
+	want := guardianTarget{Provider: "trusted", Model: "trusted-fast"}
+	if got != want {
+		t.Fatalf("target = %#v, want %#v", got, want)
 	}
 }
 

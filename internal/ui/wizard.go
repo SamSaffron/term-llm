@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"charm.land/huh/v2"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -233,11 +234,33 @@ func HasTTY() bool {
 
 func defaultWizardProviderConfigs() map[string]config.ProviderConfig {
 	providers := make(map[string]config.ProviderConfig)
-	for _, name := range []string{"chatgpt", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen"} {
-		providers[name] = config.ProviderConfig{Model: config.DefaultProviderModel(name)}
+	for _, name := range []string{"chatgpt", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen", "opencode-go"} {
+		providers[name] = config.ProviderConfig{
+			Model:     config.DefaultProviderModel(name),
+			FastModel: config.DefaultProviderFastModel(name),
+		}
 	}
-	providers["openrouter"] = config.ProviderConfig{Model: config.DefaultProviderModel("openrouter"), AppURL: "https://github.com/samsaffron/term-llm", AppTitle: "term-llm"}
+	providers["openrouter"] = config.ProviderConfig{
+		Model:     config.DefaultProviderModel("openrouter"),
+		FastModel: config.DefaultProviderFastModel("openrouter"),
+		AppURL:    "https://github.com/samsaffron/term-llm",
+		AppTitle:  "term-llm",
+	}
 	return providers
+}
+
+func wizardGuardianDefault(provider string, providers map[string]config.ProviderConfig) (string, string) {
+	provider = strings.TrimSpace(provider)
+	providerCfg := providers[provider]
+	targetProvider := provider
+	if fastProvider := strings.TrimSpace(providerCfg.FastProvider); fastProvider != "" {
+		targetProvider = fastProvider
+	}
+	model := strings.TrimSpace(providerCfg.FastModel)
+	if model == "" {
+		model = config.DefaultProviderFastModel(provider)
+	}
+	return targetProvider, model
 }
 
 // RunHeadlessSetup auto-configures term-llm when no TTY is available (e.g. Docker).
@@ -396,7 +419,49 @@ func RunSetupWizard() (*config.Config, error) {
 		tty3.Close()
 	}
 
-	// Step 2: Image provider selection
+	// Step 2: Guardian selection. Guardian approves unmatched tool actions in
+	// auto mode, so make the model choice visible and keep alternatives limited
+	// to providers that are already usable.
+	providerConfigs := defaultWizardProviderConfigs()
+	defaultGuardianProvider, defaultGuardianModel := wizardGuardianDefault(provider, providerConfigs)
+	guardianOptions := []huh.Option[string]{
+		huh.NewOption(fmt.Sprintf("Use %s:%s (recommended)", defaultGuardianProvider, defaultGuardianModel), ""),
+	}
+	for _, candidate := range providers {
+		if candidate.value == provider || (!candidate.available && !canBootstrapProviderInteractively(candidate.value)) {
+			continue
+		}
+		candidateProvider, candidateModel := wizardGuardianDefault(candidate.value, providerConfigs)
+		if candidateProvider == "" || candidateModel == "" {
+			continue
+		}
+		guardianOptions = append(guardianOptions,
+			huh.NewOption(fmt.Sprintf("Use %s:%s", candidateProvider, candidateModel), candidate.value))
+	}
+
+	var guardianProviderOverride string
+	guardianForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Which provider should Guardian use for automatic tool approvals?").
+				Description("Guardian reviews commands and file changes. The recommended choice is the fast model on your default provider. Custom provider/model pins remain available in config.yaml.").
+				Options(guardianOptions...).
+				Value(&guardianProviderOverride),
+		),
+	)
+	if ttyErr == nil {
+		if guardianTTY, err := getTTY(); err == nil {
+			defer guardianTTY.Close()
+			guardianForm = guardianForm.WithInput(guardianTTY).WithOutput(guardianTTY)
+		}
+	}
+	if err := guardianForm.Run(); err != nil {
+		return nil, err
+	}
+
+	guardianConfig := config.GuardianConfig{Provider: strings.TrimSpace(guardianProviderOverride)}
+
+	// Step 3: Image provider selection
 	var imageProvider string
 	imageForm := huh.NewForm(
 		huh.NewGroup(
@@ -429,7 +494,8 @@ func RunSetupWizard() (*config.Config, error) {
 
 	cfg := &config.Config{
 		DefaultProvider: provider,
-		Providers:       defaultWizardProviderConfigs(),
+		Providers:       providerConfigs,
+		Guardian:        guardianConfig,
 		Exec: config.ExecConfig{
 			Suggestions: 3,
 		},

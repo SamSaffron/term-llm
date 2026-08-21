@@ -202,7 +202,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	}
 	approvalMgr := tools.NewApprovalManager(perms)
 	defer approvalMgr.Close()
-	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, cfg.DefaultProvider, getModelName(cfg), approvalRuntimeOptions{Headless: true}); err != nil {
+	if err := applyResolvedApprovalMode(cfg, approvalMgr, resolvedApproval, approvalRuntimeOptions{Headless: true}); err != nil {
 		return err
 	}
 	reportApprovalMode(cmd.ErrOrStderr(), serveMCPDebug, resolvedApproval, approvalMgr)
