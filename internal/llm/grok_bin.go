@@ -104,6 +104,10 @@ type GrokBinProvider struct {
 	// interrupts before that keep the tool-result flush marker so the just-
 	// started prompt can still be cancelled.
 	acpPromptActive atomic.Bool
+	// nativeInterruptPending covers the interval after term-llm decides to
+	// interrupt but before the session/cancel notification has finished writing.
+	// Grok may report the cancelled prompt during that interval.
+	nativeInterruptPending atomic.Bool
 	// interruptFollowUp frames the next resume prompt with Grok's mid-turn
 	// interjection envelope so a cancel-and-continue steer does not drop work.
 	interruptFollowUp atomic.Bool
@@ -230,6 +234,7 @@ func (p *GrokBinProvider) ResetConversation() {
 	}
 	p.acpMu.Unlock()
 	p.acpPromptActive.Store(false)
+	p.nativeInterruptPending.Store(false)
 	p.interruptFollowUp.Store(false)
 	p.sessionID = ""
 	p.messagesSent = 0

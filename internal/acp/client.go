@@ -52,3 +52,7 @@ func (c *Client) Prompt(ctx context.Context, request PromptRequest) (PromptRespo
 func (c *Client) CancelSession(ctx context.Context, sessionID string) error {
 	return c.conn.Notify(ctx, "session/cancel", CancelSessionRequest{SessionID: sessionID})
 }
+
+func (c *Client) CancelSessionWithDelivery(ctx context.Context, sessionID string) (bool, error) {
+	return c.conn.NotifyWithDelivery(ctx, "session/cancel", CancelSessionRequest{SessionID: sessionID})
+}

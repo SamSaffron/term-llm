@@ -23,6 +23,13 @@ type observedWriteCloser struct {
 	once    sync.Once
 }
 
+type funcWriteCloser struct {
+	write func([]byte) (int, error)
+}
+
+func (w *funcWriteCloser) Write(data []byte) (int, error) { return w.write(data) }
+func (w *funcWriteCloser) Close() error                   { return nil }
+
 func (w *observedWriteCloser) Write(data []byte) (int, error) {
 	w.once.Do(func() { close(w.started) })
 	return w.WriteCloser.Write(data)
@@ -335,6 +342,99 @@ func TestApplyGrokInterjectionEnvelope(t *testing.T) {
 	}
 	if got[3].Type != "image" || got[3].Data != "abc" {
 		t.Fatalf("image block = %+v", got[3])
+	}
+}
+
+func TestGrokCancellationWarningClassification(t *testing.T) {
+	provider := NewGrokBinProvider("grok-4.5-low", nil)
+	if !provider.shouldWarnGrokCancellation(context.Background()) {
+		t.Fatal("ordinary agent-side cancellation should emit a warning")
+	}
+
+	provider.nativeInterruptPending.Store(true)
+	if provider.shouldWarnGrokCancellation(context.Background()) {
+		t.Fatal("cancellation observed while the native interrupt is being written should stay quiet")
+	}
+	provider.nativeInterruptPending.Store(false)
+
+	provider.interruptFollowUp.Store(true)
+	if provider.shouldWarnGrokCancellation(context.Background()) {
+		t.Fatal("completed native interrupt cancellation should stay quiet")
+	}
+	provider.interruptFollowUp.Store(false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if provider.shouldWarnGrokCancellation(ctx) {
+		t.Fatal("context cancellation should stay quiet")
+	}
+}
+
+func TestSendNativeInterruptMarksCancellationBeforeWrite(t *testing.T) {
+	writeErr := errors.New("write completed with error")
+	for _, tc := range []struct {
+		name          string
+		writeResult   func(int) (int, error)
+		wantSuccess   bool
+		wantFollowUp  bool
+		wantFlushLeft bool
+	}{
+		{
+			name:         "successful write",
+			writeResult:  func(size int) (int, error) { return size, nil },
+			wantSuccess:  true,
+			wantFollowUp: true,
+		},
+		{
+			name:         "complete write with error",
+			writeResult:  func(size int) (int, error) { return size, writeErr },
+			wantSuccess:  true,
+			wantFollowUp: true,
+		},
+		{
+			name:          "partial write with error",
+			writeResult:   func(size int) (int, error) { return size - 1, writeErr },
+			wantFlushLeft: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := NewGrokBinProvider("grok-4.5-low", nil)
+			var sawExpectedCancellation bool
+			writer := &funcWriteCloser{write: func(data []byte) (int, error) {
+				if !strings.Contains(string(data), `"method":"session/cancel"`) {
+					t.Fatalf("notification = %q, want session/cancel", data)
+				}
+				sawExpectedCancellation = !provider.shouldWarnGrokCancellation(context.Background())
+				return tc.writeResult(len(data))
+			}}
+			clientSide, agentSide := net.Pipe()
+			defer clientSide.Close()
+			defer agentSide.Close()
+			conn := acp.NewConnection(clientSide, writer, nil, acp.Options{})
+
+			provider.acpProcess = &grokACPProcess{
+				client:    acp.NewClient(conn),
+				sessionID: "interrupt-session",
+			}
+			provider.acpPromptActive.Store(true)
+			provider.requestInlineFlush()
+
+			if got := provider.sendNativeInterrupt(); got != tc.wantSuccess {
+				t.Fatalf("sendNativeInterrupt() = %t, want %t", got, tc.wantSuccess)
+			}
+			if !sawExpectedCancellation {
+				t.Fatal("cancellation was not classified as expected while session/cancel was being written")
+			}
+			if got := provider.interruptFollowUp.Load(); got != tc.wantFollowUp {
+				t.Fatalf("interruptFollowUp = %t, want %t", got, tc.wantFollowUp)
+			}
+			if got := provider.inlineFlushRequested(); got != tc.wantFlushLeft {
+				t.Fatalf("inline flush pending = %t, want %t", got, tc.wantFlushLeft)
+			}
+			if provider.nativeInterruptPending.Load() {
+				t.Fatal("native interrupt remained pending after write returned")
+			}
+		})
 	}
 }
 

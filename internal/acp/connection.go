@@ -183,17 +183,25 @@ func (c *Connection) call(ctx context.Context, method string, params, result any
 
 // Notify sends an ACP notification.
 func (c *Connection) Notify(ctx context.Context, method string, params any) error {
+	_, err := c.NotifyWithDelivery(ctx, method, params)
+	return err
+}
+
+// NotifyWithDelivery sends an ACP notification and reports whether the complete
+// notification was written. A writer may return both len(data) and an error; in
+// that case the peer can still act on the delivered notification.
+func (c *Connection) NotifyWithDelivery(ctx context.Context, method string, params any) (bool, error) {
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-c.done:
 		if err := c.Err(); err != nil {
-			return err
+			return false, err
 		}
-		return io.EOF
+		return false, io.EOF
 	default:
 	}
-	return c.writeObject(map[string]any{
+	return c.writeObjectWithDelivery(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
 		"params":  params,
@@ -201,24 +209,32 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) erro
 }
 
 func (c *Connection) writeObject(value any) error {
+	_, err := c.writeObjectWithDelivery(value)
+	return err
+}
+
+func (c *Connection) writeObjectWithDelivery(value any) (bool, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("encode ACP message: %w", err)
+		return false, fmt.Errorf("encode ACP message: %w", err)
 	}
 	data = append(data, '\n')
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	for len(data) > 0 {
 		n, err := c.writer.Write(data)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
+		if n < 0 || n > len(data) {
+			return false, io.ErrShortWrite
 		}
 		data = data[n:]
+		if err != nil {
+			return len(data) == 0, err
+		}
+		if n == 0 {
+			return false, io.ErrShortWrite
+		}
 	}
-	return nil
+	return true, nil
 }
 
 func (c *Connection) readLoop() {

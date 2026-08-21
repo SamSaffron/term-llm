@@ -532,14 +532,28 @@ func (p *GrokBinProvider) sendNativeInterrupt() bool {
 	if process == nil || process.client == nil || strings.TrimSpace(process.sessionID) == "" || !p.acpPromptActive.Load() {
 		return false
 	}
+	if !p.nativeInterruptPending.CompareAndSwap(false, true) {
+		return true
+	}
+	defer p.nativeInterruptPending.Store(false)
+	// A concurrent interrupt may have completed after this caller observed the
+	// active prompt. Avoid writing a duplicate cancellation in that case.
+	if !p.inlineFlushRequested() {
+		return true
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := process.client.CancelSession(ctx, process.sessionID); err != nil {
+	delivered, err := process.client.CancelSessionWithDelivery(ctx, process.sessionID)
+	if err != nil && !delivered {
 		return false
 	}
 	p.clearInlineFlush()
 	p.interruptFollowUp.Store(true)
 	return true
+}
+
+func (p *GrokBinProvider) shouldWarnGrokCancellation(ctx context.Context) bool {
+	return ctx.Err() == nil && !p.nativeInterruptPending.Load() && !p.interruptFollowUp.Load()
 }
 
 func applyGrokInterjectionEnvelope(blocks []acp.ContentBlock) []acp.ContentBlock {
@@ -782,7 +796,7 @@ promptComplete:
 		// the cancelled user turn is not replayed on the next request.
 		// A native interjection interrupt is that expected boundary, so keep it
 		// quiet. Unexpected agent-side cancels still surface a warning.
-		if ctx.Err() == nil && !p.interruptFollowUp.Load() {
+		if p.shouldWarnGrokCancellation(ctx) {
 			if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "Grok cancelled the turn before producing a complete response."}); err != nil {
 				return grokCommandResult{}, err
 			}
