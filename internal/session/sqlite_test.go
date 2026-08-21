@@ -579,6 +579,9 @@ func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
 		{objectType: "table", name: "push_subscriptions"},
 		{objectType: "table", name: "session_provider_state"},
 		{objectType: "table", name: "session_branches"},
+		{objectType: "table", name: "projects"},
+		{objectType: "index", name: "idx_projects_recent"},
+		{objectType: "index", name: "idx_sessions_project_activity"},
 		{objectType: "index", name: "idx_session_branches_idempotency"},
 		{objectType: "index", name: "idx_messages_session_sequence"},
 		{objectType: "index", name: "idx_sessions_status"},
@@ -2774,6 +2777,13 @@ func TestReadOnlyOldDBWithoutCompactionSeq(t *testing.T) {
 	}
 	if sess.CompactionSeq != -1 {
 		t.Errorf("CompactionSeq = %d, want -1", sess.CompactionSeq)
+	}
+	listed, err := store.List(ctx, ListOptions{})
+	if err != nil || len(listed) != 1 || listed[0].ProjectID != "" {
+		t.Fatalf("List on pre-project read-only DB = %#v, %v", listed, err)
+	}
+	if _, ok := AsProjectStore(store); ok {
+		t.Fatal("pre-project read-only DB falsely advertises ProjectStore")
 	}
 }
 

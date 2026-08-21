@@ -39,8 +39,24 @@ const resumeAndDrain = (session, options) => {
 };
 
 
-const createAndSwitchToFreshSession = async () => {
-  await switchToDraftSession({ clearComposer: true, focusPrompt: true });
+const projectDraftKey = (projectId) => projectId ? `draft:${projectId}` : '';
+
+const createAndSwitchToFreshSession = async (projectId = '') => {
+  const requested = String(projectId || '').trim();
+  if (state.projectsEnabled && !requested) {
+    const active = getActiveSession();
+    const candidates = [active?.projectId, state.activeProjectId, state.lastProjectId]
+      .map((value) => String(value || '').trim()).filter((value, index, all) => value && all.indexOf(value) === index);
+    const available = candidates.map((id) => state.projects.find((project) => project.id === id && project.available && !project.archived_at)).find(Boolean);
+    if (!available) {
+      app.setSidebarCollapsed?.(false);
+      app.openSidebar?.();
+      app.showToast?.('Choose a project or add one to start a chat', 'info');
+      return null;
+    }
+    projectId = available.id;
+  }
+  return switchToDraftSession({ clearComposer: false, focusPrompt: true, projectId });
 };
 
 const forceNewSessionFromURL = () => {
@@ -64,7 +80,7 @@ const clearFreshSessionURL = () => {
 
 const stageCurrentComposerForSession = (sessionId) => {
   const prompt = String(elements.promptInput.value || '').trim();
-  if (prompt) {
+  if (prompt || String(sessionId || '').startsWith('draft:')) {
     stageDraftMessage(prompt, sessionId);
     return;
   }
@@ -91,10 +107,16 @@ const invalidateSessionStateForSelection = (sessionId = '') => {
 };
 
 const switchToDraftSession = async (options = {}) => {
+  const requestedProjectId = String(options.projectId || state.activeProjectId || '').trim();
+  const wasDraftSession = Boolean(state.draftSessionActive);
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
-  const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
-  if (options.clearComposer && previousComposerSessionId === '') {
-    clearDraftMessageForSession('');
+  if (state.draftSessionActive && state.activeProjectId) {
+    state.projectAttachments[state.activeProjectId] = Array.isArray(state.attachments) ? state.attachments.slice() : [];
+  }
+  const previousComposerSessionId = state.draftSessionActive ? projectDraftKey(state.activeProjectId) : previousActiveSessionId;
+  const nextDraftKey = projectDraftKey(requestedProjectId);
+  if (options.clearComposer && previousComposerSessionId === nextDraftKey) {
+    clearDraftMessageForSession(nextDraftKey);
   } else if (options.clearPreviousComposerDraft) {
     clearDraftMessageForSession(previousComposerSessionId);
   } else {
@@ -122,6 +144,14 @@ const switchToDraftSession = async (options = {}) => {
   }
   state.activeSessionId = '';
   state.draftSessionActive = true;
+  state.activeProjectId = requestedProjectId;
+  if (requestedProjectId) {
+    state.lastProjectId = requestedProjectId;
+    localStorage.setItem(app.STORAGE_KEYS.lastProject, requestedProjectId);
+    const projectDraft = state.projectDrafts[requestedProjectId] || {};
+    state.selectedWorktreeDir = String(projectDraft.worktreeDir || '');
+    state.selectedWorktreeName = String(projectDraft.worktreeName || '');
+  }
   state.pendingBranch = null;
   if (elements.branchTreeBtn) elements.branchTreeBtn.hidden = true;
   updateURL('');
@@ -129,16 +159,24 @@ const switchToDraftSession = async (options = {}) => {
   if (options.clearComposer) {
     elements.promptInput.value = '';
     discardPendingAttachments();
+    if (requestedProjectId) state.projectAttachments[requestedProjectId] = [];
     autoGrowPrompt();
-  } else if (previousComposerSessionId) {
+  } else if (previousComposerSessionId && !wasDraftSession) {
     discardPendingAttachments();
+  }
+  if (!options.clearComposer && requestedProjectId) {
+    state.attachments = Array.isArray(state.projectAttachments[requestedProjectId])
+      ? state.projectAttachments[requestedProjectId].slice()
+      : [];
+    app.renderAttachments?.();
   }
 
   refreshPendingInterjectionBanner();
+  app.updateSendButtonState?.();
   persistAndRefreshShell();
   renderMessages(true);
   if (!options.clearComposer) {
-    restoreDraftMessageForSession('', { replace: true });
+    restoreDraftMessageForSession(nextDraftKey, { replace: true });
   }
   app.activateDiffSidebar?.('');
   app.invalidateMentionCompletions?.();
@@ -257,7 +295,9 @@ const switchToSession = async (sessionId, options = {}) => {
   if (!nextId) return null;
 
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
-  const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
+  const wasProjectDraft = Boolean(state.draftSessionActive && state.activeProjectId);
+  if (wasProjectDraft) state.projectAttachments[state.activeProjectId] = Array.isArray(state.attachments) ? state.attachments.slice() : [];
+  const previousComposerSessionId = state.draftSessionActive ? projectDraftKey(state.activeProjectId) : previousActiveSessionId;
   stageCurrentComposerForSession(previousComposerSessionId);
   let session = state.sessions.find((item) => item.id === nextId);
   if (!session && Array.isArray(state.sidebarSearchResults)) {
@@ -301,7 +341,12 @@ const switchToSession = async (sessionId, options = {}) => {
   }
 
   if (previousActiveSessionId !== nextId || state.draftSessionActive) {
-    discardPendingAttachments();
+    if (wasProjectDraft) {
+      state.attachments = [];
+      app.renderAttachments?.();
+    } else {
+      discardPendingAttachments();
+    }
   }
 
   if (previousActiveSessionId && previousActiveSessionId !== nextId) {
@@ -310,6 +355,11 @@ const switchToSession = async (sessionId, options = {}) => {
   }
   state.activeSessionId = nextId;
   state.draftSessionActive = false;
+  state.activeProjectId = String(session.projectId || '');
+  if (state.activeProjectId) {
+    state.lastProjectId = state.activeProjectId;
+    localStorage.setItem(app.STORAGE_KEYS.lastProject, state.activeProjectId);
+  }
   updateURL(sessionSlug(session));
   refreshPendingInterjectionBanner();
 
@@ -719,6 +769,8 @@ const applyServerSessionSummary = (target, serverSession) => {
   if (serverSession.provider) {
     target.provider = serverSession.provider;
   }
+  target.projectId = String(serverSession.project_id || target.projectId || '');
+  target.projectName = String(serverSession.project_name || target.projectName || '');
   if (serverSession.worktree_dir !== undefined) {
     target.worktreeDir = String(serverSession.worktree_dir || '');
     target.worktreeName = target.worktreeDir ? target.worktreeDir.split(/[\\/]/).filter(Boolean).pop() || 'worktree' : '';
@@ -1089,12 +1141,17 @@ const initialize = async () => {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
 
-    const sessionsPromise = mergeServerSessions({
-      selectedSession: urlSlug,
-      includeTranscript: Boolean(urlSlug),
-      startupTranscript: true,
-      includeWidgetStatus: true
-    });
+    await app.initializeProjectMode?.();
+    const sessionsPromise = state.projectsEnabled && !state.projectsError
+      ? (urlSlug
+        ? mergeServerSessions({ selectedSession: urlSlug, selectedOnly: true, includeTranscript: true, startupTranscript: true, includeWidgetStatus: true })
+        : Promise.resolve(state.sessions))
+      : mergeServerSessions({
+        selectedSession: urlSlug,
+        includeTranscript: Boolean(urlSlug),
+        startupTranscript: true,
+        includeWidgetStatus: true
+      });
     // Session selection owns conversation readiness. Begin transcript fallback
     // and runtime state as soon as the authoritative merge lands, without
     // waiting for providers or models. Only an actual selected transcript

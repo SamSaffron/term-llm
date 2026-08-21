@@ -254,10 +254,19 @@ const updateSendButtonState = () => {
   const hasComposerDraft = Boolean(String(elements.promptInput?.value || '').trim()) || state.attachments.length > 0;
   const interjecting = Boolean(state.streaming && hasComposerDraft);
   const loading = Boolean(state.streaming && !hasComposerDraft);
-  btn.disabled = false;
+  const project = state.projectsEnabled && state.draftSessionActive
+    ? (state.projects || []).find((item) => item.id === state.activeProjectId)
+    : null;
+  const invalidProjectDraft = Boolean(state.projectsEnabled && state.draftSessionActive && (!project || project.archived_at || !project.available));
+  const capabilitiesPending = Boolean(state.capabilitiesRequired && !state.capabilitiesLoaded);
+  btn.disabled = capabilitiesPending || invalidProjectDraft;
   btn.classList.toggle('loading', loading);
   btn.classList.toggle('interject', interjecting);
-  const label = interjecting ? 'Interject' : 'Send message';
+  let label = interjecting ? 'Interject' : 'Send message';
+  if (capabilitiesPending) label = 'Waiting for server capabilities';
+  else if (invalidProjectDraft && !project) label = 'Choose a project before sending';
+  else if (invalidProjectDraft && project.archived_at) label = 'Restore this project before sending';
+  else if (invalidProjectDraft) label = project.unavailable_reason || 'Project unavailable';
   btn.title = label;
   if (typeof btn.setAttribute === 'function') {
     btn.setAttribute('aria-label', label);

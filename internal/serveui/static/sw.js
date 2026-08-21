@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'term-llm-shell-v3';
+const SHELL_CACHE = 'term-llm-shell-v4';
 const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',

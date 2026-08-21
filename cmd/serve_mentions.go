@@ -23,7 +23,7 @@ const (
 	serveMentionMaxTextBytes    = 256 << 10
 	serveMentionCacheTTL        = 10 * time.Second
 	serveMentionCacheErrorTTL   = time.Second
-	serveMentionCacheMaxEntries = 4
+	serveMentionCacheMaxEntries = 32
 	serveMentionBuildTimeout    = 30 * time.Second
 )
 
@@ -40,6 +40,7 @@ type serveMentionSearchRequest struct {
 	Text        string `json:"text"`
 	CursorUTF16 int    `json:"cursor_utf16"`
 	Limit       int    `json:"limit,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
 	WorktreeDir string `json:"worktree_dir,omitempty"`
 }
 
@@ -102,7 +103,7 @@ func (s *serveServer) handleMentionSearch(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, serveMentionSearchResponse{Items: []serveMentionSearchItem{}})
 		return
 	}
-	root, err := s.resolveMentionSearchRoot(r.Context(), strings.TrimSpace(r.Header.Get("session_id")), req.WorktreeDir)
+	root, err := s.resolveMentionSearchRootForProject(r.Context(), strings.TrimSpace(r.Header.Get("session_id")), req.ProjectID, req.WorktreeDir)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -242,6 +243,23 @@ func (s *serveServer) trustedMentionBaseDir() (string, error) {
 		return "", fmt.Errorf("resolve server project root: %w", err)
 	}
 	return canonicalizeWorktreeBoundary(cwd)
+}
+
+func (s *serveServer) resolveMentionSearchRootForProject(ctx context.Context, sessionID, projectID, requestedWorktree string) (string, error) {
+	if s.projectsEnabled {
+		binding, err := s.resolveWorkspace(ctx, serveWorkspaceRequest{
+			SessionID: sessionID, ProjectID: projectID, WorktreeDir: requestedWorktree,
+			FirstPartyUI: true, FreshConversation: sessionID == "",
+		})
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(binding.RuntimeDir) == "" {
+			return "", errors.New("choose a project before searching mentions")
+		}
+		return canonicalizeWorktreeBoundary(binding.RuntimeDir)
+	}
+	return s.resolveMentionSearchRoot(ctx, sessionID, requestedWorktree)
 }
 
 func (s *serveServer) resolveMentionSearchRoot(ctx context.Context, sessionID, requestedWorktree string) (string, error) {

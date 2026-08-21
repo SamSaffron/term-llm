@@ -5393,3 +5393,41 @@
   .branch-tree-card,
   .branch-context-card { width: 100%; max-height: 80dvh; border-radius: 1rem 1rem 0 0; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
 }
+
+/* Project navigator */
+.project-add-btn { flex: 0 0 auto; width: auto; padding-inline: .7rem; }
+.project-group { margin: .3rem 0; }
+.project-group-header { display: flex; align-items: center; gap: .25rem; min-width: 0; }
+.project-group-toggle { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); text-align: left; font: inherit; font-weight: 650; padding: .45rem .35rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: .4rem; }
+.project-group-toggle:hover, .project-group-toggle:focus-visible { background: var(--surface-2); }
+.project-group-action { border: 0; background: transparent; color: var(--text-muted); min-width: 2rem; min-height: 2rem; border-radius: .4rem; }
+.project-group-action:hover, .project-group-action:focus-visible { color: var(--text); background: var(--surface-2); }
+.project-group.unavailable .project-group-toggle { color: var(--danger, #c65f5f); }
+.project-group.archived { opacity: .82; }
+.project-session-list { padding-left: .35rem; }
+.project-load-more { width: 100%; border: 0; background: transparent; color: var(--text-muted); padding: .45rem; }
+.archived-projects > summary { cursor: pointer; color: var(--text-muted); padding: .55rem .35rem; font-weight: 600; }
+.project-inline-error { margin: .5rem; padding: .7rem; border: 1px solid var(--danger, #c65f5f); border-radius: .5rem; display: grid; gap: .5rem; }
+.project-skeleton, .sidebar-empty { color: var(--text-muted); padding: 1rem .5rem; }
+.project-context-menu { position: absolute; z-index: 30; right: .5rem; padding: .35rem; min-width: 13rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); box-shadow: 0 .6rem 2rem rgba(0,0,0,.25); display: grid; }
+.project-context-menu button { border: 0; background: transparent; text-align: left; color: var(--text); padding: .5rem; border-radius: .35rem; }
+.project-context-menu button:hover, .project-context-menu button:focus-visible { background: var(--surface-2); }
+.project-menu-details { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font: .78rem ui-monospace, monospace; padding: .45rem; }
+.project-session-unavailable {
+  color: var(--danger, #c2413b);
+  font-size: 0.72rem;
+  padding-inline: 0.35rem;
+}
+
+.project-modal-backdrop { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.55); display: grid; place-items: center; padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left)); }
+.project-modal { width: min(32rem, 100%); max-height: min(42rem, calc(var(--app-height, 100vh) - 2rem)); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: .8rem; padding: 1rem; box-shadow: 0 1rem 3rem rgba(0,0,0,.35); display: grid; gap: .75rem; }
+.project-input { width: 100%; box-sizing: border-box; padding: .65rem; border: 1px solid var(--border); border-radius: .45rem; background: var(--bg); color: var(--text); }
+.project-path-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.project-modal-status { min-height: 1.25rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.project-status-detail { color: var(--text-muted); font-size: .78rem; overflow-wrap: anywhere; padding: 0 .4rem .35rem; }
+.project-modal-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.header-title-context { min-width: 0; display: grid; flex: 1 1 auto; }
+.header-project-subtitle { color: var(--text-muted); font-size: .72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(48vw, 26rem); }
+@media (min-width: 701px) { .header-project-subtitle { display: none; } }
+@media (max-width: 700px) { .project-modal-backdrop { align-items: end; padding: 0; } .project-modal { width: 100%; border-radius: .9rem .9rem 0 0; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); } }
+@media (prefers-reduced-motion: reduce) { .project-modal, .project-group { scroll-behavior: auto; } }

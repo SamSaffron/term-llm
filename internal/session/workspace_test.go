@@ -19,8 +19,8 @@ func createWorkspaceTestSession(t *testing.T, store *SQLiteStore, id string) *Se
 }
 
 func TestWorkspaceGrantMigration46AndCRUDCascade(t *testing.T) {
-	if schemaVersion != 46 {
-		t.Fatalf("schemaVersion = %d, want 46", schemaVersion)
+	if schemaVersion != 47 {
+		t.Fatalf("schemaVersion = %d, want 47", schemaVersion)
 	}
 	foundMigration := false
 	for _, migration := range migrations {
@@ -97,8 +97,8 @@ func TestMigration46UpgradesVersion45Database(t *testing.T) {
 	if err := upgraded.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 46 {
-		t.Fatalf("schema version = %d, want 46", version)
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 	}
 	var table string
 	if err := upgraded.db.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_workspace_grants'").Scan(&table); err != nil {

@@ -2017,6 +2017,18 @@ async function run(name, fn) {
     assert(metaEl.textContent.startsWith('7 messages'), 'meta shows updated message count');
   });
 
+  await run('project status polling re-renders grouped projection without a sidebar fetch', () => {
+    const session = { id: 'project-status', projectId: 'prj_status', title: 'Status', created: 1000, messages: [], pinned: false, archived: false, messageCount: 1, lastMessageAt: 1000 };
+    const { app } = createHarness({ visibleSessions: () => [session] });
+    app.state.sessions = [session];
+    app.state.projectsEnabled = true;
+    let groupedRenders = 0;
+    app.renderProjectSidebar = () => { groupedRenders += 1; return true; };
+    app.updateSidebarStatus([{ id: session.id, project_id: 'prj_status', last_message_at: 5000, message_count: 2, active_run: false }]);
+    assertEqual(session.lastMessageAt, 5000, 'status activity updates the project session model');
+    assertEqual(groupedRenders, 1, 'activity reorders through the grouped renderer exactly once');
+  });
+
   await run('updateSidebarStatus toggles is-active class on cached row', () => {
     const session = { id: 'y', title: 'Busy', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 };
     let activeRun = false;

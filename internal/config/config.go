@@ -511,6 +511,12 @@ type ServeConfig struct {
 	Telegram               TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
 	WebPush                WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
 	MCP                    ServeMCPConfig      `mapstructure:"mcp" yaml:"mcp,omitempty"`
+	Projects               ServeProjectsConfig `mapstructure:"projects" yaml:"projects,omitempty"`
+}
+
+// ServeProjectsConfig controls the optional Web UI project registry.
+type ServeProjectsConfig struct {
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 }
 
 // ServeMCPConfig configures the standalone term-llm serve mcp surface.

@@ -8,6 +8,7 @@ const vm = require('vm');
 const dir = __dirname;
 const source = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
 const networkSource = fs.readFileSync(path.join(dir, 'app-network.js'), 'utf8');
+const composerSource = fs.readFileSync(path.join(dir, 'app-composer.js'), 'utf8');
 
 let failures = 0;
 const pendingAsyncTests = [];
@@ -68,7 +69,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, windowOverrides = {}, contextOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, windowOverrides = {}, contextOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {}, loadComposer = false } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -173,6 +174,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], document
 
   vm.runInNewContext(source, context, { filename: 'app-core.js' });
   vm.runInNewContext(networkSource, context, { filename: 'app-network.js' });
+  if (loadComposer) vm.runInNewContext(composerSource, context, { filename: 'app-composer.js' });
   context.window.TermLLMApp.__testCookieWrites = cookieWrites;
   context.window.TermLLMApp.__testDocument = document;
   return context.window.TermLLMApp;
@@ -183,6 +185,66 @@ function loadAppCore() {
 }
 
 const app = loadAppCore();
+
+pendingAsyncTests.push((async function testHardRefreshClearsShellCachesAndUpdatesRegistration() {
+  const name = 'hard refresh clears shell caches, updates registration, and reloads';
+  const deleted = [];
+  let updates = 0;
+  let reloads = 0;
+  const refreshApp = loadAppCoreWith({
+    windowOverrides: {
+      location: { pathname: '/chat', href: 'http://localhost/chat', origin: 'http://localhost', protocol: 'http:', host: 'localhost', reload() { reloads += 1; } },
+    },
+    contextOverrides: {
+      caches: {
+        async keys() { return ['term-llm-shell-v3', 'term-llm-shell-v4', 'unrelated-cache']; },
+        async delete(key) { deleted.push(key); return true; },
+      },
+    },
+  });
+  refreshApp.state.serviceWorkerRegistration = { async update() { updates += 1; } };
+  await refreshApp.hardRefreshUIAssets();
+  if (deleted.length !== 2 || !deleted.includes('term-llm-shell-v3') || !deleted.includes('term-llm-shell-v4')) {
+    fail(name, 'did not delete exactly the term-llm shell caches', JSON.stringify(deleted));
+    return;
+  }
+  if (updates !== 1 || reloads !== 1) {
+    fail(name, `updates=${updates} reloads=${reloads}`);
+    return;
+  }
+  pass(name);
+})());
+
+(function testProjectDraftSendButtonExplainsInvalidBinding() {
+  const name = 'project draft Send is disabled with an actionable binding reason';
+  const composerApp = loadAppCoreWith({ loadComposer: true });
+  composerApp.state.projectsEnabled = true;
+  composerApp.state.draftSessionActive = true;
+  composerApp.state.capabilitiesRequired = true;
+  composerApp.state.capabilitiesLoaded = true;
+  composerApp.state.activeProjectId = '';
+  composerApp.elements.promptInput.value = 'hello';
+  composerApp.updateSendButtonState();
+  if (!composerApp.elements.sendBtn.disabled || composerApp.elements.sendBtn.title !== 'Choose a project before sending') {
+    fail(name, 'unbound draft remained apparently sendable');
+    return;
+  }
+  composerApp.state.activeProjectId = 'prj_valid';
+  composerApp.state.projects = [{ id: 'prj_valid', available: true, archived_at: null }];
+  composerApp.updateSendButtonState();
+  if (composerApp.elements.sendBtn.disabled) {
+    fail(name, 'valid project draft remained disabled');
+    return;
+  }
+  composerApp.state.projects[0].available = false;
+  composerApp.state.projects[0].unavailable_reason = 'Directory identity changed';
+  composerApp.updateSendButtonState();
+  if (!composerApp.elements.sendBtn.disabled || composerApp.elements.sendBtn.title !== 'Directory identity changed') {
+    fail(name, 'unavailable draft did not expose its blocking reason');
+    return;
+  }
+  pass(name);
+})();
 
 (function testCreateElInitializesOptionalProperties() {
   const name = 'createEl initializes only supplied class and text';

@@ -36,7 +36,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			t.Fatalf("%s=%d lines, must be below 1500", name, lines[name])
 		}
 	}
-	if lines["app-render.js"] > 3145 || lines["app-core.js"] > 2665 {
+	if lines["app-render.js"] > 3145 || lines["app-core.js"] > 2700 {
 		t.Fatalf("shell/render grew beyond baseline: %v", lines)
 	}
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -638,6 +638,22 @@ func testAppStreamJSShard(t *testing.T, shard string) {
 	}
 }
 
+func TestProjectAssetsAreVersionedInRenderedShell(t *testing.T) {
+	html := string(RenderIndexHTML("/ui", "", RenderOptions{}))
+	sw := string(RenderServiceWorker(RenderOptions{}))
+	for _, asset := range []string{"app-sidebar.js", "app-sessions.js", "app-send.js", "app-worktrees.js"} {
+		if !strings.Contains(html, `src="`+asset+`?v=`) {
+			t.Fatalf("rendered index does not version %s", asset)
+		}
+		if !strings.Contains(sw, "'./"+asset+"?v=") {
+			t.Fatalf("rendered service worker does not version %s", asset)
+		}
+	}
+	if !strings.Contains(sw, "term-llm-shell-") || strings.Contains(sw, "term-llm-shell-v3") {
+		t.Fatal("rendered service worker did not use a current versioned project shell cache")
+	}
+}
+
 func TestAppSidebarJS(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -849,7 +865,7 @@ func TestWorktreePopoverUsesResponsiveChipUI(t *testing.T) {
 	for _, want := range []string{
 		"chip-popover chip-popover-runtime worktree-popover",
 		"chip-popover-item worktree-option",
-		"worktreeApp.positionChipPopover(elements.chipWorktreeTrigger, menu, { mobileSheet: true })",
+		"worktreeApp.positionChipPopover(contextReturnFocus || elements.chipWorktreeTrigger, menu, { mobileSheet: true })",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("app-worktrees.js missing responsive popover integration %q", want)

@@ -21,19 +21,28 @@ const loadDraftMessages = () => {
         id: String(item?.id || '').trim(),
         sessionId: String(item?.sessionId || '').trim(),
         prompt: String(item?.prompt || ''),
+        provider: String(item?.provider || ''),
+        model: String(item?.model || ''),
+        effort: String(item?.effort || ''),
+        reasoningMode: String(item?.reasoningMode || ''),
+        worktreeDir: String(item?.worktreeDir || ''),
+        worktreeName: String(item?.worktreeName || ''),
         created: Number(item?.created || 0) || Date.now()
       }))
-      .filter((item) => item.id && item.prompt.trim());
+      .filter((item) => item.id && (item.prompt.trim() || item.sessionId.startsWith('draft:')));
   } catch {
     return [];
   }
 };
 
 const saveDraftMessages = (drafts) => {
-  const cleaned = (Array.isArray(drafts) ? drafts : [])
-    .filter((item) => item?.id && String(item?.prompt || '').trim())
-    .sort((a, b) => Number(b.created || 0) - Number(a.created || 0))
-    .slice(0, DRAFT_MESSAGE_LIMIT);
+  const sorted = (Array.isArray(drafts) ? drafts : [])
+    .filter((item) => item?.id && (String(item?.prompt || '').trim() || String(item?.sessionId || '').startsWith('draft:')))
+    .sort((a, b) => Number(b.created || 0) - Number(a.created || 0));
+  const cleaned = [
+    ...sorted.filter((item) => String(item.sessionId || '').startsWith('draft:')),
+    ...sorted.filter((item) => !String(item.sessionId || '').startsWith('draft:')).slice(0, DRAFT_MESSAGE_LIMIT),
+  ].sort((a, b) => Number(b.created || 0) - Number(a.created || 0));
   try {
     localStorage.setItem(draftMessagesStorageKey(), JSON.stringify(cleaned));
   } catch (err) {
@@ -44,9 +53,10 @@ const saveDraftMessages = (drafts) => {
 
 const stageDraftMessage = (prompt, sessionId = '', draftId = '') => {
   const trimmed = String(prompt || '').trim();
-  if (!trimmed) return '';
-  const id = draftId || generateId('draft');
   const normalizedSessionId = String(sessionId || '').trim();
+  const projectDraft = normalizedSessionId.startsWith('draft:');
+  if (!trimmed && !projectDraft) return '';
+  const id = draftId || (projectDraft ? normalizedSessionId : generateId('draft'));
   const next = loadDraftMessages().filter((item) => (
     item.id !== id && String(item.sessionId || '').trim() !== normalizedSessionId
   ));
@@ -54,6 +64,12 @@ const stageDraftMessage = (prompt, sessionId = '', draftId = '') => {
     id,
     sessionId: normalizedSessionId,
     prompt: trimmed,
+    provider: normalizedSessionId.startsWith('draft:') ? state.selectedProvider : '',
+    model: normalizedSessionId.startsWith('draft:') ? state.selectedModel : '',
+    effort: normalizedSessionId.startsWith('draft:') ? state.selectedEffort : '',
+    reasoningMode: normalizedSessionId.startsWith('draft:') ? state.selectedReasoningMode : '',
+    worktreeDir: normalizedSessionId.startsWith('draft:') ? state.selectedWorktreeDir : '',
+    worktreeName: normalizedSessionId.startsWith('draft:') ? state.selectedWorktreeName : '',
     created: Date.now()
   });
   saveDraftMessages(next);
@@ -71,6 +87,9 @@ const clearDraftMessageForSession = (sessionId = state.activeSessionId) => {
   saveDraftMessages(loadDraftMessages().filter((item) => (
     String(item.sessionId || '').trim() !== normalizedSessionId
   )));
+  if (normalizedSessionId.startsWith('draft:') && state.projectDrafts) {
+    delete state.projectDrafts[normalizedSessionId.slice('draft:'.length)];
+  }
 };
 
 const restoreDraftMessageForSession = (sessionId = state.activeSessionId, options = {}) => {
@@ -86,9 +105,62 @@ const restoreDraftMessageForSession = (sessionId = state.activeSessionId, option
     return false;
   }
   elements.promptInput.value = draft.prompt;
+  if (id.startsWith('draft:')) {
+    const projectId = id.slice('draft:'.length);
+    state.selectedProvider = draft.provider;
+    state.selectedModel = draft.model;
+    state.selectedEffort = draft.effort;
+    state.selectedReasoningMode = draft.reasoningMode || 'standard';
+    state.selectedWorktreeDir = draft.worktreeDir;
+    state.selectedWorktreeName = draft.worktreeName;
+    state.projectDrafts[projectId] = {
+      prompt: draft.prompt,
+      provider: draft.provider,
+      model: draft.model,
+      effort: draft.effort,
+      reasoningMode: draft.reasoningMode || 'standard',
+      worktreeDir: draft.worktreeDir,
+      worktreeName: draft.worktreeName,
+      created: draft.created,
+    };
+    app.renderProviderOptions?.();
+    app.renderModelOptions?.();
+    app.renderWorktreeChip?.();
+    app.updateHeader?.();
+  }
   app.autoGrowPrompt();
   return true;
 };
+
+const hydrateProjectDrafts = () => {
+  loadDraftMessages().forEach((draft) => {
+    const sessionId = String(draft.sessionId || '');
+    if (!sessionId.startsWith('draft:')) return;
+    const projectId = sessionId.slice('draft:'.length);
+    if (!projectId) return;
+    state.projectDrafts[projectId] = {
+      prompt: draft.prompt,
+      provider: draft.provider,
+      model: draft.model,
+      effort: draft.effort,
+      reasoningMode: draft.reasoningMode || 'standard',
+      worktreeDir: draft.worktreeDir,
+      worktreeName: draft.worktreeName,
+      created: draft.created,
+    };
+  });
+};
+
+const persistActiveProjectDraft = () => {
+  if (!state.projectsEnabled || !state.draftSessionActive || !state.activeProjectId) return '';
+  const projectId = String(state.activeProjectId);
+  const id = stageDraftMessage(elements.promptInput?.value || '', `draft:${projectId}`, `draft:${projectId}`);
+  const saved = loadDraftMessages().find((item) => item.id === id);
+  if (saved) state.projectDrafts[projectId] = { ...saved };
+  return id;
+};
+
+hydrateProjectDrafts();
 
 const restoreLatestDraftMessage = () => {
   return restoreDraftMessageForSession(state.activeSessionId);
@@ -130,6 +202,22 @@ const sendMessage = async (options = {}) => {
     if (batchingFollowUps) restoreQueuedFollowUps(followUps, followUps[0]?.sessionId);
     app.openAuthModal('Connect before sending a message.', true);
     return;
+  }
+  if (state.capabilitiesRequired && !state.capabilitiesLoaded) {
+    state.projectsError = state.projectsError || 'Could not load server capabilities';
+    app.renderSidebar?.();
+    return;
+  }
+  if (state.projectsEnabled && state.draftSessionActive) {
+    const project = (state.projects || []).find((item) => item.id === state.activeProjectId);
+    if (!project || project.archived_at || !project.available) {
+      const message = !project ? 'Choose a project or add one before sending.'
+        : (project.archived_at ? 'Restore this project before sending.' : (project.unavailable_reason || 'This project is unavailable.'));
+      app.showToast?.(message, { id: 'project-draft-blocked', tone: 'error', duration: 6500 });
+      app.renderSidebar?.();
+      app.updateSendButtonState?.();
+      return;
+    }
   }
   if (!batchingFollowUps && app.handleBranchSlashCommand?.(prompt)) return;
   if (!batchingFollowUps && /^\/(goal|mcp|model|new|tree)$/i.test(prompt)) {
@@ -596,7 +684,10 @@ const sendMessage = async (options = {}) => {
     previousResponseId = branchIntent
       ? String(branchIntent.previousResponseId || `resp_msg_${Number(branchIntent.anchorMessageId) || 0}`).trim()
       : String(session.lastResponseId || '').trim();
-    if (!previousResponseId && session.worktreeDir) {
+    if (!previousResponseId && state.projectsEnabled) {
+      body.project_id = String(session.projectId || state.activeProjectId || '').trim();
+      if (session.worktreeDir) body.worktree_dir = session.worktreeDir;
+    } else if (!previousResponseId && session.worktreeDir) {
       body.worktree_dir = session.worktreeDir;
     } else if (!previousResponseId) {
       body.use_default_workspace = true;
@@ -712,7 +803,8 @@ const sendMessage = async (options = {}) => {
     setConnectionState('', '');
     if (!preserveComposer) clearDraftMessageForSession(session.id);
     if (wasDraftSessionSend) {
-      clearDraftMessageForSession('');
+      clearDraftMessageForSession(session.projectId ? `draft:${session.projectId}` : '');
+      if (session.projectId && state.projectAttachments) delete state.projectAttachments[session.projectId];
     }
     if (headerResponseId) {
       setActiveResponseTracking(session, headerResponseId, 0);
@@ -889,6 +981,33 @@ const sendMessage = async (options = {}) => {
       }
     }
 
+    if (['project_not_found', 'project_archived', 'project_unavailable', 'workspace_conflict', 'projects_disabled', 'refresh_required'].includes(String(err?.code || ''))) {
+      if (err.code === 'projects_disabled') await app.loadCapabilities?.();
+      else await app.loadProjectSidebar?.();
+      if (err.code === 'project_not_found') {
+        const staleProjectId = String(state.activeProjectId || '');
+        if (staleProjectId) {
+          app.clearDraftMessageForSession?.(`draft:${staleProjectId}`);
+          delete state.projectDrafts[staleProjectId];
+        }
+        state.activeProjectId = '';
+        state.lastProjectId = '';
+        localStorage.removeItem(STORAGE_KEYS.lastProject);
+      }
+      if (err.code === 'workspace_conflict') {
+        try { await app.syncActiveSessionFromServer?.(session, true); } catch (_) {}
+      }
+      const projectCopy = {
+        project_not_found: 'This project no longer exists. Choose or add another project.',
+        project_archived: 'This project is archived. Restore it or start in another project.',
+        project_unavailable: 'Project unavailable. Check its server path, then retry.',
+        workspace_conflict: 'This conversation was bound elsewhere. Its server workspace has been reloaded.',
+        projects_disabled: 'Project mode was disabled; the legacy conversation list is active.',
+        refresh_required: "The server's project support changed; hard-refresh this page to continue.",
+      };
+      err.message = projectCopy[err.code] || err.message;
+    }
+
     if (state.abortController === controller) {
       state.abortController = null;
     }
@@ -904,6 +1023,9 @@ const sendMessage = async (options = {}) => {
     const message = err?.message || 'Network error. Please try again.';
     options._onTransportFailed?.(err);
     addErrorMessage(message, session);
+    if (err?.code === 'refresh_required') {
+      window.setTimeout(() => { void app.hardRefreshUIAssets?.(); }, 250);
+    }
     if (err?.status === 401) {
       app.handleAuthFailure();
     }
@@ -988,10 +1110,22 @@ const restoreBranchContextQueuedSend = (sessionId) => {
   return true;
 };
 
+let projectDraftPersistTimer = 0;
+elements.promptInput?.addEventListener?.('input', () => {
+  if (!state.projectsEnabled || !state.draftSessionActive || !state.activeProjectId) return;
+  clearTimeout(projectDraftPersistTimer);
+  projectDraftPersistTimer = setTimeout(() => {
+    persistActiveProjectDraft();
+    app.renderSidebar?.();
+  }, 200);
+});
+window.addEventListener?.('beforeunload', persistActiveProjectDraft);
+
 restoreLatestDraftMessage();
 
 Object.assign(app, {
   stageDraftMessage, removeDraftMessage, clearDraftMessageForSession,
+  persistActiveProjectDraft, hydrateProjectDrafts,
   restoreLatestDraftMessage, restoreDraftMessageForSession, sendMessage,
   releaseBranchContextQueuedSend, restoreBranchContextQueuedSend,
 });

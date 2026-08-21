@@ -67,6 +67,7 @@ class Element {
     this.children.push(child);
     return child;
   }
+  append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
   replaceChildren(...nodes) {
     this.children.forEach((child) => { child.parentNode = null; });
     this.children = [];
@@ -79,7 +80,9 @@ class Element {
     this.parentNode = null;
   }
   setAttribute(name, value) { this.attributes.set(name, String(value)); if (name === 'class') this.className = String(value); }
+  removeAttribute(name) { this.attributes.delete(name); }
   getAttribute(name) { return this.attributes.get(name) || null; }
+  contains(node) { if (node === this) return true; return this.children.some((child) => child.contains(node)); }
   addEventListener(type, listener) {
     const listeners = this.listeners.get(type) || [];
     listeners.push(listener);
@@ -91,6 +94,7 @@ class Element {
     for (const listener of listeners) await listener(evt);
   }
   focus() { this.focused = true; }
+  select() { this.selected = true; }
   matches(selector) {
     if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
     return this.tagName.toLowerCase() === selector.toLowerCase();
@@ -118,6 +122,11 @@ function createHarness(options = {}) {
     sidebarSearchInput: new Element('input'),
     backToHubLink: new Element('a'),
     hubAgentLinks: new Element('nav'),
+    addProjectBtn: new Element('button'),
+    manageProjectsBtn: new Element('button'),
+    promptInput: new Element('textarea'),
+    appShell: new Element('div'),
+    sessionGroups: new Element('div'),
   };
   elements.backToHubLink.classList.add('back-to-hub-link', 'hidden');
   elements.hubAgentLinks.classList.add('hub-agent-links', 'hidden');
@@ -130,8 +139,33 @@ function createHarness(options = {}) {
     sidebarSearchQuery: '',
     sidebarSearchResults: null,
     sidebarSearchLoading: false,
+    sidebarSearchError: '',
+    capabilitiesLoaded: false,
+    capabilitiesRequired: false,
+    worktreesEnabled: false,
+    projectsEnabled: false,
+    sidebarGroups: [],
+    projects: [],
+    projectsError: '',
+    sessions: [],
+    projectExpansion: {},
+    projectDrafts: {},
+    projectAttachments: {},
+    activeProjectId: '',
+    lastProjectId: '',
+    selectedWorktreeDir: '',
+    selectedWorktreeName: '',
+    worktrees: [],
+    draftSessionActive: false,
   };
   let renderSidebarCount = 0;
+  let renderWorktreeCount = 0;
+  const storageValues = new Map(Object.entries(options.initialStorage || {}));
+  const localStorage = {
+    getItem(key) { return storageValues.has(key) ? storageValues.get(key) : null; },
+    setItem(key, value) { storageValues.set(key, String(value)); },
+    removeItem(key) { storageValues.delete(key); },
+  };
   const app = {
     createEl(tag, className, text) {
       const element = document.createElement(tag);
@@ -142,11 +176,44 @@ function createHarness(options = {}) {
     UI_PREFIX: '/chat',
     state,
     elements,
+    STORAGE_KEYS: { draftMessages: 'drafts', projectExpansion: 'expansion', lastProject: 'lastProject', draftSessionActive: 'draftActive' },
     requestHeaders() { return {}; },
+    relativeTime() { return 'now'; },
+    truncate(value, limit) { return String(value || '').slice(0, limit); },
+    clearDraftMessageForSession(sessionId) {
+      const records = JSON.parse(localStorage.getItem('drafts') || '[]');
+      localStorage.setItem('drafts', JSON.stringify(records.filter((record) => record.sessionId !== sessionId)));
+    },
+    sidebarSessionRow(session) {
+      const row = document.createElement('div'); row.className = 'session-row'; row.dataset.sessionId = session.id;
+      row.appendChild(Object.assign(document.createElement('button'), { textContent: session.title }));
+      return row;
+    },
+    switchToSession() {},
+    switchToDraftSession(options = {}) { state.activeProjectId = String(options.projectId || ''); app.restoredProjectDraft = options; },
+    createAndSwitchToFreshSession() {},
     renderSidebar() { renderSidebarCount += 1; },
+    renderWorktreeChip() { renderWorktreeCount += 1; },
   };
   const document = new Element('document');
-  document.createElement = (tag) => new Element(tag);
+  document.body = new Element('body');
+  document.appendChild(document.body);
+  document.activeElement = null;
+  document.createElement = (tag) => {
+    const element = new Element(tag);
+    const originalFocus = element.focus.bind(element);
+    element.focus = () => { originalFocus(); document.activeElement = element; };
+    return element;
+  };
+  document.getElementById = (id) => {
+    let match = null;
+    const walk = (node) => {
+      if (node.id === id) { match = node; return; }
+      node.children.forEach((child) => { if (!match) walk(child); });
+    };
+    walk(document);
+    return match;
+  };
   document.visibilityState = options.visibilityState || 'visible';
   const navigator = { platform: options.platform || 'Linux x86_64' };
   const origin = options.origin || 'https://node.example.test';
@@ -177,6 +244,7 @@ function createHarness(options = {}) {
     window: windowObj,
     document,
     navigator,
+    localStorage,
     URL,
     URLSearchParams,
     Date: DateImpl,
@@ -199,9 +267,11 @@ function createHarness(options = {}) {
     state,
     document,
     window: windowObj,
+    localStorage,
     nativeFetchRequests,
     apiFetchRequests,
     get renderSidebarCount() { return renderSidebarCount; },
+    get renderWorktreeCount() { return renderWorktreeCount; },
   };
 }
 
@@ -755,6 +825,373 @@ function createFakeTimers() {
     await document.dispatchEvent(event);
 
     assert(!event.defaultPrevented, 'both modifiers blocks the binding on mac');
+  });
+
+  await run('project mode loads one grouped sidebar projection and renders accessible groups', async () => {
+    const requests = [];
+    const harness = createHarness({
+      apiFetch: async (url) => {
+        requests.push(String(url));
+        if (String(url).endsWith('/v1/capabilities')) {
+          return new Response(JSON.stringify({ projects: { enabled: true }, worktrees: { enabled: true } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ groups: [{
+          project: { id: 'prj_alpha', name: 'Alpha', canonical_dir: '/srv/alpha', available: true, git: true },
+          session_count: 1,
+          sessions: [{ id: 's1', number: 1, summary: 'Fix bug', project_id: 'prj_alpha', project_name: 'Alpha', created_at: '2026-08-21T00:00:00Z' }],
+        }, { project: { id: 'prj_empty', name: 'Empty', canonical_dir: '/srv/empty', available: true, git: false }, session_count: 0, sessions: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    const { app, elements, state } = harness;
+    await app.initializeProjectMode();
+    assert(state.projectsEnabled, 'project mode enabled from authenticated capabilities');
+    assert(state.worktreesEnabled, 'authenticated worktree capability is retained');
+    assert(harness.renderWorktreeCount >= 2, 'worktree control re-renders after capabilities and project status load');
+    assertEqual(requests.filter((url) => url.includes('/v1/sidebar')).length, 1, 'initial project history uses one grouped request');
+    assert(!elements.addProjectBtn.classList.contains('hidden'), 'add project action revealed');
+    app.renderProjectSidebar();
+    const groups = elements.sessionGroups.querySelectorAll('.project-group');
+    assertEqual(groups.length, 2, 'active and empty projects are both rendered');
+    const toggles = elements.sessionGroups.querySelectorAll('.project-group-toggle');
+    assertEqual(toggles[0].getAttribute('aria-expanded'), 'true', 'group disclosure exposes aria-expanded');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group-action').length, 4, 'new-chat and menu are independent buttons for each project');
+    assertEqual(state.sessions[0].projectId, 'prj_alpha', 'grouped summary preserves stable project identity');
+  });
+
+  await run('reload restores the remembered valid project draft context', async () => {
+    const { app, state } = createHarness({
+      apiFetch: async (url) => String(url).endsWith('/v1/capabilities')
+        ? new Response(JSON.stringify({ projects: { enabled: true }, worktrees: { enabled: true } }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        : new Response(JSON.stringify({ groups: [{ project: { id: 'prj_remembered', name: 'Remembered', available: true, git: true }, sessions: [] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+    state.draftSessionActive = true;
+    state.lastProjectId = 'prj_remembered';
+    state.projectDrafts = { prj_remembered: { prompt: 'survives reload', created: 100 } };
+    await app.initializeProjectMode();
+    assertEqual(state.activeProjectId, 'prj_remembered', 'remembered valid project becomes active draft context');
+    assertEqual(app.restoredProjectDraft.projectId, 'prj_remembered', 'project draft restoration uses explicit project identity');
+  });
+
+  await run('capability failure renders retry and never assumes legacy project binding', async () => {
+    const { app, elements, state } = createHarness({
+      apiFetch: async () => new Response('unavailable', { status: 503 }),
+    });
+    const enabled = await app.initializeProjectMode();
+    assertEqual(enabled, false, 'failed capabilities do not enable projects');
+    assert(state.capabilitiesRequired && !state.capabilitiesLoaded, 'capabilities remain unresolved');
+    app.renderProjectSidebar();
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-inline-error').length, 1, 'inline capability error is rendered');
+    assertEqual(elements.sessionGroups.querySelectorAll('button').length, 1, 'capability error has a Retry action');
+  });
+
+  await run('project drafts render independently and reorder groups by draft activity', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [
+      { project: { id: 'prj_recent_server', name: 'Recent server', available: true }, last_activity_at: '2026-08-21T12:00:00Z', sessions: [] },
+      { project: { id: 'prj_recent_draft', name: 'Recent draft', available: true }, last_activity_at: '2026-08-20T12:00:00Z', sessions: [] },
+    ];
+    state.projectDrafts = {
+      prj_recent_server: { prompt: 'server group draft', created: Date.parse('2026-08-21T11:00:00Z') },
+      prj_recent_draft: { prompt: 'newer browser draft', created: Date.parse('2026-08-21T13:00:00Z') },
+    };
+    app.renderProjectSidebar();
+    const groups = elements.sessionGroups.querySelectorAll('.project-group');
+    assertEqual(groups[0].dataset.projectId, 'prj_recent_draft', 'newer client draft moves its project first');
+    assertEqual(elements.sessionGroups.querySelectorAll('.session-row').length, 2, 'one independent draft row renders per project');
+  });
+
+  await run('No project continuation cursor pages without a project_id parameter', async () => {
+    const urls = [];
+    const { app, elements, state } = createHarness({
+      apiFetch: async (url) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify({ sessions: [{ id: 'legacy-2', number: 2, summary: 'Older legacy', created_at: '2026-08-20T00:00:00Z' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ no_project: true, next_cursor: 'opaque-null-cursor', sessions: [] }];
+    app.renderProjectSidebar();
+    const button = elements.sessionGroups.querySelector('.project-load-more');
+    assert(button, 'No project group renders Load more');
+    await button.dispatchEvent({ type: 'click' });
+    assert(urls.some((url) => url.includes('cursor=opaque-null-cursor') && !url.includes('project_id=')), 'No project cursor request omits project_id');
+  });
+
+  await run('disabled-mode capability flip clears stale node-scoped project drafts', async () => {
+    const { app, elements, state, localStorage } = createHarness({
+      initialStorage: {
+        drafts: JSON.stringify([
+          { id: 'draft:prj_old', sessionId: 'draft:prj_old', prompt: 'stale project prompt' },
+          { id: 'ordinary', sessionId: 'sess-1', prompt: 'ordinary retry' },
+        ]),
+        lastProject: 'prj_old',
+        draftActive: '1',
+      },
+      apiFetch: async () => new Response(JSON.stringify({ projects: { enabled: false }, worktrees: { enabled: false } }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+    state.lastProjectId = 'prj_old';
+    state.projectDrafts = { prj_old: { prompt: 'stale project prompt', worktreeDir: '/managed/old', worktreeName: 'old' } };
+    state.selectedWorktreeDir = '/managed/old';
+    state.selectedWorktreeName = 'old';
+    state.worktrees = [{ dir: '/managed/old' }];
+    state.draftSessionActive = true;
+    await app.initializeProjectMode();
+    const drafts = JSON.parse(localStorage.getItem('drafts') || '[]');
+    assertEqual(drafts.length, 1, 'project drafts are removed while ordinary retry drafts remain');
+    assertEqual(drafts[0].id, 'ordinary', 'ordinary session draft is preserved');
+    assertEqual(localStorage.getItem('lastProject'), null, 'stale last-project context is cleared');
+    assert(!state.draftSessionActive, 'stale active project draft is closed');
+    assertEqual(state.selectedWorktreeDir, '', 'stale selected worktree directory is cleared');
+    assertEqual(state.selectedWorktreeName, '', 'stale selected worktree name is cleared');
+    assertEqual(state.worktrees.length, 0, 'stale project worktree list is cleared');
+    assertEqual(app.renderProjectSidebar(), false, 'disabled mode delegates to the legacy flat/date sidebar renderer');
+    assert(elements.addProjectBtn.classList.contains('hidden') && elements.manageProjectsBtn.classList.contains('hidden'), 'disabled mode removes project mutation actions');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 0, 'disabled mode leaves no project group rows');
+  });
+
+  await run('add project path disables text transformations and traps background focus', async () => {
+    const { elements, document } = createHarness();
+    await elements.addProjectBtn.dispatchEvent({ type: 'click' });
+    const pathInput = document.querySelector('.project-path-input');
+    assert(pathInput, 'project path input rendered');
+    assertEqual(pathInput.getAttribute('autocorrect'), 'off', 'autocorrect disabled');
+    assertEqual(pathInput.autocapitalize, 'none', 'autocapitalization disabled');
+    assertEqual(pathInput.spellcheck, false, 'spellcheck disabled');
+    assert(elements.appShell.inert === true, 'background app shell is inert while modal is open');
+    const cancel = document.querySelector('.project-modal-actions').querySelector('button');
+    await cancel.dispatchEvent({ type: 'click' });
+    assert(elements.appShell.inert === false, 'background inert state clears when modal closes');
+  });
+
+  await run('archived duplicate preview restores stable project instead of starting a forbidden draft', async () => {
+    const urls = [];
+    let calls = 0;
+    const { elements, document } = createHarness({
+      apiFetch: async (url) => {
+        urls.push(String(url)); calls += 1;
+        if (calls === 1) {
+          return new Response(JSON.stringify({ duplicate: true, existing_project_id: 'prj_archived', canonical_dir: '/srv/archived', default_name: 'archived', project: { id: 'prj_archived', name: 'Archived', archived_at: '2026-08-20T00:00:00Z' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (String(url).includes('/v1/projects') && !String(url).includes('dry_run')) {
+          return new Response(JSON.stringify({ restored: true, project: { id: 'prj_archived', name: 'Archived', available: true } }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    await elements.addProjectBtn.dispatchEvent({ type: 'click' });
+    document.querySelector('.project-path-input').value = '/srv/archived';
+    const actions = document.querySelector('.project-modal-actions');
+    const submit = actions.children[1];
+    await submit.dispatchEvent({ type: 'click' });
+    assertEqual(submit.textContent, 'Restore project', 'archived duplicate requires explicit restore confirmation');
+    assert(document.getElementById('projectModal'), 'archived duplicate keeps confirmation modal open');
+    await submit.dispatchEvent({ type: 'click' });
+    assert(urls.some((url) => url.endsWith('/v1/projects?dry_run=1')), 'dry-run preview was requested');
+    assert(urls.some((url) => url.endsWith('/v1/projects')), 'confirmed archived duplicate was posted for restoration');
+  });
+
+  await run('project menu exposes keyboard semantics and restores focus on Escape', async () => {
+    const { app, elements, state, document } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_menu', name: 'Menu project', canonical_dir: '/srv/menu', available: true, git: true }, sessions: [] }];
+    app.renderProjectSidebar();
+    const actions = elements.sessionGroups.querySelectorAll('.project-group-action');
+    const menuTrigger = actions[actions.length - 1];
+    assertEqual(menuTrigger.getAttribute('aria-haspopup'), 'menu', 'project menu trigger declares popup semantics');
+    assertEqual(menuTrigger.getAttribute('aria-expanded'), 'false', 'project menu starts collapsed');
+    await menuTrigger.dispatchEvent({ type: 'click', target: menuTrigger });
+    assertEqual(menuTrigger.getAttribute('aria-expanded'), 'true', 'opening menu updates aria-expanded');
+    const menu = menuTrigger.parentNode.children.find((child) => child.classList.contains('project-context-menu'));
+    assert(menu && menu.getAttribute('role') === 'menu', 'project context menu renders with menu role');
+    assertEqual(menu.getAttribute('aria-label'), 'Manage Menu project', 'menu has an accessible project label');
+    await document.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    assert(!menuTrigger.parentNode.children.includes(menu), 'Escape dismisses project menu');
+    assertEqual(menuTrigger.getAttribute('aria-expanded'), 'false', 'dismissal resets aria-expanded');
+    assertEqual(document.activeElement, menuTrigger, 'Escape restores trigger focus');
+  });
+
+  await run('archiving requires the documented explicit confirmation', async () => {
+    const requests = [];
+    const { app, elements, state, document } = createHarness({
+      apiFetch: async (url, options = {}) => {
+        requests.push({ url: String(url), method: options.method || 'GET', body: options.body || '' });
+        if (String(url).includes('/v1/sidebar')) return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ project: { id: 'prj_archive' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_archive', name: 'Archive me', canonical_dir: '/srv/archive', available: true, git: false }, sessions: [] }];
+    app.renderProjectSidebar();
+    const actions = elements.sessionGroups.querySelectorAll('.project-group-action');
+    const menuTrigger = actions[actions.length - 1];
+    await menuTrigger.dispatchEvent({ type: 'click', target: menuTrigger });
+    const contextMenu = menuTrigger.parentNode.children.find((child) => child.classList.contains('project-context-menu'));
+    const archiveMenuItem = contextMenu.children.find((child) => child.textContent === 'Archive');
+    await archiveMenuItem.dispatchEvent({ type: 'click', target: archiveMenuItem });
+    const modalActions = document.querySelector('.project-modal-actions');
+    const archiveButton = modalActions.children[2];
+    await archiveButton.dispatchEvent({ type: 'click', target: archiveButton });
+    assertEqual(requests.filter((request) => request.method === 'PATCH').length, 0, 'first archive action does not mutate');
+    assertEqual(archiveButton.textContent, 'Confirm archive', 'archive action becomes an explicit confirmation');
+    assert(document.querySelector('.project-modal-status').textContent.includes('Archiving hides this project from new chats; existing conversations keep working.'), 'confirmation uses documented warning copy');
+    await archiveButton.dispatchEvent({ type: 'click', target: archiveButton });
+    assertEqual(requests.filter((request) => request.method === 'PATCH').length, 1, 'confirmed archive mutates exactly once');
+  });
+
+  await run('transient sidebar failure preserves the last valid project groups beneath Retry', async () => {
+    const { app, elements, state } = createHarness({ apiFetch: async () => { throw new Error('offline'); } });
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_cached', name: 'Cached', canonical_dir: '/srv/cached', available: true, git: false }, sessions: [{ id: 'cached-session', summary: 'Still usable', project_id: 'prj_cached' }] }];
+    state.projects = state.sidebarGroups.map((group) => group.project);
+    await app.loadProjectSidebar();
+    app.renderProjectSidebar();
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-inline-error').length, 1, 'transient failure renders inline Retry');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 1, 'cached project group remains rendered');
+    assertEqual(elements.sessionGroups.querySelectorAll('.session-row').length, 1, 'cached session remains usable');
+  });
+
+  await run('search failure stays distinct from zero results and offers Retry', async () => {
+    const { app, elements, state } = createHarness({
+      setTimeout(fn) { fn(); return 1; },
+      apiFetch: async () => { throw new Error('offline'); },
+    });
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_search', name: 'Search', available: true }, sessions: [{ id: 'known', summary: 'Known row', project_id: 'prj_search' }] }];
+    elements.sidebarSearchInput.value = 'needle';
+    await elements.sidebarSearchInput.dispatchEvent({ type: 'input' });
+    await flushAsync();
+    app.renderProjectSidebar();
+    assertEqual(state.sidebarSearchError, 'Could not search conversations', 'search transport failure has dedicated state');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-inline-error').length, 1, 'search failure renders inline Retry');
+    assertEqual(elements.sessionGroups.querySelectorAll('.sidebar-empty').length, 0, 'search failure is not mislabeled as no matches');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 1, 'known grouped rows remain visible during search failure');
+  });
+
+  await run('active No project conversation forces its historical group open', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.activeSessionId = 'legacy-active';
+    state.sessions = [{ id: 'legacy-active', projectId: '', title: 'Legacy active' }];
+    state.projectExpansion.__no_project__ = false;
+    state.sidebarGroups = [{ no_project: true, sessions: [{ id: 'legacy-active', summary: 'Legacy active', project_id: '' }] }];
+    app.renderProjectSidebar();
+    const group = elements.sessionGroups.querySelector('.project-group');
+    assert(group.classList.contains('active'), 'No project group is marked active');
+    assertEqual(group.querySelector('.project-group-toggle').getAttribute('aria-expanded'), 'true', 'active No project group ignores stale collapsed state');
+  });
+
+  await run('duplicate project names render shortened path disambiguators', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.projects = [
+      { id: 'prj_one', name: 'App', canonical_dir: '/srv/one/app', available: true },
+      { id: 'prj_two', name: 'App', canonical_dir: '/srv/two/app', available: true },
+    ];
+    state.sidebarGroups = state.projects.map((project) => ({ project, sessions: [] }));
+    app.renderProjectSidebar();
+    const labels = elements.sessionGroups.querySelectorAll('.project-group-toggle').map((toggle) => toggle.textContent);
+    assert(labels.some((label) => label.includes('one/app')) && labels.some((label) => label.includes('two/app')), 'duplicate names include distinct shortened paths');
+  });
+
+  await run('editing project details after preview requires a fresh dry run', async () => {
+    const urls = [];
+    const { elements, document } = createHarness({
+      apiFetch: async (url) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify({ canonical_dir: '/srv/previewed', default_name: 'previewed', git: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    await elements.addProjectBtn.dispatchEvent({ type: 'click' });
+    const path = document.querySelector('.project-path-input');
+    path.value = '/srv/first';
+    const submit = document.querySelector('.project-modal-actions').children[1];
+    await submit.dispatchEvent({ type: 'click' });
+    path.value = '/srv/second';
+    await path.dispatchEvent({ type: 'input', target: path });
+    assertEqual(submit.textContent, 'Preview', 'editing invalidates prior confirmation');
+    await submit.dispatchEvent({ type: 'click' });
+    assertEqual(urls.filter((url) => url.endsWith('?dry_run=1')).length, 2, 'edited path is previewed again');
+    assertEqual(urls.filter((url) => url.endsWith('/v1/projects')).length, 0, 'changed path was not created from stale preview');
+  });
+
+  await run('No project assignment transport failure remains retryable inline', async () => {
+    const { app, elements, state, document } = createHarness({ apiFetch: async () => { throw new Error('offline'); } });
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.projects = [{ id: 'prj_assign', name: 'Assign target', available: true }];
+    state.sidebarGroups = [{ no_project: true, sessions: [{ id: 'legacy-assign', summary: 'Assign me', project_id: '' }] }];
+    app.renderProjectSidebar();
+    const assign = elements.sessionGroups.querySelector('.assign-project-action');
+    await assign.dispatchEvent({ type: 'click', target: assign });
+    const choice = document.querySelector('.project-choice-list').querySelector('button');
+    await choice.dispatchEvent({ type: 'click', target: choice });
+    assert(!choice.disabled, 'failed assignment choice is re-enabled');
+    assert(document.querySelector('.project-modal-status').textContent.includes('Retry'), 'failed assignment exposes inline Retry copy');
+  });
+
+  await run('grouped rows prefer canonical status-updated session data over stale sidebar summaries', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sessions = [{ id: 'status-current', projectId: 'prj_status', projectName: 'Status', title: 'Current title', lastMessageAt: 5000, created: 1000, pinned: false }];
+    state.sidebarGroups = [{ project: { id: 'prj_status', name: 'Status', available: true }, sessions: [{ id: 'status-current', summary: 'Stale title', project_id: 'prj_status', created_at: 1000, last_message_at: 1000 }] }];
+    app.renderProjectSidebar();
+    const row = elements.sessionGroups.querySelector('.session-row');
+    assertEqual(row.children[0].textContent, 'Current title', 'status-updated title wins over stale grouped summary');
+  });
+
+  await run('unavailable projects badge both group and affected conversation rows', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_down', name: 'Down', canonical_dir: '/srv/down', available: false, unavailable_reason: 'Directory identity changed' }, sessions: [{ id: 'down-session', summary: 'Blocked row', project_id: 'prj_down' }] }];
+    app.renderProjectSidebar();
+    assert(elements.sessionGroups.querySelector('.project-group').classList.contains('unavailable'), 'unavailable project group is badged');
+    const row = elements.sessionGroups.querySelector('.session-row');
+    assert(row.classList.contains('project-unavailable-row'), 'affected conversation row is badged');
+    assertEqual(row.querySelectorAll('.project-session-unavailable').length, 1, 'row exposes accessible unavailable status');
+    assert(elements.sessionGroups.querySelector('.project-status-detail').textContent.includes('/srv/down'), 'group status keeps canonical path visible');
+  });
+
+  await run('project management transport failures remain visible and retryable', async () => {
+    const { app, elements, state, document } = createHarness({ apiFetch: async () => { throw new Error('offline'); } });
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_manage_fail', name: 'Manage fail', canonical_dir: '/srv/fail', available: true, git: false }, sessions: [] }];
+    app.renderProjectSidebar();
+    const actions = elements.sessionGroups.querySelectorAll('.project-group-action');
+    const menuTrigger = actions[actions.length - 1];
+    await menuTrigger.dispatchEvent({ type: 'click', target: menuTrigger });
+    const contextMenu = menuTrigger.parentNode.children.find((child) => child.classList.contains('project-context-menu'));
+    const rename = contextMenu.children.find((child) => child.textContent === 'Rename');
+    await rename.dispatchEvent({ type: 'click', target: rename });
+    const modalActions = document.querySelector('.project-modal-actions');
+    const save = modalActions.children[1];
+    await save.dispatchEvent({ type: 'click', target: save });
+    assert(!save.disabled, 'failed rename action is retryable');
+    assert(document.querySelector('.project-modal-status').textContent.includes('offline'), 'rename transport failure remains in live status');
+  });
+
+  await run('project search results retain project identity for regrouping', async () => {
+    const { elements, state } = createHarness({
+      setTimeout(fn) { fn(); return 1; },
+      apiFetch: async () => new Response(JSON.stringify({ sessions: [{ id: 's1', short_title: 'Needle', project_id: 'prj_docs', project_name: 'Docs' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    });
+    elements.sidebarSearchInput.value = 'needle';
+    await elements.sidebarSearchInput.dispatchEvent({ type: 'input' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assertEqual(state.sidebarSearchResults[0].projectId, 'prj_docs', 'search result keeps project ID');
+    assertEqual(state.sidebarSearchResults[0].projectName, 'Docs', 'search result keeps project name');
+    assertEqual(state.sessions.filter((session) => session.id === 's1').length, 1, 'search-only result joins the authoritative session collection for row actions');
   });
 
   if (failures > 0) process.exit(1);

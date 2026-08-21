@@ -7657,6 +7657,66 @@ async function testDiffCommentConvertsToReadableTypedUserMessage() {
   pass(name);
 }
 
+async function testInitialProjectSidebarFailureFallsBackToUsablePersistedSession() {
+  const name = 'initial project sidebar failure keeps a persisted session usable';
+  const sessionId = 'fallback-persisted';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed?.pathname === '/ui/v1/capabilities') {
+        return new Response(JSON.stringify({ projects: { enabled: true }, worktrees: { enabled: false } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed?.pathname === '/ui/v1/sidebar') {
+        return new Response(JSON.stringify({ error: { code: 'server_error' } }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [{ id: sessionId, number: 7, short_title: 'Fallback session', project_id: 'prj_fallback', project_name: 'Fallback', created_at: 1000, updated_at: 1000 }], selected_session: null, widget_status: { widgets: [] } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  if (!app.state.projectsEnabled || !app.state.projectsError || !app.state.sessions.some((session) => session.id === sessionId)) {
+    fail(name, 'fallback session was not loaded beneath project Retry', JSON.stringify({ error: app.state.projectsError, sessions: app.state.sessions }));
+    return;
+  }
+  pass(name);
+}
+
+async function testGlobalNewChatUsesLastValidProjectAndExpandsAmbiguousRail() {
+  const name = 'global New chat falls back to last valid project and expands an ambiguous collapsed rail';
+  const { app } = await createSessionsHarness();
+  app.state.projectsEnabled = true;
+  app.state.projects = [
+    { id: 'prj_archived', name: 'Archived', available: true, archived_at: '2026-08-20T00:00:00Z' },
+    { id: 'prj_last', name: 'Last valid', available: true, archived_at: null },
+  ];
+  app.state.sessions = [{ id: 'active-invalid', projectId: 'prj_archived', messages: [] }];
+  app.state.activeSessionId = 'active-invalid';
+  app.state.activeProjectId = 'prj_archived';
+  app.state.lastProjectId = 'prj_last';
+  await app.createAndSwitchToFreshSession();
+  if (!app.state.draftSessionActive || app.state.activeProjectId !== 'prj_last') {
+    fail(name, 'valid remembered project was not used after invalid active context', JSON.stringify(app.state));
+    return;
+  }
+
+  let collapsed = null;
+  let opened = 0;
+  app.state.draftSessionActive = false;
+  app.state.activeSessionId = '';
+  app.state.activeProjectId = '';
+  app.state.lastProjectId = '';
+  app.state.projects = [];
+  app.setSidebarCollapsed = (value) => { collapsed = value; };
+  app.openSidebar = () => { opened += 1; };
+  const result = await app.createAndSwitchToFreshSession();
+  if (result !== null || collapsed !== false || opened !== 1) {
+    fail(name, 'ambiguous rail did not expand project navigation', JSON.stringify({ result, collapsed, opened }));
+    return;
+  }
+  pass(name);
+}
+
 const appSessionsShardValue = process.env.TERM_LLM_APP_SESSIONS_TEST_SHARD;
 const appSessionsShard = appSessionsShardValue === undefined ? null : Number(appSessionsShardValue);
 let appSessionsTestIndex = 0;
@@ -7689,6 +7749,8 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testSwitchingSessionsClearsEmptyComposerDraft);
   await runAppSessionsTest(testNewChatClearsExistingDraftComposer);
   await runAppSessionsTest(testNewChatFromSessionPreservesSessionDraft);
+  await runAppSessionsTest(testInitialProjectSidebarFailureFallsBackToUsablePersistedSession);
+  await runAppSessionsTest(testGlobalNewChatUsesLastValidProjectAndExpandsAmbiguousRail);
   await runAppSessionsTest(testArchivingActiveSessionClearsItsComposerDraft);
   await runAppSessionsTest(testSwitchingSessionsDiscardsPendingAttachments);
   await runAppSessionsTest(testSwitchToSessionSyncsSelectedRuntime);

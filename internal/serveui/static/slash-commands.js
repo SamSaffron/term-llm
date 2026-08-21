@@ -250,6 +250,7 @@ const mentionRequestContext = () => {
   const session = !draft && typeof app.getActiveSession === 'function' ? app.getActiveSession() : null;
   return {
     sessionId: String(session?.id || '').trim(),
+    projectId: String(session?.projectId || (draft ? app.state?.activeProjectId : '') || '').trim(),
     worktreeDir: String(session?.worktreeDir || (draft ? app.state?.selectedWorktreeDir : '') || '').trim(),
   };
 };
@@ -285,6 +286,7 @@ const scheduleMentionUpdate = (value, cursor) => {
           text: sourceValue,
           cursor_utf16: sourceCursor,
           limit: 10,
+          project_id: context.projectId,
           worktree_dir: context.worktreeDir,
         }),
         ...(mentionAbortController ? { signal: mentionAbortController.signal } : {}),

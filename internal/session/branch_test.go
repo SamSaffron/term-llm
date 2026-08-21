@@ -2,12 +2,48 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func TestCreateBranchSupportsPreProjectSchema(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	preProjectSchema := strings.Replace(schema, "    project_id TEXT,\n", "", 1)
+	if preProjectSchema == schema {
+		t.Fatal("project_id column not found in schema fixture")
+	}
+	if _, err := db.Exec(preProjectSchema); err != nil {
+		t.Fatal(err)
+	}
+	store := &SQLiteStore{db: db, cfg: Config{Enabled: true}}
+	store.probeSessionColumns()
+	store.probeMessageColumns()
+	store.probeBranchTable()
+	t.Cleanup(func() { _ = store.Close() })
+	if store.hasProjectID || !store.hasSessionBranches {
+		t.Fatalf("pre-project capabilities: project=%v branches=%v", store.hasProjectID, store.hasSessionBranches)
+	}
+	source := &Session{ID: "pre-project-branch", Provider: "mock", Model: "mock", Status: StatusComplete}
+	if err := store.Create(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	anchor := addBranchTestMessage(t, store, source.ID, llm.UserText("branch before projects"))
+	result, err := store.CreateBranch(context.Background(), source.ID, CreateBranchOptions{AnchorMessageID: anchor.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Session == nil || result.Session.ID == "" || result.Session.ProjectID != "" {
+		t.Fatalf("pre-project branch = %#v", result)
+	}
+}
 
 func newBranchTestStore(t *testing.T) (*SQLiteStore, *Session) {
 	t.Helper()
@@ -20,7 +56,7 @@ func newBranchTestStore(t *testing.T) (*SQLiteStore, *Session) {
 		ID: "branch-source", Provider: "Mock", ProviderKey: "mock", Model: "model-a",
 		ReasoningEffort: "high", ReasoningMode: "pro", Mode: ModeChat,
 		ApprovalMode: ApprovalModeAuto, Origin: OriginWeb, Agent: "developer",
-		CWD: "/tmp/project", WorktreeDir: "/tmp/project-wt", Search: true,
+		CWD: "/tmp/project", WorktreeDir: "/tmp/project-wt", ProjectID: "prj_branch", Search: true,
 		Tools: "read_file,shell", MCP: "playwright",
 	}
 	if err := store.Create(context.Background(), sess); err != nil {
@@ -90,7 +126,7 @@ func TestCreateBranchCopiesPrefixAndClearsStreamIdentity(t *testing.T) {
 	child := result.Session
 	if child.ProviderKey != source.ProviderKey || child.Model != source.Model || child.ReasoningEffort != source.ReasoningEffort ||
 		child.ReasoningMode != source.ReasoningMode || child.ApprovalMode != source.ApprovalMode || child.Origin != source.Origin ||
-		child.Agent != source.Agent || child.CWD != source.CWD || child.WorktreeDir != source.WorktreeDir || !child.Search ||
+		child.Agent != source.Agent || child.CWD != source.CWD || child.WorktreeDir != source.WorktreeDir || child.ProjectID != source.ProjectID || !child.Search ||
 		child.Tools != source.Tools || child.MCP != source.MCP {
 		t.Fatalf("branch did not inherit runtime settings: %#v", child)
 	}

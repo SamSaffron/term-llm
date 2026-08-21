@@ -57,6 +57,7 @@ type responsesCreateRequest struct {
 	MultiAgent          *responsesMultiAgentRequest    `json:"multi_agent,omitempty"`
 	PromptCacheOptions  *responsesPromptCacheRequest   `json:"prompt_cache_options,omitempty"`
 	UseDefaultWorkspace bool                           `json:"use_default_workspace,omitempty"`
+	ProjectID           string                         `json:"project_id,omitempty"`
 	WorktreeDir         string                         `json:"worktree_dir,omitempty"`
 	ModelSwap           *responsesModelSwapRequest     `json:"model_swap,omitempty"`
 }

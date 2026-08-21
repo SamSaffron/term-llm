@@ -123,7 +123,16 @@ const toggleSidebarCollapsed = () => {
 
 const updateHeader = () => {
   const session = ensureActiveSession();
-  elements.activeSessionTitle.textContent = session?.title || 'Chat';
+  const title = session?.title || 'Chat';
+  elements.activeSessionTitle.textContent = title;
+  const projectName = String(session?.projectName || (state.projects || []).find((project) => project.id === state.activeProjectId)?.name || '').trim();
+  elements.activeSessionTitle.setAttribute('aria-label', projectName ? `${title} — project ${projectName}` : title);
+  elements.activeSessionTitle.title = projectName ? `${title} — ${projectName}` : title;
+  if (elements.activeProjectSubtitle) {
+    elements.activeProjectSubtitle.textContent = projectName ? `Project: ${projectName}` : '';
+    elements.activeProjectSubtitle.hidden = !projectName;
+    elements.activeProjectSubtitle.title = projectName;
+  }
   if (typeof app.updateGoalChip === 'function') app.updateGoalChip(session);
   updateDocumentTitle();
   updateSessionUsageDisplay(session);
@@ -418,7 +427,20 @@ const updateCachedSessionRow = (session, cached) => {
   }
 };
 
+const sidebarSessionRow = (session) => {
+  const cached = sidebarRowCache.get(session.id);
+  if (cached) {
+    updateCachedSessionRow(session, cached);
+    return cached.row;
+  }
+  return buildCachedSessionRow(session);
+};
+
 const renderSidebar = () => {
+  if (typeof app.renderProjectSidebar === 'function' && app.renderProjectSidebar()) {
+    sidebarRenderKey = '';
+    return;
+  }
   const grouped = {
     Pinned: [],
     Today: [],
@@ -2829,7 +2851,12 @@ const renderMessages = (forceScroll = false) => {
   if (!session || !messages.length) {
     elements.messages.innerHTML = '';
     if (!sessionHistoryLoading) {
-      const empty = createEl('div', 'empty-state', 'How can I help you today?');
+      let emptyCopy = 'How can I help you today?';
+      if (state.projectsEnabled) {
+        const project = state.projects.find((item) => item.id === state.activeProjectId);
+        emptyCopy = project ? `New chat in ${project.name}` : 'Choose a project or add one to start a chat';
+      }
+      const empty = createEl('div', 'empty-state', emptyCopy);
       elements.messages.appendChild(empty);
     }
     _lastRenderedSessionId = sessionId;
@@ -3012,6 +3039,7 @@ Object.assign(app, {
   toggleSidebarCollapsed,
   updateHeader,
   renderSidebar,
+  sidebarSessionRow,
   updateSidebarStatus,
   directionForText,
   applyTextDirection,

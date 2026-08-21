@@ -48,8 +48,13 @@ func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
 }
 
 func TestHubReverseNodeProxy(t *testing.T) {
+	var projectPath, projectQuery string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/healthz" {
+		switch r.URL.Path {
+		case "/chat/healthz":
+		case "/chat/v1/projects/prj_one/worktrees/diff":
+			projectPath, projectQuery = r.URL.Path, r.URL.RawQuery
+		default:
 			t.Fatalf("backend path = %q", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer node-token" {
@@ -78,6 +83,12 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"agent":"artist"`) {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+	projectReq := httptest.NewRequest(http.MethodGet, "/node/artist/v1/projects/prj_one/worktrees/diff?dir=%2Fmanaged%2Fone", nil)
+	projectRec := httptest.NewRecorder()
+	s.handler().ServeHTTP(projectRec, projectReq)
+	if projectRec.Code != http.StatusOK || projectPath != "/chat/v1/projects/prj_one/worktrees/diff" || projectQuery != "dir=%2Fmanaged%2Fone" {
+		t.Fatalf("project reverse status=%d path=%q query=%q body=%s", projectRec.Code, projectPath, projectQuery, projectRec.Body.String())
 	}
 }
 

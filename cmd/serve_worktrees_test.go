@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -294,18 +295,58 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
+	if err := store.Create(context.Background(), &session.Session{
+		ID: "worktree-active", Provider: "mock", Model: "tiny", Mode: session.ModeChat,
+		CWD: worktreeDir, WorktreeDir: worktreeDir, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	nonGitDir := t.TempDir()
+	if err := store.Create(context.Background(), &session.Session{
+		ID: "unrelated-nongit", Provider: "mock", Model: "tiny", Mode: session.ModeChat,
+		CWD: nonGitDir, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	projects, ok := session.AsProjectStore(store)
+	if !ok {
+		t.Fatal("project store unavailable")
+	}
+	project := &session.Project{Name: "Mutation owner", CanonicalDir: repo}
+	if err := projects.CreateProject(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	missingDir := filepath.Join(filepath.Dir(worktreeDir), "missing-owned-worktree")
+	missing := &session.Session{ID: "missing-worktree-active", Provider: "mock", Model: "tiny", Mode: session.ModeChat, ProjectID: project.ID, CWD: missingDir, WorktreeDir: missingDir, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive}
+	if err := store.Create(context.Background(), missing); err != nil {
+		t.Fatal(err)
+	}
 	mgr := newServeSessionManager(time.Minute, 10, nil)
 	defer mgr.Close()
 	mgr.mu.Lock()
-	mgr.sessions["root-active"] = &serveRuntime{activeInterrupt: &runtimeInterruptState{}}
+	for _, id := range []string{"root-active", "worktree-active", "unrelated-nongit", "missing-worktree-active"} {
+		mgr.sessions[id] = &serveRuntime{activeInterrupt: &runtimeInterruptState{}}
+	}
 	mgr.mu.Unlock()
 	defer func() {
 		mgr.mu.Lock()
-		delete(mgr.sessions, "root-active")
+		for _, id := range []string{"root-active", "worktree-active", "unrelated-nongit", "missing-worktree-active"} {
+			delete(mgr.sessions, id)
+		}
 		mgr.mu.Unlock()
 	}()
-	// Leave one active root run registered and exercise both root-mutating endpoints.
+	// Leave active runs in the root, a managed checkout, a missing checkout that
+	// falls back to this project, and an unrelated non-Git directory.
 	srv := &serveServer{store: store, sessionMgr: mgr, worktreeRootFn: worktreeRootForTest(repo)}
+	active := srv.activeRootRunsForWorktreeMerge(context.Background(), repo)
+	for _, want := range []string{"root-active", "worktree-active", "missing-worktree-active"} {
+		if !slices.Contains(active, want) {
+			t.Fatalf("active runs %v missing %s", active, want)
+		}
+	}
+	if slices.Contains(active, "unrelated-nongit") {
+		t.Fatalf("unrelated non-Git run blocked repository mutation: %v", active)
+	}
 
 	mergeReq := httptest.NewRequest(http.MethodPost, "/v1/worktrees/merge", bytes.NewBufferString(`{"dir":"`+worktreeDir+`"}`))
 	mergeRec := httptest.NewRecorder()
@@ -325,6 +366,29 @@ func TestServeWorktreeMergeBlocksActiveRootRun(t *testing.T) {
 	}
 	if !strings.Contains(promoteRec.Body.String(), "root-active") {
 		t.Fatalf("promote body = %s, want active root session id", promoteRec.Body.String())
+	}
+}
+
+func TestServeWorktreeDeleteUsesRepositoryMutationLease(t *testing.T) {
+	repo := newGitRepoForBindingTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "delete-lease"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+	release, admitted, err := processRootCheckoutLeases.tryAcquireMutation(repo)
+	if err != nil || !admitted {
+		t.Fatalf("acquire test mutation lease: admitted=%v err=%v", admitted, err)
+	}
+	defer release()
+	srv := &serveServer{worktreeRootFn: worktreeRootForTest(repo)}
+	rr := httptest.NewRecorder()
+	srv.handleWorktreeDelete(rr, httptest.NewRequest(http.MethodDelete, "/v1/worktrees?dir="+url.QueryEscape(wt.Dir)+"&force=1", nil))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("delete during mutation status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(wt.Dir); err != nil {
+		t.Fatalf("blocked delete removed worktree: %v", err)
 	}
 }
 

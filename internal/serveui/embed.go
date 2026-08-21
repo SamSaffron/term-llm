@@ -213,7 +213,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		return nil
 	}
 	replacements := []struct{ old, new string }{
-		{"term-llm-shell-v3", "term-llm-shell-" + AssetVersion()},
+		{"term-llm-shell-v4", "term-llm-shell-" + AssetVersion()},
 		{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
 		{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
 		{"'./app.css'", "'./" + versioned("app.css") + "'"},

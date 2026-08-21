@@ -29,7 +29,7 @@ async function main() {
     requests.push({ url, options });
     return response({ active: false, items: [] });
   };
-  const session = { id: 'session one', worktreeDir: '/managed/worktree' };
+  const session = { id: 'session one', projectId: 'prj_mentions', worktreeDir: '/managed/worktree' };
   const app = {
     UI_PREFIX: '/chat',
     elements: { promptInput, slashCommandMenu },
@@ -72,6 +72,7 @@ async function main() {
   const body = JSON.parse(requests[0].options.body);
   assert(body.text === 'review @typ now' && body.cursor_utf16 === 11, `unexpected request body: ${requests[0].options.body}`);
   assert(body.limit === 10, `mention result limit was not capped at 10: ${body.limit}`);
+  assert(body.project_id === 'prj_mentions', 'persisted project identity was not sent as mention context');
   assert(body.worktree_dir === '/managed/worktree', 'active worktree was not sent as draft/session context');
   assert(requests[0].options.headers.session_id === 'session one', 'session headers were not reused');
   assert(!slashCommandMenu.hidden && slashCommandMenu.children.length === 2, 'mention results did not open shared completion menu');

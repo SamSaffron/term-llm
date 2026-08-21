@@ -19,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -472,8 +473,16 @@ func canonicalizeServeDirForWrite(dir string) (string, error) {
 	return filepath.Join(filepath.Clean(resolvedParent), filepath.Base(absDir)), nil
 }
 
-func pathWithinDir(path, dir string) bool {
+func pathWithinDirForOS(path, dir, goos string) bool {
+	path, dir = filepath.Clean(path), filepath.Clean(dir)
+	if goos == "windows" {
+		path, dir = strings.ToLower(path), strings.ToLower(dir)
+	}
 	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+func pathWithinDir(path, dir string) bool {
+	return pathWithinDirForOS(path, dir, runtime.GOOS)
 }
 
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
@@ -1171,6 +1180,8 @@ type webSessionEntry struct {
 	Mode          session.SessionMode   `json:"mode,omitempty"`
 	Origin        session.SessionOrigin `json:"origin,omitempty"`
 	Provider      string                `json:"provider,omitempty"`
+	ProjectID     string                `json:"project_id,omitempty"`
+	ProjectName   string                `json:"project_name,omitempty"`
 	Archived      bool                  `json:"archived"`
 	Pinned        bool                  `json:"pinned"`
 	CreatedAt     int64                 `json:"created_at"`
@@ -1194,6 +1205,8 @@ func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) we
 		Mode:          sess.Mode,
 		Origin:        sess.Origin,
 		Provider:      sessionSummaryProviderKey(s.cfgRef, sess),
+		ProjectID:     sess.ProjectID,
+		ProjectName:   sess.ProjectName,
 		Archived:      sess.Archived,
 		Pinned:        sess.Pinned,
 		CreatedAt:     sess.CreatedAt.UnixMilli(),
@@ -1220,6 +1233,8 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		Mode:          sess.Mode,
 		Origin:        sess.Origin,
 		Provider:      provider,
+		ProjectID:     sess.ProjectID,
+		ProjectName:   sess.ProjectName,
 		Archived:      sess.Archived,
 		Pinned:        sess.Pinned,
 		CreatedAt:     sess.CreatedAt.UnixMilli(),
@@ -1311,6 +1326,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sessions []session.SessionSummary
+	nextCursor := ""
 	if !selectedOnly {
 		categories, err := parseSidebarSessionCategories(r.URL.Query().Get("categories"), false)
 		if err != nil {
@@ -1320,15 +1336,46 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		includeArchived := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "1") ||
 			strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
+		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+		projectCursorValue := strings.TrimSpace(r.URL.Query().Get("cursor"))
+		var projectCursor *session.ProjectSessionCursor
+		noProject := false
+		if projectCursorValue != "" {
+			cursor, decodeErr := session.DecodeProjectSessionCursor(projectCursorValue)
+			if decodeErr != nil || cursor.ProjectID != projectID {
+				writeProjectError(w, http.StatusBadRequest, "invalid_cursor", "session cursor does not belong to this project group")
+				return
+			}
+			projectCursor = &cursor
+			noProject = cursor.ProjectID == ""
+		}
+		groupPage := projectID != "" || projectCursor != nil
+		limit := 100
+		if groupPage {
+			limit = 13
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
+					limit = min(parsed, 100) + 1
+				}
+			}
+		}
 		sessions, err = s.store.List(r.Context(), session.ListOptions{
-			Limit:          100,
+			Limit:          limit,
 			Archived:       includeArchived,
 			Categories:     categories,
 			SortByActivity: true,
+			ProjectID:      projectID,
+			NoProject:      noProject,
+			ProjectCursor:  projectCursor,
 		})
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
 			return
+		}
+		if groupPage && len(sessions) == limit {
+			pageSize := limit - 1
+			nextCursor = session.EncodeProjectSessionCursor(sessions[pageSize-1])
+			sessions = sessions[:pageSize]
 		}
 	}
 
@@ -1346,6 +1393,9 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"sessions":         result,
 		"selected_session": selected,
+	}
+	if nextCursor != "" {
+		payload["next_cursor"] = nextCursor
 	}
 	if includeWidgetStatus {
 		// The shell HTML is public and process-wide cached so mutable widget
@@ -1401,6 +1451,7 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		Categories: categories,
 		Limit:      limit,
 		Archived:   includeArchived,
+		ProjectID:  strings.TrimSpace(r.URL.Query().Get("project_id")),
 	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid search query")
@@ -1416,6 +1467,8 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 		Mode          session.SessionMode   `json:"mode,omitempty"`
 		Origin        session.SessionOrigin `json:"origin,omitempty"`
 		Provider      string                `json:"provider,omitempty"`
+		ProjectID     string                `json:"project_id,omitempty"`
+		ProjectName   string                `json:"project_name,omitempty"`
 		Archived      bool                  `json:"archived"`
 		Pinned        bool                  `json:"pinned"`
 		CreatedAt     int64                 `json:"created_at"`
@@ -1444,6 +1497,8 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			Pinned:              match.Pinned,
 			MessageCount:        match.MessageCount,
 			Status:              match.Status,
+			ProjectID:           match.ProjectID,
+			ProjectName:         match.ProjectName,
 			CreatedAt:           match.SessionCreatedAt,
 			UpdatedAt:           match.UpdatedAt,
 			LastMessageAt:       match.LastMessageAt,
@@ -1458,6 +1513,8 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 			Mode:          summary.Mode,
 			Origin:        summary.Origin,
 			Provider:      sessionSummaryProviderKey(s.cfgRef, summary),
+			ProjectID:     summary.ProjectID,
+			ProjectName:   summary.ProjectName,
 			Archived:      summary.Archived,
 			Pinned:        summary.Pinned,
 			CreatedAt:     summary.CreatedAt.UnixMilli(),
@@ -1756,6 +1813,16 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "project" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeProjectError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		s.handleSessionProjectAssignment(w, r, sessionID)
+		return
 	}
 
 	if suffix == "skills" || suffix == "skills/invoke" || strings.HasPrefix(suffix, "skill-runs/") {
@@ -2485,7 +2552,7 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 		Archived            *bool   `json:"archived"`
 		Pinned              *bool   `json:"pinned"`
 	}
-	if err := decodeJSONBody(r, &req); err != nil {
+	if err := decodeSmallJSON(w, r, &req); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -3035,15 +3102,51 @@ func runtimeProviderKey(rt *serveRuntime) string {
 }
 
 func (s *serveServer) ensureRuntimeBaseDirForSession(ctx context.Context, sessionID string, rt *serveRuntime) error {
-	if s == nil || s.store == nil || sessionID == "" || rt == nil || rt.toolMgr == nil {
+	if s == nil || s.store == nil || sessionID == "" || rt == nil {
 		return nil
 	}
 	sess, err := s.store.Get(ctx, sessionID)
 	if err != nil || sess == nil {
 		return nil
 	}
-	if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, s.store, sessionID); err != nil {
-		return err
+	if strings.TrimSpace(sess.ProjectID) != "" {
+		var binding serveWorkspaceBinding
+		if s.projectsEnabled {
+			binding, err = s.resolveWorkspace(ctx, serveWorkspaceRequest{SessionID: sessionID, ProjectID: sess.ProjectID})
+		} else {
+			// Disabling the project UI/API must not strand conversations previously
+			// created in project mode. Their immutable snapshot still has to pass the
+			// same canonical project/worktree validation before it is restored.
+			binding, err = s.resolvePersistedProjectWorkspace(ctx, *sess)
+		}
+		if err != nil {
+			return err
+		}
+		if rt.toolMgr != nil {
+			readOnlyStore, readOnly := s.store.(interface{ ReadOnly() bool })
+			if !readOnly || !readOnlyStore.ReadOnly() {
+				if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, s.store, sessionID); err != nil {
+					return err
+				}
+			}
+			if err := rt.toolMgr.SetBaseDirWithContext(ctx, binding.RuntimeDir); err != nil {
+				return err
+			}
+			s.configureRuntimeSkillsForDir(rt, binding.RuntimeDir)
+		}
+		rt.mu.Lock()
+		rt.sessionMeta = sess
+		rt.mu.Unlock()
+		return nil
+	}
+	if rt.toolMgr == nil {
+		return nil
+	}
+	readOnlyStore, readOnly := s.store.(interface{ ReadOnly() bool })
+	if !readOnly || !readOnlyStore.ReadOnly() {
+		if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, s.store, sessionID); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(sess.WorktreeDir) == "" {
 		// Restore only a root that was explicitly persisted by a prior web request.
@@ -3173,6 +3276,44 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, desiredProvider)
 	}
 	return rt, true, nil
+}
+
+func (s *serveServer) ensurePersistedSessionForProjectBinding(ctx context.Context, sessionID string, rt *serveRuntime, clientModel string) error {
+	if s.store == nil || sessionID == "" || rt == nil {
+		return fmt.Errorf("session persistence is unavailable")
+	}
+	existing, err := s.store.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("load session before workspace binding: %w", err)
+	}
+	if existing != nil {
+		return nil
+	}
+	providerKey := strings.TrimSpace(rt.providerKey)
+	providerName := providerKey
+	if rt.provider != nil && strings.TrimSpace(rt.provider.Name()) != "" {
+		providerName = strings.TrimSpace(rt.provider.Name())
+	}
+	model := strings.TrimSpace(clientModel)
+	if model == "" {
+		model = strings.TrimSpace(rt.defaultModel)
+	}
+	now := time.Now()
+	provisional := &session.Session{
+		ID: sessionID, Provider: providerName, ProviderKey: providerKey, Model: model,
+		Mode: session.ModeChat, Origin: session.OriginWeb, Agent: rt.agentName,
+		CreatedAt: now, UpdatedAt: now, Search: rt.search, Tools: rt.toolsSetting,
+		MCP: rt.mcpSetting, Status: session.StatusActive,
+	}
+	if err := s.store.Create(ctx, provisional); err != nil {
+		// A concurrent fresh request may have created the same shell. Do not update
+		// any runtime metadata until this request wins the conditional binding.
+		if raced, getErr := s.store.Get(ctx, sessionID); getErr == nil && raced != nil {
+			return nil
+		}
+		return fmt.Errorf("create session before workspace binding: %w", err)
+	}
+	return nil
 }
 
 // syncPersistedSessionRuntime pins the provider, model, reasoning_effort, and

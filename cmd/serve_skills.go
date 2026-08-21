@@ -234,6 +234,11 @@ func (s *serveServer) handleSessionSkills(w http.ResponseWriter, r *http.Request
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
+	sess, err = s.sessionForProjectDiscovery(r.Context(), sess)
+	if err != nil {
+		writeWorkspaceError(w, err)
+		return
+	}
 
 	switch {
 	case suffix == "skills" && r.Method == http.MethodGet:
@@ -258,6 +263,23 @@ func serveSkillSessionAuthorized(r *http.Request, sessionID string) bool {
 	// it is not an authentication boundary.
 	claimed := strings.TrimSpace(r.Header.Get("session_id"))
 	return claimed != "" && claimed == sessionID
+}
+
+func (s *serveServer) sessionForProjectDiscovery(ctx context.Context, sess *session.Session) (*session.Session, error) {
+	if sess == nil || strings.TrimSpace(sess.ProjectID) == "" {
+		return sess, nil
+	}
+	binding, err := s.resolvePersistedProjectWorkspace(ctx, *sess)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *sess
+	resolved.CWD = binding.RuntimeDir
+	resolved.WorktreeDir = binding.WorktreeDir
+	if binding.WorktreeDir != "" && !sameServePath(binding.RuntimeDir, binding.WorktreeDir) {
+		resolved.WorktreeDir = ""
+	}
+	return &resolved, nil
 }
 
 func (s *serveServer) skillsForServeSession(sess *session.Session) *skills.Setup {
@@ -319,6 +341,19 @@ func (s *serveServer) skillsForServeSession(sess *session.Session) *skills.Setup
 		return setup
 	}
 	return s.skillsSetup
+}
+
+func (s *serveServer) configureRuntimeSkillsForDir(rt *serveRuntime, dir string) {
+	if s == nil || rt == nil || strings.TrimSpace(dir) == "" {
+		return
+	}
+	setup := s.skillsForServeSession(&session.Session{CWD: dir})
+	if rt.engine != nil && rt.toolMgr != nil {
+		RegisterSkillToolWithEngine(rt.engine, rt.toolMgr, setup)
+	}
+	rt.mu.Lock()
+	rt.systemPrompt = InjectSkillsMetadata(s.baseSystemPrompt, setup)
+	rt.mu.Unlock()
 }
 
 func (s *serveServer) handleSessionSkillsList(w http.ResponseWriter, r *http.Request, sess *session.Session) {

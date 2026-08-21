@@ -12,6 +12,37 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestServeProjectsConfigDefaultsEnabledAndLoadsExplicitDisable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Serve.Projects.Enabled {
+		t.Fatal("serve.projects.enabled did not default to true")
+	}
+	configDir, err := GetConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("serve:\n  projects:\n    enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	viper.Reset()
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Serve.Projects.Enabled {
+		t.Fatal("explicit serve.projects.enabled=false was ignored")
+	}
+}
+
 func TestWriteFileAtomicallyFollowsFinalPathSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires extra privileges on Windows")

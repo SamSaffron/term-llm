@@ -81,6 +81,8 @@ const searchResultToSession = (result) => {
     messageCount: Number(result.message_count || 0) || 0,
     lastResponseId: null,
     activeResponseId: null,
+    projectId: String(result.project_id || ''),
+    projectName: String(result.project_name || ''),
     _serverOnly: true,
     searchSnippet: String(result.snippet || result.summary || '')
   };
@@ -108,15 +110,24 @@ const runSidebarSearch = async (query, seq) => {
     if (!resp.ok) throw new Error(`search failed (${resp.status})`);
     const data = await resp.json();
     if (seq !== searchSeq) return;
-    state.sidebarSearchResults = Array.isArray(data.sessions)
+    const results = Array.isArray(data.sessions)
       ? data.sessions.map(searchResultToSession).filter(Boolean)
       : [];
+    const byID = new Map((state.sessions || []).map((session) => [session.id, session]));
+    results.forEach((incoming) => {
+      const existing = byID.get(incoming.id);
+      if (existing) Object.assign(existing, incoming);
+      else { state.sessions.push(incoming); byID.set(incoming.id, incoming); }
+    });
+    state.sidebarSearchResults = results;
     state.sidebarSearchLoading = false;
+    state.sidebarSearchError = '';
     app.renderSidebar?.();
   } catch (err) {
     if (err?.name === 'AbortError' || seq !== searchSeq) return;
-    state.sidebarSearchResults = [];
+    state.sidebarSearchResults = null;
     state.sidebarSearchLoading = false;
+    state.sidebarSearchError = 'Could not search conversations';
     app.renderSidebar?.();
   }
 };
@@ -124,6 +135,7 @@ const runSidebarSearch = async (query, seq) => {
 const scheduleSidebarSearch = () => {
   const query = String(elements.sidebarSearchInput?.value || '').trim();
   state.sidebarSearchQuery = query;
+  state.sidebarSearchError = '';
   searchSeq += 1;
   const seq = searchSeq;
   if (searchTimer !== null) clearTimeout(searchTimer);
@@ -153,6 +165,658 @@ const openWidgetsModal = () => {
 
 const closeWidgetsModal = () => {
   elements.widgetsModal?.classList.add('hidden');
+};
+
+const projectSessionFromSummary = (item, project = null) => {
+  const created = Date.parse(item.created_at || '') || Number(item.created_at || 0) || Date.now();
+  const last = Date.parse(item.last_message_at || '') || Number(item.last_message_at || 0) || created;
+  return {
+    id: String(item.id || ''), number: Number(item.number || 0), name: String(item.name || ''),
+    title: String(item.generated_short_title || item.name || item.summary || 'New chat'),
+    longTitle: String(item.generated_long_title || item.generated_short_title || item.summary || ''),
+    mode: String(item.mode || 'chat'), origin: String(item.origin || 'web'),
+    archived: Boolean(item.archived), pinned: Boolean(item.pinned), created, lastMessageAt: last,
+    status: String(item.status || 'active'), transcriptRev: Number(item.transcript_rev || 0),
+    messageCount: Number(item.message_count || 0), provider: String(item.provider_key || item.provider || ''),
+    worktreeDir: String(item.worktree_dir || ''), projectId: String(item.project_id || project?.id || ''),
+    projectName: String(item.project_name || project?.name || ''),
+    projectUnavailable: Boolean(project && !project.available),
+    projectUnavailableReason: String(project?.unavailable_reason || ''),
+    _serverOnly: true,
+  };
+};
+
+const activateProjectDialog = (backdrop, dialog, returnFocus) => {
+  const shell = elements.appShell;
+  if (shell) { shell.inert = true; shell.setAttribute?.('inert', ''); }
+  const close = () => {
+    dialog.removeEventListener?.('keydown', onKeyDown);
+    backdrop.remove();
+    if (shell) { shell.inert = false; shell.removeAttribute?.('inert'); }
+    returnFocus?.focus?.();
+  };
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') { event.preventDefault?.(); close(); return; }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(dialog.querySelectorAll?.('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || []);
+    if (!focusable.length) { event.preventDefault?.(); dialog.focus?.(); return; }
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !dialog.contains?.(document.activeElement))) { event.preventDefault?.(); last.focus?.(); }
+    else if (!event.shiftKey && (document.activeElement === last || !dialog.contains?.(document.activeElement))) { event.preventDefault?.(); first.focus?.(); }
+  };
+  dialog.addEventListener('keydown', onKeyDown);
+  backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
+  return close;
+};
+
+const clearProjectDraftStorage = () => {
+  try {
+    const records = JSON.parse(localStorage.getItem(app.STORAGE_KEYS.draftMessages) || '[]');
+    if (Array.isArray(records)) {
+      localStorage.setItem(app.STORAGE_KEYS.draftMessages, JSON.stringify(records.filter((record) => !String(record?.sessionId || '').startsWith('draft:'))));
+    }
+  } catch (_) {}
+  state.activeProjectId = '';
+  state.lastProjectId = '';
+  state.projectDrafts = {};
+  state.projectAttachments = {};
+  state.selectedWorktreeDir = '';
+  state.selectedWorktreeName = '';
+  state.worktrees = [];
+  localStorage.removeItem(app.STORAGE_KEYS.lastProject);
+  if (state.draftSessionActive) {
+    state.draftSessionActive = false;
+    localStorage.removeItem(app.STORAGE_KEYS.draftSessionActive);
+    elements.promptInput.value = '';
+    app.autoGrowPrompt?.();
+  }
+};
+
+const loadCapabilities = async () => {
+  state.capabilitiesRequired = true;
+  state.projectsError = '';
+  app.renderSidebar?.();
+  app.renderWorktreeChip?.();
+  app.updateSendButtonState?.();
+  try {
+    const response = await app.apiFetch(`${UI_PREFIX}/v1/capabilities`, { headers: app.requestHeaders('') });
+    if (!response.ok) throw new Error('Could not load server capabilities');
+    const data = await response.json();
+    const enabled = Boolean(data?.projects?.enabled);
+    const worktreesEnabled = Boolean(data?.worktrees?.enabled);
+    const hadProjectState = state.projectsEnabled || Boolean(state.lastProjectId) ||
+      Object.keys(state.projectDrafts || {}).length > 0;
+    if (!enabled && hadProjectState) {
+      clearProjectDraftStorage();
+      app.showToast?.('Project mode was disabled; the legacy conversation list is active', 'info');
+    }
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = enabled;
+    state.worktreesEnabled = worktreesEnabled;
+    state.projectsError = '';
+    elements.addProjectBtn?.classList.toggle('hidden', !enabled);
+    elements.manageProjectsBtn?.classList.toggle('hidden', !enabled);
+    app.updateSendButtonState?.();
+    app.renderSidebar?.();
+    app.renderWorktreeChip?.();
+    return enabled;
+  } catch (err) {
+    state.capabilitiesLoaded = false;
+    state.worktreesEnabled = false;
+    state.projectsError = 'Could not load projects and conversations';
+    elements.addProjectBtn?.classList.add('hidden');
+    elements.manageProjectsBtn?.classList.add('hidden');
+    app.updateSendButtonState?.();
+    app.renderSidebar?.();
+    app.renderWorktreeChip?.();
+    return false;
+  }
+};
+
+const loadProjectSidebar = async (options = {}) => {
+  if (!state.projectsEnabled) return [];
+  state.projectsError = '';
+  try {
+    const refreshStatus = options?.refreshStatus ? '&refresh_status=1' : '';
+    const response = await app.apiFetch(`${UI_PREFIX}/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${state.showHiddenSessions ? '1' : '0'}${refreshStatus}`, { headers: app.requestHeaders('') });
+    if (response.status === 404) {
+      const payload = await response.json().catch(() => ({}));
+      if (payload?.error?.code === 'projects_disabled') {
+        state.projectsEnabled = false;
+        clearProjectDraftStorage();
+        app.renderSidebar?.();
+        app.renderWorktreeChip?.();
+        return [];
+      }
+    }
+    if (!response.ok) throw new Error('Could not load projects and conversations');
+    const payload = await response.json();
+    state.sidebarGroups = Array.isArray(payload.groups) ? payload.groups : [];
+    state.projects = state.sidebarGroups.map((group) => group.project).filter(Boolean);
+    if (state.lastProjectId) {
+      const remembered = state.projects.find((project) => project.id === state.lastProjectId);
+      if (!remembered || remembered.archived_at || !remembered.available) {
+        delete state.projectDrafts[state.lastProjectId];
+        state.lastProjectId = '';
+        localStorage.removeItem(app.STORAGE_KEYS.lastProject);
+      }
+    }
+    const groupedSessions = [];
+    state.sidebarGroups.forEach((group) => {
+      (Array.isArray(group.sessions) ? group.sessions : []).forEach((item) => groupedSessions.push(projectSessionFromSummary(item, group.project)));
+    });
+    const byId = new Map(state.sessions.map((session) => [session.id, session]));
+    groupedSessions.forEach((incoming) => {
+      const existing = byId.get(incoming.id);
+      if (existing) Object.assign(existing, incoming);
+      else { state.sessions.push(incoming); byId.set(incoming.id, incoming); }
+    });
+    app.renderSidebar?.();
+    app.renderWorktreeChip?.();
+    app.updateSendButtonState?.();
+    return state.sidebarGroups;
+  } catch (err) {
+    state.projectsError = 'Could not load projects and conversations';
+    app.renderSidebar?.();
+    return [];
+  }
+};
+
+const projectExpanded = (id, force = false) => {
+  if (force) return true;
+  return state.projectExpansion[id] !== false;
+};
+
+const persistProjectExpansion = () => {
+  localStorage.setItem(app.STORAGE_KEYS.projectExpansion, JSON.stringify(state.projectExpansion));
+};
+
+const openAssignProjectModal = (conversation) => {
+  document.getElementById('assignProjectModal')?.remove();
+  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'assignProjectModal';
+  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'assignProjectTitle');
+  const title = createEl('h2', '', 'Assign project'); title.id = 'assignProjectTitle';
+  const note = createEl('p', '', 'Assignment changes grouping only. The conversation working directory and worktree will not change.');
+  const returnFocus = document.activeElement;
+  const status = createEl('div', 'project-modal-status'); status.setAttribute('aria-live', 'polite');
+  const choices = createEl('div', 'project-choice-list');
+  const close = activateProjectDialog(backdrop, dialog, returnFocus);
+  (state.projects || []).filter((project) => project.available && !project.archived_at).forEach((project) => {
+    const choice = createEl('button', '', project.name); choice.type = 'button';
+    choice.addEventListener('click', async () => {
+      choice.disabled = true;
+      status.textContent = '';
+      try {
+        const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(conversation.id)}/project`, { method: 'POST', headers: app.requestHeaders(conversation.id), body: JSON.stringify({ project_id: project.id }) });
+        if (!response.ok) { const payload = await response.json().catch(() => ({})); status.textContent = payload?.error?.message || 'This conversation does not match that project.'; choice.disabled = false; return; }
+        conversation.projectId = project.id; conversation.projectName = project.name; close(); await loadProjectSidebar();
+      } catch (_err) {
+        status.textContent = 'Could not assign this conversation. Retry.';
+        choice.disabled = false;
+      }
+    });
+    choices.appendChild(choice);
+  });
+  const cancel = createEl('button', '', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', close);
+  dialog.append(title, note, choices, status, cancel); backdrop.appendChild(dialog); document.body.appendChild(backdrop);
+  choices.querySelector('button')?.focus?.();
+};
+
+const renderProjectSessionRow = (session) => {
+  const row = app.sidebarSessionRow?.(session) || createEl('div', 'session-row');
+  row.classList.toggle('project-active-row', session.id === state.activeSessionId);
+  row.classList.toggle('project-unavailable-row', Boolean(session.projectUnavailable));
+  const existingUnavailable = row.querySelector?.('.project-session-unavailable');
+  if (session.projectUnavailable && !existingUnavailable) {
+    const unavailable = createEl('span', 'project-session-unavailable', 'Project unavailable');
+    unavailable.setAttribute('role', 'status');
+    unavailable.title = session.projectUnavailableReason || 'Project unavailable';
+    row.appendChild(unavailable);
+  } else if (!session.projectUnavailable) {
+    existingUnavailable?.remove();
+  }
+  const existingAssign = row.querySelector?.('.assign-project-action');
+  if (session.projectId) existingAssign?.remove();
+  else if (state.projectsEnabled && !existingAssign) {
+    const assign = createEl('button', 'session-actions-trigger assign-project-action', 'Assign');
+    assign.type = 'button';
+    assign.setAttribute('aria-label', `Assign project to ${session.title || 'conversation'}`);
+    assign.addEventListener('click', () => openAssignProjectModal(session));
+    row.appendChild(assign);
+  }
+  return row;
+};
+
+const loadMoreProjectSessions = async (group, list, button) => {
+  if (!group?.next_cursor) return;
+  button.disabled = true;
+  try {
+    const projectParam = group.project?.id ? `project_id=${encodeURIComponent(group.project.id)}&` : '';
+    const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions?${projectParam}cursor=${encodeURIComponent(group.next_cursor)}&limit=12&include_archived=${state.showHiddenSessions ? '1' : '0'}`, { headers: app.requestHeaders('') });
+    if (!response.ok) throw new Error('Could not load more conversations');
+    const payload = await response.json();
+    (payload.sessions || []).forEach((item) => {
+      const session = projectSessionFromSummary(item, group.project);
+      if (!state.sessions.some((existing) => existing.id === session.id)) state.sessions.push(session);
+      group.sessions.push(item);
+      list.appendChild(renderProjectSessionRow(session));
+    });
+    group.next_cursor = String(payload.next_cursor || '');
+    button.remove();
+    if (group.next_cursor) list.appendChild(projectLoadMoreButton(group, list));
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = 'Retry loading more';
+  }
+};
+
+const projectLoadMoreButton = (group, list) => {
+  const button = createEl('button', 'project-load-more', 'Load more');
+  button.type = 'button';
+  button.addEventListener('click', () => loadMoreProjectSessions(group, list, button));
+  return button;
+};
+
+const openProjectManageModal = (project, initialAction = 'rename', returnFocusOverride = null) => {
+  document.getElementById('projectManageModal')?.remove();
+  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'projectManageModal';
+  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectManageTitle');
+  const title = createEl('h2', '', `Manage ${project.name}`); title.id = 'projectManageTitle';
+  const path = createEl('div', 'project-menu-details', project.canonical_dir || ''); path.title = project.canonical_dir || '';
+  const details = createEl('p', 'project-status-detail', `${project.git ? 'Git repository' : 'Directory'} · ${project.available ? 'Available' : (project.unavailable_reason || 'Unavailable')} · ${Number(project.conversation_count || 0)} conversation${Number(project.conversation_count || 0) === 1 ? '' : 's'}`);
+  const name = createEl('input', 'project-input'); name.value = project.name || ''; name.setAttribute('aria-label', 'Project display name');
+  const note = createEl('p', '', project.archived_at ? 'Restoring makes this project available for new chats.' : 'Archiving hides this project from new chats; existing conversations keep working.');
+  const status = createEl('div', 'project-modal-status'); status.setAttribute('aria-live', 'polite');
+  const actions = createEl('div', 'project-modal-actions');
+  const cancel = createEl('button', '', 'Cancel'); cancel.type = 'button';
+  const save = createEl('button', '', 'Save name'); save.type = 'button';
+  const archive = createEl('button', 'primary', project.archived_at ? 'Restore project' : 'Archive project'); archive.type = 'button';
+  const returnFocus = returnFocusOverride || document.activeElement;
+  const close = activateProjectDialog(backdrop, dialog, returnFocus); cancel.addEventListener('click', close);
+  save.addEventListener('click', async () => {
+    save.disabled = true; status.textContent = '';
+    try {
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/projects/${encodeURIComponent(project.id)}`, { method: 'PATCH', headers: app.requestHeaders(''), body: JSON.stringify({ name: name.value }) });
+      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload?.error?.message || 'Could not rename project'); }
+      close(); await loadProjectSidebar();
+    } catch (err) { status.textContent = err?.message || 'Could not rename project. Retry.'; }
+    finally { save.disabled = false; }
+  });
+  let archiveArmed = Boolean(project.archived_at);
+  archive.addEventListener('click', async () => {
+    if (!project.archived_at && !archiveArmed) {
+      archiveArmed = true;
+      archive.textContent = 'Confirm archive';
+      status.textContent = 'Archiving hides this project from new chats; existing conversations keep working.';
+      return;
+    }
+    archive.disabled = true;
+    try {
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/projects/${encodeURIComponent(project.id)}`, { method: 'PATCH', headers: app.requestHeaders(''), body: JSON.stringify({ archived: !Boolean(project.archived_at) }) });
+      if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload?.error?.message || 'Could not update project'); }
+      close(); await loadProjectSidebar();
+    } catch (err) { status.textContent = err?.message || 'Could not update project. Retry.'; }
+    finally { archive.disabled = false; }
+  });
+  actions.append(cancel, save, archive); dialog.append(title, path, details, name, note, status, actions); backdrop.appendChild(dialog); document.body.appendChild(backdrop);
+  if (initialAction === 'archive') archive.focus(); else { name.focus(); name.select(); }
+};
+
+const openProjectManager = () => {
+  document.getElementById('projectManagerModal')?.remove();
+  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'projectManagerModal';
+  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectManagerTitle');
+  const returnFocus = document.activeElement;
+  const modalClose = activateProjectDialog(backdrop, dialog, returnFocus);
+  const title = createEl('h2', '', 'Manage projects'); title.id = 'projectManagerTitle';
+  const list = createEl('div', 'project-choice-list');
+  (state.projects || []).forEach((project) => {
+    const count = Number(project.conversation_count || 0);
+    const row = createEl('button', '', `${project.name} — ${project.git ? 'Git' : 'Directory'} — ${count} conversation${count === 1 ? '' : 's'} — ${project.canonical_dir || ''}`); row.type = 'button'; row.title = project.canonical_dir || '';
+    row.addEventListener('click', () => { modalClose(); openProjectManageModal(project); }); list.appendChild(row);
+  });
+  if (!(state.projects || []).length) list.appendChild(createEl('p', '', 'No projects registered. Add one to start a conversation.'));
+  const add = createEl('button', 'primary', 'Add project'); add.type = 'button'; add.addEventListener('click', () => { modalClose(); openProjectModal(); });
+  const close = createEl('button', '', 'Close'); close.type = 'button'; close.addEventListener('click', modalClose);
+  dialog.append(title, list, add, close); backdrop.appendChild(dialog); document.body.appendChild(backdrop); list.querySelector('button')?.focus?.() || add.focus();
+};
+
+let activeProjectContextMenu = null;
+let activeProjectContextAnchor = null;
+
+const closeProjectMenu = (restoreFocus = false) => {
+  if (!activeProjectContextMenu) return;
+  activeProjectContextMenu.remove();
+  activeProjectContextMenu = null;
+  activeProjectContextAnchor?.setAttribute?.('aria-expanded', 'false');
+  if (restoreFocus) activeProjectContextAnchor?.focus?.();
+  activeProjectContextAnchor = null;
+};
+
+const openProjectMenu = (project, anchor) => {
+  if (activeProjectContextMenu && activeProjectContextAnchor === anchor) {
+    closeProjectMenu(true);
+    return;
+  }
+  closeProjectMenu(false);
+  const menu = createEl('div', 'project-context-menu');
+  menu.id = 'projectContextMenu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', `Manage ${project.name}`);
+  activeProjectContextMenu = menu;
+  activeProjectContextAnchor = anchor;
+  anchor.setAttribute('aria-expanded', 'true');
+  const details = createEl('div', 'project-menu-details', project.canonical_dir || '');
+  details.title = project.canonical_dir || '';
+  details.setAttribute('role', 'presentation');
+  menu.appendChild(details);
+  const rename = createEl('button', '', 'Rename'); rename.type = 'button'; rename.setAttribute('role', 'menuitem');
+  rename.addEventListener('click', () => { closeProjectMenu(false); openProjectManageModal(project, 'rename', anchor); });
+  const archived = Boolean(project.archived_at);
+  const archive = createEl('button', '', archived ? 'Restore' : 'Archive'); archive.type = 'button'; archive.setAttribute('role', 'menuitem');
+  archive.addEventListener('click', () => { closeProjectMenu(false); openProjectManageModal(project, 'archive', anchor); });
+  menu.append(rename, archive);
+  if (project.git && project.available) {
+    const worktrees = createEl('button', '', 'Worktrees'); worktrees.type = 'button'; worktrees.setAttribute('role', 'menuitem');
+    worktrees.addEventListener('click', async () => { closeProjectMenu(false); await app.openWorktreeMenuForProject?.(project.id, anchor); });
+    menu.appendChild(worktrees);
+  }
+  menu.addEventListener('keydown', (event) => {
+    const items = Array.from(menu.querySelectorAll?.('[role="menuitem"]') || []);
+    const current = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') { event.preventDefault?.(); closeProjectMenu(true); return; }
+    if (event.key === 'Tab') { closeProjectMenu(false); return; }
+    let next = -1;
+    if (event.key === 'ArrowDown') next = current < 0 ? 0 : (current + 1) % items.length;
+    else if (event.key === 'ArrowUp') next = current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = items.length - 1;
+    if (next >= 0) { event.preventDefault?.(); items[next]?.focus?.(); }
+  });
+  (anchor.parentElement || anchor.parentNode)?.appendChild(menu);
+  rename.focus();
+};
+
+document.addEventListener('click', (event) => {
+  if (!activeProjectContextMenu) return;
+  if (activeProjectContextMenu.contains?.(event.target) || activeProjectContextAnchor?.contains?.(event.target)) return;
+  closeProjectMenu(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !activeProjectContextMenu) return;
+  event.preventDefault?.();
+  closeProjectMenu(true);
+});
+
+const projectHeadingLabel = (project) => {
+  if (!project) return 'No project';
+  const duplicate = (state.projects || []).filter((candidate) => String(candidate.name || '').localeCompare(String(project.name || ''), undefined, { sensitivity: 'accent' }) === 0).length > 1;
+  if (!duplicate) return project.name || 'Project';
+  const parts = String(project.canonical_dir || '').split(/[\\/]+/).filter(Boolean);
+  const suffix = parts.slice(-2).join('/');
+  return suffix ? `${project.name} — ${suffix}` : project.name;
+};
+
+const renderProjectGroup = (group) => {
+  const project = group.project || null;
+  const id = project?.id || '__no_project__';
+  const activeProjectID = state.sessions.find((session) => session.id === state.activeSessionId)?.projectId;
+  const active = state.draftSessionActive
+    ? Boolean(project && String(state.activeProjectId || '') === String(project.id || ''))
+    : String(activeProjectID || '') === String(project?.id || '');
+  if (active) state.projectExpansion[id] = true;
+  const expanded = projectExpanded(id, active);
+  const section = createEl('section', `project-group${active ? ' active' : ''}${project?.archived_at ? ' archived' : ''}${project && !project.available ? ' unavailable' : ''}`);
+  section.dataset.projectId = String(project?.id || '');
+  const headingId = `project-heading-${String(id).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+  const header = createEl('div', 'project-group-header');
+  const toggle = createEl('button', 'project-group-toggle'); toggle.type = 'button'; toggle.id = headingId;
+  toggle.setAttribute('aria-expanded', String(expanded)); toggle.title = project?.canonical_dir || '';
+  const headingLabel = projectHeadingLabel(project);
+  toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${headingLabel}${project?.canonical_dir ? ` — ${project.canonical_dir}` : ''}`);
+  toggle.textContent = `${expanded ? '▾' : '▸'} ${headingLabel}`;
+  toggle.addEventListener('click', () => {
+    state.projectExpansion[id] = !expanded; persistProjectExpansion(); app.renderSidebar?.();
+    app.showToast?.(`${project?.name || 'No project'} ${!expanded ? 'expanded' : 'collapsed'}`, 'info');
+  });
+  header.appendChild(toggle);
+  if (project) {
+    if (!project.available) {
+      const retry = createEl('button', 'project-group-action', 'Retry'); retry.type = 'button'; retry.setAttribute('aria-label', `Retry ${project.name} status`);
+      retry.addEventListener('click', () => loadProjectSidebar({ refreshStatus: true })); header.appendChild(retry);
+    } else if (project.archived_at) {
+      const restore = createEl('button', 'project-group-action', 'Restore'); restore.type = 'button'; restore.setAttribute('aria-label', `Restore ${project.name}`);
+      restore.addEventListener('click', async () => {
+        restore.disabled = true;
+        try {
+          const response = await app.apiFetch(`${UI_PREFIX}/v1/projects/${encodeURIComponent(project.id)}`, { method: 'PATCH', headers: app.requestHeaders(''), body: JSON.stringify({ archived: false }) });
+          if (!response.ok) throw new Error('Could not restore project. Retry.');
+          await loadProjectSidebar();
+        } catch (err) {
+          state.projectsError = err?.message || 'Could not restore project. Retry.';
+          app.renderSidebar?.();
+        } finally { restore.disabled = false; }
+      });
+      header.appendChild(restore);
+    } else {
+      const add = createEl('button', 'project-group-action', '＋'); add.type = 'button'; add.setAttribute('aria-label', `New chat in ${project.name}`);
+      add.addEventListener('click', () => app.createAndSwitchToFreshSession?.(project.id)); header.appendChild(add);
+    }
+    const menu = createEl('button', 'project-group-action', '⋯'); menu.type = 'button'; menu.setAttribute('aria-label', `Manage ${project.name}`);
+    menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false'); menu.setAttribute('aria-controls', 'projectContextMenu');
+    menu.addEventListener('click', () => openProjectMenu(project, menu)); header.appendChild(menu);
+  }
+  section.appendChild(header);
+  if (project && !project.available) {
+    const unavailable = createEl('div', 'project-status-detail', `${project.unavailable_reason || 'Project unavailable'} — ${project.canonical_dir || ''}`);
+    unavailable.setAttribute('role', 'status');
+    section.appendChild(unavailable);
+  }
+  if (expanded) {
+    const list = createEl('div', 'project-session-list'); list.setAttribute('role', 'list'); list.setAttribute('aria-labelledby', headingId);
+    const projectDraft = project ? state.projectDrafts?.[project.id] : null;
+    const activeDraft = Boolean(project && state.draftSessionActive && state.activeProjectId === project.id);
+    if (project && (projectDraft || activeDraft)) {
+      const draft = createEl('div', `session-row draft${activeDraft ? ' active' : ''}`);
+      const promptPreview = String(projectDraft?.prompt || '').trim();
+      const open = createEl('button', 'session-main', promptPreview ? `Draft · ${app.truncate?.(promptPreview, 48) || promptPreview}` : 'Draft · New conversation');
+      open.type = 'button'; open.disabled = Boolean(project.archived_at || !project.available);
+      open.addEventListener('click', () => app.createAndSwitchToFreshSession?.(project.id));
+      const discard = createEl('button', 'session-actions-trigger', '×'); discard.type = 'button'; discard.setAttribute('aria-label', `Discard draft and start over in ${project.name}`); discard.title = 'Discard draft and start over';
+      discard.addEventListener('click', () => {
+        app.clearDraftMessageForSession?.(`draft:${project.id}`);
+        delete state.projectDrafts[project.id];
+        state.projectAttachments[project.id] = [];
+        if (activeDraft) app.switchToDraftSession?.({ projectId: project.id, clearComposer: true, focusPrompt: true });
+        else app.renderSidebar?.();
+      });
+      draft.append(open, discard); list.appendChild(draft);
+    }
+    const canonicalByID = new Map((state.sessions || []).map((session) => [session.id, session]));
+    let sessions = (group.sessions || []).map((item) => {
+      const projected = projectSessionFromSummary(item, project);
+      const canonical = canonicalByID.get(projected.id);
+      return canonical ? {
+        ...projected,
+        ...canonical,
+        projectUnavailable: Boolean(project && !project.available),
+        projectUnavailableReason: String(project?.unavailable_reason || ''),
+      } : projected;
+    });
+    if (!state.sidebarSearchQuery) {
+      const known = new Set(sessions.map((session) => session.id));
+      (state.sessions || []).forEach((session) => {
+        if (String(session.projectId || '') === String(project?.id || '') && !known.has(session.id)) sessions.push(session);
+      });
+    }
+    if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) sessions = state.sidebarSearchResults.filter((item) => String(item.projectId || '') === String(project?.id || ''));
+    sessions.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created));
+    sessions.forEach((session) => { const row = renderProjectSessionRow(session); row.setAttribute('role', 'listitem'); list.appendChild(row); });
+    if (group.next_cursor && !state.sidebarSearchQuery) list.appendChild(projectLoadMoreButton(group, list));
+    section.appendChild(list);
+  }
+  return section;
+};
+
+const projectInlineError = (message, retryAction) => {
+  const error = createEl('div', 'project-inline-error'); error.setAttribute('role', 'alert');
+  error.appendChild(createEl('span', '', message));
+  const retry = createEl('button', '', 'Retry'); retry.type = 'button'; retry.addEventListener('click', retryAction); error.appendChild(retry);
+  return error;
+};
+
+const renderProjectSidebar = () => {
+  const container = elements.sessionGroups;
+  if (state.capabilitiesRequired && !state.capabilitiesLoaded) {
+    if (!container) return true;
+    if (state.projectsError) {
+      container.replaceChildren(projectInlineError(state.projectsError, async () => { if (await loadCapabilities()) await loadProjectSidebar(); }));
+    } else {
+      container.replaceChildren(createEl('div', 'project-skeleton', 'Loading projects and conversations…'));
+    }
+    return true;
+  }
+  if (!state.projectsEnabled) return false;
+  if (!container) return true;
+  let groups = Array.isArray(state.sidebarGroups) ? state.sidebarGroups.slice() : [];
+  if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) {
+    const ids = new Set(state.sidebarSearchResults.map((session) => String(session.projectId || '')));
+    groups = groups.filter((group) => ids.has(String(group.project?.id || '')));
+  }
+  if (state.sidebarSearchLoading) { container.replaceChildren(createEl('div', 'project-skeleton', 'Searching conversations…')); return true; }
+  if (!groups.length && state.sidebarSearchQuery && !state.sidebarSearchError) { container.replaceChildren(createEl('div', 'sidebar-empty', 'No matching conversations')); return true; }
+  const active = groups.filter((group) => group.project && !group.project.archived_at);
+  const effectiveGroupActivity = (group) => {
+    const projectId = String(group.project?.id || '');
+    const draftAt = Number(state.projectDrafts?.[projectId]?.created || 0);
+    const persistedAt = Date.parse(group.last_activity_at || '') || 0;
+    const localAt = (state.sessions || []).reduce((latest, session) => (
+      String(session.projectId || '') === projectId
+        ? Math.max(latest, Number(session.lastMessageAt || session.created || 0))
+        : latest
+    ), 0);
+    return Math.max(draftAt, persistedAt, localAt);
+  };
+  active.sort((a, b) => {
+    const aAt = effectiveGroupActivity(a);
+    const bAt = effectiveGroupActivity(b);
+    return bAt - aAt || String(a.project?.name || '').localeCompare(String(b.project?.name || '')) || String(a.project?.id || '').localeCompare(String(b.project?.id || ''));
+  });
+  const noProject = groups.filter((group) => group.no_project);
+  const archived = groups.filter((group) => group.project?.archived_at);
+  const nodes = [...active.map(renderProjectGroup), ...noProject.map(renderProjectGroup)];
+  if (state.projectsError) nodes.unshift(projectInlineError(state.projectsError, loadProjectSidebar));
+  if (state.sidebarSearchError) {
+    nodes.unshift(projectInlineError(state.sidebarSearchError, () => {
+      const query = String(elements.sidebarSearchInput?.value || state.sidebarSearchQuery || '').trim();
+      state.sidebarSearchLoading = true; state.sidebarSearchError = ''; searchSeq += 1;
+      app.renderSidebar?.(); void runSidebarSearch(query, searchSeq);
+    }));
+  }
+  if (archived.length) {
+    const details = createEl('details', 'archived-projects');
+    const summary = createEl('summary', '', 'Archived projects'); details.appendChild(summary);
+    archived.forEach((group) => {
+      const rendered = renderProjectGroup(group);
+      if (rendered.classList.contains('active')) details.open = true;
+      details.appendChild(rendered);
+    });
+    nodes.push(details);
+  }
+  container.replaceChildren(...nodes);
+  const activeGroup = container.querySelector?.('.project-group.active');
+  activeGroup?.scrollIntoView?.({ block: 'nearest' });
+  return true;
+};
+
+const focusProjectGroupThenStartDraft = async (projectId) => {
+  const id = String(projectId || '');
+  const heading = elements.sessionGroups?.querySelector?.(`.project-group[data-project-id="${id}"] .project-group-toggle`);
+  heading?.focus?.({ preventScroll: true });
+  if (heading) await new Promise((resolve) => (window.requestAnimationFrame ? window.requestAnimationFrame(resolve) : setTimeout(resolve, 0)));
+  await app.createAndSwitchToFreshSession?.(id);
+};
+
+const openProjectModal = () => {
+  document.getElementById('projectModal')?.remove();
+  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'projectModal';
+  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectModalTitle');
+  const title = createEl('h2', '', 'Add project'); title.id = 'projectModalTitle';
+  const explanation = createEl('p', '', 'Enter an absolute path on the machine running term-llm.');
+  const name = createEl('input', 'project-input'); name.placeholder = 'Display name (optional)'; name.setAttribute('aria-label', 'Project display name');
+  const path = createEl('input', 'project-input project-path-input'); path.placeholder = '/absolute/server/path'; path.setAttribute('aria-label', 'Absolute server path'); path.setAttribute('autocorrect', 'off'); path.autocapitalize = 'none'; path.autocomplete = 'off'; path.spellcheck = false;
+  const status = createEl('div', 'project-modal-status'); status.setAttribute('aria-live', 'polite');
+  const actions = createEl('div', 'project-modal-actions');
+  const cancel = createEl('button', '', 'Cancel'); cancel.type = 'button';
+  const submit = createEl('button', 'primary', 'Preview'); submit.type = 'button';
+  let preview = null;
+  const invalidatePreview = () => {
+    if (!preview) return;
+    preview = null;
+    submit.textContent = 'Preview';
+    status.textContent = 'Project details changed; preview the resolved path again.';
+  };
+  name.addEventListener('input', invalidatePreview);
+  path.addEventListener('input', invalidatePreview);
+  const close = activateProjectDialog(backdrop, dialog, elements.addProjectBtn);
+  cancel.addEventListener('click', close);
+  submit.addEventListener('click', async () => {
+    status.textContent = ''; submit.disabled = true;
+    try {
+      const body = JSON.stringify({ name: name.value, path: path.value });
+      const suffix = preview ? '' : '?dry_run=1';
+      const response = await app.apiFetch(`${UI_PREFIX}/v1/projects${suffix}`, { method: 'POST', headers: app.requestHeaders(''), body });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 409 && payload.existing_project_id) {
+          close(); await loadProjectSidebar(); await focusProjectGroupThenStartDraft(payload.existing_project_id); return;
+        }
+        throw new Error(payload?.error?.message || 'Could not add project');
+      }
+      if (!preview) {
+        if (payload.duplicate && payload.existing_project_id && !payload.project?.archived_at) {
+          close(); await loadProjectSidebar(); await focusProjectGroupThenStartDraft(payload.existing_project_id); return;
+        }
+        preview = payload;
+        const restoresArchived = Boolean(payload.duplicate && payload.project?.archived_at);
+        status.textContent = `Resolved path: ${payload.canonical_dir}${payload.git ? ' (Git repository root)' : ''}${restoresArchived ? ' — this archived project will be restored' : ''}`;
+        submit.textContent = restoresArchived ? 'Restore project' : 'Add project';
+      } else {
+        const project = payload.project;
+        close(); await loadProjectSidebar();
+        if (project?.id) await focusProjectGroupThenStartDraft(project.id);
+      }
+    } catch (err) { status.textContent = err.message || 'Could not add project'; }
+    finally { submit.disabled = false; }
+  });
+  actions.append(cancel, submit); dialog.append(title, explanation, name, path, status, actions); backdrop.appendChild(dialog); document.body.appendChild(backdrop); path.focus();
+};
+
+elements.addProjectBtn?.addEventListener('click', openProjectModal);
+elements.manageProjectsBtn?.addEventListener('click', openProjectManager);
+
+const restoreRememberedProjectDraft = async () => {
+  if (!state.projectsEnabled || !state.draftSessionActive || state.activeSessionId) return false;
+  const available = (projectID) => (state.projects || []).some((project) => project.id === projectID && project.available && !project.archived_at);
+  let projectID = available(state.lastProjectId) ? state.lastProjectId : '';
+  if (!projectID) {
+    const drafts = Object.entries(state.projectDrafts || {})
+      .filter(([id]) => available(id))
+      .sort((a, b) => Number(b[1]?.created || 0) - Number(a[1]?.created || 0));
+    projectID = drafts[0]?.[0] || '';
+  }
+  if (!projectID || typeof app.switchToDraftSession !== 'function') return false;
+  await app.switchToDraftSession({ projectId: projectID, clearComposer: false, focusPrompt: false, closeSidebar: false });
+  return true;
+};
+
+const initializeProjectMode = async () => {
+  const enabled = await loadCapabilities();
+  if (enabled) {
+    await loadProjectSidebar();
+    await restoreRememberedProjectDraft();
+  }
+  return enabled;
 };
 
 // When this serve was opened through a term-llm Hub (the hub proxy injects
@@ -664,6 +1328,12 @@ Object.assign(app, {
   renderHubAgentLinks,
   fetchHubAgentLinks,
   refreshHubAgentLinks,
-  scheduleSidebarSearch
+  scheduleSidebarSearch,
+  loadCapabilities,
+  loadProjectSidebar,
+  renderProjectSidebar,
+  activateProjectDialog,
+  openProjectModal,
+  initializeProjectMode
 });
 })();

@@ -78,6 +78,8 @@ var (
 	serveHubConnect             string
 	serveHubRegister            bool
 	serveHubRegistrationToken   string
+	serveProjects               bool
+	serveNoProjects             bool
 )
 
 const (
@@ -166,6 +168,8 @@ func init() {
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum active execution time per response; pauses while waiting for interactive input")
 	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
+	serveCmd.Flags().BoolVar(&serveProjects, "projects", false, "Strictly enable Web UI project selection")
+	serveCmd.Flags().BoolVar(&serveNoProjects, "no-projects", false, "Preserve the legacy single-workspace Web UI")
 	serveCmd.Flags().StringVar(&serveHubURL, "hub-url", "", "URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI)")
 	serveCmd.Flags().StringVar(&serveHubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
 	serveCmd.Flags().StringVar(&serveHubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
@@ -238,6 +242,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
+	startupDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve serve startup directory: %w", err)
+	}
+	if cmd.Flags().Changed("projects") && cmd.Flags().Changed("no-projects") {
+		return fmt.Errorf("--projects and --no-projects cannot be used together")
+	}
 	if servePort <= 0 || servePort > 65535 {
 		return fmt.Errorf("invalid --port %d (must be 1-65535)", servePort)
 	}
@@ -411,8 +422,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		agentSkills = agent.Skills
 	}
 	effectiveSkillsConfig := applySkillsFlag(&cfg.Skills, agentSkills)
+	baseSystemPrompt := settings.SystemPrompt
 	skillsSetup := SetupSkills(effectiveSkillsConfig, "", "", cmd.ErrOrStderr())
-	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
 
 	agentName := ""
 	var agentPlatformMsgs agents.PlatformMessagesConfig
@@ -427,6 +439,37 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		store = session.NewLoggingStore(store, func(format string, args ...any) {
 			log.Printf("[serve] "+format, args...)
 		})
+	}
+
+	projectsRequested, projectsStrict := resolveServeProjectsRequested(
+		cmd.Flags().Changed("projects") && serveProjects,
+		cmd.Flags().Changed("no-projects") && serveNoProjects,
+		cfg.Serve.Projects.Enabled,
+		hasWeb,
+	)
+	projectsEnabled, bootstrapProjectID, err := initializeServeProjects(ctx, store, startupDir, projectsRequested, projectsStrict, cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	if hasWeb {
+		switch {
+		case projectsEnabled:
+			projectCount := 0
+			if projectStore, ok := session.AsProjectStore(store); ok {
+				if projects, listErr := projectStore.ListProjects(ctx, session.ProjectListOptions{IncludeArchived: true}); listErr == nil {
+					projectCount = len(projects)
+				}
+			}
+			bootstrapCount := 0
+			if bootstrapProjectID != "" {
+				bootstrapCount = 1
+			}
+			log.Printf("projects enabled (projects=%d bootstrap=%d bootstrap_id=%s)", projectCount, bootstrapCount, bootstrapProjectID)
+		case cmd.Flags().Changed("no-projects") || !cfg.Serve.Projects.Enabled:
+			log.Printf("projects explicitly disabled")
+		default:
+			log.Printf("projects auto-disabled")
+		}
 	}
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
@@ -669,14 +712,18 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				hubNodeID:               strings.TrimSpace(serveHubNodeID),
 				hubNodeName:             strings.TrimSpace(serveHubNodeName),
 			},
-			sessionMgr:     sessionMgr,
-			jobsV2:         jobsV2,
-			cfgRef:         cfg,
-			store:          store,
-			skillsSetup:    skillsSetup,
-			skillsConfig:   effectiveSkillsConfig,
-			runtimeFactory: runtimeFactory,
-			widgetsMgr:     widgetsMgr,
+			sessionMgr:         sessionMgr,
+			jobsV2:             jobsV2,
+			cfgRef:             cfg,
+			store:              store,
+			projectsEnabled:    projectsEnabled,
+			bootstrapProjectID: bootstrapProjectID,
+			startupDir:         startupDir,
+			baseSystemPrompt:   baseSystemPrompt,
+			skillsSetup:        skillsSetup,
+			skillsConfig:       effectiveSkillsConfig,
+			runtimeFactory:     runtimeFactory,
+			widgetsMgr:         widgetsMgr,
 		}
 		if hasJobs {
 			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
@@ -1159,6 +1206,11 @@ type serveServer struct {
 	jobsV2                   *jobsV2Manager
 	cfgRef                   *config.Config
 	store                    session.Store
+	projectsEnabled          bool
+	bootstrapProjectID       string
+	startupDir               string
+	projectStatusMu          sync.Mutex
+	projectStatuses          map[string]projectStatusCacheEntry
 	server                   *http.Server
 	shutdownCh               chan struct{}
 	shutdownOnce             sync.Once
@@ -1173,6 +1225,7 @@ type serveServer struct {
 	responseRuns             *responseRunManager
 	transcriptIndexerOnce    sync.Once
 	transcriptIndexer        session.TranscriptIndexer
+	baseSystemPrompt         string
 	skillsSetup              *skills.Setup
 	skillsConfig             *config.SkillsConfig
 	skillsCacheMu            sync.Mutex
@@ -1285,6 +1338,10 @@ func (s *serveServer) httpHandler() http.Handler {
 	if s.widgetsMgr != nil {
 		s.registerWidgetRoutes(inner)
 	}
+	inner.HandleFunc("/v1/capabilities", s.auth(s.cors(s.handleCapabilities)))
+	inner.HandleFunc("/v1/projects", s.auth(s.cors(s.handleProjects)))
+	inner.HandleFunc("/v1/projects/", s.auth(s.cors(s.handleProjectByID)))
+	inner.HandleFunc("/v1/sidebar", s.auth(s.cors(s.handleSidebar)))
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/search", s.auth(s.cors(s.handleSessionsSearch)))
 	inner.HandleFunc("/v1/worktrees/diff", s.auth(s.cors(s.handleWorktreeDiff)))

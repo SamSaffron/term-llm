@@ -197,6 +197,28 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			       0, 0, 'active', NULL,
 			       NULL, NULL, ?, ?, 0
 			FROM sessions WHERE id = ?`
+		if s.hasProjectID {
+			insertSession = `
+				INSERT INTO sessions (
+					id, number, name, summary, generated_short_title, generated_long_title,
+					title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
+					provider, provider_key, model, reasoning_effort, reasoning_mode, mode,
+					approval_mode, origin, agent, cwd, worktree_dir, project_id, created_at, updated_at,
+					archived, pinned, parent_id, search, tools, mcp, user_turns, llm_turns,
+					tool_calls, input_tokens, cached_input_tokens, cache_write_tokens,
+					output_tokens, last_total_tokens, last_message_count, status, tags,
+					goal, share, compaction_seq, compaction_count, transcript_rev
+				)
+				SELECT ?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), '', '', '', '',
+				       '', NULL, 0, NULL,
+				       provider, provider_key, model, reasoning_effort, reasoning_mode, mode,
+				       approval_mode, origin, agent, cwd, worktree_dir, project_id, ?, ?,
+				       FALSE, FALSE, NULL, search, tools, mcp, 0, 0,
+				       0, 0, 0, 0, 0,
+				       0, 0, 'active', NULL,
+				       NULL, NULL, ?, ?, 0
+				FROM sessions WHERE id = ?`
+		}
 		inserted, err := conn.ExecContext(ctx, insertSession, childID, now, now, childCompactionSeq, childCompactionCount, sourceSessionID)
 		if err != nil {
 			return fmt.Errorf("insert branch session: %w", err)

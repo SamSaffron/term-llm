@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
@@ -45,11 +47,17 @@ type worktreeRow struct {
 	InUse      []worktree.InUseSession `json:"in_use,omitempty"`
 }
 
-// currentGitRoot resolves the serve process's startup repository once and shares
-// it between the HTML capability bootstrap and every worktree API handler.
+type serveWorktreeRootContextKey struct{}
+
+// currentGitRoot resolves the serve process's captured startup repository once and shares
+// it between the HTML capability bootstrap and every legacy worktree API handler.
 func (s *serveServer) currentGitRoot() (string, error) {
 	s.worktreeRootOnce.Do(func() {
-		cwd, err := os.Getwd()
+		cwd := strings.TrimSpace(s.startupDir)
+		var err error
+		if cwd == "" {
+			cwd, err = os.Getwd()
+		}
 		if s.worktreeRootFn != nil {
 			cwd, err = s.worktreeRootFn()
 		}
@@ -66,7 +74,12 @@ func (s *serveServer) currentGitRoot() (string, error) {
 	return s.worktreeRoot, s.worktreeRootErr
 }
 
-func (s *serveServer) currentGitRootOr409(w http.ResponseWriter) (string, bool) {
+func (s *serveServer) currentGitRootOr409(w http.ResponseWriter, r ...*http.Request) (string, bool) {
+	if len(r) != 0 && r[0] != nil {
+		if root, ok := r[0].Context().Value(serveWorktreeRootContextKey{}).(string); ok && root != "" {
+			return root, true
+		}
+	}
 	root, err := s.currentGitRoot()
 	if err != nil {
 		writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "not a git repository")
@@ -129,12 +142,27 @@ func sameServePath(a, b string) bool {
 	aa, errA := canonicalizeWorktreeBoundary(a)
 	bb, errB := canonicalizeWorktreeBoundary(b)
 	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
+		cleanA, cleanB := filepath.Clean(a), filepath.Clean(b)
+		if runtime.GOOS == "windows" {
+			return strings.EqualFold(cleanA, cleanB)
+		}
+		return cleanA == cleanB
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(aa, bb)
 	}
 	return aa == bb
 }
 
+func markLegacyWorktreeRoute(w http.ResponseWriter) {
+	w.Header().Set("Deprecation", "true")
+	w.Header().Set("Link", `</v1/projects/{project_id}/worktrees>; rel="successor-version"`)
+}
+
 func (s *serveServer) handleWorktrees(w http.ResponseWriter, r *http.Request) {
+	if _, ok := r.Context().Value(serveWorktreeRootContextKey{}).(string); !ok {
+		markLegacyWorktreeRoute(w)
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.handleWorktreeList(w, r)
@@ -149,7 +177,7 @@ func (s *serveServer) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request) {
-	root, ok := s.currentGitRootOr409(w)
+	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
 	}
@@ -171,7 +199,7 @@ func (s *serveServer) handleWorktreeList(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Request) {
-	root, ok := s.currentGitRootOr409(w)
+	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
 	}
@@ -187,6 +215,11 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 	if script := strings.TrimSpace(os.Getenv("TERM_LLM_WORKTREE_SETUP")); script != "" {
 		opts.SetupScript = script
 	}
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	if !ok {
+		return
+	}
+	defer releaseMutation()
 	wt, err := worktree.Create(r.Context(), root, opts)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -200,12 +233,15 @@ func (s *serveServer) handleWorktreeCreate(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *serveServer) handleWorktreeDiff(w http.ResponseWriter, r *http.Request) {
+	if _, ok := r.Context().Value(serveWorktreeRootContextKey{}).(string); !ok {
+		markLegacyWorktreeRoute(w)
+	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	root, ok := s.currentGitRootOr409(w)
+	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
 	}
@@ -226,12 +262,15 @@ func (s *serveServer) handleWorktreeDiff(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *serveServer) handleWorktreeMerge(w http.ResponseWriter, r *http.Request) {
+	if _, ok := r.Context().Value(serveWorktreeRootContextKey{}).(string); !ok {
+		markLegacyWorktreeRoute(w)
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	root, ok := s.currentGitRootOr409(w)
+	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
 	}
@@ -319,21 +358,37 @@ func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root s
 	}
 	s.sessionMgr.mu.Unlock()
 	var active []string
+	projects, _ := session.AsProjectReader(s.store)
 	for _, id := range ids {
 		sess, err := s.store.Get(ctx, id)
 		if err != nil || sess == nil {
 			continue
 		}
-		if strings.TrimSpace(sess.WorktreeDir) != "" {
-			continue
+		sessRoot := ""
+		if projects != nil && strings.TrimSpace(sess.ProjectID) != "" {
+			project, projectErr := projects.GetProject(ctx, sess.ProjectID)
+			if projectErr == nil && project != nil {
+				sessRoot = strings.TrimSpace(project.CanonicalDir)
+			}
 		}
-		cwd := strings.TrimSpace(sess.CWD)
-		if cwd == "" {
-			active = append(active, id)
-			continue
+		if sessRoot == "" {
+			candidate := strings.TrimSpace(sess.WorktreeDir)
+			if candidate == "" {
+				candidate = strings.TrimSpace(sess.CWD)
+			}
+			if candidate == "" {
+				// Unbound runs have no relationship to this repository.
+				continue
+			}
+			resolvedRoot, rootErr := worktree.MainRepoRoot(candidate)
+			if rootErr != nil {
+				// An unrelated non-Git or inaccessible session must not block a
+				// mutation in this repository.
+				continue
+			}
+			sessRoot = resolvedRoot
 		}
-		sessRoot, err := worktree.MainRepoRoot(cwd)
-		if err != nil || sameServePath(sessRoot, root) {
+		if sameServePath(sessRoot, root) {
 			active = append(active, id)
 		}
 	}
@@ -341,12 +396,15 @@ func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root s
 }
 
 func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Request) {
+	if _, ok := r.Context().Value(serveWorktreeRootContextKey{}).(string); !ok {
+		markLegacyWorktreeRoute(w)
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	root, ok := s.currentGitRootOr409(w)
+	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
 	}
@@ -378,7 +436,7 @@ func (s *serveServer) handleWorktreePromote(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *serveServer) handleWorktreeDelete(w http.ResponseWriter, r *http.Request) {
-	root, ok := s.currentGitRootOr409(w)
+	root, ok := s.currentGitRootOr409(w, r)
 	if !ok {
 		return
 	}
@@ -387,6 +445,11 @@ func (s *serveServer) handleWorktreeDelete(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	releaseMutation, ok := s.acquireRootMutation(w, r.Context(), root)
+	if !ok {
+		return
+	}
+	defer releaseMutation()
 	force := r.URL.Query().Get("force") == "1" || strings.EqualFold(r.URL.Query().Get("force"), "true")
 	inUse, err := worktree.InUse(r.Context(), s.store, wt.Dir)
 	if err != nil {

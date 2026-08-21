@@ -446,6 +446,10 @@ function createHarness(options = {}) {
         activeResponseId: null,
         lastSequenceNumber: 0,
         number: 0,
+        projectId: state.activeProjectId || '',
+        projectName: String((state.projects || []).find((project) => project.id === state.activeProjectId)?.name || ''),
+        worktreeDir: state.selectedWorktreeDir || '',
+        worktreeName: state.selectedWorktreeName || '',
       };
     },
     findMessageElement() { return null; },
@@ -7798,6 +7802,111 @@ function testDraftMessageLimitIsTen() {
   pass(name);
 }
 
+async function testProjectDraftFirstSendHandsOffAuthoritatively() {
+  const name = 'project draft first send carries binding and hands off to one authoritative session';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, localStorage, cleanup } = harness;
+  state.projectsEnabled = true;
+  state.draftSessionActive = true;
+  state.activeSessionId = '';
+  state.activeProjectId = 'prj_handoff';
+  state.lastProjectId = 'prj_handoff';
+  state.projects = [{ id: 'prj_handoff', name: 'Handoff', available: true, git: true }];
+  state.selectedWorktreeDir = '/managed/handoff';
+  state.selectedWorktreeName = 'handoff';
+  state.projectDrafts = { prj_handoff: { prompt: 'ship it', worktreeDir: '/managed/handoff', worktreeName: 'handoff', created: Date.now() } };
+  elements.promptInput.value = 'ship it';
+  app.persistActiveProjectDraft();
+
+  await app.sendMessage();
+  await cleanup();
+
+  const post = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = JSON.parse(post?.body || '{}');
+  if (body.project_id !== 'prj_handoff' || body.worktree_dir !== '/managed/handoff') {
+    fail(name, 'first request lost project/worktree binding', JSON.stringify(body));
+    return;
+  }
+  if (state.sessions.length !== 1 || state.sessions[0].projectId !== 'prj_handoff') {
+    fail(name, 'draft did not become exactly one session in its project', JSON.stringify(state.sessions));
+    return;
+  }
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  if (state.projectDrafts.prj_handoff || drafts.some((draft) => draft.sessionId === 'draft:prj_handoff')) {
+    fail(name, 'authoritative handoff retained a duplicate project draft', JSON.stringify({ drafts, projectDrafts: state.projectDrafts }));
+    return;
+  }
+  pass(name);
+}
+
+function testProjectDraftsAreNotArbitrarilyCapped() {
+  const name = 'one persisted draft is retained for every project';
+  const harness = createHarness();
+  const { app, state, localStorage } = harness;
+  state.projectsEnabled = true;
+  state.draftSessionActive = true;
+  for (let i = 0; i < 51; i += 1) {
+    state.activeProjectId = `prj_${i}`;
+    state.selectedProvider = 'mock';
+    app.stageDraftMessage(`draft ${i}`, `draft:prj_${i}`);
+  }
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]').filter((draft) => String(draft.sessionId || '').startsWith('draft:'));
+  if (drafts.length !== 51 || !drafts.some((draft) => draft.sessionId === 'draft:prj_0')) {
+    fail(name, `expected 51 independent project drafts, got ${drafts.length}`, JSON.stringify(drafts));
+    return;
+  }
+  pass(name);
+}
+
+function testProjectDraftPersistsRuntimeAndWorktreeWithoutPrompt() {
+  const name = 'project draft persists runtime and worktree even when prompt is empty';
+  const harness = createHarness();
+  const { app, elements, state, localStorage } = harness;
+  state.projectsEnabled = true;
+  state.draftSessionActive = true;
+  state.activeProjectId = 'prj_alpha';
+  state.projectDrafts = {};
+  state.providers = [];
+  state.models = [];
+  state.modelInfoByID = {};
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-project';
+  state.selectedEffort = 'high';
+  state.selectedReasoningMode = 'pro';
+  state.selectedWorktreeDir = '/managed/alpha';
+  state.selectedWorktreeName = 'alpha-wt';
+  elements.promptInput.value = '';
+
+  app.persistActiveProjectDraft();
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  const saved = drafts.find((draft) => draft.sessionId === 'draft:prj_alpha');
+  if (!saved || saved.prompt !== '' || saved.model !== 'gpt-project' || saved.effort !== 'high'
+      || saved.reasoningMode !== 'pro' || saved.worktreeDir !== '/managed/alpha') {
+    fail(name, 'empty project draft did not retain runtime state', JSON.stringify(drafts));
+    return;
+  }
+
+  state.selectedProvider = '';
+  state.selectedModel = '';
+  state.selectedEffort = '';
+  state.selectedReasoningMode = 'standard';
+  state.selectedWorktreeDir = '';
+  state.selectedWorktreeName = '';
+  app.restoreDraftMessageForSession('draft:prj_alpha', { replace: true });
+  if (state.selectedProvider !== 'chatgpt' || state.selectedModel !== 'gpt-project'
+      || state.selectedEffort !== 'high' || state.selectedReasoningMode !== 'pro'
+      || state.selectedWorktreeDir !== '/managed/alpha' || state.selectedWorktreeName !== 'alpha-wt') {
+    fail(name, 'restored project draft lost runtime state', JSON.stringify(state.projectDrafts));
+    return;
+  }
+  app.clearDraftMessageForSession('draft:prj_alpha');
+  if (state.projectDrafts.prj_alpha || JSON.parse(localStorage.getItem('draftMessages') || '[]').some((draft) => draft.sessionId === 'draft:prj_alpha')) {
+    fail(name, 'authoritative handoff left a stale project draft row');
+    return;
+  }
+  pass(name);
+}
+
 function testRestoreDraftMessageForSessionIsSessionBound() {
   const name = 'restoreDraftMessageForSession restores only the active session draft';
   const harness = createHarness();
@@ -8698,6 +8807,9 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testSuccessfulNewChatSendClearsNewConversationDraft);
   await runAppStreamTest(testClearDraftMessageForSessionRemovesLogicalBucket);
   await runAppStreamTest(testDraftMessageLimitIsTen);
+  await runAppStreamTest(testProjectDraftsAreNotArbitrarilyCapped);
+  await runAppStreamTest(testProjectDraftFirstSendHandsOffAuthoritatively);
+  await runAppStreamTest(testProjectDraftPersistsRuntimeAndWorktreeWithoutPrompt);
   await runAppStreamTest(testRestoreDraftMessageForSessionIsSessionBound);
   await runAppStreamTest(testRestoreLatestDraftMessageDoesNotCrossSessionBoundary);
   await runAppStreamTest(testCompletedResponsePreservesDeliberateFocus);

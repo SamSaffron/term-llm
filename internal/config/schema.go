@@ -366,6 +366,7 @@ var keySpecs = []KeySpec{
 	optional("serve.web_push.vapid_private_key", sensitive()),
 	optional("serve.web_push.subject"),
 	optional("serve.mcp.approval_mode", withoutResetTemplate()),
+	def("serve.projects.enabled", true),
 
 	def("file_tracking.enabled", false),
 	def("file_tracking.max_file_bytes", DefaultFileTrackingMaxFileBytes),

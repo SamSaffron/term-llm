@@ -50,6 +50,8 @@ type SQLiteStore struct {
 	hasMessageStreamIdentity bool // true if messages table has response-scoped segment identity columns
 	hasMessageClientID       bool // true if messages table has client_message_id
 	hasSessionBranches       bool // true if session_branches table exists
+	hasProjectID             bool // true if sessions table has project_id
+	hasProjectsTable         bool // true if projects table exists
 }
 
 var _ MessageSequenceStore = (*SQLiteStore)(nil)
@@ -80,6 +82,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent TEXT,
     cwd TEXT,
     worktree_dir TEXT,
+    project_id TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_user_message_at TIMESTAMP,
@@ -224,6 +227,29 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text_content ON message
 END;
 `
 
+// projectsSchema is kept separate from schema so existing databases below
+// migration 47 do not create any of the migration's objects before its
+// transaction begins. Fresh and already-current databases execute it directly;
+// upgrades create the same objects inside migration 47.
+const projectsSchema = `
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    canonical_dir TEXT NOT NULL UNIQUE,
+    is_bootstrap INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    last_used_at DATETIME NOT NULL,
+    archived_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_projects_recent
+    ON projects(archived_at, last_used_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_single_bootstrap
+    ON projects(is_bootstrap) WHERE is_bootstrap = 1;
+CREATE INDEX IF NOT EXISTS idx_sessions_project_activity
+    ON sessions(project_id, pinned DESC, last_message_at DESC, number DESC);
+`
+
 const messagesTableSchema = `
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -329,6 +355,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		store.probeSessionColumns()
 		store.probeMessageColumns()
 		store.probeBranchTable()
+		store.probeProjectsTable()
 	} else {
 		store.setCurrentColumns()
 	}
@@ -377,7 +404,10 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 46
+const (
+	projectSchemaVersion = 47
+	schemaVersion        = projectSchemaVersion
+)
 
 // migration represents a schema migration.
 type migration struct {
@@ -1292,6 +1322,17 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		version:     projectSchemaVersion,
+		description: "create projects and associate sessions",
+		up: func(db schemaExecutor) error {
+			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN project_id TEXT"); err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err := db.Exec(projectsSchema)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1471,9 +1512,18 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 		preExistingSessionsTable = tableCount > 0
 	}
 
-	// Create base schema (uses IF NOT EXISTS, safe to run multiple times)
+	// Create the common base schema (uses IF NOT EXISTS, safe to run multiple
+	// times). Migration-owned project objects are intentionally excluded for an
+	// existing pre-47 database so migration 47 remains all-or-nothing.
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create base schema: %w", err)
+	}
+	createProjectsDirectly := (needsBootstrapVersion && !preExistingSessionsTable) ||
+		(!needsBootstrapVersion && currentVersion >= projectSchemaVersion)
+	if createProjectsDirectly {
+		if _, err := db.Exec(projectsSchema); err != nil {
+			return fmt.Errorf("create projects schema: %w", err)
+		}
 	}
 
 	// Create schema_version table if it doesn't exist
@@ -1677,6 +1727,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			worktreeDirPlaceholder = ", ?"
 			worktreeDirArgs = []any{nullString(sess.WorktreeDir)}
 		}
+		projectIDCol := ""
+		projectIDPlaceholder := ""
+		var projectIDArgs []any
+		if s.hasProjectID {
+			projectIDCol = ", project_id"
+			projectIDPlaceholder = ", ?"
+			projectIDArgs = []any{nullString(sess.ProjectID)}
+		}
 		goalCol := ""
 		goalPlaceholder := ""
 		var goalArgs []any
@@ -1702,6 +1760,7 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 		)
 		insertArgs = append(insertArgs, worktreeDirArgs...)
+		insertArgs = append(insertArgs, projectIDArgs...)
 		insertArgs = append(insertArgs,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
@@ -1714,10 +1773,10 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		insertArgs = append(insertArgs, reasoningModeArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
-			                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
+				                      provider, provider_key, model, mode`+approvalModeCol+`, origin, agent, cwd`+worktreeDirCol+projectIDCol+`, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
 				                      last_total_tokens, last_message_count, status, tags`+goalCol+shareCol+reasoningEffortCol+reasoningModeCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+approvalModePlaceholder+`, ?, ?, ?`+worktreeDirPlaceholder+projectIDPlaceholder+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+goalPlaceholder+sharePlaceholder+reasoningEffortPlaceholder+reasoningModePlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1742,18 +1801,28 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 	return nil
 }
 
+func (s *SQLiteStore) enrichSessionProject(ctx context.Context, sess *Session) *Session {
+	if sess == nil || sess.ProjectID == "" || !s.hasProjectsTable {
+		return sess
+	}
+	_ = s.db.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, sess.ProjectID).Scan(&sess.ProjectName)
+	return sess
+}
+
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	sess, err := scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return s.enrichSessionProject(ctx, sess), err
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	sess, err := scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return s.enrichSessionProject(ctx, sess), err
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -1800,7 +1869,8 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	sess, err = scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return s.enrichSessionProject(ctx, sess), err
 }
 
 // Update modifies an existing session's metadata fields.
@@ -1834,6 +1904,16 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasWorktreeDir {
 		worktreeDirClause = ", worktree_dir = ?"
 	}
+	cwdAssignment := "cwd = ?"
+	if s.hasProjectID {
+		// Once a session has a project, its execution snapshot is immutable. This
+		// database-side guard also prevents a stale full-row metadata update from
+		// racing a successful BindSessionWorkspace and restoring old paths.
+		cwdAssignment = "cwd = CASE WHEN COALESCE(project_id, '') <> '' THEN cwd ELSE ? END"
+		if s.hasWorktreeDir {
+			worktreeDirClause = ", worktree_dir = CASE WHEN COALESCE(project_id, '') <> '' THEN worktree_dir ELSE ? END"
+		}
+	}
 	goalClause := ""
 	if s.hasGoal {
 		goalClause = ", goal = ?"
@@ -1845,7 +1925,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
-		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, cwd = ?` + worktreeDirClause + `,
+		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?, agent = ?, ` + cwdAssignment + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       status = ?, tags = ?` + goalClause + shareClause + `
 		WHERE id = ?`
@@ -2325,6 +2405,16 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasWorktreeDir {
 		worktreeDirCol = "COALESCE(s.worktree_dir, '')"
 	}
+	projectIDCol := "''"
+	projectNameCol := "''"
+	projectJoin := ""
+	if s.hasProjectID {
+		projectIDCol = "COALESCE(s.project_id, '')"
+		if s.hasProjectsTable {
+			projectNameCol = "COALESCE(p.name, '')"
+			projectJoin = " LEFT JOIN projects p ON p.id = s.project_id"
+		}
+	}
 	transcriptRevCol := "0"
 	if s.hasTranscriptRev {
 		transcriptRevCol = "COALESCE(s.transcript_rev, 0)"
@@ -2340,8 +2430,8 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + goalCol + `, ` + shareCol + `
-		` + fromClause + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `
+		` + fromClause + projectJoin + `
 		WHERE 1=1`
 	args := []any{}
 
@@ -2370,6 +2460,28 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		query += " AND (',' || s.tags || ',' LIKE '%,' || ? || ',%')"
 		args = append(args, opts.Tag)
 	}
+	if opts.ProjectID != "" {
+		if !s.hasProjectID {
+			return []SessionSummary{}, nil
+		}
+		query += " AND s.project_id = ?"
+		args = append(args, opts.ProjectID)
+	} else if opts.NoProject && s.hasProjectID {
+		query += " AND s.project_id IS NULL"
+	}
+	if cursor := opts.ProjectCursor; cursor != nil {
+		if !opts.SortByActivity || !s.hasPinned || !s.hasLastMessageAt || !s.hasLastUserMessageAt {
+			return nil, fmt.Errorf("project cursor requires activity sorting on the current schema")
+		}
+		activityExpr := "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
+		query += ` AND (
+			COALESCE(s.pinned, FALSE) < ? OR
+			(COALESCE(s.pinned, FALSE) = ? AND (
+				` + activityExpr + ` < ? OR
+				(` + activityExpr + ` = ? AND s.number < ?)
+			)))`
+		args = append(args, cursor.Pinned, cursor.Pinned, cursor.ActivityAt, cursor.ActivityAt, cursor.Number)
+	}
 	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
 	query += categoryClause
 	args = append(args, categoryArgs...)
@@ -2392,14 +2504,14 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		// client-side "any-message" ordering).
 		sortCol := "s.updated_at"
 		if opts.SortByActivity && s.hasLastMessageAt {
-			sortCol = "COALESCE(last_message_at, last_user_message_at, created_at)"
+			sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
 		} else if s.hasLastUserMessageAt {
-			sortCol = "COALESCE(last_user_message_at, created_at)"
+			sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
 		}
 		if s.hasPinned {
-			query += " ORDER BY COALESCE(pinned, FALSE) DESC, " + sortCol + " DESC"
+			query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC, s.number DESC"
 		} else {
-			query += " ORDER BY " + sortCol + " DESC"
+			query += " ORDER BY " + sortCol + " DESC, s.number DESC"
 		}
 	}
 
@@ -2424,12 +2536,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, goalRaw, shareRaw sql.NullString
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, projectID, projectName, goalRaw, shareRaw sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
 			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &worktreeDir, &goalRaw, &shareRaw)
+			&status, &tags, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}
@@ -2464,6 +2576,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if worktreeDir.Valid {
 			sum.WorktreeDir = worktreeDir.String
+		}
+		if projectID.Valid {
+			sum.ProjectID = projectID.String
+		}
+		if projectName.Valid {
+			sum.ProjectName = projectName.String
 		}
 		if goal := parseGoalJSONString(goalRaw); goal != nil {
 			sum.Goal = goal
@@ -2514,6 +2632,17 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		lastMessageAtCol = "s.last_message_at"
 	}
 
+	projectIDCol := "''"
+	projectNameCol := "''"
+	projectJoin := ""
+	if s.hasProjectID {
+		projectIDCol = "COALESCE(s.project_id, '')"
+		if s.hasProjectsTable {
+			projectNameCol = "COALESCE(p.name, '')"
+			projectJoin = " LEFT JOIN projects p ON p.id = s.project_id"
+		}
+	}
+
 	filterClause := ""
 	args := []any{ftsQuery}
 	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
@@ -2521,6 +2650,13 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	args = append(args, categoryArgs...)
 	if !opts.Archived {
 		filterClause += " AND s.archived = FALSE"
+	}
+	if opts.ProjectID != "" {
+		if !s.hasProjectID {
+			return []SearchResult{}, nil
+		}
+		filterClause += " AND s.project_id = ?"
+		args = append(args, opts.ProjectID)
 	}
 	args = append(args, opts.Limit)
 
@@ -2547,11 +2683,12 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		       `+generatedLongCol+` AS generated_long_title, `+titleSourceCol+` AS title_source,
 		       snippet(messages_fts, 0, '**', '**', '...', 32) AS snippet, s.provider, COALESCE(s.provider_key, '') AS provider_key,
 		       s.model, s.mode, `+originCol+` AS origin, s.archived, `+pinnedCol+` AS pinned, s.status,
-		       `+messageCountCol+` AS message_count, s.created_at, s.updated_at, `+lastMessageAtCol+` AS last_message_at,
+		       `+messageCountCol+` AS message_count, `+projectIDCol+` AS project_id, `+projectNameCol+` AS project_name,
+		       s.created_at, s.updated_at, `+lastMessageAtCol+` AS last_message_at,
 		       m.created_at AS message_created_at
 		FROM session_matches sm
 		JOIN messages m ON m.id = sm.message_id
-		JOIN sessions s ON s.id = sm.session_id
+		JOIN sessions s ON s.id = sm.session_id`+projectJoin+`
 		JOIN messages_fts ON messages_fts.rowid = sm.message_id
 		ORDER BY sm.match_rank, sm.message_id`, args...)
 	if err != nil {
@@ -2563,11 +2700,11 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	for rows.Next() {
 		var r SearchResult
 		var number sql.NullInt64
-		var generatedShortTitle, generatedLongTitle, titleSource, providerKey, mode, origin, status sql.NullString
+		var generatedShortTitle, generatedLongTitle, titleSource, providerKey, mode, origin, status, projectID, projectName sql.NullString
 		var lastMessageAt sql.NullTime
 		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
 			&generatedShortTitle, &generatedLongTitle, &titleSource, &r.Snippet, &r.Provider, &providerKey,
-			&r.Model, &mode, &origin, &r.Archived, &r.Pinned, &status, &r.MessageCount,
+			&r.Model, &mode, &origin, &r.Archived, &r.Pinned, &status, &r.MessageCount, &projectID, &projectName,
 			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &r.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
@@ -2597,6 +2734,12 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		}
 		if status.Valid {
 			r.Status = SessionStatus(status.String)
+		}
+		if projectID.Valid {
+			r.ProjectID = projectID.String
+		}
+		if projectName.Valid {
+			r.ProjectName = projectName.String
 		}
 		if lastMessageAt.Valid {
 			r.LastMessageAt = lastMessageAt.Time
@@ -4571,6 +4714,10 @@ func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscrip
 	return subs, rows.Err()
 }
 
+func (s *SQLiteStore) ReadOnly() bool {
+	return s != nil && s.cfg.ReadOnly
+}
+
 // Close closes the database connections.
 func (s *SQLiteStore) Close() error {
 	var readErr error
@@ -4607,6 +4754,15 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasMessageStreamIdentity = true
 	s.hasMessageClientID = true
 	s.hasSessionBranches = true
+	s.hasProjectID = true
+	s.hasProjectsTable = true
+}
+
+func (s *SQLiteStore) probeProjectsTable() {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'`).Scan(&count); err == nil {
+		s.hasProjectsTable = count > 0
+	}
 }
 
 func (s *SQLiteStore) probeBranchTable() {
@@ -4675,6 +4831,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasShare = true
 		case "transcript_rev":
 			s.hasTranscriptRev = true
+		case "project_id":
+			s.hasProjectID = true
 		}
 	}
 }
@@ -4753,6 +4911,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	} else {
 		base += ", NULL AS worktree_dir"
 	}
+	if s.hasProjectID {
+		base += ", project_id"
+	} else {
+		base += ", NULL AS project_id"
+	}
 	base += `, created_at, updated_at, archived, parent_id, search, tools, mcp,
 	       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens`
 	if s.hasCacheWriteTokens {
@@ -4791,7 +4954,7 @@ func (s *SQLiteStore) sessionSelectCols() string {
 func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasCompactionCount, hasTitleSkippedAt, hasLastTotalTokens, hasLastMessageCount bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
-	var name, summary, cwd, worktreeDir sql.NullString
+	var name, summary, cwd, worktreeDir, projectID sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
 	var mode, approvalMode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort, reasoningMode, goalRaw, shareRaw sql.NullString
@@ -4806,7 +4969,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	scanArgs = append(scanArgs,
 		&sess.Provider, &providerKey, &sess.Model, &reasoningEffort, &reasoningMode, &mode, &approvalMode, &origin, &sess.Pinned,
-		&agent, &cwd, &worktreeDir, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
+		&agent, &cwd, &worktreeDir, &projectID, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
 	)
@@ -4872,6 +5035,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if worktreeDir.Valid {
 		sess.WorktreeDir = worktreeDir.String
+	}
+	if projectID.Valid {
+		sess.ProjectID = projectID.String
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)

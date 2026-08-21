@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,6 +174,24 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	firstParty := isFirstPartyUIResponseRequest(r)
+	if req.UseDefaultWorkspace && s.projectsEnabled {
+		bootstrapUsable := false
+		if firstParty && strings.TrimSpace(s.bootstrapProjectID) != "" {
+			if projects, ok := s.projectStore(); ok {
+				if bootstrap, getErr := projects.GetProject(ctx, s.bootstrapProjectID); getErr == nil && bootstrap != nil && !bootstrap.Archived() {
+					bootstrapUsable = projectStatus(*bootstrap).Available
+				}
+			}
+		}
+		if bootstrapUsable {
+			req.ProjectID = s.bootstrapProjectID
+			req.UseDefaultWorkspace = false
+			log.Printf("[serve] deprecated use_default_workspace translated to bootstrap project; refresh Web UI assets")
+		} else {
+			writeProjectError(w, http.StatusConflict, "refresh_required", "the server's project support changed; refresh to continue")
+			return
+		}
+	}
 	if firstParty && clientMessageID == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "client_message_id is required for first-party requests")
 		return
@@ -311,6 +330,14 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	previousResponseID := rr.previousResponseID
 	previousDurable := rr.previousDurable
 	freshConversation := rr.freshConversation
+	workspaceBinding, workspaceErr := s.resolveWorkspace(ctx, serveWorkspaceRequest{
+		SessionID: sessionID, ProjectID: req.ProjectID, WorktreeDir: req.WorktreeDir,
+		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: freshConversation,
+	})
+	if workspaceErr != nil {
+		writeWorkspaceError(w, workspaceErr)
+		return
+	}
 	idempotencyKey := strings.TrimSpace(rr.idempotencyKey)
 	if req.Stream && idempotencyKey != "" {
 		// Streaming response runs retain their event log for the response-run
@@ -614,9 +641,6 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		swapPlan.requestedReasoningMode = reasoningMode
 		modelSwapExec.plan.requestedReasoningMode = reasoningMode
 	}
-	if freshConversation {
-		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir, req.UseDefaultWorkspace)
-	}
 	if err := claimUIFollowUp(followUpOwner, followUpOwnerStateful); err != nil {
 		if modelSwapExec != nil {
 			modelSwapExec.markRolledBack()
@@ -640,6 +664,38 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			followUpClaims.Release()
 		}
 	}()
+	if freshConversation {
+		if workspaceBinding.ProjectID != "" || strings.TrimSpace(req.ProjectID) != "" {
+			// Create only an unbound persistence shell first. Runtime/model metadata is
+			// updated only after this request wins the atomic workspace bind, so a
+			// conflicting loser cannot mutate the winner's first-turn settings.
+			if err := s.ensurePersistedSessionForProjectBinding(ctx, sessionID, runtime, req.Model); err != nil {
+				if modelSwapExec != nil {
+					modelSwapExec.markRolledBack()
+				}
+				if !stateful {
+					s.unregisterResponseIDs(runtime)
+					runtime.Close()
+				}
+				writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", err.Error())
+				return
+			}
+			if err := s.bindResolvedWorkspace(ctx, sessionID, runtime, workspaceBinding); err != nil {
+				if modelSwapExec != nil {
+					modelSwapExec.markRolledBack()
+				}
+				if !stateful {
+					s.unregisterResponseIDs(runtime)
+					runtime.Close()
+				}
+				writeWorkspaceError(w, err)
+				return
+			}
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, "", false)
+		} else {
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, reasoningMode, true, req.WorktreeDir, req.UseDefaultWorkspace)
+		}
+	}
 
 	cleanupRuntime := !stateful
 	if cleanupRuntime {

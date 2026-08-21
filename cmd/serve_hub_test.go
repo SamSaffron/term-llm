@@ -73,6 +73,19 @@ func TestHubAuthProtectsDashboardAPIAndProxy(t *testing.T) {
 	}
 }
 
+func TestHubProxiesProjectWorktreeRoutes(t *testing.T) {
+	var gotPath, gotQuery, gotAuth string
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		io.WriteString(w, `{"ok":true}`)
+	})
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/node/alpha/v1/projects/prj_one/worktrees/diff?dir=%2Fmanaged%2Fone", nil))
+	if rec.Code != http.StatusOK || gotPath != "/chat/v1/projects/prj_one/worktrees/diff" || gotQuery != "dir=%2Fmanaged%2Fone" || gotAuth != "Bearer tkn-123" {
+		t.Fatalf("project proxy status=%d path=%q query=%q auth=%q body=%s", rec.Code, gotPath, gotQuery, gotAuth, rec.Body.String())
+	}
+}
+
 func TestHubAuthQueryTokenSetsCookie(t *testing.T) {
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")

@@ -71,6 +71,18 @@ term-llm chat --no-session
 term-llm ask --session-db /tmp/term-llm.db ...
 ```
 
+## Web projects and immutable session bindings
+
+With project mode enabled, the Web sidebar groups every conversation beneath a durable project. On the first project-enabled startup, term-llm registers the canonical startup directory as a bootstrap project unless the registry already contains records. Git startup paths normalize to the main repository root; non-Git paths remain exact. Migration 47 adds nullable `project_id` metadata without changing existing `cwd` or `worktree_dir` snapshots. Only historical sessions that unambiguously match the bootstrap root are backfilled; all others remain under **No project**.
+
+A project's ID is stable even if the project is renamed, archived, or restored. A session's `project_id` is grouping and provenance, while `cwd` and `worktree_dir` are its authoritative immutable execution snapshot. Existing project conversations may resume after archival, but archived projects cannot start new conversations. Missing paths, replaced symlinks, moved roots, and cross-project worktrees fail closed before a model or tool run. A missing managed worktree may fall back only to its owning project's validated canonical root.
+
+In the Web UI, each active project can keep one Hub-node-scoped local draft. Its unsent prompt, provider/model/effort/reasoning choices, and selected managed worktree survive reloads independently; attachments remain isolated in memory for the current tab. Drafts are client-only until first send, when the server's immutable project/worktree snapshot becomes authoritative. Archiving a project disables its unsent draft but does not block its existing conversations.
+
+Eligible **No project** conversations can be assigned once through the dedicated action. Assignment proves that a Git CWD/worktree belongs to the same main repository, or that a non-Git CWD exactly matches, and writes only `project_id`; it never changes execution paths.
+
+Project registration and selection do not grant filesystem or shell permission. Workspace confirmations, configured read/write directories, shell approvals, and Guardian remain separate and authoritative.
+
 ## Worktree-bound sessions
 
 Chat sessions can bind their tools to a git worktree without changing the term-llm process working directory. In the TUI, use `/worktree` (or `/wt`) while in `chat`:
@@ -93,7 +105,7 @@ A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_fil
 
 Use `/worktree promote --branch` to avoid applying onto the current root branch. This mode creates and checks out a new root branch named after the managed worktree at the worktree HEAD, applies dirty and untracked changes there as staged and uncommitted changes, rebinds the session to root, and leaves the original worktree in place. To promote another worktree in either mode, switch to it first with `/worktree switch` or select it in `/worktree browse`.
 
-In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request. Leaving the chip on **root** makes the first-party UI explicitly request the server's validated startup repository; generic API requests that omit both fields remain unbound. The Web UI merge action removes the worktree by default and asks for confirmation before forcing removal when sessions still use it.
+In the Web UI, the header worktree chip is scoped to the active project draft or persisted conversation. Choose or create a managed worktree before the first send; `project_id` and optional `worktree_dir` are validated together and then locked into the session. Managed worktrees may live under term-llm's XDG data directory rather than inside the project path, so ownership is checked by main-repository identity. The accessible worktree sheet provides diff, merge, promote, and removal actions without browser prompt dialogs. In `--no-projects` mode, the temporary legacy worktree routes and startup-repository behavior remain available for compatibility.
 
 ## File change history
 

@@ -76,6 +76,8 @@ type Session struct {
 	ApprovalMode    SessionApprovalMode `json:"approval_mode,omitempty"`    // Tool approval mode for chat sessions (prompt, auto, yolo)
 	Origin          SessionOrigin       `json:"origin,omitempty"`           // Session surface/origin (tui, web, telegram)
 	Agent           string              `json:"agent,omitempty"`            // Agent name used for this session
+	ProjectID       string              `json:"project_id,omitempty"`       // Durable grouping/provenance identity
+	ProjectName     string              `json:"project_name,omitempty"`     // Joined display metadata; not an identifier
 	CWD             string              `json:"cwd,omitempty"`              // Working directory at session start
 	WorktreeDir     string              `json:"worktree_dir,omitempty"`     // Bound git worktree directory, if any
 	CreatedAt       time.Time           `json:"created_at"`
@@ -157,6 +159,8 @@ type SessionSummary struct {
 	OutputTokens        int                `json:"output_tokens,omitempty"`
 	Status              SessionStatus      `json:"status,omitempty"`
 	Tags                string             `json:"tags,omitempty"`
+	ProjectID           string             `json:"project_id,omitempty"`
+	ProjectName         string             `json:"project_name,omitempty"`
 	WorktreeDir         string             `json:"worktree_dir,omitempty"`
 	Goal                *Goal              `json:"goal,omitempty"`
 	Share               *ShareState        `json:"share,omitempty"`
@@ -167,19 +171,22 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
-	Name             string        // Filter by name
-	Provider         string        // Filter by provider
-	Model            string        // Filter by model
-	Mode             SessionMode   // Filter by mode (chat, ask, plan, exec)
-	Status           SessionStatus // Filter by status
-	Tag              string        // Filter by tag (substring match)
-	Categories       []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit            int           // Max results (0 = use default)
-	Offset           int           // Pagination offset
-	BeforeNumber     int64         // Keyset cursor: only sessions with number < this value
-	SortByNumberDesc bool          // Order by session number descending instead of activity sort
-	Archived         bool          // Include archived sessions
-	SortByActivity   bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+	Name             string                // Filter by name
+	Provider         string                // Filter by provider
+	Model            string                // Filter by model
+	Mode             SessionMode           // Filter by mode (chat, ask, plan, exec)
+	Status           SessionStatus         // Filter by status
+	Tag              string                // Filter by tag (substring match)
+	Categories       []string              // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit            int                   // Max results (0 = use default)
+	Offset           int                   // Pagination offset
+	BeforeNumber     int64                 // Keyset cursor: only sessions with number < this value
+	SortByNumberDesc bool                  // Order by session number descending instead of activity sort
+	Archived         bool                  // Include archived sessions
+	SortByActivity   bool                  // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+	ProjectID        string                // Restrict to one stable project ID
+	NoProject        bool                  // Restrict to legacy sessions with a null project ID
+	ProjectCursor    *ProjectSessionCursor // Group-bound keyset cursor for project sidebar paging
 }
 
 // SearchOptions configures session full-text search.
@@ -188,6 +195,7 @@ type SearchOptions struct {
 	Categories []string // Sidebar/web categories (all, chat, web, ask, plan, exec)
 	Limit      int      // Max results (0 = use default)
 	Archived   bool     // Include archived sessions
+	ProjectID  string   // Restrict to one stable project ID
 }
 
 // SearchResult represents a search match.
@@ -209,6 +217,8 @@ type SearchResult struct {
 	Archived            bool               `json:"archived,omitempty"`
 	Pinned              bool               `json:"pinned,omitempty"`
 	Status              SessionStatus      `json:"status,omitempty"`
+	ProjectID           string             `json:"project_id,omitempty"`
+	ProjectName         string             `json:"project_name,omitempty"`
 	MessageCount        int                `json:"message_count"`
 	SessionCreatedAt    time.Time          `json:"session_created_at"`
 	UpdatedAt           time.Time          `json:"updated_at"`

@@ -642,6 +642,7 @@ const connectToken = async () => {
   state.selectedReasoningMode = newReasoningMode === 'pro' ? 'pro' : 'standard';
   localStorage.setItem(STORAGE_KEYS.selectedReasoningMode, state.selectedReasoningMode);
   canonicalizeSelectedModelEffort();
+  app.persistActiveProjectDraft?.();
   if (modalEffortSelectionDirty) {
     markRuntimeSelectionIntent();
   }

@@ -132,6 +132,7 @@ const applyProviderChange = async (provider) => {
   // model fallback (or an empty list) also avoids briefly exposing stale models
   // from the previously selected provider.
   syncSettingsSelectValues();
+  app.persistActiveProjectDraft?.();
   app.updateHeader();
 
   let models;
@@ -219,6 +220,7 @@ const persistRuntimeSelection = () => {
   persist(STORAGE_KEYS.selectedProvider, state.selectedProvider || '');
   persist(STORAGE_KEYS.selectedModel, state.selectedModel || '');
   persist(STORAGE_KEYS.selectedEffort, state.selectedEffort || '');
+  app.persistActiveProjectDraft?.();
 };
 
 const canonicalizeSelectedModelEffort = () => {

@@ -169,11 +169,29 @@ edit:
 
 serve:
   approval_mode: auto
+  projects:
+    enabled: true
   mcp:
     approval_mode: prompt
 ```
 
 Configuration accepts only `prompt` and `auto`. An omitted or empty surface value inherits an explicitly configured `approval.default_mode`; if neither is set, the built-in matrix applies. `term-llm config show` lists each effective surface mode and its resolution source, and `term-llm config get chat.approval_mode` reports the effective value when the key is unset. Resolution precedence is explicit CLI mode, persisted session mode (for chat resume), per-surface config, global config, then the built-in default. A legacy resumed chat with no stored mode resumes in prompt, and stored yolo is downgraded to prompt.
+
+### Web project registry
+
+`term-llm serve web` enables the project registry by default. A project is a shared, durable pointer to an existing directory on the server. Configure it with:
+
+```yaml
+serve:
+  projects:
+    enabled: true
+```
+
+Use `--no-projects` to preserve the legacy flat sidebar and startup-workspace behavior. Use `--projects` for strict opt-in: startup fails if project storage is read-only/unsupported or the only bootstrap candidate is filesystem root. Default-enabled startup is rollout-tolerant and instead warns and falls back to legacy mode for those cases. Project initialization runs only when the `web` platform is selected; API-, jobs-, Telegram-, and Hub-delegated work do not acquire an implicit project.
+
+Project paths are absolute paths on the machine running term-llm. Symlinks are resolved. A directory inside a Git checkout is normalized to the main repository root; a non-Git directory remains exact. Filesystem root cannot be registered—use disabled project mode with the existing read/write directories, grants, shell policy, and approval mode for container-wide agents.
+
+A registered project is metadata, not authorization. Selecting one does not bypass workspace confirmation, static read/write allowlists, shell approval, or Guardian.
 
 Auto mode is intentionally narrower than yolo:
 

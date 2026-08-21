@@ -29,7 +29,9 @@ const STORAGE_BASE_KEYS = {
   draftMessages: 'term_llm_draft_messages',
   pendingIntents: 'term_llm_pending_intent',
   diffCommentQueue: 'term_llm_diff_comment_queue',
-  optimisticTranscript: 'term_llm_optimistic_transcript'
+  optimisticTranscript: 'term_llm_optimistic_transcript',
+  projectExpansion: 'term_llm_project_expansion',
+  lastProject: 'term_llm_last_project'
 };
 
 const parseSidebarSessionCategories = (raw) => {
@@ -134,7 +136,18 @@ const state = {
   selectedReasoningMode: localStorage.getItem(STORAGE_KEYS.selectedReasoningMode) || 'standard',
   selectedWorktreeDir: '',
   selectedWorktreeName: '',
-  worktrees: [],
+  worktrees: [], worktreesEnabled: false, worktreesError: '',
+  capabilitiesLoaded: false,
+  capabilitiesRequired: false,
+  projectsEnabled: false,
+  sidebarGroups: [],
+  projects: [],
+  projectsError: '',
+  activeProjectId: '',
+  lastProjectId: localStorage.getItem(STORAGE_KEYS.lastProject) || '',
+  projectDrafts: {},
+  projectAttachments: {},
+  projectExpansion: (() => { try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.projectExpansion) || '{}') || {}; } catch { return {}; } })(),
   sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1',
   sidebarSessionCategories: parseSidebarSessionCategories(window.TERM_LLM_SIDEBAR_SESSIONS),
   showHiddenSessions: localStorage.getItem(STORAGE_KEYS.showHiddenSessions) === '1',
@@ -176,7 +189,7 @@ const state = {
   widgetsLoaded: false,
   sidebarSearchQuery: '',
   sidebarSearchResults: null,
-  sidebarSearchLoading: false,
+  sidebarSearchLoading: false, sidebarSearchError: '',
   askUser: null,
   approval: null,
   serviceWorkerRegistration: null,
@@ -297,6 +310,22 @@ const maybeReloadForUIVersion = (response) => {
   return true;
 };
 
+const hardRefreshUIAssets = async () => {
+  if (uiVersionReloading) return;
+  uiVersionReloading = true;
+  try { setConnectionState('Refreshing Web UI assets…', 'bad'); } catch (_) {}
+  try {
+    if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((key) => String(key).startsWith('term-llm-shell-')).map((key) => caches.delete(key)));
+    }
+    const registration = state?.serviceWorkerRegistration;
+    if (registration?.update) await registration.update().catch(() => {});
+  } finally {
+    window.location.reload();
+  }
+};
+
 const installUIVersionFetchGuard = () => {
   if (typeof window.fetch !== 'function') return;
   const nativeFetch = window.fetch.bind(window);
@@ -330,6 +359,8 @@ const elements = {
   settingsBtn: document.getElementById('settingsBtn'),
   sidebarBrandText: document.getElementById('sidebarBrandText'),
   newChatBtn: document.getElementById('newChatBtn'),
+  addProjectBtn: document.getElementById('addProjectBtn'),
+  manageProjectsBtn: document.getElementById('manageProjectsBtn'),
   widgetsOpenBtn: document.getElementById('widgetsOpenBtn'),
   backToHubLink: document.getElementById('backToHubLink'),
   hubAgentLinks: document.getElementById('hubAgentLinks'),
@@ -343,6 +374,7 @@ const elements = {
   headerControlsRow: document.querySelector('.header-controls-row'),
   headerLeft: document.querySelector('.header-left'),
   activeSessionTitle: document.getElementById('activeSessionTitle'),
+  activeProjectSubtitle: document.getElementById('activeProjectSubtitle'),
   connectionState: document.getElementById('connectionState'),
   chatScroll: document.getElementById('chatScroll'),
   messages: document.getElementById('messages'),
@@ -2381,6 +2413,8 @@ const createSession = () => ({
   activeEffort: '',
   activeReasoningMode: '',
   provider: '',
+  projectId: state.activeProjectId || '',
+  projectName: String(state.projects.find((project) => project.id === state.activeProjectId)?.name || ''),
   worktreeDir: state.selectedWorktreeDir || '',
   worktreeName: state.selectedWorktreeName || '',
   goal: null,
@@ -2578,6 +2612,7 @@ Object.assign(app, {
   INTERJECTION_PHASE,
   sanitizeInterruptState,
   syncTokenCookie,
+  hardRefreshUIAssets,
   setAnimatedPanelOpen,
   setElementHidden,
   createEl,

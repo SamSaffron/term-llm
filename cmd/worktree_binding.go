@@ -92,6 +92,37 @@ func RestoreWorktreeBinding(ctx context.Context, store session.Store, sess *sess
 	if sess == nil {
 		return nil
 	}
+	if strings.TrimSpace(sess.ProjectID) != "" {
+		projects, ok := session.AsProjectReader(store)
+		if !ok {
+			return fmt.Errorf("project workspace is unavailable")
+		}
+		project, err := projects.GetProject(ctx, sess.ProjectID)
+		if err != nil || project == nil {
+			return fmt.Errorf("project unavailable")
+		}
+		status := projectStatus(*project)
+		if !status.Available {
+			return fmt.Errorf("project unavailable")
+		}
+		binding, err := persistedProjectWorkspaceBinding(*project, status, *sess, "")
+		if err != nil {
+			return err
+		}
+		// Keep the durable snapshot untouched, but expose the validated execution
+		// fallback on the in-memory resume object so prompt/skill discovery does not
+		// prefer a vanished worktree.
+		sess.CWD = binding.RuntimeDir
+		if binding.WorktreeDir != "" && !sameServePath(binding.RuntimeDir, binding.WorktreeDir) {
+			sess.WorktreeDir = ""
+		}
+		if toolMgr != nil {
+			if err := toolMgr.SetBaseDirWithContext(ctx, binding.RuntimeDir); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if strings.TrimSpace(sess.WorktreeDir) == "" {
 		fallback, err := sessionRootFallback(sess.CWD)
 		if err != nil {

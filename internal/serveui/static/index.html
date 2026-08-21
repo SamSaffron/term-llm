@@ -200,6 +200,10 @@
               </svg>
               <span>New chat</span>
             </button>
+            <button class="new-chat-btn project-add-btn hidden" id="addProjectBtn" type="button" aria-label="Add project">
+              <span aria-hidden="true">＋</span><span>Project</span>
+            </button>
+            <button class="widgets-sidebar-btn hidden" id="manageProjectsBtn" type="button"><span>Manage projects</span></button>
             <button class="widgets-sidebar-btn hidden" id="widgetsOpenBtn" type="button" aria-label="Open widgets">
               <svg class="sidebar-action-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="4" y="4" width="6" height="6" rx="1.5"></rect>
@@ -230,7 +234,10 @@
         <div class="header-title-row">
           <div class="header-left">
             <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" title="Open sidebar">☰</button>
-            <h1 class="header-title" id="activeSessionTitle">Chat</h1>
+            <div class="header-title-context">
+              <h1 class="header-title" id="activeSessionTitle">Chat</h1>
+              <span class="header-project-subtitle" id="activeProjectSubtitle" hidden></span>
+            </div>
             <span class="connection-state bad" id="connectionState" hidden aria-live="polite"></span>
           </div>
           <div class="header-controls-row">

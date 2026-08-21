@@ -57,6 +57,18 @@ With the default base path of `/ui`, the web runtime exposes:
 - `POST /ui/v1/messages` (Anthropic Messages API)
 - `POST /ui/v1/transcribe`
 - `GET /ui/v1/models`
+- `GET /ui/v1/capabilities`
+- `GET|POST /ui/v1/projects` (`POST ...?dry_run=1` previews normalization)
+- `GET|PATCH /ui/v1/projects/:id`
+- `GET|POST /ui/v1/projects/:id/worktrees`
+- `DELETE /ui/v1/projects/:id/worktrees?dir=...`
+- `GET /ui/v1/projects/:id/worktrees/diff?dir=...`
+- `POST /ui/v1/projects/:id/worktrees/merge`
+- `POST /ui/v1/projects/:id/worktrees/promote`
+- `GET /ui/v1/sidebar`
+- `GET /ui/v1/sessions?project_id=prj_...&cursor=...`
+- `GET /ui/v1/sessions/search?q=...&project_id=prj_...`
+- `POST /ui/v1/sessions/:id/project` (validated one-time historical assignment)
 - `GET /ui/healthz`
 - `GET /ui/` for the browser UI
 - `GET /ui/images/:file` for generated images
@@ -64,6 +76,42 @@ With the default base path of `/ui`, the web runtime exposes:
 If the jobs platform is also enabled, the jobs API is mounted under the same base path.
 
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
+
+## Project-aware Responses and worktrees
+
+The built-in Web UI fetches `GET /ui/v1/capabilities` before rendering project controls and uses the bounded grouped `GET /ui/v1/sidebar` projection. Project creation supports `POST /ui/v1/projects?dry_run=1` to preview canonical server-path and Git-root normalization before writing. Project records can be renamed, archived, and restored, but not hard-deleted or moved in place.
+
+A fresh project-aware Responses request includes:
+
+```json
+{
+  "project_id": "prj_...",
+  "worktree_dir": "/optional/term-llm-managed-worktree"
+}
+```
+
+The server resolves the stable ID, revalidates the canonical path, verifies managed-worktree repository ownership, and atomically snapshots the binding before execution. Repeating the same binding is idempotent; conflicting project/worktree values return `409 workspace_conflict`. First-party UI requests require `project_id` in project mode. Authenticated third-party Responses clients may supply it, but omission keeps their existing unbound/explicit behavior.
+
+The grouped sidebar request is `GET /ui/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=0`. It returns active, archived, empty, and optional **No project** groups in one bounded projection. Each group carries `session_count`, `last_activity_at`, up to `per_project` summaries, and an opaque `next_cursor`. Pass that cursor back only for the same group; the null-project cursor is sent without `project_id`. Global full-text search results include `project_id` and `project_name` so clients can regroup them without racing a second project lookup.
+
+Project-scoped worktree routes are under `/ui/v1/projects/:id/worktrees`: collection `GET`/`POST`, `DELETE ...?dir=...`, `GET .../diff?dir=...`, and `POST .../merge` or `.../promote`. The old `/ui/v1/worktrees` routes remain for one compatibility release, always target the serve startup repository, and return a deprecation header. They never follow browser-selected project state.
+
+Stable project/workspace errors use the normal authenticated JSON error envelope:
+
+| Code | Meaning and recovery |
+|---|---|
+| `project_required` | A fresh first-party project-mode conversation omitted its project; choose or add one. |
+| `project_not_found` | The registry identity no longer exists; refresh projects and choose another. |
+| `project_archived` | An archived project cannot start a new conversation; restore it or use another. |
+| `project_unavailable` | The path is missing or its canonical identity changed; repair it or archive/re-add the moved path. |
+| `workspace_conflict` | The immutable session binding already won with different values; refetch that session. |
+| `worktrees_unavailable` | The selected project is not an available Git repository. |
+| `projects_disabled` | Project mode is disabled. Project routes return authenticated `404`; Responses rejects supplied `project_id` with `400`. |
+| `refresh_required` | An obsolete first-party asset requested legacy default binding without a usable bootstrap; hard-refresh the page/service-worker assets. |
+
+In `--no-projects` mode, the project/sidebar mutation routes expose `projects_disabled`, the browser returns to the legacy flat/date navigator, and unsent project drafts are discarded. A first-party `use_default_workspace` request keeps the legacy rule: bind to the serve startup directory's main Git root, while a non-Git startup remains unbound. Header-less third-party requests remain unbound when they omit `project_id`.
+
+All project routes use the existing bearer-token and CORS middleware. The token identifies one shared operator security domain, not separate users or tenants. Project paths are therefore visible to every authenticated token holder, and the first-party UI version header is only a compatibility signal—not authorization.
 
 ## Live diff sidebar
 

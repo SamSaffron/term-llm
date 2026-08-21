@@ -30,7 +30,10 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
 	sessions, err := s.store.List(r.Context(), session.ListOptions{
-		Limit:          100,
+		// The grouped sidebar can expose recent rows from many projects. Keep this
+		// projection broadly bounded rather than truncating globally at 100 and
+		// starving quieter project groups of status updates.
+		Limit:          10000,
 		Archived:       includeArchived,
 		Categories:     categories,
 		SortByActivity: true,
@@ -47,6 +50,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// Revision-aware clients use transcript_rev as the correctness signal.
 	type statusEntry struct {
 		ID                  string `json:"id"`
+		ProjectID           string `json:"project_id,omitempty"`
+		ProjectName         string `json:"project_name,omitempty"`
 		ShortTitle          string `json:"short_title"`
 		LongTitle           string `json:"long_title"`
 		ActiveRun           bool   `json:"active_run,omitempty"`
@@ -85,6 +90,8 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		activeResponseID, startedRev, runEpoch, clientMessageID, anchorRowID := s.activeTranscriptRun(sess.ID)
 		result = append(result, statusEntry{
 			ID:                  sess.ID,
+			ProjectID:           sess.ProjectID,
+			ProjectName:         sess.ProjectName,
 			ShortTitle:          sess.PreferredShortTitle(),
 			LongTitle:           sess.PreferredLongTitle(),
 			ActiveRun:           activeIDs[sess.ID],
