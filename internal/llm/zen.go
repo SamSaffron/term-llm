@@ -14,7 +14,15 @@ import (
 const (
 	zenBaseURL     = "https://opencode.ai/zen/v1"
 	zenDisplayName = "OpenCode Zen"
-	modelsDevURL   = "https://models.dev/api.json"
+	// zenCatalogProviderKey selects the Zen (Chat Completions) provider entry
+	// in the shared OpenCode model catalog.
+	zenCatalogProviderKey = "opencode"
+)
+
+// Overridable for tests.
+var (
+	modelsDevURL  = "https://models.dev/api.json"
+	zenCatalogURL = opencodeGoCatalogURL
 )
 
 // ZenProvider wraps OpenAICompatProvider with models.dev pricing data.
@@ -65,12 +73,19 @@ type modelsDevModel struct {
 	} `json:"cost"`
 }
 
-// ListModels returns available models with pricing from models.dev.
+// ListModels returns available models with pricing from models.dev and
+// reasoning-effort metadata from the shared OpenCode catalog.
 func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	// Reasoning-effort metadata is fetched concurrently with the model list;
+	// failures are non-fatal and simply leave efforts unset.
+	effortsCh := make(chan map[string][]string, 1)
+	go func() { effortsCh <- fetchZenReasoningEfforts(ctx) }()
+
 	// Fetch models.dev data for pricing info
 	pricing, err := fetchModelsDevPricing(ctx)
 	if err != nil {
-		// Fall back to basic listing if models.dev fails
+		// Fall back to the basic listing without replacing a previously enriched
+		// cache with entries that lack pricing and reasoning metadata.
 		return p.OpenAICompatProvider.ListModels(ctx)
 	}
 
@@ -118,6 +133,14 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		models = append(models, info)
 	}
 
+	if efforts := <-effortsCh; len(efforts) > 0 {
+		for i := range models {
+			if e, ok := efforts[models[i].ID]; ok {
+				models[i].ReasoningEfforts = e
+			}
+		}
+	}
+
 	// Sort: free models first, then by input price
 	sort.Slice(models, func(i, j int) bool {
 		isFreeI := models[i].InputPrice == 0 && models[i].OutputPrice == 0
@@ -128,6 +151,7 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		return models[i].InputPrice < models[j].InputPrice
 	})
 
+	RefreshZenCacheSync(models)
 	return models, nil
 }
 
@@ -162,4 +186,59 @@ func fetchModelsDevPricing(ctx context.Context) (map[string]modelsDevModel, erro
 	}
 
 	return data.OpenCode.Models, nil
+}
+
+// fetchZenReasoningEfforts returns per-model reasoning-effort levels from the
+// shared OpenCode model catalog (the same source the OpenCode Go provider
+// uses). Only explicit "effort" options are advertised: toggle- and
+// budget-based models do not accept plain reasoning_effort strings on the Zen
+// Chat Completions endpoint. Failures return nil so callers can proceed
+// without effort metadata.
+func fetchZenReasoningEfforts(ctx context.Context) map[string][]string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", zenCatalogURL, nil)
+	if err != nil {
+		return nil
+	}
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var catalog map[string]json.RawMessage
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		return nil
+	}
+	raw, ok := catalog[zenCatalogProviderKey]
+	if !ok {
+		return nil
+	}
+	var provider opencodeGoCatalogProvider
+	if err := json.Unmarshal(raw, &provider); err != nil {
+		return nil
+	}
+
+	efforts := make(map[string][]string, len(provider.Models))
+	for id, model := range provider.Models {
+		for _, option := range model.ReasoningOptions {
+			if option.Type == "effort" && len(option.Values) > 0 {
+				efforts[id] = normalizeReasoningEfforts(option.Values)
+				break
+			}
+		}
+	}
+	return efforts
 }

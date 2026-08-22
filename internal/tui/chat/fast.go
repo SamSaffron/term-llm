@@ -53,7 +53,7 @@ func (m *Model) canLoadModelMetadata() bool {
 		return false
 	}
 	switch m.providerType() {
-	case config.ProviderTypeChatGPT, config.ProviderTypeOpenCodeGo:
+	case config.ProviderTypeChatGPT, config.ProviderTypeOpenCodeGo, config.ProviderTypeZen:
 		return true
 	default:
 		return false

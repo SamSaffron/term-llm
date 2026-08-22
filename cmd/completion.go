@@ -18,11 +18,13 @@ import (
 const (
 	grokBinCompletionRefreshTimeout = 5 * time.Second
 	ollamaCompletionRefreshTimeout  = 2 * time.Second
+	zenCompletionRefreshTimeout     = 2 * time.Second
 )
 
 var (
 	refreshGrokBinModelsForCompletion = llm.RefreshGrokBinModelsIfStale
 	refreshOllamaModelsForCompletion  = llm.RefreshOllamaModelsIfStale
+	refreshZenModelsForCompletion     = llm.RefreshZenModelsIfStale
 )
 
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
@@ -31,6 +33,7 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 	cfg, _ := config.Load()
 	refreshGrokBinCompletionCache(toComplete, cfg)
 	refreshOllamaCompletionCache(toComplete, cfg)
+	refreshZenCompletionCache(toComplete, cfg)
 	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 
 	// A bare provider may still be extended with ":model", so suppress the
@@ -61,6 +64,30 @@ func refreshGrokBinCompletionCache(toComplete string, cfg *config.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), grokBinCompletionRefreshTimeout)
 	defer cancel()
 	_ = refreshGrokBinModelsForCompletion(ctx, providerCfg.Model, providerCfg.Env)
+}
+
+func refreshZenCompletionCache(toComplete string, cfg *config.Config) {
+	provider, _, completingModel := strings.Cut(toComplete, ":")
+	if !completingModel {
+		return
+	}
+
+	var providerCfg config.ProviderConfig
+	if cfg != nil {
+		providerCfg = cfg.Providers[provider]
+		if len(providerCfg.Models) > 0 {
+			return
+		}
+		_ = cfg.ResolveProviderCredentials(provider)
+		providerCfg = cfg.Providers[provider]
+	}
+	if config.InferProviderType(provider, providerCfg.Type) != config.ProviderTypeZen {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), zenCompletionRefreshTimeout)
+	defer cancel()
+	_ = refreshZenModelsForCompletion(ctx, providerCfg.ResolvedAPIKey, providerCfg.Model)
 }
 
 func refreshOllamaCompletionCache(toComplete string, cfg *config.Config) {

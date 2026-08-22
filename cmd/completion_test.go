@@ -61,6 +61,52 @@ func TestRefreshGrokBinCompletionCache(t *testing.T) {
 	}
 }
 
+func TestRefreshZenCompletionCache(t *testing.T) {
+	original := refreshZenModelsForCompletion
+	t.Cleanup(func() { refreshZenModelsForCompletion = original })
+
+	var calls int
+	var gotAPIKey, gotModel string
+	refreshZenModelsForCompletion = func(ctx context.Context, apiKey, model string) error {
+		calls++
+		gotAPIKey = apiKey
+		gotModel = model
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("completion refresh context has no deadline")
+		}
+		return nil
+	}
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"work-zen": {
+			Type:   config.ProviderTypeZen,
+			APIKey: "paid-key",
+			Model:  "paid-model",
+		},
+		"pinned-zen": {
+			Type:   config.ProviderTypeZen,
+			Models: []string{"fixed-model"},
+		},
+	}}
+
+	refreshZenCompletionCache("work-zen:paid", cfg)
+	if calls != 1 || gotAPIKey != "paid-key" || gotModel != "paid-model" {
+		t.Fatalf("refresh calls/key/model = %d/%q/%q", calls, gotAPIKey, gotModel)
+	}
+
+	refreshZenCompletionCache("zen:", nil)
+	if calls != 2 {
+		t.Fatalf("built-in Zen refresh calls = %d, want 2", calls)
+	}
+
+	refreshZenCompletionCache("work-zen", cfg)
+	refreshZenCompletionCache("pinned-zen:", cfg)
+	refreshZenCompletionCache("openai:gpt", cfg)
+	if calls != 2 {
+		t.Fatalf("inapplicable completion unexpectedly refreshed: calls = %d", calls)
+	}
+}
+
 func TestOllamaModelCompletionsUseLiveEndpoint(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

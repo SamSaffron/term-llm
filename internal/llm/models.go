@@ -291,8 +291,8 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 }
 
 // ProviderModelIDs returns model IDs for a built-in provider.
-// Copilot, cursor-bin, and grok-bin prefer the latest live model-list cache
-// when present; cursor-bin and grok-bin fall back to their curated starter
+// Copilot, Zen, cursor-bin, and grok-bin prefer the latest live model-list cache
+// when present; Zen, cursor-bin, and grok-bin fall back to their curated starter
 // lists when the cache is empty.
 // For callers that might receive a custom alias name, use ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
@@ -301,6 +301,10 @@ func ProviderModelIDs(provider string) []string {
 		return GetCachedCopilotModels()
 	case "opencode-go":
 		return GetCachedOpenCodeGoModels()
+	case "zen":
+		if ids := GetCachedZenModels(); len(ids) > 0 {
+			return ids
+		}
 	case "cursor-bin":
 		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
 			return ids
@@ -939,6 +943,16 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			} else if !isImage && providerType == "venice" {
 				apiKey := resolvedProviderAPIKey(cfg, provider)
 				models = GetCachedVeniceModels(apiKey)
+				if len(models) == 0 && configModel != "" {
+					models = []string{configModel}
+				}
+			} else if !isImage && providerType == "zen" {
+				models = GetCachedZenModels()
+				if len(models) > 0 {
+					models = ExpandCachedZenReasoningVariants(models)
+				} else {
+					models = getModelIDs("zen")
+				}
 				if len(models) == 0 && configModel != "" {
 					models = []string{configModel}
 				}
