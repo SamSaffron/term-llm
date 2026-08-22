@@ -265,33 +265,33 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build executor that routes to the right tool.
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	executor := func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
 		// Check web tools first.
 		if name == mcpWebSearchToolName && webSearchTool != nil {
 			out, err := webSearchTool.Execute(ctx, args)
 			if err != nil {
-				return "", err
+				return mcphttp.ToolResult{}, err
 			}
-			return out.Content, nil
+			return mcphttp.ToolResult{Content: out.Content, IsError: out.IsError || out.TimedOut}, nil
 		}
 		if name == mcpReadURLToolName && readURLTool != nil {
 			out, err := readURLTool.Execute(ctx, args)
 			if err != nil {
-				return "", err
+				return mcphttp.ToolResult{}, err
 			}
-			return out.Content, nil
+			return mcphttp.ToolResult{Content: out.Content, IsError: out.IsError || out.TimedOut}, nil
 		}
 
 		// Local tools.
 		tool, ok := registry.Get(name)
 		if !ok {
-			return "", fmt.Errorf("unknown tool: %s", name)
+			return mcphttp.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 		}
 		out, err := tool.Execute(ctx, args)
 		if err != nil {
-			return "", err
+			return mcphttp.ToolResult{}, err
 		}
-		return out.Content, nil
+		return mcphttp.ToolResult{Content: out.Content, IsError: out.IsError || out.TimedOut}, nil
 	}
 
 	// Resolve auth token.

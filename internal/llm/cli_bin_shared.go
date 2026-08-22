@@ -273,14 +273,14 @@ func (s *cliToolBridgeState) deactivate(bridge *cliTurnBridge) {
 // wrappedExecutor routes an HTTP MCP call through the active provider stream so
 // the engine remains the sole owner of tool execution and event emission.
 func (s *cliToolBridgeState) wrappedExecutor(formatOutput func(ToolOutput) string) mcphttp.ToolExecutor {
-	return func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	return func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
 		s.eventsMu.Lock()
 		bridge := s.currentBridge
 		events := s.currentEvents
 		s.eventsMu.Unlock()
 
 		if bridge == nil || events == nil {
-			return "", fmt.Errorf("tool execution rejected: no active stream bridge for tool call %q", name)
+			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: no active stream bridge for tool call %q", name)
 		}
 
 		callID := fmt.Sprintf("mcp-%s-%d", name, mcpCallCounter.Add(1))
@@ -297,32 +297,36 @@ func (s *cliToolBridgeState) wrappedExecutor(formatOutput func(ToolOutput) strin
 		select {
 		case bridge.toolReqCh <- req:
 		case <-bridge.done:
-			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
+			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return mcphttp.ToolResult{}, ctx.Err()
 		}
 
 		select {
 		case err := <-req.ack:
 			if err != nil {
-				return "", err
+				return mcphttp.ToolResult{}, err
 			}
 		case <-bridge.done:
-			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
+			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return mcphttp.ToolResult{}, ctx.Err()
 		}
 
 		select {
 		case response := <-responseChan:
-			if formatOutput == nil {
-				return response.Result.Content, response.Err
+			content := response.Result.Content
+			if formatOutput != nil {
+				content = formatOutput(response.Result)
 			}
-			return formatOutput(response.Result), response.Err
+			return mcphttp.ToolResult{
+				Content: content,
+				IsError: response.Result.IsError || response.Result.TimedOut,
+			}, response.Err
 		case <-bridge.done:
-			return "", fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
+			return mcphttp.ToolResult{}, fmt.Errorf("tool execution rejected: stream closed during tool call %q", name)
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return mcphttp.ToolResult{}, ctx.Err()
 		}
 	}
 }
