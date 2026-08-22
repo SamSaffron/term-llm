@@ -139,20 +139,79 @@ func TestCustomScriptTool_BuildCommand_NamedArgs(t *testing.T) {
 	}
 }
 
-func TestCustomScriptTool_Execute_ScriptNotFound(t *testing.T) {
+func TestCustomScriptTool_Execute_FailureStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		script      string
+		mode        os.FileMode
+		wantContent string
+	}{
+		{
+			name:        "missing script",
+			script:      "missing.sh",
+			wantContent: "script not found",
+		},
+		{
+			name:        "unexecutable script",
+			script:      "unexecutable.sh",
+			mode:        0644,
+			wantContent: "script error",
+		},
+		{
+			name:        "nonzero exit",
+			script:      "fails.sh",
+			mode:        0755,
+			wantContent: "exit_code: 7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.mode != 0 {
+				content := "#!/bin/sh\necho diagnostic >&2\n"
+				if tt.script == "fails.sh" {
+					content += "exit 7\n"
+				}
+				if err := os.WriteFile(filepath.Join(dir, tt.script), []byte(content), tt.mode); err != nil {
+					t.Fatalf("write script: %v", err)
+				}
+			}
+
+			tool := makeCustomTool(t, dir, agents.CustomToolDef{
+				Name:        "test_tool",
+				Description: "Test failure status",
+				Script:      tt.script,
+			})
+			out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !out.IsError {
+				t.Errorf("expected IsError=true, got output: %s", out.Content)
+			}
+			if !containsStr(out.Content, tt.wantContent) {
+				t.Errorf("expected output containing %q, got %q", tt.wantContent, out.Content)
+			}
+		})
+	}
+}
+
+func TestCustomScriptTool_Execute_SuccessStatus(t *testing.T) {
 	dir := t.TempDir()
+	writeScript(t, dir, "success.sh", "#!/bin/sh\necho success\n")
 	tool := makeCustomTool(t, dir, agents.CustomToolDef{
-		Name:        "missing",
-		Description: "Missing script",
-		Script:      "nonexistent.sh",
+		Name:        "success",
+		Description: "Successful script",
+		Script:      "success.sh",
 	})
 
 	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !containsStr(out.Content, "FILE_NOT_FOUND") && !containsStr(out.Content, "not found") {
-		t.Errorf("expected file-not-found error in output, got %q", out.Content)
+	if out.IsError || out.TimedOut {
+		t.Fatalf("successful script returned failure flags: %+v", out)
 	}
 }
 

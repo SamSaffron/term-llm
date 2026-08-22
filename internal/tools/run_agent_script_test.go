@@ -91,6 +91,10 @@ func TestRunAgentScriptTool(t *testing.T) {
 			}
 
 			text := output.Content
+			wantIsError := tt.wantErr != ""
+			if output.IsError != wantIsError {
+				t.Errorf("IsError = %v, want %v; output: %s", output.IsError, wantIsError, text)
+			}
 			if tt.wantErr != "" {
 				if !strings.Contains(text, tt.wantErr) {
 					t.Errorf("expected error containing %q, got: %s", tt.wantErr, text)
@@ -102,6 +106,53 @@ func TestRunAgentScriptTool(t *testing.T) {
 			}
 			if tt.wantExit != "" && !strings.Contains(text, tt.wantExit) {
 				t.Errorf("expected %q in output, got: %s", tt.wantExit, text)
+			}
+		})
+	}
+}
+
+func TestRunAgentScriptTool_ExecutionFailureStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        os.FileMode
+		content     string
+		wantContent string
+	}{
+		{
+			name:        "unexecutable script",
+			mode:        0644,
+			content:     "#!/bin/sh\necho diagnostic >&2\n",
+			wantContent: "script error",
+		},
+		{
+			name:        "nonzero exit",
+			mode:        0755,
+			content:     "#!/bin/sh\necho diagnostic >&2\nexit 7\n",
+			wantContent: "exit_code: 7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agentDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(agentDir, "test.sh"), []byte(tt.content), tt.mode); err != nil {
+				t.Fatalf("write script: %v", err)
+			}
+			tool := NewRunAgentScriptTool(&ToolConfig{AgentDir: agentDir}, DefaultOutputLimits())
+			args, err := json.Marshal(RunAgentScriptArgs{Script: "test.sh"})
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+
+			output, err := tool.Execute(context.Background(), args)
+			if err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+			if !output.IsError {
+				t.Errorf("expected IsError=true, got output: %s", output.Content)
+			}
+			if !strings.Contains(output.Content, tt.wantContent) {
+				t.Errorf("expected output containing %q, got: %s", tt.wantContent, output.Content)
 			}
 		})
 	}
