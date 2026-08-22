@@ -10,8 +10,8 @@ import (
 )
 
 func TestServerStartStop(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "executed: " + name, nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "executed: " + name}, nil
 	}
 
 	server := NewServer(executor)
@@ -73,8 +73,8 @@ func TestServerStartStop(t *testing.T) {
 }
 
 func TestServerAuthMiddleware(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "executed", nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "executed"}, nil
 	}
 
 	server := NewServer(executor)
@@ -143,10 +143,10 @@ func TestServerAuthMiddleware(t *testing.T) {
 // restarts.
 func TestServerStopRespectsContextDeadline(t *testing.T) {
 	executorEntered := make(chan struct{})
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
 		close(executorEntered)
 		<-ctx.Done()
-		return "", ctx.Err()
+		return ToolResult{}, ctx.Err()
 	}
 
 	server := NewServer(executor)
@@ -204,8 +204,8 @@ func TestServerStopRespectsContextDeadline(t *testing.T) {
 }
 
 func TestServerCannotStartTwice(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "executed", nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "executed"}, nil
 	}
 
 	server := NewServer(executor)
@@ -229,8 +229,8 @@ func TestServerCannotStartTwice(t *testing.T) {
 }
 
 func TestStartOnAddress(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "ok", nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "ok"}, nil
 	}
 	tools := []ToolSpec{
 		{Name: "t", Description: "d", Schema: map[string]interface{}{"type": "object"}},

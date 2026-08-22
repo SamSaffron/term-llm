@@ -3,14 +3,20 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
 
 func TestAppendInlineFlushNotice(t *testing.T) {
@@ -34,6 +40,126 @@ func TestAppendInlineFlushNotice(t *testing.T) {
 	if got := state.appendInlineFlushNotice("tool ok"); got != "tool ok" {
 		t.Fatalf("cleared output = %q", got)
 	}
+}
+
+func TestCLIToolBridgePreservesToolFailureStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		response    ToolExecutionResponse
+		wantError   bool
+		wantContent string
+	}{
+		{
+			name:        "success",
+			response:    ToolExecutionResponse{Result: TextOutput("ok")},
+			wantContent: "formatted: ok",
+		},
+		{
+			name:        "semantic error",
+			response:    ToolExecutionResponse{Result: ToolOutput{Content: "exit_code: 7", IsError: true}},
+			wantError:   true,
+			wantContent: "formatted: exit_code: 7",
+		},
+		{
+			name:        "timeout",
+			response:    ToolExecutionResponse{Result: ToolOutput{Content: "timed out", TimedOut: true}},
+			wantError:   true,
+			wantContent: "formatted: timed out",
+		},
+		{
+			name:        "go error",
+			response:    ToolExecutionResponse{Err: errors.New("executor failed")},
+			wantError:   true,
+			wantContent: "Error executing tool: executor failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bridge := &cliTurnBridge{
+				toolReqCh: make(chan cliToolRequest, 1),
+				done:      make(chan struct{}),
+			}
+			events := make(chan Event, 1)
+			var state cliToolBridgeState
+			state.activate(bridge, events)
+			defer state.deactivate(bridge)
+
+			server := mcphttp.NewServer(state.wrappedExecutor(func(output ToolOutput) string {
+				return "formatted: " + output.Content
+			}))
+			url, token, err := server.Start(context.Background(), []mcphttp.ToolSpec{{
+				Name:   "shell",
+				Schema: map[string]interface{}{"type": "object"},
+			}})
+			if err != nil {
+				t.Fatalf("start MCP server: %v", err)
+			}
+			defer server.Stop(context.Background())
+
+			go func() {
+				req := <-bridge.toolReqCh
+				req.ack <- nil
+				req.response <- tt.response
+			}()
+
+			body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell","arguments":{}}}`)
+			req, err := http.NewRequest(http.MethodPost, url, body)
+			if err != nil {
+				t.Fatalf("create MCP request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("call MCP tool: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("MCP status = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			responseBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read MCP response: %v", err)
+			}
+			gotError, gotContent := decodeMCPToolCallResponse(t, responseBody)
+			if gotError != tt.wantError {
+				t.Errorf("CallToolResult.IsError = %v, want %v; response: %s", gotError, tt.wantError, responseBody)
+			}
+			if gotContent != tt.wantContent {
+				t.Errorf("CallToolResult content = %q, want %q", gotContent, tt.wantContent)
+			}
+		})
+	}
+}
+
+func decodeMCPToolCallResponse(t *testing.T, body []byte) (bool, string) {
+	t.Helper()
+	payload := bytes.TrimSpace(body)
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("data:")) {
+			payload = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			break
+		}
+	}
+
+	var response struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode MCP response %q: %v", body, err)
+	}
+	if len(response.Result.Content) != 1 {
+		t.Fatalf("MCP content = %#v, want one item", response.Result.Content)
+	}
+	return response.Result.IsError, response.Result.Content[0].Text
 }
 
 // TestInlineLoopCLIProvidersSupportInlineFlush pins the interjection contract
