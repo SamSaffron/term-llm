@@ -577,7 +577,7 @@ func (m *Model) currentTitleState(includeElapsed bool) titleState {
 		st.Task = m.sess.PreferredShortTitle()
 	}
 	if includeElapsed && m.streaming && !m.streamStartTime.IsZero() {
-		st.Elapsed = time.Since(m.streamStartTime)
+		st.Elapsed = m.visibleStreamElapsed()
 	}
 	return st
 }

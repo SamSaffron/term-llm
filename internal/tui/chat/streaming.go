@@ -666,6 +666,51 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	return m.beginUserResponse(content, userDisplay.String(), preSendCmds)
 }
 
+type streamGoalElapsedMsg struct {
+	sessionID     string
+	streamStarted time.Time
+	goal          *session.Goal
+}
+
+// goalStreamElapsedOffset returns historical goal effort for display alongside
+// the current run's elapsed time. It must never be used as a persistence or
+// telemetry clock.
+func (m *Model) goalStreamElapsedOffset() time.Duration {
+	if m.sess == nil || m.sess.Goal == nil || !m.sess.Goal.IsActive() || m.sess.Goal.TimeUsedSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(m.sess.Goal.TimeUsedSeconds) * time.Second
+}
+
+func (m *Model) visibleStreamElapsed() time.Duration {
+	if m.streamStartTime.IsZero() {
+		return 0
+	}
+	return time.Since(m.streamStartTime) + m.streamElapsedOffset
+}
+
+// refreshStreamGoalElapsed refreshes the model's goal snapshot off the UI
+// thread. Goal accounting happens in the runtime, so the model-local session
+// may lag until the next turn begins.
+func (m *Model) refreshStreamGoalElapsed(streamStarted time.Time) tea.Cmd {
+	if m.store == nil || m.sess == nil || m.sess.Goal == nil || !m.sess.Goal.IsActive() {
+		return nil
+	}
+	ctx := m.rootContext()
+	sessionID := m.sess.ID
+	return func() tea.Msg {
+		refreshed, err := m.store.Get(ctx, sessionID)
+		if err != nil || refreshed == nil || refreshed.Goal == nil {
+			return nil
+		}
+		return streamGoalElapsedMsg{
+			sessionID:     sessionID,
+			streamStarted: streamStarted,
+			goal:          refreshed.Goal.Clone(),
+		}
+	}
+}
+
 // beginUserResponse transitions from a committed user message to the normal
 // assistant stream. Keeping this separate lets direct shell mode persist its
 // own structured, literal command result without re-running composer semantics
@@ -697,6 +742,8 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	m.resetRetainedStreamTracker()
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
+	m.streamElapsedOffset = m.goalStreamElapsedOffset()
+	refreshGoalElapsedCmd := m.refreshStreamGoalElapsed(m.streamStartTime)
 	if m.stats != nil {
 		m.stats.SetModel(m.statsPricingModel())
 		m.stats.RequestStart()
@@ -735,6 +782,7 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	if m.altScreen {
 		cmds := []tea.Cmd{
 			m.startStream(content),
+			refreshGoalElapsedCmd,
 			m.spinner.Tick,
 			m.tickEvery(),
 		}
@@ -744,6 +792,7 @@ func (m *Model) beginUserResponse(content, userDisplay string, preSendCmds []tea
 	}
 	asyncCmds := []tea.Cmd{
 		m.startStream(content),
+		refreshGoalElapsedCmd,
 		m.spinner.Tick,
 		m.tickEvery(),
 	}
@@ -1107,9 +1156,10 @@ func (m *Model) attachMainRun(sessionID string) tea.Cmd {
 		if len(snapshot.CompletedMessages) > 0 {
 			m.runBoundary = runboundary.New(snapshot.RunID, snapshot.CompletedMessages, snapshot.DurableAnchorID, snapshot.DurableAnchorValid)
 		}
-		// Elapsed time belongs to the run, not the visible model: a relaunched
-		// model must resume the timer from the run's true start.
+		// Keep the true run clock for persistence and telemetry; historical goal
+		// effort is a display-only offset.
 		m.streamStartTime = snapshot.StartedAt
+		m.streamElapsedOffset = m.goalStreamElapsedOffset()
 		if m.phase == "" {
 			m.phase = "Responding"
 		}

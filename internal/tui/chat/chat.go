@@ -188,9 +188,12 @@ type Model struct {
 	reasoningRawWarned       bool
 
 	// Streaming state
-	currentResponse             strings.Builder
-	currentTokens               int
+	currentResponse strings.Builder
+	currentTokens   int
+	// streamStartTime is the true run clock used by persistence and telemetry;
+	// streamElapsedOffset contributes only to visible elapsed time.
 	streamStartTime             time.Time
+	streamElapsedOffset         time.Duration
 	webSearchUsed               bool
 	retryStatus                 string
 	streamCancelFunc            context.CancelFunc
@@ -2593,6 +2596,16 @@ func (m *Model) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if m.streaming || m.directShellRun != nil {
 			cmds = append(cmds, m.tickEvery())
 		}
+
+	case streamGoalElapsedMsg:
+		if !m.streaming || m.sess == nil || msg.goal == nil || m.sess.ID != msg.sessionID || !m.streamStartTime.Equal(msg.streamStarted) {
+			return m, nil
+		}
+		if m.sess.Goal != nil && m.sess.Goal.UpdatedAt.After(msg.goal.UpdatedAt) {
+			return m, nil
+		}
+		m.sess.Goal = msg.goal.Clone()
+		m.streamElapsedOffset = m.goalStreamElapsedOffset()
 
 	case streamRenderTickMsg:
 		m.streamRenderTickPending = false

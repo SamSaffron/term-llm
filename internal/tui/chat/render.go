@@ -895,7 +895,7 @@ func (m *Model) buildFooterLayout() footerLayout {
 func (m *Model) viewAutoSend() string {
 	if m.streaming {
 		// Minimal status line during streaming
-		elapsed := time.Since(m.streamStartTime)
+		elapsed := m.visibleStreamElapsed()
 		return fmt.Sprintf("%s%s:%s · mcp:off · %s  Responding %s",
 			m.agentPrefix(), m.providerName, m.displayModelName(), m.spinner.View(), formatChatElapsed(elapsed))
 	}
@@ -1097,7 +1097,7 @@ func (m *Model) renderStreamingInline() string {
 		indicator := ui.StreamingIndicator{
 			Spinner:         m.spinner.View(),
 			Phase:           m.phase,
-			Elapsed:         time.Since(m.streamStartTime),
+			Elapsed:         m.visibleStreamElapsed(),
 			Tokens:          m.currentTokens,
 			ShowCancel:      true,
 			HideProgress:    true, // progress shown in status line instead
@@ -1612,6 +1612,7 @@ func (m *Model) statusLineMCPParts(successStyle, mutedStyle lipgloss.Style) (str
 func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string {
 	phase := ""
 	started := time.Time{}
+	elapsedOffset := time.Duration(0)
 	tokens := 0
 	switch {
 	case m.sessionTransition != nil:
@@ -1626,6 +1627,7 @@ func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string 
 	case m.streaming:
 		phase = m.phase
 		started = m.streamStartTime
+		elapsedOffset = m.streamElapsedOffset
 		tokens = m.currentTokens
 	case m.branchContextInFlight():
 		phase = branchContextStatus
@@ -1636,7 +1638,7 @@ func (m *Model) statusLineStreamingVariants(mutedStyle lipgloss.Style) []string 
 
 	elapsed := "0s"
 	if !started.IsZero() {
-		elapsed = formatChatElapsed(time.Since(started))
+		elapsed = formatChatElapsed(time.Since(started) + elapsedOffset)
 	}
 	spinnerPhase := strings.TrimSpace(m.spinner.View() + " " + phase)
 	var variants []string

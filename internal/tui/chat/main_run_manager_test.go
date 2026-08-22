@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -451,6 +452,9 @@ func TestMainRunManagerUISinkAttachedBeforeStartAndStaleDetachIsSafe(t *testing.
 
 func TestAttachMainRunReconstructsAtLatestSequenceAndRestoresSafeAnchor(t *testing.T) {
 	m := newTestChatModel(false)
+	goal := session.NewGoal("finish the migration", 0, time.Now().Add(-time.Hour))
+	goal.TimeUsedSeconds = 900
+	m.sess.Goal = goal
 	manager := NewMainRunManager(context.Background())
 	defer manager.Close(time.Second)
 	started := make(chan struct{})
@@ -483,7 +487,11 @@ func TestAttachMainRunReconstructsAtLatestSequenceAndRestoresSafeAnchor(t *testi
 		t.Fatalf("safe anchor=%d, want %d", m.activeBranchAnchorID, anchorID)
 	}
 	if !m.streamStartTime.Equal(startSnapshot.StartedAt) {
-		t.Fatalf("elapsed timer restarted: streamStartTime=%v, want run start %v", m.streamStartTime, startSnapshot.StartedAt)
+		t.Fatalf("run clock restarted: streamStartTime=%v, want run start %v", m.streamStartTime, startSnapshot.StartedAt)
+	}
+	wantVisibleElapsed := time.Since(startSnapshot.StartedAt) + 15*time.Minute
+	if got := m.visibleStreamElapsed(); got < wantVisibleElapsed-time.Second || got > wantVisibleElapsed+time.Second {
+		t.Fatalf("visible elapsed = %v, want %v", got, wantVisibleElapsed)
 	}
 	m.streamCancelFunc()
 }

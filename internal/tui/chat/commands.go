@@ -3225,6 +3225,7 @@ func (m *Model) beginHelperStream(phase string, resetRetainedTracker bool) conte
 	}
 	m.phase = phase
 	m.streamStartTime = time.Now()
+	m.streamElapsedOffset = 0
 	if m.altScreen {
 		m.scrollToBottom = true
 	}

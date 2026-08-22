@@ -1264,3 +1264,98 @@ func TestStreamEventCoalescerDeliversMergedTextOnClose(t *testing.T) {
 		t.Fatal("expected closure on subsequent read")
 	}
 }
+
+func TestGoalStreamElapsedOffset(t *testing.T) {
+	m := newTestChatModel(false)
+	now := time.Now()
+
+	if got := m.goalStreamElapsedOffset(); got != 0 {
+		t.Fatalf("no goal offset = %v, want 0", got)
+	}
+
+	paused := session.NewGoal("ship it", 0, now.Add(-10*time.Hour))
+	paused.Status = session.GoalStatusPaused
+	paused.TimeUsedSeconds = 18000
+	m.sess = &session.Session{ID: "goal-timer-paused", Goal: paused}
+	if got := m.goalStreamElapsedOffset(); got != 0 {
+		t.Fatalf("paused goal offset = %v, want 0", got)
+	}
+
+	active := session.NewGoal("ship it", 0, now.Add(-10*time.Hour))
+	active.TimeUsedSeconds = 18000
+	m.sess = &session.Session{ID: "goal-timer", Goal: active}
+	if got := m.goalStreamElapsedOffset(); got != 5*time.Hour {
+		t.Fatalf("active goal offset = %v, want 5h", got)
+	}
+}
+
+func TestRefreshStreamGoalElapsedUpdatesCurrentStream(t *testing.T) {
+	m := newTestChatModel(false)
+	now := time.Now()
+	stale := session.NewGoal("ship it", 0, now.Add(-10*time.Hour))
+	stale.TimeUsedSeconds = 18000
+	fresh := stale.Clone()
+	fresh.TimeUsedSeconds = 36000
+	fresh.UpdatedAt = stale.UpdatedAt.Add(time.Second)
+	const sessionID = "goal-timer-refresh"
+	m.sess = &session.Session{ID: sessionID, Goal: stale}
+	m.store = &mockStore{sessions: map[string]*session.Session{
+		sessionID: {ID: sessionID, Goal: fresh},
+	}}
+	m.streaming = true
+	m.streamStartTime = now
+	m.streamElapsedOffset = m.goalStreamElapsedOffset()
+
+	cmd := m.refreshStreamGoalElapsed(now)
+	if cmd == nil {
+		t.Fatal("active goal did not schedule refresh")
+	}
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if got := m.sess.Goal.TimeUsedSeconds; got != 36000 {
+		t.Fatalf("refreshed goal time = %d, want 36000", got)
+	}
+	if got := m.streamElapsedOffset; got != 10*time.Hour {
+		t.Fatalf("refreshed elapsed offset = %v, want 10h", got)
+	}
+}
+
+func TestBeginUserResponseKeepsRunClockSeparateFromGoalElapsed(t *testing.T) {
+	m := newTestChatModel(false)
+	now := time.Now()
+	goal := session.NewGoal("ship it", 0, now.Add(-10*time.Hour))
+	goal.TimeUsedSeconds = 18000
+	const sessionID = "goal-timer-begin"
+	m.sess = &session.Session{ID: sessionID, Goal: goal}
+	store := &mockStore{sessions: map[string]*session.Session{
+		sessionID: {ID: sessionID, Goal: goal.Clone()},
+	}}
+	m.store = store
+
+	updated, _ := m.beginUserResponse("continue", "> continue", nil)
+	m = updated.(*Model)
+	if !m.streaming {
+		t.Fatal("expected streaming after beginUserResponse")
+	}
+	if elapsed := time.Since(m.streamStartTime); elapsed < 0 || elapsed > 2*time.Second {
+		t.Fatalf("run elapsed = %v, want a fresh run clock", elapsed)
+	}
+	if elapsed := m.visibleStreamElapsed(); !withinGoalSeedTolerance(elapsed, 5*time.Hour) {
+		t.Fatalf("visible elapsed = %v, want ~5h of goal pursuit", elapsed)
+	}
+
+	assistantSnapshot, _, _ := m.streamPersistenceCallbacks(m.streamStartTime)
+	if err := assistantSnapshot(context.Background(), 0, llm.AssistantText("working")); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.added) != 1 {
+		t.Fatalf("persisted messages = %d, want 1", len(store.added))
+	}
+	if got := time.Duration(store.added[0].DurationMs) * time.Millisecond; got < 0 || got > 2*time.Second {
+		t.Fatalf("persisted duration = %v, want current-run duration", got)
+	}
+}
+
+func withinGoalSeedTolerance(got, want time.Duration) bool {
+	return got >= want-2*time.Second && got <= want+2*time.Second
+}
