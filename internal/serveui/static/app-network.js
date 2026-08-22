@@ -303,8 +303,8 @@ const apiFetch = async (resource, options = {}, controls = {}) => {
         durationMs: Date.now() - startedAt,
         url: requestURL(resource),
       });
-      maybeRedirectForExternalAuth(response);
-      if (response.status === 401 && classification.authOwner === AUTH.session) {
+      const externalAuthRedirected = maybeRedirectForExternalAuth(response);
+      if (response.status === 401 && classification.authOwner === AUTH.session && !externalAuthRedirected) {
         window.setTimeout(() => app.handleAuthFailure?.(), 0);
       }
       if (!retryableStatus(response.status) || !classification.retryable || attempt >= classification.retries) {

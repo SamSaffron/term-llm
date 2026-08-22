@@ -38,8 +38,8 @@ term-llm serve hub \
 ```
 
 - `--host 0.0.0.0` — **critical.** A dv container reaches the host via `host.docker.internal`, which resolves to the host's gateway address, **not** `127.0.0.1`. A Hub bound to loopback (the default) is invisible to the container. `0.0.0.0` makes it reachable.
-- `--token hubdevtoken` — the **Hub bearer token**. You type this once in the browser to log into the dashboard. Pick your own value.
-- `--registration-token devreg` — a **separate** token that lets a container self-register itself as a node on startup. The container must present the same value (see Step 2). Pick your own value.
+- `--token hubdevtoken` — the **human/operator Hub bearer token** in this local example. It unlocks the dashboard but is never used by the reverse node. A public deployment may instead use `--auth passkey --public-url https://…`; that changes only human browser sign-in.
+- `--registration-token devreg` — a **separate machine token** that lets a container self-register itself as a node on startup. It is required regardless of whether humans use bearer or passkey authentication. The container must present the same value (see Step 2). Pick your own value.
 
 **Do not run the bare `term-llm serve hub` with no flags.** It binds `127.0.0.1` only and uses a different auto-generated token. dv containers can't reach it, and you'll end up staring at a Hub that never sees your agent. See [Troubleshooting](#troubleshooting).
 

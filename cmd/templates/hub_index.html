@@ -8,7 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d1117'/%3E%3Cg fill='none' stroke='%23e6edf3' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='32' cy='32' r='8'/%3E%3Ccircle cx='14' cy='16' r='5'/%3E%3Ccircle cx='50' cy='16' r='5'/%3E%3Ccircle cx='14' cy='48' r='5'/%3E%3Ccircle cx='50' cy='48' r='5'/%3E%3Cpath d='M18 20 27 29M46 20 37 29M18 44 27 35M46 44 37 35'/%3E%3C/g%3E%3C/svg%3E">
   <style>{{.CSS}}</style>
 </head>
-<body>
+<body data-base-path="{{.BasePath}}">
   <header class="hub-header">
     <div class="hub-brand">
       <svg class="hub-logo" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -26,6 +26,7 @@
     </div>
     <div class="hub-header-actions">
       <span class="hub-summary" id="hubSummary" aria-live="polite"></span>
+      {{if .PasskeyAuth}}<button class="hub-btn ghost" id="securityBtn" type="button">Security</button>{{end}}
       <button class="hub-btn ghost" id="refreshBtn" type="button" title="Refresh nodes">Refresh</button>
       {{if .CanAddNodes}}<button class="hub-btn primary" id="addNodeBtn" type="button">Add node</button>{{end}}
     </div>
@@ -45,6 +46,12 @@
       <div class="delegations-list" id="delegationsList"></div>
       <div class="delegations-empty hidden" id="delegationsEmpty">No delegated work yet.</div>
     </section>
+    {{if .PasskeyAuth}}<section class="delegations-panel hidden" id="securityPanel" aria-label="Security">
+      <div class="delegations-head"><div><h2>Security</h2><p>Passkeys and active browser sessions.</p></div><span id="activeSessionCount"></span></div>
+      <div id="credentialList" class="delegations-list"></div>
+      <div class="modal-actions"><button class="hub-btn ghost" id="addPasskeyBtn" type="button">Add passkey</button><button class="hub-btn ghost" id="revokeSessionsBtn" type="button">Revoke other sessions</button><button class="hub-btn ghost" id="logoutBtn" type="button">Sign out</button></div>
+      <div class="modal-status" id="securityStatus" aria-live="polite"></div>
+    </section>{{end}}
     <div class="hub-empty hidden" id="hubEmpty">
       <p>No nodes yet.</p>
       <p class="hub-empty-hint">Point the hub at nodes with <code>--config</code>, create contain workspaces, or add one with <em>Add node</em>.</p>
@@ -130,6 +137,7 @@ term-llm serve hub</code></pre>
   </div>
   {{end}}
 
+  {{if .PasskeyAuth}}<script src="{{.AuthScriptURL}}"></script>{{end}}
   <script>
   (() => {
     'use strict';
@@ -441,6 +449,62 @@ term-llm serve hub</code></pre>
     document.getElementById('refreshBtn').addEventListener('click', () => { refresh(); refreshDelegations(); });
     refresh();
     setInterval(() => { refresh(); refreshDelegations(); }, 15000);
+
+    {{if .PasskeyAuth}}
+    const securityPanel = document.getElementById('securityPanel');
+    const securityStatus = document.getElementById('securityStatus');
+    const readSecurityResponse = async (response, fallback) => {
+      if (response.status === 401) {
+        window.location.assign(hubPath('/auth/login'));
+        throw new Error('Hub sign-in is required.');
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error?.message || fallback);
+      return data;
+    };
+    const loadSecurity = async () => {
+      try {
+        const [credentialResponse, sessionResponse] = await Promise.all([fetch(hubPath('/api/auth/credentials')), fetch(hubPath('/api/auth/session'))]);
+        const credentialData = await readSecurityResponse(credentialResponse, 'Could not load passkeys.');
+        const session = await readSecurityResponse(sessionResponse, 'Could not load sessions.');
+        const credentials = credentialData.credentials || [];
+        document.getElementById('activeSessionCount').textContent = `${session.active_sessions || 0} active session${session.active_sessions === 1 ? '' : 's'}`;
+        const list = document.getElementById('credentialList'); list.replaceChildren();
+        for (const credential of credentials) {
+          const row = el('div', 'delegation-card');
+          const title = el('strong', '', credential.display_name); row.appendChild(title);
+          row.appendChild(el('div', 'delegation-meta', `Created ${new Date(credential.created_at).toLocaleDateString()} · Last used ${new Date(credential.last_used_at).toLocaleString()} · ${(credential.transports || []).join(', ') || 'transport not reported'}`));
+          const actions = el('div', 'modal-actions');
+          const rename = el('button', 'hub-btn ghost small', 'Rename');
+          rename.type = 'button';
+          rename.addEventListener('click', async () => {
+            const display_name = window.prompt('Passkey name', credential.display_name);
+            if (!display_name) return;
+            try {
+              const response = await fetch(hubPath(`/api/auth/credentials/${credential.record_id}`), {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({display_name})});
+              await readSecurityResponse(response, 'Rename failed.');
+              securityStatus.textContent = 'Passkey renamed.';
+              await loadSecurity();
+            } catch (error) {
+              securityStatus.textContent = error.message;
+            }
+          });
+          const remove = el('button', 'hub-btn ghost small', 'Remove'); remove.type='button'; remove.disabled=credentials.length===1; remove.addEventListener('click',async()=>{try{securityStatus.textContent='Confirm with a passkey…';await HubPasskey.reauth();const response=await fetch(hubPath(`/api/auth/credentials/${credential.record_id}`),{method:'DELETE'});await readSecurityResponse(response,'Remove failed.');securityStatus.textContent='Passkey removed.';await loadSecurity();}catch(error){securityStatus.textContent=error.message;}});
+          actions.append(rename,remove);row.appendChild(actions);list.appendChild(row);
+        }
+      } catch (error) {
+        securityStatus.textContent = error.message;
+      }
+    };
+    const postSecurity = async (path, fallback) => {
+      const response = await fetch(hubPath(path), {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+      return readSecurityResponse(response, fallback);
+    };
+    document.getElementById('securityBtn').addEventListener('click',async()=>{securityPanel.classList.toggle('hidden');if(!securityPanel.classList.contains('hidden'))await loadSecurity();});
+    document.getElementById('logoutBtn').addEventListener('click',async()=>{try{const result=await postSecurity('/api/auth/logout','Sign out failed.');window.location.assign(result.redirect);}catch(error){securityStatus.textContent=error.message;}});
+    document.getElementById('revokeSessionsBtn').addEventListener('click',async()=>{try{const result=await postSecurity('/api/auth/sessions/revoke-others','Could not revoke sessions.');securityStatus.textContent=`Revoked ${result.revoked} other session${result.revoked===1?'':'s'}.`;await loadSecurity();}catch(error){securityStatus.textContent=error.message;}});
+    document.getElementById('addPasskeyBtn').addEventListener('click',async()=>{const name=window.prompt('Name this passkey','Additional passkey');if(!name)return;try{securityStatus.textContent='Confirm with an existing passkey…';await HubPasskey.reauth();securityStatus.textContent='Create the new passkey…';await HubPasskey.addPasskey(name);securityStatus.textContent='Passkey added.';await loadSecurity();}catch(error){securityStatus.textContent=error.message;}});
+    {{end}}
 
     const modal = document.getElementById('addNodeModal');
     if (!modal) return;

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,7 +13,10 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -25,6 +29,12 @@ var (
 	serveHubToken                 string
 	serveHubRegistrationTokenFlag string
 	serveHubBasePath              string
+	serveHubPublicURL             string
+	serveHubPasskeyAuthFile       string
+	serveHubBootstrapTokenFile    string
+	serveHubRecoveryTokenFile     string
+	serveHubPrintBootstrapToken   bool
+	serveHubPasskeyTrustedProxies []string
 )
 
 var serveHubCmd = &cobra.Command{
@@ -61,10 +71,11 @@ Config file (--config), YAML or JSON:
       url: http://127.0.0.1:8081/chat
       token: <web bearer token>
 
-Hub auth is intentionally simple: --auth bearer (the default) protects the
-dashboard, registry API, and node proxy with one Hub bearer token.
-/api/connect and node-originated delegation calls use node auth instead. Use
---auth none only for loopback-only local development.`,
+Hub auth defaults to --auth bearer for compatibility. Public browser-facing
+Hubs can use --auth passkey with a stable HTTPS --public-url; WebAuthn then
+issues expiring server-side browser sessions. /api/connect and node-originated
+delegation calls continue to use independent node auth. Use --auth none only
+for loopback-only local development.`,
 	Args: cobra.NoArgs,
 	RunE: runServeHub,
 }
@@ -113,8 +124,16 @@ func defaultHubNodesFile() (string, error) {
 	return filepath.Join(dir, "hub", "nodes.json"), nil
 }
 
+func defaultHubAuthFile() (string, error) {
+	dir, err := appdata.GetDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "hub", "auth.json"), nil
+}
+
 func runServeHub(cmd *cobra.Command, args []string) error {
-	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveHubAuthMode, false, false)
+	authMode, err := resolveHubAuthMode(serveHubAuthMode)
 	if err != nil {
 		return err
 	}
@@ -122,13 +141,40 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	if err := validateHubBind(serveHubHost, serveHubPort, requireAuth); err != nil {
 		return err
 	}
+	var endpoint passkeyauth.Endpoint
+	if authMode == "passkey" {
+		publicURL := strings.TrimSpace(serveHubPublicURL)
+		if publicURL == "" {
+			publicURL = strings.TrimSpace(os.Getenv("TERM_LLM_HUB_PUBLIC_URL"))
+		}
+		endpoint, err = passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: serveHubBasePath, BasePathExplicit: cmd.Flags().Changed("base-path")})
+		if err != nil {
+			return fmt.Errorf("invalid Hub passkey --public-url/--base-path configuration: %w", err)
+		}
+	}
 	hubBasePath, err := normalizeHubBasePath(serveHubBasePath)
+	if authMode == "passkey" {
+		hubBasePath = endpoint.BasePath
+	}
 	if err != nil {
 		return err
 	}
-	token, tokenSource, err := resolveServeToken(serveHubToken, os.Getenv("TERM_LLM_HUB_TOKEN"), requireAuth, generateServeToken)
-	if err != nil {
-		return err
+	hubTokenEnv := strings.TrimSpace(os.Getenv("TERM_LLM_HUB_TOKEN"))
+	if hubTokenEnv == "" {
+		hubTokenEnv = strings.TrimSpace(tools.HubTokenFromEnvironment())
+	}
+	var token, tokenSource string
+	if authMode == "passkey" {
+		if t := strings.TrimSpace(serveHubToken); t != "" {
+			token, tokenSource = t, tokenSourceFlag
+		} else if hubTokenEnv != "" {
+			token, tokenSource = hubTokenEnv, tokenSourceEnv
+		}
+	} else {
+		token, tokenSource, err = resolveServeToken(serveHubToken, hubTokenEnv, requireAuth, generateServeToken)
+		if err != nil {
+			return err
+		}
 	}
 
 	var resolvers []hub.Resolver
@@ -151,21 +197,87 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 
 	s := newHubServer(hub.NewRegistry(resolvers...), store)
 	s.requireAuth = requireAuth
+	s.authMode = authMode
 	s.token = token
 	s.registrationToken = resolveServeHubRegistrationToken(serveHubRegistrationTokenFlag)
 	s.basePath = hubBasePath
 	// The delegation ledger lives beside the node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
+	bootstrapDisplay := ""
+	if authMode == "passkey" {
+		authFile := strings.TrimSpace(serveHubPasskeyAuthFile)
+		if authFile == "" {
+			authFile, err = defaultHubAuthFile()
+			if err != nil {
+				return fmt.Errorf("resolve Hub passkey auth file: %w", err)
+			}
+		}
+		authStore, err := passkeyauth.OpenStore(passkeyauth.StoreOptions{Path: authFile, RPID: endpoint.RPID, UserName: hubPasskeyUserName, Warnf: func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: "+format+"\n", args...) }})
+		if err != nil {
+			return err
+		}
+		bootstrapSecret, display, err := resolveHubBootstrapSecret(cmd, authStore.CredentialCount() == 0)
+		if err != nil {
+			return err
+		}
+		bootstrapDisplay = display
+		bootstrapGrants, err := passkeyauth.NewGrants(passkeyauth.GrantBootstrap, bootstrapSecret, nil, nil)
+		for i := range bootstrapSecret {
+			bootstrapSecret[i] = 0
+		}
+		if err != nil {
+			return err
+		}
+		recoverySecret, err := resolveHubRecoverySecret(authStore.CredentialCount() > 0)
+		if err != nil {
+			return err
+		}
+		recoveryGrants, err := passkeyauth.NewGrants(passkeyauth.GrantRecovery, recoverySecret, nil, nil)
+		for i := range recoverySecret {
+			recoverySecret[i] = 0
+		}
+		if err != nil {
+			return err
+		}
+		peerResolver, err := newHubClientPeerResolver(serveHubPasskeyTrustedProxies)
+		if err != nil {
+			return err
+		}
+		s.passkey, err = newHubPasskeyRuntime(endpoint, authStore, bootstrapGrants, recoveryGrants, peerResolver)
+		if err != nil {
+			return err
+		}
+	}
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
 	srv := &http.Server{Addr: addr, Handler: s.handler()}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "term-llm Hub listening on http://%s%s\n", addr, s.hubPath("/"))
+	if authMode == "passkey" {
+		fmt.Fprintf(out, "term-llm Hub backend listening on http://%s%s\n", addr, s.hubPath("/"))
+	} else {
+		fmt.Fprintf(out, "term-llm Hub listening on http://%s%s\n", addr, s.hubPath("/"))
+	}
 	fmt.Fprintf(out, "  GET http://%s%s\n", addr, s.hubPath("/api/nodes"))
 	fmt.Fprintf(out, "  ANY http://%s%s\n", addr, s.hubPath("/node/<id>/..."))
 	fmt.Fprintf(out, "  node store: %s\n", nodesFile)
-	fmt.Fprintf(out, "  auth: %s\n", authSummary(requireAuth))
-	if requireAuth {
+	if authMode == "passkey" {
+		fmt.Fprintln(out, "  auth: passkey")
+		fmt.Fprintf(out, "  browser URL: %s\n", endpoint.URL.String())
+		if bearerSummary := hubPasskeyBearerCompatibilitySummary(tokenSource); bearerSummary != "" {
+			fmt.Fprintf(out, "  explicit bearer API compatibility: enabled (%s)\n", bearerSummary)
+		}
+		if s.passkey.store.CredentialCount() == 0 {
+			fmt.Fprintln(out, "  first-passkey setup required")
+		}
+		if bootstrapDisplay != "" {
+			fmt.Fprintf(out, "\nOpen %s\n", endpoint.URL.ResolveReference(&url.URL{Path: s.publicPath("/auth/setup")}).String())
+			fmt.Fprintf(out, "Enter one-time setup code: %s\n", bootstrapDisplay)
+			fmt.Fprintln(out, "The code expires in 10 minutes and can create exactly one passkey.")
+		}
+	} else {
+		fmt.Fprintf(out, "  auth: %s\n", authSummary(requireAuth))
+	}
+	if requireAuth && authMode != "passkey" {
 		switch tokenSource {
 		case tokenSourceGenerated:
 			fmt.Fprintf(out, "  generated Hub bearer token: %s\n", token)
@@ -174,13 +286,85 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 		case tokenSourceFlag:
 			fmt.Fprintln(out, "  Hub bearer token: from --token")
 		}
-	} else {
+	} else if !requireAuth {
 		fmt.Fprintln(out, "WARNING: hub auth disabled; bind to loopback only.")
 	}
 	if s.registrationToken != "" {
 		fmt.Fprintln(out, "  registration: enabled")
 	}
 	return srv.ListenAndServe()
+}
+
+var hubOutputIsTerminal = func(w any) bool { f, ok := w.(interface{ Fd() uintptr }); return ok && term.IsTerminal(int(f.Fd())) }
+
+func hubPasskeyBearerCompatibilitySummary(source string) string {
+	switch source {
+	case tokenSourceFlag:
+		return "from --token"
+	case tokenSourceEnv:
+		return "from TERM_LLM_HUB_TOKEN"
+	default:
+		return ""
+	}
+}
+
+func resolveHubAuthMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		mode = "bearer"
+	}
+	if mode != "bearer" && mode != "none" && mode != "passkey" {
+		return "", fmt.Errorf("invalid --auth %q (must be bearer, passkey, or none)", raw)
+	}
+	return mode, nil
+}
+func resolveHubBootstrapSecret(cmd *cobra.Command, needed bool) ([]byte, string, error) {
+	env := os.Getenv("TERM_LLM_HUB_BOOTSTRAP_TOKEN")
+	_ = os.Unsetenv("TERM_LLM_HUB_BOOTSTRAP_TOKEN")
+	if !needed {
+		return nil, "", nil
+	}
+	if p := strings.TrimSpace(serveHubBootstrapTokenFile); p != "" {
+		secret, err := passkeyauth.ReadPrivateSecretFile(p)
+		return secret, "", err
+	}
+	if strings.TrimSpace(env) != "" {
+		secret := []byte(strings.TrimSpace(env))
+		if err := passkeyauth.ValidateHostSecret(secret); err != nil {
+			return nil, "", err
+		}
+		return secret, "", nil
+	}
+	interactive := hubOutputIsTerminal(cmd.OutOrStdout())
+	if !interactive && !serveHubPrintBootstrapToken {
+		return nil, "", fmt.Errorf("first-passkey setup requires --passkey-bootstrap-token-file or TERM_LLM_HUB_BOOTSTRAP_TOKEN when output is non-interactive (or explicitly use --print-passkey-bootstrap-token)")
+	}
+	secret, display, err := passkeyauth.GenerateBootstrapSecret(nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if !interactive {
+		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: printing a passkey bootstrap code to non-interactive output; service logs are temporary enrollment credentials")
+	}
+	return secret, display, nil
+}
+func resolveHubRecoverySecret(enabled bool) ([]byte, error) {
+	env := os.Getenv("TERM_LLM_HUB_RECOVERY_TOKEN")
+	_ = os.Unsetenv("TERM_LLM_HUB_RECOVERY_TOKEN")
+	if !enabled {
+		return nil, nil
+	}
+	if p := strings.TrimSpace(serveHubRecoveryTokenFile); p != "" {
+		return passkeyauth.ReadPrivateSecretFile(p)
+	}
+	if strings.TrimSpace(env) == "" {
+		return nil, nil
+	}
+	secret := []byte(strings.TrimSpace(env))
+	if err := passkeyauth.ValidateHostSecret(secret); err != nil {
+		return nil, err
+	}
+	return secret, nil
 }
 
 func init() {
@@ -190,8 +374,14 @@ func init() {
 	serveHubCmd.Flags().StringVar(&serveHubConfig, "config", "", "Path to a static nodes config file (YAML or JSON)")
 	serveHubCmd.Flags().BoolVar(&serveHubContain, "contain", true, "Discover nodes from local contain workspaces")
 	serveHubCmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
-	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer or none (none is loopback-only)")
-	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (defaults to $TERM_LLM_HUB_TOKEN, else auto-generated)")
+	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer, passkey, or none (none is loopback-only)")
+	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (auto-generated in bearer mode; optional explicit API token in passkey mode)")
 	serveHubCmd.Flags().StringVar(&serveHubBasePath, "base-path", "/", "URL prefix for the Hub dashboard/API when mounted behind a reverse proxy (e.g. /hub)")
+	serveHubCmd.Flags().StringVar(&serveHubPublicURL, "public-url", "", "Stable browser-visible URL required for passkey auth (or $TERM_LLM_HUB_PUBLIC_URL)")
+	serveHubCmd.Flags().StringVar(&serveHubPasskeyAuthFile, "passkey-auth-file", "", "Passkey credential store (default: <data-dir>/hub/auth.json)")
+	serveHubCmd.Flags().StringVar(&serveHubBootstrapTokenFile, "passkey-bootstrap-token-file", "", "Private file containing the first-passkey setup secret")
+	serveHubCmd.Flags().StringVar(&serveHubRecoveryTokenFile, "passkey-recovery-token-file", "", "Private file containing a short-lived passkey recovery secret")
+	serveHubCmd.Flags().BoolVar(&serveHubPrintBootstrapToken, "print-passkey-bootstrap-token", false, "Print a generated first-passkey setup code even when output is not interactive (unsafe for service logs)")
+	serveHubCmd.Flags().StringSliceVar(&serveHubPasskeyTrustedProxies, "passkey-trusted-proxy", nil, "Trusted reverse-proxy IP or CIDR allowed to supply X-Forwarded-For (repeatable)")
 	serveHubCmd.Flags().StringVar(&serveHubRegistrationTokenFlag, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
 }

@@ -49,8 +49,10 @@ type hubServer struct {
 	nodeAPIClient *http.Client
 
 	requireAuth       bool
+	authMode          string
 	token             string
 	registrationToken string
+	passkey           *hubPasskeyRuntime
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {

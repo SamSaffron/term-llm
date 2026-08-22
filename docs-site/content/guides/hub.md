@@ -22,6 +22,204 @@ bearer as an operator/admin credential: anyone holding it can add nodes and make
 the Hub connect to addresses reachable from the Hub host. Use `--auth none` only
 for loopback-only local development.
 
+## Passkey authentication
+
+Bearer authentication remains the default for compatibility. Public human-facing
+Hubs can opt into phishing-resistant WebAuthn/passkey login and short-lived,
+server-side browser sessions:
+
+```bash
+term-llm serve hub \
+  --auth passkey \
+  --public-url https://hub.example.com/hub/ \
+  --base-path /hub \
+  --host 127.0.0.1 \
+  --port 8090
+```
+
+Passkey mode requires a stable domain and HTTPS. The only HTTP exception is
+`http://localhost[:port]` for local development; loopback IP literals are not
+accepted. `--public-url` (or `TERM_LLM_HUB_PUBLIC_URL`) is the authoritative
+browser origin and relying-party ID. Hub never trusts `Host`, `Forwarded`, or
+`X-Forwarded-*` to derive WebAuthn security settings. When `--base-path` is not
+explicit, it is derived from the public URL. If both are given, their normalized
+paths must match.
+
+On a fresh interactive start, Hub prints a random one-time setup code valid for
+ten minutes. Open the printed `/auth/setup` URL, enter the code, and enroll the
+first passkey. The code is never put in a URL or page. Redirected output,
+systemd, and containers must use a private secret file:
+
+```bash
+openssl rand -base64 32 | sudo install -m 600 /dev/stdin /run/secrets/term-llm-hub-bootstrap
+term-llm serve hub --auth passkey \
+  --public-url https://hub.example.com/hub/ \
+  --passkey-bootstrap-token-file /run/secrets/term-llm-hub-bootstrap
+```
+
+`TERM_LLM_HUB_BOOTSTRAP_TOKEN` is also supported and is scrubbed from the
+process environment after capture. A file takes precedence. The explicit
+`--print-passkey-bootstrap-token` escape hatch prints a generated code to
+non-interactive output, but makes service logs temporary enrollment credentials.
+Remove the bootstrap secret after enrollment. Credentials persist in
+`<data-dir>/hub/auth.json` (or `--passkey-auth-file`); sessions do not survive a
+Hub restart. A custom auth file's immediate parent must already be private
+(mode `0700` on Unix); Hub rejects an unsafe parent rather than changing a
+shared directory's permissions.
+
+The Security panel can add/name multiple passkeys, remove any non-final
+credential, show the active session count, revoke other sessions, and sign out.
+Adding or deleting a passkey requires a fresh passkey assertion. Sessions have a
+12-hour idle and seven-day absolute lifetime. The browser receives a host-only,
+HttpOnly, SameSite=Strict cookie scoped to the Hub mount; only its SHA-256 hash
+is retained in process memory.
+
+### Reverse proxy example
+
+Terminate TLS at the proxy while keeping the Hub backend on loopback. The
+browser must always use the exact configured public URL:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name hub.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/hub.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/hub.example.com/privkey.pem;
+
+    location = /hub { return 308 /hub/; }
+    location /hub/ {
+        # No trailing slash: preserve /hub for Hub's own base-path router.
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        # Overwrite, rather than append, client identity at this trust boundary.
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+}
+```
+
+Start Hub with `--public-url https://hub.example.com/hub/ --base-path /hub`
+and explicitly trust only the TLS proxy's direct address for authentication rate
+limits:
+
+```text
+--passkey-trusted-proxy 127.0.0.1/32
+```
+
+Without that flag Hub ignores `X-Forwarded-For`; this prevents clients from
+spoofing addresses to evade authentication limits. When the direct peer matches
+a configured trusted IP/CIDR, Hub walks `X-Forwarded-For` from right to left and
+uses the first untrusted address. Configure every proxy hop deliberately and
+have the edge proxy overwrite client-supplied forwarding headers. If the header
+is absent or malformed, Hub fails closed to the direct proxy address, which
+means all clients share one rate-limit bucket until the proxy configuration is
+fixed. Forwarding headers never override the configured WebAuthn origin or RP
+ID. Do not browse the loopback backend URL: it is not the WebAuthn origin.
+
+### Host-controlled recovery
+
+Recovery adds one replacement passkey without deleting existing credentials or
+granting access to Hub data. With at least one credential already enrolled:
+
+1. Stop Hub and create a cryptographically random private file, for example
+   `/run/secrets/term-llm-hub-recovery`, mode `0600`.
+2. Restart with `--passkey-recovery-token-file` (or temporarily set
+   `TERM_LLM_HUB_RECOVERY_TOKEN`).
+3. Within ten minutes, open `<public-url>/auth/recover`, enter the secret, and
+   enroll one replacement passkey.
+4. Remove/unmount the recovery secret and restart without the recovery option.
+5. Sign in normally, revoke other sessions if compromise is suspected, then
+   remove obsolete passkeys from Security.
+
+Deleting `auth.json` is a destructive identity reset, not recovery.
+
+For an interactive process, the complete recovery run is:
+
+```bash
+umask 077
+openssl rand -base64 32 > /tmp/term-llm-hub-recovery
+term-llm serve hub \
+  --auth passkey --public-url https://hub.example.com/hub/ --base-path /hub \
+  --host 127.0.0.1 --port 8090 \
+  --passkey-recovery-token-file /tmp/term-llm-hub-recovery
+# Enroll at https://hub.example.com/hub/auth/recover, then Ctrl-C.
+rm -f /tmp/term-llm-hub-recovery
+# Restart the original command without --passkey-recovery-token-file.
+```
+
+For systemd, use a credential rather than an environment variable or journal
+output. Adapt the full `ExecStart` to match the installed unit:
+
+```bash
+sudo sh -c 'umask 077; openssl rand -base64 32 > /etc/term-llm-hub-recovery'
+sudo systemctl edit term-llm-hub
+# [Service]
+# LoadCredential=hub-recovery:/etc/term-llm-hub-recovery
+# ExecStart=
+# ExecStart=/usr/local/bin/term-llm serve hub --auth passkey \
+#   --public-url https://hub.example.com/hub/ --base-path /hub \
+#   --host 127.0.0.1 --port 8090 \
+#   --passkey-recovery-token-file %d/hub-recovery
+sudo systemctl daemon-reload
+sudo systemctl restart term-llm-hub
+# Enroll at /hub/auth/recover, then run `sudo systemctl edit term-llm-hub`
+# again and remove the temporary LoadCredential/ExecStart override.
+sudo rm -f /etc/term-llm-hub-recovery
+sudo systemctl daemon-reload && sudo systemctl restart term-llm-hub
+```
+
+For a container, mount a one-use host file read-only, then recreate the
+container without the mount and recovery flag immediately after enrollment:
+
+```bash
+umask 077; openssl rand -base64 32 > ./hub-recovery
+# Add temporarily to the container invocation:
+#   -v "$PWD/hub-recovery:/run/secrets/hub-recovery:ro"
+#   --passkey-recovery-token-file /run/secrets/hub-recovery
+# Enroll at /hub/auth/recover, stop and recreate without both lines, then:
+rm -f ./hub-recovery
+```
+
+### Browser compatibility checklist
+
+Before promoting a public deployment, exercise the passkey flow with Safari and
+iCloud Keychain/Touch ID, Chrome or Edge with a platform/synced passkey,
+Firefox with a roaming security key, phone-to-desktop hybrid/QR, and a hardware
+security key as a second credential. Also test root and non-root mounts, direct
+HTTPS and TLS-terminating reverse proxy deployments, `http://localhost`, login
+after a Hub restart, and recovery enrollment while existing credentials remain.
+Record authenticator/browser combinations that are not supported rather than
+weakening exact-origin or user-verification checks.
+
+The repository's automated Chromium virtual-authenticator smoke covers an
+internal/platform authenticator, a second USB/roaming authenticator, an HTTPS
+reverse proxy with a non-root mount, logout/relogin, restart, and recovery while
+an existing credential remains. Unit and HTTP integration tests cover the
+`http://localhost` configuration exception and root mount. No unsupported
+combination is currently known.
+Safari/iCloud Keychain, Firefox with physical roaming keys, hybrid QR, real
+hardware keys, and direct/reverse-proxied production HTTPS still require the
+release-time physical-device matrix above; do not infer support by weakening
+policy when one of those combinations fails.
+
+An explicitly configured `--token`/`TERM_LLM_HUB_TOKEN` remains accepted in the
+`Authorization` header for automation or emergency API access, but passkey mode
+never auto-generates one and never accepts query-token login or the legacy
+browser token cookie. The startup banner reports when this compatibility
+credential is enabled and whether it came from the flag or environment. When
+converting an existing bearer deployment, remove `TERM_LLM_HUB_TOKEN` if the
+intended result is passkey-only access; inherited systemd/container environment
+still counts as explicit bearer configuration.
+
+
 ## Run as a systemd service
 
 An example unit lives at
@@ -160,13 +358,13 @@ These diagnostics are advisory and token-safe; `/api/nodes` still never returns 
 
 ## Security posture
 
-The hub defaults to bearer auth: `--auth bearer` protects the dashboard, Hub APIs, and node proxy with a single Hub token. (`/healthz` is intentionally public and returns only `{"status":"ok","role":"hub"}`.) Set the bearer explicitly with `--token` or `TERM_LLM_HUB_TOKEN` for stable deployments; otherwise the hub prints a generated token at startup. Treat this token as an operator/admin secret: a holder can add or test nodes pointing at any address the Hub can reach and can proxy through those nodes. `--auth none` is available for local development, but it is loopback-only because anyone who can reach an unauthenticated hub can reach every node it fronts. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.
+The hub defaults to bearer auth: `--auth bearer` protects the dashboard, Hub APIs, and node proxy with a single Hub token. (`/healthz` is intentionally public and returns only `{"status":"ok","role":"hub"}`.) Set the bearer explicitly with `--token` or `TERM_LLM_HUB_TOKEN` for stable deployments; otherwise the hub prints a generated token at startup. Treat this token as an operator/admin secret: a holder can add or test nodes pointing at any address the Hub can reach and can proxy through those nodes. `--auth passkey` replaces browser bearer copies with WebAuthn-backed, revocable, expiring in-memory sessions while leaving node, registration, reverse-WebSocket, and delegation credentials unchanged. `--auth none` is available for local development, but it is loopback-only because anyone who can reach an unauthenticated hub can reach every node it fronts. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.
 
 The backend transport never uses an environment proxy (`HTTP_PROXY` would see injected tokens). The hub still rejects obvious cross-site browser requests and requires JSON content types for mutating node-registry APIs as defense-in-depth around the simple bearer gate.
 
-Routing is path-based (`/node/<id>/...`) in v1; the proxy target is resolved per request, so host-based routing can be layered on later without changing the proxy plumbing. Because path routing puts hub UI and proxied node UI on the same browser origin, Hub v1 treats registered nodes/widgets as trusted. The node web UI namespaces localStorage by hub node id to avoid ordinary state collisions; this is not a security boundary. Untrusted remote nodes/widgets still need the future host-based/widget-grant isolation work before they should be opened through a shared hub origin.
+Routing is path-based (`/node/<id>/...`) in v1; the proxy target is resolved per request, so host-based routing can be layered on later without changing the proxy plumbing. Because path routing puts hub UI and proxied node UI on the same browser origin, Hub v1 treats every registered node/widget as fully trusted with the operator browser's Hub authority. HttpOnly/SameSite session cookies and passkeys do not isolate malicious JavaScript already executing on that origin. The node web UI namespaces localStorage by hub node id to avoid ordinary state collisions; this is not a security boundary. Untrusted remote nodes/widgets still need the future host-based/widget-grant isolation work before they should be opened through a shared hub origin.
 
-Node self-registration, scheduling, hub-level user auth, and mTLS between hub and nodes are deliberately out of scope for v1.
+Node scheduling and mTLS between hub and nodes remain out of scope for v1; passkey mode intentionally supports one logical Hub administrator rather than multiple users or roles.
 
 ## Cross-node delegation
 

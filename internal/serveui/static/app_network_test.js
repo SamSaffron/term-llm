@@ -42,6 +42,7 @@ function createHarness(fetchImpl, online = true) {
       return timer;
     },
     clearTimeout(timer) { if (timer) timer.cleared = true; },
+    location: { href: 'https://example.test/ui/', assign(url) { window.assignedURL = url; } },
     addEventListener(type, handler) {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type).push(handler);
@@ -86,7 +87,7 @@ function createHarness(fetchImpl, online = true) {
     await flush();
   };
   return {
-    app, state, navigator, document, timers, advance, dispatch, flush,
+    app, state, navigator, document, window, timers, advance, dispatch, flush,
     dispatchDocument: async (type) => {
       const handler = documentListeners.get(type);
       if (handler) handler({ type });
@@ -168,6 +169,14 @@ async function testTimeoutAuthAbortAndDiagnostics() {
   });
   await authHarness.advance(0);
   assert(owned.status === 401 && authFailures === 1, 'session-owned 401 should trigger auth handling exactly once');
+
+  let redirectedAuthFailures = 0;
+  const redirectHarness = createHarness(async () => new Response('{"error":{"code":"hub_auth_required"}}', { status: 401, headers: { 'X-Term-LLM-Login-URL': '/hub/auth/login' } }));
+  redirectHarness.app.handleAuthFailure = () => { redirectedAuthFailures += 1; };
+  await redirectHarness.app.apiFetch('/ui/v1/private', {}, { retries: 0, auth: redirectHarness.app.API_FETCH_AUTH.session });
+  await redirectHarness.advance(0);
+  assert(redirectHarness.window.assignedURL === 'https://example.test/hub/auth/login', 'Hub auth 401 did not redirect to mounted login');
+  assert(redirectedAuthFailures === 0, 'Hub auth redirect opened the node-token auth failure path');
   assert(authHarness.app.networkDiagnostics.some((entry) => entry.kind === 'request' && entry.status === 401), 'request diagnostics should record HTTP status');
 
   const request = new Request('https://example.test/ui/v1/request-diagnostic');

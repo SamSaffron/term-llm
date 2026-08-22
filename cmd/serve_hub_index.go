@@ -23,8 +23,11 @@ var hubIndexTmpl = template.Must(template.New("hub-index").Parse(hubIndexHTML))
 type hubIndexView struct {
 	CSS          template.CSS
 	BasePathJSON template.JS
+	BasePath     string
 	// CanAddNodes toggles the Add Node UI.
-	CanAddNodes bool
+	CanAddNodes   bool
+	PasskeyAuth   bool
+	AuthScriptURL string
 }
 
 func (s *hubServer) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -37,8 +40,11 @@ func (s *hubServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Headers are committed if Execute fails mid-stream; nothing useful to
 	// surface to the client at that point.
 	_ = hubIndexTmpl.Execute(w, hubIndexView{
-		CSS:          template.CSS(hubIndexCSS),
-		BasePathJSON: template.JS(string(baseJSON)),
-		CanAddNodes:  s.store != nil,
+		CSS:           template.CSS(hubIndexCSS),
+		BasePathJSON:  template.JS(string(baseJSON)),
+		BasePath:      s.basePath,
+		CanAddNodes:   s.store != nil,
+		PasskeyAuth:   s.passkey != nil,
+		AuthScriptURL: s.publicPath("/auth/hub_auth.js"),
 	})
 }

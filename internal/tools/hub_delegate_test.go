@@ -104,6 +104,9 @@ func TestHubDelegateClientFromEnvCaptureScrubsToken(t *testing.T) {
 
 	captureHubDelegationEnv()
 
+	if got := HubTokenFromEnvironment(); got != "tkn-secret" {
+		t.Fatalf("HubTokenFromEnvironment = %q", got)
+	}
 	c, err := newHubDelegationClient()
 	if err != nil {
 		t.Fatalf("newHubDelegationClient: %v", err)

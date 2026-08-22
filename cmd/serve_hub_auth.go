@@ -14,6 +14,9 @@ const hubAuthCookieName = "term_llm_hub_token"
 
 func (s *hubServer) handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.passkey != nil {
+		s.registerPasskeyRoutes(mux)
+	}
 	mux.HandleFunc("/healthz", s.handleHubHealth)
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
 	mux.HandleFunc("/api/registration-info", s.handleRegistrationInfo)
@@ -30,6 +33,9 @@ func (s *hubServer) handler() http.Handler {
 }
 
 func (s *hubServer) auth(next http.Handler) http.Handler {
+	if s.authMode == "passkey" && s.passkey != nil {
+		return s.passkeyAuth(next)
+	}
 	if !s.requireAuth {
 		return next
 	}
@@ -269,6 +275,9 @@ func hubBrowserRequestAllowed(r *http.Request, requireJSON bool) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return true
+	}
+	if expected, ok := r.Context().Value(hubExpectedOriginKey{}).(string); ok && expected != "" {
+		return strings.EqualFold(origin, expected)
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {

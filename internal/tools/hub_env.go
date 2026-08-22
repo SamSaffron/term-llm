@@ -82,6 +82,18 @@ func HubDelegationConfigured() bool {
 	return url != "" && nodeID != "" && token != ""
 }
 
+// HubTokenFromEnvironment returns the Hub token captured and scrubbed during
+// package initialization. Hub server commands use this to honor the same
+// TERM_LLM_HUB_TOKEN without putting it back into the subprocess environment.
+func HubTokenFromEnvironment() string {
+	hubDelegationCfg.Lock()
+	defer hubDelegationCfg.Unlock()
+	if !hubDelegationCfg.tokenFromEnv {
+		return ""
+	}
+	return hubDelegationCfg.token
+}
+
 // HubDelegationEnviron returns the TERM_LLM_HUB_* entries a reload re-exec of
 // this SAME binary needs to keep hub delegation working when the token
 // originally arrived via the environment (init scrubbed it, so os.Environ()
