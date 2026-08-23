@@ -1043,6 +1043,63 @@ func TestResponseRunRecoveryPreservesToolExecutionResults(t *testing.T) {
 	}
 }
 
+func TestResponseRunRecoveryAttachesGuardianReviewByCallIDBeforeToolStart(t *testing.T) {
+	run := newResponseRun("resp_guardian", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.guardian.review", map[string]any{
+		"tool_call_id": "call_shell", "outcome": "approved", "message": "guardian: approved (low risk)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.appendEvent("response.output_item.added", map[string]any{"item": map[string]any{
+		"type": "function_call", "call_id": "call_shell", "name": "shell", "arguments": `{"command":"pwd"}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	recovery := run.recoveryPayloadLocked()
+	messages := recovery["messages"].([]map[string]any)
+	tools := messages[0]["tools"].([]map[string]any)
+	reviews, ok := tools[0]["guardianReviews"].([]map[string]any)
+	if !ok || len(reviews) != 1 || reviews[0]["outcome"] != "approved" {
+		t.Fatalf("recovered guardian reviews = %#v", tools[0]["guardianReviews"])
+	}
+	if len(messages) != 1 || messages[0]["role"] != "tool-group" {
+		t.Fatalf("guardian review leaked into standalone recovery row: %#v", messages)
+	}
+}
+
+func TestResponseRunRecoveryDropsEmptyUncorrelatedGuardianNotice(t *testing.T) {
+	run := newResponseRun("resp_guardian_empty", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.guardian.review", map[string]any{"outcome": "warning", "message": "  "}); err != nil {
+		t.Fatal(err)
+	}
+	if messages, ok := run.recoveryPayloadLocked()["messages"].([]map[string]any); ok && len(messages) != 0 {
+		t.Fatalf("empty guardian notice created recovery rows: %#v", messages)
+	}
+}
+
+func TestResponseRunRecoveryFlushesUnmatchedGuardianReviewAtTerminal(t *testing.T) {
+	run := newResponseRun("resp_guardian_orphan", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.guardian.review", map[string]any{
+		"tool_call_id": "missing-shell", "outcome": "denied", "message": "guardian: denied",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.complete(map[string]any{"response": map[string]any{"id": run.id}}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatal(err)
+	}
+	messages := run.recoveryPayloadLocked()["messages"].([]map[string]any)
+	if len(messages) != 1 || messages[0]["role"] != "guardian-notice" {
+		t.Fatalf("terminal guardian recovery messages = %#v", messages)
+	}
+	content, _ := messages[0]["content"].(string)
+	if !strings.Contains(content, "guardian: denied") || !strings.Contains(content, "missing-shell") {
+		t.Fatalf("terminal guardian notice content = %q", content)
+	}
+	if len(run.pendingGuardianByCall) != 0 {
+		t.Fatalf("pending guardian reviews not cleared: %#v", run.pendingGuardianByCall)
+	}
+}
+
 func TestResponseRunRecoveryStoresToolImagesAsArtifacts(t *testing.T) {
 	run := newResponseRun("resp_images", "sess_test", "", "mock", time.Now().Unix(), func() {})
 

@@ -208,7 +208,7 @@ const sendMessage = async (options = {}) => {
     app.renderSidebar?.();
     return;
   }
-  if (state.projectsEnabled && state.draftSessionActive) {
+  if (state.projectsEnabled && state.draftSessionActive && state.activeProjectId) {
     const project = (state.projects || []).find((item) => item.id === state.activeProjectId);
     if (!project || project.archived_at || !project.available) {
       const message = !project ? 'Choose a project or add one before sending.'
@@ -685,12 +685,17 @@ const sendMessage = async (options = {}) => {
       ? String(branchIntent.previousResponseId || `resp_msg_${Number(branchIntent.anchorMessageId) || 0}`).trim()
       : String(session.lastResponseId || '').trim();
     if (!previousResponseId && state.projectsEnabled) {
-      body.project_id = String(session.projectId || state.activeProjectId || '').trim();
+      const projectId = String(session.projectId || state.activeProjectId || '').trim();
+      if (projectId) body.project_id = projectId;
+      else body.no_project = true;
       if (session.worktreeDir) body.worktree_dir = session.worktreeDir;
     } else if (!previousResponseId && session.worktreeDir) {
       body.worktree_dir = session.worktreeDir;
     } else if (!previousResponseId) {
       body.use_default_workspace = true;
+    }
+    if (!previousResponseId) {
+      body.agent = String(session.agent || (state.draftSessionActive ? state.selectedAgent : '') || '').trim();
     }
     if (previousResponseId) {
       body.previous_response_id = previousResponseId;

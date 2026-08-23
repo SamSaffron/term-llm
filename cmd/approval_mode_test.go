@@ -29,7 +29,7 @@ func TestResolveApprovalMode(t *testing.T) {
 		{name: "blank edit is prompt", input: approvalModeResolutionInput{Surface: approvalSurfaceEdit}, wantMode: tools.ModePrompt, wantSource: approvalModeSourceBuiltinDefault},
 		{name: "blank exec is prompt", input: approvalModeResolutionInput{Surface: approvalSurfaceExec}, wantMode: tools.ModePrompt, wantSource: approvalModeSourceBuiltinDefault},
 		{name: "blank loop is prompt", input: approvalModeResolutionInput{Surface: approvalSurfaceLoop}, wantMode: tools.ModePrompt, wantSource: approvalModeSourceBuiltinDefault},
-		{name: "blank serve is prompt", input: approvalModeResolutionInput{Surface: approvalSurfaceServe}, wantMode: tools.ModePrompt, wantSource: approvalModeSourceBuiltinDefault},
+		{name: "blank serve is auto", input: approvalModeResolutionInput{Surface: approvalSurfaceServe}, wantMode: tools.ModeAuto, wantSource: approvalModeSourceBuiltinDefault},
 		{name: "blank serve mcp is prompt", input: approvalModeResolutionInput{Surface: approvalSurfaceServeMCP}, wantMode: tools.ModePrompt, wantSource: approvalModeSourceBuiltinDefault},
 		{
 			name:       "global prompt overrides chat builtin",
@@ -64,6 +64,12 @@ func TestResolveApprovalMode(t *testing.T) {
 		{
 			name:       "cli prompt overrides config auto",
 			input:      approvalModeResolutionInput{Surface: approvalSurfaceChat, CLI: approvalModePtr(tools.ModePrompt), Config: &config.Config{Chat: config.ChatConfig{ApprovalMode: "auto"}}},
+			wantMode:   tools.ModePrompt,
+			wantSource: approvalModeSourceCLI,
+		},
+		{
+			name:       "cli prompt overrides serve auto builtin",
+			input:      approvalModeResolutionInput{Surface: approvalSurfaceServe, CLI: approvalModePtr(tools.ModePrompt)},
 			wantMode:   tools.ModePrompt,
 			wantSource: approvalModeSourceCLI,
 		},

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -174,6 +175,40 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	clientMessageID := strings.TrimSpace(req.ClientMessageID)
 	firstParty := isFirstPartyUIResponseRequest(r)
+	req.Agent = strings.TrimSpace(req.Agent)
+	if req.Agent != "" && !firstParty {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is available only to the Web UI")
+		return
+	}
+	if req.Agent != "" && !agents.IsSafeLookupName(req.Agent) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid agent name")
+		return
+	}
+	if req.Agent != "" {
+		available := false
+		for _, name := range s.cfg.agentNames {
+			if req.Agent == name {
+				available = true
+				break
+			}
+		}
+		if !available {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "agent is not available")
+			return
+		}
+	}
+	if req.NoProject && strings.TrimSpace(req.ProjectID) != "" {
+		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project and project_id are mutually exclusive")
+		return
+	}
+	if req.NoProject && !firstParty {
+		writeProjectError(w, http.StatusBadRequest, "invalid_project_selection", "no_project is available only to the Web UI")
+		return
+	}
+	if req.NoProject && !s.projectsEnabled {
+		writeProjectError(w, http.StatusBadRequest, "projects_disabled", "no_project is not accepted while project mode is disabled")
+		return
+	}
 	if req.UseDefaultWorkspace && s.projectsEnabled {
 		bootstrapUsable := false
 		if firstParty && strings.TrimSpace(s.bootstrapProjectID) != "" {
@@ -332,7 +367,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	freshConversation := rr.freshConversation
 	workspaceBinding, workspaceErr := s.resolveWorkspace(ctx, serveWorkspaceRequest{
 		SessionID: sessionID, ProjectID: req.ProjectID, WorktreeDir: req.WorktreeDir,
-		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: freshConversation,
+		FirstPartyUI: isFirstPartyUIResponseRequest(r), FreshConversation: freshConversation, AllowNoProject: req.NoProject,
 	})
 	if workspaceErr != nil {
 		writeWorkspaceError(w, workspaceErr)
@@ -566,7 +601,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		if previousResponseID != "" || rr.durableRuntime {
 			runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
 		} else {
-			runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
+			runtime, stateful, err = s.runtimeForFreshAgentProviderRequest(ctx, sessionID, freshProvider, req.Agent)
 		}
 		if handleRuntimeErr(err) {
 			return
@@ -665,10 +700,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}
 	}()
 	if freshConversation {
-		if workspaceBinding.ProjectID != "" || strings.TrimSpace(req.ProjectID) != "" {
+		if workspaceBinding.ProjectID != "" || strings.TrimSpace(req.ProjectID) != "" || req.NoProject {
 			// Create only an unbound persistence shell first. Runtime/model metadata is
-			// updated only after this request wins the atomic workspace bind, so a
-			// conflicting loser cannot mutate the winner's first-turn settings.
+			// updated after the selected project or explicit No project workspace is
+			// applied, so a conflicting project bind cannot mutate the winner's settings.
 			if err := s.ensurePersistedSessionForProjectBinding(ctx, sessionID, runtime, req.Model); err != nil {
 				if modelSwapExec != nil {
 					modelSwapExec.markRolledBack()

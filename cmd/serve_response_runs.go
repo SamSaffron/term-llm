@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,13 +28,14 @@ type responseRunEvent struct {
 }
 
 type responseRunRecoveryTool struct {
-	ID           string
-	Name         string
-	Arguments    string
-	Status       string
-	ResultStatus string
-	Created      int64
-	Images       []string
+	ID              string
+	Name            string
+	Arguments       string
+	Status          string
+	ResultStatus    string
+	Created         int64
+	Images          []string
+	GuardianReviews []map[string]any
 }
 
 type responseRunRecoveryMessage struct {
@@ -133,23 +135,24 @@ type responseRun struct {
 	lastSequenceNumber     int64
 	// events[eventStart:] is the retained replay window; dropped prefix slots
 	// are zeroed and reclaimed in batches to avoid per-token slice copies.
-	events             []responseRunEvent
-	eventStart         int
-	minReplayAfter     int64
-	maxRetainedEvents  int
-	recoveryMessages   []responseRunRecoveryMessage
-	recoveryEvents     []responseRunRecoveryEvent
-	nextMessageOrdinal int64
-	currentAssistant   int
-	currentToolGroup   int
-	segmentRanges      map[int]responseRunSegmentRange
-	compactionEnabled  bool
-	subscribers        map[int]chan responseRunEvent
-	subscriberWarned   map[int]bool // tracks whether 75% buffer warning was logged
-	subscriberDropped  map[int]bool // tracks subscribers dropped after their live buffer overflowed
-	nextSubscriberID   int
-	cancel             context.CancelFunc
-	cancelRequested    bool
+	events                []responseRunEvent
+	eventStart            int
+	minReplayAfter        int64
+	maxRetainedEvents     int
+	recoveryMessages      []responseRunRecoveryMessage
+	recoveryEvents        []responseRunRecoveryEvent
+	pendingGuardianByCall map[string][]map[string]any
+	nextMessageOrdinal    int64
+	currentAssistant      int
+	currentToolGroup      int
+	segmentRanges         map[int]responseRunSegmentRange
+	compactionEnabled     bool
+	subscribers           map[int]chan responseRunEvent
+	subscriberWarned      map[int]bool // tracks whether 75% buffer warning was logged
+	subscriberDropped     map[int]bool // tracks subscribers dropped after their live buffer overflowed
+	nextSubscriberID      int
+	cancel                context.CancelFunc
+	cancelRequested       bool
 }
 
 type startResponseRunOptions struct {
@@ -262,24 +265,25 @@ func (r *responseRun) invalidateDurableBoundary() {
 
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
 	return &responseRun{
-		id:                   respID,
-		sessionID:            sessionID,
-		previousResponseID:   previousResponseID,
-		model:                model,
-		created:              created,
-		status:               "in_progress",
-		startedCompactionSeq: -1,
-		maxRetainedEvents:    defaultResponseRunReplayLimit,
-		currentAssistant:     -1,
-		currentToolGroup:     -1,
-		segmentRanges:        make(map[int]responseRunSegmentRange),
-		persistence:          newResponseRunPersistenceLedger(),
-		boundary:             runboundary.New(respID, nil, 0, false),
-		compactionEnabled:    true,
-		subscribers:          make(map[int]chan responseRunEvent),
-		subscriberWarned:     make(map[int]bool),
-		subscriberDropped:    make(map[int]bool),
-		cancel:               cancel,
+		id:                    respID,
+		sessionID:             sessionID,
+		previousResponseID:    previousResponseID,
+		model:                 model,
+		created:               created,
+		status:                "in_progress",
+		startedCompactionSeq:  -1,
+		maxRetainedEvents:     defaultResponseRunReplayLimit,
+		currentAssistant:      -1,
+		currentToolGroup:      -1,
+		pendingGuardianByCall: make(map[string][]map[string]any),
+		segmentRanges:         make(map[int]responseRunSegmentRange),
+		persistence:           newResponseRunPersistenceLedger(),
+		boundary:              runboundary.New(respID, nil, 0, false),
+		compactionEnabled:     true,
+		subscribers:           make(map[int]chan responseRunEvent),
+		subscriberWarned:      make(map[int]bool),
+		subscriberDropped:     make(map[int]bool),
+		cancel:                cancel,
 	}
 }
 
@@ -877,13 +881,83 @@ func (r *responseRun) activeEventsLocked() []responseRunEvent {
 	return r.events[r.eventStart:]
 }
 
+func (r *responseRun) attachGuardianReviewLocked(callID string, review map[string]any) bool {
+	for messageIndex := range r.recoveryMessages {
+		group := &r.recoveryMessages[messageIndex]
+		if group.Role != "tool-group" {
+			continue
+		}
+		for toolIndex := range group.Tools {
+			if group.Tools[toolIndex].ID == callID {
+				group.Tools[toolIndex].GuardianReviews = append(group.Tools[toolIndex].GuardianReviews, cloneJSONMap(review))
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *responseRun) flushPendingGuardianReviewsLocked() {
+	callIDs := make([]string, 0, len(r.pendingGuardianByCall))
+	for callID := range r.pendingGuardianByCall {
+		callIDs = append(callIDs, callID)
+	}
+	sort.Strings(callIDs)
+	for _, callID := range callIDs {
+		for _, review := range r.pendingGuardianByCall[callID] {
+			message := strings.TrimSpace(stringValue(review["message"]))
+			if message == "" {
+				outcome := strings.TrimSpace(stringValue(review["outcome"]))
+				if outcome == "" {
+					outcome = "warning"
+				}
+				message = fmt.Sprintf("Guardian %s review", outcome)
+			}
+			message = fmt.Sprintf("%s (unmatched tool call %s)", message, callID)
+			r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
+				ID: r.nextRecoveryMessageIDLocked("guardian_notice"), Role: "guardian-notice",
+				Content: []byte(message), Created: time.Now().UnixMilli(),
+			})
+		}
+		delete(r.pendingGuardianByCall, callID)
+	}
+}
+
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
+	if event == "response.completed" || event == "response.cancelled" || event == "response.failed" {
+		r.flushPendingGuardianReviewsLocked()
+	}
 	switch event {
 	case "response.ask_user.prompt", "response.approval.prompt":
 		r.recoveryEvents = append(r.recoveryEvents, responseRunRecoveryEvent{
 			Event:   event,
 			Payload: cloneJSONMap(payload),
 		})
+	case "response.guardian.review":
+		callID := stringValue(payload["tool_call_id"])
+		review := cloneJSONMap(payload)
+		delete(review, "response_id")
+		delete(review, "run_epoch")
+		delete(review, "sequence_number")
+		delete(review, "tool_call_id")
+		if callID != "" {
+			if !r.attachGuardianReviewLocked(callID, review) {
+				if r.pendingGuardianByCall == nil {
+					r.pendingGuardianByCall = make(map[string][]map[string]any)
+				}
+				r.pendingGuardianByCall[callID] = append(r.pendingGuardianByCall[callID], review)
+			}
+			return
+		}
+		message := strings.TrimSpace(stringValue(payload["message"]))
+		if message == "" {
+			return
+		}
+		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
+			ID: r.nextRecoveryMessageIDLocked("guardian_notice"), Role: "guardian-notice",
+			Content: []byte(message), Created: time.Now().UnixMilli(),
+		})
+		return
 	case "response.interjection":
 		text := stringValue(payload["text"])
 		if text == "" {
@@ -946,6 +1020,12 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 		if tool.ID == "" {
 			tool.ID = fmt.Sprintf("%s_tool_%d", r.id, len(r.recoveryMessages)+1)
+		}
+		if pending := r.pendingGuardianByCall[tool.ID]; len(pending) > 0 {
+			for _, review := range pending {
+				tool.GuardianReviews = append(tool.GuardianReviews, cloneJSONMap(review))
+			}
+			delete(r.pendingGuardianByCall, tool.ID)
 		}
 		if r.currentToolGroup < 0 || r.currentToolGroup >= len(r.recoveryMessages) {
 			r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
@@ -1287,6 +1367,13 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 				}
 				if tool.ResultStatus != "" {
 					toolEntry["resultStatus"] = tool.ResultStatus
+				}
+				if len(tool.GuardianReviews) > 0 {
+					reviews := make([]map[string]any, 0, len(tool.GuardianReviews))
+					for _, review := range tool.GuardianReviews {
+						reviews = append(reviews, cloneJSONMap(review))
+					}
+					toolEntry["guardianReviews"] = reviews
 				}
 				if len(tool.Images) > 0 {
 					images := make([]string, len(tool.Images))

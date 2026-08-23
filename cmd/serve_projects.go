@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,9 +22,11 @@ import (
 )
 
 const (
-	maxProjectRequestBytes      = 64 << 10
-	maxEagerProjectStatusChecks = 64
-	projectStatusCacheTTL       = 15 * time.Second
+	maxProjectRequestBytes         = 64 << 10
+	maxEagerProjectStatusChecks    = 64
+	maxProjectDirectoryEntries     = 500
+	maxProjectDirectoryScanEntries = 5000
+	projectStatusCacheTTL          = 15 * time.Second
 )
 
 type projectStatusCacheEntry struct {
@@ -56,6 +59,49 @@ type projectCreateResponse struct {
 	Duplicate         bool        `json:"duplicate,omitempty"`
 	ExistingProjectID string      `json:"existing_project_id,omitempty"`
 	Restored          bool        `json:"restored,omitempty"`
+}
+
+type projectDirectoryEntry struct {
+	Name              string `json:"name"`
+	Path              string `json:"path"`
+	Git               bool   `json:"git,omitempty"`
+	ExistingProjectID string `json:"existing_project_id,omitempty"`
+}
+
+type projectDirectoryBreadcrumb struct {
+	Label string `json:"label"`
+	Path  string `json:"path"`
+}
+
+type projectDirectoryResponse struct {
+	Path        string                       `json:"path"`
+	Parent      string                       `json:"parent,omitempty"`
+	Home        string                       `json:"home,omitempty"`
+	Breadcrumbs []projectDirectoryBreadcrumb `json:"breadcrumbs"`
+	Entries     []projectDirectoryEntry      `json:"entries"`
+	Truncated   bool                         `json:"truncated,omitempty"`
+}
+
+type sessionProjectCandidate struct {
+	CanonicalDir      string `json:"canonical_dir"`
+	DefaultName       string `json:"default_name"`
+	Git               bool   `json:"git"`
+	ExistingProjectID string `json:"existing_project_id,omitempty"`
+	ExistingName      string `json:"existing_name,omitempty"`
+	ExistingArchived  bool   `json:"existing_archived,omitempty"`
+}
+
+type sessionProjectAssignmentInfo struct {
+	CWD         string                   `json:"cwd,omitempty"`
+	WorktreeDir string                   `json:"worktree_dir,omitempty"`
+	ProjectID   string                   `json:"project_id,omitempty"`
+	Candidate   *sessionProjectCandidate `json:"candidate,omitempty"`
+}
+
+type sessionProjectAssignmentRequest struct {
+	ProjectID           string `json:"project_id"`
+	CreateFromWorkspace bool   `json:"create_from_workspace,omitempty"`
+	Name                string `json:"name,omitempty"`
 }
 
 type projectPatchRequest struct {
@@ -120,6 +166,12 @@ func canonicalProjectStoragePath(path, goos string) string {
 // resolveProjectPath is the single validator used by dry-run, create,
 // bootstrap, and availability checks.
 func resolveProjectPath(path string) (resolvedProjectPath, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return resolveProjectPathContext(ctx, path)
+}
+
+func resolveProjectPathContext(ctx context.Context, path string) (resolvedProjectPath, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return resolvedProjectPath{}, fmt.Errorf("path is required")
@@ -160,9 +212,9 @@ func resolveProjectPath(path string) (resolvedProjectPath, error) {
 	}
 	_ = dir.Close()
 
-	isGit := worktree.IsGitRepo(resolved)
+	isGit := worktree.IsGitRepoContext(ctx, resolved)
 	if isGit {
-		resolved, err = worktree.MainRepoRoot(resolved)
+		resolved, err = worktree.MainRepoRootContext(ctx, resolved)
 		if err != nil {
 			return resolvedProjectPath{}, fmt.Errorf("resolve main repository: %w", err)
 		}
@@ -190,8 +242,14 @@ func sameCanonicalProjectIdentity(actual, stored string) bool {
 }
 
 func projectStatus(p session.Project) projectAPI {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return projectStatusContext(ctx, p)
+}
+
+func projectStatusContext(ctx context.Context, p session.Project) projectAPI {
 	api := projectAPI{Project: p}
-	resolved, err := resolveProjectPath(p.CanonicalDir)
+	resolved, err := resolveProjectPathContext(ctx, p.CanonicalDir)
 	if err != nil || !sameCanonicalProjectIdentity(resolved.CanonicalDir, p.CanonicalDir) {
 		api.Project.Available = false
 		api.Project.UnavailableReason = "Project directory is missing or its canonical identity changed"
@@ -237,7 +295,17 @@ func projectWithDerivedStatus(p session.Project, cached projectAPI) projectAPI {
 	return api
 }
 
-func (s *serveServer) cachedProjectStatus(p session.Project, detailed bool) projectAPI {
+func keepCachedProjectStatus(entry projectStatusCacheEntry, p session.Project, startedAt, now time.Time, detailed bool) bool {
+	if !entry.updatedAt.Equal(p.UpdatedAt) {
+		return false
+	}
+	if entry.detailed != detailed {
+		return entry.detailed && now.Sub(entry.checkedAt) < projectStatusCacheTTL
+	}
+	return entry.checkedAt.After(startedAt)
+}
+
+func (s *serveServer) cachedProjectStatus(ctx context.Context, p session.Project, detailed bool) projectAPI {
 	now := time.Now()
 	s.projectStatusMu.Lock()
 	if entry, ok := s.projectStatuses[p.ID]; ok && entry.updatedAt.Equal(p.UpdatedAt) && now.Sub(entry.checkedAt) < projectStatusCacheTTL && (entry.detailed || !detailed) {
@@ -248,9 +316,16 @@ func (s *serveServer) cachedProjectStatus(p session.Project, detailed bool) proj
 
 	status := cheapProjectStatus(p)
 	if detailed && status.Available {
-		status = projectStatus(p)
+		status = projectStatusContext(ctx, p)
+		if ctx.Err() != nil {
+			return status
+		}
 	}
 	s.projectStatusMu.Lock()
+	if entry, ok := s.projectStatuses[p.ID]; ok && keepCachedProjectStatus(entry, p, now, time.Now(), detailed) {
+		s.projectStatusMu.Unlock()
+		return projectWithDerivedStatus(p, entry.status)
+	}
 	if s.projectStatuses == nil {
 		s.projectStatuses = make(map[string]projectStatusCacheEntry)
 	}
@@ -259,12 +334,12 @@ func (s *serveServer) cachedProjectStatus(p session.Project, detailed bool) proj
 	return status
 }
 
-func resolveServeProjectsRequested(cmdProjects, cmdNoProjects, configEnabled, hasWeb bool) (enabled, strict bool) {
+func resolveServeProjectsRequested(projectsSet, projectsValue, cmdNoProjects, configEnabled, hasWeb bool) (enabled, strict bool) {
 	if !hasWeb || cmdNoProjects {
 		return false, false
 	}
-	if cmdProjects {
-		return true, true
+	if projectsSet {
+		return projectsValue, projectsValue
 	}
 	return configEnabled, false
 }
@@ -297,7 +372,7 @@ func initializeServeProjects(ctx context.Context, store session.Store, startupDi
 	if len(existing) != 0 {
 		return true, "", nil
 	}
-	resolved, err := resolveProjectPath(startupDir)
+	resolved, err := resolveProjectPathContext(ctx, startupDir)
 	if err != nil {
 		if strict {
 			return false, "", fmt.Errorf("initialize bootstrap project: %w", err)
@@ -306,18 +381,27 @@ func initializeServeProjects(ctx context.Context, store session.Store, startupDi
 		return false, "", nil
 	}
 	bootstrap := &session.Project{Name: resolved.DefaultName, CanonicalDir: resolved.CanonicalDir, IsBootstrap: true}
-	matchingIDs, err := bootstrapMatchingSessions(ctx, store, resolved)
+	matchingSessions, err := bootstrapMatchingSessions(ctx, store, resolved)
 	if err != nil {
-		return false, "", fmt.Errorf("inspect historical sessions for project bootstrap: %w", err)
+		if strict {
+			return false, "", fmt.Errorf("inspect historical sessions for project bootstrap: %w", err)
+		}
+		fmt.Fprintf(warningWriter, "warning: projects auto-disabled: could not inspect historical sessions (%v)\n", err)
+		return false, "", nil
 	}
-	if err := projects.BootstrapProject(ctx, bootstrap, matchingIDs); err != nil {
-		return false, "", fmt.Errorf("bootstrap project: %w", err)
+	if err := projects.BootstrapProject(ctx, bootstrap, matchingSessions); err != nil {
+		if strict {
+			return false, "", fmt.Errorf("bootstrap project: %w", err)
+		}
+		fmt.Fprintf(warningWriter, "warning: projects auto-disabled: could not create bootstrap project (%v)\n", err)
+		return false, "", nil
 	}
 	return true, bootstrap.ID, nil
 }
 
-func bootstrapMatchingSessions(ctx context.Context, store session.Store, root resolvedProjectPath) ([]string, error) {
-	var ids []string
+func bootstrapMatchingSessions(ctx context.Context, store session.Store, root resolvedProjectPath) ([]session.ProjectSessionMatch, error) {
+	var matchingSessions []session.ProjectSessionMatch
+	matchesByWorkspace := make(map[string]bool)
 	before := int64(0)
 	for {
 		summaries, err := store.List(ctx, session.ListOptions{Archived: true, Limit: 200, BeforeNumber: before, SortByNumberDesc: true})
@@ -328,15 +412,23 @@ func bootstrapMatchingSessions(ctx context.Context, store session.Store, root re
 			break
 		}
 		for _, summary := range summaries {
-			persisted, err := store.Get(ctx, summary.ID)
-			if err != nil {
+			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			if persisted == nil || persisted.ProjectID != "" {
+			if summary.ProjectID != "" {
 				continue
 			}
-			if sessionMatchesProjectBinding(*persisted, root) {
-				ids = append(ids, persisted.ID)
+			workspaceKey := strings.TrimSpace(summary.CWD) + "\x00" + strings.TrimSpace(summary.WorktreeDir)
+			matches, ok := matchesByWorkspace[workspaceKey]
+			if !ok {
+				candidate := session.Session{CWD: summary.CWD, WorktreeDir: summary.WorktreeDir}
+				matches = sessionMatchesProjectBindingContext(ctx, candidate, root)
+				matchesByWorkspace[workspaceKey] = matches
+			}
+			if matches {
+				matchingSessions = append(matchingSessions, session.ProjectSessionMatch{
+					ID: summary.ID, CWD: summary.CWD, WorktreeDir: summary.WorktreeDir,
+				})
 			}
 		}
 		before = summaries[len(summaries)-1].Number
@@ -344,10 +436,16 @@ func bootstrapMatchingSessions(ctx context.Context, store session.Store, root re
 			break
 		}
 	}
-	return ids, nil
+	return matchingSessions, nil
 }
 
 func sessionMatchesProjectBinding(sess session.Session, project resolvedProjectPath) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return sessionMatchesProjectBindingContext(ctx, sess, project)
+}
+
+func sessionMatchesProjectBindingContext(ctx context.Context, sess session.Session, project resolvedProjectPath) bool {
 	if project.Git {
 		cwd := strings.TrimSpace(sess.CWD)
 		worktreeDir := strings.TrimSpace(sess.WorktreeDir)
@@ -362,13 +460,13 @@ func sessionMatchesProjectBinding(sess session.Session, project resolvedProjectP
 			if err != nil {
 				return false
 			}
-			root, err := worktree.MainRepoRoot(wt.Dir)
+			root, err := worktree.MainRepoRootContext(ctx, wt.Dir)
 			return err == nil && sameServePath(root, project.CanonicalDir)
 		}
-		if cwd == "" || !worktree.IsGitRepo(cwd) {
+		if cwd == "" || !worktree.IsGitRepoContext(ctx, cwd) {
 			return false
 		}
-		root, err := worktree.MainRepoRoot(cwd)
+		root, err := worktree.MainRepoRootContext(ctx, cwd)
 		return err == nil && sameServePath(root, project.CanonicalDir)
 	}
 	// Non-Git projects never have a legal worktree snapshot.
@@ -400,8 +498,10 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	if s.projectsEnabled {
 		if projects, ok := s.projectStore(); ok {
 			if list, err := projects.ListProjects(r.Context(), session.ProjectListOptions{}); err == nil {
+				statusCtx, cancelStatus := context.WithTimeout(r.Context(), 2*time.Second)
+				defer cancelStatus()
 				for i, p := range list {
-					if status := s.cachedProjectStatus(p, i < maxEagerProjectStatusChecks); status.Available && status.Git {
+					if status := s.cachedProjectStatus(statusCtx, p, i < maxEagerProjectStatusChecks); status.Available && status.Git {
 						worktreesEnabled = true
 						break
 					}
@@ -416,6 +516,217 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 		"projects":  map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees": map[string]bool{"enabled": worktreesEnabled},
 	})
+}
+
+func projectDirectoryBreadcrumbs(path string) []projectDirectoryBreadcrumb {
+	clean := filepath.Clean(path)
+	volume := filepath.VolumeName(clean)
+	remainder := strings.TrimPrefix(clean, volume)
+	separator := string(filepath.Separator)
+	breadcrumbs := make([]projectDirectoryBreadcrumb, 0, 8)
+	current := volume
+	if strings.HasPrefix(remainder, separator) {
+		current += separator
+		label := current
+		if label == "" {
+			label = separator
+		}
+		breadcrumbs = append(breadcrumbs, projectDirectoryBreadcrumb{Label: label, Path: current})
+		remainder = strings.TrimPrefix(remainder, separator)
+	}
+	for _, part := range strings.Split(remainder, separator) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		breadcrumbs = append(breadcrumbs, projectDirectoryBreadcrumb{Label: part, Path: current})
+	}
+	return breadcrumbs
+}
+
+func projectDirectoryErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return http.StatusForbidden
+	case errors.Is(err, os.ErrNotExist):
+		return http.StatusNotFound
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+func canonicalBrowseDirectory(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		var err error
+		path, err = os.UserHomeDir()
+		if err != nil || path == "" {
+			path, err = os.Getwd()
+		}
+		if err != nil {
+			return "", fmt.Errorf("find starting directory: %w", err)
+		}
+	}
+	if containsProjectControl(path) {
+		return "", fmt.Errorf("path contains control characters")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be absolute")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("open directory: %w", err)
+	}
+	resolved = filepath.Clean(resolved)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("inspect directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path is not a directory")
+	}
+	return resolved, nil
+}
+
+func listProjectDirectories(path string, showHidden bool, existing map[string]string) (projectDirectoryResponse, error) {
+	resolved, err := canonicalBrowseDirectory(path)
+	if err != nil {
+		return projectDirectoryResponse{}, err
+	}
+	dir, err := os.Open(resolved)
+	if err != nil {
+		return projectDirectoryResponse{}, fmt.Errorf("open directory: %w", err)
+	}
+	defer dir.Close()
+
+	result := projectDirectoryResponse{
+		Path:        resolved,
+		Breadcrumbs: projectDirectoryBreadcrumbs(resolved),
+		Entries:     make([]projectDirectoryEntry, 0, 32),
+	}
+	if parent := filepath.Dir(resolved); parent != resolved {
+		result.Parent = parent
+	}
+	if home, homeErr := canonicalBrowseDirectory(""); homeErr == nil {
+		result.Home = home
+	}
+
+	scanned := 0
+	for scanned < maxProjectDirectoryScanEntries && len(result.Entries) < maxProjectDirectoryEntries {
+		batch, readErr := dir.ReadDir(128)
+		for _, entry := range batch {
+			scanned++
+			if scanned > maxProjectDirectoryScanEntries {
+				result.Truncated = true
+				break
+			}
+			name := entry.Name()
+			if !showHidden && strings.HasPrefix(name, ".") {
+				continue
+			}
+			fullPath := filepath.Join(resolved, name)
+			isDir := entry.IsDir()
+			if entry.Type()&os.ModeSymlink != 0 {
+				info, statErr := os.Stat(fullPath)
+				isDir = statErr == nil && info.IsDir()
+			}
+			if !isDir {
+				continue
+			}
+			item := projectDirectoryEntry{Name: name, Path: fullPath}
+			if _, statErr := os.Stat(filepath.Join(fullPath, ".git")); statErr == nil {
+				item.Git = true
+			}
+			identity := fullPath
+			if canonical, canonicalErr := filepath.EvalSymlinks(fullPath); canonicalErr == nil {
+				identity = canonicalProjectStoragePath(canonical, runtime.GOOS)
+			}
+			item.ExistingProjectID = existing[identity]
+			result.Entries = append(result.Entries, item)
+			if len(result.Entries) == maxProjectDirectoryEntries {
+				result.Truncated = true
+				break
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return projectDirectoryResponse{}, fmt.Errorf("read directory: %w", readErr)
+		}
+	}
+	if scanned >= maxProjectDirectoryScanEntries {
+		result.Truncated = true
+	}
+	sort.Slice(result.Entries, func(i, j int) bool {
+		left, right := result.Entries[i], result.Entries[j]
+		if left.Git != right.Git {
+			return left.Git
+		}
+		return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+	})
+	return result, nil
+}
+
+func (s *serveServer) projectBrowseDirectoryAllowed(path string, projects []session.Project) bool {
+	roots := make([]string, 0, len(projects)+2)
+	if home, err := canonicalBrowseDirectory(""); err == nil {
+		roots = append(roots, home)
+	}
+	if startup := strings.TrimSpace(s.startupDir); startup != "" {
+		if resolved, err := canonicalBrowseDirectory(startup); err == nil {
+			roots = append(roots, resolved)
+		}
+	}
+	for _, project := range projects {
+		if root := strings.TrimSpace(project.CanonicalDir); root != "" {
+			roots = append(roots, root)
+		}
+	}
+	for _, root := range roots {
+		if pathWithinDirForOS(path, root, runtime.GOOS) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *serveServer) handleProjectDirectories(w http.ResponseWriter, r *http.Request) {
+	if !s.projectsEnabled {
+		writeProjectError(w, http.StatusNotFound, "projects_disabled", "project mode is disabled")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeProjectError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	existing := make(map[string]string)
+	var registered []session.Project
+	if projects, ok := s.projectStore(); ok {
+		if list, err := projects.ListProjects(r.Context(), session.ProjectListOptions{IncludeArchived: true}); err == nil {
+			registered = list
+			for _, project := range list {
+				existing[canonicalProjectStoragePath(project.CanonicalDir, runtime.GOOS)] = project.ID
+			}
+		}
+	}
+	requested, err := canonicalBrowseDirectory(r.URL.Query().Get("path"))
+	if err != nil {
+		writeProjectError(w, projectDirectoryErrorStatus(err), "directory_unavailable", err.Error())
+		return
+	}
+	if !s.projectBrowseDirectoryAllowed(requested, registered) {
+		writeProjectError(w, http.StatusForbidden, "directory_unavailable", "directory is outside the allowed browse roots")
+		return
+	}
+	listing, err := listProjectDirectories(requested, r.URL.Query().Get("show_hidden") == "1", existing)
+	if err != nil {
+		writeProjectError(w, projectDirectoryErrorStatus(err), "directory_unavailable", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, listing)
 }
 
 func (s *serveServer) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -437,8 +748,10 @@ func (s *serveServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result := make([]projectAPI, 0, len(list))
+		statusCtx, cancelStatus := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancelStatus()
 		for i, p := range list {
-			result = append(result, s.cachedProjectStatus(p, i < maxEagerProjectStatusChecks))
+			result = append(result, s.cachedProjectStatus(statusCtx, p, i < maxEagerProjectStatusChecks))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": result})
 	case http.MethodPost:
@@ -447,7 +760,7 @@ func (s *serveServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeProjectError(w, http.StatusBadRequest, "invalid_project", "invalid project request: "+err.Error())
 			return
 		}
-		resolved, err := resolveProjectPath(req.Path)
+		resolved, err := resolveProjectPathContext(r.Context(), req.Path)
 		if err != nil {
 			log.Printf("[serve] rejected project path canonicalization: %v", err)
 			writeProjectError(w, http.StatusBadRequest, "invalid_project_path", err.Error())
@@ -604,13 +917,43 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Availability is intentionally derived rather than persisted.
+	statusCtx, cancelStatus := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancelStatus()
 	for i := range groups {
 		if groups[i].Project != nil {
-			api := s.cachedProjectStatus(*groups[i].Project, i < maxEagerProjectStatusChecks)
+			api := s.cachedProjectStatus(statusCtx, *groups[i].Project, i < maxEagerProjectStatusChecks)
 			groups[i].Project = &api.Project
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+}
+
+func sessionProjectCandidateFor(ctx context.Context, persisted *session.Session, projects session.ProjectStore) (*sessionProjectCandidate, error) {
+	if persisted == nil {
+		return nil, nil
+	}
+	candidatePath := strings.TrimSpace(persisted.CWD)
+	if candidatePath == "" {
+		candidatePath = strings.TrimSpace(persisted.WorktreeDir)
+	}
+	if candidatePath == "" {
+		return nil, nil
+	}
+	resolved, err := resolveProjectPathContext(ctx, candidatePath)
+	if err != nil {
+		return nil, nil
+	}
+	candidate := &sessionProjectCandidate{CanonicalDir: resolved.CanonicalDir, DefaultName: resolved.DefaultName, Git: resolved.Git}
+	existing, err := projects.GetProjectByCanonicalDir(ctx, resolved.CanonicalDir)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		candidate.ExistingProjectID = existing.ID
+		candidate.ExistingName = existing.Name
+		candidate.ExistingArchived = existing.Archived()
+	}
+	return candidate, nil
 }
 
 func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -618,20 +961,99 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		writeProjectError(w, http.StatusNotFound, "projects_disabled", "project mode is disabled")
 		return
 	}
-	var req struct {
-		ProjectID string `json:"project_id"`
-	}
-	if err := decodeSmallJSON(w, r, &req); err != nil || strings.TrimSpace(req.ProjectID) == "" {
-		writeProjectError(w, http.StatusBadRequest, "invalid_project", "project_id is required")
+	projects, ok := s.projectStore()
+	if !ok {
+		writeProjectError(w, http.StatusServiceUnavailable, "projects_unavailable", "project storage is unavailable")
 		return
 	}
-	var releaseAssignmentGuard func()
+	if r.Method == http.MethodGet {
+		persisted, err := s.store.Get(r.Context(), sessionID)
+		if err != nil || persisted == nil {
+			writeProjectError(w, http.StatusNotFound, "session_not_found", "session not found")
+			return
+		}
+		info := sessionProjectAssignmentInfo{CWD: persisted.CWD, WorktreeDir: persisted.WorktreeDir, ProjectID: persisted.ProjectID}
+		if persisted.ProjectID == "" {
+			info.Candidate, err = sessionProjectCandidateFor(r.Context(), persisted, projects)
+			if err != nil {
+				writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not inspect the conversation workspace")
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, info)
+		return
+	}
+	var req sessionProjectAssignmentRequest
+	if err := decodeSmallJSON(w, r, &req); err != nil {
+		writeProjectError(w, http.StatusBadRequest, "invalid_project", "invalid project assignment request: "+err.Error())
+		return
+	}
+	req.ProjectID = strings.TrimSpace(req.ProjectID)
+	if (req.ProjectID == "" && !req.CreateFromWorkspace) || (req.ProjectID != "" && req.CreateFromWorkspace) {
+		writeProjectError(w, http.StatusBadRequest, "invalid_project", "provide project_id or create_from_workspace")
+		return
+	}
 	var guardedRuntime *serveRuntime
+	persisted, err := s.store.Get(r.Context(), sessionID)
+	if err != nil || persisted == nil {
+		writeProjectError(w, http.StatusNotFound, "session_not_found", "session not found")
+		return
+	}
+	if strings.TrimSpace(persisted.ProjectID) != "" {
+		writeProjectError(w, http.StatusConflict, "workspace_conflict", "this conversation already has a project")
+		return
+	}
+	var project *session.Project
+	if req.CreateFromWorkspace {
+		candidate, candidateErr := sessionProjectCandidateFor(r.Context(), persisted, projects)
+		if candidateErr != nil {
+			writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not inspect the conversation workspace")
+			return
+		}
+		if candidate == nil {
+			writeProjectError(w, http.StatusConflict, "candidate_unavailable", "the conversation workspace cannot be registered as a project")
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = candidate.DefaultName
+			if candidate.ExistingName != "" {
+				name = candidate.ExistingName
+			}
+		}
+		project = &session.Project{Name: name, CanonicalDir: candidate.CanonicalDir}
+		if err := projects.CreateProject(r.Context(), project); err != nil && !errors.Is(err, session.ErrProjectDuplicate) {
+			writeProjectError(w, http.StatusBadRequest, "invalid_project", err.Error())
+			return
+		}
+		s.clearProjectStatusCache()
+		log.Printf("[serve] project upgraded from conversation workspace: id=%s path=%s", project.ID, project.CanonicalDir)
+	} else {
+		project, err = projects.GetProject(r.Context(), req.ProjectID)
+		if err != nil || project == nil {
+			writeProjectError(w, http.StatusNotFound, "project_not_found", "project not found")
+			return
+		}
+	}
+	status := projectStatus(*project)
+	if !status.Available {
+		writeProjectError(w, http.StatusConflict, "project_unavailable", status.UnavailableReason)
+		return
+	}
+	if project.Archived() {
+		writeProjectError(w, http.StatusConflict, "project_archived", "restore the project before assigning conversations")
+		return
+	}
+	if !sessionMatchesProjectBindingContext(r.Context(), *persisted, resolvedProjectPath{CanonicalDir: project.CanonicalDir, Git: status.Git}) {
+		writeProjectError(w, http.StatusConflict, "workspace_conflict", "the persisted conversation workspace does not match this project")
+		return
+	}
+
+	// Keep the process-wide session map lock only around the final race-sensitive
+	// recheck and assignment. Project discovery and Git inspection above may be
+	// slow and must not block unrelated conversations.
+	var releaseAssignmentGuard func()
 	if s.sessionMgr != nil {
-		// Hold the manager map lock so a response cannot create/acquire this
-		// session's runtime between the active-run check and the conditional DB
-		// assignment. An existing runtime's operation lock closes the same race for
-		// requests that already acquired it.
 		s.sessionMgr.mu.Lock()
 		if rt := s.sessionMgr.sessions[sessionID]; rt != nil {
 			if rt.hasActiveRun() || !rt.mu.TryLock() {
@@ -653,40 +1075,21 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		} else {
 			releaseAssignmentGuard = s.sessionMgr.mu.Unlock
 		}
-		defer releaseAssignmentGuard()
 	}
-	persisted, err := s.store.Get(r.Context(), sessionID)
-	if err != nil || persisted == nil {
-		writeProjectError(w, http.StatusNotFound, "session_not_found", "session not found")
+	releaseGuard := func() {
+		if releaseAssignmentGuard != nil {
+			release := releaseAssignmentGuard
+			releaseAssignmentGuard = nil
+			release()
+		}
+	}
+	defer releaseGuard()
+	latest, getErr := s.store.Get(r.Context(), sessionID)
+	if getErr != nil || latest == nil || latest.ProjectID != "" || latest.CWD != persisted.CWD || latest.WorktreeDir != persisted.WorktreeDir {
+		writeProjectError(w, http.StatusConflict, "workspace_conflict", "the conversation workspace changed while it was being inspected")
 		return
 	}
-	if strings.TrimSpace(persisted.ProjectID) != "" {
-		writeProjectError(w, http.StatusConflict, "workspace_conflict", "this conversation already has a project")
-		return
-	}
-	projects, ok := s.projectStore()
-	if !ok {
-		writeProjectError(w, http.StatusServiceUnavailable, "projects_unavailable", "project storage is unavailable")
-		return
-	}
-	project, err := projects.GetProject(r.Context(), strings.TrimSpace(req.ProjectID))
-	if err != nil || project == nil {
-		writeProjectError(w, http.StatusNotFound, "project_not_found", "project not found")
-		return
-	}
-	status := projectStatus(*project)
-	if !status.Available {
-		writeProjectError(w, http.StatusConflict, "project_unavailable", status.UnavailableReason)
-		return
-	}
-	if project.Archived() {
-		writeProjectError(w, http.StatusConflict, "project_archived", "restore the project before assigning conversations")
-		return
-	}
-	if !sessionMatchesProjectBinding(*persisted, resolvedProjectPath{CanonicalDir: project.CanonicalDir, Git: status.Git}) {
-		writeProjectError(w, http.StatusConflict, "workspace_conflict", "the persisted conversation workspace does not match this project")
-		return
-	}
+	persisted = latest
 	if err := projects.AssignSessionProject(r.Context(), sessionID, project.ID, persisted.CWD, persisted.WorktreeDir); errors.Is(err, session.ErrWorkspaceConflict) {
 		writeProjectError(w, http.StatusConflict, "workspace_conflict", "this conversation was assigned by another request")
 		return
@@ -699,6 +1102,7 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 	if guardedRuntime != nil {
 		guardedRuntime.sessionMeta = persisted
 	}
+	releaseGuard()
 	writeJSON(w, http.StatusOK, persisted)
 }
 

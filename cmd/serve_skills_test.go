@@ -954,3 +954,21 @@ func serveSkillTestSetup(t *testing.T) (*skills.Setup, string) {
 }
 
 var _ llm.Provider = (*llm.MockProvider)(nil)
+
+func TestConfigureRuntimeSkillsPreservesAgentResolvedPrompt(t *testing.T) {
+	setup := &skills.Setup{XML: "<available_skills>demo</available_skills>"}
+	srv := &serveServer{baseSystemPrompt: "server default", skillsSetup: setup}
+	rt := &serveRuntime{
+		baseSystemPrompt: "agent prompt",
+		systemPrompt:     "agent prompt\n\n<available_skills>startup</available_skills>",
+	}
+
+	srv.configureRuntimeSkillsForDir(rt, t.TempDir())
+
+	if !strings.Contains(rt.systemPrompt, "agent prompt") || strings.Contains(rt.systemPrompt, "server default") || strings.Contains(rt.systemPrompt, "startup") {
+		t.Fatalf("configured prompt = %q", rt.systemPrompt)
+	}
+	if !strings.Contains(rt.systemPrompt, setup.XML) {
+		t.Fatalf("configured prompt missing skills metadata: %q", rt.systemPrompt)
+	}
+}

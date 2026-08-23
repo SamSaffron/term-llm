@@ -35,6 +35,7 @@ type responsesBranchContextRequest struct {
 }
 
 type responsesCreateRequest struct {
+	Agent               string                         `json:"agent,omitempty"`
 	Model               string                         `json:"model"`
 	Provider            string                         `json:"provider"`
 	Input               json.RawMessage                `json:"input"`
@@ -57,6 +58,7 @@ type responsesCreateRequest struct {
 	MultiAgent          *responsesMultiAgentRequest    `json:"multi_agent,omitempty"`
 	PromptCacheOptions  *responsesPromptCacheRequest   `json:"prompt_cache_options,omitempty"`
 	UseDefaultWorkspace bool                           `json:"use_default_workspace,omitempty"`
+	NoProject           bool                           `json:"no_project,omitempty"`
 	ProjectID           string                         `json:"project_id,omitempty"`
 	WorktreeDir         string                         `json:"worktree_dir,omitempty"`
 	ModelSwap           *responsesModelSwapRequest     `json:"model_swap,omitempty"`

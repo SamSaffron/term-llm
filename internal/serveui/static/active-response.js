@@ -12,11 +12,21 @@
   const responseID = (payload, fallback = '') => String(payload?.response_id || payload?.response?.id || payload?.id || fallback || '').trim();
 
   const clone = (value) => (typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value)));
+  const guardianReview = (payload = {}) => ({
+    outcome: String(payload.outcome || 'warning').trim(), message: String(payload.message || payload.text || '').trim(), model: String(payload.model || '').trim(), tool: String(payload.tool || '').trim(),
+    command: String(payload.command || '').trim(), path: String(payload.path || '').trim(), is_write: Boolean(payload.is_write), workdir: String(payload.workdir || '').trim(),
+  });
+  const flushPendingGuardianReviews = (run, sequence) => {
+    let offset = 0; for (const [callID, reviews] of run.pendingGuardianByCallID) for (const review of reviews) {
+      const key = `${run.responseID}:guardian-notice:${sequence}:${offset++}`, outcome = review.outcome || 'warning'; run.projection.push({ key, id: key, role: 'guardian-notice', responseId: run.responseID, toolCallId: callID, terminalPolicy: 'durable', content: `${review.message || `Guardian ${outcome} review`} (unmatched tool call ${callID})`, guardianReviews: [clone(review)] });
+    }
+    run.pendingGuardianByCallID.clear();
+  };
 
   const createActiveRun = ({ responseId, runEpoch = 0, anchor = null } = {}) => ({
     responseID: String(responseId || '').trim(), runEpoch: Math.max(0, int(runEpoch)),
     terminal: null, lastSequence: 0, anchor: anchor == null ? null : clone(anchor), projection: [],
-    assistantByOrdinal: new Map(), toolByCallID: new Map(),
+    assistantByOrdinal: new Map(), toolByCallID: new Map(), pendingGuardianByCallID: new Map(),
     // Internal semantic cursor: null or the exact current tool-group object in projection.
     currentToolGroup: null,
   });
@@ -64,6 +74,11 @@
     };
     group.tools.push(entry);
     run.toolByCallID.set(id, entry);
+    const pendingGuardian = run.pendingGuardianByCallID.get(id);
+    if (pendingGuardian?.length) {
+      entry.guardianReviews = pendingGuardian.map((review) => clone(review));
+      run.pendingGuardianByCallID.delete(id);
+    }
     return entry;
   };
   const closeToolGroupsAtBoundary = (run) => {
@@ -229,13 +244,33 @@
         structural = true;
         break;
       }
-      case 'response.phase':
-      case 'response.model_swap.progress':
       case 'response.guardian.review': {
+        const callID = String(payload.tool_call_id || payload.call_id || '').trim();
+        const review = guardianReview(payload);
+        if (callID) {
+          const tool = run.toolByCallID.get(callID);
+          if (tool) {
+            if (!Array.isArray(tool.guardianReviews)) tool.guardianReviews = [];
+            tool.guardianReviews.push(review);
+          } else {
+            const pending = run.pendingGuardianByCallID.get(callID) || [];
+            pending.push(review);
+            run.pendingGuardianByCallID.set(callID, pending);
+          }
+        } else if (review.message) {
+          const key = `${run.responseID}:guardian-notice:${validation.sequence}`;
+          run.projection.push({ key, id: key, role: 'guardian-notice', responseId: run.responseID,
+            terminalPolicy: 'durable', content: review.message, guardianReviews: [review] });
+          structural = true;
+        }
+        break;
+      }
+      case 'response.phase':
+      case 'response.model_swap.progress': {
         const key = `${run.responseID}:transient:${event}`;
         let entry = run.projection.find((candidate) => candidate.key === key);
         if (!entry) {
-          const role = event === 'response.phase' ? 'phase' : (event === 'response.model_swap.progress' ? 'model-swap' : 'event');
+          const role = event === 'response.phase' ? 'phase' : 'model-swap';
           // A model-swap row has a durable replacement at handoff. Keep the
           // live row mounted through terminal state so it does not disappear
           // and reappear (or appear to move) while that replacement arrives.
@@ -251,6 +286,7 @@
       case 'response.cancelled':
       case 'response.failed': {
         closeToolGroupsAtBoundary(run);
+        flushPendingGuardianReviews(run, validation.sequence);
         const finalRev = Math.max(0, int(payload.final_rev ?? payload.response?.final_rev));
         const durableOutputCount = Math.max(0, int(payload.durable_output_count ?? payload.response?.durable_output_count));
         const declaredHandoff = (payload.durable_handoff ?? payload.response?.durable_handoff) === true;
@@ -291,6 +327,7 @@
     const currentToolGroupIndex = run.currentToolGroup ? run.projection.indexOf(run.currentToolGroup) : -1;
     candidate.projection = run.projection.map((entry) => clone(entry));
     candidate.currentToolGroup = currentToolGroupIndex >= 0 ? candidate.projection[currentToolGroupIndex] : null;
+    for (const [callID, reviews] of run.pendingGuardianByCallID) candidate.pendingGuardianByCallID.set(callID, reviews.map((review) => clone(review)));
     for (const entry of candidate.projection) {
       if (entry.role === 'assistant') candidate.assistantByOrdinal.set(int(entry.assistantSegmentOrdinal), entry);
       if (entry.role === 'tool-group') {
@@ -320,6 +357,9 @@
         const group = run.projection.slice(before).find((entry) => entry.role === 'tool-group') || run.projection.findLast((entry) => entry.role === 'tool-group');
         if (group) group.created = Number(message.created || message.created_at) || 0;
         if (group && message.status) group.status = String(message.status);
+      } else if (message.role === 'guardian-notice') {
+        closeToolGroupsAtBoundary(run); const key = String(message.id || `${responseId}:guardian-notice:${run.projection.length + 1}`);
+        run.projection.push({ key, id: key, role: 'guardian-notice', responseId, terminalPolicy: 'durable', content: String(message.content || '') });
       } else if (message.role === 'compaction-ref') {
         closeToolGroupsAtBoundary(run);
         const eventSequence = int(message.compaction_sequence ?? message.eventSequence);

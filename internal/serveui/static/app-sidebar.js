@@ -6,6 +6,7 @@ const createEl = app.createEl;
 const { UI_PREFIX, state, elements } = app;
 
 const SEARCH_DEBOUNCE_MS = 180;
+const NO_PROJECT_SELECTION = '__no_project__';
 let searchTimer = null;
 let searchAbort = null;
 let searchSeq = 0;
@@ -254,8 +255,6 @@ const loadCapabilities = async () => {
     state.projectsEnabled = enabled;
     state.worktreesEnabled = worktreesEnabled;
     state.projectsError = '';
-    elements.addProjectBtn?.classList.toggle('hidden', !enabled);
-    elements.manageProjectsBtn?.classList.toggle('hidden', !enabled);
     app.updateSendButtonState?.();
     app.renderSidebar?.();
     app.renderWorktreeChip?.();
@@ -264,8 +263,6 @@ const loadCapabilities = async () => {
     state.capabilitiesLoaded = false;
     state.worktreesEnabled = false;
     state.projectsError = 'Could not load projects and conversations';
-    elements.addProjectBtn?.classList.add('hidden');
-    elements.manageProjectsBtn?.classList.add('hidden');
     app.updateSendButtonState?.();
     app.renderSidebar?.();
     app.renderWorktreeChip?.();
@@ -293,7 +290,7 @@ const loadProjectSidebar = async (options = {}) => {
     const payload = await response.json();
     state.sidebarGroups = Array.isArray(payload.groups) ? payload.groups : [];
     state.projects = state.sidebarGroups.map((group) => group.project).filter(Boolean);
-    if (state.lastProjectId) {
+    if (state.lastProjectId && state.lastProjectId !== NO_PROJECT_SELECTION) {
       const remembered = state.projects.find((project) => project.id === state.lastProjectId);
       if (!remembered || remembered.archived_at || !remembered.available) {
         delete state.projectDrafts[state.lastProjectId];
@@ -322,45 +319,17 @@ const loadProjectSidebar = async (options = {}) => {
   }
 };
 
-const projectExpanded = (id, force = false) => {
-  if (force) return true;
-  return state.projectExpansion[id] !== false;
-};
+const projectExpanded = (id) => state.projectExpansion[id] !== false;
+const projectExpansionAnimations = new Set();
 
 const persistProjectExpansion = () => {
   localStorage.setItem(app.STORAGE_KEYS.projectExpansion, JSON.stringify(state.projectExpansion));
 };
 
-const openAssignProjectModal = (conversation) => {
-  document.getElementById('assignProjectModal')?.remove();
-  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'assignProjectModal';
-  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'assignProjectTitle');
-  const title = createEl('h2', '', 'Assign project'); title.id = 'assignProjectTitle';
-  const note = createEl('p', '', 'Assignment changes grouping only. The conversation working directory and worktree will not change.');
-  const returnFocus = document.activeElement;
-  const status = createEl('div', 'project-modal-status'); status.setAttribute('aria-live', 'polite');
-  const choices = createEl('div', 'project-choice-list');
-  const close = activateProjectDialog(backdrop, dialog, returnFocus);
-  (state.projects || []).filter((project) => project.available && !project.archived_at).forEach((project) => {
-    const choice = createEl('button', '', project.name); choice.type = 'button';
-    choice.addEventListener('click', async () => {
-      choice.disabled = true;
-      status.textContent = '';
-      try {
-        const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(conversation.id)}/project`, { method: 'POST', headers: app.requestHeaders(conversation.id), body: JSON.stringify({ project_id: project.id }) });
-        if (!response.ok) { const payload = await response.json().catch(() => ({})); status.textContent = payload?.error?.message || 'This conversation does not match that project.'; choice.disabled = false; return; }
-        conversation.projectId = project.id; conversation.projectName = project.name; close(); await loadProjectSidebar();
-      } catch (_err) {
-        status.textContent = 'Could not assign this conversation. Retry.';
-        choice.disabled = false;
-      }
-    });
-    choices.appendChild(choice);
-  });
-  const cancel = createEl('button', '', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', close);
-  dialog.append(title, note, choices, status, cancel); backdrop.appendChild(dialog); document.body.appendChild(backdrop);
-  choices.querySelector('button')?.focus?.();
-};
+const openAssignProjectModal = (conversation) => app.openAssignProjectDialog(conversation, {
+  activateDialog: activateProjectDialog,
+  onAssigned: loadProjectSidebar,
+});
 
 const renderProjectSessionRow = (session) => {
   const row = app.sidebarSessionRow?.(session) || createEl('div', 'session-row');
@@ -375,110 +344,167 @@ const renderProjectSessionRow = (session) => {
   } else if (!session.projectUnavailable) {
     existingUnavailable?.remove();
   }
-  const existingAssign = row.querySelector?.('.assign-project-action');
-  if (session.projectId) existingAssign?.remove();
-  else if (state.projectsEnabled && !existingAssign) {
-    const assign = createEl('button', 'session-actions-trigger assign-project-action', 'Assign');
-    assign.type = 'button';
-    assign.setAttribute('aria-label', `Assign project to ${session.title || 'conversation'}`);
-    assign.addEventListener('click', () => openAssignProjectModal(session));
-    row.appendChild(assign);
-  }
   return row;
 };
 
-const loadMoreProjectSessions = async (group, list, button) => {
-  if (!group?.next_cursor) return;
-  button.disabled = true;
+let projectPaginationObserver = null;
+
+const disconnectProjectPagination = () => {
+  projectPaginationObserver?.disconnect?.();
+  projectPaginationObserver = null;
+};
+
+const observeProjectPaginationSentinel = (sentinel) => {
+  if (!sentinel) return;
+  if (typeof IntersectionObserver !== 'function') {
+    setTimeout(() => sentinel._loadMore?.(), 0);
+    return;
+  }
+  if (!projectPaginationObserver) {
+    projectPaginationObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        projectPaginationObserver?.unobserve?.(entry.target);
+        entry.target?._loadMore?.();
+      });
+    }, { root: elements.sidebarContent || null, rootMargin: '160px 0px' });
+  }
+  projectPaginationObserver.observe(sentinel);
+};
+
+const loadMoreProjectSessions = async (group, list, sentinel) => {
+  if (!group?.next_cursor || sentinel?._loading) return;
+  sentinel._loading = true;
+  sentinel.classList.add('loading');
+  sentinel.setAttribute('aria-label', 'Loading older conversations');
   try {
     const projectParam = group.project?.id ? `project_id=${encodeURIComponent(group.project.id)}&` : '';
     const response = await app.apiFetch(`${UI_PREFIX}/v1/sessions?${projectParam}cursor=${encodeURIComponent(group.next_cursor)}&limit=12&include_archived=${state.showHiddenSessions ? '1' : '0'}`, { headers: app.requestHeaders('') });
     if (!response.ok) throw new Error('Could not load more conversations');
     const payload = await response.json();
+    sentinel.remove();
     (payload.sessions || []).forEach((item) => {
       const session = projectSessionFromSummary(item, group.project);
       if (!state.sessions.some((existing) => existing.id === session.id)) state.sessions.push(session);
       group.sessions.push(item);
-      list.appendChild(renderProjectSessionRow(session));
+      const row = renderProjectSessionRow(session); row.setAttribute('role', 'listitem'); list.appendChild(row);
     });
     group.next_cursor = String(payload.next_cursor || '');
-    button.remove();
-    if (group.next_cursor) list.appendChild(projectLoadMoreButton(group, list));
-  } catch (err) {
-    button.disabled = false;
-    button.textContent = 'Retry loading more';
+    const listIsMounted = !('isConnected' in list) || list.isConnected;
+    if (group.next_cursor && listIsMounted) appendProjectPaginationSentinel(group, list);
+  } catch (_err) {
+    sentinel._loading = false;
+    sentinel.classList.remove('loading');
+    sentinel.classList.add('error');
+    sentinel.textContent = 'Couldn’t load older conversations';
+    sentinel.setAttribute('aria-label', sentinel.textContent);
+    setTimeout(() => {
+      const mounted = !('isConnected' in sentinel) || sentinel.isConnected;
+      if (!mounted || !group.next_cursor) return;
+      sentinel.classList.remove('error');
+      sentinel.textContent = '';
+      observeProjectPaginationSentinel(sentinel);
+    }, 5000);
   }
 };
 
-const projectLoadMoreButton = (group, list) => {
-  const button = createEl('button', 'project-load-more', 'Load more');
-  button.type = 'button';
-  button.addEventListener('click', () => loadMoreProjectSessions(group, list, button));
-  return button;
+const projectPaginationSentinel = (group, list) => {
+  const sentinel = createEl('div', 'project-pagination-sentinel');
+  sentinel.setAttribute('role', 'status');
+  sentinel.setAttribute('aria-label', 'More conversations load automatically');
+  sentinel._loadMore = () => loadMoreProjectSessions(group, list, sentinel);
+  return sentinel;
+};
+
+const appendProjectPaginationSentinel = (group, list) => {
+  const sentinel = projectPaginationSentinel(group, list);
+  list.appendChild(sentinel);
+  observeProjectPaginationSentinel(sentinel);
+  return sentinel;
 };
 
 const openProjectManageModal = (project, initialAction = 'rename', returnFocusOverride = null) => {
   document.getElementById('projectManageModal')?.remove();
   const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'projectManageModal';
-  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectManageTitle');
-  const title = createEl('h2', '', `Manage ${project.name}`); title.id = 'projectManageTitle';
-  const path = createEl('div', 'project-menu-details', project.canonical_dir || ''); path.title = project.canonical_dir || '';
-  const details = createEl('p', 'project-status-detail', `${project.git ? 'Git repository' : 'Directory'} · ${project.available ? 'Available' : (project.unavailable_reason || 'Unavailable')} · ${Number(project.conversation_count || 0)} conversation${Number(project.conversation_count || 0) === 1 ? '' : 's'}`);
-  const name = createEl('input', 'project-input'); name.value = project.name || ''; name.setAttribute('aria-label', 'Project display name');
-  const note = createEl('p', '', project.archived_at ? 'Restoring makes this project available for new chats.' : 'Archiving hides this project from new chats; existing conversations keep working.');
+  const dialog = createEl('div', 'project-modal project-manage-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectManageTitle');
+  dialog.appendChild(createEl('div', 'project-modal-handle'));
+
+  const header = createEl('div', 'project-modal-header');
+  const heading = createEl('div', 'project-modal-heading');
+  const title = createEl('h2', '', 'Manage project'); title.id = 'projectManageTitle';
+  const explanation = createEl('p', '', project.archived_at ? 'This project is archived. Restore it to start new chats here.' : 'Rename this project, or archive it to hide it from new chats.');
+  const closeButton = createEl('button', 'project-modal-close', '×'); closeButton.type = 'button'; closeButton.setAttribute('aria-label', 'Close manage project');
+  heading.append(title, explanation); header.append(heading, closeButton);
+
+  const fields = createEl('div', 'project-modal-fields');
+  const identity = createEl('section', 'project-manage-identity');
+  const identityTop = createEl('div', 'project-field-label-row');
+  identityTop.appendChild(createEl('span', 'project-field-label', 'Folder'));
+  const stateLabel = project.archived_at ? 'Archived' : (project.available ? 'Available' : 'Unavailable');
+  const stateClass = project.archived_at ? 'is-archived' : (project.available ? 'is-available' : 'is-unavailable');
+  identityTop.appendChild(createEl('span', `project-manage-state ${stateClass}`, stateLabel));
+  const projectPath = createEl('code', 'project-manage-path', project.canonical_dir || ''); projectPath.title = project.canonical_dir || '';
+  const conversations = Number(project.conversation_count || 0);
+  const metadata = createEl('div', 'project-field-hint', `${project.git ? 'Git repository' : 'Directory'} · ${conversations} conversation${conversations === 1 ? '' : 's'}`);
+  identity.append(identityTop, projectPath, metadata);
+
+  const nameField = createEl('div', 'project-field');
+  const nameLabel = createEl('label', 'project-field-label', 'Display name'); nameLabel.setAttribute('for', 'projectManageNameInput');
+  const name = createEl('input', 'project-input'); name.id = 'projectManageNameInput'; name.value = project.name || ''; name.setAttribute('aria-label', 'Project display name'); name.setAttribute('aria-describedby', 'projectManageNameHint');
+  const nameHint = createEl('div', 'project-field-hint', 'Shown in the sidebar; the folder on disk is unchanged.'); nameHint.id = 'projectManageNameHint';
+  nameField.append(nameLabel, name, nameHint);
+
+  const danger = createEl('section', `project-manage-danger${project.archived_at ? ' is-restore' : ''}`);
+  const dangerCopy = createEl('div', 'project-manage-danger-copy');
+  dangerCopy.append(createEl('span', 'project-field-label', project.archived_at ? 'Restore project' : 'Archive project'));
+  const archiveHint = createEl('p', 'project-field-hint', project.archived_at ? 'Restoring makes this project available for new chats.' : 'Archiving hides this project from new chats; existing conversations keep working.'); archiveHint.id = 'projectManageArchiveHint';
+  dangerCopy.appendChild(archiveHint);
+  const archive = createEl('button', project.archived_at ? 'btn project-manage-archive' : 'btn danger-quiet project-manage-archive', project.archived_at ? 'Restore project' : 'Archive project'); archive.type = 'button'; archive.setAttribute('aria-describedby', archiveHint.id);
+  const warning = createEl('p', 'project-manage-warning', 'Archive this project? You can restore it later.'); warning.hidden = true; warning.setAttribute('role', 'alert');
+  danger.append(dangerCopy, archive, warning);
+  fields.append(identity, nameField, danger);
+
   const status = createEl('div', 'project-modal-status'); status.setAttribute('aria-live', 'polite');
   const actions = createEl('div', 'project-modal-actions');
-  const cancel = createEl('button', '', 'Cancel'); cancel.type = 'button';
-  const save = createEl('button', '', 'Save name'); save.type = 'button';
-  const archive = createEl('button', 'primary', project.archived_at ? 'Restore project' : 'Archive project'); archive.type = 'button';
+  const cancel = createEl('button', 'btn', 'Cancel'); cancel.type = 'button';
+  const save = createEl('button', 'btn primary', 'Save name'); save.type = 'button';
+  const footer = createEl('div', 'project-modal-footer'); actions.append(cancel, save); footer.append(status, actions);
+  dialog.append(header, fields, footer); backdrop.appendChild(dialog); document.body.appendChild(backdrop);
+
+  const setStatus = (message = '', error = false) => {
+    status.textContent = message; status.classList.toggle('is-error', error);
+    if (error) status.setAttribute('role', 'alert'); else status.removeAttribute('role');
+  };
   const returnFocus = returnFocusOverride || document.activeElement;
-  const close = activateProjectDialog(backdrop, dialog, returnFocus); cancel.addEventListener('click', close);
-  save.addEventListener('click', async () => {
-    save.disabled = true; status.textContent = '';
+  const close = activateProjectDialog(backdrop, dialog, returnFocus);
+  closeButton.addEventListener('click', close); cancel.addEventListener('click', close);
+  const saveName = async () => {
+    save.disabled = true; save.classList.add('is-loading'); save.textContent = 'Saving…'; setStatus();
     try {
       const response = await app.apiFetch(`${UI_PREFIX}/v1/projects/${encodeURIComponent(project.id)}`, { method: 'PATCH', headers: app.requestHeaders(''), body: JSON.stringify({ name: name.value }) });
       if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload?.error?.message || 'Could not rename project'); }
       close(); await loadProjectSidebar();
-    } catch (err) { status.textContent = err?.message || 'Could not rename project. Retry.'; }
-    finally { save.disabled = false; }
-  });
+    } catch (err) { setStatus(err?.message || 'Could not rename project. Retry.', true); }
+    finally { save.disabled = false; save.classList.remove('is-loading'); save.textContent = 'Save name'; }
+  };
+  save.addEventListener('click', saveName);
+  name.addEventListener('keydown', async (event) => { if (event.key === 'Enter') { event.preventDefault?.(); await saveName(); } });
+
   let archiveArmed = Boolean(project.archived_at);
   archive.addEventListener('click', async () => {
     if (!project.archived_at && !archiveArmed) {
-      archiveArmed = true;
-      archive.textContent = 'Confirm archive';
-      status.textContent = 'Archiving hides this project from new chats; existing conversations keep working.';
+      archiveArmed = true; archive.textContent = 'Confirm archive'; archive.classList.remove('danger-quiet'); archive.classList.add('danger'); warning.hidden = false; archive.setAttribute('aria-describedby', `${archiveHint.id} projectManageArchiveWarning`); warning.id = 'projectManageArchiveWarning';
       return;
     }
-    archive.disabled = true;
+    archive.disabled = true; archive.classList.add('is-loading'); setStatus();
     try {
       const response = await app.apiFetch(`${UI_PREFIX}/v1/projects/${encodeURIComponent(project.id)}`, { method: 'PATCH', headers: app.requestHeaders(''), body: JSON.stringify({ archived: !Boolean(project.archived_at) }) });
       if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload?.error?.message || 'Could not update project'); }
       close(); await loadProjectSidebar();
-    } catch (err) { status.textContent = err?.message || 'Could not update project. Retry.'; }
-    finally { archive.disabled = false; }
+    } catch (err) { setStatus(err?.message || 'Could not update project. Retry.', true); }
+    finally { archive.disabled = false; archive.classList.remove('is-loading'); }
   });
-  actions.append(cancel, save, archive); dialog.append(title, path, details, name, note, status, actions); backdrop.appendChild(dialog); document.body.appendChild(backdrop);
   if (initialAction === 'archive') archive.focus(); else { name.focus(); name.select(); }
-};
-
-const openProjectManager = () => {
-  document.getElementById('projectManagerModal')?.remove();
-  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'projectManagerModal';
-  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectManagerTitle');
-  const returnFocus = document.activeElement;
-  const modalClose = activateProjectDialog(backdrop, dialog, returnFocus);
-  const title = createEl('h2', '', 'Manage projects'); title.id = 'projectManagerTitle';
-  const list = createEl('div', 'project-choice-list');
-  (state.projects || []).forEach((project) => {
-    const count = Number(project.conversation_count || 0);
-    const row = createEl('button', '', `${project.name} — ${project.git ? 'Git' : 'Directory'} — ${count} conversation${count === 1 ? '' : 's'} — ${project.canonical_dir || ''}`); row.type = 'button'; row.title = project.canonical_dir || '';
-    row.addEventListener('click', () => { modalClose(); openProjectManageModal(project); }); list.appendChild(row);
-  });
-  if (!(state.projects || []).length) list.appendChild(createEl('p', '', 'No projects registered. Add one to start a conversation.'));
-  const add = createEl('button', 'primary', 'Add project'); add.type = 'button'; add.addEventListener('click', () => { modalClose(); openProjectModal(); });
-  const close = createEl('button', '', 'Close'); close.type = 'button'; close.addEventListener('click', modalClose);
-  dialog.append(title, list, add, close); backdrop.appendChild(dialog); document.body.appendChild(backdrop); list.querySelector('button')?.focus?.() || add.focus();
 };
 
 let activeProjectContextMenu = null;
@@ -549,7 +575,7 @@ document.addEventListener('keydown', (event) => {
 });
 
 const projectHeadingLabel = (project) => {
-  if (!project) return 'No project';
+  if (!project) return 'Chat';
   const duplicate = (state.projects || []).filter((candidate) => String(candidate.name || '').localeCompare(String(project.name || ''), undefined, { sensitivity: 'accent' }) === 0).length > 1;
   if (!duplicate) return project.name || 'Project';
   const parts = String(project.canonical_dir || '').split(/[\\/]+/).filter(Boolean);
@@ -564,20 +590,28 @@ const renderProjectGroup = (group) => {
   const active = state.draftSessionActive
     ? Boolean(project && String(state.activeProjectId || '') === String(project.id || ''))
     : String(activeProjectID || '') === String(project?.id || '');
-  if (active) state.projectExpansion[id] = true;
-  const expanded = projectExpanded(id, active);
+  const expanded = projectExpanded(id);
   const section = createEl('section', `project-group${active ? ' active' : ''}${project?.archived_at ? ' archived' : ''}${project && !project.available ? ' unavailable' : ''}`);
   section.dataset.projectId = String(project?.id || '');
   const headingId = `project-heading-${String(id).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
   const header = createEl('div', 'project-group-header');
-  const toggle = createEl('button', 'project-group-toggle'); toggle.type = 'button'; toggle.id = headingId;
-  toggle.setAttribute('aria-expanded', String(expanded)); toggle.title = project?.canonical_dir || '';
   const headingLabel = projectHeadingLabel(project);
+  const toggle = createEl('button', 'project-group-toggle'); toggle.type = 'button'; toggle.id = headingId;
+  toggle.setAttribute('aria-expanded', String(expanded));
   toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${headingLabel}${project?.canonical_dir ? ` — ${project.canonical_dir}` : ''}`);
-  toggle.textContent = `${expanded ? '▾' : '▸'} ${headingLabel}`;
-  toggle.addEventListener('click', () => {
-    state.projectExpansion[id] = !expanded; persistProjectExpansion(); app.renderSidebar?.();
-    app.showToast?.(`${project?.name || 'No project'} ${!expanded ? 'expanded' : 'collapsed'}`, 'info');
+  toggle.title = project?.canonical_dir || `${expanded ? 'Collapse' : 'Expand'} ${headingLabel}`;
+  const label = createEl('span', 'project-group-label', headingLabel);
+  const chevron = createEl('span', 'project-group-chevron');
+  chevron.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+  toggle.append(label, chevron);
+  toggle.addEventListener('click', (event) => {
+    event.preventDefault?.();
+    const nextExpanded = !projectExpanded(id);
+    state.projectExpansion[id] = nextExpanded;
+    if (nextExpanded) projectExpansionAnimations.add(id);
+    else projectExpansionAnimations.delete(id);
+    persistProjectExpansion();
+    app.renderSidebar?.();
   });
   header.appendChild(toggle);
   if (project) {
@@ -613,25 +647,8 @@ const renderProjectGroup = (group) => {
     section.appendChild(unavailable);
   }
   if (expanded) {
-    const list = createEl('div', 'project-session-list'); list.setAttribute('role', 'list'); list.setAttribute('aria-labelledby', headingId);
-    const projectDraft = project ? state.projectDrafts?.[project.id] : null;
-    const activeDraft = Boolean(project && state.draftSessionActive && state.activeProjectId === project.id);
-    if (project && (projectDraft || activeDraft)) {
-      const draft = createEl('div', `session-row draft${activeDraft ? ' active' : ''}`);
-      const promptPreview = String(projectDraft?.prompt || '').trim();
-      const open = createEl('button', 'session-main', promptPreview ? `Draft · ${app.truncate?.(promptPreview, 48) || promptPreview}` : 'Draft · New conversation');
-      open.type = 'button'; open.disabled = Boolean(project.archived_at || !project.available);
-      open.addEventListener('click', () => app.createAndSwitchToFreshSession?.(project.id));
-      const discard = createEl('button', 'session-actions-trigger', '×'); discard.type = 'button'; discard.setAttribute('aria-label', `Discard draft and start over in ${project.name}`); discard.title = 'Discard draft and start over';
-      discard.addEventListener('click', () => {
-        app.clearDraftMessageForSession?.(`draft:${project.id}`);
-        delete state.projectDrafts[project.id];
-        state.projectAttachments[project.id] = [];
-        if (activeDraft) app.switchToDraftSession?.({ projectId: project.id, clearComposer: true, focusPrompt: true });
-        else app.renderSidebar?.();
-      });
-      draft.append(open, discard); list.appendChild(draft);
-    }
+    const opening = projectExpansionAnimations.delete(id);
+    const list = createEl('div', `project-session-list${opening ? ' is-opening' : ''}`); list.setAttribute('role', 'list'); list.setAttribute('aria-labelledby', headingId);
     const canonicalByID = new Map((state.sessions || []).map((session) => [session.id, session]));
     let sessions = (group.sessions || []).map((item) => {
       const projected = projectSessionFromSummary(item, project);
@@ -652,7 +669,7 @@ const renderProjectGroup = (group) => {
     if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) sessions = state.sidebarSearchResults.filter((item) => String(item.projectId || '') === String(project?.id || ''));
     sessions.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created));
     sessions.forEach((session) => { const row = renderProjectSessionRow(session); row.setAttribute('role', 'listitem'); list.appendChild(row); });
-    if (group.next_cursor && !state.sidebarSearchQuery) list.appendChild(projectLoadMoreButton(group, list));
+    if (group.next_cursor && !state.sidebarSearchQuery) appendProjectPaginationSentinel(group, list);
     section.appendChild(list);
   }
   return section;
@@ -667,6 +684,7 @@ const projectInlineError = (message, retryAction) => {
 
 const renderProjectSidebar = () => {
   const container = elements.sessionGroups;
+  disconnectProjectPagination();
   if (state.capabilitiesRequired && !state.capabilitiesLoaded) {
     if (!container) return true;
     if (state.projectsError) {
@@ -688,14 +706,13 @@ const renderProjectSidebar = () => {
   const active = groups.filter((group) => group.project && !group.project.archived_at);
   const effectiveGroupActivity = (group) => {
     const projectId = String(group.project?.id || '');
-    const draftAt = Number(state.projectDrafts?.[projectId]?.created || 0);
     const persistedAt = Date.parse(group.last_activity_at || '') || 0;
     const localAt = (state.sessions || []).reduce((latest, session) => (
       String(session.projectId || '') === projectId
         ? Math.max(latest, Number(session.lastMessageAt || session.created || 0))
         : latest
     ), 0);
-    return Math.max(draftAt, persistedAt, localAt);
+    return Math.max(persistedAt, localAt);
   };
   active.sort((a, b) => {
     const aAt = effectiveGroupActivity(a);
@@ -724,8 +741,6 @@ const renderProjectSidebar = () => {
     nodes.push(details);
   }
   container.replaceChildren(...nodes);
-  const activeGroup = container.querySelector?.('.project-group.active');
-  activeGroup?.scrollIntoView?.({ block: 'nearest' });
   return true;
 };
 
@@ -737,76 +752,26 @@ const focusProjectGroupThenStartDraft = async (projectId) => {
   await app.createAndSwitchToFreshSession?.(id);
 };
 
-const openProjectModal = () => {
-  document.getElementById('projectModal')?.remove();
-  const backdrop = createEl('div', 'project-modal-backdrop'); backdrop.id = 'projectModal';
-  const dialog = createEl('div', 'project-modal'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'projectModalTitle');
-  const title = createEl('h2', '', 'Add project'); title.id = 'projectModalTitle';
-  const explanation = createEl('p', '', 'Enter an absolute path on the machine running term-llm.');
-  const name = createEl('input', 'project-input'); name.placeholder = 'Display name (optional)'; name.setAttribute('aria-label', 'Project display name');
-  const path = createEl('input', 'project-input project-path-input'); path.placeholder = '/absolute/server/path'; path.setAttribute('aria-label', 'Absolute server path'); path.setAttribute('autocorrect', 'off'); path.autocapitalize = 'none'; path.autocomplete = 'off'; path.spellcheck = false;
-  const status = createEl('div', 'project-modal-status'); status.setAttribute('aria-live', 'polite');
-  const actions = createEl('div', 'project-modal-actions');
-  const cancel = createEl('button', '', 'Cancel'); cancel.type = 'button';
-  const submit = createEl('button', 'primary', 'Preview'); submit.type = 'button';
-  let preview = null;
-  const invalidatePreview = () => {
-    if (!preview) return;
-    preview = null;
-    submit.textContent = 'Preview';
-    status.textContent = 'Project details changed; preview the resolved path again.';
-  };
-  name.addEventListener('input', invalidatePreview);
-  path.addEventListener('input', invalidatePreview);
-  const close = activateProjectDialog(backdrop, dialog, elements.addProjectBtn);
-  cancel.addEventListener('click', close);
-  submit.addEventListener('click', async () => {
-    status.textContent = ''; submit.disabled = true;
-    try {
-      const body = JSON.stringify({ name: name.value, path: path.value });
-      const suffix = preview ? '' : '?dry_run=1';
-      const response = await app.apiFetch(`${UI_PREFIX}/v1/projects${suffix}`, { method: 'POST', headers: app.requestHeaders(''), body });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        if (response.status === 409 && payload.existing_project_id) {
-          close(); await loadProjectSidebar(); await focusProjectGroupThenStartDraft(payload.existing_project_id); return;
-        }
-        throw new Error(payload?.error?.message || 'Could not add project');
-      }
-      if (!preview) {
-        if (payload.duplicate && payload.existing_project_id && !payload.project?.archived_at) {
-          close(); await loadProjectSidebar(); await focusProjectGroupThenStartDraft(payload.existing_project_id); return;
-        }
-        preview = payload;
-        const restoresArchived = Boolean(payload.duplicate && payload.project?.archived_at);
-        status.textContent = `Resolved path: ${payload.canonical_dir}${payload.git ? ' (Git repository root)' : ''}${restoresArchived ? ' — this archived project will be restored' : ''}`;
-        submit.textContent = restoresArchived ? 'Restore project' : 'Add project';
-      } else {
-        const project = payload.project;
-        close(); await loadProjectSidebar();
-        if (project?.id) await focusProjectGroupThenStartDraft(project.id);
-      }
-    } catch (err) { status.textContent = err.message || 'Could not add project'; }
-    finally { submit.disabled = false; }
-  });
-  actions.append(cancel, submit); dialog.append(title, explanation, name, path, status, actions); backdrop.appendChild(dialog); document.body.appendChild(backdrop); path.focus();
-};
-
-elements.addProjectBtn?.addEventListener('click', openProjectModal);
-elements.manageProjectsBtn?.addEventListener('click', openProjectManager);
+const openProjectModal = (options = {}) => app.openProjectPicker({
+  ...options,
+  activateDialog: activateProjectDialog,
+  onExistingProject: async (projectID) => { await loadProjectSidebar(); await focusProjectGroupThenStartDraft(projectID); },
+  onProjectCreated: async (project) => { await loadProjectSidebar(); if (project?.id) await focusProjectGroupThenStartDraft(project.id); },
+});
 
 const restoreRememberedProjectDraft = async () => {
   if (!state.projectsEnabled || !state.draftSessionActive || state.activeSessionId) return false;
+  const noProjectRemembered = state.lastProjectId === '__no_project__';
   const available = (projectID) => (state.projects || []).some((project) => project.id === projectID && project.available && !project.archived_at);
   let projectID = available(state.lastProjectId) ? state.lastProjectId : '';
-  if (!projectID) {
+  if (!projectID && !noProjectRemembered) {
     const drafts = Object.entries(state.projectDrafts || {})
       .filter(([id]) => available(id))
       .sort((a, b) => Number(b[1]?.created || 0) - Number(a[1]?.created || 0));
     projectID = drafts[0]?.[0] || '';
   }
-  if (!projectID || typeof app.switchToDraftSession !== 'function') return false;
-  await app.switchToDraftSession({ projectId: projectID, clearComposer: false, focusPrompt: false, closeSidebar: false });
+  if ((!projectID && !noProjectRemembered) || typeof app.switchToDraftSession !== 'function') return false;
+  await app.switchToDraftSession({ projectId: noProjectRemembered ? '' : projectID, clearComposer: false, focusPrompt: false, closeSidebar: false });
   return true;
 };
 
@@ -1332,6 +1297,7 @@ Object.assign(app, {
   loadCapabilities,
   loadProjectSidebar,
   renderProjectSidebar,
+  openAssignProjectModal,
   activateProjectDialog,
   openProjectModal,
   initializeProjectMode

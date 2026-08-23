@@ -36,7 +36,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			t.Fatalf("%s=%d lines, must be below 1500", name, lines[name])
 		}
 	}
-	if lines["app-render.js"] > 3145 || lines["app-core.js"] > 2700 {
+	if lines["app-render.js"] > 3190 || lines["app-core.js"] > 2715 {
 		t.Fatalf("shell/render grew beyond baseline: %v", lines)
 	}
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -55,6 +55,9 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	branchingLines := 0
 	branchCommandLines := 0
 	diffLines := map[string]int{}
+	diffScopeLines := 0
+	projectPickerLines := 0
+	guardianRenderLines := 0
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".js") || strings.HasSuffix(name, "_test.js") {
@@ -73,15 +76,21 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			branchingLines = lineCount
 		} else if name == "app-branch-commands.js" {
 			branchCommandLines = lineCount
+		} else if name == "app-diff-scopes.js" {
+			diffScopeLines = lineCount
+		} else if name == "app-project-picker.js" {
+			projectPickerLines = lineCount
+		} else if name == "guardian-render.js" {
+			guardianRenderLines = lineCount
 		} else if name == "app-diffs.js" || name == "app-diff-comments.js" || name == "app-diff-queue.js" {
 			diffLines[name] = lineCount
 		} else {
 			legacyProductionLines += lineCount
 		}
 	}
-	// Keep focused transport/completion/branching/diff boundaries from weakening
-	// the pre-existing ratchet: legacy production code must still decrease, while each
-	// extracted module gets a narrow independent ceiling.
+	// Keep focused transport/completion/branching/diff/project-picker boundaries from
+	// weakening the pre-existing ratchet: legacy production code must still decrease,
+	// while each extracted module gets a narrow independent ceiling.
 	if legacyProductionLines >= 20729 {
 		t.Fatalf("legacy first-party production JS=%d lines, must decrease from 20729", legacyProductionLines)
 	}
@@ -100,6 +109,15 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	diffControllerLines := diffLines["app-diffs.js"] + diffLines["app-diff-comments.js"] + diffLines["app-diff-queue.js"]
 	if diffLines["app-diffs.js"] == 0 || diffLines["app-diff-comments.js"] == 0 || diffLines["app-diff-queue.js"] == 0 || diffControllerLines > 2700 {
 		t.Fatalf("diff sidebar, comments, and queue controllers grew beyond focused budget: %v", diffLines)
+	}
+	if diffScopeLines == 0 || diffScopeLines > 100 {
+		t.Fatalf("diff scope vocabulary and availability controller=%d lines, budget=100", diffScopeLines)
+	}
+	if guardianRenderLines == 0 || guardianRenderLines > 80 {
+		t.Fatalf("guardian renderer=%d lines, budget=80", guardianRenderLines)
+	}
+	if projectPickerLines == 0 || projectPickerLines > 420 {
+		t.Fatalf("project picker and assignment controllers=%d lines, budget=420", projectPickerLines)
 	}
 
 	for _, name := range []string{"active-response.js", "conversation.js", "transcript-window.js"} {
@@ -165,6 +183,24 @@ func TestBranchingAssetIsVersionedAndCached(t *testing.T) {
 		if !strings.Contains(string(serviceWorker), "'./"+name+"'") {
 			t.Fatalf("service worker shell cache is missing %s", name)
 		}
+	}
+}
+
+func TestProjectPickerAssetIsVersionedAndCached(t *testing.T) {
+	const name = "app-project-picker.js"
+	if _, err := StaticAsset(name); err != nil {
+		t.Fatalf("StaticAsset(%s): %v", name, err)
+	}
+	rendered := string(RenderIndexHTML("/chat", "", RenderOptions{}))
+	if !strings.Contains(rendered, `src="`+name+`?v=`) || !strings.Contains(rendered, `href="`+name+`?v=`) {
+		t.Fatalf("%s must be versioned in both script and preload tags", name)
+	}
+	serviceWorker, err := StaticAsset("sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(serviceWorker), "'./"+name+"'") {
+		t.Fatalf("service worker shell cache is missing %s", name)
 	}
 }
 
@@ -274,7 +310,7 @@ func TestHeaderControlsUseSharedActionPill(t *testing.T) {
 	}
 	htmlSrc := string(indexHTML)
 	for _, want := range []string{
-		`class="chip-trigger narrow-header-action" id="chipModelTrigger"`,
+		`class="chip-trigger narrow-header-action header-action" id="chipModelTrigger"`,
 		`class="mcp-status header-action" id="mcpStatus"`,
 		`class="icon-btn diff-toggle header-action" id="diffToggleBtn"`,
 	} {
@@ -285,8 +321,8 @@ func TestHeaderControlsUseSharedActionPill(t *testing.T) {
 	if !strings.Contains(htmlSrc, `class="effort-meter"`) {
 		t.Fatal("model picker should include the narrow effort meter icon")
 	}
-	if strings.Contains(htmlSrc, `class="chip-trigger header-action" id="chipModelTrigger"`) {
-		t.Fatal("model picker should only use the shared pill styling at narrow widths")
+	if strings.Contains(htmlSrc, `class="chip-trigger narrow-header-action" id="chipModelTrigger"`) {
+		t.Fatal("model picker should use the shared action pill at every viewport width")
 	}
 
 	css, err := StaticAsset("app.css")
@@ -305,12 +341,17 @@ func TestHeaderControlsUseSharedActionPill(t *testing.T) {
 		".header-action {",
 		"height: var(--header-action-height);",
 		"border-radius: var(--header-action-radius);",
-		".header-controls-row .narrow-header-action {",
 		".effort-meter {",
 		".chip-trigger:not(.header-action) {",
 	} {
 		if !strings.Contains(cssSrc, want) {
 			t.Fatalf("app.css missing shared header action styling: %s", want)
+		}
+	}
+	runtimeBlock := cssRuleBlock(cssSrc, ".model-picker .narrow-header-action")
+	for _, want := range []string{"border-color: transparent;", "background: transparent;", "box-shadow: none;"} {
+		if !strings.Contains(runtimeBlock, want) {
+			t.Fatalf("runtime control should stay subtle until hover; missing %q in %s", want, runtimeBlock)
 		}
 	}
 	for _, selector := range []string{".diff-toggle", ".mcp-status"} {

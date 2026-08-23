@@ -233,12 +233,16 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (applyRecoveredInteractiveFact(session, event, payload)) return { terminal: false };
 
   if (event === 'response.guardian.review') {
-    if (lifecycleResult?.changed) {
+    const active = session.transcript?.conversation?.active;
+    const callId = String(payload?.tool_call_id || payload?.call_id || '').trim();
+    const tool = callId ? active?.toolByCallID?.get(callId) : null;
+    const group = tool ? active.projection.find((entry) => entry.role === 'tool-group' && entry.tools?.includes(tool)) : null;
+    if (group) updateVisibleToolGroupNode(session, group);
+    else if (lifecycleResult?.changed) {
       app.refreshSessionMessagesFromTranscript?.(session);
       if (isSessionVisible(session)) app.renderMessages?.();
     }
     saveSessions();
-    scrollVisibleStreamToBottom(session, true);
     return { terminal: false };
   }
 

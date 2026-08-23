@@ -446,6 +446,7 @@ function createHarness(options = {}) {
         activeResponseId: null,
         lastSequenceNumber: 0,
         number: 0,
+        agent: state.selectedAgent || '',
         projectId: state.activeProjectId || '',
         projectName: String((state.projects || []).find((project) => project.id === state.activeProjectId)?.name || ''),
         worktreeDir: state.selectedWorktreeDir || '',
@@ -3082,6 +3083,7 @@ async function testDraftSendIgnoresStaleGlobalStreamingFlag() {
   state.streaming = true;
   state.currentStreamSessionId = '';
   state.currentStreamResponseId = '';
+  state.selectedAgent = 'reviewer';
   elements.promptInput.value = 'fresh draft message';
 
   const sendPromise = app.sendMessage().catch(() => {});
@@ -3107,6 +3109,14 @@ async function testDraftSendIgnoresStaleGlobalStreamingFlag() {
   const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (postCalls.length !== 1) {
     fail(name, 'draft send should post a normal response request once', JSON.stringify(fetchCalls));
+    app.detachResponseStream();
+    await sendPromise;
+    await cleanup();
+    return;
+  }
+  const requestBody = JSON.parse(postCalls[0].body || '{}');
+  if (requestBody.agent !== 'reviewer' || state.sessions[0].agent !== 'reviewer') {
+    fail(name, 'draft send should bind the selected agent to the request and session', JSON.stringify({ requestAgent: requestBody.agent, sessionAgent: state.sessions[0].agent }));
     app.detachResponseStream();
     await sendPromise;
     await cleanup();
@@ -4990,8 +5000,8 @@ function testModelSwapProgressEventUpdatesTransientMarker() {
   pass(name);
 }
 
-function testGuardianReviewEventIsDisplayOnlyTransient() {
-  const name = 'guardian review event is display-only and transient';
+function testGuardianReviewAttachesToToolEvenBeforeToolStart() {
+  const name = 'guardian review attaches to its command even when review arrives first';
   const { app, state } = createHarness();
   const session = {
     id: 'session_guardian', title: 'Guardian', messages: [], lastResponseId: null,
@@ -5001,12 +5011,21 @@ function testGuardianReviewEventIsDisplayOnlyTransient() {
   state.activeSessionId = session.id;
   const streamState = app.createResponseStreamState(session);
   app.applyResponseStreamEvent(session, streamState, 'response.guardian.review', {
-    response_id: 'resp_guardian',
-    message: 'Guardian approved command', sequence_number: 1,
+    response_id: 'resp_guardian', tool_call_id: 'shell-1', outcome: 'approved',
+    message: 'guardian: approved (low risk)', sequence_number: 1,
   });
-  const marker = projectedMessages(session)[0];
-  if (!marker || marker.role !== 'event' || !marker.transient) {
-    fail(name, 'guardian marker can leak into durable optimistic recovery', JSON.stringify(marker));
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    response_id: 'resp_guardian', sequence_number: 2,
+    item: { type: 'function_call', call_id: 'shell-1', name: 'shell', arguments: '{"command":"pwd"}' },
+  });
+  const projected = projectedMessages(session);
+  const tool = projected[0]?.tools?.[0];
+  if (projected.length !== 1 || projected[0]?.role !== 'tool-group' || tool?.guardianReviews?.[0]?.outcome !== 'approved') {
+    fail(name, 'guardian review was not attached to the correlated tool', JSON.stringify(projected));
+    return;
+  }
+  if (projected.some((message) => message.role === 'event' || message.role === 'guardian-notice')) {
+    fail(name, 'correlated guardian review leaked into a standalone row', JSON.stringify(projected));
     return;
   }
   pass(name);
@@ -7802,6 +7821,34 @@ function testDraftMessageLimitIsTen() {
   pass(name);
 }
 
+async function testNoProjectDraftFirstSendIsExplicit() {
+  const name = 'No project draft first send carries an explicit unbound selection';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  state.projectsEnabled = true;
+  state.draftSessionActive = true;
+  state.activeSessionId = '';
+  state.activeProjectId = '';
+  state.lastProjectId = '__no_project__';
+  state.projects = [];
+  elements.promptInput.value = 'stay unbound';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const post = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const body = JSON.parse(post?.body || '{}');
+  if (body.no_project !== true || Object.prototype.hasOwnProperty.call(body, 'project_id') || body.use_default_workspace) {
+    fail(name, 'first request did not preserve explicit No project selection', JSON.stringify(body));
+    return;
+  }
+  if (state.sessions.length !== 1 || state.sessions[0].projectId !== '') {
+    fail(name, 'No project draft became a project-bound session', JSON.stringify(state.sessions));
+    return;
+  }
+  pass(name);
+}
+
 async function testProjectDraftFirstSendHandsOffAuthoritatively() {
   const name = 'project draft first send carries binding and hands off to one authoritative session';
   const harness = createHarness();
@@ -8808,6 +8855,7 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testClearDraftMessageForSessionRemovesLogicalBucket);
   await runAppStreamTest(testDraftMessageLimitIsTen);
   await runAppStreamTest(testProjectDraftsAreNotArbitrarilyCapped);
+  await runAppStreamTest(testNoProjectDraftFirstSendIsExplicit);
   await runAppStreamTest(testProjectDraftFirstSendHandsOffAuthoritatively);
   await runAppStreamTest(testProjectDraftPersistsRuntimeAndWorktreeWithoutPrompt);
   await runAppStreamTest(testRestoreDraftMessageForSessionIsSessionBound);
@@ -8856,7 +8904,7 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testResponseModelSwitchStabilizesEffortAndClearsPending);
   await runAppStreamTest(testCompletedResponseClearsUnappliedQueuedEffort);
   await runAppStreamTest(testModelSwapProgressEventUpdatesTransientMarker);
-  await runAppStreamTest(testGuardianReviewEventIsDisplayOnlyTransient);
+  await runAppStreamTest(testGuardianReviewAttachesToToolEvenBeforeToolStart);
   await runAppStreamTest(testResponsePhaseEventUpdatesTransientMarker);
   await runAppStreamTest(testResponseRetryEventUpdatesOwnedHeaderStatus);
   await runAppStreamTest(testProviderRetryClearsOnMeaningfulProgress);

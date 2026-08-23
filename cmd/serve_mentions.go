@@ -41,6 +41,7 @@ type serveMentionSearchRequest struct {
 	CursorUTF16 int    `json:"cursor_utf16"`
 	Limit       int    `json:"limit,omitempty"`
 	ProjectID   string `json:"project_id,omitempty"`
+	NoProject   bool   `json:"no_project,omitempty"`
 	WorktreeDir string `json:"worktree_dir,omitempty"`
 }
 
@@ -103,7 +104,7 @@ func (s *serveServer) handleMentionSearch(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, serveMentionSearchResponse{Items: []serveMentionSearchItem{}})
 		return
 	}
-	root, err := s.resolveMentionSearchRootForProject(r.Context(), strings.TrimSpace(r.Header.Get("session_id")), req.ProjectID, req.WorktreeDir)
+	root, err := s.resolveMentionSearchRootForProject(r.Context(), strings.TrimSpace(r.Header.Get("session_id")), req.ProjectID, req.WorktreeDir, req.NoProject, isFirstPartyUIResponseRequest(r))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -245,11 +246,11 @@ func (s *serveServer) trustedMentionBaseDir() (string, error) {
 	return canonicalizeWorktreeBoundary(cwd)
 }
 
-func (s *serveServer) resolveMentionSearchRootForProject(ctx context.Context, sessionID, projectID, requestedWorktree string) (string, error) {
-	if s.projectsEnabled {
+func (s *serveServer) resolveMentionSearchRootForProject(ctx context.Context, sessionID, projectID, requestedWorktree string, noProject, firstParty bool) (string, error) {
+	if s.projectsEnabled && (firstParty || strings.TrimSpace(projectID) != "") {
 		binding, err := s.resolveWorkspace(ctx, serveWorkspaceRequest{
 			SessionID: sessionID, ProjectID: projectID, WorktreeDir: requestedWorktree,
-			FirstPartyUI: true, FreshConversation: sessionID == "",
+			FirstPartyUI: firstParty, FreshConversation: sessionID == "", AllowNoProject: noProject,
 		})
 		if err != nil {
 			return "", err

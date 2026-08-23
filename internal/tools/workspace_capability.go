@@ -783,7 +783,7 @@ func (m *ApprovalManager) reviewWorkspaceGrant(ctx context.Context, path string,
 	isWrite := access == session.WorkspaceAccessWrite
 	if reviewFunc == nil {
 		detail := "guardian policy reviewer is not configured"
-		m.emitGuardianEvent(m.guardianPathEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); workspace grant denied"))
+		m.emitGuardianEventForContext(ctx, m.guardianPathEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); workspace grant denied"))
 		return guardianReviewFailure(detail)
 	}
 	existing := m.workspaceApprovalContext()
@@ -794,25 +794,25 @@ func (m *ApprovalManager) reviewWorkspaceGrant(ctx context.Context, path string,
 		ScopeID: scopeID, WorkspaceAccess: string(access), Reason: reason,
 	})
 	if err != nil {
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: workspace review failed (%v); grant denied", err), decision))
+		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: workspace review failed (%v); grant denied", err), decision))
 		return guardianReviewFailure(err.Error())
 	}
 	if decision.Allowed && guardianAllowContradictsPolicy(decision) {
 		rationale := guardianDenialRationale(decision, "guardian allow contradicted policy risk/authorization fields")
 		trip := m.recordGuardianDenial()
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianDenied, "guardian: workspace grant denied: "+rationale, decision))
+		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianDenied, "guardian: workspace grant denied: "+rationale, decision))
 		m.applyGuardianBreakerTrip(trip)
 		return guardianPolicyDenial(rationale)
 	}
 	if !decision.Allowed {
 		rationale := guardianDenialRationale(decision, "workspace grant was not approved by guardian policy")
 		trip := m.recordGuardianDenial()
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianDenied, "guardian: workspace grant denied: "+rationale, decision))
+		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianDenied, "guardian: workspace grant denied: "+rationale, decision))
 		m.applyGuardianBreakerTrip(trip)
 		return guardianPolicyDenial(rationale)
 	}
 	m.resetGuardianDenials()
-	m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
+	m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, ManageWorkspaceToolName, path, isWrite, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 	return nil
 }
 

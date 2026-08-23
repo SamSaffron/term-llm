@@ -215,8 +215,34 @@ func (s *signalRecvStream) Close() error {
 	return nil
 }
 
+type guardianRecordingTool struct{}
+
+func (guardianRecordingTool) Spec() ToolSpec {
+	return ToolSpec{Name: "guardian_recording", Description: "test", Schema: map[string]any{"type": "object"}}
+}
+func (guardianRecordingTool) Preview(json.RawMessage) string { return "" }
+func (guardianRecordingTool) Execute(ctx context.Context, _ json.RawMessage) (ToolOutput, error) {
+	RecordGuardianReview(ctx, GuardianReview{Outcome: "approved", Message: "guardian: approved", Command: "pwd"})
+	return TextOutput("ok"), nil
+}
+
 type countingSearchTool struct {
 	calls atomic.Int64
+}
+
+func TestExecuteSingleToolCallPersistsGuardianReviewOnToolResult(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(guardianRecordingTool{})
+	engine := NewEngine(&fakeProvider{}, registry)
+	events := make(chan Event, 4)
+	messages, err := engine.executeSingleToolCall(context.Background(), ToolCall{ID: "call-guardian", Name: "guardian_recording"}, eventSender{ctx: context.Background(), ch: events}, false, false)
+	if err != nil || len(messages) != 1 || len(messages[0].Parts) != 1 {
+		t.Fatalf("execute = %#v, %v", messages, err)
+	}
+	result := messages[0].Parts[0].ToolResult
+	if result == nil || len(result.GuardianReviews) != 1 || result.GuardianReviews[0].Command != "pwd" {
+		t.Fatalf("persisted guardian reviews = %#v", result)
+	}
 }
 
 func (t *countingSearchTool) Spec() ToolSpec {

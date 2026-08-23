@@ -100,10 +100,13 @@ Available platforms:
   telegram   Telegram bot
 
 Platforms are specified as positional arguments. If none are given, the
-serve.platforms list from config.yaml is used.
+serve.platforms list from config.yaml is used. Ordinary serve runs default to
+Guardian-reviewed auto approval. Use --approval prompt to require human approval
+for unmatched actions. The separate "serve mcp" command remains prompt by default.
 
 Examples:
   term-llm serve web             # web server with UI enabled
+  term-llm serve web --approval prompt # require approval for unmatched actions
   term-llm serve api             # API only (no chat UI)
   term-llm serve telegram        # Telegram bot only
   term-llm serve telegram web    # both platforms
@@ -239,6 +242,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return svc.Run(cmd.Context())
+}
+
+func withServeSessionLogging(store session.Store) session.Store {
+	if store == nil {
+		return nil
+	}
+	if logged, ok := store.(*session.LoggingStore); ok {
+		store = logged.Store
+	}
+	return session.NewLoggingStore(store, func(format string, args ...any) {
+		log.Printf("[serve] "+format, args...)
+	})
 }
 
 func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
@@ -427,22 +442,25 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
 
 	agentName := ""
+	var availableAgentNames []string
 	var agentPlatformMsgs agents.PlatformMessagesConfig
 	if agent != nil {
 		agentName = agent.Name
 		agentPlatformMsgs = agent.PlatformMessages
+	} else if hasWeb {
+		availableAgentNames, err = ListAgentNames(cfg)
+		if err != nil {
+			return fmt.Errorf("list web agents: %w", err)
+		}
 	}
 
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
 	defer storeCleanup()
-	if store != nil {
-		store = session.NewLoggingStore(store, func(format string, args ...any) {
-			log.Printf("[serve] "+format, args...)
-		})
-	}
+	store = withServeSessionLogging(store)
 
 	projectsRequested, projectsStrict := resolveServeProjectsRequested(
-		cmd.Flags().Changed("projects") && serveProjects,
+		cmd.Flags().Changed("projects"),
+		serveProjects,
 		cmd.Flags().Changed("no-projects") && serveNoProjects,
 		cfg.Serve.Projects.Enabled,
 		hasWeb,
@@ -495,7 +513,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 	if serveDebug || serveVerbose {
 		approvalErrWriter = cmd.ErrOrStderr()
 	}
-	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
+	agentRuntimeFactory := func(ctx context.Context, providerName string, providerModel string, requestedAgent string) (*serveRuntime, error) {
+		runtimeAgent := strings.TrimSpace(serveAgent)
+		if runtimeAgent == "" {
+			runtimeAgent = strings.TrimSpace(requestedAgent)
+		}
 		runner := &cmdRunner{baseCfg: cfg, defaults: cmdRunnerOptions{
 			Provider:            serveProvider,
 			Tools:               serveTools,
@@ -522,7 +544,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		}}
 		env, err := runner.prepare(ctx, runpkg.Request{
 			Platform:     runpkg.PlatformWeb,
-			AgentName:    serveAgent,
+			AgentName:    runtimeAgent,
 			Provider:     strings.TrimSpace(providerName),
 			Model:        strings.TrimSpace(providerModel),
 			DeferSession: true,
@@ -533,7 +555,6 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		runtime := env.runtime
 		runtime.toolMap = toolMap
 		runtime.platform = "web"
-		runtime.platformMessages = agentPlatformMsgs
 		runtime.sideProviderFactory = func(providerKey, model string) (llm.Provider, error) {
 			return llm.NewProviderByName(cfg, providerKey, model)
 		}
@@ -574,6 +595,9 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return runtime, nil
 	}
 
+	runtimeFactory := func(ctx context.Context, providerName string, providerModel string) (*serveRuntime, error) {
+		return agentRuntimeFactory(ctx, providerName, providerModel, "")
+	}
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		return runtimeFactory(ctx, "", "")
 	}
@@ -702,6 +726,7 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				locationSharingDisabled: locationSharingDisabled,
 				sidebarSessions:         append([]string(nil), sidebarSessions...),
 				agentName:               agentName,
+				agentNames:              append([]string(nil), availableAgentNames...),
 				corsOrigins:             append([]string(nil), serveCORSOrigins...),
 				filesDir:                resolveFilesDir(serveFilesDir, cfg),
 				writeDirs:               resolveServeWriteDirs(serveWriteDirs, cfg),
@@ -712,18 +737,19 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 				hubNodeID:               strings.TrimSpace(serveHubNodeID),
 				hubNodeName:             strings.TrimSpace(serveHubNodeName),
 			},
-			sessionMgr:         sessionMgr,
-			jobsV2:             jobsV2,
-			cfgRef:             cfg,
-			store:              store,
-			projectsEnabled:    projectsEnabled,
-			bootstrapProjectID: bootstrapProjectID,
-			startupDir:         startupDir,
-			baseSystemPrompt:   baseSystemPrompt,
-			skillsSetup:        skillsSetup,
-			skillsConfig:       effectiveSkillsConfig,
-			runtimeFactory:     runtimeFactory,
-			widgetsMgr:         widgetsMgr,
+			sessionMgr:          sessionMgr,
+			jobsV2:              jobsV2,
+			cfgRef:              cfg,
+			store:               store,
+			projectsEnabled:     projectsEnabled,
+			bootstrapProjectID:  bootstrapProjectID,
+			startupDir:          startupDir,
+			baseSystemPrompt:    baseSystemPrompt,
+			skillsSetup:         skillsSetup,
+			skillsConfig:        effectiveSkillsConfig,
+			runtimeFactory:      runtimeFactory,
+			agentRuntimeFactory: agentRuntimeFactory,
+			widgetsMgr:          widgetsMgr,
 		}
 		if hasJobs {
 			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, resolvedApproval, s.notifyJobsV2RunDone)
@@ -1088,6 +1114,7 @@ type serveServerConfig struct {
 	locationSharingDisabled bool
 	sidebarSessions         []string
 	agentName               string
+	agentNames              []string
 	corsOrigins             []string
 	filesDir                string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
 	writeDirs               []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
@@ -1242,6 +1269,7 @@ type serveServer struct {
 	webrtcEnabled            bool
 	webrtcHeadSnippet        string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory           func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
+	agentRuntimeFactory      func(ctx context.Context, providerName string, model string, agentName string) (*serveRuntime, error)
 	titleProviderFactory     func(*config.Config) (llm.Provider, error)
 	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
 	widgetsMgr               *widgets.Manager
@@ -1250,6 +1278,8 @@ type serveServer struct {
 	worktreeRootOnce         sync.Once
 	worktreeRoot             string
 	worktreeRootErr          error
+	fileChangeRepoCacheMu    sync.Mutex
+	fileChangeRepoCache      map[string]sessionGitRepoCacheEntry
 	fileTrackStoreFn         func() *filetrack.Store // test seam; nil → process-wide store from config
 	worktreeRootFn           func() (string, error)  // test seam; nil → os.Getwd
 	rootMutationAdmitted     func()                  // test seam; called while the exclusive root lease is held
@@ -1339,6 +1369,7 @@ func (s *serveServer) httpHandler() http.Handler {
 		s.registerWidgetRoutes(inner)
 	}
 	inner.HandleFunc("/v1/capabilities", s.auth(s.cors(s.handleCapabilities)))
+	inner.HandleFunc("/v1/project-directories", s.auth(s.cors(s.handleProjectDirectories)))
 	inner.HandleFunc("/v1/projects", s.auth(s.cors(s.handleProjects)))
 	inner.HandleFunc("/v1/projects/", s.auth(s.cors(s.handleProjectByID)))
 	inner.HandleFunc("/v1/sidebar", s.auth(s.cors(s.handleSidebar)))

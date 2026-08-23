@@ -175,7 +175,7 @@ When a tool needs access outside approved workspaces/directories, term-llm promp
 
 ### Approval modes
 
-Approval mode is visible in the chat status line. With no approval configuration, `chat` and `ask` start in **Auto**; `edit`, `exec`, `loop`, `serve`, and `serve mcp` start in **Prompt**.
+Approval mode is visible in the chat status line. With no approval configuration, `chat`, `ask`, and ordinary `serve` platforms (`web`, `api`, `jobs`, and `telegram`) start in **Auto**; `edit`, `exec`, `loop`, and standalone `serve mcp` start in **Prompt**.
 
 - **Prompt**: unapproved tool actions ask before proceeding.
 - **Auto**: Guardian reviews supported actions that remain unmatched after deterministic checks. Auto is not yolo.
@@ -185,11 +185,12 @@ Use the canonical flag for one run:
 
 ```bash
 term-llm chat --approval prompt
+term-llm serve web --approval prompt
 term-llm ask --approval auto "inspect this"
 term-llm chat --approval yolo
 ```
 
-`--auto` and `--yolo` remain aliases. In the TUI, Shift+Tab normally cycles `prompt → auto → yolo → prompt`. If no Guardian reviewer is available during setup, Shift+Tab skips auto and tells you why. After the breaker suspends auto, the first Shift+Tab explicitly resumes auto with a fresh epoch; a second press advances to yolo.
+`--auto` and `--yolo` remain aliases. Use `--approval prompt` to launch an ordinary serve platform with human approval instead of its auto default; `serve.approval_mode: prompt` makes that override persistent. Standalone `serve mcp` keeps its prompt default. In the TUI, Shift+Tab normally cycles `prompt → auto → yolo → prompt`. If no Guardian reviewer is available during setup, Shift+Tab skips auto and tells you why. After the breaker suspends auto, the first Shift+Tab explicitly resumes auto with a fresh epoch; a second press advances to yolo.
 
 To replace the built-in matrix globally or per surface:
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -67,6 +68,7 @@ func TestHandleSessionsSelectedSessionSideloadsStartupMetadata(t *testing.T) {
 	}
 	if _, err := fileStore.RecordChange(ctx, filetrack.ChangeRecord{
 		SessionID: changed.ID,
+		RunID:     "run-1",
 		Path:      "/work/changed.go",
 		Before:    []byte("old\nkeep\n"),
 		After:     []byte("new\nkeep\nextra\n"),
@@ -183,6 +185,9 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 
 	mustStoreRecord := func(rec filetrack.ChangeRecord) {
 		t.Helper()
+		if rec.RunID == "" {
+			rec.RunID = "run-1"
+		}
 		if _, err := store.RecordChange(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
@@ -209,6 +214,18 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		SessionID: "sess-image", Path: "/work/deleted.gif",
 		Before: []byte("GIF89adeleted"), AfterMissing: true,
 	})
+	windowPNG1 := []byte("\x89PNG\r\n\x1a\nwindow-one")
+	windowPNG2 := []byte("\x89PNG\r\n\x1a\nwindow-two")
+	windowPNG3 := []byte("\x89PNG\r\n\x1a\nwindow-three")
+	for _, rec := range []filetrack.ChangeRecord{
+		{SessionID: "sess-window", RunID: "run-1", Path: "/work/old.txt", Before: []byte("old\n"), After: []byte("older\n")},
+		{SessionID: "sess-window", RunID: "run-2", Path: "/work/shared.txt", Before: []byte("base\n"), After: []byte("two\n")},
+		{SessionID: "sess-window", RunID: "run-3", Path: "/work/window.png", Before: windowPNG1, After: windowPNG2},
+		{SessionID: "sess-window", RunID: "run-4", Path: "/work/shared.txt", Before: []byte("two\n"), After: []byte("four\n")},
+		{SessionID: "sess-window", RunID: "run-4", Path: "/work/window.png", Before: windowPNG2, After: windowPNG3},
+	} {
+		mustStoreRecord(rec)
+	}
 
 	t.Run("list", func(t *testing.T) {
 		code, body := getSessionPath(t, srv, "/v1/sessions/sess-1/file-changes")
@@ -228,6 +245,48 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		}
 		if entry["seq"].(float64) != 2 {
 			t.Fatalf("seq = %v, want latest path sequence 2", entry["seq"])
+		}
+	})
+
+	t.Run("last three turns", func(t *testing.T) {
+		code, body := getSessionPath(t, srv, "/v1/sessions/sess-window/file-changes?scope=last_3_turns")
+		if code != http.StatusOK || body["scope"] != fileChangeScopeLast3Turns || body["git"] != false {
+			t.Fatalf("list status=%d body=%#v", code, body)
+		}
+		changes, ok := body["file_changes"].([]any)
+		if !ok || len(changes) != 2 {
+			t.Fatalf("file_changes = %#v, want two entries", body["file_changes"])
+		}
+		for _, raw := range changes {
+			entry := raw.(map[string]any)
+			if entry["path"] == "/work/old.txt" || entry["snapshot_seq"] != float64(5) {
+				t.Fatalf("window entry = %#v", entry)
+			}
+		}
+		mustStoreRecord(filetrack.ChangeRecord{
+			SessionID: "sess-window", RunID: "run-5", Path: "/work/shared.txt",
+			Before: []byte("four\n"), After: []byte("five\n"),
+		})
+
+		code, body = getSessionPath(t, srv, "/v1/sessions/sess-window/file-changes/diff?path=/work/shared.txt&scope=last_3_turns&snapshot_seq=5")
+		if code != http.StatusOK || body["kind"] != filetrack.KindModify {
+			t.Fatalf("diff status=%d body=%#v", code, body)
+		}
+		hunks := body["hunks"].([]any)
+		if len(hunks) == 0 || !strings.Contains(fmt.Sprint(hunks), "base") || !strings.Contains(fmt.Sprint(hunks), "four") {
+			t.Fatalf("window hunks = %#v", hunks)
+		}
+
+		for _, tc := range []struct {
+			side string
+			want []byte
+		}{{side: "before", want: windowPNG1}, {side: "after", want: windowPNG3}} {
+			req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-window/file-changes/content?path=/work/window.png&side="+tc.side+"&scope=last_3_turns&snapshot_seq=5", nil)
+			rr := httptest.NewRecorder()
+			srv.handleSessionByID(rr, req)
+			if rr.Code != http.StatusOK || string(rr.Body.Bytes()) != string(tc.want) {
+				t.Fatalf("%s image status=%d body=%q", tc.side, rr.Code, rr.Body.Bytes())
+			}
 		}
 	})
 
@@ -332,6 +391,18 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid snapshot sequence", func(t *testing.T) {
+		for _, path := range []string{
+			"/v1/sessions/sess-1/file-changes/diff?path=/work/a.go&scope=last_3_turns&snapshot_seq=nope",
+			"/v1/sessions/sess-image/file-changes/content?path=/work/preview.png&side=before&scope=last_3_turns&snapshot_seq=-1",
+		} {
+			code, _ := getSessionPath(t, srv, path)
+			if code != http.StatusBadRequest {
+				t.Fatalf("%s status = %d, want 400", path, code)
+			}
+		}
+	})
+
 	t.Run("empty session lists nothing", func(t *testing.T) {
 		code, body := getSessionPath(t, srv, "/v1/sessions/other/file-changes")
 		if code != http.StatusOK {
@@ -377,7 +448,7 @@ func TestSessionFileChangesRequireLiveSession(t *testing.T) {
 
 	for _, id := range []string{"live-session", "deleted-session"} {
 		if _, err := store.RecordChange(ctx, filetrack.ChangeRecord{
-			SessionID: id, Path: "/work/f.txt",
+			SessionID: id, RunID: "run-1", Path: "/work/f.txt",
 			After: []byte("x\n"), BeforeMissing: true,
 		}); err != nil {
 			t.Fatal(err)

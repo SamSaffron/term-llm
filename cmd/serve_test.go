@@ -481,6 +481,33 @@ func TestServeServerConfig_RouteHelpers(t *testing.T) {
 	}
 }
 
+func TestRuntimeForFreshAgentProviderRequestUsesSelectedAgent(t *testing.T) {
+	mgr := newServeSessionManager(time.Hour, 10, func(context.Context) (*serveRuntime, error) {
+		return &serveRuntime{}, nil
+	})
+	defer mgr.Close()
+
+	var createdAgent string
+	srv := &serveServer{
+		cfg:        serveServerConfig{},
+		sessionMgr: mgr,
+		agentRuntimeFactory: func(_ context.Context, _, _, agentName string) (*serveRuntime, error) {
+			createdAgent = agentName
+			return &serveRuntime{agentName: agentName}, nil
+		},
+	}
+	rt, stateful, err := srv.runtimeForFreshAgentProviderRequest(context.Background(), "sess-agent", "", "reviewer")
+	if err != nil {
+		t.Fatalf("runtimeForFreshAgentProviderRequest: %v", err)
+	}
+	if !stateful {
+		t.Fatal("selected-agent runtime should be stateful")
+	}
+	if createdAgent != "reviewer" || rt.agentName != "reviewer" {
+		t.Fatalf("created agent = %q, runtime agent = %q; want reviewer", createdAgent, rt.agentName)
+	}
+}
+
 func TestCustomBasePath_EndToEnd(t *testing.T) {
 	// Handlers are called with paths already stripped of basePath by
 	// http.StripPrefix in the mux. So "/" is the SPA root, "/app.css" is
@@ -492,6 +519,7 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 			uiTitle:         "My Lab",
 			sidebarSessions: []string{"chat", "web"},
 			agentName:       "jarvis",
+			agentNames:      []string{"developer", "reviewer"},
 		},
 	}
 
@@ -519,6 +547,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(body, `TERM_LLM_AGENT_NAME="jarvis"`) {
 		t.Error("/ should inject TERM_LLM_AGENT_NAME")
+	}
+	if !strings.Contains(body, `TERM_LLM_AGENT_NAMES=["developer","reviewer"]`) {
+		t.Error("/ should inject TERM_LLM_AGENT_NAMES")
 	}
 	if !strings.Contains(body, `TERM_LLM_UI_TITLE="My Lab"`) {
 		t.Error("/ should inject TERM_LLM_UI_TITLE")

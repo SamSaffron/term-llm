@@ -2,8 +2,10 @@ package llm
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,6 +168,7 @@ type Engine struct {
 	pendingToolSpecs map[string]map[string]ToolSpec
 	activeToolRunID  string
 	pendingToolsMu   sync.Mutex
+	toolRunPrefix    string
 	toolRunCounter   atomic.Uint64
 
 	toolPlannerMu sync.RWMutex
@@ -278,6 +281,16 @@ func nextEngineInterjectionID() string {
 	return fmt.Sprintf("interject_%d", engineInterjectionID.Add(1))
 }
 
+var engineIdentityFallback atomic.Uint64
+
+func newEngineToolRunPrefix() string {
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		return hex.EncodeToString(buf[:])
+	}
+	return fmt.Sprintf("%x_%x", time.Now().UnixNano(), engineIdentityFallback.Add(1))
+}
+
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	if tools == nil {
 		tools = NewToolRegistry()
@@ -286,6 +299,7 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 		provider:         provider,
 		tools:            tools,
 		pendingToolSpecs: make(map[string]map[string]ToolSpec),
+		toolRunPrefix:    newEngineToolRunPrefix(),
 	}
 
 	// Wire up tool executors for providers that expose term-llm tools over an external bridge.
@@ -434,7 +448,10 @@ func (e *Engine) AddDynamicToolForRun(runID string, tool Tool) bool {
 }
 
 func (e *Engine) beginToolRun() string {
-	runID := fmt.Sprintf("toolrun_%d", e.toolRunCounter.Add(1))
+	if e.toolRunPrefix == "" {
+		e.toolRunPrefix = newEngineToolRunPrefix()
+	}
+	runID := fmt.Sprintf("toolrun_%s_%d", e.toolRunPrefix, e.toolRunCounter.Add(1))
 	e.pendingToolsMu.Lock()
 	// An engine runs one provider stream at a time. Clear abandoned delivery
 	// queues so cancellation cannot leak activation into a later run.
@@ -3536,7 +3553,7 @@ turnLoop:
 					}
 					// Build result message for this tool call
 					if execErr != nil {
-						syncToolResults = append(syncToolResults, ToolErrorMessage(call.ID, call.Name, execErr.Error(), nil))
+						syncToolResults = append(syncToolResults, toolErrorMessageWithGuardian(call.ID, call.Name, execErr.Error(), nil, result.GuardianReviews))
 					} else {
 						syncToolResults = append(syncToolResults, ToolResultMessageFromOutput(call.ID, call.Name, result, nil))
 					}
@@ -4375,6 +4392,14 @@ func startToolHeartbeat(ctx context.Context, callID, toolName string, send event
 	}
 }
 
+func toolErrorMessageWithGuardian(id, name, text string, thoughtSig []byte, reviews []GuardianReview) Message {
+	message := ToolErrorMessage(id, name, text, thoughtSig)
+	if len(message.Parts) > 0 && message.Parts[0].ToolResult != nil {
+		message.Parts[0].ToolResult.GuardianReviews = append([]GuardianReview(nil), reviews...)
+	}
+	return message
+}
+
 // executeSingleToolCall executes a single tool call and returns the result message.
 func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
 	tool, ok := e.tools.Get(call.Name)
@@ -4403,11 +4428,13 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 
 	// Add call ID to context for spawn_agent event bubbling
 	toolCtx := ContextWithCallID(ctx, call.ID)
+	toolCtx, guardianReviews := ContextWithGuardianReviewCapture(toolCtx)
 
 	stopHeartbeat := startToolHeartbeat(ctx, call.ID, call.Name, send)
 	defer stopHeartbeat()
 
 	output, err, panicValue := executeToolWithCancellation(toolCtx, tool, call.Arguments)
+	output.GuardianReviews = guardianReviews()
 	if planner := e.currentToolPlanner(); planner != nil {
 		planner.ToolExecuted(SessionIDFromContext(ctx), ToolRunIDFromContext(ctx), call.Name)
 	}
@@ -4425,7 +4452,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 		errMsg := fmt.Sprintf("Error: %v", err)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		send.TrySend(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
-		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
+		return []Message{toolErrorMessageWithGuardian(call.ID, call.Name, errMsg, call.ThoughtSig, output.GuardianReviews)}, nil
 	}
 
 	DebugToolResult(debug, call.ID, call.Name, output.Content)
@@ -4485,8 +4512,10 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
 	} else {
 		toolCtx := ContextWithCallID(ctx, callID)
+		toolCtx, guardianReviews := ContextWithGuardianReviewCapture(toolCtx)
 		var panicValue any
 		result, err, panicValue = executeToolWithCancellation(toolCtx, tool, call.Arguments)
+		result.GuardianReviews = guardianReviews()
 		if panicValue != nil {
 			err = fmt.Errorf("Error: tool panicked: %v", panicValue)
 		}

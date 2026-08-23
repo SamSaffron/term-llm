@@ -202,9 +202,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	settings.SessionID = req.SessionID
+	baseSystemPrompt := appendChildSkillSystemContext(settings.SystemPrompt, req.ChildSkill)
 	skillsSetup := SetupSkillsInDir(&cfg.Skills, req.Skills, agentSkills, r.errWriter(), settings.BaseDir)
-	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
-	settings.SystemPrompt = appendChildSkillSystemContext(settings.SystemPrompt, req.ChildSkill)
+	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
 
 	modelName := activeModel(cfg)
 	provider := req.ProviderInstance
@@ -317,6 +317,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		toolDiscovery:       cfg.ToolDiscovery,
 		store:               runtimeStore,
 		goalStore:           store,
+		baseSystemPrompt:    baseSystemPrompt,
 		systemPrompt:        settings.SystemPrompt,
 		search:              settings.Search,
 		forceExternalSearch: forceExternalSearch,
@@ -332,6 +333,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		mcpSetting:          settings.MCP,
 		agentName:           agentName,
 		platform:            templatePlatform(req.Platform),
+	}
+	if agent != nil {
+		runtime.platformMessages = agent.PlatformMessages
 	}
 	if askUser, ok := sink.(runpkg.AskUserPrompter); ok {
 		runtime.askUserFunc = askUser.AskUser

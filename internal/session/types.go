@@ -161,6 +161,7 @@ type SessionSummary struct {
 	Tags                string             `json:"tags,omitempty"`
 	ProjectID           string             `json:"project_id,omitempty"`
 	ProjectName         string             `json:"project_name,omitempty"`
+	CWD                 string             `json:"cwd,omitempty"`
 	WorktreeDir         string             `json:"worktree_dir,omitempty"`
 	Goal                *Goal              `json:"goal,omitempty"`
 	Share               *ShareState        `json:"share,omitempty"`
@@ -187,15 +188,17 @@ type ListOptions struct {
 	ProjectID        string                // Restrict to one stable project ID
 	NoProject        bool                  // Restrict to legacy sessions with a null project ID
 	ProjectCursor    *ProjectSessionCursor // Group-bound keyset cursor for project sidebar paging
+	ExcludeSubagents bool                  // Hide machine-generated child-agent sessions
 }
 
 // SearchOptions configures session full-text search.
 type SearchOptions struct {
-	Query      string   // Text query to search for
-	Categories []string // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit      int      // Max results (0 = use default)
-	Archived   bool     // Include archived sessions
-	ProjectID  string   // Restrict to one stable project ID
+	Query            string   // Text query to search for
+	Categories       []string // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit            int      // Max results (0 = use default)
+	Archived         bool     // Include archived sessions
+	ProjectID        string   // Restrict to one stable project ID
+	ExcludeSubagents bool     // Hide machine-generated child-agent sessions
 }
 
 // SearchResult represents a search match.

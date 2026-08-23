@@ -359,6 +359,7 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 		}
 		rec.ToolName = ShellToolName
 		rec.ToolCallID = llm.CallIDFromContext(ctx)
+		rec.RunID = llm.ToolRunIDFromContext(ctx)
 		if fc := recorder.RecordChange(ctx, *rec); fc != nil {
 			changes = append(changes, *fc)
 		}

@@ -2392,6 +2392,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasLastMessageAt {
 		lastMessageAtCol = "s.last_message_at"
 	}
+	lastUserMessageAtCol := "NULL"
+	if s.hasLastUserMessageAt {
+		lastUserMessageAtCol = "s.last_user_message_at"
+	}
 	goalCol := "NULL"
 	if s.hasGoal {
 		goalCol = "s.goal"
@@ -2428,13 +2432,16 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
-		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
+		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + projectJoin + `
 		WHERE 1=1`
 	args := []any{}
 
+	if opts.ExcludeSubagents {
+		query += " AND s.parent_id IS NULL"
+	}
 	if opts.Name != "" {
 		query += " AND s.name = ?"
 		args = append(args, opts.Name)
@@ -2536,17 +2543,23 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	for rows.Next() {
 		var sum SessionSummary
 		var number sql.NullInt64
-		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, worktreeDir, projectID, projectName, goalRaw, shareRaw sql.NullString
-		var lastMessageAt sql.NullTime
+		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, cwd, worktreeDir, projectID, projectName, goalRaw, shareRaw sql.NullString
+		var lastMessageAt, lastUserMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
-			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &sum.MessageCount, &sum.TranscriptRev,
+			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw)
+			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}
 		if lastMessageAt.Valid {
 			sum.LastMessageAt = lastMessageAt.Time
+		} else if opts.SortByActivity && lastUserMessageAt.Valid {
+			// Cursor encoding must receive the exact fallback value used by the
+			// activity ORDER BY and keyset predicate.
+			sum.LastMessageAt = lastUserMessageAt.Time
+		} else if opts.SortByActivity {
+			sum.LastMessageAt = sum.CreatedAt
 		}
 		if number.Valid {
 			sum.Number = number.Int64
@@ -2573,6 +2586,9 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		if tags.Valid {
 			sum.Tags = tags.String
+		}
+		if cwd.Valid {
+			sum.CWD = cwd.String
 		}
 		if worktreeDir.Valid {
 			sum.WorktreeDir = worktreeDir.String
@@ -2650,6 +2666,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	args = append(args, categoryArgs...)
 	if !opts.Archived {
 		filterClause += " AND s.archived = FALSE"
+	}
+	if opts.ExcludeSubagents {
+		filterClause += " AND s.parent_id IS NULL"
 	}
 	if opts.ProjectID != "" {
 		if !s.hasProjectID {
@@ -4074,7 +4093,7 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 				return true
 			}
 		case llm.PartToolResult:
-			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || part.ToolResult.Name == "update_plan" || part.ToolResult.Name == "ask_user" || planToolCalls[part.ToolResult.ID]) {
+			if part.ToolResult != nil && (part.ToolResult.IsError || len(part.ToolResult.Images) > 0 || len(part.ToolResult.GuardianReviews) > 0 || part.ToolResult.Name == "update_plan" || part.ToolResult.Name == "ask_user" || planToolCalls[part.ToolResult.ID]) {
 				return true
 			}
 		}

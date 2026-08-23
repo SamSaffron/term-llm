@@ -258,13 +258,21 @@ func (o *CreateOptions) progress(msg string) {
 }
 
 // IsGitRepo reports whether dir is inside a git working tree.
-func IsGitRepo(dir string) bool {
-	out, err := runGit(dir, "rev-parse", "--is-inside-work-tree")
+func IsGitRepo(dir string) bool { return IsGitRepoContext(context.Background(), dir) }
+
+// IsGitRepoContext is IsGitRepo with caller-controlled cancellation.
+func IsGitRepoContext(ctx context.Context, dir string) bool {
+	out, err := runGitCtx(ctx, dir, "rev-parse", "--is-inside-work-tree")
 	return err == nil && strings.TrimSpace(out) == "true"
 }
 
 // MainRepoRoot returns the canonical main checkout root for any worktree in the repo.
-func MainRepoRoot(dir string) (string, error) { return canonicalRepoRoot(dir) }
+func MainRepoRoot(dir string) (string, error) { return MainRepoRootContext(context.Background(), dir) }
+
+// MainRepoRootContext is MainRepoRoot with caller-controlled cancellation.
+func MainRepoRootContext(ctx context.Context, dir string) (string, error) {
+	return canonicalRepoRootContext(ctx, dir)
+}
 
 // CheckoutRoot returns the canonical root of the specific checkout containing dir.
 func CheckoutRoot(dir string) (string, error) {
@@ -1780,6 +1788,10 @@ func revParseFull(dir, ref string) (string, error) {
 }
 
 func canonicalRepoRoot(dir string) (string, error) {
+	return canonicalRepoRootContext(context.Background(), dir)
+}
+
+func canonicalRepoRootContext(ctx context.Context, dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", fmt.Errorf("empty repo dir")
 	}
@@ -1787,7 +1799,7 @@ func canonicalRepoRoot(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := runGit(abs, "rev-parse", "--git-common-dir")
+	out, err := runGitCtx(ctx, abs, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", fmt.Errorf("worktree: resolve git common dir: %w", err)
 	}

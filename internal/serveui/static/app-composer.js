@@ -257,7 +257,7 @@ const updateSendButtonState = () => {
   const project = state.projectsEnabled && state.draftSessionActive
     ? (state.projects || []).find((item) => item.id === state.activeProjectId)
     : null;
-  const invalidProjectDraft = Boolean(state.projectsEnabled && state.draftSessionActive && (!project || project.archived_at || !project.available));
+  const invalidProjectDraft = Boolean(state.projectsEnabled && state.draftSessionActive && state.activeProjectId && (!project || project.archived_at || !project.available));
   const capabilitiesPending = Boolean(state.capabilitiesRequired && !state.capabilitiesLoaded);
   btn.disabled = capabilitiesPending || invalidProjectDraft;
   btn.classList.toggle('loading', loading);

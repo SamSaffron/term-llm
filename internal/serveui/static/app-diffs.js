@@ -1,9 +1,8 @@
 (() => {
 'use strict';
 
-// Live diff sidebar: shows the active session's cumulative file changes while
-// the agent works. Fed by metadata-only `response.file_change` stream events;
-// diff content is fetched on demand from the session file-changes endpoints.
+// Live diff sidebar: defaults to changes from the latest agent turn and can
+// switch to Git worktree/index scopes when the session is in a repository.
 // Files render as an accordion ordered by recency: each one expands inline
 // where it sits in the list and can be collapsed individually. Rendering is
 // keyed by path — blocks are reused across renders so live updates patch the
@@ -51,6 +50,9 @@ const sessionDiffState = (sessionId) => {
   let ds = diffStateBySession.get(sessionId);
   if (!ds) {
     ds = {
+      scope: 'last_turn',
+      gitKnown: false,
+      git: false,
       files: new Map(),          // path -> { path, kind, adds, dels, truncated, lastSeq }
       expanded: new Set(),       // paths whose diff body is open
       userCollapsed: new Set(),  // paths the user explicitly collapsed (blocks auto-expand)
@@ -78,34 +80,16 @@ const sessionDiffState = (sessionId) => {
   return ds;
 };
 
-const normalizeSessionDiffSummary = (value) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const fileCount = Number(value.file_count);
-  const adds = Number(value.adds);
-  const dels = Number(value.dels);
-  if (!Number.isSafeInteger(fileCount) || fileCount < 0
-      || !Number.isSafeInteger(adds) || adds < 0
-      || !Number.isSafeInteger(dels) || dels < 0) return null;
-  return { fileCount, adds, dels };
-};
+const normalizeSessionDiffSummary = app.normalizeDiffSummary;
 
-const applySessionDiffSummary = (sessionId, value) => {
-  const owner = String(sessionId || '').trim();
-  const summary = normalizeSessionDiffSummary(value);
-  if (!owner || !summary) return false;
-  const ds = sessionDiffState(owner);
-  ds.summaryKnown = true;
-  ds.summary = summary;
-  if (summary.fileCount === 0) {
-    ds.files.clear();
-    ds.listLoaded = true;
-    reconcileDiffPathState(owner, ds);
-  } else if (ds.files.size === 0) {
-    ds.listLoaded = false;
-  }
-  if (owner === state.activeSessionId) renderDiffSidebar(owner);
-  return true;
-};
+const applySessionDiffSummary = (sessionId, value) => app.applyDiffSummary({
+  owner: sessionId,
+  value,
+  sessionState: sessionDiffState,
+  activeSessionId: () => state.activeSessionId,
+  reconcile: reconcileDiffPathState,
+  render: renderDiffSidebar
+});
 
 const authHeaders = () => (state.token ? { Authorization: `Bearer ${state.token}` } : {});
 const isResolvedSessionIdentity = typeof app.isSessionIdentityResolved === 'function'
@@ -318,6 +302,7 @@ const buildUnifiedDiff = (path, data) => {
 const handleFileChangeEvent = (session, payload) => {
   if (!session?.id || !payload?.path) return;
   const ds = sessionDiffState(session.id);
+  if (ds.scope !== 'last_turn') return;
   const path = String(payload.path);
   const seq = Number(payload.seq) || 0;
 
@@ -438,16 +423,21 @@ const reconcileDiffPathState = (sessionId, ds) => {
 const fetchSessionFileChanges = async (sessionId) => {
   if (!isResolvedSessionIdentity(sessionId)) return false;
   const ds = sessionDiffState(sessionId);
+  const requestedScope = ds.scope;
   // Snapshot per-path seqs so live rows whose change events land while this
   // fetch is in flight survive the authoritative replace below.
   const seqAtStart = new Map();
   ds.files.forEach((entry, path) => seqAtStart.set(path, entry.lastSeq || 0));
   try {
-    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes`, {
+    const scopeQuery = requestedScope === 'last_turn' ? '' : `?scope=${encodeURIComponent(requestedScope)}`;
+    const resp = await app.apiFetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes${scopeQuery}`, {
       headers: authHeaders()
     });
     if (!resp.ok) return; // 404 = tracking disabled; treat as no changes
     const body = await resp.json();
+    if (ds.scope !== requestedScope) return false;
+    ds.gitKnown = true;
+    ds.git = Boolean(body?.git);
     const entries = Array.isArray(body?.file_changes) ? body.file_changes : [];
     // The server list is authoritative: live rows may carry non-canonical
     // paths (e.g. relative) that would otherwise duplicate the canonical
@@ -465,7 +455,8 @@ const fetchSessionFileChanges = async (sessionId) => {
         adds: Number(entry.adds) || 0,
         dels: Number(entry.dels) || 0,
         truncated: Boolean(entry.truncated),
-        lastSeq: Number(entry.seq) || prev?.lastSeq || 0
+        lastSeq: Number(entry.seq) || prev?.lastSeq || 0,
+        snapshotSeq: Number(entry.snapshot_seq) || 0
       });
     });
     ds.files.forEach((entry, path) => {
@@ -475,17 +466,17 @@ const fetchSessionFileChanges = async (sessionId) => {
     ds.files = next;
     ds.listLoaded = true;
     ds.summaryKnown = true;
-    ds.summary = { fileCount: next.size, adds: 0, dels: 0 };
+    ds.summary = { fileCount: next.size, adds: 0, dels: 0, git: ds.git };
     next.forEach((entry) => {
       ds.summary.adds += entry.adds;
       ds.summary.dels += entry.dels;
     });
     reconcileDiffPathState(sessionId, ds);
-    // Cached diffs predating the authoritative seq are stale even though no
-    // live event bumped them (the tab may have missed events while detached).
+    // Cached diffs predating the authoritative path or window snapshot are
+    // stale even when the tab missed every live event while detached.
     ds.files.forEach((entry, path) => {
       const cached = ds.diffCache.get(path);
-      if (cached && (entry.lastSeq || 0) > (cached.seq || 0)) ds.dirtyPaths.add(path);
+      if (cached && ((entry.lastSeq || 0) > (cached.seq || 0) || (entry.snapshotSeq || 0) !== (cached.snapshotSeq || 0))) ds.dirtyPaths.add(path);
     });
     if (sessionId === state.activeSessionId) renderDiffSidebar(sessionId);
     return true;
@@ -508,27 +499,30 @@ const fetchFileDiff = (sessionId, path) => {
   const existingRequest = ds.inflight.get(path);
   if (existingRequest) return existingRequest;
 
-  const seqAtRequest = ds.files.get(path)?.lastSeq || 0;
+  const requestedScope = ds.scope;
+  const { lastSeq: seqAtRequest = 0, snapshotSeq = 0 } = ds.files.get(path) || {};
   const request = (async () => {
     try {
-      const url = `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/diff?path=${encodeURIComponent(path)}`;
+      const diffQuery = `${requestedScope === 'last_turn' ? '' : `&scope=${encodeURIComponent(requestedScope)}`}${Number(snapshotSeq) > 0 ? `&snapshot_seq=${snapshotSeq}` : ''}`;
+      const url = `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/diff?path=${encodeURIComponent(path)}${diffQuery}`;
       const resp = await app.apiFetch(url, { headers: authHeaders() });
       if (!resp.ok) {
-        markDiffFetchError(sessionId, path);
+        if (ds.scope === requestedScope) markDiffFetchError(sessionId, path);
         return null;
       }
       const data = await resp.json();
+      if (ds.scope !== requestedScope) return null;
       // rev, not seq, keys body rebuilds: a refetch can return newer server
       // content under an unchanged local seq (events missed while detached).
       ds.cacheRev += 1;
-      ds.diffCache.set(path, { seq: seqAtRequest, rev: ds.cacheRev, data });
+      ds.diffCache.set(path, { seq: seqAtRequest, snapshotSeq, rev: ds.cacheRev, data });
       ds.fetchErrors.delete(path);
 
       // A newer change may have landed mid-fetch; leave it dirty and schedule
       // another refresh (the debounce timer that requested this fetch already
       // fired, so without rescheduling the stale diff would stick around).
-      const latestSeq = ds.files.get(path)?.lastSeq || 0;
-      if (latestSeq <= seqAtRequest) ds.dirtyPaths.delete(path);
+      const latest = ds.files.get(path);
+      if ((latest?.lastSeq || 0) <= seqAtRequest && (latest?.snapshotSeq || 0) === snapshotSeq) ds.dirtyPaths.delete(path);
       else scheduleDiffRefresh(sessionId);
 
       // True-up the list entry with cumulative counts from the actual diff.
@@ -544,10 +538,10 @@ const fetchFileDiff = (sessionId, path) => {
       if (sessionId === state.activeSessionId) scheduleDiffRender(sessionId);
       return data;
     } catch {
-      markDiffFetchError(sessionId, path);
+      if (ds.scope === requestedScope) markDiffFetchError(sessionId, path);
       return null;
     } finally {
-      ds.inflight.delete(path);
+      if (ds.inflight.get(path) === request) ds.inflight.delete(path);
     }
   })();
   ds.inflight.set(path, request);
@@ -568,25 +562,17 @@ const fileDirName = (path) => {
 
 const kindBadgeLabel = { create: 'A', modify: 'M', delete: 'D' };
 const normalizeDiffKind = (kind) => kindBadgeLabel[kind] ? kind : 'modify';
-const diffTotals = (ds) => {
-  if (!ds) return { fileCount: 0, adds: 0, dels: 0 };
-  if (!ds.listLoaded && ds.summaryKnown) return ds.summary;
-  const totals = { fileCount: ds.files.size, adds: 0, dels: 0 };
-  ds.files.forEach((entry) => {
-    totals.adds += entry.adds;
-    totals.dels += entry.dels;
-  });
-  return totals;
-};
+const diffTotals = app.diffTotals;
 
 const applyDiffSidebarVisibility = (ds) => {
   const hasChanges = diffTotals(ds).fileCount > 0;
+  const available = hasChanges || Boolean(ds.gitKnown && ds.git);
   const drawer = isDiffDrawerViewport();
-  const visible = hasChanges && !ds.hidden && !drawer;
-  const drawerOpen = Boolean(hasChanges && drawer && elements.diffSidebar?.classList.contains('open'));
+  const visible = available && !ds.hidden && !drawer;
+  const drawerOpen = Boolean(available && drawer && elements.diffSidebar?.classList.contains('open'));
 
   if (elements.diffSidebar) {
-    if (!hasChanges) {
+    if (!available) {
       elements.diffSidebar.classList.remove('open');
       elements.appShell?.classList.remove('diff-open');
       setPanelHidden(elements.diffSidebar, true);
@@ -609,8 +595,8 @@ const applyDiffSidebarVisibility = (ds) => {
   }
 
   if (elements.diffToggleBtn) {
-    elements.diffToggleBtn.hidden = !hasChanges;
-    if (hasChanges) elements.diffToggleBtn.removeAttribute?.('hidden');
+    elements.diffToggleBtn.hidden = !available;
+    if (available) elements.diffToggleBtn.removeAttribute?.('hidden');
     else elements.diffToggleBtn.setAttribute?.('hidden', '');
     elements.diffToggleBtn.classList.toggle('active', visible || drawerOpen);
   }
@@ -694,33 +680,33 @@ const DIFF_FILE_ICON_SVG = '<svg class="diff-toggle-file-icon" viewBox="0 0 16 1
 
 const renderDiffTotals = (ds) => {
   const { fileCount, adds, dels } = diffTotals(ds);
-  if (fileCount === 0) {
-    if (elements.diffSidebarTotals) elements.diffSidebarTotals.textContent = '';
-    if (elements.diffToggleBadge) {
-      elements.diffToggleBadge.replaceChildren();
-    }
-    if (elements.diffToggleBtn) {
-      elements.diffToggleBtn.title = '';
-      elements.diffToggleBtn.setAttribute?.('aria-label', 'Toggle file changes');
-    }
-    return;
-  }
-
   const summary = [];
-  if (adds > 0) summary.push(`+${adds}`);
-  if (dels > 0) summary.push(`−${dels}`);
-  const summaryText = summary.join(' ');
-  if (elements.diffSidebarTotals) elements.diffSidebarTotals.textContent = summaryText;
+  const sidebarParts = [];
+  if (adds > 0) {
+    summary.push(`+${adds}`);
+    sidebarParts.push(createEl('span', 'diff-sidebar-totals-add', `+${adds}`));
+  }
+  if (dels > 0) {
+    summary.push(`−${dels}`);
+    sidebarParts.push(createEl('span', 'diff-sidebar-totals-del', `−${dels}`));
+  }
+  elements.diffSidebarTotals?.replaceChildren(...sidebarParts);
+
   if (elements.diffToggleBadge) {
     const badge = elements.diffToggleBadge;
-    const parts = [];
-    const fileCountEl = createEl('span', 'diff-toggle-file-count');
-    fileCountEl.innerHTML = DIFF_FILE_ICON_SVG;
-    fileCountEl.dataset.fileCount = String(fileCount);
-    parts.push(fileCountEl);
-    if (adds > 0) parts.push(createEl('span', 'diff-toggle-stat-add', `+${adds}`));
-    if (dels > 0) parts.push(createEl('span', 'diff-toggle-stat-del', `−${dels}`));
-    badge.replaceChildren(...parts);
+    if (fileCount > 0 || ds?.git) {
+      const fileCountEl = createEl('span', 'diff-toggle-file-count');
+      fileCountEl.innerHTML = DIFF_FILE_ICON_SVG;
+      fileCountEl.dataset.fileCount = String(fileCount);
+      const parts = [fileCountEl];
+      if (adds > 0) parts.push(createEl('span', 'diff-toggle-stat-add', `+${adds}`));
+      if (dels > 0) parts.push(createEl('span', 'diff-toggle-stat-del', `−${dels}`));
+      badge.classList.toggle('no-stats', summary.length === 0);
+      badge.replaceChildren(...parts);
+    } else {
+      badge.classList.remove('no-stats');
+      badge.replaceChildren();
+    }
   }
   if (elements.diffToggleBtn) {
     const fileLabel = `${fileCount} changed ${fileCount === 1 ? 'file' : 'files'}`;
@@ -753,15 +739,18 @@ const copyDiffText = (button, text) => {
   }).catch(() => {});
 };
 
-const imageDiffContentURL = (sessionId, path, side) => `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/content?path=${encodeURIComponent(path)}&side=${side}`;
+const imageDiffContentURL = (sessionId, path, side, scope = 'last_turn', snapshotSeq = 0) => {
+  const scopeQuery = `${scope === 'last_turn' ? '' : `&scope=${encodeURIComponent(scope)}`}${Number(snapshotSeq) > 0 ? `&snapshot_seq=${snapshotSeq}` : ''}`;
+  return `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/content?path=${encodeURIComponent(path)}&side=${side}${scopeQuery}`;
+};
 
-const renderImageDiff = (sessionId, path, data) => {
+const renderImageDiff = (sessionId, path, data, scope = 'last_turn', snapshotSeq = 0) => {
   const comparison = createEl('div', `diff-image-comparison diff-image-${normalizeDiffKind(data.kind)}`);
   const sides = data.kind === 'create' ? ['after'] : data.kind === 'delete' ? ['before'] : ['before', 'after'];
   sides.forEach((side) => {
     const panel = createEl('div', 'diff-image-side');
     panel.appendChild(createEl('div', 'diff-image-label', side === 'before' ? 'Before' : 'After'));
-    const src = imageDiffContentURL(sessionId, path, side);
+    const src = imageDiffContentURL(sessionId, path, side, scope, snapshotSeq);
     const image = createEl('img', 'diff-image-preview');
     image.src = src;
     image.alt = `${side === 'before' ? 'Before' : 'After'} ${fileBaseName(path)}`;
@@ -816,7 +805,8 @@ const renderDiffFileBody = (sessionId, ds, path, commentFocus = null) => {
     return body;
   }
   if (cached.data.image) {
-    body.appendChild(renderImageDiff(sessionId, path, cached.data));
+    if (!app.isTurnDiffScope?.(ds.scope)) { body.appendChild(createEl('div', 'diff-note', 'Image previews are available only for turn-based scopes.')); return body; }
+    body.appendChild(renderImageDiff(sessionId, path, cached.data, ds.scope, ds.files.get(path)?.snapshotSeq));
     return body;
   }
 
@@ -851,7 +841,8 @@ const renderDiffFileBody = (sessionId, ds, path, commentFocus = null) => {
         rows,
         rowIndex,
         rowElement: rowEl,
-        fileChangeSeq: Number(ds.files.get(path)?.lastSeq) || Number(cached.seq) || 0,
+        scope: ds.scope,
+        fileChangeSeq: Number(ds.files.get(path)?.snapshotSeq) || Number(ds.files.get(path)?.lastSeq) || Number(cached.seq) || 0,
         initialTabStop: rowIndex === firstCommentableRowIndex
       });
       table.appendChild(rowEl);
@@ -1052,8 +1043,9 @@ const renderDiffAccordion = (sessionId, ds) => {
   app.reconcileDiffCommentPanel?.(sessionId, new Set(paths));
   const desired = paths.map((path) => syncDiffFileBlock(sessionId, ds, path).el);
 
-  const desiredChildren = desired.length === 0 && ds.filter
-    ? [createEl('div', 'diff-note', 'No files match the filter.')] : desired;
+  const desiredChildren = desired.length === 0
+    ? [createEl('div', 'diff-note', ds.filter ? 'No files match the filter.' : 'No changes in this scope.')]
+    : desired;
   // Avoid list churn unless membership/order changed, preserving exact surviving focus across necessary replacements.
   const current = list.children || [];
   const unchanged = current.length === desiredChildren.length && desiredChildren.every((el, i) => current[i] === el);
@@ -1098,6 +1090,7 @@ const updateDiffBulkToggle = (ds) => {
 };
 
 const renderDiffSidebarContent = (sessionId, ds) => {
+  app.renderDiffScope?.(elements.diffScopeSelect, elements.diffScopeTrigger, elements.diffScopeLabel, ds);
   renderDiffTotals(ds);
   updateDiffBulkToggle(ds);
   renderDiffAccordion(sessionId, ds);
@@ -1115,9 +1108,9 @@ const renderDiffSidebar = (sessionId) => {
   const ds = sessionDiffState(sessionId);
   applyDiffSidebarVisibility(ds);
   updateDiffBulkToggle(ds);
+  app.renderDiffScope?.(elements.diffScopeSelect, elements.diffScopeTrigger, elements.diffScopeLabel, ds);
   renderDiffTotals(ds);
   app.renderDiffCommentQueueBar?.(sessionId);
-  if (ds.files.size === 0) return;
   // Skip the accordion (and its lazy diff fetches) while hidden; it renders
   // on reveal.
   if (elements.diffSidebar?.hidden) return;
@@ -1513,7 +1506,16 @@ if (diffViewportMedia) {
 window.addEventListener?.('resize', handleDiffViewportChange);
 window.addEventListener?.('keydown', handleDiffGlobalKeydown);
 
+const setDiffScope = app.createDiffScopeSetter({
+  activeSessionId: () => state.activeSessionId,
+  sessionState: sessionDiffState,
+  render: renderDiffSidebar,
+  fetchList: fetchSessionFileChanges,
+  clearComments: app.clearDiffCommentPanel
+});
+app.wireDiffScopePicker?.(elements.diffScopeTrigger, elements.diffScopeSelect);
 elements.diffFileList?.addEventListener?.('keydown', handleDiffListKeydown);
+elements.diffScopeSelect?.addEventListener?.('change', (event) => setDiffScope(event.target?.value));
 elements.diffToggleBtn?.addEventListener?.('click', toggleDiffSidebar);
 elements.diffSidebarCloseBtn?.addEventListener?.('click', () => {
   if (isDiffDrawerViewport()) closeDiffDrawer();
@@ -1539,6 +1541,7 @@ Object.assign(app, {
   setDiffSidebarHidden,
   closeDiffSidebar,
   toggleDiffSidebar,
+  setDiffScope,
   toggleDiffFile,
   pinDiffFileExpanded,
   scrollDiffFileIntoView: scrollFileIntoView,

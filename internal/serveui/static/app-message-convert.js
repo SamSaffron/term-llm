@@ -283,6 +283,9 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
   const attachToolResultState = (part, created, msg, partIndex) => {
     const images = normalizeImages(part.images);
+    const guardianReviews = Array.isArray(part.guardian_reviews)
+      ? part.guardian_reviews.filter((review) => review && typeof review === 'object').map((review) => ({ ...review }))
+      : [];
     const callId = part.tool_call_id || '';
     const failed = Boolean(part.tool_error || part.is_error);
     const spawnAgent = part.spawn_agent && typeof part.spawn_agent === 'object' ? part.spawn_agent : null;
@@ -294,7 +297,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     let tool = group && callId ? group.tools.find((entry) => entry.id === callId) : null;
     if (!tool && group && part.tool_name) tool = group.tools.find((entry) => entry.name === part.tool_name);
     // A page can contain the durable answer before the matching tool-call body.
-    if (!tool && images.length === 0) {
+    if (!tool && images.length === 0 && guardianReviews.length === 0) {
       if (askUserSummary) result.push(askUserAnswerEntry(askUserSummary, callId, created, msg, partIndex));
       return;
     }
@@ -311,6 +314,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     }
     tool.status = failed ? 'error' : 'done';
     tool.resultStatus = failed ? 'error' : 'success';
+    if (guardianReviews.length > 0) tool.guardianReviews = guardianReviews;
     if (spawnAgent) {
       tool.subagent = {
         agentName: String(spawnAgent.agent_name || ''),
@@ -498,6 +502,9 @@ const convertServerMessages = (serverMessages, options = {}) => {
           toolEntry.status = status;
         }
         if (failed || isActivity) toolEntry.resultStatus = failed ? 'error' : 'success';
+        if (Array.isArray(part.guardian_reviews) && part.guardian_reviews.length > 0) {
+          toolEntry.guardianReviews = part.guardian_reviews.filter((review) => review && typeof review === 'object').map((review) => ({ ...review }));
+        }
         appendUniqueImages(toolEntry, normalizeImages(part.images));
       } else if (part.type === 'tool_result') {
         attachToolResultState(part, created, msg, partIndex);

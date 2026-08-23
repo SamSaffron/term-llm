@@ -69,7 +69,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, windowOverrides = {}, contextOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {}, loadComposer = false } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, windowOverrides = {}, contextOverrides = {}, initialStorage = {}, agentName = '', agentNames = [], uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {}, loadComposer = false } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -120,6 +120,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], document
     TERM_LLM_UI_PREFIX: '/chat',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_AGENT_NAME: agentName,
+    TERM_LLM_AGENT_NAMES: agentNames,
     TERM_LLM_UI_TITLE: uiTitle,
     TERM_LLM_HUB: hub,
     navigator: navigatorObj,
@@ -184,6 +185,26 @@ function loadAppCore() {
   return loadAppCoreWith();
 }
 
+(function testAgentSelectionDefaultsToServerBehaviorAndRemembersPreviousAgent() {
+  const name = 'new conversation agent selection defaults to server behavior and remembers previous agent';
+  const defaultApp = loadAppCoreWith({ agentNames: ['developer', 'reviewer'] });
+  const rememberedApp = loadAppCoreWith({
+    agentNames: ['developer', 'reviewer'],
+    initialStorage: { term_llm_selected_agent: 'reviewer' },
+  });
+  const staleApp = loadAppCoreWith({
+    agentNames: ['developer', 'reviewer'],
+    initialStorage: { term_llm_selected_agent: 'removed-agent' },
+  });
+  if (defaultApp.state.selectedAgent !== ''
+      || rememberedApp.state.selectedAgent !== 'reviewer'
+      || staleApp.state.selectedAgent !== '') {
+    fail(name, `unexpected selections: ${defaultApp.state.selectedAgent}, ${rememberedApp.state.selectedAgent}, ${staleApp.state.selectedAgent}`);
+    return;
+  }
+  pass(name);
+})();
+
 const app = loadAppCore();
 
 pendingAsyncTests.push((async function testHardRefreshClearsShellCachesAndUpdatesRegistration() {
@@ -224,6 +245,12 @@ pendingAsyncTests.push((async function testHardRefreshClearsShellCachesAndUpdate
   composerApp.state.capabilitiesLoaded = true;
   composerApp.state.activeProjectId = '';
   composerApp.elements.promptInput.value = 'hello';
+  composerApp.updateSendButtonState();
+  if (composerApp.elements.sendBtn.disabled) {
+    fail(name, 'explicit No project draft remained disabled');
+    return;
+  }
+  composerApp.state.activeProjectId = 'prj_missing';
   composerApp.updateSendButtonState();
   if (!composerApp.elements.sendBtn.disabled || composerApp.elements.sendBtn.title !== 'Choose a project before sending') {
     fail(name, 'unbound draft remained apparently sendable');

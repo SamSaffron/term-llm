@@ -1533,7 +1533,7 @@ func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolNam
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
 		detail := "guardian policy reviewer is not configured"
-		m.emitGuardianEvent(m.guardianPathEvent(ctx, toolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
+		m.emitGuardianEventForContext(ctx, m.guardianPathEvent(ctx, toolName, path, isWrite, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
 		return Cancel, true, guardianReviewFailure(detail)
 	}
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{
@@ -1547,24 +1547,24 @@ func (m *ApprovalManager) checkPathGuardianApproval(ctx context.Context, toolNam
 		ScopeID:         llm.SessionIDFromContext(ctx),
 	})
 	if err != nil {
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
+		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
 		return Cancel, true, guardianReviewFailure(err.Error())
 	}
 	if decision.Allowed && guardianAllowContradictsPolicy(decision) {
 		rationale := guardianDenialRationale(decision, "guardian allow contradicted policy risk/authorization fields")
 		trip := m.recordGuardianDenial()
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
+		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
 		m.applyGuardianBreakerTrip(trip)
 		return Cancel, true, guardianPolicyDenial(rationale)
 	}
 	if decision.Allowed {
 		m.resetGuardianDenials()
-		m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
+		m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 		return ProceedOnce, true, nil
 	}
 	rationale := guardianDenialRationale(decision, "action was not approved by guardian policy")
 	trip := m.recordGuardianDenial()
-	m.emitGuardianEvent(m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
+	m.emitGuardianEventForContext(ctx, m.guardianPathDecisionEvent(ctx, toolName, path, isWrite, GuardianDenied, "guardian: denied: "+rationale, decision))
 	m.applyGuardianBreakerTrip(trip)
 	return Cancel, true, guardianPolicyDenial(rationale)
 }
@@ -1573,7 +1573,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	reviewFunc := m.lookupPolicyReviewFunc()
 	if reviewFunc == nil {
 		detail := "guardian policy reviewer is not configured"
-		m.emitGuardianEvent(m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
+		m.emitGuardianEventForContext(ctx, m.guardianEvent(ctx, command, workDir, GuardianWarning, "guardian: auto mode unavailable (no reviewer configured); action denied"))
 		return Cancel, true, guardianReviewFailure(detail)
 	}
 	approvalContext := m.guardianApprovalContext(command, workDir)
@@ -1583,25 +1583,25 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 	}
 	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: entries, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
 	if err != nil {
-		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
+		m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianError, fmt.Sprintf("guardian: review failed (%v); action denied", err), decision))
 		return Cancel, true, guardianReviewFailure(err.Error())
 	}
 	if decision.Allowed && guardianAllowContradictsPolicy(decision) {
 		rationale := guardianDenialRationale(decision, "guardian allow contradicted policy risk/authorization fields")
 		trip := m.recordGuardianDenial()
-		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
+		m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
 		m.applyGuardianBreakerTrip(trip)
 		return Cancel, true, guardianPolicyDenial(rationale)
 	}
 	if decision.Allowed {
 		m.resetGuardianDenials()
 		m.addGuardianExactShell(command, workDir)
-		m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
+		m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianApproved, "guardian: "+formatGuardianApproval(decision), decision))
 		return ProceedAlways, true, nil
 	}
 	rationale := guardianDenialRationale(decision, "action was not approved by guardian policy")
 	trip := m.recordGuardianDenial()
-	m.emitGuardianEvent(m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
+	m.emitGuardianEventForContext(ctx, m.guardianDecisionEvent(ctx, command, workDir, GuardianDenied, "guardian: denied: "+rationale, decision))
 	m.applyGuardianBreakerTrip(trip)
 	return Cancel, true, guardianPolicyDenial(rationale)
 }
@@ -1737,6 +1737,17 @@ func (m *ApprovalManager) guardianEvent(ctx context.Context, command, workDir st
 		Message:    message,
 		Outcome:    outcome,
 	}
+}
+
+func (m *ApprovalManager) emitGuardianEventForContext(ctx context.Context, event GuardianEvent) {
+	if strings.TrimSpace(event.ToolCallID) != "" {
+		llm.RecordGuardianReview(ctx, llm.GuardianReview{
+			Outcome: string(event.Outcome), Message: event.Message, Model: event.Model,
+			Tool: event.ToolName, Command: event.Command, Path: event.Path,
+			IsWrite: event.IsWrite, WorkDir: event.WorkDir,
+		})
+	}
+	m.emitGuardianEvent(event)
 }
 
 func (m *ApprovalManager) emitGuardianEvent(event GuardianEvent) {

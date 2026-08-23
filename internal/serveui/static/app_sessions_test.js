@@ -504,7 +504,7 @@ async function createSessionsHarness(options = {}) {
 
 async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
   const name = 'switching sessions stages current composer before restoring target draft';
-  const drafts = new Map([['', 'existing blank draft']]);
+  const drafts = new Map([['draft:__no_project__', 'existing blank draft']]);
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
@@ -597,7 +597,7 @@ async function testSwitchingSessionsClearsEmptyComposerDraft() {
 
 async function testNewChatClearsExistingDraftComposer() {
   const name = 'new chat clears existing draft instead of restoring it';
-  const drafts = new Map([['', 'old new-chat draft']]);
+  const drafts = new Map([['draft:__no_project__', 'old new-chat draft']]);
   const { app } = await createSessionsHarness({
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
@@ -627,7 +627,7 @@ async function testNewChatClearsExistingDraftComposer() {
   app.elements.promptInput.value = 'old new-chat draft';
 
   await app.switchToDraftSession({ clearComposer: true, focusPrompt: true });
-  if (drafts.has('')) {
+  if (drafts.has('draft:__no_project__')) {
     fail(name, 'expected the new-chat draft bucket to be removed', JSON.stringify(Array.from(drafts.entries())));
     return;
   }
@@ -640,7 +640,7 @@ async function testNewChatClearsExistingDraftComposer() {
 
 async function testNewChatFromSessionPreservesSessionDraft() {
   const name = 'new chat from a session preserves that session draft';
-  const drafts = new Map([['', 'existing blank draft']]);
+  const drafts = new Map([['draft:__no_project__', 'existing blank draft']]);
   const { app } = await createSessionsHarness({
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
@@ -680,7 +680,7 @@ async function testNewChatFromSessionPreservesSessionDraft() {
     fail(name, 'expected New Chat composer to be empty', app.elements.promptInput.value);
     return;
   }
-  if (drafts.get('') !== 'existing blank draft') {
+  if (drafts.get('draft:__no_project__') !== 'existing blank draft') {
     fail(name, 'expected unrelated blank draft bucket to survive New Chat from a session', JSON.stringify(Array.from(drafts.entries())));
     return;
   }
@@ -689,7 +689,7 @@ async function testNewChatFromSessionPreservesSessionDraft() {
 
 async function testArchivingActiveSessionClearsItsComposerDraft() {
   const name = 'archiving active hidden session clears its composer draft';
-  const drafts = new Map([['', 'blank draft']]);
+  const drafts = new Map([['draft:__no_project__', 'blank draft']]);
   const { app, windowObj } = await createSessionsHarness({
     fetchImpl: async (url, options = {}) => {
       if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
@@ -749,7 +749,7 @@ async function testArchivingActiveSessionClearsItsComposerDraft() {
     fail(name, 'archived active session should not leave an orphan draft', JSON.stringify(Array.from(drafts.entries())));
     return;
   }
-  if (drafts.get('') !== 'blank draft') {
+  if (drafts.get('draft:__no_project__') !== 'blank draft') {
     fail(name, 'blank draft bucket should remain available after archiving active session', JSON.stringify(Array.from(drafts.entries())));
     return;
   }
@@ -882,6 +882,16 @@ async function testNumericDeepLinkResolvesRealSessionId() {
         return true;
       },
     },
+    onInitializeStarted({ app }) {
+      // Project/sidebar hydration can discover the canonical session after the
+      // numeric route stub is created but before the selected-session merge.
+      app.state.sessions.push({
+        id: 'sess_real',
+        number: 1291,
+        title: 'Real session',
+        _serverOnly: true,
+      });
+    },
     fetchImpl: async (url) => {
       fetchCalls.push(url);
       const parsed = parsedTestURL(url);
@@ -939,6 +949,11 @@ async function testNumericDeepLinkResolvesRealSessionId() {
 
   if (app.state.activeSessionId !== 'sess_real') {
     fail(name, 'active session id should be reconciled to real server id', `got ${app.state.activeSessionId}`);
+    return;
+  }
+  const resolvedSessions = app.state.sessions.filter((session) => Number(session.number) === 1291);
+  if (resolvedSessions.length !== 1 || resolvedSessions[0].title !== 'Real session') {
+    fail(name, 'numeric route stub should be replaced by one hydrated session', JSON.stringify(resolvedSessions));
     return;
   }
   if (!fetchCalls.some((url) => isTranscriptIndexURL(url, 'sess_real'))) {
@@ -2948,6 +2963,47 @@ async function testConvertServerMessagesRestoresNativeToolActivityBeforeAnswer()
   pass(name);
 }
 
+async function testConvertServerMessagesRestoresGuardianReviewOnTool() {
+  const name = 'guardian review survives reload inside the correlated tool';
+  const { app } = await createSessionsHarness();
+  const converted = app.convertServerMessages([
+    { id: 1, sequence: 1, role: 'assistant', created_at: 1000, parts: [
+      { type: 'tool_call', tool_name: 'shell', tool_call_id: 'shell-1', tool_arguments: '{"command":"pwd"}' },
+    ] },
+    { id: 2, sequence: 2, role: 'tool', created_at: 1100, parts: [
+      { type: 'tool_result', tool_name: 'shell', tool_call_id: 'shell-1',
+        guardian_reviews: [{ outcome: 'approved', message: 'guardian: approved (low risk)' }] },
+    ] },
+  ]);
+  const tool = converted[0]?.tools?.[0];
+  if (converted.length !== 1 || converted[0]?.role !== 'tool-group' || tool?.guardianReviews?.[0]?.outcome !== 'approved') {
+    fail(name, 'durable guardian review was not attached to its tool', JSON.stringify(converted));
+    return;
+  }
+  pass(name);
+}
+
+async function testConvertServerMessagesRestoresOrphanedGuardianToolResult() {
+  const name = 'guardian-bearing tool result survives when its call is on an earlier page';
+  const { app } = await createSessionsHarness();
+  const converted = app.convertServerMessages([{
+    id: 2, sequence: 2, role: 'tool', created_at: 1100, parts: [{
+      type: 'tool_result', tool_name: 'shell', tool_call_id: 'shell-prior-page',
+      guardian_reviews: [{ outcome: 'denied', message: 'guardian: denied' }],
+    }],
+  }]);
+  const tool = converted[0]?.tools?.[0];
+  if (converted.length !== 1 || converted[0]?.role !== 'tool-group' || tool?.id !== 'shell-prior-page' || tool?.guardianReviews?.[0]?.outcome !== 'denied') {
+    fail(name, 'orphaned guardian tool result was not reconstructed as its tool', JSON.stringify(converted));
+    return;
+  }
+  if (converted.some((entry) => entry.role === 'guardian-notice')) {
+    fail(name, 'orphaned guardian tool result became a standalone notice', JSON.stringify(converted));
+    return;
+  }
+  pass(name);
+}
+
 async function testConvertServerMessagesRestoresAskUserAnswerAfterTool() {
   const name = 'server ask_user result restores its answer immediately after the tool group';
   const { app } = await createSessionsHarness();
@@ -4341,6 +4397,23 @@ async function testApplyServerSessionSummaryMapsLastMessageAt() {
   pass(name);
 }
 
+async function testApplyServerSessionSummaryClearsAbsentProject() {
+  const name = 'authoritative session summary clears stale project metadata';
+  const { app } = await createSessionsHarness();
+  const target = {
+    id: 'sess-project', title: 'Existing', created: 1000, messages: [],
+    projectId: 'project-stale', projectName: 'Stale project',
+  };
+  app.applyServerSessionSummary(target, {
+    id: target.id, short_title: target.title, created_at: target.created,
+  });
+  if (target.projectId !== '' || target.projectName !== '') {
+    fail(name, 'omitted no-project fields preserved stale local metadata', JSON.stringify(target));
+    return;
+  }
+  pass(name);
+}
+
 async function testSanitizeSessionPreservesLastMessageAt() {
   const name = 'sanitizeSession reads lastMessageAt from stored and server-shaped payloads';
   const { app } = await createSessionsHarness();
@@ -5578,13 +5651,15 @@ function testSanitizeMessagePreservesDiffComment() {
       id: 'diff-message', role: 'user', content: 'provider prompt', created: 1,
       diffComments: [],
       diffComment: {
-        id: 'comment-1', parent_id: 'comment-0', path: 'internal/a.go', side: 'old', line: 7,
-        file_change_seq: 12, line_text: 'old()', instruction: 'Keep this.',
+        id: 'comment-1', parent_id: 'comment-0', path: 'internal/a.go', scope: 'staged', side: 'old', line: 7,
+        file_change_seq: 0, line_text: 'old()', instruction: 'Keep this.',
         context_before: [{ side: 'old', line: 6, text: 'before' }],
         context_after: [{ side: 'new', line: 7, text: 'after' }],
       },
     });
     if (sanitized?.diffComments?.[0]?.id !== 'comment-1'
+        || sanitized.diffComments[0].scope !== 'staged'
+        || sanitized.diffComments[0].file_change_seq !== 0
         || sanitized.diffComments[0].parent_id !== 'comment-0'
         || sanitized.diffComments[0].context_before?.[0]?.text !== 'before'
         || sanitized.diffComments[0].context_after?.[0]?.side !== 'new') {
@@ -5603,6 +5678,25 @@ function testSanitizeMessagePreservesAskUserCallIdentity() {
     });
     if (!sanitized?.askUser || sanitized.askUserCallId !== 'call-ask') {
       fail(name, 'ask_user identity was dropped', JSON.stringify(sanitized));
+      return;
+    }
+    pass(name);
+  });
+}
+
+function testSanitizeMessageWhitelistsGuardianReviews() {
+  const name = 'sanitizeMessage preserves only bounded guardian review fields';
+  return createSessionsHarness().then(({ app }) => {
+    const sanitized = app.sanitizeMessage({
+      id: 'guardian-group', role: 'tool-group', status: 'done', created: 1,
+      tools: [{ id: 'shell-1', name: 'shell', status: 'done', arguments: '{}', guardianReviews: [{
+        outcome: 'approved', message: 'guardian: approved', model: 'reviewer', tool: 'shell', command: 'pwd',
+        path: '/tmp', is_write: false, workdir: '/work', unexpected: 'must not persist',
+      }] }],
+    });
+    const review = sanitized?.tools?.[0]?.guardianReviews?.[0];
+    if (review?.command !== 'pwd' || review?.workdir !== '/work' || Object.prototype.hasOwnProperty.call(review || {}, 'unexpected')) {
+      fail(name, 'guardian review whitelist was not enforced', JSON.stringify(sanitized));
       return;
     }
     pass(name);
@@ -7643,14 +7737,14 @@ async function testDiffCommentConvertsToReadableTypedUserMessage() {
     created_at: 1000,
     parts: [
       { type: 'diff_comment', diff_comment: { id: 'dc1', path: 'a.go', side: 'old', line: 4, file_change_seq: 8, line_text: 'old()', instruction: 'Keep it.' } },
-      { type: 'diff_comment', diff_comment: { id: 'dc2', path: 'b.go', side: 'new', line: 9, file_change_seq: 10, line_text: 'new()', instruction: 'Use this.' } },
+      { type: 'diff_comment', diff_comment: { id: 'dc2', path: 'b.go', scope: 'staged', side: 'new', line: 9, file_change_seq: 0, line_text: 'new()', instruction: 'Use this.' } },
       { type: 'text', text: '[Inline diff instruction]\nprovider detail' }
     ]
   }]);
   const message = converted[0];
   if (converted.length !== 1 || message?.diffComments?.length !== 2
       || message.diffComments[0]?.instruction !== 'Keep it.' || message.diffComments[0]?.side !== 'old'
-      || message.diffComments[1]?.instruction !== 'Use this.' || message?.content.indexOf('provider detail') < 0) {
+      || message.diffComments[1]?.instruction !== 'Use this.' || message.diffComments[1]?.scope !== 'staged' || message?.content.indexOf('provider detail') < 0) {
     fail(name, 'typed diff comment was not projected', JSON.stringify(converted));
     return;
   }
@@ -7682,8 +7776,8 @@ async function testInitialProjectSidebarFailureFallsBackToUsablePersistedSession
   pass(name);
 }
 
-async function testGlobalNewChatUsesLastValidProjectAndExpandsAmbiguousRail() {
-  const name = 'global New chat falls back to last valid project and expands an ambiguous collapsed rail';
+async function testGlobalNewChatUsesLastValidProjectAndFallsBackToNoProject() {
+  const name = 'global New chat defaults to the last valid project and falls back to No project';
   const { app } = await createSessionsHarness();
   app.state.projectsEnabled = true;
   app.state.projects = [
@@ -7700,18 +7794,14 @@ async function testGlobalNewChatUsesLastValidProjectAndExpandsAmbiguousRail() {
     return;
   }
 
-  let collapsed = null;
-  let opened = 0;
   app.state.draftSessionActive = false;
   app.state.activeSessionId = '';
   app.state.activeProjectId = '';
   app.state.lastProjectId = '';
   app.state.projects = [];
-  app.setSidebarCollapsed = (value) => { collapsed = value; };
-  app.openSidebar = () => { opened += 1; };
-  const result = await app.createAndSwitchToFreshSession();
-  if (result !== null || collapsed !== false || opened !== 1) {
-    fail(name, 'ambiguous rail did not expand project navigation', JSON.stringify({ result, collapsed, opened }));
+  await app.createAndSwitchToFreshSession();
+  if (!app.state.draftSessionActive || app.state.activeProjectId !== '') {
+    fail(name, 'missing project history did not open a No project draft', JSON.stringify(app.state));
     return;
   }
   pass(name);
@@ -7736,6 +7826,7 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testSanitizeMessagePreservesSkillRunState);
   await runAppSessionsTest(testSanitizeMessagePreservesDiffComment);
   await runAppSessionsTest(testSanitizeMessagePreservesAskUserCallIdentity);
+  await runAppSessionsTest(testSanitizeMessageWhitelistsGuardianReviews);
   await runAppSessionsTest(testSanitizeMessagePreservesPlanExecutionEvidence);
   await runAppSessionsTest(testSkillProvenanceEventConvertsToLinkedRunBlock);
   await runAppSessionsTest(testSessionSwitchRefreshesSkillsAndDraftClearsThem);
@@ -7750,7 +7841,7 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testNewChatClearsExistingDraftComposer);
   await runAppSessionsTest(testNewChatFromSessionPreservesSessionDraft);
   await runAppSessionsTest(testInitialProjectSidebarFailureFallsBackToUsablePersistedSession);
-  await runAppSessionsTest(testGlobalNewChatUsesLastValidProjectAndExpandsAmbiguousRail);
+  await runAppSessionsTest(testGlobalNewChatUsesLastValidProjectAndFallsBackToNoProject);
   await runAppSessionsTest(testArchivingActiveSessionClearsItsComposerDraft);
   await runAppSessionsTest(testSwitchingSessionsDiscardsPendingAttachments);
   await runAppSessionsTest(testSwitchToSessionSyncsSelectedRuntime);
@@ -7787,6 +7878,8 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails);
   await runAppSessionsTest(testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded);
   await runAppSessionsTest(testConvertServerMessagesRestoresNativeToolActivityBeforeAnswer);
+  await runAppSessionsTest(testConvertServerMessagesRestoresGuardianReviewOnTool);
+  await runAppSessionsTest(testConvertServerMessagesRestoresOrphanedGuardianToolResult);
   await runAppSessionsTest(testConvertServerMessagesRestoresAskUserAnswerAfterTool);
   await runAppSessionsTest(testConvertServerMessagesAttachesToolResultImages);
   await runAppSessionsTest(testConvertServerMessagesAttachesToolErrorsWithoutPhantoms);
@@ -7828,6 +7921,7 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testSyncIgnoresPendingInterjectionWithoutExactID);
   await runAppSessionsTest(testSyncUsesServerProvidedPendingInterjectionId);
   await runAppSessionsTest(testApplyServerSessionSummaryMapsLastMessageAt);
+  await runAppSessionsTest(testApplyServerSessionSummaryClearsAbsentProject);
   await runAppSessionsTest(testSanitizeSessionPreservesLastMessageAt);
   await runAppSessionsTest(testPreConnectedVisibilityDoesNotStartSidebarStatusPoll);
   await runAppSessionsTest(testHealthyVisibilityDoesNotAbortActiveStream);

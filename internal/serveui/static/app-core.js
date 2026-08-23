@@ -20,6 +20,7 @@ const STORAGE_BASE_KEYS = {
   selectedProvider: 'term_llm_selected_provider',
   selectedEffort: 'term_llm_selected_effort',
   selectedReasoningMode: 'term_llm_selected_reasoning_mode',
+  selectedAgent: 'term_llm_selected_agent',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
   diffSidebarWidth: 'term_llm_diff_sidebar_width',
   showHiddenSessions: 'term_llm_show_hidden_sessions',
@@ -121,12 +122,22 @@ const initialStoredActiveSessionId = localStorage.getItem(STORAGE_KEYS.activeSes
 const initialDraftSessionActive = initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID
   || localStorage.getItem(STORAGE_KEYS.draftSessionActive) === '1';
 
+const availableAgentNames = Array.isArray(window.TERM_LLM_AGENT_NAMES)
+  ? [...new Set(window.TERM_LLM_AGENT_NAMES.map((name) => String(name || '').trim()).filter(Boolean))]
+  : [];
+const storedAgentName = String(localStorage.getItem(STORAGE_KEYS.selectedAgent) || '').trim();
+const initialSelectedAgent = availableAgentNames.includes(storedAgentName) ? storedAgentName : '';
+if (initialSelectedAgent) localStorage.setItem(STORAGE_KEYS.selectedAgent, initialSelectedAgent);
+else localStorage.removeItem(STORAGE_KEYS.selectedAgent);
+
 const state = {
   token: localStorage.getItem(STORAGE_KEYS.token) || '',
   sessions: [],
   sessionProgressById: {},
   activeSessionId: initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID ? '' : initialStoredActiveSessionId,
   draftSessionActive: initialDraftSessionActive,
+  availableAgents: availableAgentNames,
+  selectedAgent: initialSelectedAgent,
   providers: [],
   selectedProvider: localStorage.getItem(STORAGE_KEYS.selectedProvider) || '',
   models: [],
@@ -359,8 +370,6 @@ const elements = {
   settingsBtn: document.getElementById('settingsBtn'),
   sidebarBrandText: document.getElementById('sidebarBrandText'),
   newChatBtn: document.getElementById('newChatBtn'),
-  addProjectBtn: document.getElementById('addProjectBtn'),
-  manageProjectsBtn: document.getElementById('manageProjectsBtn'),
   widgetsOpenBtn: document.getElementById('widgetsOpenBtn'),
   backToHubLink: document.getElementById('backToHubLink'),
   hubAgentLinks: document.getElementById('hubAgentLinks'),
@@ -509,6 +518,9 @@ const elements = {
   startupSplash: document.getElementById('startupSplash'),
   startupStatus: document.getElementById('startupStatus'),
   diffSidebar: document.getElementById('diffSidebar'),
+  diffScopeTrigger: document.getElementById('diffScopeTrigger'),
+  diffScopeLabel: document.getElementById('diffScopeLabel'),
+  diffScopeSelect: document.getElementById('diffScopeSelect'),
   diffSidebarTotals: document.getElementById('diffSidebarTotals'),
   diffSidebarCloseBtn: document.getElementById('diffSidebarCloseBtn'),
   diffResizeHandle: document.getElementById('diffResizeHandle'),
@@ -1533,7 +1545,7 @@ const updateSessionUsageDisplay = (session) => {
     || sessionHasInProgressState(session)
   ));
   setTriggerLocked(elements.chipProviderTrigger, locked, lockTitle);
-  setTriggerLocked(elements.chipModelTrigger, locked, lockTitle);
+  setTriggerLocked(elements.chipModelTrigger, locked && !effortQueueable, effortQueueable ? 'View runtime and queue reasoning effort for the next model turn' : lockTitle);
   setTriggerLocked(
     elements.chipEffortTrigger,
     locked && !effortQueueable,
@@ -2115,7 +2127,7 @@ const sanitizeMessage = (msg) => {
   if (Number.isFinite(segmentEndSequence) && segmentEndSequence > 0) base.segmentEndSequence = Math.trunc(segmentEndSequence);
   const runEpoch = Number(msg.runEpoch ?? msg.run_epoch);
   if (Number.isFinite(runEpoch) && runEpoch > 0) base.runEpoch = Math.trunc(runEpoch);
-  if (role === 'user' || role === 'assistant' || role === 'error') {
+  if (role === 'user' || role === 'assistant' || role === 'error' || role === 'guardian-notice') {
     base.content = String(msg.content || '');
     if (role === 'assistant' && msg.usage && typeof msg.usage === 'object') {
       base.usage = msg.usage;
@@ -2198,6 +2210,7 @@ const sanitizeMessage = (msg) => {
         created: asTimestamp(t.created)
       };
       if (t.resultStatus === 'success' || t.resultStatus === 'error') tool.resultStatus = t.resultStatus;
+      if (Array.isArray(t.guardianReviews)) tool.guardianReviews = t.guardianReviews.filter((review) => review && typeof review === 'object').map((review) => ({ outcome: String(review.outcome || ''), message: String(review.message || ''), model: String(review.model || ''), tool: String(review.tool || ''), command: String(review.command || ''), path: String(review.path || ''), is_write: Boolean(review.is_write), workdir: String(review.workdir || '') }));
       if (t.subagent && typeof t.subagent === 'object') {
         tool.subagent = {
           agentName: String(t.subagent.agentName || ''),
@@ -2229,6 +2242,7 @@ const sanitizeSession = (session) => {
     longTitle: typeof session.longTitle === 'string' ? session.longTitle : '',
     mode: typeof session.mode === 'string' && session.mode.trim() ? session.mode.trim() : 'chat',
     origin: typeof session.origin === 'string' && session.origin.trim() ? session.origin.trim() : 'tui',
+    agent: typeof session.agent === 'string' ? session.agent : '',
     archived: Boolean(session.archived),
     pinned: Boolean(session.pinned),
     created: asTimestamp(session.created),
@@ -2401,6 +2415,7 @@ const createSession = () => ({
   longTitle: '',
   mode: 'chat',
   origin: 'web',
+  agent: state.selectedAgent || '',
   archived: false,
   pinned: false,
   created: Date.now(),

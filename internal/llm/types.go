@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // contextKey is a private type for context keys to prevent collisions.
@@ -12,6 +13,52 @@ type contextKey string
 
 // toolCallIDKey is the context key for the current tool call ID.
 const toolCallIDKey contextKey = "tool_call_id"
+const guardianReviewCollectorKey contextKey = "guardian_review_collector"
+
+// GuardianReview is display-only audit metadata for a Guardian-reviewed tool
+// invocation. Providers must continue to receive only the ordinary tool result.
+type GuardianReview struct {
+	Outcome string `json:"outcome"`
+	Message string `json:"message"`
+	Model   string `json:"model,omitempty"`
+	Tool    string `json:"tool,omitempty"`
+	Command string `json:"command,omitempty"`
+	Path    string `json:"path,omitempty"`
+	IsWrite bool   `json:"is_write,omitempty"`
+	WorkDir string `json:"workdir,omitempty"`
+}
+
+type guardianReviewCollector struct {
+	mu      sync.Mutex
+	reviews []GuardianReview
+}
+
+// ContextWithGuardianReviewCapture installs a per-tool review collector and
+// returns a snapshot function for the execution owner.
+func ContextWithGuardianReviewCapture(ctx context.Context) (context.Context, func() []GuardianReview) {
+	collector := &guardianReviewCollector{}
+	return context.WithValue(ctx, guardianReviewCollectorKey, collector), collector.snapshot
+}
+
+// RecordGuardianReview attaches a correlated review to the active tool call.
+func RecordGuardianReview(ctx context.Context, review GuardianReview) {
+	collector, _ := ctx.Value(guardianReviewCollectorKey).(*guardianReviewCollector)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	collector.reviews = append(collector.reviews, review)
+	collector.mu.Unlock()
+}
+
+func (c *guardianReviewCollector) snapshot() []GuardianReview {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]GuardianReview(nil), c.reviews...)
+}
 
 // ContextWithCallID returns a new context with the tool call ID set.
 // Used by the engine to pass the call ID to spawn_agent for event bubbling.
@@ -391,14 +438,19 @@ type DiffCommentContextLine struct {
 }
 
 // DiffComment is durable, display-only metadata for an instruction anchored to
-// a particular retained file-change snapshot. The adjacent text part carries
-// the actual provider-facing instruction.
+// a particular diff snapshot. The adjacent text part carries the actual
+// provider-facing instruction.
 type DiffComment struct {
-	ID            string                   `json:"id"`
-	ParentID      string                   `json:"parent_id,omitempty"`
-	Path          string                   `json:"path"`
-	Side          string                   `json:"side"`
-	Line          int                      `json:"line"`
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id,omitempty"`
+	Path     string `json:"path"`
+	// Scope is the diff view captured by the anchor. Empty means last_turn for
+	// comments persisted before scoped Git diffs supported inline comments.
+	Scope string `json:"scope,omitempty"`
+	Side  string `json:"side"`
+	Line  int    `json:"line"`
+	// FileChangeSeq is the retained snapshot sequence for last_turn and zero
+	// for Git scopes, which do not have a session file-tracker snapshot.
 	FileChangeSeq int64                    `json:"file_change_seq"`
 	LineText      string                   `json:"line_text"`
 	ContextBefore []DiffCommentContextLine `json:"context_before,omitempty"`
@@ -644,13 +696,14 @@ type ToolContentPart struct {
 // ToolOutput is the structured return type from Tool.Execute().
 // Most tools only populate Content. Edit/image tools also populate Diffs/Images.
 type ToolOutput struct {
-	Content      string            // Text result (sent to LLM)
-	ContentParts []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
-	Diffs        []DiffData        // Structured diff data (for UI rendering)
-	Images       []string          // Image paths (for UI rendering)
-	FileChanges  []FileChange      `json:"file_changes,omitempty"` // Recorded file changes (when file tracking is enabled)
-	TimedOut     bool              // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
-	IsError      bool              // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
+	Content         string            // Text result (sent to LLM)
+	ContentParts    []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
+	Diffs           []DiffData        // Structured diff data (for UI rendering)
+	Images          []string          // Image paths (for UI rendering)
+	FileChanges     []FileChange      `json:"file_changes,omitempty"`     // Recorded file changes (when file tracking is enabled)
+	GuardianReviews []GuardianReview  `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata; never provider content
+	TimedOut        bool              // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
+	IsError         bool              // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
 }
 
 // TextOutput creates a ToolOutput with only text content.
@@ -660,16 +713,17 @@ func TextOutput(s string) ToolOutput {
 
 // ToolResult is the output from executing a tool call.
 type ToolResult struct {
-	ID           string
-	Name         string
-	Content      string            // Clean text sent to LLM
-	ContentParts []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content
-	Display      string            // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
-	Diffs        []DiffData        `json:"diffs,omitempty"`  // Structured diff data
-	Images       []string          `json:"images,omitempty"` // Image paths
-	IsError      bool              // True if this result represents a tool execution error
-	Caller       string            `json:",omitempty"` // PTC caller provenance.
-	ThoughtSig   []byte            // Gemini 3 thought signature (passed through from ToolCall)
+	ID              string
+	Name            string
+	Content         string            // Clean text sent to LLM
+	ContentParts    []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content
+	Display         string            // Deprecated: old marker-based output. Kept only for deserializing pre-structured sessions. TODO: remove once no saved sessions use Display-based diff markers.
+	Diffs           []DiffData        `json:"diffs,omitempty"`            // Structured diff data
+	Images          []string          `json:"images,omitempty"`           // Image paths
+	GuardianReviews []GuardianReview  `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata
+	IsError         bool              // True if this result represents a tool execution error
+	Caller          string            `json:",omitempty"` // PTC caller provenance.
+	ThoughtSig      []byte            // Gemini 3 thought signature (passed through from ToolCall)
 }
 
 // EventType describes streaming events.
@@ -931,14 +985,15 @@ func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig 
 		Parts: []Part{{
 			Type: PartToolResult,
 			ToolResult: &ToolResult{
-				ID:           id,
-				Name:         name,
-				Content:      output.Content,
-				ContentParts: output.ContentParts,
-				Diffs:        output.Diffs,
-				Images:       output.Images,
-				IsError:      output.IsError || output.TimedOut,
-				ThoughtSig:   thoughtSig,
+				ID:              id,
+				Name:            name,
+				Content:         output.Content,
+				ContentParts:    output.ContentParts,
+				Diffs:           output.Diffs,
+				Images:          output.Images,
+				GuardianReviews: append([]GuardianReview(nil), output.GuardianReviews...),
+				IsError:         output.IsError || output.TimedOut,
+				ThoughtSig:      thoughtSig,
 			},
 		}},
 	}

@@ -248,9 +248,11 @@ const plausibleMentionAtCursor = (value, cursor) => {
 const mentionRequestContext = () => {
   const draft = Boolean(app.state?.draftSessionActive);
   const session = !draft && typeof app.getActiveSession === 'function' ? app.getActiveSession() : null;
+  const projectId = String(session?.projectId || (draft ? app.state?.activeProjectId : '') || '').trim();
   return {
     sessionId: String(session?.id || '').trim(),
-    projectId: String(session?.projectId || (draft ? app.state?.activeProjectId : '') || '').trim(),
+    projectId,
+    noProject: Boolean(app.state?.projectsEnabled && !projectId),
     worktreeDir: String(session?.worktreeDir || (draft ? app.state?.selectedWorktreeDir : '') || '').trim(),
   };
 };
@@ -287,6 +289,7 @@ const scheduleMentionUpdate = (value, cursor) => {
           cursor_utf16: sourceCursor,
           limit: 10,
           project_id: context.projectId,
+          no_project: context.noProject,
           worktree_dir: context.worktreeDir,
         }),
         ...(mentionAbortController ? { signal: mentionAbortController.signal } : {}),

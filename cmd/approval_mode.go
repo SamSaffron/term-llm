@@ -96,7 +96,7 @@ func resolveApprovalMode(input approvalModeResolutionInput) (resolvedApprovalMod
 	}
 
 	mode := tools.ModePrompt
-	if input.Surface == approvalSurfaceChat || input.Surface == approvalSurfaceAsk {
+	if input.Surface == approvalSurfaceChat || input.Surface == approvalSurfaceAsk || input.Surface == approvalSurfaceServe {
 		mode = tools.ModeAuto
 	}
 	return resolvedApprovalMode{Mode: mode, Source: approvalModeSourceBuiltinDefault}, nil

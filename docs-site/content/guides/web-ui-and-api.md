@@ -266,6 +266,8 @@ term-llm serve web --auth none --host 127.0.0.1
 
 ## Useful flags
 
+Ordinary serve platforms default to Guardian-reviewed auto approval. To require human approval for unmatched actions, launch with `--approval prompt` (or set `serve.approval_mode: prompt`). Auto is fail-closed: serve startup fails if Guardian cannot initialize.
+
 ```bash
 term-llm serve web \
   --provider anthropic \
@@ -273,13 +275,14 @@ term-llm serve web \
   --search \
   --mcp playwright \
   --max-turns 200 \
-  --yolo
+  --approval prompt
 ```
 
 Relevant options include:
 
 - `--provider`
 - `--agent`
+- `--approval prompt|auto|yolo` (`--auto` and `--yolo` are aliases)
 - `--search`
 - `--native-search` / `--no-native-search`
 - `--mcp`

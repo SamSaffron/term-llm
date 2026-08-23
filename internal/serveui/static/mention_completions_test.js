@@ -96,6 +96,19 @@ async function main() {
   assert(slashCommandMenu.hidden && promptInput.focused, 'mention acceptance did not close and refocus the menu');
 
   requests.length = 0;
+  app.state.draftSessionActive = true;
+  app.state.projectsEnabled = true;
+  app.state.activeProjectId = '';
+  promptInput.value = 'review @typ now';
+  promptInput.selectionStart = 11;
+  promptInput.selectionEnd = 11;
+  promptInput.dispatch('input');
+  await runScheduledTimers();
+  const noProjectBody = JSON.parse(requests[0].options.body);
+  assert(noProjectBody.no_project === true && noProjectBody.project_id === '', 'No project draft mention context was not explicit');
+  app.state.draftSessionActive = false;
+
+  requests.length = 0;
   promptInput.value = 'mail@example.com';
   promptInput.selectionStart = promptInput.value.length;
   promptInput.dispatch('input');

@@ -38,6 +38,7 @@ type serveRuntime struct {
 	store                session.Store
 	goalStore            session.Store
 	syntheticUserCB      func(context.Context, llm.Message) error
+	baseSystemPrompt     string // agent-resolved prompt before workspace skill metadata
 	systemPrompt         string
 	history              []llm.Message
 	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
@@ -126,6 +127,7 @@ func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
 			"message":      message,
 			"tool_call_id": event.ToolCallID,
 			"outcome":      event.Outcome,
+			"model":        event.Model,
 			"tool":         event.ToolName,
 			"path":         event.Path,
 			"is_write":     event.IsWrite,

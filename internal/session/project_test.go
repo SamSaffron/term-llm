@@ -416,6 +416,32 @@ func TestProjectSidebarBoundedGroupsAndIndependentCursor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	spawnChild := createWorkspaceTestSession(t, store, "spawn-child")
+	spawnChild.ParentID = "alpha-0"
+	spawnChild.IsSubagent = true
+	if err := store.Update(ctx, spawnChild); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindSessionWorkspace(ctx, spawnChild.ID, SessionWorkspaceBinding{ProjectID: alpha.ID, CWD: alpha.CanonicalDir}); err != nil {
+		t.Fatal(err)
+	}
+	spawnMessage := NewMessage(spawnChild.ID, llm.UserText("internal delegated review"), 0)
+	spawnMessage.CreatedAt = time.Now().Add(time.Hour)
+	if err := store.AddMessage(ctx, spawnChild.ID, spawnMessage); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := store.Search(ctx, SearchOptions{Query: "internal delegated review", ExcludeSubagents: true}); err != nil || len(matches) != 0 {
+		t.Fatalf("spawn_agent child leaked into sidebar search: %#v, %v", matches, err)
+	}
+	if summaries, err := store.List(ctx, ListOptions{Limit: 100, ExcludeSubagents: true}); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, summary := range summaries {
+			if summary.ID == spawnChild.ID {
+				t.Fatalf("spawn_agent child leaked into flat sidebar list: %#v", summaries)
+			}
+		}
+	}
 	createWorkspaceTestSession(t, store, "legacy-null")
 	groups, err := store.Sidebar(ctx, SidebarOptions{PerProject: 2})
 	if err != nil {
@@ -436,6 +462,11 @@ func TestProjectSidebarBoundedGroupsAndIndependentCursor(t *testing.T) {
 	if alphaGroup == nil || len(alphaGroup.Sessions) != 2 || alphaGroup.SessionCount != 4 || alphaGroup.NextCursor == "" {
 		t.Fatalf("alpha group = %#v", alphaGroup)
 	}
+	for _, summary := range alphaGroup.Sessions {
+		if summary.ID == spawnChild.ID {
+			t.Fatalf("spawn_agent child leaked into project sidebar: %#v", alphaGroup)
+		}
+	}
 	if betaGroup == nil || len(betaGroup.Sessions) != 0 {
 		t.Fatalf("empty beta group = %#v", betaGroup)
 	}
@@ -454,7 +485,7 @@ func TestProjectSidebarBoundedGroupsAndIndependentCursor(t *testing.T) {
 	if err := store.AddMessage(ctx, newest.ID, newestMessage); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.List(ctx, ListOptions{ProjectID: alpha.ID, ProjectCursor: &cursor, Limit: 2, SortByActivity: true})
+	page, err := store.List(ctx, ListOptions{ProjectID: alpha.ID, ProjectCursor: &cursor, Limit: 2, SortByActivity: true, ExcludeSubagents: true})
 	if err != nil || len(page) != 2 {
 		all, _ := store.List(ctx, ListOptions{ProjectID: alpha.ID, Limit: 10, SortByActivity: true})
 		t.Fatalf("second page = %#v, %v; cursor=%#v all=%#v", page, err, cursor, all)
@@ -506,7 +537,7 @@ func TestBootstrapProjectIsAtomicAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	legacy := createWorkspaceTestSession(t, store, "legacy-bootstrap")
 	p := &Project{Name: "Bootstrap", CanonicalDir: t.TempDir()}
-	if err := store.BootstrapProject(ctx, p, []string{legacy.ID}); err != nil {
+	if err := store.BootstrapProject(ctx, p, []ProjectSessionMatch{{ID: legacy.ID, CWD: legacy.CWD, WorktreeDir: legacy.WorktreeDir}}); err != nil {
 		t.Fatal(err)
 	}
 	firstID := p.ID
@@ -524,5 +555,32 @@ func TestBootstrapProjectIsAtomicAndIdempotent(t *testing.T) {
 	projects, err := store.ListProjects(ctx, ProjectListOptions{IncludeArchived: true})
 	if err != nil || len(projects) != 1 {
 		t.Fatalf("projects = %#v, %v", projects, err)
+	}
+}
+
+func TestBootstrapProjectSkipsSessionWhoseWorkspaceChanged(t *testing.T) {
+	store := newProjectTestStore(t)
+	ctx := context.Background()
+	legacy := createWorkspaceTestSession(t, store, "bootstrap-workspace-race")
+	legacy.CWD = t.TempDir()
+	if err := store.Update(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	match := ProjectSessionMatch{ID: legacy.ID, CWD: legacy.CWD, WorktreeDir: legacy.WorktreeDir}
+	legacy.CWD = t.TempDir()
+	if err := store.Update(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	project := &Project{Name: "Bootstrap", CanonicalDir: match.CWD}
+	if err := store.BootstrapProject(ctx, project, []ProjectSessionMatch{match}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Get(ctx, legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ProjectID != "" {
+		t.Fatalf("changed workspace was claimed by bootstrap project: %#v", loaded)
 	}
 }

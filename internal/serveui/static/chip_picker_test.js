@@ -386,17 +386,21 @@ function testChipLockAllowsIdleSessionAndLocksBusyState() {
     }
   }
 
-  // Busy active session — provider/model locked, effort can queue for the next model turn.
+  // Busy active session — the compact runtime control stays available for effort,
+  // while provider/model changes remain locked inside its popover.
   app.updateSessionUsageDisplay({ id: 'sess-1', activeModel: 'gpt-5', activeResponseId: 'resp_1' });
-  for (const id of ['chipProviderTrigger', 'chipModelTrigger']) {
-    if (!elementMap[id].hasAttribute('disabled')) {
-      fail(name, `${id} should be disabled when a response is active`);
-      return;
-    }
-    if (elementMap[id].getAttribute('aria-disabled') !== 'true') {
-      fail(name, `${id} should have aria-disabled=true when locked`);
-      return;
-    }
+  if (!elementMap.chipProviderTrigger.hasAttribute('disabled')
+      || elementMap.chipProviderTrigger.getAttribute('aria-disabled') !== 'true') {
+    fail(name, 'provider changes should be locked while a response is active');
+    return;
+  }
+  if (elementMap.chipModelTrigger.hasAttribute('disabled')) {
+    fail(name, 'compact runtime trigger should remain enabled to queue effort while active');
+    return;
+  }
+  if (elementMap.chipModelTrigger.getAttribute('title') !== 'View runtime and queue reasoning effort for the next model turn') {
+    fail(name, 'compact runtime trigger should explain queued effort while active', elementMap.chipModelTrigger.getAttribute('title'));
+    return;
   }
   if (elementMap.chipEffortTrigger.hasAttribute('disabled')) {
     fail(name, 'chipEffortTrigger should remain enabled to queue effort while active');
@@ -599,14 +603,10 @@ function testPopoverItemSelectionDispatchesChangeAndCloses() {
   let lastChangeValue = null;
   sel.addEventListener('change', () => { changeCount += 1; lastChangeValue = sel.value; });
 
-  // Simulate the user clicking the chip trigger to open the popover.
+  // Open the generic selector directly; the visible model chip now owns the
+  // unified runtime panel rather than a model-only menu.
   const trigger = elementMap.chipModelTrigger;
-  const triggerListeners = trigger.listeners?.click || [];
-  if (triggerListeners.length === 0) {
-    fail(name, 'chipModelTrigger has no click listener wired');
-    return;
-  }
-  triggerListeners[0]({ stopPropagation() {}, preventDefault() {} });
+  app.openChipPopover(sel, trigger);
 
   const popover = elementMap.chipPopover;
   if (popover.hidden) {
@@ -642,14 +642,71 @@ function testPopoverItemSelectionDispatchesChangeAndCloses() {
   pass(name);
 }
 
-function openModelPopover(elementMap, options) {
+function testPopoverOmitsHiddenOptions() {
+  const name = 'popover omits options unavailable for the current context';
+  const { app, elementMap } = loadCoreAndStream();
+  const hidden = makeOption('staged', 'Staged');
+  hidden.hidden = true;
+  const popover = openModelPopover(app, elementMap, [makeOption('last_turn', 'Last turn'), hidden]);
+  const values = popover.children.map((child) => child.dataset?.value);
+  if (values.length !== 1 || values[0] !== 'last_turn') {
+    fail(name, `hidden option leaked into popover: ${JSON.stringify(values)}`);
+    return;
+  }
+  pass(name);
+}
+
+function testPopoverActionRunsWithoutChangingSelection() {
+  const name = 'popover footer action stays available during filtering and runs without changing selection';
+  const { app, elementMap } = loadCoreAndStream();
+  const sel = elementMap.chipModelSelect;
+  sel.value = 'project-one';
+  sel.options = [
+    makeOption('project-one', 'Project one'),
+    ...Array.from({ length: 10 }, (_, i) => makeOption(`project-${i + 2}`, `Project ${i + 2}`)),
+  ];
+  let changeCount = 0;
+  let actionCount = 0;
+  sel.addEventListener('change', () => { changeCount += 1; });
+  const trigger = elementMap.chipModelTrigger;
+
+  app.openChipPopover(sel, trigger, {
+    action: { label: 'Add project', onSelect: () => { actionCount += 1; } },
+  });
+  const popover = elementMap.chipPopover;
+  const action = popover.children.find((child) => child.classList?.contains('chip-popover-item-action'));
+  if (!action) return fail(name, 'footer action was not rendered');
+  const filterInput = popover.children.find((child) => child.tagName === 'INPUT');
+  if (!filterInput) return fail(name, 'expected a filter input for the project list');
+  filterInput.value = 'nothing matches';
+  filterInput.listeners.input[0]();
+  if (action.hidden) return fail(name, 'footer action was hidden by project filtering');
+
+  action.listeners.click[0]();
+  if (actionCount !== 1) return fail(name, `expected action once, got ${actionCount}`);
+  if (changeCount !== 0 || sel.value !== 'project-one') {
+    return fail(name, `action changed the selection to ${JSON.stringify(sel.value)}`);
+  }
+  if (!popover.hidden) return fail(name, 'popover stayed open after action');
+
+  let focusCount = 0;
+  trigger.focus = () => { focusCount += 1; };
+  app.openChipPopover(sel, trigger, {
+    action: { label: 'Add project', onSelect: () => { actionCount += 1; } },
+  });
+  const reopenedFilter = popover.children.find((child) => child.tagName === 'INPUT');
+  reopenedFilter.listeners.keydown[0]({ key: 'Escape', preventDefault() {} });
+  if (!popover.hidden || focusCount !== 1) {
+    return fail(name, 'Escape did not close the popover and restore trigger focus');
+  }
+  pass(name);
+}
+
+function openModelPopover(app, elementMap, options) {
   const sel = elementMap.chipModelSelect;
   sel.value = '';
   sel.options = options;
-  const trigger = elementMap.chipModelTrigger;
-  const triggerListeners = trigger.listeners?.click || [];
-  if (triggerListeners.length === 0) return null;
-  triggerListeners[0]({ stopPropagation() {}, preventDefault() {} });
+  app.openChipPopover(sel, elementMap.chipModelTrigger);
   return elementMap.chipPopover;
 }
 
@@ -662,7 +719,7 @@ function testPopoverHidesFilterInputBelowThreshold() {
   // Use exactly 10 options to confirm the filter is suppressed at the boundary.
   const opts = [];
   for (let i = 0; i < 10; i++) opts.push(makeOption(`m-${i}`, `m-${i}`));
-  const popover = openModelPopover(elementMap, opts);
+  const popover = openModelPopover(app, elementMap, opts);
   if (!popover) return fail(name, 'no click listener on chipModelTrigger');
 
   const filterInputs = popover.children.filter((c) => c.tagName === 'INPUT');
@@ -680,7 +737,7 @@ function testPopoverShowsFilterInputAboveThreshold() {
 
   const opts = [];
   for (let i = 0; i < 15; i++) opts.push(makeOption(`m-${i}`, `m-${i}`));
-  const popover = openModelPopover(elementMap, opts);
+  const popover = openModelPopover(app, elementMap, opts);
   if (!popover) return fail(name, 'no click listener on chipModelTrigger');
 
   const filterInputs = popover.children.filter((c) => c.tagName === 'INPUT');
@@ -705,7 +762,7 @@ function testFilterInputHidesNonMatchingItems() {
   for (let i = 0; i < 12; i++) opts.push(makeOption(`gpt-${i}`, `gpt-${i}`));
   opts.push(makeOption('claude-haiku', 'claude-haiku'));
   opts.push(makeOption('claude-sonnet', 'claude-sonnet'));
-  const popover = openModelPopover(elementMap, opts);
+  const popover = openModelPopover(app, elementMap, opts);
   if (!popover) return fail(name, 'no click listener on chipModelTrigger');
 
   const filterInput = popover.children.find((c) => c.tagName === 'INPUT');
@@ -749,16 +806,14 @@ function collectNodes(root, predicate, out = []) {
   return out;
 }
 
-function testCompressedModelChipOpensRuntimeControls() {
-  const name = 'compressed model chip opens provider/model/effort controls';
-  const { app, elementMap, windowObj, ctx } = loadCoreAndStream();
+function testUnifiedRuntimeChipOpensAllRuntimeControls() {
+  const name = 'unified runtime chip opens provider/model/effort controls';
+  const { app, elementMap, ctx } = loadCoreAndStream();
   app.updateHeader = () => app.updateSessionUsageDisplay(null);
   app.state.selectedProvider = 'anthropic';
   app.state.selectedModel = 'claude-sonnet-4.5';
   app.state.selectedEffort = 'medium';
 
-  elementMap.chipProviderTrigger.closest = () => ({ nodeType: 1 });
-  windowObj.getComputedStyle = () => ({ display: 'none' });
   elementMap.chipProviderSelect.options = [
     makeOption('', 'Auto (server default)'),
     makeOption('chatgpt', 'chatgpt (default)'),
@@ -781,7 +836,7 @@ function testCompressedModelChipOpensRuntimeControls() {
 
   const popover = elementMap.chipPopover;
   if (popover.hidden || !popover.classList.contains('chip-popover-runtime')) {
-    fail(name, 'expected runtime popover to open from compressed model chip');
+    fail(name, 'expected runtime popover to open from the unified runtime chip');
     return;
   }
 
@@ -805,6 +860,15 @@ function testCompressedModelChipOpensRuntimeControls() {
   listeners[0]();
   if (app.state.selectedEffort !== 'high') {
     fail(name, `expected effort to update to high, got ${JSON.stringify(app.state.selectedEffort)}`);
+    return;
+  }
+
+  app.closeChipPopover();
+  app.updateSessionUsageDisplay({ id: 'sess-1', activeModel: 'claude-sonnet-4.5', activeResponseId: 'resp-1' });
+  triggerListeners[0]({ stopPropagation() {}, preventDefault() {} });
+  const lockedSelects = collectNodes(popover, (node) => node.tagName === 'SELECT');
+  if (!lockedSelects[0]?.disabled || !lockedSelects[1]?.disabled || lockedSelects[2]?.disabled) {
+    fail(name, 'busy runtime popover should lock provider/model while leaving effort queueable');
     return;
   }
   pass(name);
@@ -835,7 +899,7 @@ function testMobilePopoverUsesVisualViewportSafeBounds() {
 
   const opts = [];
   for (let i = 0; i < 15; i++) opts.push(makeOption(`gpt-${i}`, `gpt-${i}`));
-  const popover = openModelPopover(elementMap, opts);
+  const popover = openModelPopover(app, elementMap, opts);
   if (!popover) return fail(name, 'no click listener on chipModelTrigger');
 
   if (popover.style.top !== 'calc(12px + 0.5rem + var(--safe-top))') {
@@ -912,10 +976,12 @@ async function main() {
   testProviderChipChangeUpdatesHeaderBeforeModelsFetchCompletes();
   await testStaleProviderModelFetchDoesNotOverwriteNewerSelection();
   testPopoverItemSelectionDispatchesChangeAndCloses();
+  testPopoverOmitsHiddenOptions();
+  testPopoverActionRunsWithoutChangingSelection();
   testPopoverHidesFilterInputBelowThreshold();
   testPopoverShowsFilterInputAboveThreshold();
   testFilterInputHidesNonMatchingItems();
-  testCompressedModelChipOpensRuntimeControls();
+  testUnifiedRuntimeChipOpensAllRuntimeControls();
   testMobilePopoverUsesVisualViewportSafeBounds();
   testMobileWorktreePopoverUsesBottomSheetPosition();
 

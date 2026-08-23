@@ -18,6 +18,7 @@ type serveWorkspaceRequest struct {
 	WorktreeDir       string
 	FirstPartyUI      bool
 	FreshConversation bool
+	AllowNoProject    bool
 }
 
 type serveWorkspaceBinding struct {
@@ -61,6 +62,9 @@ func (s *serveServer) resolveWorkspace(ctx context.Context, req serveWorkspaceRe
 		}
 	}
 
+	if req.AllowNoProject && req.ProjectID != "" {
+		return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "invalid_project_selection", "no_project and project_id are mutually exclusive")
+	}
 	if !s.projectsEnabled {
 		if req.ProjectID != "" {
 			return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "projects_disabled", "project_id is not accepted while project mode is disabled")
@@ -70,10 +74,45 @@ func (s *serveServer) resolveWorkspace(ctx context.Context, req serveWorkspaceRe
 	if req.ProjectID == "" && persisted != nil {
 		req.ProjectID = strings.TrimSpace(persisted.ProjectID)
 	}
-	if req.FirstPartyUI && req.FreshConversation && req.ProjectID == "" && (persisted == nil || strings.TrimSpace(persisted.ProjectID) == "") {
+	if req.AllowNoProject && req.ProjectID != "" {
+		return serveWorkspaceBinding{}, workspaceError(http.StatusConflict, "workspace_conflict", "this conversation is already bound to a project")
+	}
+	if req.FirstPartyUI && req.FreshConversation && req.ProjectID == "" && !req.AllowNoProject && (persisted == nil || strings.TrimSpace(persisted.ProjectID) == "") {
 		return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "project_required", "choose a project before starting a conversation")
 	}
 	if req.ProjectID == "" {
+		// An explicit No project selection uses the persisted immutable snapshot,
+		// or the server startup directory for a new conversation, without adding
+		// project provenance.
+		if req.AllowNoProject && req.FirstPartyUI {
+			if persisted != nil {
+				persistedWorktree := strings.TrimSpace(persisted.WorktreeDir)
+				if req.WorktreeDir != "" && !sameServePath(req.WorktreeDir, persistedWorktree) {
+					return serveWorkspaceBinding{}, workspaceError(http.StatusConflict, "workspace_conflict", "this conversation is already bound to another worktree")
+				}
+				root := persistedWorktree
+				if root == "" {
+					root = strings.TrimSpace(persisted.CWD)
+				}
+				if root == "" {
+					root = strings.TrimSpace(s.startupDir)
+				}
+				if root == "" {
+					return serveWorkspaceBinding{}, workspaceError(http.StatusServiceUnavailable, "workspace_unavailable", "the default workspace is unavailable")
+				}
+				return serveWorkspaceBinding{RootDir: root, RuntimeDir: root, WorktreeDir: strings.TrimSpace(persisted.WorktreeDir)}, nil
+			}
+			if req.FreshConversation {
+				if req.WorktreeDir != "" {
+					return serveWorkspaceBinding{}, workspaceError(http.StatusBadRequest, "project_required", "worktree_dir requires project_id")
+				}
+				root := strings.TrimSpace(s.startupDir)
+				if root == "" {
+					return serveWorkspaceBinding{}, workspaceError(http.StatusServiceUnavailable, "workspace_unavailable", "the default workspace is unavailable")
+				}
+				return serveWorkspaceBinding{RootDir: root, RuntimeDir: root}, nil
+			}
+		}
 		// Third-party omission and legacy null-project resumes retain their existing
 		// unbound/explicit behavior. A first-party UI may not use an arbitrary path
 		// as a substitute for selecting a registry project.
@@ -167,9 +206,11 @@ func persistedProjectWorkspaceBinding(project session.Project, status projectAPI
 		// project's managed bucket may use the documented root fallback.
 		if _, statErr := os.Stat(persistedWorktree); os.IsNotExist(statErr) {
 			managedRoot, rootErr := worktree.ManagedRoot(project.CanonicalDir)
-			candidate, candidateErr := canonicalizeWorktreeBoundary(persistedWorktree)
-			managedRoot, rootErr = canonicalizeWorktreeBoundary(managedRoot)
-			matches = rootErr == nil && candidateErr == nil && candidate != managedRoot && pathWithinDir(candidate, managedRoot)
+			if rootErr == nil {
+				candidate, candidateErr := canonicalizeWorktreeBoundary(persistedWorktree)
+				managedRoot, rootErr = canonicalizeWorktreeBoundary(managedRoot)
+				matches = rootErr == nil && candidateErr == nil && candidate != managedRoot && pathWithinDir(candidate, managedRoot)
+			}
 		}
 	}
 	if !matches {
@@ -215,23 +256,56 @@ func (s *serveServer) resolvePersistedProjectWorkspace(ctx context.Context, pers
 }
 
 func (s *serveServer) bindResolvedWorkspace(ctx context.Context, sessionID string, rt *serveRuntime, binding serveWorkspaceBinding) error {
+	var persisted *session.Session
 	if binding.ProjectID == "" {
-		return nil
-	}
-	binder, ok := session.AsSessionWorkspaceBinder(s.store)
-	if !ok {
-		return workspaceError(http.StatusServiceUnavailable, "projects_unavailable", "session workspace binding is unavailable")
-	}
-	persisted, err := binder.BindSessionWorkspace(ctx, sessionID, session.SessionWorkspaceBinding{
-		ProjectID:   binding.ProjectID,
-		CWD:         binding.RuntimeDir,
-		WorktreeDir: binding.WorktreeDir,
-	})
-	if errors.Is(err, session.ErrWorkspaceConflict) {
-		return workspaceError(http.StatusConflict, "workspace_conflict", "another request already bound this conversation to a different workspace")
-	}
-	if err != nil {
-		return err
+		if strings.TrimSpace(binding.RuntimeDir) == "" {
+			return nil
+		}
+		var err error
+		persisted, err = s.store.Get(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("load no-project session shell: %w", err)
+		}
+		if persisted == nil {
+			return errors.New("load no-project session shell: session not found")
+		}
+		if strings.TrimSpace(persisted.ProjectID) != "" ||
+			(strings.TrimSpace(persisted.CWD) != "" && !sameServePath(persisted.CWD, binding.RuntimeDir)) ||
+			(strings.TrimSpace(persisted.WorktreeDir) != "" && !sameServePath(persisted.WorktreeDir, binding.WorktreeDir)) {
+			return workspaceError(http.StatusConflict, "workspace_conflict", "another request already bound this conversation to a different workspace")
+		}
+		persisted.CWD = binding.RuntimeDir
+		persisted.WorktreeDir = binding.WorktreeDir
+		if err := s.store.Update(ctx, persisted); err != nil {
+			return fmt.Errorf("persist no-project workspace: %w", err)
+		}
+	} else {
+		current, err := s.store.Get(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("load project session shell: %w", err)
+		}
+		if current != nil && strings.TrimSpace(current.ProjectID) == binding.ProjectID {
+			// Existing immutable project snapshots are already persisted. RuntimeDir
+			// may intentionally be a root fallback for a vanished worktree and must
+			// not be written back over that snapshot.
+			persisted = current
+		} else {
+			binder, ok := session.AsSessionWorkspaceBinder(s.store)
+			if !ok {
+				return workspaceError(http.StatusServiceUnavailable, "projects_unavailable", "session workspace binding is unavailable")
+			}
+			persisted, err = binder.BindSessionWorkspace(ctx, sessionID, session.SessionWorkspaceBinding{
+				ProjectID:   binding.ProjectID,
+				CWD:         binding.RuntimeDir,
+				WorktreeDir: binding.WorktreeDir,
+			})
+			if errors.Is(err, session.ErrWorkspaceConflict) {
+				return workspaceError(http.StatusConflict, "workspace_conflict", "another request already bound this conversation to a different workspace")
+			}
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if rt != nil && rt.toolMgr != nil {
 		if err := rt.toolMgr.ConfigureWorkspacePersistence(ctx, s.store, sessionID); err != nil {

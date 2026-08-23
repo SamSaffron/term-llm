@@ -47,18 +47,19 @@ func initGitProject(t *testing.T) string {
 
 func TestResolveServeProjectsRequestedTriStateAndWebScope(t *testing.T) {
 	for _, tc := range []struct {
-		name                                    string
-		cmdProjects, cmdNoProjects, config, web bool
-		wantEnabled, wantStrict                 bool
+		name                                                   string
+		projectsSet, projectsValue, cmdNoProjects, config, web bool
+		wantEnabled, wantStrict                                bool
 	}{
-		{"default enabled for web", false, false, true, true, true, false},
-		{"config disables", false, false, false, true, false, false},
-		{"strict flag overrides disabled config", true, false, false, true, true, true},
-		{"no-projects overrides enabled config", false, true, true, true, false, false},
-		{"non-web never initializes", true, false, true, false, false, false},
+		{"default enabled for web", false, false, false, true, true, true, false},
+		{"config disables", false, false, false, false, true, false, false},
+		{"strict flag overrides disabled config", true, true, false, false, true, true, true},
+		{"explicit projects false overrides enabled config", true, false, false, true, true, false, false},
+		{"no-projects overrides enabled config", false, false, true, true, true, false, false},
+		{"non-web never initializes", true, true, false, true, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			enabled, strict := resolveServeProjectsRequested(tc.cmdProjects, tc.cmdNoProjects, tc.config, tc.web)
+			enabled, strict := resolveServeProjectsRequested(tc.projectsSet, tc.projectsValue, tc.cmdNoProjects, tc.config, tc.web)
 			if enabled != tc.wantEnabled || strict != tc.wantStrict {
 				t.Fatalf("resolve = (%v,%v), want (%v,%v)", enabled, strict, tc.wantEnabled, tc.wantStrict)
 			}
@@ -97,6 +98,77 @@ func TestResolveProjectPathValidationAndGitNormalization(t *testing.T) {
 		if _, err := resolveProjectPath(path); err == nil {
 			t.Errorf("resolveProjectPath(%q) unexpectedly succeeded", path)
 		}
+	}
+}
+
+func TestProjectDirectoryBrowserListsFoldersAndMetadata(t *testing.T) {
+	root := t.TempDir()
+	plain := filepath.Join(root, "plain")
+	gitDir := filepath.Join(root, "repository")
+	hidden := filepath.Join(root, ".hidden")
+	for _, dir := range []string{plain, filepath.Join(gitDir, ".git"), hidden} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "not-a-folder.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := listProjectDirectories(root, false, map[string]string{canonicalProjectStoragePath(plain, runtime.GOOS): "prj_plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameServePath(listing.Path, root) || listing.Parent == "" || len(listing.Breadcrumbs) == 0 {
+		t.Fatalf("listing navigation metadata = %#v", listing)
+	}
+	if len(listing.Entries) != 2 {
+		t.Fatalf("entries = %#v, want two visible directories", listing.Entries)
+	}
+	if listing.Entries[0].Name != "repository" || !listing.Entries[0].Git {
+		t.Fatalf("Git directory was not sorted and badged first: %#v", listing.Entries)
+	}
+	if listing.Entries[1].Name != "plain" || listing.Entries[1].ExistingProjectID != "prj_plain" {
+		t.Fatalf("existing project metadata missing: %#v", listing.Entries[1])
+	}
+
+	withHidden, err := listProjectDirectories(root, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withHidden.Entries) != 3 || withHidden.Entries[0].Name != "repository" {
+		t.Fatalf("show-hidden entries = %#v", withHidden.Entries)
+	}
+}
+
+func TestProjectDirectoryHandlerValidation(t *testing.T) {
+	srv, _ := newServeProjectTestServer(t)
+	root := t.TempDir()
+	srv.startupDir = root
+	target := "/v1/project-directories?path=" + url.QueryEscape(root)
+	rr := httptest.NewRecorder()
+	srv.handleProjectDirectories(rr, httptest.NewRequest(http.MethodGet, target, nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"breadcrumbs"`) {
+		t.Fatalf("directory listing status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	srv.handleProjectDirectories(rr, httptest.NewRequest(http.MethodPost, target, nil))
+	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("invalid method status=%d allow=%q", rr.Code, rr.Header().Get("Allow"))
+	}
+
+	rr = httptest.NewRecorder()
+	srv.handleProjectDirectories(rr, httptest.NewRequest(http.MethodGet, "/v1/project-directories?path=relative", nil))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "path must be absolute") {
+		t.Fatalf("relative path status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	outside := t.TempDir()
+	rr = httptest.NewRecorder()
+	srv.handleProjectDirectories(rr, httptest.NewRequest(http.MethodGet, "/v1/project-directories?path="+url.QueryEscape(outside), nil))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("outside path status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -179,6 +251,31 @@ func mustJSONQuote(value string) string {
 	return string(data)
 }
 
+func TestKeepCachedProjectStatusPrefersFreshDetailAndNewerResults(t *testing.T) {
+	updated := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	started := updated.Add(time.Minute)
+	now := started.Add(time.Second)
+	project := session.Project{UpdatedAt: updated}
+	for _, tc := range []struct {
+		name     string
+		entry    projectStatusCacheEntry
+		detailed bool
+		want     bool
+	}{
+		{name: "fresh detail over cheap", entry: projectStatusCacheEntry{updatedAt: updated, checkedAt: started, detailed: true}, want: true},
+		{name: "stale detail yields to cheap", entry: projectStatusCacheEntry{updatedAt: updated, checkedAt: now.Add(-projectStatusCacheTTL - time.Second), detailed: true}, want: false},
+		{name: "newer equivalent result", entry: projectStatusCacheEntry{updatedAt: updated, checkedAt: started.Add(time.Millisecond), detailed: true}, detailed: true, want: true},
+		{name: "older equivalent result", entry: projectStatusCacheEntry{updatedAt: updated, checkedAt: started.Add(-time.Millisecond), detailed: true}, detailed: true, want: false},
+		{name: "detail upgrades cheap", entry: projectStatusCacheEntry{updatedAt: updated, checkedAt: started.Add(time.Millisecond)}, detailed: true, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepCachedProjectStatus(tc.entry, project, started, now, tc.detailed); got != tc.want {
+				t.Fatalf("keepCachedProjectStatus() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveWorkspacePolicyAndImmutableBinding(t *testing.T) {
 	srv, store := newServeProjectTestServer(t)
 	ctx := context.Background()
@@ -194,7 +291,25 @@ func TestResolveWorkspacePolicyAndImmutableBinding(t *testing.T) {
 	if _, err := srv.resolveWorkspace(ctx, serveWorkspaceRequest{SessionID: "fresh", FirstPartyUI: true, FreshConversation: true}); err == nil {
 		t.Fatal("missing first-party project unexpectedly succeeded")
 	}
+	noProjectRoot := t.TempDir()
+	srv.startupDir = noProjectRoot
+	binding, err = srv.resolveWorkspace(ctx, serveWorkspaceRequest{SessionID: "fresh", FirstPartyUI: true, FreshConversation: true, AllowNoProject: true})
+	if err != nil || binding.ProjectID != "" || !sameServePath(binding.RuntimeDir, noProjectRoot) {
+		t.Fatalf("explicit no-project binding = %#v, %v", binding, err)
+	}
 	now := time.Now()
+	noProjectShell := &session.Session{ID: "no-project-shell", Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}
+	if err := store.Create(ctx, noProjectShell); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.bindResolvedWorkspace(ctx, noProjectShell.ID, nil, binding); err != nil {
+		t.Fatalf("bind explicit no-project workspace: %v", err)
+	}
+	persistedNoProject, err := store.Get(ctx, noProjectShell.ID)
+	if err != nil || persistedNoProject.ProjectID != "" || !sameServePath(persistedNoProject.CWD, noProjectRoot) {
+		t.Fatalf("persisted no-project workspace = %#v, %v", persistedNoProject, err)
+	}
+	now = time.Now()
 	sess := &session.Session{ID: "bound", Provider: "mock", Model: "mock", Mode: session.ModeChat, Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusActive}
 	if err := store.Create(ctx, sess); err != nil {
 		t.Fatal(err)
@@ -540,14 +655,24 @@ func TestProjectMentionAndSkillDiscoveryStayWithinResolvedBinding(t *testing.T) 
 	if err != nil || !sameServePath(skillSession.CWD, projectA.CanonicalDir) {
 		t.Fatalf("skill discovery binding = %#v, %v", skillSession, err)
 	}
-	mentionRoot, err := srv.resolveMentionSearchRootForProject(ctx, "", projectB.ID, "")
+	mentionRoot, err := srv.resolveMentionSearchRootForProject(ctx, "", projectB.ID, "", false, true)
 	if err != nil || !sameServePath(mentionRoot, projectB.CanonicalDir) {
 		t.Fatalf("draft mention root = %q, %v", mentionRoot, err)
 	}
-	if _, err := srv.resolveMentionSearchRootForProject(ctx, persisted.ID, projectB.ID, ""); err == nil {
+	noProjectRoot := t.TempDir()
+	srv.startupDir = noProjectRoot
+	noProjectSession := &session.Session{ID: "no-project-discovery", Provider: "mock", Model: "mock", CWD: noProjectRoot, Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+	if err := store.Create(ctx, noProjectSession); err != nil {
+		t.Fatal(err)
+	}
+	mentionRoot, err = srv.resolveMentionSearchRootForProject(ctx, noProjectSession.ID, "", "", true, true)
+	if err != nil || !sameServePath(mentionRoot, noProjectRoot) {
+		t.Fatalf("no-project mention root = %q, %v", mentionRoot, err)
+	}
+	if _, err := srv.resolveMentionSearchRootForProject(ctx, persisted.ID, projectB.ID, "", false, true); err == nil {
 		t.Fatal("persisted project A session accepted project B mention context")
 	}
-	if _, err := srv.resolveMentionSearchRootForProject(ctx, "", projectA.ID, t.TempDir()); err == nil {
+	if _, err := srv.resolveMentionSearchRootForProject(ctx, "", projectA.ID, t.TempDir(), false, true); err == nil {
 		t.Fatal("project mention search accepted arbitrary worktree path")
 	}
 }
@@ -633,6 +758,46 @@ func TestSessionProjectAssignmentValidatesAndPreservesWorkspace(t *testing.T) {
 	}
 	if rr := requestProject("archived-unavailable", gone.ID); rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "project_unavailable") {
 		t.Fatalf("archived unavailable assignment status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	now := time.Now()
+	legacy := &session.Session{ID: "upgrade-candidate", Provider: "mock", Model: "mock", CWD: root, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+	if err := store.Create(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	infoRR := httptest.NewRecorder()
+	srv.handleSessionByID(infoRR, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+legacy.ID+"/project", nil))
+	if infoRR.Code != http.StatusOK {
+		t.Fatalf("candidate status=%d body=%s", infoRR.Code, infoRR.Body.String())
+	}
+	var info sessionProjectAssignmentInfo
+	if err := json.Unmarshal(infoRR.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Candidate == nil || !sameServePath(info.Candidate.CanonicalDir, root) || info.Candidate.DefaultName != filepath.Base(root) {
+		t.Fatalf("candidate info = %#v", info)
+	}
+
+	upgradeReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+legacy.ID+"/project", strings.NewReader(`{"create_from_workspace":true,"name":"Upgraded workspace"}`))
+	upgradeReq.Header.Set("Content-Type", "application/json")
+	upgradeRR := httptest.NewRecorder()
+	srv.handleSessionByID(upgradeRR, upgradeReq)
+	if upgradeRR.Code != http.StatusOK {
+		t.Fatalf("upgrade status=%d body=%s", upgradeRR.Code, upgradeRR.Body.String())
+	}
+	assigned, err := store.Get(ctx, legacy.ID)
+	if err != nil || assigned == nil || assigned.ProjectID == "" || assigned.ProjectName != "Upgraded workspace" || !sameServePath(assigned.CWD, root) {
+		t.Fatalf("upgraded session = %#v, %v", assigned, err)
+	}
+	project, err := store.GetProject(ctx, assigned.ProjectID)
+	if err != nil || project == nil || project.Name != "Upgraded workspace" || !sameServePath(project.CanonicalDir, root) {
+		t.Fatalf("created project = %#v, %v", project, err)
 	}
 }
 

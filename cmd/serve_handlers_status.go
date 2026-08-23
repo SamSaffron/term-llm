@@ -30,13 +30,14 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_archived")), "true")
 
 	sessions, err := s.store.List(r.Context(), session.ListOptions{
-		// The grouped sidebar can expose recent rows from many projects. Keep this
-		// projection broadly bounded rather than truncating globally at 100 and
-		// starving quieter project groups of status updates.
-		Limit:          10000,
-		Archived:       includeArchived,
-		Categories:     categories,
-		SortByActivity: true,
+		// Bound the polling projection independently of the total session history.
+		// The grouped sidebar pages older rows on demand; status polling is only a
+		// freshness hint and must remain cheap for long-lived stores.
+		Limit:            200,
+		Archived:         includeArchived,
+		Categories:       categories,
+		SortByActivity:   true,
+		ExcludeSubagents: true,
 	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")

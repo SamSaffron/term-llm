@@ -39,24 +39,22 @@ const resumeAndDrain = (session, options) => {
 };
 
 
-const projectDraftKey = (projectId) => projectId ? `draft:${projectId}` : '';
+const NO_PROJECT_SELECTION = '__no_project__';
+const projectDraftKey = (projectId) => `draft:${projectId || NO_PROJECT_SELECTION}`;
 
-const createAndSwitchToFreshSession = async (projectId = '') => {
-  const requested = String(projectId || '').trim();
-  if (state.projectsEnabled && !requested) {
+const createAndSwitchToFreshSession = async (...args) => {
+  const explicitSelection = args.length > 0;
+  const projectId = args[0];
+  let requested = explicitSelection ? String(projectId || '').trim() : '';
+  if (state.projectsEnabled && !explicitSelection) {
     const active = getActiveSession();
-    const candidates = [active?.projectId, state.activeProjectId, state.lastProjectId]
+    const candidates = [active?.projectId, state.draftSessionActive ? state.activeProjectId : '', state.lastProjectId]
       .map((value) => String(value || '').trim()).filter((value, index, all) => value && all.indexOf(value) === index);
-    const available = candidates.map((id) => state.projects.find((project) => project.id === id && project.available && !project.archived_at)).find(Boolean);
-    if (!available) {
-      app.setSidebarCollapsed?.(false);
-      app.openSidebar?.();
-      app.showToast?.('Choose a project or add one to start a chat', 'info');
-      return null;
-    }
-    projectId = available.id;
+    const remembered = candidates.find((id) => id === NO_PROJECT_SELECTION
+      || state.projects.some((project) => project.id === id && project.available && !project.archived_at));
+    requested = remembered === NO_PROJECT_SELECTION ? '' : String(remembered || '');
   }
-  return switchToDraftSession({ clearComposer: false, focusPrompt: true, projectId });
+  return switchToDraftSession({ clearComposer: false, focusPrompt: true, projectId: requested });
 };
 
 const forceNewSessionFromURL = () => {
@@ -107,11 +105,13 @@ const invalidateSessionStateForSelection = (sessionId = '') => {
 };
 
 const switchToDraftSession = async (options = {}) => {
-  const requestedProjectId = String(options.projectId || state.activeProjectId || '').trim();
+  const hasProjectSelection = Object.prototype.hasOwnProperty.call(options, 'projectId');
+  const requestedProjectId = String(hasProjectSelection ? (options.projectId || '') : (state.activeProjectId || '')).trim();
   const wasDraftSession = Boolean(state.draftSessionActive);
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
-  if (state.draftSessionActive && state.activeProjectId) {
-    state.projectAttachments[state.activeProjectId] = Array.isArray(state.attachments) ? state.attachments.slice() : [];
+  if (state.draftSessionActive) {
+    const attachmentKey = state.activeProjectId || NO_PROJECT_SELECTION;
+    state.projectAttachments[attachmentKey] = Array.isArray(state.attachments) ? state.attachments.slice() : [];
   }
   const previousComposerSessionId = state.draftSessionActive ? projectDraftKey(state.activeProjectId) : previousActiveSessionId;
   const nextDraftKey = projectDraftKey(requestedProjectId);
@@ -145,12 +145,20 @@ const switchToDraftSession = async (options = {}) => {
   state.activeSessionId = '';
   state.draftSessionActive = true;
   state.activeProjectId = requestedProjectId;
-  if (requestedProjectId) {
+  if (state.projectsEnabled && hasProjectSelection) {
+    state.lastProjectId = requestedProjectId || NO_PROJECT_SELECTION;
+    localStorage.setItem(app.STORAGE_KEYS.lastProject, state.lastProjectId);
+  } else if (requestedProjectId) {
     state.lastProjectId = requestedProjectId;
     localStorage.setItem(app.STORAGE_KEYS.lastProject, requestedProjectId);
+  }
+  if (requestedProjectId) {
     const projectDraft = state.projectDrafts[requestedProjectId] || {};
     state.selectedWorktreeDir = String(projectDraft.worktreeDir || '');
     state.selectedWorktreeName = String(projectDraft.worktreeName || '');
+  } else {
+    state.selectedWorktreeDir = '';
+    state.selectedWorktreeName = '';
   }
   state.pendingBranch = null;
   if (elements.branchTreeBtn) elements.branchTreeBtn.hidden = true;
@@ -159,14 +167,15 @@ const switchToDraftSession = async (options = {}) => {
   if (options.clearComposer) {
     elements.promptInput.value = '';
     discardPendingAttachments();
-    if (requestedProjectId) state.projectAttachments[requestedProjectId] = [];
+    state.projectAttachments[requestedProjectId || NO_PROJECT_SELECTION] = [];
     autoGrowPrompt();
   } else if (previousComposerSessionId && !wasDraftSession) {
     discardPendingAttachments();
   }
-  if (!options.clearComposer && requestedProjectId) {
-    state.attachments = Array.isArray(state.projectAttachments[requestedProjectId])
-      ? state.projectAttachments[requestedProjectId].slice()
+  if (!options.clearComposer) {
+    const attachmentKey = requestedProjectId || NO_PROJECT_SELECTION;
+    state.attachments = Array.isArray(state.projectAttachments[attachmentKey])
+      ? state.projectAttachments[attachmentKey].slice()
       : [];
     app.renderAttachments?.();
   }
@@ -356,7 +365,10 @@ const switchToSession = async (sessionId, options = {}) => {
   state.activeSessionId = nextId;
   state.draftSessionActive = false;
   state.activeProjectId = String(session.projectId || '');
-  if (state.activeProjectId) {
+  if (state.projectsEnabled) {
+    state.lastProjectId = state.activeProjectId || NO_PROJECT_SELECTION;
+    localStorage.setItem(app.STORAGE_KEYS.lastProject, state.lastProjectId);
+  } else if (state.activeProjectId) {
     state.lastProjectId = state.activeProjectId;
     localStorage.setItem(app.STORAGE_KEYS.lastProject, state.activeProjectId);
   }
@@ -753,6 +765,7 @@ const applyServerSessionSummary = (target, serverSession) => {
   target.longTitle = serverSession.long_title || '';
   target.mode = String(serverSession.mode || target.mode || 'chat');
   target.origin = String(serverSession.origin || target.origin || 'tui');
+  target.agent = String(serverSession.agent || target.agent || '');
   target.archived = Boolean(serverSession.archived);
   target.pinned = Boolean(serverSession.pinned);
   target.created = asTimestamp(serverSession.created_at || target.created);
@@ -769,8 +782,8 @@ const applyServerSessionSummary = (target, serverSession) => {
   if (serverSession.provider) {
     target.provider = serverSession.provider;
   }
-  target.projectId = String(serverSession.project_id || target.projectId || '');
-  target.projectName = String(serverSession.project_name || target.projectName || '');
+  target.projectId = String(serverSession.project_id || '');
+  target.projectName = String(serverSession.project_name || '');
   if (serverSession.worktree_dir !== undefined) {
     target.worktreeDir = String(serverSession.worktree_dir || '');
     target.worktreeName = target.worktreeDir ? target.worktreeDir.split(/[\\/]/).filter(Boolean).pop() || 'worktree' : '';
@@ -935,10 +948,10 @@ const mergeServerSessions = async (options = {}) => {
 
     const mergeServerSession = (serverSession) => {
       if (!serverSession || typeof serverSession !== 'object') return null;
-      const sNum = Number(serverSession.number || 0);
-      let local = localById.get(serverSession.id) ||
-        (sNum > 0 ? localByNumber.get(sNum) : null) ||
-        null;
+      const exact = localById.get(serverSession.id) || null;
+      const numberedStub = localByNumber.get(Number(serverSession.number)) || null;
+      let local = numberedStub || exact;
+      if (numberedStub && exact && numberedStub !== exact) state.sessions.splice(state.sessions.indexOf(exact), 1);
       if (local) {
         reconcileServerSessionIdentity(local, serverSession);
         applyServerSessionSummary(local, serverSession);

@@ -194,18 +194,6 @@ const pruneDiffCommentQueues = (retainedIDs) => {
   if (changed) persistQueues();
 };
 
-const commentPayload = (comment) => ({
-  id: comment.id,
-  ...(comment.parent_id ? { parent_id: comment.parent_id } : {}),
-  path: comment.path,
-  side: comment.side,
-  line: comment.line,
-  file_change_seq: comment.file_change_seq,
-  line_text: comment.line_text,
-  context_before: comment.context_before,
-  context_after: comment.context_after,
-  instruction: comment.instruction
-});
 const makeBatchID = () => {
   try { if (globalThis.crypto?.randomUUID) return `diff_comment_batch_${globalThis.crypto.randomUUID()}`; } catch {}
   return `diff_comment_batch_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -298,7 +286,7 @@ const sendQueuedDiffComments = async (sessionId = state.activeSessionId) => {
     await app.sendMessage?.({
       prompt: buildBatchPrompt(snapshot),
       displayPrompt: snapshot.length === 1 ? snapshot[0].instruction : `${snapshot.length} inline comments`,
-      contentParts: snapshot.map((item) => ({ type: 'diff_comment', diff_comment: commentPayload(item) })),
+      contentParts: snapshot.map((item) => ({ type: 'diff_comment', diff_comment: app.diffCommentPayload(item) })),
       diffComment: snapshot.length === 1 ? snapshot[0] : null,
       diffComments: snapshot,
       attachments: [],

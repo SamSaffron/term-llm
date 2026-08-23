@@ -45,8 +45,41 @@ func TestParseUserMessageContentAcceptsDiffCommentMetadata(t *testing.T) {
 	if len(message.Parts) != 2 || message.Parts[0].Type != llm.PartDiffComment || message.Parts[0].DiffComment == nil {
 		t.Fatalf("parts = %#v", message.Parts)
 	}
-	if got := message.Parts[0].DiffComment; got.Path != comment.Path || got.Side != "old" || got.Line != 17 || got.FileChangeSeq != 42 {
+	if got := message.Parts[0].DiffComment; got.Path != comment.Path || got.Scope != "last_turn" || got.Side != "old" || got.Line != 17 || got.FileChangeSeq != 42 {
 		t.Fatalf("diff comment = %#v", got)
+	}
+}
+
+func TestParseUserMessageContentAcceptsGitDiffCommentsWithoutFileChangeSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		input     string
+		wantScope string
+	}{
+		{name: "uncommitted", input: "uncommitted", wantScope: "uncommitted"},
+		{name: "unstaged", input: "unstaged", wantScope: "unstaged"},
+		{name: "trimmed uppercase staged", input: "  STAGED ", wantScope: "staged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comment := testDiffComment()
+			comment.Scope = tc.input
+			comment.FileChangeSeq = 0
+			content, err := json.Marshal([]any{
+				map[string]any{"type": "diff_comment", "diff_comment": comment},
+				map[string]any{"type": "input_text", "text": "provider-facing anchored instruction"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, err := parseUserMessageContent(content)
+			if err != nil {
+				t.Fatalf("parseUserMessageContent: %v", err)
+			}
+			got := message.Parts[0].DiffComment
+			if got == nil || got.Scope != tc.wantScope || got.FileChangeSeq != 0 {
+				t.Fatalf("git diff comment = %#v", got)
+			}
+		})
 	}
 }
 
@@ -110,6 +143,53 @@ func TestParseUserMessageContentRejectsInvalidDiffCommentMetadata(t *testing.T) 
 	]`)
 	if _, err := parseUserMessageContent(content); err == nil || !strings.Contains(err.Error(), "side must be old or new") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseUserMessageContentAcceptsLast3TurnsDiffComment(t *testing.T) {
+	comment := testDiffComment()
+	comment.Scope = fileChangeScopeLast3Turns
+	comment.FileChangeSeq = 42
+	content, err := json.Marshal([]any{
+		map[string]any{"type": "diff_comment", "diff_comment": comment},
+		map[string]any{"type": "input_text", "text": "provider text"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseUserMessageContent(content); err != nil {
+		t.Fatalf("parse last-three-turn comment: %v", err)
+	}
+}
+
+func TestParseUserMessageContentRejectsInvalidDiffCommentScopeAndSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		scope   string
+		seq     int64
+		wantErr string
+	}{
+		{name: "unknown scope", scope: "committed", seq: 0, wantErr: "scope must be"},
+		{name: "last turn zero sequence", scope: "last_turn", seq: 0, wantErr: "must be positive for last_turn"},
+		{name: "last three turns zero sequence", scope: "last_3_turns", seq: 0, wantErr: "must be positive for last_3_turns"},
+		{name: "negative git sequence", scope: "staged", seq: -1, wantErr: "must be zero for Git diff scopes"},
+		{name: "positive git sequence", scope: "unstaged", seq: 7, wantErr: "must be zero for Git diff scopes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comment := testDiffComment()
+			comment.Scope = tc.scope
+			comment.FileChangeSeq = tc.seq
+			content, err := json.Marshal([]any{
+				map[string]any{"type": "diff_comment", "diff_comment": comment},
+				map[string]any{"type": "input_text", "text": "provider text"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parseUserMessageContent(content); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

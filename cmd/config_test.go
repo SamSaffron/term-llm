@@ -168,6 +168,12 @@ func TestEffectiveApprovalConfigValue(t *testing.T) {
 	if got, ok, err := effectiveApprovalConfigValue("chat.approval_mode", &config.Config{}); err != nil || !ok || got != "auto (builtin_default)" {
 		t.Fatalf("blank chat effective value = %q, %t, %v; want auto builtin_default", got, ok, err)
 	}
+	if got, ok, err := effectiveApprovalConfigValue("serve.approval_mode", &config.Config{}); err != nil || !ok || got != "auto (builtin_default)" {
+		t.Fatalf("blank serve effective value = %q, %t, %v; want auto builtin_default", got, ok, err)
+	}
+	if got, ok, err := effectiveApprovalConfigValue("serve.mcp.approval_mode", &config.Config{}); err != nil || !ok || got != "prompt (builtin_default)" {
+		t.Fatalf("blank serve mcp effective value = %q, %t, %v; want prompt builtin_default", got, ok, err)
+	}
 	cfg := &config.Config{Approval: config.ApprovalConfig{DefaultMode: "prompt"}, Ask: config.AskConfig{ApprovalMode: "auto"}}
 	for _, tc := range []struct {
 		key  string

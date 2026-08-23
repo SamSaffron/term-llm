@@ -33,7 +33,7 @@ const projectSelectSQL = `
 	SELECT p.id, p.name, p.canonical_dir, p.is_bootstrap,
 	       p.created_at, p.updated_at, p.last_used_at, p.archived_at,
 	       COUNT(s.id) AS conversation_count
-	FROM projects p LEFT JOIN sessions s ON s.project_id = p.id`
+	FROM projects p LEFT JOIN sessions s ON s.project_id = p.id AND s.archived = FALSE AND s.parent_id IS NULL`
 
 func (s *SQLiteStore) ListProjects(ctx context.Context, opts ProjectListOptions) ([]Project, error) {
 	if !s.hasProjectsTable || !s.hasProjectID {
@@ -178,30 +178,30 @@ func (s *SQLiteStore) UpdateProject(ctx context.Context, id string, update Proje
 	if !s.projectsAvailable() {
 		return nil, ErrProjectsUnsupported
 	}
-	current, err := s.GetProject(ctx, id)
-	if err != nil || current == nil {
-		return current, err
-	}
-	name := current.Name
+	set := make([]string, 0, 3)
+	args := make([]any, 0, 4)
 	if update.Name != nil {
-		name = strings.TrimSpace(*update.Name)
+		name := strings.TrimSpace(*update.Name)
 		if name == "" || len([]rune(name)) > 120 {
 			return nil, fmt.Errorf("project name must contain 1 to 120 characters")
 		}
-	}
-	var archived any
-	if current.ArchivedAt != nil {
-		archived = current.ArchivedAt.UTC()
+		set = append(set, "name = ?")
+		args = append(args, name)
 	}
 	if update.Archived != nil {
+		set = append(set, "archived_at = ?")
 		if *update.Archived {
-			archived = time.Now().UTC()
+			args = append(args, time.Now().UTC())
 		} else {
-			archived = nil
+			args = append(args, nil)
 		}
 	}
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE projects SET name = ?, archived_at = ?, updated_at = ? WHERE id = ?`, name, archived, now, id)
+	if len(set) == 0 {
+		return s.GetProject(ctx, id)
+	}
+	set = append(set, "updated_at = ?")
+	args = append(args, time.Now().UTC(), id)
+	result, err := s.db.ExecContext(ctx, `UPDATE projects SET `+strings.Join(set, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update project: %w", err)
 	}
@@ -213,7 +213,7 @@ func (s *SQLiteStore) UpdateProject(ctx context.Context, id string, update Proje
 
 // BootstrapProject inserts the first project and claims only the caller's
 // prevalidated, unambiguous legacy sessions in one transaction.
-func (s *SQLiteStore) BootstrapProject(ctx context.Context, p *Project, matchingSessionIDs []string) error {
+func (s *SQLiteStore) BootstrapProject(ctx context.Context, p *Project, matchingSessions []ProjectSessionMatch) error {
 	if !s.projectsAvailable() {
 		return ErrProjectsUnsupported
 	}
@@ -253,8 +253,13 @@ func (s *SQLiteStore) BootstrapProject(ctx context.Context, p *Project, matching
 	if _, err := conn.ExecContext(ctx, `INSERT INTO projects (id, name, canonical_dir, is_bootstrap, created_at, updated_at, last_used_at) VALUES (?, ?, ?, 1, ?, ?, ?)`, p.ID, p.Name, p.CanonicalDir, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.LastUsedAt.UTC()); err != nil {
 		return fmt.Errorf("insert bootstrap project: %w", err)
 	}
-	for _, id := range matchingSessionIDs {
-		if _, err := conn.ExecContext(ctx, `UPDATE sessions SET project_id = ? WHERE id = ? AND project_id IS NULL`, p.ID, id); err != nil {
+	for _, match := range matchingSessions {
+		if _, err := conn.ExecContext(ctx, `
+			UPDATE sessions SET project_id = ?
+			WHERE id = ? AND project_id IS NULL
+			  AND COALESCE(cwd, '') = ?
+			  AND COALESCE(worktree_dir, '') = ?`,
+			p.ID, match.ID, match.CWD, match.WorktreeDir); err != nil {
 			return fmt.Errorf("backfill bootstrap project: %w", err)
 		}
 	}
@@ -382,7 +387,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 				            s.number DESC
 			       ) AS rn
 			FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
-			WHERE 1=1 `+archiveClause+`
+			WHERE s.parent_id IS NULL `+archiveClause+`
 		)
 		SELECT id, number, name, summary, generated_short_title, generated_long_title,
 		       title_source, provider, provider_key, model, mode, origin, archived, pinned,

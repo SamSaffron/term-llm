@@ -125,7 +125,8 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 		Diffs: []DiffData{
 			{File: "test.go", Old: "old", New: "new", Line: 1},
 		},
-		IsError: true,
+		GuardianReviews: []GuardianReview{{Outcome: "approved", Message: "guardian: approved", Command: "pwd"}},
+		IsError:         true,
 	}
 
 	data, err := json.Marshal(original)
@@ -152,6 +153,9 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 	}
 	if restored.IsError != original.IsError {
 		t.Errorf("IsError = %v, want %v", restored.IsError, original.IsError)
+	}
+	if len(restored.GuardianReviews) != 1 || restored.GuardianReviews[0].Command != "pwd" {
+		t.Fatalf("GuardianReviews = %#v", restored.GuardianReviews)
 	}
 }
 

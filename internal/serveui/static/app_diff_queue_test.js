@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const source = fs.readFileSync(path.join(__dirname, 'app-diff-queue.js'), 'utf8');
+const commentSource = fs.readFileSync(path.join(__dirname, 'app-diff-comments.js'), 'utf8');
+const scopeSource = fs.readFileSync(path.join(__dirname, 'app-diff-scopes.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 let failures = 0;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -51,8 +53,8 @@ const makeBar = () => {
   return { bar, count, send, discard };
 };
 
-const makeComment = (id, instruction = `instruction ${id}`, pathName = 'a.go', line = 2, seq = 1) => ({
-  id, path: pathName, side: 'new', line, file_change_seq: seq, line_text: `line ${line}`,
+const makeComment = (id, instruction = `instruction ${id}`, pathName = 'a.go', line = 2, seq = 1, scope = 'last_turn') => ({
+  id, path: pathName, scope, side: 'new', line, file_change_seq: seq, line_text: `line ${line}`,
   context_before: [{ side: 'new', line: line - 1, text: 'before' }],
   context_after: [{ side: 'new', line: line + 1, text: 'after' }], instruction, created_at: seq
 });
@@ -84,18 +86,9 @@ const createHarness = (options = {}) => {
     elements: { diffToggleBtn: toggle },
     STORAGE_KEYS: { diffCommentQueue: 'term_llm_diff_comment_queue', pendingIntents: 'term_llm_pending_intent' },
     isSessionIdentityResolved: (id) => id.startsWith('s'),
-    normalizeDiffComment(entry) {
-      if (!entry?.id || !entry.path || !entry.instruction || !entry.line || !entry.file_change_seq) return null;
-      return { ...entry, created_at: Number(entry.created_at) || Date.now() };
-    },
-    anchorKey: (entry) => `${entry.path}\0${entry.side}\0${entry.line}`,
-    formatDiffCommentInstruction: (entry) => `FORMAT:${entry.id}:${entry.instruction}`,
     bumpDiffCommentPathRevision(sessionId, pathName) { revisions.push([sessionId, pathName]); },
     renderDiffSidebar(sessionId) { renders.push(sessionId); },
     showToast(message, detail) { toasts.push([message, detail]); },
-    addOptimisticDiffComment(sessionId, comment) { optimistic.push([sessionId, comment]); },
-    removeOptimisticDiffComment(sessionId, id) { removedOptimistic.push([sessionId, id]); },
-    hydrateDiffComments() { return Promise.resolve([]); },
     async sendMessage(spec) {
       sendCalls.push(spec);
       if (options.sendMessage) return options.sendMessage(spec);
@@ -110,6 +103,13 @@ const createHarness = (options = {}) => {
     clearTimeout: options.clearTimeout || clearTimeout,
     globalThis: { crypto: { randomUUID: () => `uuid-${sendCalls.length + 1}` } }
   };
+  vm.runInNewContext(scopeSource, context, { filename: 'app-diff-scopes.js' });
+  vm.runInNewContext(commentSource, context, { filename: 'app-diff-comments.js' });
+  Object.assign(app, {
+    addOptimisticDiffComment(sessionId, comment) { optimistic.push([sessionId, comment]); },
+    removeOptimisticDiffComment(sessionId, id) { removedOptimistic.push([sessionId, id]); },
+    hydrateDiffComments() { return Promise.resolve([]); }
+  });
   vm.runInNewContext(source, context, { filename: 'app-diff-queue.js' });
   return { app, state, storage, storageAttempts, document, bar, count, status, send, discard, toggle, optimistic, removedOptimistic, sendCalls, toasts, revisions, renders };
 };
@@ -168,11 +168,12 @@ const createHarness = (options = {}) => {
     harness.document.activeElement = harness.send;
     harness.app.setDiffCommentSendMode('s1', 'queue');
     harness.app.queueDiffComment('s1', makeComment('a1', 'First'));
-    harness.app.queueDiffComment('s1', makeComment('a2', 'Second', 'b.go', 5, 2));
+    harness.app.queueDiffComment('s1', makeComment('a2', 'Second', 'b.go', 5, 0, 'staged'));
     assert(await harness.app.sendQueuedDiffComments('s1'), 'batch send did not succeed');
     assert(harness.sendCalls.length === 1, 'batch created multiple send calls');
     const call = harness.sendCalls[0];
     assert(call.contentParts.length === 2 && call.diffComments.length === 2, 'batch lost diff comment parts');
+    assert(call.contentParts[1].diff_comment.scope === 'staged' && call.contentParts[1].diff_comment.file_change_seq === 0, 'batch lost staged diff scope');
     assert(call.displayPrompt === '2 inline comments' && call.prompt.startsWith('[Inline diff instructions] (2 anchored comments)'), 'plural batch prompt/display changed');
     assert(harness.optimistic.length === 2 && harness.optimistic.every(([, item]) => item.client_message_id === call.reuseMessageId), 'optimistic entries did not share batch identity');
     assert(harness.app.queuedDiffComments('s1').length === 0 && harness.app.diffCommentSendMode('s1') === 'send', 'successful batch did not clear/reset mode');

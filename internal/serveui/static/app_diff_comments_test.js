@@ -5,6 +5,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-diff-comments.js'), 'utf8');
+const scopeSource = fs.readFileSync(path.join(__dirname, 'app-diff-scopes.js'), 'utf8');
 let failures = 0;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const run = async (name, fn) => {
@@ -129,8 +130,8 @@ const createHarness = (initialPayloads = {}) => {
     queuedDiffComments(id, anchor = null) {
       const items = queued.filter((item) => item.sessionId === id).map((item) => item.comment);
       if (!anchor) return items;
-      const key = `${anchor.path}\0${anchor.side}\0${anchor.line}`;
-      return items.filter((item) => `${item.path}\0${item.side}\0${item.line}` === key);
+      const key = `${anchor.scope || 'last_turn'}\0${anchor.path}\0${anchor.side}\0${anchor.line}`;
+      return items.filter((item) => `${item.scope || 'last_turn'}\0${item.path}\0${item.side}\0${item.line}` === key);
     },
     queueDiffComment(id, comment) { queued.push({ sessionId: id, comment }); return true; },
     removeQueuedDiffComment(id, commentId) {
@@ -173,6 +174,7 @@ const createHarness = (initialPayloads = {}) => {
     window, document, globalThis: {}, console, Date, Math, Promise,
     encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout
   };
+  vm.runInNewContext(scopeSource, context, { filename: 'app-diff-scopes.js' });
   vm.runInNewContext(source, context, { filename: 'app-diff-comments.js' });
   return {
     app, state, calls, payloads, pinCalls, scrollCalls, queued, modes, document, window,
@@ -180,8 +182,8 @@ const createHarness = (initialPayloads = {}) => {
   };
 };
 
-const commentEntry = (id, pathName, instruction, revision = 1) => ({ created_at: revision, client_message_id: id, diff_comment: {
-  id, path: pathName, side: 'new', line: 2, file_change_seq: revision,
+const commentEntry = (id, pathName, instruction, revision = 1, scope = 'last_turn') => ({ created_at: revision, client_message_id: id, diff_comment: {
+  id, path: pathName, scope, side: 'new', line: 2, file_change_seq: revision,
   line_text: 'x', instruction
 } });
 
@@ -192,8 +194,8 @@ const decorateRow = (harness, options = {}) => {
   const row = options.row || { type: 'add', oldNo: 0, newNo: 2, text: 'x' };
   const rows = options.rows || [row];
   const restore = harness.app.decorateDiffCommentRow({
-    sessionId: options.sessionId || 's1', path: options.path || 'a.go', row, rows,
-    rowIndex: options.rowIndex || 0, rowElement, fileChangeSeq: options.fileChangeSeq || 1
+    sessionId: options.sessionId || 's1', path: options.path || 'a.go', scope: options.scope || 'last_turn', row, rows,
+    rowIndex: options.rowIndex || 0, rowElement, fileChangeSeq: options.fileChangeSeq ?? 1
   });
   table.appendChild(rowElement);
   restore?.();
@@ -223,9 +225,47 @@ const decorateRow = (harness, options = {}) => {
       context_before: [{ side: 'old', line: 11, text: 'before' }],
       context_after: [{ side: 'new', line: 12, text: 'after' }], instruction: 'Keep this behavior.'
     });
-    for (const expected of ['Path: internal/a.go', 'Side: old', 'Line: 12', 'Captured file-change seq: 99', '> old 12 | <exact & old>', 'Instruction:\nKeep this behavior.']) {
+    for (const expected of ['Path: internal/a.go', 'Scope: last_turn', 'Side: old', 'Line: 12', 'Captured file-change seq: 99', '> old 12 | <exact & old>', 'Instruction:\nKeep this behavior.']) {
       assert(text.includes(expected), `missing ${expected}`);
     }
+  });
+
+  await run('rolling turn comments use the window snapshot sequence', async () => {
+    const prior = commentEntry('window-1', 'a.go', 'Review this.', 10, 'last_3_turns');
+    const harness = createHarness({ s1: { comments: [prior], transcript_rev: 1 } });
+    const { app } = harness;
+    await app.hydrateDiffComments('s1', { revision: 1 });
+    const normalized = app.normalizeDiffComment(prior);
+    assert(normalized?.file_change_seq === 10, 'rolling turn comment was rejected');
+    assert(app.normalizeDiffComment({ ...prior.diff_comment, file_change_seq: 0 }) === null, 'rolling turn comment accepted a zero snapshot');
+    assert(app.anchorKey(prior.diff_comment) !== app.anchorKey({ ...prior.diff_comment, scope: 'last_turn' }), 'rolling and single-turn anchors collided');
+
+    const decorated = decorateRow(harness, { scope: 'last_3_turns', fileChangeSeq: 11 });
+    assert(decorated.button && decorated.rowElement.dataset.commentable === 'true', 'rolling turn row has no comment affordance');
+    await decorated.button.click();
+    assert(decorated.table.querySelector('.diff-comment-history-meta')?.textContent === 'File changed after this instruction', 'advanced rolling snapshot did not stale the prior comment');
+    const text = app.formatDiffCommentInstruction({ ...normalized, file_change_seq: 11 });
+    assert(text.includes('Scope: last_3_turns') && text.includes('Captured file-change seq: 11'), 'rolling turn instruction omitted its snapshot identity');
+  });
+
+  await run('git diff scopes allow zero-sequence inline comments without cross-scope anchors', async () => {
+    const harness = createHarness();
+    const { app } = harness;
+    let sent;
+    app.sendMessage = async (options) => { sent = options; options._onTransportStarted(); };
+    const staged = app.normalizeDiffComment({
+      id: 'staged-1', path: 'a.go', scope: 'staged', side: 'new', line: 2,
+      file_change_seq: 0, line_text: 'x', instruction: 'Adjust the staged change.'
+    });
+    assert(staged?.scope === 'staged' && staged.file_change_seq === 0, 'staged comment was rejected');
+    assert(app.anchorKey(staged) !== app.anchorKey({ ...staged, scope: 'unstaged' }), 'comment anchors leaked across Git scopes');
+    const decorated = decorateRow(harness, { scope: 'staged', fileChangeSeq: 0 });
+    assert(decorated.button && decorated.rowElement.dataset.commentable === 'true', 'staged row has no comment affordance');
+    await decorated.button.click();
+    decorated.table.querySelector('textarea').value = 'Adjust the staged change.';
+    await decorated.table.querySelector('.diff-comment-send').click();
+    assert(sent?.contentParts?.[0]?.diff_comment?.scope === 'staged' && sent.contentParts[0].diff_comment.file_change_seq === 0, 'staged scope was not submitted');
+    assert(sent.prompt.includes('Scope: staged') && !sent.prompt.includes('Captured file-change seq:'), 'agent instruction misstated staged scope');
   });
 
   await run('hydrates by transcript revision and isolates per-path revisions', async () => {

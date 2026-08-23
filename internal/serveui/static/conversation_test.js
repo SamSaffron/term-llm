@@ -64,6 +64,53 @@ const envelope = (messages, rev = 1) => ({ rev, messages, renderedMessages() { r
 })();
 
 (() => {
+  const run = active.createActiveRun({ responseId: 'guardian-edge-cases', runEpoch: 1 });
+  active.reduceResponseEvent(run, 'response.guardian.review', {
+    response_id: 'guardian-edge-cases', run_epoch: 1, sequence_number: 1,
+    tool_call_id: 'missing-shell', outcome: 'denied', message: 'guardian: denied'
+  });
+  active.reduceResponseEvent(run, 'response.completed', {
+    response_id: 'guardian-edge-cases', run_epoch: 1, sequence_number: 2,
+    final_rev: 1, durable_handoff: true, durable_output_count: 1
+  });
+  assert.equal(run.pendingGuardianByCallID.size, 0);
+  assert.equal(run.projection[0].role, 'guardian-notice');
+  assert.match(run.projection[0].content, /missing-shell/);
+
+  const empty = active.createActiveRun({ responseId: 'guardian-empty', runEpoch: 1 });
+  active.reduceResponseEvent(empty, 'response.guardian.review', {
+    response_id: 'guardian-empty', run_epoch: 1, sequence_number: 1, outcome: 'warning', message: ' '
+  });
+  assert.equal(empty.projection.length, 0, 'empty uncorrelated guardian review created a blank row');
+})();
+
+(() => {
+  const run = active.createActiveRun({ responseId: 'guardian-detached', runEpoch: 1 });
+  active.reduceResponseEvent(run, 'response.guardian.review', {
+    response_id: 'guardian-detached', run_epoch: 1, sequence_number: 1,
+    tool_call_id: 'late-shell', outcome: 'approved', message: 'guardian: approved'
+  });
+  const replayed = active.reduceDetachedReplay(run, [{
+    event: 'response.output_item.added', payload: {
+      response_id: 'guardian-detached', run_epoch: 1, sequence_number: 2,
+      item: { type: 'function_call', call_id: 'late-shell', name: 'shell' }
+    }
+  }]);
+  assert.equal(replayed.projection[0].tools[0].guardianReviews[0].outcome, 'approved');
+  assert.equal(replayed.pendingGuardianByCallID.size, 0);
+})();
+
+(() => {
+  const recovered = active.activeRunFromSnapshot({
+    id: 'guardian-notice-snapshot', run_epoch: 1, status: 'failed', last_sequence_number: 2,
+    final_rev: 0, durable_handoff: false, durable_output_count: 0,
+    recovery: { messages: [{ id: 'guardian-orphan', role: 'guardian-notice', content: 'guardian: denied (unmatched tool call call-1)' }] }
+  });
+  assert.equal(recovered.projection[0].role, 'guardian-notice');
+  assert.match(recovered.projection[0].content, /call-1/);
+})();
+
+(() => {
   const conversation = conversationAPI.createConversation({ sessionId: 'normal', durable: envelope([], 0) });
   conversationAPI.addIntent(conversation, { id: 'local-1', clientMessageId: 'client-1', role: 'user', content: 'question' });
   conversationAPI.startActiveRun(conversation, { responseId: 'resp-1', runEpoch: 1, anchor: { clientMessageId: 'client-1' } });

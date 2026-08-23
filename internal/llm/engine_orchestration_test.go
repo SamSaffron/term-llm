@@ -41,6 +41,19 @@ func eventTypes(events []Event) []EventType {
 	return types
 }
 
+type guardianSyncTool struct {
+	err error
+}
+
+func (t guardianSyncTool) Spec() ToolSpec {
+	return ToolSpec{Name: "test_tool", Schema: map[string]any{"type": "object"}}
+}
+func (t guardianSyncTool) Execute(ctx context.Context, _ json.RawMessage) (ToolOutput, error) {
+	RecordGuardianReview(ctx, GuardianReview{Outcome: "denied", Message: "guardian: denied", Command: "rm -rf build"})
+	return TextOutput("blocked"), t.err
+}
+func (guardianSyncTool) Preview(json.RawMessage) string { return "" }
+
 type inlineSyncToolProvider struct {
 	inline      bool
 	ordered     bool
@@ -332,6 +345,63 @@ func TestEngineOrchestration_InlineSyncToolLoopDoesNotReinvokeProvider(t *testin
 	}
 	if text.String() != "inline final" {
 		t.Fatalf("text = %q, want inline final", text.String())
+	}
+}
+
+func TestEngineOrchestration_InlineSyncToolLoopPersistsGuardianReviews(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		toolErr error
+	}{
+		{name: "success"},
+		{name: "error", toolErr: errors.New("guardian denied execution")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := NewToolRegistry()
+			registry.Register(guardianSyncTool{err: tc.toolErr})
+			provider := &inlineSyncToolProvider{inline: true}
+			engine := NewEngine(provider, registry)
+			var persisted []Message
+			engine.SetTurnCompletedCallback(func(_ context.Context, _ int, messages []Message, _ TurnMetrics) error {
+				persisted = append(persisted, messages...)
+				return nil
+			})
+
+			stream, err := engine.Stream(context.Background(), Request{
+				Messages: []Message{UserText("use tool")}, Tools: []ToolSpec{{Name: "test_tool"}},
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			defer stream.Close()
+			for {
+				event, recvErr := stream.Recv()
+				if recvErr == io.EOF {
+					break
+				}
+				if recvErr != nil {
+					t.Fatalf("Recv: %v", recvErr)
+				}
+				if event.Type == EventError {
+					t.Fatalf("unexpected stream error: %v", event.Err)
+				}
+			}
+
+			var result *ToolResult
+			for _, message := range persisted {
+				for _, part := range message.Parts {
+					if part.Type == PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "sync-1" {
+						result = part.ToolResult
+					}
+				}
+			}
+			if result == nil || len(result.GuardianReviews) != 1 || result.GuardianReviews[0].Command != "rm -rf build" {
+				t.Fatalf("persisted sync guardian result = %#v; messages = %#v", result, persisted)
+			}
+			if got, want := result.IsError, tc.toolErr != nil; got != want {
+				t.Fatalf("result IsError = %v, want %v", got, want)
+			}
+		})
 	}
 }
 

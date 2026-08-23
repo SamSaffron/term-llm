@@ -34,7 +34,7 @@ func NewLoggingStore(store Store, warnFunc WarnFunc) *LoggingStore {
 
 // logOnce logs a warning only once per operation type to avoid spamming.
 func (s *LoggingStore) logOnce(op string, err error) {
-	if err == nil || s.warnFunc == nil {
+	if err == nil || s.warnFunc == nil || errors.Is(err, context.Canceled) {
 		return
 	}
 

@@ -150,6 +150,7 @@ const SESSION_MENU_ICONS = {
   unpin: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><g transform="rotate(38 8 8)"><path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5c0 .276-.224 1.5-.5 1.5s-.5-1.224-.5-1.5V10h-4a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 0 1 5 6.708V2.277a3 3 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354"/></g></svg>',
   refine: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8-4.8-1.7 4.8-1.7L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
   rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/></svg>',
+  assign: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v10H3Z"/><path d="M12 12v4M10 14h4"/></svg>',
   hide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20C7 20 2.73 16.89 1 12c.92-2.6 2.63-4.77 4.83-6.2"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A11.02 11.02 0 0 1 12 5c5 0 9.27 3.11 11 7a11.05 11.05 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/></svg>',
   unhide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
 };
@@ -340,6 +341,16 @@ const buildCachedSessionRow = (session) => {
   const pinIconEl = pinBtn.querySelector('.session-menu-icon');
   const pinLabelEl = pinBtn.querySelector('.session-menu-label');
 
+  const assignBtn = createSessionMenuButton('Assign project', 'assign', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeAllSessionMenus();
+    const current = resolveSidebarSession(sessionId);
+    if (current) app.openAssignProjectModal?.(current);
+  });
+  assignBtn.classList.add('assign-project-action');
+  assignBtn.hidden = !(state.projectsEnabled && !session.projectId);
+
   const archiveBtn = createSessionMenuButton(
     session.archived ? 'Unhide' : 'Hide',
     session.archived ? 'unhide' : 'hide',
@@ -356,6 +367,7 @@ const buildCachedSessionRow = (session) => {
 
   menu.appendChild(renameBtn);
   menu.appendChild(pinBtn);
+  menu.appendChild(assignBtn);
   menu.appendChild(archiveBtn);
   menuWrap.appendChild(actionBtn);
   menuWrap.appendChild(menu);
@@ -365,7 +377,7 @@ const buildCachedSessionRow = (session) => {
 
   sidebarRowCache.set(session.id, {
     row, btn, titleEl, metaEl,
-    pinIconEl, pinLabelEl,
+    pinIconEl, pinLabelEl, assignBtn,
     archiveIconEl, archiveLabelEl,
     prevPinned: session.pinned,
     prevArchived: session.archived
@@ -375,7 +387,7 @@ const buildCachedSessionRow = (session) => {
 };
 
 const updateCachedSessionRow = (session, cached) => {
-  const { row, btn, titleEl, metaEl, pinIconEl, pinLabelEl, archiveIconEl, archiveLabelEl } = cached;
+  const { row, btn, titleEl, metaEl, pinIconEl, pinLabelEl, assignBtn, archiveIconEl, archiveLabelEl } = cached;
 
   row.classList.toggle('is-active', sessionHasInProgressState(session));
   row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
@@ -419,6 +431,8 @@ const updateCachedSessionRow = (session, cached) => {
     pinIconEl.innerHTML = SESSION_MENU_ICONS[session.pinned ? 'unpin' : 'pin'];
     cached.prevPinned = session.pinned;
   }
+
+  assignBtn.hidden = !(state.projectsEnabled && !session.projectId);
 
   if (session.archived !== cached.prevArchived) {
     archiveLabelEl.textContent = session.archived ? 'Unhide' : 'Hide';
@@ -1436,6 +1450,7 @@ const createToolCard = (message) => {
 
   details.appendChild(label);
   details.appendChild(args);
+  app.appendGuardianReviews?.(details, message);
 
   toggle.appendChild(arrow);
   toggle.appendChild(name);
@@ -1740,6 +1755,8 @@ const createMessageNode = (message) => {
     renderAssistantMarkdown(body, message.content || '');
   } else if (message.role === 'error') {
     body.textContent = `Error: ${message.content || 'Unknown error.'}`;
+  } else if (message.role === 'guardian-notice') {
+    body.textContent = `🛡 ${String(message.content || 'Guardian policy notice').replace(/^guardian:\s*/i, '')}`;
   } else {
     // User message: show attachments if present
     if (message.attachments && message.attachments.length > 0) {
@@ -1833,6 +1850,7 @@ const updateToolNode = (message) => {
   if (args) {
     args.textContent = message.arguments || '(waiting for arguments…)';
   }
+  if (details) app.syncGuardianReviews?.(details, message);
   syncToolArtifactsNode(node.querySelector('.tool-card'), message);
 };
 
@@ -1936,6 +1954,9 @@ const createToolGroupNode = (message) => {
   const arrow = createEl('span', 'tool-arrow', '▶');
 
   const summary = createEl('span', 'tool-group-summary', toolGroupSummaryText(message));
+  const guardianTools = transcriptVisibleTools(message);
+  const guardianBadge = createEl('span', `tool-guardian-badge ${app.guardianSummaryTone?.(guardianTools) || ''}`, app.guardianSummary?.(guardianTools) || '');
+  guardianBadge.hidden = !guardianBadge.textContent;
 
   const statusBadge = createEl('span', 'tool-status');
   if (isToolGroupFinished(message)) {
@@ -1947,6 +1968,7 @@ const createToolGroupNode = (message) => {
 
   toggle.appendChild(arrow);
   toggle.appendChild(summary);
+  toggle.appendChild(guardianBadge);
   toggle.appendChild(statusBadge);
 
   const details = document.createElement('div');
@@ -2115,6 +2137,7 @@ const createToolEntryNode = (tool) => {
 
   const argsNode = buildArgsNode(tool);
   if (argsNode) wrapper.appendChild(argsNode);
+  app.appendGuardianReviews?.(wrapper, tool);
   const subagentNode = buildSubagentResultNode(tool);
   if (subagentNode) wrapper.appendChild(subagentNode);
 
@@ -2128,11 +2151,13 @@ const syncGenericToolEntry = (entry, tool) => {
     status.textContent = tool.status === 'done' ? '✓' : (tool.status === 'error' ? '×' : '…');
   }
   const existingArgs = entry.querySelector('.tool-entry-args');
-  if (tool.status === 'done' && tool.argumentsFinalized && existingArgs) return;
-  const newArgs = buildArgsNode(tool);
-  if (existingArgs && newArgs) existingArgs.replaceWith(newArgs);
-  else if (!existingArgs && newArgs) entry.appendChild(newArgs);
-  else if (existingArgs && !newArgs) existingArgs.remove();
+  if (!(tool.status === 'done' && tool.argumentsFinalized && existingArgs)) {
+    const newArgs = buildArgsNode(tool);
+    if (existingArgs && newArgs) existingArgs.replaceWith(newArgs);
+    else if (!existingArgs && newArgs) entry.appendChild(newArgs);
+    else if (existingArgs && !newArgs) existingArgs.remove();
+  }
+  app.syncGuardianReviews?.(entry, tool);
   const existingSubagent = entry.querySelector('.subagent-result');
   const newSubagent = buildSubagentResultNode(tool);
   if (existingSubagent && newSubagent) existingSubagent.replaceWith(newSubagent);
@@ -2445,6 +2470,13 @@ const updateToolGroupNode = (message) => {
 
   const summary = node.querySelector('.tool-group-summary');
   if (summary) summary.textContent = toolGroupSummaryText(message);
+  const guardianBadge = node.querySelector('.tool-guardian-badge');
+  if (guardianBadge) {
+    const guardianTools = transcriptVisibleTools(message);
+    guardianBadge.textContent = app.guardianSummary?.(guardianTools) || '';
+    guardianBadge.className = `tool-guardian-badge ${app.guardianSummaryTone?.(guardianTools) || ''}`;
+    guardianBadge.hidden = !guardianBadge.textContent;
+  }
 
   const statusBadge = node.querySelector('.tool-status');
   if (statusBadge) {
@@ -2849,14 +2881,84 @@ const renderMessages = (forceScroll = false) => {
   if (elements.messages?.dataset) elements.messages.dataset.sessionId = sessionId || '';
 
   if (!session || !messages.length) {
+    if (elements.messages.querySelector?.('.new-chat-project-trigger[aria-expanded="true"]')) {
+      app.closeChipPopover?.();
+    }
     elements.messages.innerHTML = '';
     if (!sessionHistoryLoading) {
-      let emptyCopy = 'How can I help you today?';
-      if (state.projectsEnabled) {
-        const project = state.projects.find((item) => item.id === state.activeProjectId);
-        emptyCopy = project ? `New chat in ${project.name}` : 'Choose a project or add one to start a chat';
+      const emptyCopy = 'How can I help you today?';
+      const empty = createEl('div', 'empty-state');
+      empty.appendChild(createEl('div', 'empty-state-title', emptyCopy));
+      if (state.draftSessionActive && Array.isArray(state.availableAgents) && state.availableAgents.length > 0) {
+        const picker = createEl('div', 'new-chat-project-picker new-chat-agent-picker');
+        const select = createEl('select', 'chip-select-hidden new-chat-agent-select');
+        select.setAttribute('aria-label', 'Agent for new chat');
+        select.tabIndex = -1;
+        const defaultOption = createEl('option', '', 'Default'); defaultOption.value = ''; select.appendChild(defaultOption);
+        state.availableAgents.forEach((name) => {
+          const option = createEl('option', '', name); option.value = name; select.appendChild(option);
+        });
+        select.value = state.availableAgents.includes(state.selectedAgent) ? state.selectedAgent : '';
+        state.selectedAgent = select.value;
+        const trigger = createEl('button', 'new-chat-project-trigger new-chat-agent-trigger');
+        trigger.type = 'button';
+        trigger.setAttribute('aria-label', 'Choose agent for new chat');
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-controls', 'chipPopover');
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.appendChild(createEl('span', 'new-chat-project-label', 'Agent'));
+        const selectedLabel = createEl('span', 'new-chat-project-value', state.selectedAgent || 'Default');
+        trigger.appendChild(selectedLabel);
+        trigger.appendChild(createEl('span', 'new-chat-project-chevron', '⌄'));
+        select.addEventListener('change', () => {
+          state.selectedAgent = select.value;
+          selectedLabel.textContent = state.selectedAgent || 'Default';
+          if (state.selectedAgent) localStorage.setItem(STORAGE_KEYS.selectedAgent, state.selectedAgent); else localStorage.removeItem(STORAGE_KEYS.selectedAgent);
+        });
+        trigger.addEventListener('click', () => app.openChipPopover?.(select, trigger));
+        picker.appendChild(select);
+        picker.appendChild(trigger);
+        empty.appendChild(picker);
       }
-      const empty = createEl('div', 'empty-state', emptyCopy);
+      if (state.projectsEnabled && state.draftSessionActive) {
+        const picker = createEl('div', 'new-chat-project-picker');
+        const select = createEl('select', 'chip-select-hidden new-chat-project-select');
+        select.setAttribute('aria-label', 'Context for new chat');
+        select.tabIndex = -1;
+        const chat = createEl('option', '', 'Chat'); chat.value = ''; select.appendChild(chat);
+        (state.projects || []).filter((item) => item.available && !item.archived_at).forEach((item) => {
+          const option = createEl('option', '', item.name || 'Project'); option.value = item.id; select.appendChild(option);
+        });
+        select.value = String(state.activeProjectId || '');
+
+        const selectedProjectLabel = () => Array.from(select.options || select.children || [])
+          .find((option) => option.value === select.value)?.textContent || 'Chat';
+        const trigger = createEl('button', 'new-chat-project-trigger');
+        trigger.type = 'button';
+        trigger.setAttribute('aria-label', 'Choose chat or project');
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-controls', 'chipPopover');
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.appendChild(createEl('span', 'new-chat-project-label', 'Project'));
+        const selectedLabel = createEl('span', 'new-chat-project-value', selectedProjectLabel());
+        trigger.appendChild(selectedLabel);
+        trigger.appendChild(createEl('span', 'new-chat-project-chevron', '⌄'));
+        select.addEventListener('change', () => {
+          selectedLabel.textContent = selectedProjectLabel();
+          void app.switchToDraftSession?.({ projectId: select.value, clearComposer: false, focusPrompt: false, closeSidebar: false });
+        });
+        trigger.addEventListener('click', () => {
+          app.openChipPopover?.(select, trigger, {
+            action: {
+              label: 'Add project',
+              onSelect: () => app.openProjectModal?.({ returnFocus: trigger }),
+            },
+          });
+        });
+        picker.appendChild(select);
+        picker.appendChild(trigger);
+        empty.appendChild(picker);
+      }
       elements.messages.appendChild(empty);
     }
     _lastRenderedSessionId = sessionId;

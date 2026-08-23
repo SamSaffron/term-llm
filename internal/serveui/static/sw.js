@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'term-llm-shell-v4';
+const SHELL_CACHE = 'term-llm-shell-v5';
 const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
@@ -14,6 +14,7 @@ const SHELL_ASSETS = [
   './app-network.js',
   './app-plan.js',
   './slash-commands.js',
+  './guardian-render.js',
   './app-render.js',
   './app-attachments.js',
   './app-stream.js',
@@ -25,6 +26,7 @@ const SHELL_ASSETS = [
   './app-composer.js',
   './app-skills.js',
   './side-question.js',
+  './app-project-picker.js',
   './app-sidebar.js',
   './app-sessions.js',
   './app-path-notes.js',
@@ -36,6 +38,7 @@ const SHELL_ASSETS = [
   './app-message-convert.js',
   './intent-storage.js',
   './app-session-admin.js',
+  './app-diff-scopes.js',
   './app-diff-comments.js',
   './app-diff-queue.js',
   './app-diffs.js',

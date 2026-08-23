@@ -7,9 +7,144 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/samsaffron/term-llm/internal/gitdiff"
+	"github.com/samsaffron/term-llm/internal/session"
 )
+
+const (
+	fileChangeScopeLastTurn    = "last_turn"
+	fileChangeScopeLast3Turns  = "last_3_turns"
+	fileChangeScopeUncommitted = string(gitdiff.ScopeUncommitted)
+	fileChangeScopeUnstaged    = string(gitdiff.ScopeUnstaged)
+	fileChangeScopeStaged      = string(gitdiff.ScopeStaged)
+)
+
+type fileChangeScopeSpec struct {
+	name string
+	runs int
+}
+
+var fileChangeScopeSpecs = [...]fileChangeScopeSpec{
+	{name: fileChangeScopeLastTurn, runs: 1},
+	{name: fileChangeScopeLast3Turns, runs: 3},
+	{name: fileChangeScopeUncommitted},
+	{name: fileChangeScopeUnstaged},
+	{name: fileChangeScopeStaged},
+}
+
+func lookupFileChangeScope(value string) (fileChangeScopeSpec, bool) {
+	for _, spec := range fileChangeScopeSpecs {
+		if spec.name == value {
+			return spec, true
+		}
+	}
+	return fileChangeScopeSpec{}, false
+}
+
+func fileChangeScopeRunWindow(scope string) (int, bool) {
+	spec, ok := lookupFileChangeScope(scope)
+	return spec.runs, ok && spec.runs > 0
+}
+
+func fileChangeScopeNames() string {
+	names := make([]string, 0, len(fileChangeScopeSpecs))
+	for _, spec := range fileChangeScopeSpecs {
+		names = append(names, spec.name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func normalizeFileChangeScope(value string) (string, bool) {
+	scope := strings.ToLower(strings.TrimSpace(value))
+	if scope == "" {
+		scope = fileChangeScopeLastTurn
+	}
+	_, ok := lookupFileChangeScope(scope)
+	if !ok {
+		return "", false
+	}
+	return scope, true
+}
+
+func requestedFileChangeScope(r *http.Request) (string, bool) {
+	return normalizeFileChangeScope(r.URL.Query().Get("scope"))
+}
+
+func requestedFileChangeSnapshot(r *http.Request) (int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("snapshot_seq"))
+	if raw == "" {
+		return 0, true
+	}
+	seq, err := strconv.ParseInt(raw, 10, 64)
+	return seq, err == nil && seq > 0
+}
+
+type sessionGitRepoCacheEntry struct {
+	repo      *gitdiff.Repo
+	available bool
+	checkedAt time.Time
+}
+
+const sessionGitRepoCacheTTL = 15 * time.Second
+
+func (s *serveServer) sessionGitRepo(ctx context.Context, sessionID string) (*gitdiff.Repo, bool) {
+	dir := strings.TrimSpace(s.startupDir)
+	cacheKey := sessionID + "\x00" + dir
+	var persisted *session.Session
+	if s.store != nil {
+		sess, err := s.store.Get(ctx, sessionID)
+		if err != nil || sess == nil {
+			return nil, false
+		}
+		persisted = sess
+		cacheKey = sessionID + "\x00" + sess.ProjectID + "\x00" + sess.CWD + "\x00" + sess.WorktreeDir
+	}
+	s.fileChangeRepoCacheMu.Lock()
+	if entry, ok := s.fileChangeRepoCache[cacheKey]; ok && time.Since(entry.checkedAt) < sessionGitRepoCacheTTL {
+		s.fileChangeRepoCacheMu.Unlock()
+		return entry.repo, entry.available
+	}
+	s.fileChangeRepoCacheMu.Unlock()
+
+	if persisted != nil {
+		if strings.TrimSpace(persisted.ProjectID) != "" {
+			binding, err := s.resolvePersistedProjectWorkspace(ctx, *persisted)
+			if err != nil {
+				return nil, false
+			}
+			dir = strings.TrimSpace(binding.RuntimeDir)
+			if dir == "" {
+				dir = strings.TrimSpace(binding.RepoRoot)
+			}
+		} else if candidate := strings.TrimSpace(persisted.WorktreeDir); candidate != "" {
+			dir = candidate
+		} else if candidate := strings.TrimSpace(persisted.CWD); candidate != "" {
+			dir = candidate
+		}
+	}
+	repo, err := gitdiff.Open(ctx, dir)
+	entry := sessionGitRepoCacheEntry{repo: repo, available: err == nil, checkedAt: time.Now()}
+	s.fileChangeRepoCacheMu.Lock()
+	if s.fileChangeRepoCache == nil {
+		s.fileChangeRepoCache = make(map[string]sessionGitRepoCacheEntry)
+	}
+	if len(s.fileChangeRepoCache) >= 64 {
+		var oldestKey string
+		var oldest time.Time
+		for key, cached := range s.fileChangeRepoCache {
+			if oldestKey == "" || cached.checkedAt.Before(oldest) {
+				oldestKey, oldest = key, cached.checkedAt
+			}
+		}
+		delete(s.fileChangeRepoCache, oldestKey)
+	}
+	s.fileChangeRepoCache[cacheKey] = entry
+	s.fileChangeRepoCacheMu.Unlock()
+	return entry.repo, entry.available
+}
 
 // fileChangeSessionExists reports whether file-change history may be served
 // for a session. Filetrack retention is independent of session pruning, so
@@ -25,9 +160,9 @@ func (s *serveServer) fileChangeSessionExists(ctx context.Context, sessionID str
 	return err == nil && sess != nil
 }
 
-// handleSessionFileChanges serves GET /v1/sessions/{id}/file-changes:
-// the session's cumulative per-file changes relative to its baseline
-// (file state at first touch in the session).
+// handleSessionFileChanges serves GET /v1/sessions/{id}/file-changes. It
+// defaults to the latest agent turn and accepts rolling turn and Git scopes
+// exposed by the Changes selector.
 func (s *serveServer) handleSessionFileChanges(w http.ResponseWriter, r *http.Request, sessionID string) {
 	store := s.fileTrackStore()
 	if store == nil {
@@ -39,7 +174,23 @@ func (s *serveServer) handleSessionFileChanges(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	changes, err := store.ListSessionChanges(r.Context(), sessionID)
+	scope, ok := requestedFileChangeScope(r)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "unsupported file change scope")
+		return
+	}
+	runs, turnScope := fileChangeScopeRunWindow(scope)
+	repo, isGit := s.sessionGitRepo(r.Context(), sessionID)
+	var changes []filetrack.CumulativeChange
+	var err error
+	if turnScope {
+		changes, err = store.ListRecentRunChanges(r.Context(), sessionID, runs)
+	} else if !isGit {
+		writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "git file change scopes require a git repository")
+		return
+	} else {
+		changes, err = repo.List(r.Context(), gitdiff.Scope(scope))
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load file changes")
 		return
@@ -47,7 +198,7 @@ func (s *serveServer) handleSessionFileChanges(w http.ResponseWriter, r *http.Re
 	if changes == nil {
 		changes = []filetrack.CumulativeChange{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"file_changes": changes})
+	writeJSON(w, http.StatusOK, map[string]any{"file_changes": changes, "git": isGit, "scope": scope})
 }
 
 // handleSessionFileChangeDiff serves GET /v1/sessions/{id}/file-changes/diff?path=…:
@@ -70,7 +221,26 @@ func (s *serveServer) handleSessionFileChangeDiff(w http.ResponseWriter, r *http
 		return
 	}
 
-	content, err := store.GetFileDiffContent(r.Context(), sessionID, path)
+	scope, ok := requestedFileChangeScope(r)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "unsupported file change scope")
+		return
+	}
+	snapshotSeq, ok := requestedFileChangeSnapshot(r)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "snapshot_seq must be a positive integer")
+		return
+	}
+	var content *filetrack.FileDiffContent
+	var err error
+	if runs, ok := fileChangeScopeRunWindow(scope); ok {
+		content, err = store.GetRecentRunFileDiffContent(r.Context(), sessionID, path, runs, snapshotSeq)
+	} else if repo, isGit := s.sessionGitRepo(r.Context(), sessionID); !isGit {
+		writeOpenAIError(w, http.StatusConflict, "invalid_request_error", "git file change scopes require a git repository")
+		return
+	} else {
+		content, err = repo.File(r.Context(), gitdiff.Scope(scope), path)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load file diff")
 		return
@@ -121,7 +291,22 @@ func (s *serveServer) handleSessionFileChangeContent(w http.ResponseWriter, r *h
 		return
 	}
 
-	content, err := store.GetFileDiffSide(r.Context(), sessionID, path, side)
+	scope, ok := requestedFileChangeScope(r)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "unsupported file change scope")
+		return
+	}
+	snapshotSeq, ok := requestedFileChangeSnapshot(r)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "snapshot_seq must be a positive integer")
+		return
+	}
+	runs, turnScope := fileChangeScopeRunWindow(scope)
+	if !turnScope {
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "image diff content is not available for git scopes")
+		return
+	}
+	content, err := store.GetRecentRunFileDiffSide(r.Context(), sessionID, path, side, runs, snapshotSeq)
 	if errors.Is(err, filetrack.ErrInvalidDiffSide) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "requested side is not available for this change")
 		return

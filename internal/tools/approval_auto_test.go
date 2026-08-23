@@ -51,6 +51,7 @@ func TestApprovalManagerAutoReviewerHandlesUnmatchedRead(t *testing.T) {
 	var event GuardianEvent
 	mgr.GuardianEventFunc = func(got GuardianEvent) { event = got }
 	ctx := llm.ContextWithCallID(context.Background(), "read-call")
+	ctx, guardianReviews := llm.ContextWithGuardianReviewCapture(ctx)
 	ctx = llm.ContextWithApprovalTranscript(ctx, []llm.Message{llm.UserText("inspect the generated report")})
 
 	outcome, err := mgr.CheckPathApprovalWithContext(ctx, ReadFileToolName, path, path, false)
@@ -59,6 +60,9 @@ func TestApprovalManagerAutoReviewerHandlesUnmatchedRead(t *testing.T) {
 	}
 	if event.ToolCallID != "read-call" || event.ToolName != ReadFileToolName || event.Path != path || event.IsWrite || event.Outcome != GuardianApproved {
 		t.Fatalf("read guardian event = %#v", event)
+	}
+	if reviews := guardianReviews(); len(reviews) != 1 || reviews[0].Outcome != string(GuardianApproved) || reviews[0].Path != path {
+		t.Fatalf("captured guardian reviews = %#v", reviews)
 	}
 	if outcome, err := mgr.CheckPathApprovalWithContext(ctx, ReadFileToolName, path, path, false); err != nil || outcome != ProceedOnce {
 		t.Fatalf("repeated read approval = %v, %v", outcome, err)

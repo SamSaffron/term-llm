@@ -6,7 +6,9 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-diffs.js'), 'utf8');
+const scopeSource = fs.readFileSync(path.join(__dirname, 'app-diff-scopes.js'), 'utf8');
 const cssSource = fs.readFileSync(path.join(__dirname, 'app.css'), 'utf8');
+const indexSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const commentSource = fs.readFileSync(path.join(__dirname, 'app-diff-comments.js'), 'utf8');
 let failures = 0;
 
@@ -179,6 +181,9 @@ function createHarness(options = {}) {
     sidebar: new Element('aside'),
     planPanel: new Element('aside'),
     diffSidebar: new Element('aside'),
+    diffScopeTrigger: new Element('button'),
+    diffScopeLabel: new Element('span'),
+    diffScopeSelect: new Element('select'),
     diffSidebarTotals: new Element('span'),
     diffSidebarCloseBtn: new Element('button'),
     diffResizeHandle: new Element('div'),
@@ -192,6 +197,12 @@ function createHarness(options = {}) {
     diffFilterInput: new Element('input')
   };
   elements.diffSidebar.hidden = true;
+  elements.diffScopeTrigger.hidden = true;
+  elements.diffScopeSelect.hidden = true;
+  elements.diffScopeSelect.value = 'last_turn';
+  elements.diffScopeSelect.options = [
+    ['last_turn', 'Last turn'], ['last_3_turns', 'Last 3 turns'], ['uncommitted', 'Uncommitted'], ['unstaged', 'Unstaged'], ['staged', 'Staged']
+  ].map(([value, textContent]) => ({ value, textContent }));
   elements.diffToggleBtn.hidden = true;
   elements.diffFilterRow.hidden = true;
 
@@ -246,6 +257,7 @@ function createHarness(options = {}) {
   };
 
   const queuedComments = [];
+  const chipPopoverOpens = [];
   const commentSendModes = new Map();
   const app = {
     createEl(tag, className, text) {
@@ -259,6 +271,7 @@ function createHarness(options = {}) {
     state,
     elements,
     clipboardWrites: [],
+    openChipPopover(select, trigger) { chipPopoverOpens.push({ select, trigger }); },
     closeCurrentPlanSurface() { planCloseCalls += 1; },
     diffCommentSendMode(sessionId) { return commentSendModes.get(sessionId) || 'send'; },
     setDiffCommentSendMode(sessionId, mode) {
@@ -348,7 +361,10 @@ function createHarness(options = {}) {
   document.body.appendChild(elements.appShell);
   elements.appShell.append(elements.appMain, elements.sidebar, elements.planPanel, elements.diffSidebar);
   elements.appMain.appendChild(elements.diffToggleBtn);
+  elements.diffScopeTrigger.appendChild(elements.diffScopeLabel);
   elements.diffSidebar.append(
+    elements.diffScopeTrigger,
+    elements.diffScopeSelect,
     elements.diffSidebarTotals,
     elements.diffSidebarCloseBtn,
     elements.diffResizeHandle,
@@ -410,6 +426,7 @@ function createHarness(options = {}) {
   };
   context.globalThis = context;
   app.apiFetch = (...args) => context.fetch(...args);
+  vm.runInNewContext(scopeSource, context, { filename: 'app-diff-scopes.js' });
   if (options.diffComments) vm.runInNewContext(commentSource, context, { filename: 'app-diff-comments.js' });
   vm.runInNewContext(source, context, { filename: 'app-diffs.js' });
 
@@ -422,7 +439,7 @@ function createHarness(options = {}) {
   };
 
   return {
-    app, elements, state, document, localStorage, storage, timers, fetchCalls, queuedComments, flushTimers, setDrawer, media, windowObj: context.window,
+    app, elements, state, document, localStorage, storage, timers, fetchCalls, queuedComments, chipPopoverOpens, flushTimers, setDrawer, media, windowObj: context.window,
     get planCloseCalls() { return planCloseCalls; }
   };
 }
@@ -443,6 +460,30 @@ async function run(name, fn) {
 }
 
 (async () => {
+  await run('Changes header uses the shared custom scope popover', () => {
+    assert(!indexSource.includes('class="diff-sidebar-title"'), 'redundant Changes title is removed');
+    assert(indexSource.includes('id="diffScopeTrigger"'), 'custom scope trigger is present');
+    assert(indexSource.includes('aria-haspopup="listbox"'), 'scope trigger exposes listbox semantics');
+    const selectRule = cssSource.match(/\.diff-scope-select\s*\{([^}]*)\}/)?.[1] || '';
+    const triggerRule = cssSource.match(/\.diff-sidebar-header \.chip-trigger\.diff-scope-trigger\s*\{([^}]*)\}/)?.[1] || '';
+    assert(/display:\s*none/.test(selectRule), 'native picker is retained only as hidden state');
+    assert(/color:\s*var\(--text\)/.test(triggerRule), 'scope label uses normal foreground color');
+    assert(cssSource.includes('.chip-popover-item[aria-selected="true"]::before'), 'scope picker reuses selected-option checkmark');
+  });
+
+  await run('inline comment action text is optically centered', () => {
+    assert(/\.diff-comment-cancel,\s*\.diff-comment-send\s*\{[^}]*padding-block:\s*calc\(0\.35rem \+ 1px\) calc\(0\.35rem - 1px\)/s.test(cssSource), 'Cancel and Send now text lacks optical vertical centering');
+  });
+
+  await run('diff scope normalization is shared by picker and comments', () => {
+    const { app } = createHarness();
+    assertEqual(app.normalizeDiffScope('  STAGED '), 'staged', 'scope normalization did not trim and lowercase');
+    assertEqual(app.normalizeDiffScope(' LAST_3_TURNS '), 'last_3_turns', 'rolling turn scope was not normalized');
+    assertEqual(app.normalizeDiffScope('committed'), '', 'unknown diff scope was accepted');
+    assert(app.DIFF_SCOPES.has('last_turn') && app.DIFF_SCOPES.has('last_3_turns') && app.DIFF_SCOPES.has('uncommitted'), 'shared scope set is incomplete');
+    assert(app.isTurnDiffScope('last_turn') && app.isTurnDiffScope('last_3_turns') && !app.isTurnDiffScope('staged'), 'turn scopes are not classified centrally');
+  });
+
   await run('buildDiffRowModel numbers lines across hunks', () => {
     const { app } = createHarness();
     const rows = app.buildDiffRowModel([
@@ -960,13 +1001,102 @@ async function run(name, fn) {
     await flushTimers();
 
     assert(!elements.diffToggleBtn.hidden, 'changed session exposes Changes immediately');
+    assert(!elements.diffScopeSelect.hidden, 'non-git session exposes turn-based scope state');
+    assert(!elements.diffScopeTrigger.hidden, 'non-git session exposes the turn-based scope picker');
+    const optionsByValue = new Map(elements.diffScopeSelect.options.map((option) => [option.value, option]));
+    assert(!optionsByValue.get('last_turn').hidden && !optionsByValue.get('last_3_turns').hidden, 'turn scopes should remain available without Git');
+    assert(optionsByValue.get('uncommitted').hidden && optionsByValue.get('unstaged').hidden && optionsByValue.get('staged').hidden, 'Git scopes should be hidden without a repository');
     const fileCount = elements.diffToggleBadge.querySelector('.diff-toggle-file-count');
     assert(fileCount, 'changed toggle renders the file icon/count');
     assertEqual(fileCount.dataset.fileCount, '2', 'aggregate metadata supplies the actual file count');
     assertEqual(elementText(elements.diffToggleBadge), '+4−2', 'aggregate metadata supplies additions and deletions');
+    assertEqual(elementText(elements.diffSidebarTotals), '+4−2', 'sidebar totals preserve their combined text');
+    assertEqual(elements.diffSidebarTotals.children[0].className, 'diff-sidebar-totals-add', 'additions use their colored totals class');
+    assertEqual(elements.diffSidebarTotals.children[1].className, 'diff-sidebar-totals-del', 'deletions use their colored totals class');
     assertEqual(elements.diffToggleBtn.title, '2 changed files (+4 −2)', 'initial title is final and accurate');
     assertEqual(elements.diffFileList.children.length, 0, 'full file rows remain lazy');
     assertEqual(fetchCalls.filter((url) => url.endsWith('/file-changes')).length, 0, 'rendering the header does not fetch the list');
+  });
+
+  await run('git sessions expose scoped selector and update totals on selection', async () => {
+    const { app, elements, fetchCalls, chipPopoverOpens, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => ({
+          git: true,
+          scope: 'unstaged',
+          file_changes: [{ path: '/work/a.go', kind: 'modify', adds: 7, dels: 3, truncated: false }]
+        })
+      })
+    });
+    app.applySessionDiffSummary('s1', { file_count: 0, adds: 0, dels: 0, git: true });
+    app.activateDiffSidebar('s1');
+
+    assert(!elements.diffToggleBtn.hidden, 'git session keeps Changes available when Last turn is clean');
+    const emptyIcon = elements.diffToggleBadge.querySelector('.diff-toggle-file-count');
+    assert(emptyIcon, 'clean Last turn renders a neutral file icon instead of a blank button');
+    assertEqual(emptyIcon.dataset.fileCount, '0', 'neutral icon preserves the mobile file count');
+    assert(elements.diffToggleBadge.classList.contains('no-stats'), 'neutral fallback state is styled explicitly');
+    assertEqual(elements.diffToggleBtn.title, '0 changed files', 'clean Last turn has a useful tooltip');
+    app.toggleDiffSidebar();
+    await flushTimers();
+    assert(!elements.diffScopeSelect.hidden, 'git scope selector state is available');
+    assert(!elements.diffScopeTrigger.hidden, 'git session shows the custom scope trigger');
+    assertEqual(elements.diffScopeLabel.textContent, 'Last turn', 'trigger mirrors the selected scope label');
+    await elements.diffScopeTrigger.dispatchEvent({ type: 'click', stopPropagation() {} });
+    assertEqual(chipPopoverOpens.length, 1, 'trigger opens the shared chip popover');
+    assert(chipPopoverOpens[0].select === elements.diffScopeSelect, 'popover mirrors the scope select options');
+    assertEqual(elements.diffScopeSelect.value, 'last_turn', 'Last turn is the default scope');
+
+    elements.diffScopeSelect.value = 'last_3_turns';
+    await elements.diffScopeSelect.dispatchEvent({ type: 'change', target: elements.diffScopeSelect });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(fetchCalls.some((url) => url.endsWith('/file-changes?scope=last_3_turns')), 'rolling turn scope is sent to the list endpoint');
+    assertEqual(elements.diffScopeLabel.textContent, 'Last 3 turns', 'rolling scope label updates after selection');
+
+    elements.diffScopeSelect.value = 'unstaged';
+    await elements.diffScopeSelect.dispatchEvent({ type: 'change', target: elements.diffScopeSelect });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(fetchCalls.some((url) => url.endsWith('/file-changes?scope=unstaged')), 'selected scope is sent to the list endpoint');
+    assertEqual(elements.diffScopeLabel.textContent, 'Unstaged', 'trigger label updates after selection');
+    assertEqual(elementText(elements.diffSidebarTotals), '+7−3', 'scope response updates totals');
+    assertEqual(elements.diffSidebarTotals.children[0].className, 'diff-sidebar-totals-add', 'scope additions are green-classed');
+    assertEqual(elements.diffSidebarTotals.children[1].className, 'diff-sidebar-totals-del', 'scope deletions are red-classed');
+  });
+
+  await run('rolling turn scope pins diff and comment anchors to the listed snapshot', async () => {
+    let capturedAnchor = null;
+    let snapshotSeq = 9;
+    const { app, fetchCalls, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/work/a.go', kind: 'modify', lang: 'go', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: 'new' }] }] }
+          : { git: false, scope: 'last_3_turns', file_changes: [{ path: '/work/a.go', kind: 'modify', adds: 1, dels: 0, truncated: false, seq: 7, snapshot_seq: snapshotSeq }] })
+      })
+    });
+    app.decorateDiffCommentRow = (options) => { capturedAnchor = options; return null; };
+    app.applySessionDiffSummary('s1', { file_count: 1, adds: 1, dels: 0, git: false });
+    app.activateDiffSidebar('s1');
+    app.setDiffScope('last_3_turns');
+    await new Promise((resolve) => setImmediate(resolve));
+    app.toggleDiffSidebar();
+    app.toggleDiffFile('s1', '/work/a.go');
+    await flushTimers();
+    await flushTimers();
+
+    assert(fetchCalls.some((url) => url.endsWith('/file-changes?scope=last_3_turns')), 'rolling list request omitted its scope');
+    assert(fetchCalls.some((url) => url.includes('/diff?') && url.includes('scope=last_3_turns') && url.includes('snapshot_seq=9')), `rolling file request was not pinned to the listed snapshot: ${JSON.stringify(fetchCalls)}`);
+    assertEqual(capturedAnchor?.fileChangeSeq, 9, 'inline comment anchor used the path sequence instead of the window snapshot');
+
+    snapshotSeq = 10;
+    app.refreshFileChangesAfterRun({ id: 's1' });
+    await new Promise((resolve) => setImmediate(resolve));
+    await flushTimers();
+    await flushTimers();
+    await flushTimers();
+    assert(fetchCalls.some((url) => url.includes('/diff?') && url.includes('snapshot_seq=10')), `rolling baseline shift did not refresh the pinned body: ${JSON.stringify(fetchCalls)}`);
+    assertEqual(capturedAnchor?.fileChangeSeq, 10, 'rolling baseline shift did not refresh the comment snapshot');
   });
 
   await run('opening a known changed session fetches the full list exactly once', async () => {

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+const projectPickerSource = fs.readFileSync(path.join(__dirname, 'app-project-picker.js'), 'utf8');
 const source = fs.readFileSync(path.join(__dirname, 'app-sidebar.js'), 'utf8');
 let failures = 0;
 
@@ -122,8 +123,6 @@ function createHarness(options = {}) {
     sidebarSearchInput: new Element('input'),
     backToHubLink: new Element('a'),
     hubAgentLinks: new Element('nav'),
-    addProjectBtn: new Element('button'),
-    manageProjectsBtn: new Element('button'),
     promptInput: new Element('textarea'),
     appShell: new Element('div'),
     sessionGroups: new Element('div'),
@@ -254,12 +253,14 @@ function createHarness(options = {}) {
     fetch: trackedNativeFetch,
     Response,
     AbortController,
+    ...(options.IntersectionObserver ? { IntersectionObserver: options.IntersectionObserver } : {}),
   };
   context.globalThis = context;
   app.apiFetch = (...args) => {
     apiFetchRequests.push(args);
     return apiFetchImpl(...args);
   };
+  vm.runInNewContext(projectPickerSource, context, { filename: 'app-project-picker.js' });
   vm.runInNewContext(source, context, { filename: 'app-sidebar.js' });
   return {
     app,
@@ -848,13 +849,15 @@ function createFakeTimers() {
     assert(state.worktreesEnabled, 'authenticated worktree capability is retained');
     assert(harness.renderWorktreeCount >= 2, 'worktree control re-renders after capabilities and project status load');
     assertEqual(requests.filter((url) => url.includes('/v1/sidebar')).length, 1, 'initial project history uses one grouped request');
-    assert(!elements.addProjectBtn.classList.contains('hidden'), 'add project action revealed');
     app.renderProjectSidebar();
     const groups = elements.sessionGroups.querySelectorAll('.project-group');
     assertEqual(groups.length, 2, 'active and empty projects are both rendered');
     const toggles = elements.sessionGroups.querySelectorAll('.project-group-toggle');
     assertEqual(toggles[0].getAttribute('aria-expanded'), 'true', 'group disclosure exposes aria-expanded');
-    assertEqual(elements.sessionGroups.querySelectorAll('.project-group-action').length, 4, 'new-chat and menu are independent buttons for each project');
+    assert(toggles[0].querySelector('.project-group-chevron').innerHTML.includes('<svg'), 'group disclosure uses an SVG chevron');
+    assertEqual(groups[0].querySelector('.project-group-header').children[0], toggles[0], 'project name and disclosure share the left-side click target');
+    assertEqual(toggles[0].querySelector('.project-group-label').textContent, 'Alpha', 'project name renders inside the disclosure control');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group-action').length, 4, 'new-chat and menu are independent controls');
     assertEqual(state.sessions[0].projectId, 'prj_alpha', 'grouped summary preserves stable project identity');
   });
 
@@ -884,7 +887,7 @@ function createFakeTimers() {
     assertEqual(elements.sessionGroups.querySelectorAll('button').length, 1, 'capability error has a Retry action');
   });
 
-  await run('project drafts render independently and reorder groups by draft activity', () => {
+  await run('project drafts stay off the sidebar and do not reorder project groups', () => {
     const { app, elements, state } = createHarness();
     state.capabilitiesLoaded = true;
     state.projectsEnabled = true;
@@ -898,26 +901,33 @@ function createFakeTimers() {
     };
     app.renderProjectSidebar();
     const groups = elements.sessionGroups.querySelectorAll('.project-group');
-    assertEqual(groups[0].dataset.projectId, 'prj_recent_draft', 'newer client draft moves its project first');
-    assertEqual(elements.sessionGroups.querySelectorAll('.session-row').length, 2, 'one independent draft row renders per project');
+    assertEqual(groups[0].dataset.projectId, 'prj_recent_server', 'hidden composer drafts do not move project groups');
+    assertEqual(elements.sessionGroups.querySelectorAll('.session-row').length, 0, 'composer drafts do not render sidebar rows');
   });
 
-  await run('No project continuation cursor pages without a project_id parameter', async () => {
+  await run('No project conversations paginate automatically without a Load more control', async () => {
     const urls = [];
+    class ImmediateIntersectionObserver {
+      constructor(callback) { this.callback = callback; }
+      observe(target) { this.callback([{ isIntersecting: true, target }]); }
+      unobserve() {}
+      disconnect() {}
+    }
     const { app, elements, state } = createHarness({
+      IntersectionObserver: ImmediateIntersectionObserver,
       apiFetch: async (url) => {
         urls.push(String(url));
-        return new Response(JSON.stringify({ sessions: [{ id: 'legacy-2', number: 2, summary: 'Older legacy', created_at: '2026-08-20T00:00:00Z' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ sessions: [{ id: 'legacy-2', number: 2, summary: 'Older legacy', created_at: Date.now() }], next_cursor: '' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       },
     });
     state.capabilitiesLoaded = true;
     state.projectsEnabled = true;
     state.sidebarGroups = [{ no_project: true, next_cursor: 'opaque-null-cursor', sessions: [] }];
     app.renderProjectSidebar();
-    const button = elements.sessionGroups.querySelector('.project-load-more');
-    assert(button, 'No project group renders Load more');
-    await button.dispatchEvent({ type: 'click' });
-    assert(urls.some((url) => url.includes('cursor=opaque-null-cursor') && !url.includes('project_id=')), 'No project cursor request omits project_id');
+    assert(!elements.sessionGroups.querySelector('.project-load-more'), 'manual Load more control is absent');
+    assert(elements.sessionGroups.querySelector('.project-pagination-sentinel'), 'automatic pagination sentinel is rendered');
+    await flushAsync();
+    assert(urls.some((url) => url.includes('cursor=opaque-null-cursor') && !url.includes('project_id=')), 'No project cursor was not fetched automatically');
   });
 
   await run('disabled-mode capability flip clears stale node-scoped project drafts', async () => {
@@ -948,13 +958,12 @@ function createFakeTimers() {
     assertEqual(state.selectedWorktreeName, '', 'stale selected worktree name is cleared');
     assertEqual(state.worktrees.length, 0, 'stale project worktree list is cleared');
     assertEqual(app.renderProjectSidebar(), false, 'disabled mode delegates to the legacy flat/date sidebar renderer');
-    assert(elements.addProjectBtn.classList.contains('hidden') && elements.manageProjectsBtn.classList.contains('hidden'), 'disabled mode removes project mutation actions');
     assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 0, 'disabled mode leaves no project group rows');
   });
 
   await run('add project path disables text transformations and traps background focus', async () => {
-    const { elements, document } = createHarness();
-    await elements.addProjectBtn.dispatchEvent({ type: 'click' });
+    const { app, elements, document } = createHarness();
+    app.openProjectModal();
     const pathInput = document.querySelector('.project-path-input');
     assert(pathInput, 'project path input rendered');
     assertEqual(pathInput.getAttribute('autocorrect'), 'off', 'autocorrect disabled');
@@ -966,10 +975,42 @@ function createFakeTimers() {
     assert(elements.appShell.inert === false, 'background inert state clears when modal closes');
   });
 
+  await run('add project browser navigates server folders and fills the path', async () => {
+    const urls = [];
+    const { app, document } = createHarness({
+      apiFetch: async (url) => {
+        urls.push(String(url));
+        const nested = String(url).includes(encodeURIComponent('/home/sam/Source')) || String(url).includes('path=%2Fhome%2Fsam%2FSource');
+        return new Response(JSON.stringify(nested ? {
+          path: '/home/sam/Source', parent: '/home/sam', home: '/home/sam',
+          breadcrumbs: [{ label: '/', path: '/' }, { label: 'home', path: '/home' }, { label: 'sam', path: '/home/sam' }, { label: 'Source', path: '/home/sam/Source' }],
+          entries: [{ name: 'term-llm', path: '/home/sam/Source/term-llm', git: true }],
+        } : {
+          path: '/home/sam', parent: '/home', home: '/home/sam',
+          breadcrumbs: [{ label: '/', path: '/' }, { label: 'home', path: '/home' }, { label: 'sam', path: '/home/sam' }],
+          entries: [{ name: 'Source', path: '/home/sam/Source' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    app.openProjectModal();
+    const browse = document.querySelector('.project-browse-button');
+    await browse.dispatchEvent({ type: 'click', target: browse });
+    await flushAsync();
+    assert(urls[0].includes('/v1/project-directories'), 'browser loads from the authenticated server directory endpoint');
+    assertEqual(document.querySelector('.project-path-input').value, '/home/sam', 'default browser folder fills the path');
+    const source = document.querySelector('.project-browser-row');
+    assertEqual(source.textContent, '', 'folder row uses structured child content');
+    await source.dispatchEvent({ type: 'click', target: source });
+    await flushAsync();
+    assertEqual(document.querySelector('.project-path-input').value, '/home/sam/Source', 'navigating updates the selected server folder');
+    assert(document.querySelector('.project-browser-badge'), 'Git directory metadata renders as a badge');
+    assertEqual(browse.getAttribute('aria-expanded'), 'true', 'inline browser exposes its expanded state');
+  });
+
   await run('archived duplicate preview restores stable project instead of starting a forbidden draft', async () => {
     const urls = [];
     let calls = 0;
-    const { elements, document } = createHarness({
+    const { app, document } = createHarness({
       apiFetch: async (url) => {
         urls.push(String(url)); calls += 1;
         if (calls === 1) {
@@ -981,7 +1022,7 @@ function createFakeTimers() {
         return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       },
     });
-    await elements.addProjectBtn.dispatchEvent({ type: 'click' });
+    app.openProjectModal();
     document.querySelector('.project-path-input').value = '/srv/archived';
     const actions = document.querySelector('.project-modal-actions');
     const submit = actions.children[1];
@@ -1033,12 +1074,15 @@ function createFakeTimers() {
     const contextMenu = menuTrigger.parentNode.children.find((child) => child.classList.contains('project-context-menu'));
     const archiveMenuItem = contextMenu.children.find((child) => child.textContent === 'Archive');
     await archiveMenuItem.dispatchEvent({ type: 'click', target: archiveMenuItem });
-    const modalActions = document.querySelector('.project-modal-actions');
-    const archiveButton = modalActions.children[2];
+    const archiveButton = document.querySelector('.project-manage-archive');
+    assert(document.querySelector('.project-manage-identity'), 'manage dialog renders project identity as a structured panel');
+    assert(document.querySelector('.project-modal-close'), 'manage dialog has a visible close affordance');
+    assertEqual(document.querySelector('.project-modal-actions').children.length, 2, 'destructive action is separated from footer actions');
     await archiveButton.dispatchEvent({ type: 'click', target: archiveButton });
     assertEqual(requests.filter((request) => request.method === 'PATCH').length, 0, 'first archive action does not mutate');
     assertEqual(archiveButton.textContent, 'Confirm archive', 'archive action becomes an explicit confirmation');
-    assert(document.querySelector('.project-modal-status').textContent.includes('Archiving hides this project from new chats; existing conversations keep working.'), 'confirmation uses documented warning copy');
+    assert(archiveButton.classList.contains('danger'), 'confirmed archive receives explicit danger styling');
+    assert(!document.querySelector('.project-manage-warning').hidden, 'confirmation warning appears beside the archive action');
     await archiveButton.dispatchEvent({ type: 'click', target: archiveButton });
     assertEqual(requests.filter((request) => request.method === 'PATCH').length, 1, 'confirmed archive mutates exactly once');
   });
@@ -1074,7 +1118,7 @@ function createFakeTimers() {
     assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 1, 'known grouped rows remain visible during search failure');
   });
 
-  await run('active No project conversation forces its historical group open', () => {
+  await run('active No project conversation respects an explicit collapsed state', () => {
     const { app, elements, state } = createHarness();
     state.capabilitiesLoaded = true;
     state.projectsEnabled = true;
@@ -1085,7 +1129,50 @@ function createFakeTimers() {
     app.renderProjectSidebar();
     const group = elements.sessionGroups.querySelector('.project-group');
     assert(group.classList.contains('active'), 'No project group is marked active');
-    assertEqual(group.querySelector('.project-group-toggle').getAttribute('aria-expanded'), 'true', 'active No project group ignores stale collapsed state');
+    assertEqual(group.querySelector('.project-group-toggle').getAttribute('aria-expanded'), 'false', 'active No project group remains user-collapsed');
+    assert(!group.querySelector('.project-session-list'), 'collapsed active project does not render its conversation list');
+  });
+
+  await run('sidebar refresh never scrolls the active project into view', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.activeSessionId = 'active-session';
+    state.sessions = [{ id: 'active-session', projectId: 'prj_active', title: 'Active' }];
+    state.sidebarGroups = [{ project: { id: 'prj_active', name: 'Active', available: true }, sessions: [{ id: 'active-session', summary: 'Active', project_id: 'prj_active' }] }];
+    let scrollCalls = 0;
+    const previousScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = () => { scrollCalls += 1; };
+    try {
+      app.renderProjectSidebar();
+      app.renderProjectSidebar();
+    } finally {
+      if (previousScrollIntoView) Element.prototype.scrollIntoView = previousScrollIntoView;
+      else delete Element.prototype.scrollIntoView;
+    }
+    assertEqual(scrollCalls, 0, 'project refresh did not move the sidebar viewport');
+  });
+
+  await run('project disclosure toggles without a notification', async () => {
+    const { app, elements, state } = createHarness();
+    const notifications = [];
+    app.showToast = (message) => notifications.push(message);
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_quiet', name: 'Quiet project', available: true }, sessions: [] }];
+    app.renderProjectSidebar();
+    const toggle = elements.sessionGroups.querySelector('.project-group-toggle');
+    await toggle.dispatchEvent({ type: 'click', target: toggle, preventDefault() {} });
+    assertEqual(state.projectExpansion.prj_quiet, false, 'project group collapsed');
+    app.renderProjectSidebar();
+    const collapsedToggle = elements.sessionGroups.querySelector('.project-group-toggle');
+    await collapsedToggle.dispatchEvent({ type: 'click', target: collapsedToggle, preventDefault() {} });
+    assertEqual(state.projectExpansion.prj_quiet, true, 'project group expands again after rerender');
+    app.renderProjectSidebar();
+    assert(elements.sessionGroups.querySelector('.project-session-list').classList.contains('is-opening'), 'user expansion receives one restrained reveal');
+    app.renderProjectSidebar();
+    assert(!elements.sessionGroups.querySelector('.project-session-list').classList.contains('is-opening'), 'background rerender does not replay expansion animation');
+    assertEqual(notifications.length, 0, 'project disclosure did not emit a toast');
   });
 
   await run('duplicate project names render shortened path disambiguators', () => {
@@ -1098,19 +1185,19 @@ function createFakeTimers() {
     ];
     state.sidebarGroups = state.projects.map((project) => ({ project, sessions: [] }));
     app.renderProjectSidebar();
-    const labels = elements.sessionGroups.querySelectorAll('.project-group-toggle').map((toggle) => toggle.textContent);
+    const labels = elements.sessionGroups.querySelectorAll('.project-group-label').map((label) => label.textContent);
     assert(labels.some((label) => label.includes('one/app')) && labels.some((label) => label.includes('two/app')), 'duplicate names include distinct shortened paths');
   });
 
   await run('editing project details after preview requires a fresh dry run', async () => {
     const urls = [];
-    const { elements, document } = createHarness({
+    const { app, document } = createHarness({
       apiFetch: async (url) => {
         urls.push(String(url));
         return new Response(JSON.stringify({ canonical_dir: '/srv/previewed', default_name: 'previewed', git: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       },
     });
-    await elements.addProjectBtn.dispatchEvent({ type: 'click' });
+    app.openProjectModal();
     const path = document.querySelector('.project-path-input');
     path.value = '/srv/first';
     const submit = document.querySelector('.project-modal-actions').children[1];
@@ -1123,19 +1210,58 @@ function createFakeTimers() {
     assertEqual(urls.filter((url) => url.endsWith('/v1/projects')).length, 0, 'changed path was not created from stale preview');
   });
 
-  await run('No project assignment transport failure remains retryable inline', async () => {
+  await run('No project assignment lives off-row and transport failure remains retryable inline', async () => {
     const { app, elements, state, document } = createHarness({ apiFetch: async () => { throw new Error('offline'); } });
     state.capabilitiesLoaded = true;
     state.projectsEnabled = true;
-    state.projects = [{ id: 'prj_assign', name: 'Assign target', available: true }];
-    state.sidebarGroups = [{ no_project: true, sessions: [{ id: 'legacy-assign', summary: 'Assign me', project_id: '' }] }];
+    state.projects = [{ id: 'prj_assign', name: 'Assign target', canonical_dir: '/srv/assign', available: true, git: true }];
+    const conversation = { id: 'legacy-assign', title: 'Assign me', projectId: '' };
+    state.sidebarGroups = [{ no_project: true, sessions: [{ id: conversation.id, summary: conversation.title, project_id: '' }] }];
     app.renderProjectSidebar();
-    const assign = elements.sessionGroups.querySelector('.assign-project-action');
-    await assign.dispatchEvent({ type: 'click', target: assign });
-    const choice = document.querySelector('.project-choice-list').querySelector('button');
+    assert(!elements.sessionGroups.querySelector('.assign-project-action'), 'assignment action is not rendered beside the conversation');
+    app.openAssignProjectModal(conversation);
+    const choiceList = document.querySelector('.project-choice-list');
+    const choice = choiceList.querySelector('.project-choice');
+    const dialog = document.getElementById('assignProjectModal').querySelector('.project-assign-modal');
+    assertEqual(choiceList.getAttribute('role'), 'radiogroup', 'project choices expose single-select semantics');
+    assertEqual(dialog.getAttribute('aria-describedby'), 'assignProjectNote', 'grouping-only warning describes the dialog');
     await choice.dispatchEvent({ type: 'click', target: choice });
-    assert(!choice.disabled, 'failed assignment choice is re-enabled');
-    assert(document.querySelector('.project-modal-status').textContent.includes('Retry'), 'failed assignment exposes inline Retry copy');
+    assertEqual(choice.getAttribute('aria-checked'), 'true', 'project choice is visibly selected before assignment');
+    const assign = document.querySelector('.project-modal-actions').children[1];
+    assert(!assign.disabled, 'selecting a project enables the explicit assignment action');
+    await assign.dispatchEvent({ type: 'click', target: assign });
+    assert(!assign.disabled, 'failed assignment action is re-enabled');
+    const assignStatus = document.querySelector('.project-modal-status');
+    assert(assignStatus.textContent.includes('Retry'), 'failed assignment exposes inline Retry copy');
+    assertEqual(assignStatus.getAttribute('role'), 'alert', 'assignment failure is announced as an error');
+  });
+
+  await run('assignment upgrades the conversation workspace into a new project', async () => {
+    const requests = [];
+    const conversation = { id: 'legacy-upgrade', title: 'Upgrade me', projectId: '' };
+    const { app, state, document } = createHarness({
+      apiFetch: async (url, options = {}) => {
+        requests.push({ url: String(url), method: options.method || 'GET', body: options.body || '' });
+        if (String(url).includes('/v1/sidebar')) return new Response(JSON.stringify({ groups: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if ((options.method || 'GET') === 'POST') return new Response(JSON.stringify({ project_id: 'prj_upgraded', project_name: 'workspace' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ candidate: { canonical_dir: '/home/sam/workspace', default_name: 'workspace', git: true } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+    state.projects = [];
+    app.openAssignProjectModal(conversation);
+    await flushAsync();
+    const upgrade = document.querySelector('.project-assign-upgrade');
+    assert(!upgrade.hidden, 'candidate workspace renders as an inline project upgrade');
+    assertEqual(upgrade.querySelector('.project-manage-path').textContent, '/home/sam/workspace', 'candidate path is visible before creation');
+    const controls = document.querySelector('.project-assign-upgrade-controls');
+    const name = controls.children[0]; const create = controls.children[1];
+    assertEqual(name.value, 'workspace', 'candidate folder name pre-fills the project name');
+    assertEqual(create.textContent, 'Create & assign', 'candidate exposes one-step project creation');
+    await create.dispatchEvent({ type: 'click', target: create });
+    await flushAsync();
+    const createRequest = requests.find((request) => request.method === 'POST');
+    assert(createRequest && JSON.parse(createRequest.body).create_from_workspace === true, 'upgrade posts the create-from-workspace assignment');
+    assertEqual(conversation.projectId, 'prj_upgraded', 'created project is assigned to the conversation');
   });
 
   await run('grouped rows prefer canonical status-updated session data over stale sidebar summaries', () => {
@@ -1176,9 +1302,12 @@ function createFakeTimers() {
     await rename.dispatchEvent({ type: 'click', target: rename });
     const modalActions = document.querySelector('.project-modal-actions');
     const save = modalActions.children[1];
-    await save.dispatchEvent({ type: 'click', target: save });
+    const nameInput = document.getElementById('projectManageNameInput');
+    await nameInput.dispatchEvent({ type: 'keydown', key: 'Enter', target: nameInput, preventDefault() {} });
     assert(!save.disabled, 'failed rename action is retryable');
-    assert(document.querySelector('.project-modal-status').textContent.includes('offline'), 'rename transport failure remains in live status');
+    const errorStatus = document.querySelector('.project-modal-status');
+    assert(errorStatus.textContent.includes('offline'), 'rename transport failure remains in live status');
+    assertEqual(errorStatus.getAttribute('role'), 'alert', 'rename failure is announced as an error');
   });
 
   await run('project search results retain project identity for regrouping', async () => {

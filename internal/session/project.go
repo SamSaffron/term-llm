@@ -128,6 +128,14 @@ func AsProjectReader(store Store) (ProjectReader, bool) {
 	return reader, ok
 }
 
+// ProjectSessionMatch is a prevalidated legacy session workspace that may be
+// claimed by an atomic project bootstrap if its persisted paths are unchanged.
+type ProjectSessionMatch struct {
+	ID          string
+	CWD         string
+	WorktreeDir string
+}
+
 // ProjectStore is optional so custom and read-only pre-migration stores remain
 // usable without falsely advertising project support.
 type ProjectStore interface {
@@ -136,7 +144,7 @@ type ProjectStore interface {
 	GetProjectByCanonicalDir(ctx context.Context, canonicalDir string) (*Project, error)
 	CreateProject(ctx context.Context, project *Project) error
 	UpdateProject(ctx context.Context, id string, update ProjectUpdate) (*Project, error)
-	BootstrapProject(ctx context.Context, project *Project, matchingSessionIDs []string) error
+	BootstrapProject(ctx context.Context, project *Project, matchingSessions []ProjectSessionMatch) error
 	Sidebar(ctx context.Context, opts SidebarOptions) ([]SidebarGroup, error)
 	AssignSessionProject(ctx context.Context, sessionID, projectID, expectedCWD, expectedWorktreeDir string) error
 }
@@ -195,8 +203,8 @@ func (s *loggingProjectStore) UpdateProject(ctx context.Context, id string, upda
 	s.log("UpdateProject", err)
 	return v, err
 }
-func (s *loggingProjectStore) BootstrapProject(ctx context.Context, p *Project, ids []string) error {
-	err := s.store.BootstrapProject(ctx, p, ids)
+func (s *loggingProjectStore) BootstrapProject(ctx context.Context, p *Project, matches []ProjectSessionMatch) error {
+	err := s.store.BootstrapProject(ctx, p, matches)
 	s.log("BootstrapProject", err)
 	return err
 }

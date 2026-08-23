@@ -316,6 +316,8 @@ func (s *serveServer) buildIndexHTML() []byte {
 	headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
 	agentEscaped, _ := json.Marshal(s.cfg.agentName)
 	headSnippet += `<script>window.TERM_LLM_AGENT_NAME=` + string(agentEscaped) + `;</script>`
+	agentNamesEscaped, _ := json.Marshal(s.cfg.agentNames)
+	headSnippet += `<script>window.TERM_LLM_AGENT_NAMES=` + string(agentNamesEscaped) + `;</script>`
 	titleEscaped, _ := json.Marshal(s.cfg.uiTitle)
 	headSnippet += `<script>window.TERM_LLM_UI_TITLE=` + string(titleEscaped) + `;</script>`
 	headSnippet += `<script>window.TERM_LLM_LOCATION_SHARING_ENABLED=` + strconv.FormatBool(!s.cfg.locationSharingDisabled) + `;</script>`
@@ -917,6 +919,7 @@ type sessionMessagePartEntry struct {
 	ImageURL        string                         `json:"image_url,omitempty"`
 	Images          []string                       `json:"images,omitempty"`
 	ToolError       bool                           `json:"tool_error,omitempty"`
+	GuardianReviews []llm.GuardianReview           `json:"guardian_reviews,omitempty"`
 	SpawnAgent      *tools.SpawnAgentResult        `json:"spawn_agent,omitempty"`
 	MimeType        string                         `json:"mime_type,omitempty"`
 	Width           int                            `json:"width,omitempty"`
@@ -1166,9 +1169,10 @@ func sessionSummaryLastMessageAt(sess session.SessionSummary) time.Time {
 }
 
 type webFileChangeSummary struct {
-	FileCount int `json:"file_count"`
-	Adds      int `json:"adds"`
-	Dels      int `json:"dels"`
+	FileCount int  `json:"file_count"`
+	Adds      int  `json:"adds"`
+	Dels      int  `json:"dels"`
+	Git       bool `json:"git"`
 }
 
 type webSessionEntry struct {
@@ -1282,7 +1286,8 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 
 	result := &webSelectedSessionEntry{webSessionEntry: selected}
 	if fileStore := s.fileTrackStore(); fileStore != nil {
-		changes, err := fileStore.ListSessionChanges(ctx, selected.ID)
+		_, result.FileChangeSummary.Git = s.sessionGitRepo(ctx, selected.ID)
+		changes, err := fileStore.ListRecentRunChanges(ctx, selected.ID, 1)
 		if err != nil {
 			return nil, fmt.Errorf("summarize selected session file changes: %w", err)
 		}
@@ -1360,13 +1365,14 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		sessions, err = s.store.List(r.Context(), session.ListOptions{
-			Limit:          limit,
-			Archived:       includeArchived,
-			Categories:     categories,
-			SortByActivity: true,
-			ProjectID:      projectID,
-			NoProject:      noProject,
-			ProjectCursor:  projectCursor,
+			Limit:            limit,
+			Archived:         includeArchived,
+			Categories:       categories,
+			SortByActivity:   true,
+			ProjectID:        projectID,
+			NoProject:        noProject,
+			ProjectCursor:    projectCursor,
+			ExcludeSubagents: true,
 		})
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
@@ -1447,11 +1453,12 @@ func (s *serveServer) handleSessionsSearch(w http.ResponseWriter, r *http.Reques
 	}
 
 	matches, err := s.store.Search(r.Context(), session.SearchOptions{
-		Query:      query,
-		Categories: categories,
-		Limit:      limit,
-		Archived:   includeArchived,
-		ProjectID:  strings.TrimSpace(r.URL.Query().Get("project_id")),
+		Query:            query,
+		Categories:       categories,
+		Limit:            limit,
+		Archived:         includeArchived,
+		ProjectID:        strings.TrimSpace(r.URL.Query().Get("project_id")),
+		ExcludeSubagents: true,
 	})
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid search query")
@@ -1567,6 +1574,7 @@ func askUserResultSummary(content string) string {
 
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
 	failedToolCalls := make(map[string]bool)
+	guardianReviewsByCall := make(map[string][]llm.GuardianReview)
 	planToolCalls := make(map[string]bool)
 	spawnAgentToolCalls := make(map[string]bool)
 	parentSessionID := ""
@@ -1583,8 +1591,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 					spawnAgentToolCalls[part.ToolCall.ID] = true
 				}
 			}
-			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.IsError && part.ToolResult.ID != "" {
-				failedToolCalls[part.ToolResult.ID] = true
+			if part.Type == llm.PartToolResult && part.ToolResult != nil {
+				if part.ToolResult.IsError && part.ToolResult.ID != "" {
+					failedToolCalls[part.ToolResult.ID] = true
+				}
+				if part.ToolResult.ID != "" && len(part.ToolResult.GuardianReviews) > 0 {
+					guardianReviewsByCall[part.ToolResult.ID] = append(guardianReviewsByCall[part.ToolResult.ID], part.ToolResult.GuardianReviews...)
+				}
 			}
 		}
 	}
@@ -1711,10 +1724,11 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 			case llm.PartToolCall:
 				if p.ToolCall != nil {
 					pe := sessionMessagePartEntry{
-						Type:       "tool_call",
-						ToolName:   p.ToolCall.Name,
-						ToolCallID: p.ToolCall.ID,
-						ToolError:  failedToolCalls[p.ToolCall.ID],
+						Type:            "tool_call",
+						ToolName:        p.ToolCall.Name,
+						ToolCallID:      p.ToolCall.ID,
+						ToolError:       failedToolCalls[p.ToolCall.ID],
+						GuardianReviews: append([]llm.GuardianReview(nil), guardianReviewsByCall[p.ToolCall.ID]...),
 					}
 					if len(p.ToolCall.Arguments) > 0 {
 						pe.ToolArgs = string(p.ToolCall.Arguments)
@@ -1740,7 +1754,7 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 							spawnResult.SessionID = s.validatedSpawnChildID(parentSessionID, spawnResult.SessionID)
 						}
 					}
-					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
+					includeResult := p.ToolResult.IsError || len(p.ToolResult.Images) > 0 || len(p.ToolResult.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil
 					if !includeResult {
 						continue
 					}
@@ -1749,11 +1763,12 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 						toolName = tools.SpawnAgentToolName
 					}
 					pe := sessionMessagePartEntry{
-						Type:       "tool_result",
-						ToolName:   toolName,
-						ToolCallID: p.ToolResult.ID,
-						ToolError:  p.ToolResult.IsError || (spawnResult != nil && spawnResult.Error != ""),
-						SpawnAgent: spawnResult,
+						Type:            "tool_result",
+						ToolName:        toolName,
+						ToolCallID:      p.ToolResult.ID,
+						ToolError:       p.ToolResult.IsError || (spawnResult != nil && spawnResult.Error != ""),
+						GuardianReviews: append([]llm.GuardianReview(nil), p.ToolResult.GuardianReviews...),
+						SpawnAgent:      spawnResult,
 					}
 					if isAskUserResult {
 						pe.AskUserSummary = askUserResultSummary(p.ToolResult.Content)
@@ -1816,8 +1831,8 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if suffix == "project" {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
 			writeProjectError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
@@ -3066,10 +3081,42 @@ func (s *serveServer) unregisterSessionResponseIDs(sessionID string) {
 	})
 }
 
+func (s *serveServer) requestedRuntimeAgent(ctx context.Context, sessionID, requestedAgent string) string {
+	if pinned := strings.TrimSpace(s.cfg.agentName); pinned != "" {
+		return pinned
+	}
+	if requested := strings.TrimSpace(requestedAgent); requested != "" {
+		return requested
+	}
+	if s.store != nil && strings.TrimSpace(sessionID) != "" {
+		if sess, err := s.store.Get(ctx, sessionID); err == nil && sess != nil {
+			return strings.TrimSpace(sess.Agent)
+		}
+	}
+	return ""
+}
+
+func (s *serveServer) createRequestRuntime(ctx context.Context, providerName, modelName, agentName string) (*serveRuntime, error) {
+	if s.agentRuntimeFactory != nil {
+		return s.agentRuntimeFactory(ctx, providerName, modelName, agentName)
+	}
+	if strings.TrimSpace(agentName) != "" {
+		return nil, fmt.Errorf("per-conversation agents are unavailable")
+	}
+	if s.runtimeFactory != nil {
+		return s.runtimeFactory(ctx, providerName, modelName)
+	}
+	return s.sessionMgr.factory(ctx)
+}
+
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
+	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
+	create := func(ctx context.Context) (*serveRuntime, error) {
+		return s.createRequestRuntime(ctx, "", "", agentName)
+	}
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)
-		rt, err := s.sessionMgr.factory(ctx)
+		rt, err := create(ctx)
 		if err != nil {
 			return nil, false, err
 		}
@@ -3077,7 +3124,7 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	}
 	// Stateful sessions should persist beyond a single HTTP request, but
 	// creation must still respect request cancellation/timeouts.
-	rt, err := s.sessionMgr.GetOrCreate(ctx, sessionID)
+	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, create)
 	if err != nil {
 		return nil, false, err
 	}
@@ -3185,8 +3232,9 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	}
 	providerName = strings.TrimSpace(providerName)
 	modelName = strings.TrimSpace(modelName)
+	agentName := s.requestedRuntimeAgent(ctx, sessionID, "")
 	if sessionID == "" {
-		rt, err := s.runtimeFactory(ctx, providerName, modelName)
+		rt, err := s.createRequestRuntime(ctx, providerName, modelName, agentName)
 		if err != nil {
 			return nil, false, err
 		}
@@ -3208,7 +3256,7 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	}
 	// Use GetOrCreateWith to get proper in-flight deduplication.
 	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) {
-		return s.runtimeFactory(ctx, providerName, modelName)
+		return s.createRequestRuntime(ctx, providerName, modelName, agentName)
 	})
 	if err != nil {
 		return nil, false, err
@@ -3231,6 +3279,10 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 // runtimeForFreshProviderRequest starts a fresh conversation, optionally using
 // a specific provider, even when the caller reuses an existing session ID.
 func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessionID string, providerName string) (*serveRuntime, bool, error) {
+	return s.runtimeForFreshAgentProviderRequest(ctx, sessionID, providerName, "")
+}
+
+func (s *serveServer) runtimeForFreshAgentProviderRequest(ctx context.Context, sessionID string, providerName string, requestedAgent string) (*serveRuntime, bool, error) {
 	defaultProvider := ""
 	if s.cfgRef != nil {
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
@@ -3240,13 +3292,18 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 	if desiredProvider == "" {
 		desiredProvider = defaultProvider
 	}
-	if s.runtimeFactory == nil && providerName != "" && providerName != defaultProvider {
+	if s.runtimeFactory == nil && s.agentRuntimeFactory == nil && providerName != "" && providerName != defaultProvider {
 		desiredProvider = ""
 	}
+	agentName := s.requestedRuntimeAgent(ctx, sessionID, requestedAgent)
+	factoryProvider := ""
+	if providerName != "" && providerName != defaultProvider {
+		factoryProvider = providerName
+	}
 	create := s.sessionMgr.factory
-	if s.runtimeFactory != nil && providerName != "" && providerName != defaultProvider {
+	if agentName != "" || factoryProvider != "" || s.agentRuntimeFactory != nil {
 		create = func(ctx context.Context) (*serveRuntime, error) {
-			return s.runtimeFactory(ctx, providerName, "")
+			return s.createRequestRuntime(ctx, factoryProvider, "", agentName)
 		}
 	}
 	if sessionID == "" {
@@ -3424,6 +3481,10 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	}
 
 	changed := false
+	if strings.TrimSpace(sess.Agent) != strings.TrimSpace(rt.agentName) {
+		sess.Agent = strings.TrimSpace(rt.agentName)
+		changed = true
+	}
 	if strings.TrimSpace(sess.Provider) != providerName {
 		sess.Provider = providerName
 		changed = true

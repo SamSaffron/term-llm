@@ -49,6 +49,7 @@ func recordFileChange(ctx context.Context, recorder FileChangeRecorder, toolName
 	defer cancel()
 	return recorder.RecordChange(recordCtx, filetrack.ChangeRecord{
 		SessionID:     sessionID,
+		RunID:         llm.ToolRunIDFromContext(ctx),
 		ToolName:      toolName,
 		ToolCallID:    callID,
 		Path:          path,

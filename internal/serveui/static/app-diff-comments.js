@@ -2,7 +2,7 @@
 'use strict';
 
 const app = window.TermLLMApp || (window.TermLLMApp = {});
-const { UI_PREFIX, state } = app;
+const { UI_PREFIX, state, normalizeDiffScope, isTurnDiffScope } = app;
 const CONTEXT_RADIUS = 2;
 const COMMENT_REFRESH_MS = 15_000;
 const commentStateBySession = new Map();
@@ -32,16 +32,18 @@ const normalizeComment = (entry) => {
   const raw = entry?.diff_comment || entry;
   if (!raw || typeof raw !== 'object') return null;
   const side = String(raw.side || '').toLowerCase();
+  const scope = normalizeDiffScope(raw.scope);
   const line = Number(raw.line) || 0;
   const seq = Number(raw.file_change_seq) || 0;
   const id = String(raw.id || '').trim();
   const path = String(raw.path || '');
   const instruction = String(raw.instruction || '').trim();
-  if (!id || !path || !instruction || (side !== 'old' && side !== 'new') || line <= 0 || seq <= 0) return null;
+  if (!id || !path || !instruction || !scope || (side !== 'old' && side !== 'new') || line <= 0 || seq < 0 || (isTurnDiffScope(scope) ? seq === 0 : seq !== 0)) return null;
   return {
     id,
     parent_id: String(raw.parent_id || ''),
     path,
+    scope,
     side,
     line,
     file_change_seq: seq,
@@ -55,14 +57,32 @@ const normalizeComment = (entry) => {
   };
 };
 
-const anchorKey = (comment) => `${String(comment?.path || '')}\u0000${String(comment?.side || '')}\u0000${Number(comment?.line) || 0}`;
+const diffCommentPayload = ({
+  id, parent_id, path, scope, side, line, file_change_seq,
+  line_text, context_before, context_after, instruction
+}) => ({
+  id, ...(parent_id ? { parent_id } : {}), path, scope, side, line, file_change_seq,
+  line_text, context_before, context_after, instruction
+});
+
+const scopeOf = (value) => normalizeDiffScope(value?.scope) || 'last_turn';
+const scopeLabel = (value) => scopeOf(value).replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase());
+const anchorKey = (comment) => `${scopeOf(comment)}\u0000${String(comment?.path || '')}\u0000${String(comment?.side || '')}\u0000${Number(comment?.line) || 0}`;
+// Turn-window anchors invalidate on any newer retained snapshot. Git scopes
+// have no session sequence, so their captured line text is the identity signal.
+const sameAnchorSnapshot = (comment, anchor) => {
+  if (scopeOf(comment) !== scopeOf(anchor)) return false;
+  return isTurnDiffScope(scopeOf(anchor))
+    ? comment.file_change_seq === anchor.file_change_seq
+    : comment.line_text === anchor.line_text;
+};
 const commentsForAnchor = (sessionId, anchor) => sessionCommentState(sessionId).comments
   .filter((comment) => anchorKey(comment) === anchorKey(anchor))
   .sort((a, b) => (a.created_at - b.created_at) || a.id.localeCompare(b.id));
 
 const pathFingerprint = (comments, path) => JSON.stringify(comments
   .filter((comment) => comment.path === path)
-  .map((comment) => [comment.id, comment.parent_id, comment.side, comment.line, comment.file_change_seq, comment.instruction, comment.optimistic])
+  .map((comment) => [comment.id, comment.parent_id, comment.scope, comment.side, comment.line, comment.file_change_seq, comment.instruction, comment.optimistic])
   .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
 
 const bumpChangedPathRevisions = (cs, before, after) => {
@@ -160,13 +180,14 @@ const reconcileDiffCommentPanel = (sessionId, retainedPaths) => {
   return retained.has(cs.openPanel.path) ? false : clearDiffCommentPanel(sessionId);
 };
 
-const rowAnchor = (path, row, fileChangeSeq) => {
+const rowAnchor = (path, row, fileChangeSeq, scope = 'last_turn') => {
+  scope = normalizeDiffScope(scope) || 'last_turn';
   const side = row?.type === 'del' ? 'old' : (row?.newNo ? 'new' : 'old');
   return {
-    path,
+    path, scope,
     side,
     line: Number(side === 'old' ? row?.oldNo : row?.newNo) || 0,
-    file_change_seq: Number(fileChangeSeq) || 0,
+    file_change_seq: isTurnDiffScope(scope) ? (Number(fileChangeSeq) || 0) : 0,
     line_text: String(row?.text ?? '')
   };
 };
@@ -198,12 +219,12 @@ const formatAgentInstruction = (comment) => {
   const lines = [
     '[Inline diff instruction]',
     `Path: ${comment.path}`,
+    `Scope: ${scopeOf(comment)}`,
     `Side: ${comment.side}`,
-    `Line: ${comment.line}`,
-    `Captured file-change seq: ${comment.file_change_seq}`,
-    '',
-    'Captured context:'
+    `Line: ${comment.line}`
   ];
+  if (isTurnDiffScope(scopeOf(comment))) lines.push(`Captured file-change seq: ${comment.file_change_seq}`);
+  lines.push('', 'Captured context:');
   for (const line of comment.context_before) lines.push(`  ${formatContextLine(line)}`);
   lines.push(`> ${comment.side} ${comment.line} | ${comment.line_text}`);
   for (const line of comment.context_after) lines.push(`  ${formatContextLine(line)}`);
@@ -399,18 +420,7 @@ const showEditor = (panel, sessionId, anchor, rows, rowIndex, trigger, prior, op
       await app.sendMessage?.({
         prompt: formatAgentInstruction(comment),
         displayPrompt: comment.instruction,
-        contentParts: [{ type: 'diff_comment', diff_comment: {
-          id: comment.id,
-          ...(comment.parent_id ? { parent_id: comment.parent_id } : {}),
-          path: comment.path,
-          side: comment.side,
-          line: comment.line,
-          file_change_seq: comment.file_change_seq,
-          line_text: comment.line_text,
-          context_before: comment.context_before,
-          context_after: comment.context_after,
-          instruction: comment.instruction
-        }}],
+        contentParts: [{ type: 'diff_comment', diff_comment: diffCommentPayload(comment) }],
         diffComment: comment,
         attachments: [],
         preserveComposer: true,
@@ -533,8 +543,8 @@ const openCommentPanel = (sessionId, anchor, rows, rowIndex, rowElement, trigger
       const meta = document.createElement('div');
       meta.className = 'diff-comment-history-meta';
       meta.textContent = isQueued
-        ? (comment.file_change_seq === anchor.file_change_seq ? 'Queued — not sent' : 'File changed after this was queued')
-        : (comment.file_change_seq === anchor.file_change_seq ? (comment.optimistic ? 'Sending…' : 'Sent') : `File changed after this instruction${comment.optimistic ? ' · sending…' : ''}`);
+        ? (sameAnchorSnapshot(comment, anchor) ? 'Queued — not sent' : 'File changed after this was queued')
+        : (sameAnchorSnapshot(comment, anchor) ? (comment.optimistic ? 'Sending…' : 'Sent') : `File changed after this instruction${comment.optimistic ? ' · sending…' : ''}`);
       item.append(text, meta);
       if (isQueued) {
         const itemActions = document.createElement('div');
@@ -580,10 +590,10 @@ const focusAdjacentCommentRow = (rowElement, direction) => {
   next.focus?.();
 };
 
-const decorateDiffCommentRow = ({ sessionId, path, row, rows, rowIndex, rowElement, fileChangeSeq, initialTabStop = rowIndex === 0 }) => {
+const decorateDiffCommentRow = ({ sessionId, path, scope = 'last_turn', row, rows, rowIndex, rowElement, fileChangeSeq, initialTabStop = rowIndex === 0 }) => {
   if (!rowElement || !row || row.type === 'hunk') return null;
-  const anchor = rowAnchor(path, row, fileChangeSeq);
-  if (!anchor.line || !anchor.file_change_seq) return null;
+  const anchor = rowAnchor(path, row, fileChangeSeq, scope);
+  if (!anchor.line || (isTurnDiffScope(anchor.scope) && !anchor.file_change_seq)) return null;
   const queued = app.queuedDiffComments?.(sessionId, anchor) || [];
   const queuedIDs = new Set(queued.map((comment) => comment.id));
   const prior = commentsForAnchor(sessionId, anchor).filter((comment) => !queuedIDs.has(comment.id));
@@ -595,7 +605,7 @@ const decorateDiffCommentRow = ({ sessionId, path, row, rows, rowIndex, rowEleme
   button.tabIndex = -1;
   button.setAttribute('aria-expanded', 'false');
   button.setAttribute('aria-controls', panelIDForAnchor(sessionId, anchor));
-  if (hasComments && [...prior, ...queued].some((comment) => comment.file_change_seq !== anchor.file_change_seq)) {
+  if (hasComments && [...prior, ...queued].some((comment) => !sameAnchorSnapshot(comment, anchor))) {
     button.classList.add('stale');
     button.title = `${label} (one or more anchors are outdated)`;
   }
@@ -670,7 +680,7 @@ const createDiffCommentMessageNode = (message, createMetaNode) => {
     block.className = 'diff-comment-message-block';
     const heading = document.createElement('div');
     heading.className = 'diff-comment-message-heading';
-    heading.textContent = `Inline comment · ${comment.path}:${comment.line} (${comment.side})`;
+    heading.textContent = `Inline comment · ${scopeLabel(comment)} · ${comment.path}:${comment.line} (${comment.side})`;
     const instruction = document.createElement('div');
     instruction.className = 'diff-comment-message-instruction';
     instruction.textContent = comment.instruction;
@@ -708,6 +718,7 @@ window.addEventListener?.('keydown', (event) => {
 
 Object.assign(app, {
   anchorKey,
+  diffCommentPayload,
   captureDiffCommentContext: captureContext,
   formatDiffCommentInstruction: formatAgentInstruction,
   normalizeDiffComment: normalizeComment,

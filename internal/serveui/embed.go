@@ -15,9 +15,9 @@ import (
 
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
-//go:embed static/app-core.js static/toast.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-path-notes.js static/app-branching.js static/app-branch-commands.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-sidebar.js
-//go:embed static/app-attachments.js static/app-stream.js static/app-response-effects.js static/app-send.js static/app-runtime.js static/app-interject.js static/app-modals.js static/app-composer.js static/app-skills.js static/side-question.js static/app-webrtc.js static/app-diff-comments.js static/app-diff-queue.js static/app-diffs.js static/app-worktrees.js
-//go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js static/transcript-window.js static/active-response.js static/conversation.js
+//go:embed static/app-core.js static/toast.js static/app-network.js static/app-plan.js static/slash-commands.js static/app-render.js static/app-sessions.js static/app-path-notes.js static/app-branching.js static/app-branch-commands.js static/app-session-events.js static/app-mcp.js static/app-goals-location.js static/app-message-convert.js static/intent-storage.js static/app-session-admin.js static/app-project-picker.js static/app-sidebar.js
+//go:embed static/app-attachments.js static/app-stream.js static/app-response-effects.js static/app-send.js static/app-runtime.js static/app-interject.js static/app-modals.js static/app-composer.js static/app-skills.js static/side-question.js static/app-webrtc.js static/app-diff-comments.js static/app-diff-queue.js static/app-diff-scopes.js static/app-diffs.js static/app-worktrees.js
+//go:embed static/decoration.js static/guardian-render.js static/markdown-setup.js static/markdown-streaming.js static/transcript-window.js static/active-response.js static/conversation.js
 //go:embed static/vendor
 var staticFiles embed.FS
 
@@ -98,6 +98,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="conversation.js"`, `href="` + versioned("conversation.js") + `"`},
 		{`href="app-plan.js"`, `href="` + versioned("app-plan.js") + `"`},
 		{`href="slash-commands.js"`, `href="` + versioned("slash-commands.js") + `"`},
+		{`href="guardian-render.js"`, `href="` + versioned("guardian-render.js") + `"`},
 		{`href="app-render.js"`, `href="` + versioned("app-render.js") + `"`},
 		{`href="app-attachments.js"`, `href="` + versioned("app-attachments.js") + `"`},
 		{`href="app-stream.js"`, `href="` + versioned("app-stream.js") + `"`},
@@ -109,6 +110,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="app-composer.js"`, `href="` + versioned("app-composer.js") + `"`},
 		{`href="app-skills.js"`, `href="` + versioned("app-skills.js") + `"`},
 		{`href="side-question.js"`, `href="` + versioned("side-question.js") + `"`},
+		{`href="app-project-picker.js"`, `href="` + versioned("app-project-picker.js") + `"`},
 		{`href="app-sidebar.js"`, `href="` + versioned("app-sidebar.js") + `"`},
 		{`href="app-sessions.js"`, `href="` + versioned("app-sessions.js") + `"`},
 		{`href="app-path-notes.js"`, `href="` + versioned("app-path-notes.js") + `"`},
@@ -122,6 +124,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="app-session-admin.js"`, `href="` + versioned("app-session-admin.js") + `"`},
 		{`href="app-diff-comments.js"`, `href="` + versioned("app-diff-comments.js") + `"`},
 		{`href="app-diff-queue.js"`, `href="` + versioned("app-diff-queue.js") + `"`},
+		{`href="app-diff-scopes.js"`, `href="` + versioned("app-diff-scopes.js") + `"`},
 		{`href="app-diffs.js"`, `href="` + versioned("app-diffs.js") + `"`},
 		{`href="app-worktrees.js"`, `href="` + versioned("app-worktrees.js") + `"`},
 		{`src="markdown-setup.js"`, `src="` + versioned("markdown-setup.js") + `"`},
@@ -135,6 +138,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="app-network.js"`, `src="` + versioned("app-network.js") + `"`},
 		{`src="app-plan.js"`, `src="` + versioned("app-plan.js") + `"`},
 		{`src="slash-commands.js"`, `src="` + versioned("slash-commands.js") + `"`},
+		{`src="guardian-render.js"`, `src="` + versioned("guardian-render.js") + `"`},
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
 		{`src="app-attachments.js"`, `src="` + versioned("app-attachments.js") + `"`},
 		{`src="app-stream.js"`, `src="` + versioned("app-stream.js") + `"`},
@@ -146,6 +150,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="app-composer.js"`, `src="` + versioned("app-composer.js") + `"`},
 		{`src="app-skills.js"`, `src="` + versioned("app-skills.js") + `"`},
 		{`src="side-question.js"`, `src="` + versioned("side-question.js") + `"`},
+		{`src="app-project-picker.js"`, `src="` + versioned("app-project-picker.js") + `"`},
 		{`src="app-sidebar.js"`, `src="` + versioned("app-sidebar.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
 		{`src="app-path-notes.js"`, `src="` + versioned("app-path-notes.js") + `"`},
@@ -159,6 +164,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="app-session-admin.js"`, `src="` + versioned("app-session-admin.js") + `"`},
 		{`src="app-diff-comments.js"`, `src="` + versioned("app-diff-comments.js") + `"`},
 		{`src="app-diff-queue.js"`, `src="` + versioned("app-diff-queue.js") + `"`},
+		{`src="app-diff-scopes.js"`, `src="` + versioned("app-diff-scopes.js") + `"`},
 		{`src="app-diffs.js"`, `src="` + versioned("app-diffs.js") + `"`},
 		{`src="app-worktrees.js"`, `src="` + versioned("app-worktrees.js") + `"`},
 	}
@@ -213,7 +219,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		return nil
 	}
 	replacements := []struct{ old, new string }{
-		{"term-llm-shell-v4", "term-llm-shell-" + AssetVersion()},
+		{"term-llm-shell-v5", "term-llm-shell-" + AssetVersion()},
 		{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
 		{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
 		{"'./app.css'", "'./" + versioned("app.css") + "'"},
@@ -228,6 +234,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./app-network.js'", "'./" + versioned("app-network.js") + "'"},
 		{"'./app-plan.js'", "'./" + versioned("app-plan.js") + "'"},
 		{"'./slash-commands.js'", "'./" + versioned("slash-commands.js") + "'"},
+		{"'./guardian-render.js'", "'./" + versioned("guardian-render.js") + "'"},
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
 		{"'./app-attachments.js'", "'./" + versioned("app-attachments.js") + "'"},
 		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
@@ -250,6 +257,8 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./app-session-admin.js'", "'./" + versioned("app-session-admin.js") + "'"},
 		{"'./app-diff-comments.js'", "'./" + versioned("app-diff-comments.js") + "'"},
 		{"'./app-diff-queue.js'", "'./" + versioned("app-diff-queue.js") + "'"},
+		{"'./app-diff-scopes.js'", "'./" + versioned("app-diff-scopes.js") + "'"},
+		{"'./app-project-picker.js'", "'./" + versioned("app-project-picker.js") + "'"},
 		{"'./app-diffs.js'", "'./" + versioned("app-diffs.js") + "'"},
 		{"'./app-worktrees.js'", "'./" + versioned("app-worktrees.js") + "'"},
 	}

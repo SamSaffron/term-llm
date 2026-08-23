@@ -9,6 +9,39 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestSessionMessageEntriesExposeGuardianOnlyToolResult(t *testing.T) {
+	entries := (&serveServer{}).sessionMessageEntries([]session.Message{{
+		ID: 1, Sequence: 1, Role: llm.RoleTool, CreatedAt: time.Now(),
+		Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+			ID: "call-shell", Name: tools.ShellToolName,
+			GuardianReviews: []llm.GuardianReview{{Outcome: "approved", Message: "guardian: approved", Command: "pwd"}},
+		}}},
+	}})
+	if len(entries) != 1 || len(entries[0].Parts) != 1 {
+		t.Fatalf("entries = %#v", entries)
+	}
+	part := entries[0].Parts[0]
+	if part.ToolCallID != "call-shell" || len(part.GuardianReviews) != 1 || part.GuardianReviews[0].Command != "pwd" {
+		t.Fatalf("guardian tool result = %#v", part)
+	}
+}
+
+func TestSessionMessageEntriesAccumulateGuardianReviewsForRepeatedResults(t *testing.T) {
+	now := time.Now()
+	entries := (&serveServer{}).sessionMessageEntries([]session.Message{
+		{ID: 1, Sequence: 1, Role: llm.RoleAssistant, CreatedAt: now, Parts: []llm.Part{{
+			Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-shell", Name: tools.ShellToolName},
+		}}},
+		{ID: 2, Sequence: 2, Role: llm.RoleTool, CreatedAt: now, Parts: []llm.Part{
+			{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-shell", Name: tools.ShellToolName, GuardianReviews: []llm.GuardianReview{{Outcome: "approved"}}}},
+			{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-shell", Name: tools.ShellToolName, GuardianReviews: []llm.GuardianReview{{Outcome: "warning"}}}},
+		}},
+	})
+	if len(entries) == 0 || len(entries[0].Parts) == 0 || len(entries[0].Parts[0].GuardianReviews) != 2 {
+		t.Fatalf("accumulated guardian reviews = %#v", entries)
+	}
+}
+
 func TestSessionMessageEntriesExposeErrorOnlyToolResults(t *testing.T) {
 	srv := &serveServer{}
 	entries := srv.sessionMessageEntries([]session.Message{{

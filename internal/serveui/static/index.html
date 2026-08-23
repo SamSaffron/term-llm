@@ -131,6 +131,7 @@
   <link rel="preload" as="script" href="active-response.js">
   <link rel="preload" as="script" href="conversation.js">
   <link rel="preload" as="script" href="app-plan.js">
+  <link rel="preload" as="script" href="guardian-render.js">
   <link rel="preload" as="script" href="app-render.js">
   <link rel="preload" as="script" href="app-attachments.js">
   <link rel="preload" as="script" href="app-stream.js">
@@ -141,6 +142,7 @@
   <link rel="preload" as="script" href="app-modals.js">
   <link rel="preload" as="script" href="app-composer.js">
   <link rel="preload" as="script" href="app-skills.js">
+  <link rel="preload" as="script" href="app-project-picker.js">
   <link rel="preload" as="script" href="app-sidebar.js">
   <link rel="preload" as="script" href="app-sessions.js">
   <link rel="preload" as="script" href="app-path-notes.js">
@@ -152,6 +154,7 @@
   <link rel="preload" as="script" href="app-message-convert.js">
   <link rel="preload" as="script" href="intent-storage.js">
   <link rel="preload" as="script" href="app-session-admin.js">
+  <link rel="preload" as="script" href="app-diff-scopes.js">
   <link rel="preload" as="script" href="app-diff-comments.js">
   <link rel="preload" as="script" href="app-diff-queue.js">
   <link rel="preload" as="script" href="app-diffs.js">
@@ -200,10 +203,6 @@
               </svg>
               <span>New chat</span>
             </button>
-            <button class="new-chat-btn project-add-btn hidden" id="addProjectBtn" type="button" aria-label="Add project">
-              <span aria-hidden="true">＋</span><span>Project</span>
-            </button>
-            <button class="widgets-sidebar-btn hidden" id="manageProjectsBtn" type="button"><span>Manage projects</span></button>
             <button class="widgets-sidebar-btn hidden" id="widgetsOpenBtn" type="button" aria-label="Open widgets">
               <svg class="sidebar-action-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="4" y="4" width="6" height="6" rx="1.5"></rect>
@@ -253,7 +252,7 @@
               </div>
               <span class="chip-sep" id="chipSepProviderModel" data-sep="provider-model">·</span>
               <div class="model-chip model-chip-primary" data-chip="model" id="chipModel">
-                <button type="button" class="chip-trigger narrow-header-action" id="chipModelTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Model">
+                <button type="button" class="chip-trigger narrow-header-action header-action" id="chipModelTrigger" aria-haspopup="dialog" aria-expanded="false" aria-label="Runtime">
                   <span class="chip-label" id="chipModelLabel">—</span>
                   <svg class="effort-meter" viewBox="0 0 8 12" aria-hidden="true" focusable="false">
                     <rect class="effort-meter-bar effort-meter-bar-1" x="0" y="7" width="1.4" height="5" rx="0.7"></rect>
@@ -371,7 +370,17 @@
     <aside class="diff-sidebar" id="diffSidebar" hidden aria-label="Session file changes">
       <div class="diff-resize-handle" id="diffResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize changes panel" title="Drag to resize"></div>
       <div class="diff-sidebar-header">
-        <span class="diff-sidebar-title">Changes</span>
+        <button type="button" class="chip-trigger diff-scope-trigger" id="diffScopeTrigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="chipPopover" aria-label="Change scope" hidden>
+          <span class="chip-label" id="diffScopeLabel">Last turn</span>
+          <svg class="diff-scope-chevron" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 4 4 4-4"/></svg>
+        </button>
+        <select class="diff-scope-select" id="diffScopeSelect" aria-label="Change scope" hidden>
+          <option value="last_turn">Last turn</option>
+          <option value="last_3_turns">Last 3 turns</option>
+          <option value="uncommitted">Uncommitted</option>
+          <option value="unstaged">Unstaged</option>
+          <option value="staged">Staged</option>
+        </select>
         <span class="diff-sidebar-totals" id="diffSidebarTotals"></span>
         <button class="icon-btn diff-bulk-toggle" id="diffBulkToggleBtn" type="button" aria-label="Expand all files" title="Expand all" data-action="expand">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -699,6 +708,7 @@
   <script src="app-network.js"></script>
   <script src="app-plan.js"></script>
   <script src="slash-commands.js"></script>
+  <script src="guardian-render.js"></script>
   <script src="app-render.js"></script>
   <script src="app-attachments.js"></script>
   <script src="app-stream.js"></script>
@@ -710,6 +720,7 @@
   <script src="app-modals.js"></script>
   <script src="app-skills.js"></script>
   <script src="side-question.js"></script>
+  <script src="app-project-picker.js"></script>
   <script src="app-sidebar.js"></script>
   <script src="app-mcp.js"></script>
   <script src="app-goals-location.js"></script>
@@ -721,6 +732,7 @@
   <script src="app-branching.js"></script>
   <script src="app-branch-commands.js"></script>
   <script src="app-session-events.js"></script>
+  <script src="app-diff-scopes.js"></script>
   <script src="app-diff-comments.js"></script>
   <script src="app-diff-queue.js"></script>
   <script src="app-diffs.js"></script>

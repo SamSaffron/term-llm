@@ -124,6 +124,9 @@ func managedWorktreeForRoot(root, dir string) (*worktree.Worktree, error) {
 }
 
 func canonicalizeWorktreeBoundary(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("empty worktree path")
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -139,6 +142,9 @@ func canonicalizeWorktreeBoundary(path string) (string, error) {
 }
 
 func sameServePath(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return strings.TrimSpace(a) == "" && strings.TrimSpace(b) == ""
+	}
 	aa, errA := canonicalizeWorktreeBoundary(a)
 	bb, errB := canonicalizeWorktreeBoundary(b)
 	if errA != nil || errB != nil {
@@ -341,6 +347,28 @@ func (s *serveServer) acquireRootMutation(w http.ResponseWriter, ctx context.Con
 	return release, true
 }
 
+func directoryGitMetadataState(dir string) (hasGit, known bool) {
+	resolved, err := filepath.EvalSymlinks(strings.TrimSpace(dir))
+	if err != nil {
+		return false, false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return false, false
+	}
+	for current := filepath.Clean(resolved); ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			return true, true
+		} else if !os.IsNotExist(err) {
+			return false, false
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, true
+		}
+	}
+}
+
 func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root string) []string {
 	if s == nil || s.sessionMgr == nil || s.store == nil {
 		return nil
@@ -377,13 +405,19 @@ func (s *serveServer) activeRootRunsForWorktreeMerge(ctx context.Context, root s
 				candidate = strings.TrimSpace(sess.CWD)
 			}
 			if candidate == "" {
-				// Unbound runs have no relationship to this repository.
+				// An unbound serve runtime executes relative to the server checkout.
+				// Without persisted provenance, fail closed for repository mutation.
+				active = append(active, id)
 				continue
 			}
-			resolvedRoot, rootErr := worktree.MainRepoRoot(candidate)
+			resolvedRoot, rootErr := worktree.MainRepoRootContext(ctx, candidate)
 			if rootErr != nil {
-				// An unrelated non-Git or inaccessible session must not block a
-				// mutation in this repository.
+				if hasGit, known := directoryGitMetadataState(candidate); known && !hasGit {
+					continue
+				}
+				// Git inspection failures are not proof that an active runtime is
+				// unrelated. Fail closed unless the directory is provably non-Git.
+				active = append(active, id)
 				continue
 			}
 			sessRoot = resolvedRoot

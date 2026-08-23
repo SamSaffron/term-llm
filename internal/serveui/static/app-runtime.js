@@ -500,7 +500,7 @@ const applyChipPopoverFilter = (query) => {
   let firstVisible = null;
   items.forEach((el) => {
     const haystack = el.dataset?.search || '';
-    const match = !q || haystack.includes(q);
+    const match = el.dataset?.filterPersistent === 'true' || !q || haystack.includes(q);
     el.hidden = !match;
     if (match && !firstVisible) firstVisible = el;
   });
@@ -517,6 +517,12 @@ const applyChipPopoverFilter = (query) => {
 const commitChipPopoverItem = (item) => {
   const selectEl = chipPopoverState.selectEl;
   if (!item || !selectEl) return;
+  if (typeof item._chipPopoverAction === 'function') {
+    const action = item._chipPopoverAction;
+    closeChipPopover();
+    action();
+    return;
+  }
   const value = item.dataset.value || '';
   if (selectEl.value !== value) {
     selectEl.value = value;
@@ -525,7 +531,7 @@ const commitChipPopoverItem = (item) => {
   closeChipPopover();
 };
 
-const openChipPopover = (selectEl, triggerEl) => {
+const openChipPopover = (selectEl, triggerEl, config = {}) => {
   const pop = elements.chipPopover;
   if (!pop || !selectEl) return;
   if (chipPopoverState.triggerEl === triggerEl) {
@@ -533,13 +539,15 @@ const openChipPopover = (selectEl, triggerEl) => {
     return;
   }
   closeChipPopover();
+  pop.setAttribute('role', 'listbox');
+  pop.removeAttribute('aria-label');
   pop.classList?.remove('chip-popover-runtime');
   chipPopoverState.mode = 'select';
   chipPopoverState.selectEl = selectEl;
   chipPopoverState.triggerEl = triggerEl;
   pop.innerHTML = '';
 
-  const options = Array.from(selectEl.options);
+  const options = Array.from(selectEl.options).filter((option) => !option.hidden);
   let filterInput = null;
   if (options.length > CHIP_POPOVER_FILTER_THRESHOLD) {
     filterInput = document.createElement('input');
@@ -566,11 +574,13 @@ const openChipPopover = (selectEl, triggerEl) => {
           if (focused && !focused.hidden) commitChipPopoverItem(focused);
           return;
         }
-        case 'Escape':
+        case 'Escape': {
           e.preventDefault();
+          const trigger = chipPopoverState.triggerEl;
           closeChipPopover();
-          chipPopoverState.triggerEl?.focus?.();
+          trigger?.focus?.();
           return;
+        }
       }
     });
     chipPopoverState.filterInput = filterInput;
@@ -598,6 +608,20 @@ const openChipPopover = (selectEl, triggerEl) => {
     item.addEventListener('mouseenter', () => focusChipPopoverItem(item));
     pop.appendChild(item);
   });
+  if (config.action && typeof config.action.onSelect === 'function') {
+    const action = createEl('div', 'chip-popover-item chip-popover-item-action');
+    action.setAttribute('role', 'option');
+    action.setAttribute('aria-selected', 'false');
+    action.tabIndex = -1;
+    action.dataset.search = String(config.action.label || '').toLowerCase();
+    action.dataset.filterPersistent = 'true';
+    action._chipPopoverAction = config.action.onSelect;
+    action.appendChild(createEl('span', 'chip-popover-item-action-icon', '＋'));
+    action.appendChild(createEl('span', 'chip-popover-item-label', config.action.label || 'Add'));
+    action.addEventListener('click', () => commitChipPopoverItem(action));
+    action.addEventListener('mouseenter', () => focusChipPopoverItem(action));
+    pop.appendChild(action);
+  }
   triggerEl.setAttribute('aria-expanded', 'true');
   if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = false;
   positionChipPopover(triggerEl);
@@ -607,12 +631,6 @@ const openChipPopover = (selectEl, triggerEl) => {
   // Focus the filter input last so the user can type immediately. The selected
   // item is still highlighted (visually focused) without stealing input focus.
   if (filterInput) filterInput.focus?.();
-};
-
-const isRuntimePickerCompressed = () => {
-  const providerChip = elements.chipProviderTrigger?.closest?.('.model-chip');
-  if (!providerChip || !window.getComputedStyle) return false;
-  return window.getComputedStyle(providerChip).display === 'none';
 };
 
 const copySelectOptions = (from, to, formatOption = null) => {
@@ -626,7 +644,9 @@ const copySelectOptions = (from, to, formatOption = null) => {
   });
 };
 
-const runtimeField = ({ label, value, sourceSelect, onChange, formatOption = null }) => {
+const runtimeTriggerLocked = (trigger) => Boolean(trigger?.disabled || trigger?.hasAttribute?.('disabled'));
+
+const runtimeField = ({ label, value, sourceSelect, onChange, formatOption = null, disabled = false }) => {
   const field = createEl('label', 'runtime-popover-field');
 
   const labelEl = createEl('span', 'runtime-popover-label', label);
@@ -635,6 +655,7 @@ const runtimeField = ({ label, value, sourceSelect, onChange, formatOption = nul
   const select = createEl('select', 'runtime-popover-select');
   copySelectOptions(sourceSelect, select, formatOption);
   select.value = value || '';
+  select.disabled = disabled;
   select.addEventListener('change', async () => {
     select.disabled = true;
     try {
@@ -664,12 +685,14 @@ const renderRuntimePopoverContent = () => {
     label: 'Provider',
     value: state.selectedProvider || '',
     sourceSelect: elements.chipProviderSelect,
+    disabled: runtimeTriggerLocked(elements.chipProviderTrigger),
     onChange: (value) => applyProviderChange(value),
   }));
   fields.appendChild(runtimeField({
     label: 'Model',
     value: state.selectedModel || '',
     sourceSelect: elements.chipModelSelect,
+    disabled: runtimeTriggerLocked(elements.chipProviderTrigger),
     onChange: (value) => applyModelChange(value),
     formatOption: (opt) => opt.value ? compactHeaderModelLabel(opt.value) : opt.textContent,
   }));
@@ -694,6 +717,8 @@ const openRuntimePopover = (triggerEl) => {
   chipPopoverState.selectEl = null;
   chipPopoverState.triggerEl = triggerEl;
   chipPopoverState.filterInput = null;
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Runtime settings');
   pop.classList?.add('chip-popover-runtime');
   renderRuntimePopoverContent();
   triggerEl.setAttribute('aria-expanded', 'true');
@@ -712,7 +737,7 @@ const wireChipTrigger = (triggerEl, selectEl) => {
   if (!triggerEl || !selectEl) return;
   triggerEl.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (triggerEl === elements.chipModelTrigger && isRuntimePickerCompressed()) {
+    if (triggerEl === elements.chipModelTrigger) {
       openRuntimePopover(triggerEl);
       return;
     }
@@ -738,8 +763,9 @@ document.addEventListener('keydown', (e) => {
   if (chipPopoverState.mode === 'runtime') {
     if (e.key === 'Escape') {
       e.preventDefault();
+      const trigger = chipPopoverState.triggerEl;
       closeChipPopover();
-      chipPopoverState.triggerEl?.focus?.();
+      trigger?.focus?.();
     }
     return;
   }
@@ -748,11 +774,13 @@ document.addEventListener('keydown', (e) => {
   // preventDefault'd and the user couldn't type spaces.
   if (e.target === chipPopoverState.filterInput) return;
   switch (e.key) {
-    case 'Escape':
+    case 'Escape': {
       e.preventDefault();
+      const trigger = chipPopoverState.triggerEl;
       closeChipPopover();
-      chipPopoverState.triggerEl?.focus?.();
+      trigger?.focus?.();
       return;
+    }
     case 'ArrowDown':
       e.preventDefault();
       moveChipPopoverFocus(1);
@@ -866,7 +894,6 @@ Object.assign(app, {
   applyChipPopoverFilter,
   commitChipPopoverItem,
   openChipPopover,
-  isRuntimePickerCompressed,
   copySelectOptions,
   runtimeField,
   renderRuntimePopoverContent,

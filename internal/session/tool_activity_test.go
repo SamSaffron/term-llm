@@ -8,6 +8,13 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func TestTranscriptRowHasDisplayBodyForGuardianOnlyToolResult(t *testing.T) {
+	result := &llm.ToolResult{ID: "call-shell", GuardianReviews: []llm.GuardianReview{{Outcome: "approved", Message: "guardian: approved"}}}
+	if !transcriptRowHasDisplayBody(llm.RoleTool, []llm.Part{{Type: llm.PartToolResult, ToolResult: result}}, nil) {
+		t.Fatal("guardian-only tool result should be visible in transcript index")
+	}
+}
+
 func TestSQLitePersistsToolActivityPart(t *testing.T) {
 	store, err := NewStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {

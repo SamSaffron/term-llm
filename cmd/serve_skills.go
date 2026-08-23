@@ -352,7 +352,12 @@ func (s *serveServer) configureRuntimeSkillsForDir(rt *serveRuntime, dir string)
 		RegisterSkillToolWithEngine(rt.engine, rt.toolMgr, setup)
 	}
 	rt.mu.Lock()
-	rt.systemPrompt = InjectSkillsMetadata(s.baseSystemPrompt, setup)
+	basePrompt := rt.baseSystemPrompt
+	if basePrompt == "" {
+		basePrompt = rt.systemPrompt
+		rt.baseSystemPrompt = basePrompt
+	}
+	rt.systemPrompt = InjectSkillsMetadata(basePrompt, setup)
 	rt.mu.Unlock()
 }
 

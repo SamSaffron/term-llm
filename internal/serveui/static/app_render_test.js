@@ -6,6 +6,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-render.js'), 'utf8');
+const guardianRenderSource = fs.readFileSync(path.join(__dirname, 'guardian-render.js'), 'utf8');
 const markdownStreaming = require(path.join(__dirname, 'markdown-streaming.js'));
 let failures = 0;
 
@@ -448,6 +449,7 @@ function createHarness(appOverrides = {}) {
   windowObj.navigator = context.navigator;
   windowObj.localStorage = context.localStorage;
 
+  vm.runInNewContext(guardianRenderSource, context, { filename: 'guardian-render.js' });
   vm.runInNewContext(source, context, { filename: 'app-render.js' });
   return { app, session, messages, document, windowObj, timers, copied, parseCalls };
 }
@@ -1154,6 +1156,48 @@ async function run(name, fn) {
     assertEqual(output?.textContent, 'durable review output', 'subagent output survives reconstruction');
     assertEqual(link?.textContent, 'Open internal activity', 'child activity action is visible');
     assert(String(link?.href || '').includes('child_1'), 'child activity action targets persisted child session');
+  });
+
+  await run('guardian reviews render inside their tool and summarize while collapsed', () => {
+    const { app } = createHarness();
+    const group = {
+      id: 'guardian_group', role: 'tool-group', status: 'done',
+      tools: [{ id: 'shell_1', name: 'shell', status: 'done', arguments: '{"command":"pwd"}',
+        guardianReviews: [{ outcome: 'approved', message: 'guardian: approved (low risk)' }] }],
+    };
+    const node = app.createToolGroupNode(group);
+    assertEqual(node.querySelector('.tool-guardian-badge')?.textContent, '🛡 1 approved', 'collapsed summary reports guardian decision');
+    assertEqual(node.querySelector('.tool-guardian-text')?.textContent, 'Guardian: approved (low risk)', 'review is nested in the command entry');
+    assertEqual(node.querySelectorAll('.message.guardian-notice').length, 0, 'correlated review creates no standalone message');
+  });
+
+  await run('guardian review errors use denied summary tone', () => {
+    const { app } = createHarness();
+    const group = {
+      id: 'guardian_error_group', role: 'tool-group', status: 'done',
+      tools: [{ id: 'shell_error', name: 'shell', status: 'error', arguments: '{"command":"rm -rf build"}',
+        guardianReviews: [{ outcome: 'error', message: 'guardian: review failed; action denied' }] }],
+    };
+    const badge = app.createToolGroupNode(group).querySelector('.tool-guardian-badge');
+    assertEqual(badge?.textContent, '🛡 1 denied', 'review failure is summarized as a denial');
+    assert(String(badge?.className || '').includes('denied'), 'review failure badge uses denied tone');
+  });
+
+  await run('live guardian sync stays between tool arguments and subagent result', () => {
+    const { app } = createHarness();
+    const tool = {
+      id: 'spawn_guardian', name: 'spawn_agent', status: 'done', arguments: '{"agent_name":"reviewer","prompt":"review"}',
+      subagent: { agentName: 'reviewer', output: 'review output' },
+    };
+    const entry = app.createToolEntryNode(tool);
+    tool.guardianReviews = [{ outcome: 'approved', message: 'guardian: approved' }];
+    app.syncGuardianReviews(entry, tool);
+    const classes = entry.children.map((child) => child.className);
+    const argsIndex = classes.indexOf('tool-entry-args');
+    const guardianIndex = classes.indexOf('tool-entry-guardian');
+    const resultIndex = classes.indexOf('subagent-result');
+    assert(argsIndex >= 0 && argsIndex < guardianIndex && guardianIndex < resultIndex,
+      `live guardian order is ${JSON.stringify(classes)}`);
   });
 
   await run('failed tools count as finished in tool group progress', () => {
@@ -1964,6 +2008,29 @@ async function run(name, fn) {
     assertEqual(groups[1].querySelectorAll('.session-row').length, 1, 'one today row');
   });
 
+  await run('project assignment appears only in the session overflow menu', async () => {
+    const session = { id: 'assign-menu', title: 'Legacy', created: 1000, messages: [], pinned: false, archived: false, projectId: '', messageCount: 0, lastMessageAt: 1000 };
+    const assigned = [];
+    const { app } = createHarness({
+      visibleSessions: () => [session],
+      openAssignProjectModal(current) { assigned.push(current); },
+    });
+    app.state.projectsEnabled = true;
+    app.state.sessions = [session];
+    app.renderSidebar();
+
+    const row = app.elements.sessionGroups.querySelector('.session-row');
+    assertEqual(row.children.length, 2, 'assignment did not add a sibling action beside the session row');
+    const assign = row.querySelector('.assign-project-action');
+    assert(assign && assign.parentNode.classList.contains('session-menu'), 'assignment is contained by the overflow menu');
+    await assign.dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} });
+    assertEqual(assigned[0], session, 'assignment action opens the project chooser for the current session');
+
+    session.projectId = 'prj_assigned';
+    app.sidebarSessionRow(session);
+    assert(assign.hidden, 'assignment action is hidden after the session has a project');
+  });
+
   await run('cached sidebar menu actions resolve latest session object by id', async () => {
     const original = { id: 'stale', title: 'Old', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
     const replacement = { id: 'stale', title: 'New', created: 1000, messages: [], pinned: true, archived: true, messageCount: 0, lastMessageAt: 2000 };
@@ -1985,7 +2052,7 @@ async function run(name, fn) {
 
     await buttons[2].dispatchEvent(event());
     await buttons[3].dispatchEvent(event());
-    await buttons[4].dispatchEvent(event());
+    await buttons[5].dispatchEvent(event());
 
     assert(calls[0][0] === 'rename' && calls[0][1] === replacement, 'rename uses latest session object');
     assert(calls[1][0] === 'pin' && calls[1][1] === replacement && calls[1][2] === false, 'pin toggle uses latest pinned state');
@@ -2124,7 +2191,43 @@ async function run(name, fn) {
 
     assertEqual(messages.children.length, 1, 'empty local session should show one empty-state node');
     assertEqual(messages.children[0].className, 'empty-state', 'empty local session uses empty-state class');
-    assertEqual(messages.children[0].textContent, 'How can I help you today?', 'empty local session keeps the new-chat prompt');
+    assertEqual(messages.children[0].querySelector('.empty-state-title').textContent, 'How can I help you today?', 'empty local session keeps the new-chat prompt');
+  });
+
+  await run('new-chat project picker selects Chat and exposes project creation', async () => {
+    const selections = [];
+    let pickerPopover = null;
+    let addProjectOptions = null;
+    const { app, session, messages } = createHarness({
+      switchToDraftSession(options) { selections.push(options); },
+      openChipPopover(select, trigger, config) { pickerPopover = { select, trigger, config }; },
+      openProjectModal(options) { addProjectOptions = options; },
+    });
+    session.messages = [];
+    app.state.projectsEnabled = true;
+    app.state.draftSessionActive = true;
+    app.state.activeProjectId = 'prj_previous';
+    app.state.projects = [
+      { id: 'prj_previous', name: 'Previous', available: true },
+      { id: 'prj_archived', name: 'Archived', available: true, archived_at: 'now' },
+    ];
+
+    app.renderMessages();
+    const select = messages.querySelector('.new-chat-project-select');
+    assert(select, 'new-chat project picker is rendered');
+    assertEqual(select.value, 'prj_previous', 'project picker defaults to the previous project');
+    assertEqual(select.children.length, 2, 'picker includes Chat and available projects only');
+    assertEqual(select.children[0].textContent, 'Chat', 'Chat is the first explicit option');
+    const trigger = messages.querySelector('.new-chat-project-trigger');
+    assert(trigger, 'project picker uses the shared popover trigger');
+    await trigger.dispatchEvent({ type: 'click' });
+    assertEqual(pickerPopover?.select, select, 'trigger opens the shared picker with its hidden select');
+    assertEqual(pickerPopover?.config?.action?.label, 'Add project', 'picker includes project creation');
+    pickerPopover.config.action.onSelect();
+    assertEqual(addProjectOptions?.returnFocus, trigger, 'add-project modal restores focus to the picker trigger');
+    select.value = '';
+    await select.dispatchEvent({ type: 'change' });
+    assertEqual(selections[0]?.projectId, '', 'Chat selection switches to an unbound draft explicitly');
   });
 
   await run('renderMessages: incremental append reuses existing nodes', () => {

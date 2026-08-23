@@ -473,6 +473,8 @@ func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
 	comment.ID = strings.TrimSpace(comment.ID)
 	comment.ParentID = strings.TrimSpace(comment.ParentID)
 	comment.Path = strings.TrimSpace(comment.Path)
+	var scopeOK bool
+	comment.Scope, scopeOK = normalizeFileChangeScope(comment.Scope)
 	comment.Side = strings.ToLower(strings.TrimSpace(comment.Side))
 	comment.Instruction = strings.TrimSpace(comment.Instruction)
 	if comment.ID == "" || len(comment.ID) > 200 {
@@ -484,14 +486,21 @@ func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
 	if comment.Path == "" || len(comment.Path) > diffCommentMaxPathBytes {
 		return nil, fmt.Errorf("diff_comment.path is required and must be at most %d bytes", diffCommentMaxPathBytes)
 	}
+	if !scopeOK {
+		return nil, fmt.Errorf("diff_comment.scope must be one of %s", fileChangeScopeNames())
+	}
 	if comment.Side != "old" && comment.Side != "new" {
 		return nil, fmt.Errorf("diff_comment.side must be old or new")
 	}
 	if comment.Line <= 0 {
 		return nil, fmt.Errorf("diff_comment.line must be positive")
 	}
-	if comment.FileChangeSeq <= 0 {
-		return nil, fmt.Errorf("diff_comment.file_change_seq must be positive")
+	_, turnScope := fileChangeScopeRunWindow(comment.Scope)
+	if turnScope && comment.FileChangeSeq <= 0 {
+		return nil, fmt.Errorf("diff_comment.file_change_seq must be positive for %s", comment.Scope)
+	}
+	if !turnScope && comment.FileChangeSeq != 0 {
+		return nil, fmt.Errorf("diff_comment.file_change_seq must be zero for Git diff scopes")
 	}
 	if len(comment.LineText) > diffCommentMaxLineBytes {
 		return nil, fmt.Errorf("diff_comment.line_text must be at most %d bytes", diffCommentMaxLineBytes)
@@ -502,7 +511,7 @@ func parseDiffCommentPart(raw json.RawMessage) (*llm.DiffComment, error) {
 	if len(comment.ContextBefore) > 4 || len(comment.ContextAfter) > 4 {
 		return nil, fmt.Errorf("diff_comment context is limited to four lines on each side")
 	}
-	totalBytes := len(comment.ID) + len(comment.ParentID) + len(comment.Path) + len(comment.Side) + len(comment.LineText) + len(comment.Instruction)
+	totalBytes := len(comment.ID) + len(comment.ParentID) + len(comment.Path) + len(comment.Scope) + len(comment.Side) + len(comment.LineText) + len(comment.Instruction)
 	for _, contextLines := range [][]llm.DiffCommentContextLine{comment.ContextBefore, comment.ContextAfter} {
 		for i := range contextLines {
 			contextLines[i].Side = strings.ToLower(strings.TrimSpace(contextLines[i].Side))

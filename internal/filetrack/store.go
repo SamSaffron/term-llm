@@ -44,6 +44,7 @@ const (
 // ChangeRecord describes one before→after file transition to record.
 type ChangeRecord struct {
 	SessionID  string
+	RunID      string
 	ToolName   string
 	ToolCallID string
 	Path       string // absolute path
@@ -65,6 +66,7 @@ type ChangeRecord struct {
 // Change is one recorded change row.
 type Change struct {
 	Seq        int64
+	RunID      string
 	Path       string
 	Kind       string
 	ToolName   string
@@ -81,12 +83,13 @@ type Change struct {
 
 // CumulativeChange summarizes a file's net change relative to the session baseline.
 type CumulativeChange struct {
-	Path      string `json:"path"`
-	Kind      string `json:"kind"`
-	Adds      int    `json:"adds"`
-	Dels      int    `json:"dels"`
-	Truncated bool   `json:"truncated"`
-	Seq       int64  `json:"seq"` // latest change sequence for this path in the session
+	Path        string `json:"path"`
+	Kind        string `json:"kind"`
+	Adds        int    `json:"adds"`
+	Dels        int    `json:"dels"`
+	Truncated   bool   `json:"truncated"`
+	Seq         int64  `json:"seq"`                    // latest change sequence for this path in the session
+	SnapshotSeq int64  `json:"snapshot_seq,omitempty"` // shared identity for a multi-run window
 }
 
 // FileDiffContent holds the baseline and current contents for one file.
@@ -137,7 +140,7 @@ type Store struct {
 	sessionBytes map[string]int64 // retained-bytes budget cache per session
 }
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const (
 	// Check after at most 8 MiB of retained input, or 64 metadata-only rows.
@@ -162,6 +165,7 @@ CREATE TABLE IF NOT EXISTS blobs (
 CREATE TABLE IF NOT EXISTS file_changes (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
 	session_id   TEXT NOT NULL,
+	run_id       TEXT,
 	seq          INTEGER NOT NULL,
 	path         TEXT NOT NULL,
 	kind         TEXT NOT NULL CHECK (kind IN ('create','modify','delete')),
@@ -274,18 +278,43 @@ func initSchema(db *sql.DB) error {
 	var version int
 	err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
 	if err == sql.ErrNoRows {
-		_, err = db.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion)
-		return err
+		tx, txErr := db.Begin()
+		if txErr != nil {
+			return fmt.Errorf("begin file change schema initialization: %w", txErr)
+		}
+		defer tx.Rollback()
+		if _, txErr = tx.Exec("CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq)"); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion); txErr != nil {
+			return txErr
+		}
+		return tx.Commit()
 	}
 	if err != nil {
 		return err
 	}
 
-	// Future migrations run here, mirroring internal/session/sqlite.go.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin file change migration: %w", err)
+	}
+	defer tx.Rollback()
+	if version < 2 {
+		if _, err := tx.Exec("ALTER TABLE file_changes ADD COLUMN run_id TEXT"); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("add file change run identity: %w", err)
+		}
+	}
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq)"); err != nil {
+		return err
+	}
 	if version < schemaVersion {
-		if _, err := db.Exec("UPDATE schema_version SET version = ?", schemaVersion); err != nil {
+		if _, err := tx.Exec("UPDATE schema_version SET version = ?", schemaVersion); err != nil {
 			return err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit file change migration: %w", err)
 	}
 	return nil
 }
@@ -409,6 +438,7 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 	}
 
 	change := &Change{
+		RunID:      rec.RunID,
 		Path:       rec.Path,
 		Kind:       kind,
 		ToolName:   rec.ToolName,
@@ -452,14 +482,14 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO file_changes
-			(session_id, seq, path, kind, tool_name, tool_call_id,
+			(session_id, run_id, seq, path, kind, tool_name, tool_call_id,
 			 before_hash, after_hash, before_size, after_size,
 			 adds, dels, truncated, is_binary)
 		VALUES
-			(?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM file_changes WHERE session_id = ?),
+			(?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM file_changes WHERE session_id = ?),
 			 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING seq`,
-		rec.SessionID, rec.SessionID,
+		rec.SessionID, nullString(rec.RunID), rec.SessionID,
 		rec.Path, kind, rec.ToolName, rec.ToolCallID,
 		nullString(change.BeforeHash), nullString(change.AfterHash), beforeSize, afterSize,
 		adds, dels, boolInt(change.Truncated), boolInt(isBinary),
@@ -581,10 +611,83 @@ type pathSpan struct {
 	lastSeq         int64
 }
 
+type recentRunWindow struct {
+	runIDs      []string
+	snapshotSeq int64
+}
+
+func (s *Store) latestRunWindow(ctx context.Context, sessionID string, limit int, snapshotSeq int64) (recentRunWindow, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	query := `
+		SELECT run_id, MAX(seq) FROM file_changes
+		WHERE session_id = ? AND COALESCE(run_id, '') <> ''`
+	args := []any{sessionID}
+	if snapshotSeq > 0 {
+		query += " AND seq <= ?"
+		args = append(args, snapshotSeq)
+	}
+	query += " GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return recentRunWindow{}, fmt.Errorf("query recent file change runs: %w", err)
+	}
+	defer rows.Close()
+
+	window := recentRunWindow{}
+	for rows.Next() {
+		var runID string
+		var lastSeq int64
+		if err := rows.Scan(&runID, &lastSeq); err != nil {
+			return recentRunWindow{}, err
+		}
+		window.runIDs = append(window.runIDs, runID)
+		if lastSeq > window.snapshotSeq {
+			window.snapshotSeq = lastSeq
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return recentRunWindow{}, err
+	}
+	return window, nil
+}
+
+func runWindowFilter(runIDs []string, snapshotSeq int64) (string, []any) {
+	filter := ""
+	var args []any
+	if runIDs != nil {
+		if len(runIDs) == 0 {
+			return " AND 1 = 0", nil
+		}
+		args = make([]any, len(runIDs))
+		for i, runID := range runIDs {
+			args[i] = runID
+		}
+		filter = " AND run_id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",") + ")"
+	}
+	if snapshotSeq > 0 {
+		filter += " AND seq <= ?"
+		args = append(args, snapshotSeq)
+	}
+	return filter, args
+}
+
 func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.sessionRunSpans(ctx, sessionID, nil, 0)
+}
+
+func (s *Store) sessionRunSpans(ctx context.Context, sessionID string, runIDs []string, snapshotSeq int64) ([]*pathSpan, error) {
+	query := `
 		SELECT seq, path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, ''), is_binary
-		FROM file_changes WHERE session_id = ? ORDER BY seq`, sessionID)
+		FROM file_changes WHERE session_id = ?`
+	args := []any{sessionID}
+	filter, filterArgs := runWindowFilter(runIDs, snapshotSeq)
+	query += filter
+	args = append(args, filterArgs...)
+	query += " ORDER BY seq"
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query session changes: %w", err)
 	}
@@ -626,16 +729,25 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 }
 
 func (s *Store) sessionPathSpan(ctx context.Context, sessionID, path string) (*pathSpan, error) {
+	return s.sessionRunPathSpan(ctx, sessionID, nil, 0, path)
+}
+
+func (s *Store) sessionRunPathSpan(ctx context.Context, sessionID string, runIDs []string, snapshotSeq int64, path string) (*pathSpan, error) {
 	path = normalizePath(path)
 	if path == "" {
 		return nil, nil
 	}
 	sp := &pathSpan{path: path}
+	where := "session_id = ? AND path = ?"
+	args := []any{sessionID, path}
+	filter, filterArgs := runWindowFilter(runIDs, snapshotSeq)
+	where += filter
+	args = append(args, filterArgs...)
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT kind, COALESCE(before_hash, ''), is_binary
 		FROM file_changes
-		WHERE session_id = ? AND path = ?
-		ORDER BY seq ASC LIMIT 1`, sessionID, path).
+		WHERE `+where+`
+		ORDER BY seq ASC LIMIT 1`, args...).
 		Scan(&sp.firstKind, &sp.firstBeforeHash, &sp.firstBinary); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -645,8 +757,8 @@ func (s *Store) sessionPathSpan(ctx context.Context, sessionID, path string) (*p
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT seq, kind, COALESCE(after_hash, ''), is_binary
 		FROM file_changes
-		WHERE session_id = ? AND path = ?
-		ORDER BY seq DESC LIMIT 1`, sessionID, path).
+		WHERE `+where+`
+		ORDER BY seq DESC LIMIT 1`, args...).
 		Scan(&sp.lastSeq, &sp.lastKind, &sp.lastAfterHash, &sp.lastBinary); err != nil {
 		return nil, fmt.Errorf("query last path change: %w", err)
 	}
@@ -709,6 +821,30 @@ func blobsNeeded(kind string) (needBefore, needAfter bool) {
 // sorted by path. Net no-ops are omitted.
 func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]CumulativeChange, error) {
 	spans, err := s.sessionSpans(ctx, sessionID)
+	return s.listChangesFromSpans(ctx, spans, err)
+}
+
+// ListRecentRunChanges returns the cumulative changes across the latest runs
+// that recorded file changes. Rows without run identities are excluded.
+func (s *Store) ListRecentRunChanges(ctx context.Context, sessionID string, runs int) ([]CumulativeChange, error) {
+	window, err := s.latestRunWindow(ctx, sessionID, runs, 0)
+	if err != nil || len(window.runIDs) == 0 {
+		return nil, err
+	}
+	spans, err := s.sessionRunSpans(ctx, sessionID, window.runIDs, window.snapshotSeq)
+	changes, err := s.listChangesFromSpans(ctx, spans, err)
+	if err != nil {
+		return nil, err
+	}
+	if runs > 1 {
+		for i := range changes {
+			changes[i].SnapshotSeq = window.snapshotSeq
+		}
+	}
+	return changes, nil
+}
+
+func (s *Store) listChangesFromSpans(ctx context.Context, spans []*pathSpan, err error) ([]CumulativeChange, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -777,6 +913,21 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 // in a session, or nil when the path has no net change recorded.
 func (s *Store) GetFileDiffContent(ctx context.Context, sessionID, path string) (*FileDiffContent, error) {
 	sp, err := s.sessionPathSpan(ctx, sessionID, path)
+	return s.fileDiffContentFromSpan(ctx, sp, err)
+}
+
+// GetRecentRunFileDiffContent returns one file diff across the latest runs that
+// recorded file changes. A positive snapshotSeq pins the rolling window.
+func (s *Store) GetRecentRunFileDiffContent(ctx context.Context, sessionID, path string, runs int, snapshotSeq int64) (*FileDiffContent, error) {
+	window, err := s.latestRunWindow(ctx, sessionID, runs, snapshotSeq)
+	if err != nil || len(window.runIDs) == 0 {
+		return nil, err
+	}
+	sp, err := s.sessionRunPathSpan(ctx, sessionID, window.runIDs, window.snapshotSeq, path)
+	return s.fileDiffContentFromSpan(ctx, sp, err)
+}
+
+func (s *Store) fileDiffContentFromSpan(ctx context.Context, sp *pathSpan, err error) (*FileDiffContent, error) {
 	if err != nil || sp == nil {
 		return nil, err
 	}
@@ -831,6 +982,24 @@ func (s *Store) GetFileDiffSide(ctx context.Context, sessionID, path, side strin
 		return nil, ErrInvalidDiffSide
 	}
 	sp, err := s.sessionPathSpan(ctx, sessionID, path)
+	return s.fileDiffSideFromSpan(ctx, sp, side, err)
+}
+
+// GetRecentRunFileDiffSide returns one retained image side across the latest
+// runs that recorded file changes. A positive snapshotSeq pins the window.
+func (s *Store) GetRecentRunFileDiffSide(ctx context.Context, sessionID, path, side string, runs int, snapshotSeq int64) (*FileDiffSide, error) {
+	if side != "before" && side != "after" {
+		return nil, ErrInvalidDiffSide
+	}
+	window, err := s.latestRunWindow(ctx, sessionID, runs, snapshotSeq)
+	if err != nil || len(window.runIDs) == 0 {
+		return nil, err
+	}
+	sp, err := s.sessionRunPathSpan(ctx, sessionID, window.runIDs, window.snapshotSeq, path)
+	return s.fileDiffSideFromSpan(ctx, sp, side, err)
+}
+
+func (s *Store) fileDiffSideFromSpan(ctx context.Context, sp *pathSpan, side string, err error) (*FileDiffSide, error) {
 	if err != nil || sp == nil {
 		return nil, err
 	}

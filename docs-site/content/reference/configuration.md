@@ -91,8 +91,8 @@ chat:
   # off: do not touch terminal/window titles at all.
   terminal_title: smart
 
-# Optional global approval override. When omitted, chat and ask use auto;
-# edit, exec, loop, serve, and serve mcp use prompt.
+# Optional global approval override. When omitted, chat, ask, and ordinary
+# serve platforms use auto; edit, exec, loop, and serve mcp use prompt.
 # approval:
 #   default_mode: prompt
 
@@ -130,8 +130,10 @@ A blank configuration uses these built-in defaults:
 
 | Surface | Default |
 |---------|---------|
-| `chat`, `ask` | `auto` |
-| `edit`, `exec`, `loop`, `serve`, `serve mcp` | `prompt` |
+| `chat`, `ask`, ordinary `serve` platforms | `auto` |
+| `edit`, `exec`, `loop`, `serve mcp` | `prompt` |
+
+Ordinary `serve` means the `web`, `api`, `jobs`, and `telegram` platforms, including combined launches. To start one in human approval mode instead, pass `--approval prompt` or set `serve.approval_mode: prompt`. Standalone `term-llm serve mcp` remains prompt by default.
 
 In **prompt** mode, actions outside deterministic file/directory and shell allowlists ask before proceeding. In **auto** mode, deterministic exact approvals and usable narrow patterns still run first. Guardian reviews unmatched shell commands, file reads, file writes and edits/diffs, grep/glob directory searches, image input/output paths, and explicit additional-workspace grants/elevations. Auto does not review MCP/network/service actions and is not yolo. Shell approvals from Guardian are cached only for the exact command and working directory; ordinary per-file reviews do not silently create workspace grants.
 
@@ -145,6 +147,7 @@ Choose a mode for one invocation with `--approval`:
 
 ```bash
 term-llm chat --approval prompt   # conservative override of chat's auto default
+term-llm serve web --approval prompt # conservative override of serve's auto default
 term-llm ask --approval auto "fix this"
 term-llm loop --approval yolo --done "go test ./..." "fix tests"
 ```
@@ -168,7 +171,7 @@ edit:
   approval_mode: prompt
 
 serve:
-  approval_mode: auto
+  approval_mode: prompt # override ordinary serve's auto default
   projects:
     enabled: true
   mcp:
@@ -199,7 +202,7 @@ Auto mode is intentionally narrower than yolo:
 - `auto`: Guardian reviews supported unmatched local operations and fails closed on denials/review failures.
 - `yolo`: auto-approve tool actions without prompting (explicit CLI use only).
 
-Interactive Guardian initialization failure produces one warning and temporarily uses prompt mode; the requested auto policy remains saved so a later resume can retry. Headless auto runtimes fail startup if Guardian cannot initialize. Once auto is running, a Guardian denial, contradictory allow, timeout, malformed response, unavailability, or transport failure returns an error to the agent in terminal, web/serve, and headless runtimes. It does not immediately fall through to a human prompt for that action.
+Interactive Guardian initialization failure produces one warning and temporarily uses prompt mode; the requested auto policy remains saved so a later resume can retry. Headless auto runtimes fail startup if Guardian cannot initialize. Because ordinary `serve` now uses the auto built-in default, an unconfigured serve launch follows this fail-fast path; use `--approval prompt` or `serve.approval_mode: prompt` to opt into human approval mode instead. Once auto is running, a Guardian denial, contradictory allow, timeout, malformed response, unavailability, or transport failure returns an error to the agent in terminal, web/serve, and headless runtimes. It does not immediately fall through to a human prompt for that action.
 
 Configure Guardian review with:
 
