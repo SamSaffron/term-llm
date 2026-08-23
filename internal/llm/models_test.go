@@ -162,7 +162,7 @@ func TestProviderModelIDsMatchEntries(t *testing.T) {
 	for provider, entries := range ProviderModels {
 		// These providers intentionally prefer account-scoped live caches over
 		// their static starter entries.
-		if provider == "copilot" || provider == "cursor-bin" || provider == "grok-bin" || provider == "opencode-go" || provider == "zen" {
+		if provider == "copilot" || provider == "cursor-bin" || provider == "grok" || provider == "grok-bin" || provider == "opencode-go" || provider == "zen" {
 			continue
 		}
 		ids := ProviderModelIDs(provider)

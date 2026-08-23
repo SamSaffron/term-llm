@@ -647,7 +647,7 @@ Provider configs can override which MIME types may be forwarded as native file/d
 
 Built-in defaults are conservative:
 
-- `openai`, `chatgpt`, and `copilot` allow OpenAI Responses-style document/spreadsheet/text MIME types natively by default.
+- `openai`, `chatgpt`, `grok`, and `copilot` allow the native Responses MIME set by default: PDF; `text/*`; JSON and XML; Word (`.doc`/`.docx`), RTF, and OpenDocument text; Excel (`.xls`/`.xlsx`); and PowerPoint (`.ppt`/`.pptx`).
 - Providers without an implemented native file path do not forward native file parts; they use text fallback/marker behavior instead.
 - Text-like files (`txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files) can still be embedded as ordinary text on providers without native file support, wrapped in explicit begin/end file markers.
 

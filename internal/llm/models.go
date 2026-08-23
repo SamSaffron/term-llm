@@ -144,6 +144,11 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "fable-max"},
 		{ID: "haiku"},
 	},
+	"grok": {
+		// Native xAI subscription OAuth provider. Live authenticated catalog data
+		// replaces this fallback when available.
+		{ID: "grok-4.6", ReasoningEfforts: grok46ReasoningEfforts},
+	},
 	"grok-bin": {
 		{ID: "grok-4.6", ReasoningEfforts: grokBinEffortVariants},
 		{ID: "grok-4.6-low"},
@@ -291,8 +296,8 @@ func PricingForProviderModel(provider, model string) (inputPrice, outputPrice fl
 }
 
 // ProviderModelIDs returns model IDs for a built-in provider.
-// Copilot, Zen, cursor-bin, and grok-bin prefer the latest live model-list cache
-// when present; Zen, cursor-bin, and grok-bin fall back to their curated starter
+// Copilot, Grok, Zen, cursor-bin, and grok-bin prefer the latest live model-list cache
+// when present; Grok, Zen, cursor-bin, and grok-bin fall back to their curated starter
 // lists when the cache is empty.
 // For callers that might receive a custom alias name, use ResolveProviderModelIDs.
 func ProviderModelIDs(provider string) []string {
@@ -307,6 +312,14 @@ func ProviderModelIDs(provider string) []string {
 		}
 	case "cursor-bin":
 		if ids := GetCachedCursorBinModels(); len(ids) > 0 {
+			return ids
+		}
+	case "grok":
+		if models, _, err := CachedGrokModels(); err == nil {
+			ids := make([]string, 0, len(models))
+			for _, model := range models {
+				ids = append(ids, model.ID)
+			}
 			return ids
 		}
 	case "grok-bin":
@@ -407,6 +420,11 @@ func resolveProviderModelEntries(provider string) []ModelEntry {
 }
 
 func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
+	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
+		if efforts, found := grokCachedReasoningEfforts(baseModel); found {
+			return efforts
+		}
+	}
 	for _, entry := range resolveProviderModelEntries(provider) {
 		if entry.ID != baseModel {
 			continue
@@ -459,6 +477,11 @@ func defaultReasoningEffortsForProviderModel(provider, model string) []string {
 		if isClaudeSonnetModelName(nameLower) {
 			return cloneEfforts(claudeBinSonnetEffortVariants)
 		}
+	case "grok":
+		if efforts, found := grokCachedReasoningEfforts(model); found {
+			return efforts
+		}
+		return staticGrokReasoningEfforts(nameLower)
 	case "grok-bin":
 		if base, hasSuffix := trimKnownEffortSuffix(nameLower); strings.HasPrefix(base, "grok-4") && !hasSuffix {
 			return cloneEfforts(grokBinEffortVariants)
@@ -563,6 +586,11 @@ func BaseModelAndEffortForProvider(provider, model string) (base string, effort 
 }
 
 func reasoningEffortsForEntry(provider string, entry ModelEntry) []string {
+	if resolveProviderType(strings.ToLower(strings.TrimSpace(provider))) == "grok" {
+		if efforts, found := grokCachedReasoningEfforts(entry.ID); found {
+			return efforts
+		}
+	}
 	if len(entry.ReasoningEfforts) > 0 {
 		return cloneEfforts(entry.ReasoningEfforts)
 	}
@@ -789,7 +817,7 @@ func resolvedProviderAPIKey(cfg *config.Config, provider string) string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "zen", "opencode-go", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "grok", "copilot", "openrouter", "gemini", "zen", "opencode-go", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "vllm", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

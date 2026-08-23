@@ -128,7 +128,7 @@ Server-side limits are authoritative: at most 10 attachments, 20 MB decoded per 
 File handling is provider-aware:
 
 - Images are sent as image parts when the selected provider supports images.
-- Providers with native file input support (currently OpenAI/ChatGPT/Copilot Responses transports by default) receive whitelisted MIME types as native file parts.
+- Providers with native file input support (currently OpenAI, ChatGPT, Grok subscription, and Copilot Responses transports by default) receive supported files as native Responses inputs. The default native MIME set covers PDF; `text/*`; JSON/XML; Word/RTF/OpenDocument text; Excel; and PowerPoint files.
 - Text-like uploads such as `txt`, `md`, `csv`, `tsv`, `json`, `yaml`, `xml`, `html`, and common code files are embedded as ordinary text when native file input is unavailable. Embedded contents are wrapped in explicit `BEGIN USER-PROVIDED FILE` / `END USER-PROVIDED FILE` markers.
 - Unsupported binary files are saved locally and represented by a marker instead of being forwarded to the provider.
 

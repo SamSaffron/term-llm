@@ -265,6 +265,12 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 				return nil, fmt.Errorf("provider chatgpt: %w", err)
 			}
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeGrok:
+			provider, err := NewGrokProvider(model)
+			if err != nil {
+				return nil, fmt.Errorf("provider grok: %w", err)
+			}
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeCopilot:
 			// copilot uses GitHub device code OAuth with interactive authentication
 			provider, err := NewCopilotProvider(model)
@@ -418,6 +424,8 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 		case config.ProviderTypeChatGPT:
 			// chatgpt uses native OAuth with interactive authentication
 			return NewChatGPTProvider("")
+		case config.ProviderTypeGrok:
+			return NewGrokProvider("")
 		case config.ProviderTypeCopilot:
 			// copilot uses GitHub device code OAuth with interactive authentication
 			return NewCopilotProvider("")
@@ -450,6 +458,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 	}
 
 	providerType := config.InferProviderType(name, cfg.Type)
+	if err := config.ValidateProviderCompatibility(name, cfg); err != nil {
+		return nil, err
+	}
 
 	switch providerType {
 	case config.ProviderTypeAnthropic:
@@ -461,6 +472,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 	case config.ProviderTypeChatGPT:
 		// ChatGPT uses native OAuth with interactive authentication
 		return NewChatGPTProviderWithOptions(cfg.Model, ChatGPTProviderOptions{UseWebSocket: cfg.UseWebSocket, ServiceTier: cfg.ServiceTier, FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg), Responses: responsesOptionsFromConfig(cfg.Responses)})
+
+	case config.ProviderTypeGrok:
+		return NewGrokProviderWithOptions(cfg.Model, GrokProviderOptions{FileUploadPolicy: FileUploadPolicyOverrideForProviderConfig(name, *cfg)})
 
 	case config.ProviderTypeCopilot:
 		// Copilot uses GitHub device code OAuth with interactive authentication

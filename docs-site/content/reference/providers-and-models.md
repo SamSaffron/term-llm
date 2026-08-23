@@ -30,7 +30,7 @@ Use `providers` when you want to know what is available and how it is configured
 term-llm supports a mix of provider types:
 
 - hosted API providers such as Anthropic, AWS Bedrock, OpenAI, xAI, Gemini, NEAR AI Cloud, SambaNova, and OpenRouter
-- subscription-backed OAuth providers such as ChatGPT and Copilot
+- subscription-backed OAuth providers such as ChatGPT, Grok, and Copilot
 - local or self-hosted OpenAI-compatible providers such as Ollama, LM Studio, vLLM, or custom endpoints
 
 ## Credentials
@@ -42,7 +42,8 @@ Most providers use API keys via environment variables. Some use OAuth credential
 | `anthropic` | `ANTHROPIC_API_KEY` | API key |
 | `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Anthropic Claude via AWS Bedrock |
 | `openai` | `OPENAI_API_KEY` | Standard OpenAI API key |
-| `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
+| `chatgpt` | `~/.config/term-llm/chatgpt_oauth.json` | ChatGPT Plus/Pro OAuth |
+| `grok` | `~/.config/term-llm/grok_oauth.json` | Grok subscription device OAuth |
 | `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
 | `gemini` | `GEMINI_API_KEY` | Google AI Studio key |
 | `xai` | `XAI_API_KEY` | xAI API key |
@@ -80,8 +81,11 @@ Examples:
 ```bash
 term-llm ask --provider anthropic "question"
 term-llm ask --provider chatgpt "question"
+term-llm ask --provider grok "question"
 term-llm ask --provider copilot "question"
 ```
+
+`grok` in chat selects the subscription OAuth provider. Existing `providers.grok` API-key or custom-endpoint configurations must declare `type: xai` or `type: openai_compatible`; term-llm rejects ambiguous `api_key`, `base_url`, and `url` fields instead of ignoring them. The image command keeps its older `--provider grok` alias for the xAI API-key image provider (`image.xai` / `XAI_API_KEY`), not Grok subscription OAuth.
 
 ### Anthropic-compatible endpoints
 

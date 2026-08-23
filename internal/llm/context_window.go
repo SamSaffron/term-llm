@@ -323,6 +323,14 @@ func InputLimitForProviderModel(providerName, model string) int {
 		return configInputLimitForProvider(providerName, model)
 	}
 
+	// Grok subscription limits come from the authenticated account catalog. A
+	// positive live value overrides the generic xAI Grok prefix fallback.
+	if providerType == string(config.ProviderTypeGrok) {
+		if result := grokCachedInputLimit(model); result > 0 {
+			return result
+		}
+	}
+
 	// 1. Explicit provider-scoped limits from ProviderModels
 	if v, ok := explicitProviderInput[configKey(providerType, model)]; ok {
 		return v

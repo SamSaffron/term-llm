@@ -83,6 +83,7 @@ type ResponsesRequest struct {
 	ToolChoice                      any                          `json:"tool_choice,omitempty"`
 	ParallelToolCalls               *bool                        `json:"parallel_tool_calls,omitempty"`
 	MaxOutputTokens                 int                          `json:"max_output_tokens,omitempty"`
+	Text                            *ResponsesText               `json:"text,omitempty"`
 	Temperature                     *float64                     `json:"temperature,omitempty"`
 	TopP                            *float64                     `json:"top_p,omitempty"`
 	Reasoning                       *ResponsesReasoning          `json:"reasoning,omitempty"`
@@ -220,6 +221,10 @@ type ResponsesNamespaceFunctionTool struct {
 	AllowedCallers []string               `json:"allowed_callers,omitempty"`
 	OutputSchema   map[string]interface{} `json:"output_schema,omitempty"`
 	DeferLoading   bool                   `json:"defer_loading"`
+}
+
+type ResponsesText struct {
+	Verbosity string `json:"verbosity,omitempty"`
 }
 
 // ResponsesReasoning configures GPT-5.6 reasoning execution.

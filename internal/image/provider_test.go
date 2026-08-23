@@ -93,6 +93,22 @@ func TestNewImageProviderGeminiSizePrecedence(t *testing.T) {
 	}
 }
 
+func TestNewImageProviderGrokAliasRemainsXAIAPIKeyProvider(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", root+"/config")
+	cfg := &config.Config{}
+	cfg.Image.XAI.APIKey = "test-key"
+	cfg.Image.XAI.Model = "grok-2-image-1212"
+	provider, err := NewImageProvider(cfg, "grok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := provider.(*XAIProvider); !ok {
+		t.Fatalf("image provider grok created %T, want *XAIProvider", provider)
+	}
+}
+
 func TestValidateSize(t *testing.T) {
 	tests := []struct {
 		size    string

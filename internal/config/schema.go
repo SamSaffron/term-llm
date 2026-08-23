@@ -442,6 +442,10 @@ var providerSpecs = []ProviderSpec{
 		Defaults: []DefaultField{{"model", "gpt-5.6-sol-medium"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", true}},
 	},
 	{
+		Name: "grok", Type: ProviderTypeGrok, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Defaults: []DefaultField{{"model", "grok-4.6"}, {"fast_model", "grok-4.6"}},
+	},
+	{
 		Name: "gemini", Type: ProviderTypeGemini, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
 		Defaults: []DefaultField{{"model", "gemini-3-flash-preview"}, {"fast_model", "gemini-2.5-flash-lite"}},
 	},

@@ -490,6 +490,7 @@ func TestInferProviderType(t *testing.T) {
 		{"zen", "", ProviderTypeZen},
 		{"opencode-go", "", ProviderTypeOpenCodeGo},
 		{"claude-bin", "", ProviderTypeClaudeBin},
+		{"grok", "", ProviderTypeGrok},
 		{"grok-bin", "", ProviderTypeGrokBin},
 		{"cursor-bin", "", ProviderTypeCursorBin},
 		{"agy-bin", "", ProviderTypeAgyBin},
@@ -612,6 +613,36 @@ func TestDescribeCredentialSource_GrokBin(t *testing.T) {
 	}
 	if source != "grok CLI login (no key needed)" {
 		t.Fatalf("source=%q, want grok CLI login description", source)
+	}
+}
+
+func TestGrokProviderCompatibilityRequiresExplicitAPIType(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	for _, cfg := range []ProviderConfig{{APIKey: "legacy"}, {BaseURL: "https://api.x.ai/v1"}} {
+		err := ValidateProviderCompatibility("grok", &cfg)
+		if err == nil || !strings.Contains(err.Error(), "type: xai") || !strings.Contains(err.Error(), "type: openai_compatible") {
+			t.Fatalf("compatibility error = %v", err)
+		}
+	}
+	for _, providerType := range []ProviderType{ProviderTypeXAI, ProviderTypeOpenAICompat} {
+		cfg := ProviderConfig{Type: providerType, APIKey: "key", BaseURL: "https://example.test/v1"}
+		if err := ValidateProviderCompatibility("grok", &cfg); err != nil {
+			t.Fatalf("explicit type %q rejected: %v", providerType, err)
+		}
+	}
+}
+
+func TestGrokSchemaDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	if got := DefaultProviderModel("grok"); got != "grok-4.6" {
+		t.Fatalf("DefaultProviderModel(grok) = %q", got)
+	}
+	if got := DefaultProviderFastModels()["grok"]; got != "grok-4.6" {
+		t.Fatalf("grok fast model = %q", got)
 	}
 }
 

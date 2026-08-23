@@ -9,7 +9,7 @@ next:
   label: Usage guide
   url: /guides/usage/
 ---
-On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, NEAR AI Cloud, SambaNova, OpenRouter, Gemini, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, Grok subscription, GitHub Copilot, xAI, Venice, NEAR AI Cloud, SambaNova, OpenRouter, Gemini, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -113,7 +113,31 @@ The ChatGPT default pins Sol to medium effort. Its live model catalog supplies c
 
 Codex's product-level **Ultra** option combines `max` effort with subagents; it is not an inference API effort and term-llm does not show it in the effort selector. The ChatGPT OAuth backend also does not receive the public API's Pro, hosted multi-agent, programmatic-tool-calling, or prompt-cache control fields. `service_tier: fast` is a user-facing alias for the upstream `priority` tier; omit it to send no tier.
 
-### Option 4: Use xAI (Grok)
+### Grok subscription OAuth
+
+If you have an eligible Grok subscription, use the native `grok` provider. It uses xAI's device OAuth flow and the Grok CLI Responses proxy; it does not use `XAI_API_KEY` or read the Grok Build CLI's `~/.grok/auth.json`.
+
+```bash
+term-llm auth login grok
+term-llm models --provider grok
+term-llm ask --provider grok:grok-4.6 "review this code"
+```
+
+Credentials are stored separately at `$XDG_CONFIG_HOME/term-llm/grok_oauth.json` (normally `~/.config/term-llm/grok_oauth.json`) with owner-only permissions and refreshed automatically. HTTP/SSE is always used with `store: false`; server-side response chaining and WebSockets are disabled.
+
+```yaml
+default_provider: grok
+providers:
+  grok:
+    model: grok-4.6
+    fast_model: grok-4.6
+```
+
+The authenticated subscription catalog determines which models the account can use. `xai` remains the separate API-key provider for the public developer API, and `grok-bin` remains the local Grok Build subprocess provider. Because `grok` is now the chat OAuth provider, an older `providers.grok` block containing `api_key`, `base_url`, or `url` must be migrated explicitly: use `type: xai` for the public xAI API, or `type: openai_compatible` for a custom endpoint. term-llm returns a migration error rather than silently ignoring those fields.
+
+The overload is command-specific: `term-llm ask --provider grok` means Grok subscription OAuth, while `term-llm image --provider grok` remains a compatibility alias for the xAI image API and uses `image.xai.api_key` / `XAI_API_KEY`. Grok subscription OAuth credentials are not used for image generation.
+
+### Option 4: Use xAI public developer API (Grok)
 
 [xAI](https://x.ai) provides access to Grok models with native web search and X (Twitter) search capabilities.
 

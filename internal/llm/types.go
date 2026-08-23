@@ -889,6 +889,7 @@ type ModelInfo struct {
 	Created                int64              `json:"created,omitempty"`
 	OwnedBy                string             `json:"owned_by,omitempty"`
 	InputLimit             int                `json:"input_limit,omitempty"`        // Max input tokens (0 = unknown)
+	OutputLimit            int                `json:"output_limit,omitempty"`       // Max output tokens (0 = unknown)
 	ConfiguredContext      int                `json:"configured_context,omitempty"` // Provider/model runtime context setting (0 = unknown)
 	InputPrice             float64            `json:"input_price"`                  // Pricing per 1M tokens (0 = free, -1 = unknown)
 	OutputPrice            float64            `json:"output_price"`                 // Pricing per 1M tokens (0 = free, -1 = unknown)

@@ -62,6 +62,7 @@ var modelListSupportedTypes = map[config.ProviderType]bool{
 	config.ProviderTypeZen:          true,
 	config.ProviderTypeOpenCodeGo:   true,
 	config.ProviderTypeXAI:          true,
+	config.ProviderTypeGrok:         true,
 	config.ProviderTypeVenice:       true,
 	config.ProviderTypeNearAI:       true,
 	config.ProviderTypeSambaNova:    true,
@@ -111,6 +112,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 		providerType = config.InferProviderType(providerName, providerCfg.Type)
 	} else {
 		providerType = config.InferProviderType(providerName, "")
+	}
+	if err := config.ValidateProviderCompatibility(providerName, &providerCfg); err != nil {
+		return err
 	}
 
 	// For built-in providers without explicit config, continue for providers that
@@ -193,6 +197,13 @@ func runModels(cmd *cobra.Command, args []string) error {
 		// The Go model and metadata endpoints are public; a key is required only
 		// when the returned provider is used for inference.
 		lister = llm.NewOpenCodeGoProviderWithBaseURL(apiKey, providerCfg.Model, providerCfg.BaseURL)
+	case config.ProviderTypeGrok:
+		model := providerCfg.Model
+		provider, err := llm.NewGrokProvider(model)
+		if err != nil {
+			return fmt.Errorf("grok provider: %w", err)
+		}
+		lister = provider
 	case config.ProviderTypeXAI:
 		apiKey := providerCfg.ResolvedAPIKey
 		if apiKey == "" {
@@ -232,6 +243,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 	timeout := 10 * time.Second
 	if providerType == config.ProviderTypeCopilot {
 		timeout = 6 * time.Minute
+	} else if providerType == config.ProviderTypeGrok {
+		timeout = 30 * time.Second
 	} else if providerType == config.ProviderTypeCursorBin || providerType == config.ProviderTypeGrokBin {
 		timeout = 45 * time.Second
 	}
