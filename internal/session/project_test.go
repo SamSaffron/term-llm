@@ -23,16 +23,17 @@ func newProjectTestStore(t *testing.T) *SQLiteStore {
 	return store
 }
 
-func TestProjectMigration47AndCRUDStableIdentity(t *testing.T) {
-	if schemaVersion != 47 {
-		t.Fatalf("schemaVersion = %d, want 47", schemaVersion)
+func TestProjectMigrationsAndCRUDStableIdentity(t *testing.T) {
+	if projectSchemaVersion != 47 || schemaVersion != 48 {
+		t.Fatalf("schema versions = project %d/current %d, want 47/48", projectSchemaVersion, schemaVersion)
 	}
-	found := false
+	found47, found48 := false, false
 	for _, migration := range migrations {
-		found = found || migration.version == 47
+		found47 = found47 || migration.version == projectSchemaVersion
+		found48 = found48 || migration.version == schemaVersion
 	}
-	if !found {
-		t.Fatal("migration 47 missing")
+	if !found47 || !found48 {
+		t.Fatalf("project migrations present = 47:%t 48:%t", found47, found48)
 	}
 	store := newProjectTestStore(t)
 	ctx := context.Background()
@@ -103,12 +104,45 @@ func TestProjectMigration47UpgradesExistingDatabase(t *testing.T) {
 	if err := db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != projectSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", version, projectSchemaVersion)
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 	}
 	var projectID sql.NullString
 	if err := db.QueryRow("SELECT project_id FROM sessions WHERE id = 'legacy-project-migration'").Scan(&projectID); err != nil {
 		t.Fatalf("read migrated session: %v", err)
+	}
+	if projectID.Valid {
+		t.Fatalf("legacy session project_id = %q, want NULL", projectID.String)
+	}
+	var projectsTable int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'").Scan(&projectsTable); err != nil {
+		t.Fatal(err)
+	}
+	if projectsTable != 1 {
+		t.Fatalf("projects table count = %d, want 1", projectsTable)
+	}
+}
+
+func TestProjectMigration48RepairsVersion47WithoutProjectColumn(t *testing.T) {
+	db := openProjectMigration46DB(t)
+	if _, err := db.Exec("UPDATE schema_version SET version = ?", projectSchemaVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+
+	var version int
+	if err := db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+	var projectID sql.NullString
+	if err := db.QueryRow("SELECT project_id FROM sessions WHERE id = 'legacy-project-migration'").Scan(&projectID); err != nil {
+		t.Fatalf("read repaired session: %v", err)
 	}
 	if projectID.Valid {
 		t.Fatalf("legacy session project_id = %q, want NULL", projectID.String)

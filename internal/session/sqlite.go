@@ -406,7 +406,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = projectSchemaVersion
+	schemaVersion        = 48
 )
 
 // migration represents a schema migration.
@@ -1333,6 +1333,19 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		// Schema version alone is not sufficient evidence that every version 47
+		// database has the project objects. Reconcile them idempotently.
+		version:     48,
+		description: "repair missing project schema",
+		up: func(db schemaExecutor) error {
+			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN project_id TEXT"); err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err := db.Exec(projectsSchema)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1518,8 +1531,10 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create base schema: %w", err)
 	}
-	createProjectsDirectly := (needsBootstrapVersion && !preExistingSessionsTable) ||
-		(!needsBootstrapVersion && currentVersion >= projectSchemaVersion)
+	// Create project objects directly only for a fresh database. Existing
+	// databases reach the project schema through migrations, including the
+	// version 48 repair for databases incorrectly marked as version 47.
+	createProjectsDirectly := needsBootstrapVersion && !preExistingSessionsTable
 	if createProjectsDirectly {
 		if _, err := db.Exec(projectsSchema); err != nil {
 			return fmt.Errorf("create projects schema: %w", err)
