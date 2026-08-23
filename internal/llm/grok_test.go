@@ -267,6 +267,37 @@ func TestGrokCachedOutputLimitClampsRequest(t *testing.T) {
 	}
 }
 
+func TestGrokProviderOmitsToolControlsWithoutTools(t *testing.T) {
+	isolateGrokLLMTestEnv(t)
+	oldClient := grokHTTPClient
+	defer func() { grokHTTPClient = oldClient }()
+
+	var payload map[string]any
+	grokHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		return grokSSE(`event: response.completed`, `data: {"type":"response.completed","response":{}}`, `data: [DONE]`), nil
+	})}
+
+	creds := &credentials.GrokCredentials{AccessToken: "access", RefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct_1"}
+	provider := NewGrokProviderWithCreds(creds, "grok-4.6")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("hi")},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainStreamToDone(t, stream)
+
+	for _, field := range []string{"tool_choice", "parallel_tool_calls"} {
+		if value, ok := payload[field]; ok {
+			t.Errorf("payload includes %s=%v without tools: %v", field, value, payload)
+		}
+	}
+}
+
 func TestGrokProviderExactEndpointHeadersAndResponsesFeatures(t *testing.T) {
 	isolateGrokLLMTestEnv(t)
 	oldClient := grokHTTPClient

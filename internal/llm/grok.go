@@ -241,8 +241,6 @@ func (p *GrokProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 		Messages:                        req.Messages,
 		ExtractInstructionsFromMessages: true,
 		Tools:                           tools,
-		ToolChoice:                      "auto",
-		ParallelToolCalls:               boolPtr(true),
 		MaxOutputTokens:                 clampGrokOutputTokens(req.MaxOutputTokens, model),
 		Text:                            &ResponsesText{Verbosity: "low"},
 		Include:                         []string{"reasoning.encrypted_content"},
@@ -252,8 +250,12 @@ func (p *GrokProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 		ExtraHeaders:                    extraHeaders,
 		FileUploadPolicy:                p.fileUploadPolicy,
 	}
-	if req.ToolChoice.Mode != "" {
-		responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
+	if len(tools) > 0 {
+		responsesReq.ToolChoice = "auto"
+		responsesReq.ParallelToolCalls = boolPtr(true)
+		if req.ToolChoice.Mode != "" {
+			responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
+		}
 	}
 	if req.TemperatureSet || req.Temperature != 0 {
 		value := float64(req.Temperature)
