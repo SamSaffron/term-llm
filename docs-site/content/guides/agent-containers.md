@@ -111,11 +111,12 @@ The service supervisor runs as root. The Web UI, jobs server, first-boot `bootst
 | `jobs` | Runs `term-llm serve jobs` on port `8080` inside the container. |
 | `bootstrap-jobs` | Creates default scheduled jobs on first boot, then removes its persisted service definition and exits. |
 
-The Web UI service starts with file serving and widgets enabled:
+The Web UI service uses `--no-projects` because each container is already a dedicated, persistent agent workspace. Single-workspace mode is a first-class deployment choice for personal agents like these: the container is the workspace, so a project registry would add another unnecessary layer of navigation.
 
 ```bash
 term-llm serve web \
   --agent myagent \
+  --no-projects \
   --base-path /chat \
   --host 0.0.0.0 \
   --port 8081 \

@@ -109,6 +109,9 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "exec sudo -E -Hu agent") {
 			t.Fatalf("service %s should re-exec as agent user while preserving provider credentials", rel)
 		}
+		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--no-projects") {
+			t.Fatalf("webui should use single-workspace mode for its dedicated agent")
+		}
 		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--files-dir /home/agent/Files") {
 			t.Fatalf("webui should serve files from agent home")
 		}
