@@ -8,6 +8,8 @@ if [ "$(id -un)" != "agent" ]; then
     "$0" "$@"
 fi
 
+cd /home/agent
+
 set -- serve web \
   --agent "${AGENT_NAME:-agent}" \
   --no-projects \

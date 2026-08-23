@@ -162,6 +162,50 @@ VOLUME_INIT
   echo "bootstrap: wrote default volume init at $init_file"
 }
 
+migrate_managed_webui_single_workspace() {
+  local service="$CONFIG_DIR/services/webui/run"
+  local add_cwd=0
+  local tmp
+
+  [ -f "$service" ] || return 0
+  if grep -q -- '--no-projects' "$service" || grep -q -- '--projects' "$service"; then
+    return 0
+  fi
+
+  # Upgrade only the recognizable managed agent service. Leave custom web
+  # launchers alone, including any that already chose a project-mode flag.
+  if ! grep -q '^set -- serve web \\' "$service" ||
+     ! grep -Fq -- '--agent "${AGENT_NAME:-agent}"' "$service" ||
+     ! grep -Fq -- '--widgets-dir /home/agent/.config/term-llm/widgets' "$service"; then
+    return 0
+  fi
+
+  if ! grep -q '^cd /home/agent$' "$service"; then
+    add_cwd=1
+  fi
+  tmp="$service.tmp.$$"
+  if ! awk -v add_cwd="$add_cwd" '
+    add_cwd == 1 && $0 == "set -- serve web \\" {
+      print "cd /home/agent"
+      print ""
+      add_cwd = 0
+    }
+    { print }
+    $0 == "  --agent \"${AGENT_NAME:-agent}\" \\" {
+      print "  --no-projects \\"
+      added_flag = 1
+    }
+    END { if (!added_flag) exit 1 }
+  ' "$service" > "$tmp"; then
+    rm -f "$tmp"
+    echo "bootstrap: could not migrate managed webui service to single-workspace mode" >&2
+    return 1
+  fi
+  cat "$tmp" > "$service"
+  rm -f "$tmp"
+  echo "bootstrap: migrated managed webui service to single-workspace mode"
+}
+
 ensure_agent_ownership() {
   mkdir -p "$AGENT_HOME" "$CONFIG_DIR"
   if [ ! -e "$AGENT_HOME/.zshrc" ]; then
@@ -229,6 +273,7 @@ bootstrap_seed_once() {
 }
 
 bootstrap_seed_once
+migrate_managed_webui_single_workspace
 ensure_agent_ownership
 
 # Volume init hook (runs every container start after first-boot bootstrap).

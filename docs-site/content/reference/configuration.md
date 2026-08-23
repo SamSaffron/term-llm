@@ -192,7 +192,7 @@ serve:
 
 Use `--no-projects` for single-workspace mode. This is the intended setup for dedicated personal agents and agent containers whose persistent workspace is the whole environment, rather than one project among many. It keeps the flat/date sidebar and binds first-party default-workspace requests to the serve startup directory's main Git root; a non-Git startup remains unbound. Use `--projects` for strict project-registry opt-in: startup fails if project storage is read-only/unsupported or the only bootstrap candidate is filesystem root. Default-enabled project startup is rollout-tolerant and instead warns and falls back to single-workspace mode for those cases. Project initialization runs only when the `web` platform is selected; API-, jobs-, Telegram-, and Hub-delegated work do not acquire an implicit project.
 
-Project paths are absolute paths on the machine running term-llm. Symlinks are resolved. A directory inside a Git checkout is normalized to the main repository root; a non-Git directory remains exact. Filesystem root cannot be registered—use disabled project mode with the existing read/write directories, grants, shell policy, and approval mode for container-wide agents.
+Project paths are absolute paths on the machine running term-llm. Symlinks are resolved. A directory inside a Git checkout is normalized to the main repository root; a non-Git directory remains exact. Filesystem root cannot be registered—use `--no-projects` single-workspace mode with the existing read/write directories, grants, shell policy, and approval mode for container-wide agents.
 
 A registered project is metadata, not authorization. Selecting one does not bypass workspace confirmation, static read/write allowlists, shell approval, or Guardian.
 

@@ -111,7 +111,7 @@ The service supervisor runs as root. The Web UI, jobs server, first-boot `bootst
 | `jobs` | Runs `term-llm serve jobs` on port `8080` inside the container. |
 | `bootstrap-jobs` | Creates default scheduled jobs on first boot, then removes its persisted service definition and exits. |
 
-The Web UI service uses `--no-projects` because each container is already a dedicated, persistent agent workspace. Single-workspace mode is a first-class deployment choice for personal agents like these: the container is the workspace, so a project registry would add another unnecessary layer of navigation.
+The Web UI service uses `--no-projects` because each container is already a dedicated, persistent agent environment rather than a host for unrelated project roots. Single-workspace mode is a first-class deployment choice for personal agents like these, without an extra project-registry layer. The service starts in `/home/agent`, so repository-aware features use the agent's home as their starting point.
 
 ```bash
 term-llm serve web \
@@ -197,7 +197,7 @@ Update the host `term-llm` first, then rebuild/recreate the workspace image:
 term-llm contain rebuild myagent
 ```
 
-State is preserved in the Docker volume. Rebuilds update the managed image and binary but do not overwrite the live agent config already copied into `/home/agent`.
+State is preserved in the Docker volume. Rebuilds update the managed image and binary but do not generally overwrite live agent config already copied into `/home/agent`. The image does apply narrowly detected service migrations when required for compatibility; custom Web UI launchers and services with an explicit `--projects` or `--no-projects` choice are left untouched.
 
 ## Removing a workspace
 
