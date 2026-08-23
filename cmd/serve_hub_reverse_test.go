@@ -7,9 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -429,18 +429,42 @@ func TestHubReverseReadLoopCompletesLargeActivelyDrainedStream(t *testing.T) {
 	}
 
 	bodyResult := make(chan reverseBodyResult, 1)
+	var consumed atomic.Int64
+	progress := make(chan struct{}, 1)
 	go func() {
-		body, err := io.ReadAll(response.resp.Body)
-		bodyResult <- reverseBodyResult{body: body, err: err}
+		var body []byte
+		buf := make([]byte, 4*1024)
+		for {
+			n, readErr := response.resp.Body.Read(buf)
+			if n > 0 {
+				body = append(body, buf[:n]...)
+				consumed.Add(int64(n))
+				select {
+				case progress <- struct{}{}:
+				default:
+				}
+			}
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					readErr = nil
+				}
+				bodyResult <- reverseBodyResult{body: body, err: readErr}
+				return
+			}
+		}
 	}()
 	const frameCount = 4 * hubReversePendingBuffer
-	progressDeadline := time.Now().Add(5 * time.Second)
 	for i := 0; i < frameCount; i++ {
-		for len(pending.ch) >= hubReversePendingBuffer/2 {
-			if time.Now().After(progressDeadline) {
+		// Limit all frames in flight, including frames buffered by the websocket
+		// transport but not yet reflected in pending.ch. This test is about an
+		// actively drained response, not whether a loaded runner can transfer the
+		// entire stream within one absolute deadline.
+		for int64(i)-consumed.Load() >= hubReversePendingBuffer/2 {
+			select {
+			case <-progress:
+			case <-time.After(5 * time.Second):
 				t.Fatalf("active response consumer stopped making progress at frame %d", i)
 			}
-			runtime.Gosched()
 		}
 		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: request.ID, Body: []byte("x")}); err != nil {
 			t.Fatalf("write body frame %d: %v", i, err)
