@@ -377,7 +377,7 @@ func initializeServeProjects(ctx context.Context, store session.Store, startupDi
 		if strict {
 			return false, "", fmt.Errorf("initialize bootstrap project: %w", err)
 		}
-		fmt.Fprintf(warningWriter, "warning: projects auto-disabled: startup directory cannot be registered (%v); use --projects to require project mode or --no-projects for legacy container mode\n", err)
+		fmt.Fprintf(warningWriter, "warning: projects auto-disabled: startup directory cannot be registered (%v); use --projects to require project mode or --no-projects for single-workspace mode\n", err)
 		return false, "", nil
 	}
 	bootstrap := &session.Project{Name: resolved.DefaultName, CanonicalDir: resolved.CanonicalDir, IsBootstrap: true}

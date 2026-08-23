@@ -93,6 +93,11 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			}
 		}
 		if rel == "entrypoint.sh" {
+			for _, want := range []string{"migrate_managed_webui_single_workspace", "grep -q -- '--projects'", "bootstrap: migrated managed webui service to single-workspace mode"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("entrypoint missing managed webui migration content %q", want)
+				}
+			}
 			if strings.Contains(string(data), "CLAUDE_CODE_OAUTH_TOKEN:") || strings.Contains(string(data), "claude_code_oauth_token:") {
 				t.Fatalf("entrypoint should not persist Claude OAuth token under providers.env in config.yaml")
 			}
@@ -109,14 +114,20 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "exec sudo -E -Hu agent") {
 			t.Fatalf("service %s should re-exec as agent user while preserving provider credentials", rel)
 		}
-		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--files-dir /home/agent/Files") {
-			t.Fatalf("webui should serve files from agent home")
+		if rel == "bootstrap/services/webui/run" {
+			serveArgs := `cd /home/agent
+
+set -- serve web \
+  --agent "${AGENT_NAME:-agent}" \
+  --no-projects \`
+			for _, want := range []string{serveArgs, "--files-dir /home/agent/Files", "--enable-widgets", "--widgets-dir /home/agent/.config/term-llm/widgets"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("webui service missing %q", want)
+				}
+			}
 		}
-		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--enable-widgets") {
-			t.Fatalf("webui should enable widgets")
-		}
-		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--widgets-dir /home/agent/.config/term-llm/widgets") {
-			t.Fatalf("webui should use the persistent agent widgets dir")
+		if rel == "bootstrap/services/jobs/run" && strings.Contains(string(data), "--no-projects") {
+			t.Fatalf("jobs should not carry the web-only --no-projects flag")
 		}
 		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"system-upgrade\"`) || !strings.Contains(string(data), `"pacman"`) || !strings.Contains(string(data), `"dnf"`)) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")

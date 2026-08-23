@@ -109,7 +109,7 @@ Stable project/workspace errors use the normal authenticated JSON error envelope
 | `projects_disabled` | Project mode is disabled. Project routes return authenticated `404`; Responses rejects supplied `project_id` with `400`. |
 | `refresh_required` | An obsolete first-party asset requested legacy default binding without a usable bootstrap; hard-refresh the page/service-worker assets. |
 
-In `--no-projects` mode, the project/sidebar mutation routes expose `projects_disabled`, the browser returns to the legacy flat/date navigator, and unsent project drafts are discarded. A first-party `use_default_workspace` request keeps the legacy rule: bind to the serve startup directory's main Git root, while a non-Git startup remains unbound. Header-less third-party requests remain unbound when they omit `project_id`.
+In `--no-projects` single-workspace mode, the project/sidebar mutation routes expose `projects_disabled`, the browser uses the flat/date navigator, and unsent project drafts are discarded. A first-party `use_default_workspace` request binds to the serve startup directory's main Git root, while a non-Git startup remains unbound. Header-less third-party requests remain unbound when they omit `project_id`.
 
 All project routes use the existing bearer-token and CORS middleware. The token identifies one shared operator security domain, not separate users or tenants. Project paths are therefore visible to every authenticated token holder, and the first-party UI version header is only a compatibility signal—not authorization.
 

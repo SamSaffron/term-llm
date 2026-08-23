@@ -8,8 +8,11 @@ if [ "$(id -un)" != "agent" ]; then
     "$0" "$@"
 fi
 
+cd /home/agent
+
 set -- serve web \
   --agent "${AGENT_NAME:-agent}" \
+  --no-projects \
   --base-path "${WEB_BASE_PATH:-/chat}" \
   --host 0.0.0.0 \
   --port 8081 \
