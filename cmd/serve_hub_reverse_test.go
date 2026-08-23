@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -266,7 +267,7 @@ func TestHubReverseResponseCancellation(t *testing.T) {
 	}
 }
 
-func TestHubReverseReadLoopBackpressuresSlowConsumerInsteadOfCanceling(t *testing.T) {
+func TestHubReverseReadLoopIsolatesUnreadResponseOverflow(t *testing.T) {
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
 	hubTS := httptest.NewServer(s.handler())
@@ -283,26 +284,24 @@ func TestHubReverseReadLoopBackpressuresSlowConsumerInsteadOfCanceling(t *testin
 	defer conn.Close()
 	waitForReverseNode(t, s, "artist")
 
-	requests := make(chan hubReverseRequest, 16)
+	frames := make(chan hubReverseRequest, 32)
 	go func() {
 		for {
 			var frame hubReverseRequest
 			if err := conn.ReadJSON(&frame); err != nil {
 				return
 			}
-			if frame.Type == hubReverseFrameRequest {
-				requests <- frame
-			}
+			frames <- frame
 		}
 	}()
 
 	firstResult := make(chan reverseDoResult, 1)
 	go func() {
-		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/slow-stream", nil)
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/unread-stream", nil)
 		resp, err := s.reverse.do(context.Background(), node, req)
 		firstResult <- reverseDoResult{resp: resp, err: err}
 	}()
-	firstReq := waitForReverseRequest(t, requests, "/chat/slow-stream")
+	firstReq := waitForReverseRequest(t, frames, "/chat/unread-stream")
 	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: firstReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}}); err != nil {
 		t.Fatalf("write first response_start: %v", err)
 	}
@@ -312,38 +311,266 @@ func TestHubReverseReadLoopBackpressuresSlowConsumerInsteadOfCanceling(t *testin
 	}
 	defer first.resp.Body.Close()
 
-	const chunk = "chunk"
-	const chunkCount = hubReversePendingBuffer + 4
-	writerDone := make(chan error, 1)
-	go func() {
-		for i := 0; i < chunkCount; i++ {
-			if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte(chunk)}); err != nil {
-				writerDone <- err
-				return
-			}
+	// Leave the first body unread and overflow only its bounded response queue.
+	// The hub must cancel that request without blocking the tunnel's sole reader.
+	for i := 0; i < hubReversePendingBuffer+2; i++ {
+		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte("chunk")}); err != nil {
+			t.Fatalf("write unread response body frame %d: %v", i, err)
 		}
-		writerDone <- conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: firstReq.ID})
+	}
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelSecond()
+	secondResult := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/healthz", nil).WithContext(secondCtx)
+		resp, err := s.reverse.do(secondCtx, node, req)
+		secondResult <- reverseDoResult{resp: resp, err: err}
 	}()
 
-	// Leave the response body unread long enough for the per-request queue to fill.
-	// The stream must apply backpressure instead of being canceled as "slow".
-	time.Sleep(100 * time.Millisecond)
-
-	body, err := io.ReadAll(first.resp.Body)
-	if err != nil {
-		t.Fatalf("read slow body: %v", err)
-	}
-	if string(body) != strings.Repeat(chunk, chunkCount) {
-		t.Fatalf("slow body len=%d, want len=%d", len(body), len(strings.Repeat(chunk, chunkCount)))
-	}
-	select {
-	case err := <-writerDone:
-		if err != nil {
-			t.Fatalf("write slow response: %v", err)
+	// Start the sibling before waiting for cancellation. Seeing both frames proves
+	// the sole websocket reader and writer remain live while overflow is handled.
+	var secondReq hubReverseRequest
+	gotCancel := false
+	deadline := time.After(2 * time.Second)
+	for !gotCancel || secondReq.ID == "" {
+		select {
+		case frame := <-frames:
+			switch {
+			case frame.Type == hubReverseFrameCancel && frame.ID == firstReq.ID:
+				gotCancel = true
+			case frame.Type == hubReverseFrameRequest && frame.Path == "/chat/healthz":
+				secondReq = frame
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for overflow cancel and sibling request (cancel=%v sibling=%q)", gotCancel, secondReq.ID)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for reverse writer")
 	}
+	if err := conn.WriteJSON(hubReverseResponse{ID: secondReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: []byte("ok")}); err != nil {
+		t.Fatalf("write second response: %v", err)
+	}
+	second := waitForReverseDoResult(t, secondResult)
+	if second.err != nil {
+		t.Fatalf("second reverse do after unread stream overflow: %v", second.err)
+	}
+	defer second.resp.Body.Close()
+	body, err := io.ReadAll(second.resp.Body)
+	if err != nil {
+		t.Fatalf("read second body: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("second body = %q", body)
+	}
+	if !s.reverse.isConnected("artist") {
+		t.Fatal("reverse tunnel disconnected after isolating unread response")
+	}
+
+	_, err = io.ReadAll(first.resp.Body)
+	if !errors.Is(err, errHubReverseSlowConsumer) {
+		t.Fatalf("first body error = %v, want %v", err, errHubReverseSlowConsumer)
+	}
+}
+
+func TestHubReverseReadLoopCompletesLargeActivelyDrainedStream(t *testing.T) {
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(hubTS.URL, "http") + "/api/connect?node_id=artist"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer node-token")
+	header.Set(hubNodeIDHeader, "artist")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+	waitForReverseNode(t, s, "artist")
+
+	frames := make(chan hubReverseRequest, 8)
+	go func() {
+		for {
+			var frame hubReverseRequest
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			frames <- frame
+		}
+	}()
+
+	result := make(chan reverseDoResult, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/large-stream", nil)
+		resp, err := s.reverse.do(context.Background(), node, req)
+		result <- reverseDoResult{resp: resp, err: err}
+	}()
+	request := waitForReverseRequest(t, frames, "/chat/large-stream")
+	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: request.ID, Status: http.StatusOK}); err != nil {
+		t.Fatalf("write response_start: %v", err)
+	}
+	response := waitForReverseDoResult(t, result)
+	if response.err != nil {
+		t.Fatalf("reverse do: %v", response.err)
+	}
+	defer response.resp.Body.Close()
+
+	s.reverse.mu.RLock()
+	reverseConn := s.reverse.conns[node.ID]
+	s.reverse.mu.RUnlock()
+	if reverseConn == nil {
+		t.Fatal("reverse connection disappeared")
+	}
+	reverseConn.pendingMu.Lock()
+	pending := reverseConn.pending[request.ID]
+	reverseConn.pendingMu.Unlock()
+	if pending == nil {
+		t.Fatal("large stream request is not pending")
+	}
+
+	bodyResult := make(chan reverseBodyResult, 1)
+	go func() {
+		body, err := io.ReadAll(response.resp.Body)
+		bodyResult <- reverseBodyResult{body: body, err: err}
+	}()
+	const frameCount = 4 * hubReversePendingBuffer
+	progressDeadline := time.Now().Add(5 * time.Second)
+	for i := 0; i < frameCount; i++ {
+		for len(pending.ch) >= hubReversePendingBuffer/2 {
+			if time.Now().After(progressDeadline) {
+				t.Fatalf("active response consumer stopped making progress at frame %d", i)
+			}
+			runtime.Gosched()
+		}
+		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: request.ID, Body: []byte("x")}); err != nil {
+			t.Fatalf("write body frame %d: %v", i, err)
+		}
+	}
+	if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: request.ID}); err != nil {
+		t.Fatalf("write response_end: %v", err)
+	}
+
+	select {
+	case got := <-bodyResult:
+		if got.err != nil {
+			t.Fatalf("read large response body: %v", got.err)
+		}
+		if len(got.body) != frameCount || strings.Trim(string(got.body), "x") != "" {
+			t.Fatalf("large response body length/content mismatch: len=%d want=%d", len(got.body), frameCount)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out draining large reverse response")
+	}
+}
+
+type reverseBodyResult struct {
+	body []byte
+	err  error
+}
+
+func TestHubReversePendingDefersTerminalBehindFullBodyQueue(t *testing.T) {
+	pending := newHubReversePending()
+	for i := 0; i < hubReversePendingBuffer; i++ {
+		queued, full := pending.enqueue(hubReverseResponse{Type: hubReverseFrameResponseBody, Body: []byte("x")})
+		if !queued || full {
+			t.Fatalf("enqueue body frame %d = (%v, %v)", i, queued, full)
+		}
+	}
+	if !pending.deferTerminal(hubReverseResponse{Type: hubReverseFrameResponseEnd}) {
+		t.Fatal("failed to defer terminal frame")
+	}
+	pr, pw := io.Pipe()
+	go (&hubReverseConnection{}).copyReverseResponseBody(context.Background(), "request", pending, pw)
+	body, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatalf("read deferred-terminal body: %v", err)
+	}
+	if len(body) != hubReversePendingBuffer {
+		t.Fatalf("body length = %d, want %d", len(body), hubReversePendingBuffer)
+	}
+}
+
+func TestHubReversePendingEnforcesBodyByteLimit(t *testing.T) {
+	pending := newHubReversePending()
+	queued, full := pending.enqueue(hubReverseResponse{
+		Type: hubReverseFrameResponseBody,
+		Body: make([]byte, hubReversePendingBodyBytes+1),
+	})
+	if queued || !full {
+		t.Fatalf("oversized enqueue = (%v, %v), want (false, true)", queued, full)
+	}
+	if got := pending.queuedBytes.Load(); got != 0 {
+		t.Fatalf("queued bytes = %d after rejected frame, want 0", got)
+	}
+
+	pending = newHubReversePending()
+	connection := &hubReverseConnection{pending: map[string]*hubReversePending{"request": pending}}
+	connection.dispatchResponse(hubReverseResponse{
+		ID:   "request",
+		Type: hubReverseFrameResponseBody,
+		Body: make([]byte, hubReversePendingBodyBytes+1),
+	})
+	if err := pending.errValue(); !errors.Is(err, errHubReverseResponseTooLarge) {
+		t.Fatalf("oversized dispatch error = %v, want %v", err, errHubReverseResponseTooLarge)
+	}
+}
+
+func TestHubReverseDispatchFullTerminalPreservesNodeOutcome(t *testing.T) {
+	t.Run("node error", func(t *testing.T) {
+		pending := newHubReversePending()
+		for i := 0; i < hubReversePendingBuffer; i++ {
+			queued, full := pending.enqueue(hubReverseResponse{Type: hubReverseFrameResponseBody, Body: []byte("x")})
+			if !queued || full {
+				t.Fatalf("enqueue body frame %d = (%v, %v)", i, queued, full)
+			}
+		}
+		connection := &hubReverseConnection{pending: map[string]*hubReversePending{"request": pending}}
+		connection.dispatchResponse(hubReverseResponse{ID: "request", Error: "node failed", Body: []byte("terminal metadata")})
+		if pending.doneClosed() {
+			t.Fatal("node error aborted before queued body frames drained")
+		}
+		if _, ok := connection.pending["request"]; ok {
+			t.Fatal("errored request remained pending")
+		}
+		pr, pw := io.Pipe()
+		go connection.copyReverseResponseBody(context.Background(), "request", pending, pw)
+		body, err := io.ReadAll(pr)
+		if err == nil || err.Error() != "node failed" {
+			t.Fatalf("body error = %v, want node failure", err)
+		}
+		if len(body) != hubReversePendingBuffer {
+			t.Fatalf("body length = %d, want %d queued bytes", len(body), hubReversePendingBuffer)
+		}
+		if got := pending.queuedBytes.Load(); got != 0 {
+			t.Fatalf("queued bytes after terminal error = %d, want 0", got)
+		}
+	})
+
+	t.Run("clean response end", func(t *testing.T) {
+		pending := newHubReversePending()
+		for i := 0; i < hubReversePendingBuffer; i++ {
+			queued, full := pending.enqueue(hubReverseResponse{Type: hubReverseFrameResponseBody})
+			if !queued || full {
+				t.Fatalf("enqueue body frame %d = (%v, %v)", i, queued, full)
+			}
+		}
+		connection := &hubReverseConnection{pending: map[string]*hubReversePending{"request": pending}}
+		connection.dispatchResponse(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: "request"})
+		select {
+		case terminal := <-pending.terminal:
+			if terminal.Type != hubReverseFrameResponseEnd {
+				t.Fatalf("terminal frame = %#v", terminal)
+			}
+		default:
+			t.Fatal("clean terminal frame was not deferred")
+		}
+		if pending.doneClosed() {
+			t.Fatal("clean terminal frame aborted pending request")
+		}
+		if _, ok := connection.pending["request"]; ok {
+			t.Fatal("completed request remained pending")
+		}
+	})
 }
 
 func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
@@ -395,12 +622,12 @@ func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
 	}
 	defer first.resp.Body.Close()
 
-	// Fill the first request's response queue until the websocket reader is
-	// backpressured behind an undrained body. Canceling the request must unblock
-	// that path so later multiplexed requests on the same websocket still work.
+	// Queue several frames behind the unread body without overflowing its buffer.
+	// Explicit cancellation must still release that request so later multiplexed
+	// requests on the same websocket continue to work.
 	writerDone := make(chan error, 1)
 	go func() {
-		for i := 0; i < hubReversePendingBuffer+4; i++ {
+		for i := 0; i < hubReversePendingBuffer/2; i++ {
 			if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte("chunk")}); err != nil {
 				writerDone <- err
 				return
@@ -415,10 +642,10 @@ func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
 	select {
 	case err := <-writerDone:
 		if err != nil {
-			t.Fatalf("write blocked body frames: %v", err)
+			t.Fatalf("write queued body frames: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for blocked reverse writer to unblock after cancel")
+		t.Fatal("timed out waiting for reverse writer")
 	}
 
 	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 2*time.Second)
@@ -469,6 +696,9 @@ func waitForReverseRequest(t *testing.T, ch <-chan hubReverseRequest, wantPath s
 	for {
 		select {
 		case req := <-ch:
+			if req.Type != hubReverseFrameRequest {
+				continue
+			}
 			if req.Path == wantPath {
 				return req
 			}

@@ -103,64 +103,64 @@ func (t *RunAgentScriptTool) Preview(args json.RawMessage) string {
 func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	var a RunAgentScriptArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.Script == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "script is required"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "script is required")), nil
 	}
 
 	// Validate AgentDir is configured
 	if t.config.AgentDir == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "no agent directory configured"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "no agent directory configured")), nil
 	}
 
 	// Security: reject path separators and traversal
 	if strings.Contains(a.Script, "/") || strings.Contains(a.Script, "\\") || strings.Contains(a.Script, "..") {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "script name must not contain path separators or '..'"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "script name must not contain path separators or '..'")), nil
 	}
 
 	// Resolve absolute path and verify containment within AgentDir
 	absScript := filepath.Join(t.config.AgentDir, a.Script)
 	absScript, err := filepath.Abs(absScript)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "resolve path: %v", err))), nil
+		return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "resolve path: %v", err)), nil
 	}
 
 	agentDir, err := filepath.Abs(t.config.AgentDir)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "resolve agent dir: %v", err))), nil
+		return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "resolve agent dir: %v", err)), nil
 	}
 
 	if !strings.HasPrefix(absScript, agentDir+string(filepath.Separator)) {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "script path escapes agent directory"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "script path escapes agent directory")), nil
 	}
 
 	// Resolve symlinks and re-check containment
 	realScript, err := filepath.EvalSymlinks(absScript)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrFileNotFound, "script not found: %s", a.Script))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrFileNotFound, "script not found: %s", a.Script)), nil
 		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "resolve symlinks: %v", err))), nil
+		return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "resolve symlinks: %v", err)), nil
 	}
 
 	realAgentDir, err := filepath.EvalSymlinks(agentDir)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "resolve agent dir symlinks: %v", err))), nil
+		return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "resolve agent dir symlinks: %v", err)), nil
 	}
 
 	if !strings.HasPrefix(realScript, realAgentDir+string(filepath.Separator)) {
-		return llm.TextOutput(formatToolError(NewToolError(ErrSymlinkEscape, "script symlink escapes agent directory"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrSymlinkEscape, "script symlink escapes agent directory")), nil
 	}
 
 	// Verify target is a file
 	info, err := os.Stat(realScript)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrFileNotFound, "script not found: %s", a.Script))), nil
+		return scriptToolErrorOutput(NewToolErrorf(ErrFileNotFound, "script not found: %s", a.Script)), nil
 	}
 	if info.IsDir() {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "script target is a directory, not a file"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "script target is a directory, not a file")), nil
 	}
 
 	// Set timeout
@@ -178,14 +178,14 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 	if t.config != nil {
 		workDir = t.config.WorkingDir()
 		if workDir == "" && t.config.RequiresExplicitWorkingDir() {
-			return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run agent scripts"))), nil
+			return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run agent scripts")), nil
 		}
 	}
 	if workDir == "" {
 		var err error
 		workDir, err = os.Getwd()
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err)), nil
 		}
 	}
 
@@ -193,7 +193,7 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 	if strings.TrimSpace(a.Args) != "" {
 		argv, err = splitShellWords(a.Args)
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid args: %v", err))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrInvalidParams, "invalid args: %v", err)), nil
 		}
 	}
 
@@ -213,7 +213,7 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 
 	var setupErr *runAgentScriptSetupError
 	if errors.As(execErr, &setupErr) {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", setupErr.err))), nil
+		return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", setupErr.err)), nil
 	}
 
 	result := ShellResult{
@@ -225,17 +225,23 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 
 	if execCtx.Err() != nil {
-		result.TimedOut = true
-		return llm.ToolOutput{Content: formatShellResult(result, t.limits), TimedOut: true}, nil
+		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
+		result.TimedOut = timedOut
+		result.Canceled = !timedOut
+		return llm.ToolOutput{Content: formatShellResult(result, t.limits), IsError: true, TimedOut: timedOut}, nil
 	}
 
 	if execErr != nil {
 		if exitErr, ok := execErr.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script error: %v", execErr))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "script error: %v", execErr)), nil
 		}
 	}
 
-	return llm.TextOutput(formatShellResult(result, t.limits)), nil
+	// Agent scripts use the same success contract as shell and custom scripts:
+	// every nonzero exit is a failed tool call.
+	output := llm.TextOutput(formatShellResult(result, t.limits))
+	output.IsError = result.ExitCode != 0
+	return output, nil
 }

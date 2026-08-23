@@ -2672,29 +2672,50 @@ func (s *serveServer) transcriptRev(ctx context.Context, sessionID string) (int6
 
 const responseRunRevisionReadTimeout = 5 * time.Second
 
+func latestResponseRunDurableBoundary(items []session.TranscriptIndexItem) int64 {
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		if item.ID <= 0 || item.Flags&session.TranscriptFlagCompactionTail != 0 {
+			continue
+		}
+		switch llm.Role(item.Role) {
+		case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+			return item.ID
+		}
+	}
+	return 0
+}
+
 func (s *serveServer) configureResponseRunRevision(run *responseRun, sessionID string) {
 	if run == nil {
 		return
 	}
 	startedCtx, startedCancel := context.WithTimeout(context.Background(), responseRunRevisionReadTimeout)
-	if indexer, ok := s.transcriptIndexerForWeb(); ok {
-		if snapshot, err := indexer.GetTranscriptSnapshot(startedCtx, sessionID); err == nil {
-			run.startedRev = snapshot.Rev
-			run.startedCompactionSeq = snapshot.CompactionSeq
-			run.startedCompactionCount = snapshot.CompactionCount
-			for i := len(snapshot.Items) - 1; i >= 0; i-- {
-				item := snapshot.Items[i]
-				if item.ID <= 0 || item.Flags&session.TranscriptFlagCompactionTail != 0 {
-					continue
+	configured := false
+	compactReadAllowed := true
+	if reporter, ok := s.store.(session.TranscriptVersionReporter); ok && !reporter.TranscriptVersioned() {
+		compactReadAllowed = false
+	}
+	if reader, ok := s.store.(session.ResponseRunStartStateReader); compactReadAllowed && ok {
+		if state, err := reader.GetResponseRunStartState(startedCtx, sessionID); err == nil {
+			run.startedRev = state.Rev
+			run.startedCompactionSeq = state.CompactionSeq
+			run.startedCompactionCount = state.CompactionCount
+			if state.DurableBoundaryID > 0 {
+				run.setInitialDurableBoundary(state.DurableBoundaryID)
+			}
+			configured = true
+		}
+	}
+	if !configured {
+		if indexer, ok := s.transcriptIndexerForWeb(); ok {
+			if snapshot, err := indexer.GetTranscriptSnapshot(startedCtx, sessionID); err == nil {
+				run.startedRev = snapshot.Rev
+				run.startedCompactionSeq = snapshot.CompactionSeq
+				run.startedCompactionCount = snapshot.CompactionCount
+				if boundaryID := latestResponseRunDurableBoundary(snapshot.Items); boundaryID > 0 {
+					run.setInitialDurableBoundary(boundaryID)
 				}
-				switch llm.Role(item.Role) {
-				case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
-					run.setInitialDurableBoundary(item.ID)
-					break
-				default:
-					continue
-				}
-				break
 			}
 		}
 	}

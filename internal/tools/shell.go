@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -179,6 +180,7 @@ type ShellResult struct {
 	Stderr          string `json:"stderr"`
 	ExitCode        int    `json:"exit_code"`
 	TimedOut        bool   `json:"timed_out,omitempty"`
+	Canceled        bool   `json:"canceled,omitempty"`
 	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
 	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
 }
@@ -390,10 +392,12 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		StderrTruncated: stderr.Truncated(),
 	}
 
-	// Check for timeout
+	// Distinguish an elapsed deadline from explicit caller cancellation.
 	if execCtx.Err() != nil {
-		result.TimedOut = true
-		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true, IsError: true, FileChanges: fileChanges}, nil
+		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
+		result.TimedOut = timedOut
+		result.Canceled = !timedOut
+		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: timedOut, IsError: true, FileChanges: fileChanges}, nil
 	}
 
 	// Get exit code
@@ -434,6 +438,8 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 
 	if result.TimedOut {
 		sb.WriteString("[Command timed out]\n\n")
+	} else if result.Canceled {
+		sb.WriteString("[Command canceled]\n\n")
 	}
 
 	if stdout != "" {

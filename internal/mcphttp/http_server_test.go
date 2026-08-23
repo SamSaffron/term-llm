@@ -1,8 +1,10 @@
 package mcphttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,8 +12,8 @@ import (
 )
 
 func TestServerStartStop(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "executed: " + name, nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "executed: " + name}, nil
 	}
 
 	server := NewServer(executor)
@@ -72,9 +74,66 @@ func TestServerStartStop(t *testing.T) {
 	}
 }
 
+func TestServerPropagatesToolResultIsError(t *testing.T) {
+	server := NewServer(func(context.Context, string, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "failed usefully", IsError: true}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url, token, err := server.Start(ctx, []ToolSpec{{Name: "fail", Schema: map[string]interface{}{"type": "object"}}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	}()
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fail","arguments":{}}}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(payload), []byte("\n")) {
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("data:")) {
+			payload = bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(line), []byte("data:")))
+			break
+		}
+	}
+	var result struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatalf("decode response %q: %v", payload, err)
+	}
+	if !result.Result.IsError || len(result.Result.Content) != 1 || result.Result.Content[0].Text != "failed usefully" {
+		t.Fatalf("tool result = %#v", result.Result)
+	}
+}
+
 func TestServerAuthMiddleware(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "executed", nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "executed"}, nil
 	}
 
 	server := NewServer(executor)
@@ -143,10 +202,10 @@ func TestServerAuthMiddleware(t *testing.T) {
 // restarts.
 func TestServerStopRespectsContextDeadline(t *testing.T) {
 	executorEntered := make(chan struct{})
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
 		close(executorEntered)
 		<-ctx.Done()
-		return "", ctx.Err()
+		return ToolResult{}, ctx.Err()
 	}
 
 	server := NewServer(executor)
@@ -204,8 +263,8 @@ func TestServerStopRespectsContextDeadline(t *testing.T) {
 }
 
 func TestServerCannotStartTwice(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "executed", nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "executed"}, nil
 	}
 
 	server := NewServer(executor)
@@ -229,8 +288,8 @@ func TestServerCannotStartTwice(t *testing.T) {
 }
 
 func TestStartOnAddress(t *testing.T) {
-	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-		return "ok", nil
+	executor := func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error) {
+		return ToolResult{Content: "ok"}, nil
 	}
 	tools := []ToolSpec{
 		{Name: "t", Description: "d", Schema: map[string]interface{}{"type": "object"}},

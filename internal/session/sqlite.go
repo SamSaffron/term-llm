@@ -25,6 +25,7 @@ import (
 type SQLiteStore struct {
 	db                       *sql.DB
 	readDB                   *sql.DB
+	responseRunReadDB        *sql.DB
 	cfg                      Config
 	hasGeneratedTitles       bool // true if sessions table has generated title columns
 	hasCompactionSeq         bool // true if sessions table has compaction_seq column
@@ -381,19 +382,32 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		}
 		if strings.EqualFold(journalMode, "wal") {
 			readDSN := sqliteFileURI(dbPath) + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
-			readDB, err := sql.Open("sqlite", readDSN)
+			openReader := func(purpose string) (*sql.DB, error) {
+				reader, err := sql.Open("sqlite", readDSN)
+				if err != nil {
+					return nil, fmt.Errorf("open %s database: %w", purpose, err)
+				}
+				reader.SetMaxOpenConns(1)
+				reader.SetMaxIdleConns(1)
+				if err := reader.Ping(); err != nil {
+					reader.Close()
+					return nil, fmt.Errorf("connect %s database: %w", purpose, err)
+				}
+				return reader, nil
+			}
+			readDB, err := openReader("transcript read")
 			if err != nil {
 				db.Close()
-				return nil, fmt.Errorf("open transcript read database: %w", err)
+				return nil, err
 			}
-			readDB.SetMaxOpenConns(1)
-			readDB.SetMaxIdleConns(1)
-			if err := readDB.Ping(); err != nil {
+			responseRunReadDB, err := openReader("response-run read")
+			if err != nil {
 				readDB.Close()
 				db.Close()
-				return nil, fmt.Errorf("connect transcript read database: %w", err)
+				return nil, err
 			}
 			store.readDB = readDB
+			store.responseRunReadDB = responseRunReadDB
 		}
 	}
 
@@ -4123,6 +4137,61 @@ func (s *SQLiteStore) transcriptReadDB() *sql.DB {
 	return s.db
 }
 
+func (s *SQLiteStore) responseRunStateReadDB() *sql.DB {
+	if s.responseRunReadDB != nil {
+		return s.responseRunReadDB
+	}
+	return s.db
+}
+
+// GetResponseRunStartState returns the response-run transcript envelope in one
+// indexed scalar query. File-backed WAL stores use a dedicated scalar reader so
+// startup is queued behind neither long transcript materialization nor the
+// single writer connection. In-memory, read-only, and rollback-journal stores
+// retain their existing serialized connection behavior.
+func (s *SQLiteStore) GetResponseRunStartState(ctx context.Context, sessionID string) (ResponseRunStartState, error) {
+	if !s.hasTranscriptRev || !s.hasMessagesTable {
+		return ResponseRunStartState{}, ErrTranscriptRevisionUnsupported
+	}
+	compactionSeqExpr := "-1"
+	if s.hasCompactionSeq {
+		compactionSeqExpr = "COALESCE(compaction_seq, -1)"
+	}
+	compactionCountExpr := "0"
+	if s.hasCompactionCount {
+		compactionCountExpr = "COALESCE(compaction_count, 0)"
+	}
+	compactionTailFilter := ""
+	if s.hasMessageCompactionTail {
+		compactionTailFilter = "AND NOT COALESCE(compaction_tail, FALSE)"
+	}
+	state := ResponseRunStartState{CompactionSeq: -1}
+	err := s.responseRunStateReadDB().QueryRowContext(ctx, `
+		SELECT transcript_rev, `+compactionSeqExpr+`, `+compactionCountExpr+`, COALESCE((
+			SELECT id
+			FROM messages
+			WHERE session_id = sessions.id
+				AND role IN ('user', 'assistant', 'tool')
+				`+compactionTailFilter+`
+			ORDER BY sequence DESC, id DESC
+			LIMIT 1
+		), 0)
+		FROM sessions
+		WHERE id = ?`, sessionID).Scan(
+		&state.Rev,
+		&state.CompactionSeq,
+		&state.CompactionCount,
+		&state.DurableBoundaryID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResponseRunStartState{}, ErrNotFound
+	}
+	if err != nil {
+		return ResponseRunStartState{}, fmt.Errorf("get response run start state: %w", err)
+	}
+	return state, nil
+}
+
 // GetTranscriptSnapshot returns the complete transcript envelope from one
 // SQLite read transaction.
 func (s *SQLiteStore) GetTranscriptSnapshot(ctx context.Context, sessionID string) (TranscriptSnapshot, error) {
@@ -4758,7 +4827,11 @@ func (s *SQLiteStore) Close() error {
 	if s.readDB != nil {
 		readErr = s.readDB.Close()
 	}
-	return errors.Join(readErr, s.db.Close())
+	var responseRunReadErr error
+	if s.responseRunReadDB != nil {
+		responseRunReadErr = s.responseRunReadDB.Close()
+	}
+	return errors.Join(readErr, responseRunReadErr, s.db.Close())
 }
 
 // setCurrentColumns records optional columns that are guaranteed to exist after

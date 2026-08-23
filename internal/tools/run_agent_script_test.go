@@ -91,6 +91,10 @@ func TestRunAgentScriptTool(t *testing.T) {
 			}
 
 			text := output.Content
+			wantIsError := tt.wantErr != ""
+			if output.IsError != wantIsError {
+				t.Errorf("IsError = %v, want %v; output: %s", output.IsError, wantIsError, text)
+			}
 			if tt.wantErr != "" {
 				if !strings.Contains(text, tt.wantErr) {
 					t.Errorf("expected error containing %q, got: %s", tt.wantErr, text)
@@ -102,6 +106,114 @@ func TestRunAgentScriptTool(t *testing.T) {
 			}
 			if tt.wantExit != "" && !strings.Contains(text, tt.wantExit) {
 				t.Errorf("expected %q in output, got: %s", tt.wantExit, text)
+			}
+		})
+	}
+}
+
+func TestRunAgentScriptTool_ExecutionFailureStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script execution status test requires POSIX executable files")
+	}
+	tests := []struct {
+		name        string
+		mode        os.FileMode
+		content     string
+		wantContent string
+	}{
+		{
+			name:        "unexecutable script",
+			mode:        0644,
+			content:     "#!/bin/sh\necho diagnostic >&2\n",
+			wantContent: "script error",
+		},
+		{
+			name:        "nonzero exit",
+			mode:        0755,
+			content:     "#!/bin/sh\necho diagnostic >&2\nexit 7\n",
+			wantContent: "exit_code: 7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agentDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(agentDir, "test.sh"), []byte(tt.content), tt.mode); err != nil {
+				t.Fatalf("write script: %v", err)
+			}
+			tool := NewRunAgentScriptTool(&ToolConfig{AgentDir: agentDir}, DefaultOutputLimits())
+			args, err := json.Marshal(RunAgentScriptArgs{Script: "test.sh"})
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+
+			output, err := tool.Execute(context.Background(), args)
+			if err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+			if !output.IsError {
+				t.Errorf("expected IsError=true, got output: %s", output.Content)
+			}
+			if !strings.Contains(output.Content, tt.wantContent) {
+				t.Errorf("expected output containing %q, got: %s", tt.wantContent, output.Content)
+			}
+		})
+	}
+}
+
+func TestRunAgentScriptTool_ContextFailureStatus(t *testing.T) {
+	agentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDir, "wait.sh"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	oldCommand := runAgentScriptCommand
+	runAgentScriptCommand = func(ctx context.Context, _ string, _ []string, _ string, _, _ *limitedBuffer) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { runAgentScriptCommand = oldCommand })
+	tool := NewRunAgentScriptTool(&ToolConfig{AgentDir: agentDir}, DefaultOutputLimits())
+	args, err := json.Marshal(RunAgentScriptArgs{Script: "wait.sh"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	tests := []struct {
+		name         string
+		context      func() (context.Context, context.CancelFunc)
+		wantTimedOut bool
+		wantMarker   string
+	}{
+		{
+			name: "deadline",
+			context: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			wantTimedOut: true,
+			wantMarker:   "[Command timed out]",
+		},
+		{
+			name: "cancellation",
+			context: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			wantMarker: "[Command canceled]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := tt.context()
+			defer cancel()
+			output, err := tool.Execute(ctx, args)
+			if err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+			if !output.IsError || output.TimedOut != tt.wantTimedOut {
+				t.Fatalf("context-failed script flags = IsError:%v TimedOut:%v; want true, %v", output.IsError, output.TimedOut, tt.wantTimedOut)
+			}
+			if !strings.Contains(output.Content, tt.wantMarker) {
+				t.Fatalf("context-failed script output = %q, want marker %q", output.Content, tt.wantMarker)
 			}
 		})
 	}

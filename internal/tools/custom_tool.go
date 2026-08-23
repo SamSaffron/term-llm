@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,15 @@ type CustomScriptTool struct {
 	agentDir   string
 	limits     OutputLimits
 	toolConfig *ToolConfig
+}
+
+// scriptToolErrorOutput preserves the structured diagnostic text while marking
+// every validation/setup failure as a failed tool call; no script ran to a
+// successful completion in these paths.
+func scriptToolErrorOutput(err *ToolError) llm.ToolOutput {
+	output := llm.TextOutput(formatToolError(err))
+	output.IsError = true
+	return output
 }
 
 // newCustomScriptTool creates a CustomScriptTool from a definition and agent directory.
@@ -73,13 +83,13 @@ func (t *CustomScriptTool) Preview(args json.RawMessage) string {
 func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
 	// Validate agentDir is set
 	if t.agentDir == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "no agent directory configured"))), nil
+		return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "no agent directory configured")), nil
 	}
 
 	// Resolve and validate the script path
 	scriptPath, err := t.resolveScript()
 	if err != nil {
-		return llm.TextOutput(formatToolError(err.(*ToolError))), nil
+		return scriptToolErrorOutput(err.(*ToolError)), nil
 	}
 
 	// Determine timeout; cap at 24h as a safety net
@@ -97,14 +107,14 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	if t.toolConfig != nil {
 		workDir = t.toolConfig.WorkingDir()
 		if workDir == "" && t.toolConfig.RequiresExplicitWorkingDir() {
-			return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run custom tools"))), nil
+			return scriptToolErrorOutput(NewToolError(ErrInvalidParams, "an explicit session working directory is required to run custom tools")), nil
 		}
 	}
 	if workDir == "" {
 		var err error
 		workDir, err = os.Getwd()
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err)), nil
 		}
 	}
 
@@ -132,7 +142,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 		// Build the command according to the calling convention.
 		cmd, err := t.buildCommand(execCtx, scriptPath, args)
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "build command: %v", err))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "build command: %v", err)), nil
 		}
 		cmd.Dir = workDir
 		cmd.Env = append([]string(nil), env...)
@@ -141,7 +151,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 
 		cleanup, prepErr := prepareToolCommand(cmd)
 		if prepErr != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr)), nil
 		}
 
 		execErr = cmd.Run()
@@ -159,19 +169,26 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	}
 
 	if execCtx.Err() != nil {
-		result.TimedOut = true
-		return llm.ToolOutput{Content: formatShellResult(result, t.limits), TimedOut: true}, nil
+		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
+		result.TimedOut = timedOut
+		result.Canceled = !timedOut
+		return llm.ToolOutput{Content: formatShellResult(result, t.limits), IsError: true, TimedOut: timedOut}, nil
 	}
 
 	if execErr != nil {
 		if exitErr, ok := execErr.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script error: %v", execErr))), nil
+			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "script error: %v", execErr)), nil
 		}
 	}
 
-	return llm.TextOutput(formatShellResult(result, t.limits)), nil
+	// Script-backed tools intentionally follow shell semantics: every nonzero exit
+	// is a failed tool call. Scripts that use exit codes as signals must translate
+	// successful signal cases to zero before returning to term-llm.
+	output := llm.TextOutput(formatShellResult(result, t.limits))
+	output.IsError = result.ExitCode != 0
+	return output, nil
 }
 
 // buildCommand constructs the exec.Cmd for the script according to the calling convention.

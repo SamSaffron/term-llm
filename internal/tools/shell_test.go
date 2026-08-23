@@ -371,6 +371,23 @@ func TestShellTool_Timeout(t *testing.T) {
 		}
 	})
 
+	t.Run("command cancellation is not timeout", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{Command: "sleep 10"})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		output, err := tool.Execute(ctx, args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, "[Command canceled]") {
+			t.Fatalf("expected cancellation marker in output, got: %s", output.Content)
+		}
+		if output.TimedOut || !output.IsError {
+			t.Fatalf("canceled command flags = IsError:%v TimedOut:%v; want true, false", output.IsError, output.TimedOut)
+		}
+	})
+
 	t.Run("non-zero exit marks output error", func(t *testing.T) {
 		tool := NewShellTool(nil, nil, DefaultOutputLimits())
 		args := mustMarshalShellArgs(ShellArgs{Command: "printf fail >&2; exit 7"})

@@ -8,6 +8,32 @@ import (
 	"testing"
 )
 
+type responseRunStartErrorStore struct {
+	NoopStore
+	err error
+}
+
+func (s *responseRunStartErrorStore) GetResponseRunStartState(context.Context, string) (ResponseRunStartState, error) {
+	return ResponseRunStartState{}, s.err
+}
+
+func TestLoggingStoreResponseRunStartStateIgnoresExpectedErrors(t *testing.T) {
+	for _, expected := range []error{ErrNotFound, ErrTranscriptRevisionUnsupported} {
+		t.Run(expected.Error(), func(t *testing.T) {
+			var warnings []string
+			store := NewLoggingStore(&responseRunStartErrorStore{err: expected}, func(format string, args ...any) {
+				warnings = append(warnings, fmt.Sprintf(format, args...))
+			})
+			if _, err := store.GetResponseRunStartState(context.Background(), "missing"); !errors.Is(err, expected) {
+				t.Fatalf("error = %v, want %v", err, expected)
+			}
+			if len(warnings) != 0 {
+				t.Fatalf("warnings = %q, want none", warnings)
+			}
+		})
+	}
+}
+
 func TestLoggingStoreIgnoresContextCancellation(t *testing.T) {
 	var warnings []string
 	store := NewLoggingStore(&NoopStore{}, func(format string, args ...any) {

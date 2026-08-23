@@ -22,14 +22,23 @@ import (
 // The tunnel uses a small JSON frame protocol: the Hub sends request frames; the
 // node replies with response_start, response_body, and response_end frames. For
 // non-streaming JSON-style calls, a single complete response frame is also
-// accepted and exposed as an ordinary http.Response reader.
+// accepted and exposed as an ordinary http.Response reader when the complete
+// JSON/base64 frame remains below hubReverseMaxWireFrameBytes; larger responses
+// must use the chunked frame sequence.
 
 const (
-	hubReversePingInterval        = 20 * time.Second
-	hubReversePongWait            = 60 * time.Second
-	hubReverseWriteWait           = 10 * time.Second
-	hubReverseChunkSize           = 32 * 1024
-	hubReversePendingBuffer       = 16
+	hubReversePingInterval = 20 * time.Second
+	hubReversePongWait     = 60 * time.Second
+	hubReverseWriteWait    = 10 * time.Second
+	hubReverseChunkSize    = 32 * 1024
+	// Bound each request by both frames and decoded body bytes. This absorbs an
+	// ~8 MiB burst at the connector's maximum chunk size without allowing one
+	// downstream client to wedge the multiplexed websocket reader.
+	hubReversePendingBuffer    = 256
+	hubReversePendingBodyBytes = 8 << 20
+	// JSON/base64 framing expands a 32 KiB body chunk. Leave ample room for
+	// response metadata while rejecting unexpectedly large node frames.
+	hubReverseMaxWireFrameBytes   = 256 << 10
 	hubReverseMaxRequestBodyBytes = 32 << 20
 
 	hubReverseFrameRequest       = "request"
@@ -37,6 +46,11 @@ const (
 	hubReverseFrameResponseStart = "response_start"
 	hubReverseFrameResponseBody  = "response_body"
 	hubReverseFrameResponseEnd   = "response_end"
+)
+
+var (
+	errHubReverseSlowConsumer     = errors.New("reverse response consumer is too slow")
+	errHubReverseResponseTooLarge = errors.New("reverse response frame body exceeds per-request limit")
 )
 
 type hubReverseRequest struct {
@@ -58,12 +72,14 @@ type hubReverseResponse struct {
 }
 
 type hubReversePending struct {
-	ch       chan hubReverseResponse
-	done     chan struct{}
-	doneOnce sync.Once
-	mu       sync.RWMutex
-	err      error
-	pipe     *io.PipeWriter
+	ch          chan hubReverseResponse
+	terminal    chan hubReverseResponse
+	queuedBytes atomic.Int64
+	done        chan struct{}
+	doneOnce    sync.Once
+	mu          sync.RWMutex
+	err         error
+	pipe        *io.PipeWriter
 }
 
 type hubReverseConnection struct {
@@ -80,8 +96,9 @@ type hubReverseConnection struct {
 
 func newHubReversePending() *hubReversePending {
 	return &hubReversePending{
-		ch:   make(chan hubReverseResponse, hubReversePendingBuffer),
-		done: make(chan struct{}),
+		ch:       make(chan hubReverseResponse, hubReversePendingBuffer),
+		terminal: make(chan hubReverseResponse, 1),
+		done:     make(chan struct{}),
 	}
 }
 
@@ -138,19 +155,57 @@ func (p *hubReversePending) abort(err error) {
 	}
 }
 
-func (p *hubReversePending) enqueue(resp hubReverseResponse) bool {
+func (p *hubReversePending) enqueue(resp hubReverseResponse) (queued, full bool) {
 	if p == nil {
-		return false
+		return false, false
 	}
-	// Apply per-request backpressure instead of dropping body frames for a
-	// slower downstream consumer. Because one websocket reader multiplexes all
-	// requests for a node, a full per-request queue can temporarily stall sibling
-	// requests on the same reverse connection until this request drains or is
-	// canceled.
+	bodyBytes := int64(len(resp.Body))
+	if bodyBytes > hubReversePendingBodyBytes {
+		return false, true
+	}
+	if bodyBytes > 0 && p.queuedBytes.Add(bodyBytes) > hubReversePendingBodyBytes {
+		p.queuedBytes.Add(-bodyBytes)
+		return false, true
+	}
+	// Never block the sole websocket reader behind one request. The bounded
+	// frame and byte windows absorb normal scheduling/network-backpressure
+	// bursts; exhausting either isolates a consumer that has stopped draining.
 	select {
 	case p.ch <- resp:
+		return true, false
+	case <-p.done:
+		p.queuedBytes.Add(-bodyBytes)
+		return false, false
+	default:
+		p.queuedBytes.Add(-bodyBytes)
+		return false, true
+	}
+}
+
+func (p *hubReversePending) release(resp hubReverseResponse) {
+	if p != nil && len(resp.Body) > 0 {
+		p.queuedBytes.Add(-int64(len(resp.Body)))
+	}
+}
+
+// deferTerminal preserves a terminal frame when body traffic has filled the
+// regular queue. The body copier drains queued frames before observing this
+// one-slot terminal lane, so node errors and clean completion are not replaced
+// by a synthetic slow-consumer failure.
+func (p *hubReversePending) deferTerminal(resp hubReverseResponse) bool {
+	if p == nil || len(resp.Body) > hubReversePendingBodyBytes {
+		return false
+	}
+	bodyBytes := int64(len(resp.Body))
+	p.queuedBytes.Add(bodyBytes)
+	select {
+	case p.terminal <- resp:
 		return true
 	case <-p.done:
+		p.queuedBytes.Add(-bodyBytes)
+		return false
+	default:
+		p.queuedBytes.Add(-bodyBytes)
 		return false
 	}
 }
@@ -282,18 +337,38 @@ func (c *hubReverseConnection) readLoop(done func()) {
 			return
 		}
 		c.touch()
-		c.pendingMu.Lock()
-		pending := c.pending[resp.ID]
-		terminal := hubReverseResponseFrameTerminal(resp)
-		c.pendingMu.Unlock()
-		if pending != nil {
-			if !pending.enqueue(resp) {
-				continue
-			}
-			if terminal {
-				c.removePending(resp.ID, pending)
-			}
+		c.dispatchResponse(resp)
+	}
+}
+
+func (c *hubReverseConnection) dispatchResponse(resp hubReverseResponse) {
+	c.pendingMu.Lock()
+	pending := c.pending[resp.ID]
+	terminal := hubReverseResponseFrameTerminal(resp)
+	c.pendingMu.Unlock()
+	if pending == nil {
+		return
+	}
+	if len(resp.Body) > hubReversePendingBodyBytes {
+		c.abortPending(resp.ID, pending, errHubReverseResponseTooLarge, true)
+		return
+	}
+	queued, full := pending.enqueue(resp)
+	if full {
+		switch {
+		case terminal && pending.deferTerminal(resp):
+			c.removePending(resp.ID, pending)
+		case resp.Error != "":
+			c.abortPending(resp.ID, pending, errors.New(resp.Error), false)
+		default:
+			c.abortPending(resp.ID, pending, errHubReverseSlowConsumer, true)
 		}
+	}
+	if !queued {
+		return
+	}
+	if terminal {
+		c.removePending(resp.ID, pending)
 	}
 }
 
@@ -304,18 +379,20 @@ func hubReverseResponseFrameTerminal(resp hubReverseResponse) bool {
 	return resp.Type == hubReverseFrameResponseEnd || resp.Error != ""
 }
 
-func (c *hubReverseConnection) removePending(id string, pending *hubReversePending) {
+func (c *hubReverseConnection) removePending(id string, pending *hubReversePending) bool {
 	c.pendingMu.Lock()
-	if c.pending[id] == pending {
+	removed := c.pending[id] == pending
+	if removed {
 		delete(c.pending, id)
 	}
 	c.pendingMu.Unlock()
+	return removed
 }
 
 func (c *hubReverseConnection) abortPending(id string, pending *hubReversePending, err error, sendCancel bool) {
-	c.removePending(id, pending)
+	removed := c.removePending(id, pending)
 	pending.abort(err)
-	if sendCancel {
+	if sendCancel && removed {
 		go func() { _ = c.writeRequest(hubReverseRequest{Type: hubReverseFrameCancel, ID: id}) }()
 	}
 }
@@ -332,6 +409,9 @@ func (c *hubReverseConnection) failPending(msg string) {
 }
 
 func (c *hubReverseConnection) writeRequest(frame hubReverseRequest) error {
+	if c == nil || c.conn == nil {
+		return errors.New("reverse connection is unavailable")
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	_ = c.conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
@@ -376,6 +456,7 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 
 	select {
 	case resp := <-pending.ch:
+		pending.release(resp)
 		return c.buildHTTPResponseFromReverseFrame(ctx, req, id, pending, resp)
 	case <-pending.done:
 		if err := pending.errValue(); err != nil {
@@ -421,38 +502,48 @@ func (c *hubReverseConnection) buildHTTPResponseFromReverseFrame(ctx context.Con
 func (c *hubReverseConnection) copyReverseResponseBody(ctx context.Context, id string, pending *hubReversePending, pw *io.PipeWriter) {
 	defer pw.Close()
 	for {
+		var resp hubReverseResponse
+		// Drain ordinary frames before a deferred terminal frame. This preserves
+		// wire order when response_end arrived while the body queue was full.
 		select {
-		case resp := <-pending.ch:
-			if resp.Error != "" {
-				_ = pw.CloseWithError(errors.New(resp.Error))
-				return
-			}
-			switch resp.Type {
-			case hubReverseFrameResponseBody:
-				if len(resp.Body) > 0 {
-					if _, err := pw.Write(resp.Body); err != nil {
-						c.cancelPending(id, err)
-						return
-					}
+		case resp = <-pending.ch:
+		default:
+			select {
+			case resp = <-pending.ch:
+			case resp = <-pending.terminal:
+			case <-pending.done:
+				err := pending.errValue()
+				if err == nil {
+					err = context.Canceled
 				}
-			case hubReverseFrameResponseEnd:
-				return
-			default:
-				err := fmt.Errorf("unexpected reverse response frame %q", resp.Type)
 				_ = pw.CloseWithError(err)
-				c.cancelPending(id, err)
+				return
+			case <-ctx.Done():
+				_ = pw.CloseWithError(ctx.Err())
+				c.cancelPending(id, ctx.Err())
 				return
 			}
-		case <-pending.done:
-			err := pending.errValue()
-			if err == nil {
-				err = context.Canceled
-			}
-			_ = pw.CloseWithError(err)
+		}
+		pending.release(resp)
+
+		if resp.Error != "" {
+			_ = pw.CloseWithError(errors.New(resp.Error))
 			return
-		case <-ctx.Done():
-			_ = pw.CloseWithError(ctx.Err())
-			c.cancelPending(id, ctx.Err())
+		}
+		switch resp.Type {
+		case hubReverseFrameResponseBody:
+			if len(resp.Body) > 0 {
+				if _, err := pw.Write(resp.Body); err != nil {
+					c.cancelPending(id, err)
+					return
+				}
+			}
+		case hubReverseFrameResponseEnd:
+			return
+		default:
+			err := fmt.Errorf("unexpected reverse response frame %q", resp.Type)
+			_ = pw.CloseWithError(err)
+			c.cancelPending(id, err)
 			return
 		}
 	}
@@ -465,8 +556,8 @@ func (c *hubReverseConnection) cancelPending(id string, err error) {
 	c.pendingMu.Unlock()
 	if pending != nil {
 		pending.abort(err)
+		go func() { _ = c.writeRequest(hubReverseRequest{Type: hubReverseFrameCancel, ID: id}) }()
 	}
-	go func() { _ = c.writeRequest(hubReverseRequest{Type: hubReverseFrameCancel, ID: id}) }()
 }
 
 func (s *hubServer) handleReverseConnect(w http.ResponseWriter, r *http.Request) {
@@ -489,6 +580,7 @@ func (s *hubServer) handleReverseConnect(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(hubReverseMaxWireFrameBytes)
 	s.reverse.attach(node, conn)
 	log.Printf("hub: reverse node %q connected", node.ID)
 }

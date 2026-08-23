@@ -22,8 +22,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// ToolResult is the text result exposed to an MCP client and its semantic status.
+type ToolResult struct {
+	Content string
+	IsError bool
+}
+
 // ToolExecutor is a function that executes a tool and returns the result.
-type ToolExecutor func(ctx context.Context, name string, args json.RawMessage) (string, error)
+type ToolExecutor func(ctx context.Context, name string, args json.RawMessage) (ToolResult, error)
 
 // ToolSpec describes a tool to expose via MCP.
 type ToolSpec struct {
@@ -142,8 +148,9 @@ func (s *Server) startInternal(host string, port int, token string, tools []Tool
 
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: result},
+					&mcp.TextContent{Text: result.Content},
 				},
+				IsError: result.IsError,
 			}, nil
 		})
 	}

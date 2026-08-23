@@ -2,9 +2,12 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -151,6 +154,151 @@ func TestSQLiteStoreTranscriptIndexAndBodiesUseDurableIdentity(t *testing.T) {
 	if got := bodies[0].ClientMessageID; got != "client-hello" {
 		t.Fatalf("body client message id=%q, want client-hello", got)
 	}
+}
+
+func TestSQLiteResponseRunStartStateMatchesTranscriptSnapshot(t *testing.T) {
+	store, sess := newTranscriptTestStore(t)
+	ctx := context.Background()
+	compacted := []Message{
+		*NewMessage(sess.ID, llm.UserText("[Context Compaction]\nsummary"), -1),
+		*NewMessage(sess.ID, llm.AssistantText("retained answer"), -1),
+	}
+	compacted[1].CompactionTail = true
+	if err := store.CompactMessages(ctx, sess.ID, compacted); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	for _, message := range []*Message{
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "visible event"}}}, -1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "provider context"}}}, -1),
+	} {
+		if err := store.AddMessage(ctx, sess.ID, message); err != nil {
+			t.Fatalf("AddMessage(%s): %v", message.Role, err)
+		}
+	}
+
+	assertMatchesSnapshot := func() ResponseRunStartState {
+		t.Helper()
+		snapshot, err := store.GetTranscriptSnapshot(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("GetTranscriptSnapshot: %v", err)
+		}
+		var wantBoundary int64
+		for i := len(snapshot.Items) - 1; i >= 0; i-- {
+			item := snapshot.Items[i]
+			if item.Flags&TranscriptFlagCompactionTail != 0 {
+				continue
+			}
+			switch llm.Role(item.Role) {
+			case llm.RoleUser, llm.RoleAssistant, llm.RoleTool:
+				wantBoundary = item.ID
+			}
+			if wantBoundary != 0 {
+				break
+			}
+		}
+		state, err := store.GetResponseRunStartState(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("GetResponseRunStartState: %v", err)
+		}
+		if state.Rev != snapshot.Rev ||
+			state.CompactionSeq != snapshot.CompactionSeq ||
+			state.CompactionCount != snapshot.CompactionCount ||
+			state.DurableBoundaryID != wantBoundary {
+			t.Fatalf("start state = %#v, snapshot = %#v, want boundary %d", state, snapshot, wantBoundary)
+		}
+		return state
+	}
+
+	compactedState := assertMatchesSnapshot()
+	if compactedState.CompactionSeq < 0 || compactedState.CompactionCount != 1 {
+		t.Fatalf("compaction state = %#v, want active first compaction", compactedState)
+	}
+	tool := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{
+		Type:       llm.PartToolResult,
+		ToolResult: &llm.ToolResult{ID: "call-latest", Name: "shell", Content: "done"},
+	}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, tool); err != nil {
+		t.Fatalf("AddMessage(tool): %v", err)
+	}
+	if state := assertMatchesSnapshot(); state.DurableBoundaryID != tool.ID {
+		t.Fatalf("boundary = %d, want latest tool row %d", state.DurableBoundaryID, tool.ID)
+	}
+}
+
+func TestSQLiteResponseRunStartStateDoesNotQueueBehindWriter(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("begin writer transaction: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	if _, err := store.GetResponseRunStartState(ctx, sess.ID); err != nil {
+		t.Fatalf("start-state read queued behind occupied writer connection: %v", err)
+	}
+	cancel()
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback writer transaction: %v", err)
+	}
+
+	readTx, err := store.readDB.Begin()
+	if err != nil {
+		t.Fatalf("begin transcript read transaction: %v", err)
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	if _, err := store.GetResponseRunStartState(ctx, sess.ID); err != nil {
+		t.Fatalf("start-state read queued behind occupied transcript reader: %v", err)
+	}
+	cancel()
+	if err := readTx.Rollback(); err != nil {
+		t.Fatalf("rollback transcript read transaction: %v", err)
+	}
+}
+
+func TestSQLiteResponseRunStartStateCompatibilityAndErrors(t *testing.T) {
+	t.Run("unknown session", func(t *testing.T) {
+		store, _ := newTranscriptTestStore(t)
+		if _, err := store.GetResponseRunStartState(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("unsupported transcript revision", func(t *testing.T) {
+		store, sess := newTranscriptTestStore(t)
+		store.hasTranscriptRev = false
+		if _, err := store.GetResponseRunStartState(context.Background(), sess.ID); !errors.Is(err, ErrTranscriptRevisionUnsupported) {
+			t.Fatalf("error = %v, want ErrTranscriptRevisionUnsupported", err)
+		}
+	})
+
+	t.Run("unsupported messages table", func(t *testing.T) {
+		store, sess := newTranscriptTestStore(t)
+		store.hasMessagesTable = false
+		if _, err := store.GetResponseRunStartState(context.Background(), sess.ID); !errors.Is(err, ErrTranscriptRevisionUnsupported) {
+			t.Fatalf("error = %v, want ErrTranscriptRevisionUnsupported", err)
+		}
+	})
+
+	t.Run("legacy optional columns", func(t *testing.T) {
+		store, sess := newTranscriptTestStore(t)
+		store.hasCompactionSeq = false
+		store.hasCompactionCount = false
+		store.hasMessageCompactionTail = false
+		state, err := store.GetResponseRunStartState(context.Background(), sess.ID)
+		if err != nil {
+			t.Fatalf("GetResponseRunStartState: %v", err)
+		}
+		if state.CompactionSeq != -1 || state.CompactionCount != 0 {
+			t.Fatalf("legacy compaction state = %#v, want sequence -1 count 0", state)
+		}
+	})
 }
 
 func TestSQLiteCompactionPreservesResponseIdentity(t *testing.T) {

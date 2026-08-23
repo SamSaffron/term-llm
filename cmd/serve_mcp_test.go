@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/pflag"
 )
@@ -41,6 +42,26 @@ func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLe
 	childApproval.Changed = true
 	if _, err := resolveServeMCPApprovalMode(serveMCPCmd, &config.Config{}); err == nil || !strings.Contains(err.Error(), "mutually exclusive across serve and serve mcp") {
 		t.Fatalf("cross-level conflict error = %v", err)
+	}
+}
+
+func TestServeMCPToolResultPreservesFailureStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		out  llm.ToolOutput
+		want bool
+	}{
+		{name: "success", out: llm.TextOutput("ok")},
+		{name: "semantic error", out: llm.ToolOutput{Content: "failed", IsError: true}, want: true},
+		{name: "timeout", out: llm.ToolOutput{Content: "timed out", TimedOut: true}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := serveMCPToolResult(tt.out)
+			if got.Content != tt.out.Content || got.IsError != tt.want {
+				t.Fatalf("serve MCP result = %#v, want content %q IsError %v", got, tt.out.Content, tt.want)
+			}
+		})
 	}
 }
 

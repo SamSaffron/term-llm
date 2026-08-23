@@ -217,12 +217,15 @@ func (p *ClaudeBinProvider) SetEnv(env map[string]string) {
 // Note: The signature uses an anonymous function type (not mcphttp.ToolExecutor)
 // to satisfy the ToolExecutorSetter interface in engine.go.
 func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (ToolOutput, error)) {
-	// Wrap the ToolOutput executor to satisfy the mcphttp.ToolExecutor (string, error) interface.
+	// Wrap the ToolOutput executor to satisfy the mcphttp.ToolExecutor interface.
 	// For tool outputs with image data, materialise images to temp files and include their
 	// paths in the response text so Claude CLI can read them natively as vision inputs.
-	p.toolExecutor = func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	p.toolExecutor = func(ctx context.Context, name string, args json.RawMessage) (mcphttp.ToolResult, error) {
 		output, err := executor(ctx, name, args)
-		return p.formatToolOutputForClaude(output), err
+		return mcphttp.ToolResult{
+			Content: p.formatToolOutputForClaude(output),
+			IsError: output.IsError || output.TimedOut,
+		}, err
 	}
 }
 
