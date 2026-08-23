@@ -2461,7 +2461,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
-		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
+		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, COALESCE(s.agent, ''), s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `
 		` + fromClause + projectJoin + `
@@ -2487,9 +2487,17 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		query += " AND s.mode = ?"
 		args = append(args, string(opts.Mode))
 	}
+	if agent := strings.TrimSpace(opts.Agent); agent != "" {
+		query += " AND COALESCE(NULLIF(TRIM(s.agent), ''), 'default') = ?"
+		args = append(args, agent)
+	}
 	if opts.Status != "" {
 		query += " AND s.status = ?"
 		args = append(args, string(opts.Status))
+	}
+	if !opts.UpdatedAtOrAfter.IsZero() {
+		query += " AND s.updated_at >= ?"
+		args = append(args, opts.UpdatedAtOrAfter.UTC())
 	}
 	if opts.Tag != "" {
 		// Substring match on comma-separated tags
@@ -2555,8 +2563,12 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if limit == 0 {
 		limit = 50 // Default
 	}
-	query += " LIMIT ?"
-	args = append(args, limit)
+	if limit < 0 {
+		query += " LIMIT -1"
+	} else {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
 	if opts.Offset > 0 {
 		query += " OFFSET ?"
 		args = append(args, opts.Offset)
@@ -2575,7 +2587,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		var mode, status, tags, generatedShortTitle, generatedLongTitle, titleSource, origin, cwd, worktreeDir, projectID, projectName, goalRaw, shareRaw sql.NullString
 		var lastMessageAt, lastUserMessageAt sql.NullTime
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
-			&origin, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
+			&origin, &sum.Agent, &sum.Archived, &sum.Pinned, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw)
 		if err != nil {

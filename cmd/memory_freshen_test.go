@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -331,6 +332,143 @@ func TestReadLastUpdatedRecentAt_RoundTrip(t *testing.T) {
 	if !ts.Equal(now) {
 		t.Errorf("got %v, want %v", ts, now)
 	}
+}
+
+func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.T) {
+	ctx := context.Background()
+	checkpoint := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	oldUpdatedAt := checkpoint.Add(-time.Hour)
+	recentUpdatedAt := checkpoint.Add(time.Minute)
+
+	summaries := make([]session.SessionSummary, 0, 1002)
+	for i := 0; i < 1000; i++ {
+		summaries = append(summaries, session.SessionSummary{
+			ID:        "old-" + strconv.Itoa(i),
+			Number:    int64(i + 1),
+			Agent:     "jarvis",
+			Status:    session.StatusComplete,
+			UpdatedAt: oldUpdatedAt,
+		})
+	}
+	summaries = append(summaries,
+		session.SessionSummary{ID: "recent-jarvis", Number: 1001, Agent: "jarvis", Status: session.StatusComplete, UpdatedAt: recentUpdatedAt},
+		session.SessionSummary{ID: "recent-other", Number: 1002, Agent: "other", Status: session.StatusComplete, UpdatedAt: recentUpdatedAt},
+	)
+
+	sessStore := &updateRecentCountingStore{
+		summaries: summaries,
+		messages: map[string][]session.Message{
+			"recent-jarvis": {{Role: llm.RoleUser, TextContent: "new activity", Sequence: 0}},
+			"recent-other":  {{Role: llm.RoleUser, TextContent: "other activity", Sequence: 0}},
+		},
+		messageCalls: map[string]int{},
+	}
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer memStore.Close()
+
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint)
+	if err != nil {
+		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
+	}
+	if !strings.Contains(input.Text, "new activity") || strings.Contains(input.Text, "other activity") {
+		t.Fatalf("input text = %q, want only recent jarvis activity", input.Text)
+	}
+	if sessStore.listCalls != 1 {
+		t.Fatalf("List calls = %d, want 1", sessStore.listCalls)
+	}
+	if sessStore.getCalls != 0 {
+		t.Fatalf("Get calls = %d, want 0", sessStore.getCalls)
+	}
+	if len(sessStore.messageCalls) != 1 || sessStore.messageCalls["recent-jarvis"] != 1 {
+		t.Fatalf("GetMessagesFrom calls = %#v, want only recent-jarvis", sessStore.messageCalls)
+	}
+	if !sessStore.lastListOptions.UpdatedAtOrAfter.Equal(checkpoint) || sessStore.lastListOptions.Agent != "jarvis" {
+		t.Fatalf("List options = %#v, want agent and update checkpoint filters", sessStore.lastListOptions)
+	}
+}
+
+func TestCollectMemoryUpdateRecentInputNoOpDoesNotLoadHistoricalSessions(t *testing.T) {
+	ctx := context.Background()
+	checkpoint := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	summaries := make([]session.SessionSummary, 1000)
+	for i := range summaries {
+		summaries[i] = session.SessionSummary{
+			ID:        "old-" + strconv.Itoa(i),
+			Number:    int64(i + 1),
+			Agent:     "jarvis",
+			Status:    session.StatusComplete,
+			UpdatedAt: checkpoint.Add(-time.Hour),
+		}
+	}
+	sessStore := &updateRecentCountingStore{
+		summaries:    summaries,
+		messageCalls: map[string]int{},
+	}
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer memStore.Close()
+
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint)
+	if err != nil {
+		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
+	}
+	if input.Text != "" || !input.Exhausted {
+		t.Fatalf("input = %#v, want an exhausted no-op", input)
+	}
+	if sessStore.getCalls != 0 || len(sessStore.messageCalls) != 0 {
+		t.Fatalf("historical point queries: Get=%d GetMessagesFrom=%#v", sessStore.getCalls, sessStore.messageCalls)
+	}
+}
+
+type updateRecentCountingStore struct {
+	session.NoopStore
+	summaries       []session.SessionSummary
+	messages        map[string][]session.Message
+	listCalls       int
+	getCalls        int
+	messageCalls    map[string]int
+	lastListOptions session.ListOptions
+}
+
+func (s *updateRecentCountingStore) List(_ context.Context, opts session.ListOptions) ([]session.SessionSummary, error) {
+	s.listCalls++
+	s.lastListOptions = opts
+	result := make([]session.SessionSummary, 0)
+	for _, summary := range s.summaries {
+		if opts.Status != "" && summary.Status != opts.Status {
+			continue
+		}
+		if opts.Agent != "" && updateRecentSessionAgent(summary.Agent) != strings.TrimSpace(opts.Agent) {
+			continue
+		}
+		if !opts.UpdatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(opts.UpdatedAtOrAfter) {
+			continue
+		}
+		result = append(result, summary)
+	}
+	return result, nil
+}
+
+func (s *updateRecentCountingStore) Get(_ context.Context, _ string) (*session.Session, error) {
+	s.getCalls++
+	return nil, nil
+}
+
+func (s *updateRecentCountingStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq, _ int) ([]session.Message, error) {
+	s.messageCalls[sessionID]++
+	messages := s.messages[sessionID]
+	result := make([]session.Message, 0, len(messages))
+	for _, message := range messages {
+		if message.Sequence >= fromSeq {
+			result = append(result, message)
+		}
+	}
+	return result, nil
 }
 
 // -- helpers --
