@@ -78,7 +78,7 @@ func NormalizeMediaType(mediaType string) string {
 
 // DefaultOpenAIResponsesFileUploadPolicy returns the native file types currently
 // documented for OpenAI Responses-style file input. The same policy is used for
-// ChatGPT/Copilot Responses transports unless overridden in config.
+// ChatGPT/Grok/Copilot Responses transports unless overridden in config.
 func DefaultOpenAIResponsesFileUploadPolicy() FileUploadPolicy {
 	return FileUploadPolicy{
 		NativeMimeTypes:    cloneStrings(openAIResponsesNativeFileMIMETypes),
@@ -104,7 +104,7 @@ func DefaultPortableTextFileUploadPolicy() FileUploadPolicy {
 // file path get native file MIME types by default.
 func DefaultFileUploadPolicyForProviderType(providerType config.ProviderType) FileUploadPolicy {
 	switch providerType {
-	case config.ProviderTypeOpenAI, config.ProviderTypeChatGPT, config.ProviderTypeCopilot:
+	case config.ProviderTypeOpenAI, config.ProviderTypeChatGPT, config.ProviderTypeGrok, config.ProviderTypeCopilot:
 		return DefaultOpenAIResponsesFileUploadPolicy()
 	default:
 		return DefaultPortableTextFileUploadPolicy()

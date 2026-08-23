@@ -22,6 +22,8 @@ func builtinHasOAuthCredentials(name string) bool {
 	switch name {
 	case "chatgpt":
 		return credentials.ChatGPTCredentialsExist()
+	case "grok":
+		return credentials.GrokCredentialsExist()
 	case "copilot":
 		return credentials.CopilotCredentialsExist()
 	case "grok-bin":
@@ -97,6 +99,13 @@ var builtinProviderMeta = map[string]struct {
 		requiresKey:        false,
 		supportsListModels: false,
 		description:        "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
+	},
+	"grok": {
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
+		supportsListModels: true,
+		description:        "Grok subscription via native xAI device OAuth and Responses API",
 	},
 	"copilot": {
 		credential:         "oauth",
@@ -306,12 +315,20 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 			}
 
 			provType := string(config.InferProviderType(name, provCfg.Type))
+			credential := "api_key"
+			requiresKey := true
+			supportsListModels := provType == "openai_compatible" || provType == "vllm"
+			if provType == string(config.ProviderTypeGrok) {
+				credential = "oauth"
+				requiresKey = false
+				supportsListModels = true
+			}
 			info := ProviderInfo{
 				Name:               name,
 				Type:               provType,
-				Credential:         "api_key",
-				RequiresKey:        true,
-				SupportsListModels: provType == "openai_compatible" || provType == "vllm",
+				Credential:         credential,
+				RequiresKey:        requiresKey,
+				SupportsListModels: supportsListModels,
 				Configured:         true,
 				IsBuiltin:          false,
 			}

@@ -113,7 +113,26 @@ func TestRunModelsQueriesConfiguredOllamaEndpoint(t *testing.T) {
 	}
 }
 
+func TestModelListSupportedTypesIncludesGrok(t *testing.T) {
+	isolateGrokCmdTestEnv(t)
+	if !modelListSupportedTypes[config.ProviderTypeGrok] {
+		t.Fatal("grok should be wired for authenticated dynamic model listing")
+	}
+}
+
+func TestBuiltinProviderMetaGrok(t *testing.T) {
+	isolateGrokCmdTestEnv(t)
+	meta, ok := builtinProviderMeta["grok"]
+	if !ok {
+		t.Fatal("grok provider metadata missing")
+	}
+	if meta.requiresKey || meta.credential != "oauth" || !meta.supportsListModels {
+		t.Fatalf("grok metadata = %+v", meta)
+	}
+}
+
 func TestBuiltinProviderMetaGrokBin(t *testing.T) {
+	isolateGrokCmdTestEnv(t)
 	meta, ok := builtinProviderMeta["grok-bin"]
 	if !ok {
 		t.Fatal("grok-bin provider metadata missing")
@@ -124,6 +143,7 @@ func TestBuiltinProviderMetaGrokBin(t *testing.T) {
 }
 
 func TestModelListSupportedTypesIncludesGrokBin(t *testing.T) {
+	isolateGrokCmdTestEnv(t)
 	if !modelListSupportedTypes[config.ProviderTypeGrokBin] {
 		t.Fatal("grok-bin should be wired for dynamic model listing")
 	}

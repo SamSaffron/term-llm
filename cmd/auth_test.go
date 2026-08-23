@@ -52,6 +52,11 @@ func TestResolveAuthProviderByArg(t *testing.T) {
 		t.Fatalf("got %q, want chatgpt", p.id)
 	}
 
+	p, err = resolveAuthProvider([]string{"grok"}, "")
+	if err != nil || p.id != "grok" {
+		t.Fatalf("grok provider = %+v, err %v", p, err)
+	}
+
 	// Case-insensitive arg.
 	p, err = resolveAuthProvider([]string{"COPILOT"}, "")
 	if err != nil {
@@ -71,7 +76,7 @@ func TestResolveAuthProviderByArg(t *testing.T) {
 
 func TestAuthProviderCompletion(t *testing.T) {
 	out, _ := authProviderCompletion(nil, nil, "")
-	want := map[string]bool{"chatgpt": true, "copilot": true}
+	want := map[string]bool{"chatgpt": true, "grok": true, "copilot": true}
 	if len(out) != len(want) {
 		t.Fatalf("completion = %v", out)
 	}
@@ -137,6 +142,39 @@ func TestRunAuthLogoutClearsCredentials(t *testing.T) {
 	}
 }
 
+func isolateGrokCmdTestEnv(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+}
+
+func TestRunAuthLogoutGrokUnreadableStillClearsLocally(t *testing.T) {
+	isolateGrokCmdTestEnv(t)
+	root := os.Getenv("XDG_CONFIG_HOME")
+	dir := filepath.Join(root, "term-llm")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "grok_oauth.json")
+	if err := os.WriteFile(path, []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := authLogoutCmd
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := runAuthLogout(cmd, []string{"grok"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("Grok credentials still exist: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Cleared Grok Subscription credentials") || !strings.Contains(stderr.String(), "could not revoke") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestRunAuthStatus(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -164,6 +202,7 @@ func TestRunAuthStatus(t *testing.T) {
 		"ChatGPT (Codex)",
 		"signed in; expires 2030-01-02 15:04 UTC",
 		"(account acct-xyz)",
+		"Grok Subscription",
 		"GitHub Copilot",
 		"not signed in",
 	} {

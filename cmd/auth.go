@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -15,14 +16,14 @@ import (
 )
 
 // authProvider describes an OAuth provider we can drive a sign-in flow for.
-// Each provider exposes the four hooks the auth subcommands need; we keep
-// the registry small (just ChatGPT + Copilot) because API-key providers
+// Each provider exposes the hooks the auth subcommands need. API-key providers
 // are configured via env vars or `term-llm config set`.
 type authProvider struct {
 	name     string // user-facing label
 	id       string // CLI slug
 	exists   func() bool
 	clear    func() error
+	logout   func(context.Context) (string, error)
 	login    func() error
 	describe func() (string, error)
 }
@@ -41,6 +42,18 @@ func authProviders() []authProvider {
 			describe: chatgptAuthStatus,
 		},
 		{
+			name:   "Grok Subscription",
+			id:     "grok",
+			exists: credentials.GrokCredentialsExist,
+			clear:  credentials.ClearGrokCredentials,
+			logout: llm.LogoutGrok,
+			login: func() error {
+				_, err := llm.PromptForGrokAuth()
+				return err
+			},
+			describe: grokAuthStatus,
+		},
+		{
 			name:   "GitHub Copilot",
 			id:     "copilot",
 			exists: credentials.CopilotCredentialsExist,
@@ -56,7 +69,7 @@ func authProviders() []authProvider {
 
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Sign in to OAuth providers (ChatGPT, GitHub Copilot)",
+	Short: "Sign in to OAuth providers (ChatGPT, Grok, GitHub Copilot)",
 	Long: `Manage OAuth credentials for providers that require interactive sign-in.
 
 API-key providers (Anthropic, OpenAI direct, Gemini, etc.) are configured
@@ -65,6 +78,7 @@ via environment variables or 'term-llm config set'; they do not appear here.
 Examples:
   term-llm auth login                # interactively pick a provider
   term-llm auth login chatgpt
+  term-llm auth login grok
   term-llm auth status
   term-llm auth logout copilot`,
 }
@@ -114,6 +128,17 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	}
 	if !p.exists() {
 		fmt.Fprintf(cmd.OutOrStdout(), "No %s credentials stored.\n", p.name)
+		return nil
+	}
+	if p.logout != nil {
+		warning, err := p.logout(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("clear %s credentials: %w", p.id, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Cleared %s credentials.\n", p.name)
+		if warning != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s.\n", warning)
+		}
 		return nil
 	}
 	if err := p.clear(); err != nil {
@@ -220,6 +245,18 @@ func chatgptAuthStatus() (string, error) {
 		detail = "account " + creds.AccountID
 	}
 	return formatAuthStatusLine(label, formatExpiry(creds.ExpiresAt, creds.IsExpired()), detail), nil
+}
+
+func grokAuthStatus() (string, error) {
+	const label = "Grok Subscription"
+	if !credentials.GrokCredentialsExist() {
+		return formatAuthStatusLine(label, "not signed in", ""), nil
+	}
+	creds, err := credentials.GetGrokCredentials()
+	if err != nil {
+		return "", err
+	}
+	return formatAuthStatusLine(label, formatExpiry(creds.ExpiresAt, creds.IsExpired()), "account "+creds.AccountID), nil
 }
 
 func copilotAuthStatus() (string, error) {

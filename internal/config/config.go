@@ -21,6 +21,7 @@ const (
 	ProviderTypeAnthropic    ProviderType = "anthropic"
 	ProviderTypeOpenAI       ProviderType = "openai"
 	ProviderTypeChatGPT      ProviderType = "chatgpt"
+	ProviderTypeGrok         ProviderType = "grok"
 	ProviderTypeCopilot      ProviderType = "copilot"
 	ProviderTypeGemini       ProviderType = "gemini"
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
@@ -45,6 +46,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"anthropic":   ProviderTypeAnthropic,
 	"openai":      ProviderTypeOpenAI,
 	"chatgpt":     ProviderTypeChatGPT,
+	"grok":        ProviderTypeGrok,
 	"copilot":     ProviderTypeCopilot,
 	"gemini":      ProviderTypeGemini,
 	"openrouter":  ProviderTypeOpenRouter,
@@ -73,6 +75,18 @@ func InferProviderType(name string, explicit ProviderType) ProviderType {
 		return t
 	}
 	return ProviderTypeOpenAICompat
+}
+
+// ValidateProviderCompatibility rejects ambiguous legacy fields that a native
+// provider would otherwise ignore silently.
+func ValidateProviderCompatibility(name string, cfg *ProviderConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if InferProviderType(name, cfg.Type) == ProviderTypeGrok && (strings.TrimSpace(cfg.APIKey) != "" || strings.TrimSpace(cfg.ResolvedAPIKey) != "" || strings.TrimSpace(cfg.BaseURL) != "" || strings.TrimSpace(cfg.URL) != "") {
+		return fmt.Errorf("provider %q now selects Grok subscription OAuth and cannot use api_key/base_url/url; set explicit type: xai for the public xAI API or type: openai_compatible for a custom endpoint", name)
+	}
+	return nil
 }
 
 // FileUploadConfig controls how user-uploaded files are forwarded to a provider.
@@ -2085,6 +2099,8 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return "agy Antigravity login (no key needed)", true
 	case ProviderTypeChatGPT:
 		return "ChatGPT OAuth (interactive)", true
+	case ProviderTypeGrok:
+		return "Grok subscription OAuth (interactive)", true
 	case ProviderTypeCopilot:
 		return "GitHub Copilot OAuth (interactive)", true
 	case ProviderTypeOpenAICompat, ProviderTypeVLLM:

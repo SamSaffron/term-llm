@@ -30,6 +30,12 @@ func detectAvailableProviders() []providerOption {
 			hint:      "run 'term-llm auth login chatgpt' to sign in",
 		},
 		{
+			name:      "Grok Subscription - xAI OAuth",
+			value:     "grok",
+			available: credentials.GrokCredentialsExist(),
+			hint:      "run 'term-llm auth login grok' to sign in",
+		},
+		{
 			name:      "Anthropic - API key",
 			value:     "anthropic",
 			available: isAnthropicAvailable(),
@@ -159,7 +165,7 @@ func validateProviderSelection(providers []providerOption, provider string) (*pr
 }
 
 func canBootstrapProviderInteractively(provider string) bool {
-	return provider == "chatgpt"
+	return provider == "chatgpt" || provider == "grok"
 }
 
 // imageProviderOption represents an image provider choice in the setup wizard
@@ -234,7 +240,7 @@ func HasTTY() bool {
 
 func defaultWizardProviderConfigs() map[string]config.ProviderConfig {
 	providers := make(map[string]config.ProviderConfig)
-	for _, name := range []string{"chatgpt", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen", "opencode-go"} {
+	for _, name := range []string{"chatgpt", "grok", "anthropic", "openai", "claude-bin", "grok-bin", "cursor-bin", "agy-bin", "gemini", "xai", "venice", "nearai", "sambanova", "zen", "opencode-go"} {
 		providers[name] = config.ProviderConfig{
 			Model:     config.DefaultProviderModel(name),
 			FastModel: config.DefaultProviderFastModel(name),
@@ -345,7 +351,7 @@ func RunSetupWizard() (*config.Config, error) {
 		}
 
 		option := huh.NewOption(label, p.value)
-		if p.value == "chatgpt" {
+		if p.value == "chatgpt" || p.value == "grok" {
 			llmOptions = append(llmOptions, option)
 			continue
 		}
