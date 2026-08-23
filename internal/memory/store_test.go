@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
 func TestStoreFragmentCRUDAndSearch(t *testing.T) {
@@ -730,9 +733,17 @@ func TestStoreInitFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
 	}
 	defer db.Close()
 
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("seed schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO memory_meta(key, value) VALUES(?, '11')`, memorySchemaVersionKey); err != nil {
+		t.Fatalf("seed schema marker: %v", err)
+	}
+
 	originalMigrations := memoryMigrations
-	memoryMigrations = []memoryMigration{{
-		version:     1,
+	memoryMigrations = append([]memoryMigration(nil), originalMigrations...)
+	memoryMigrations[len(memoryMigrations)-1] = memoryMigration{
+		version:     memorySchemaVersion,
 		description: "failing migration",
 		up: func(db schemaExecutor) error {
 			if _, err := db.Exec(`CREATE TABLE partial_memory_migration (id INTEGER PRIMARY KEY)`); err != nil {
@@ -740,7 +751,7 @@ func TestStoreInitFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
 			}
 			return errors.New("injected memory migration failure")
 		},
-	}}
+	}
 	defer func() {
 		memoryMigrations = originalMigrations
 	}()
@@ -761,9 +772,11 @@ func TestStoreInitFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
 	}
 
 	var version string
-	err = db.QueryRow(`SELECT value FROM memory_meta WHERE key = ?`, memorySchemaVersionKey).Scan(&version)
-	if err != sql.ErrNoRows {
-		t.Fatalf("schema version marker error = %v, value = %q; want sql.ErrNoRows", err, version)
+	if err := db.QueryRow(`SELECT value FROM memory_meta WHERE key = ?`, memorySchemaVersionKey).Scan(&version); err != nil {
+		t.Fatalf("read schema version marker: %v", err)
+	}
+	if version != "11" {
+		t.Fatalf("schema version marker = %q, want prior version 11", version)
 	}
 }
 
@@ -798,6 +811,29 @@ func TestStoreInitFreshAndMigratedSchemasEquivalent(t *testing.T) {
 		t.Fatalf("fresh and migrated schemas differ\n--- fresh ---\n%s\n--- migrated ---\n%s", freshSchema, migratedSchema)
 	}
 
+	freshSignature, err := sqliteutil.SchemaSignature(context.Background(), fresh.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migratedSignature, err := sqliteutil.SchemaSignature(context.Background(), migrated.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(freshSignature, migratedSignature) {
+		t.Fatalf("fresh and migrated complete SQLite signatures differ\n--- fresh ---\n%s\n--- migrated ---\n%s", strings.Join(freshSignature, "\n"), strings.Join(migratedSignature, "\n"))
+	}
+	var prefix, tailNorm, vectorNorm float64
+	if err := migrated.db.QueryRow(`SELECT search_prefix_0,search_tail_norm,search_vector_norm FROM memory_embeddings WHERE fragment_id='legacy-fragment'`).Scan(&prefix, &tailNorm, &vectorNorm); err != nil {
+		t.Fatal(err)
+	}
+	var compactContent string
+	if err := migrated.db.QueryRow(`SELECT compact_content FROM memory_insights WHERE content='legacy insight'`).Scan(&compactContent); err != nil {
+		t.Fatal(err)
+	}
+	if prefix != 0 || tailNorm != -1 || vectorNorm != -1 || compactContent != "" {
+		t.Fatalf("legacy defaults prefix=%v tail=%v vector=%v compact=%q", prefix, tailNorm, vectorNorm, compactContent)
+	}
+
 	for _, db := range []*sql.DB{fresh.db, migrated.db} {
 		var version string
 		if err := db.QueryRow(`SELECT value FROM memory_meta WHERE key = ?`, memorySchemaVersionKey).Scan(&version); err != nil {
@@ -817,29 +853,21 @@ func seedLegacyMemorySchema(t *testing.T, dbPath string) {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`
-		CREATE TABLE memory_embeddings (
-			fragment_id TEXT NOT NULL REFERENCES memory_fragments(id) ON DELETE CASCADE,
-			provider TEXT NOT NULL,
-			model TEXT NOT NULL,
-			dimensions INTEGER NOT NULL,
-			vector BLOB NOT NULL,
-			embedded_at DATETIME NOT NULL,
-			PRIMARY KEY (fragment_id, provider, model)
-		);
-		CREATE TABLE memory_insights (
-			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-			agent               TEXT NOT NULL,
-			content             TEXT NOT NULL,
-			category            TEXT NOT NULL DEFAULT '',
-			trigger_desc        TEXT NOT NULL DEFAULT '',
-			confidence          REAL NOT NULL DEFAULT 0.5,
-			reinforcement_count INTEGER NOT NULL DEFAULT 1,
-			created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
-			last_reinforced     DATETIME NOT NULL DEFAULT (datetime('now'))
-		);
-	`); err != nil {
-		t.Fatalf("seed legacy schema: %v", err)
+	legacySchema, err := memoryLegacyBaselineSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("seed faithful pre-marker memory schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO memory_fragments(id,agent,path,content,created_at,updated_at) VALUES('legacy-fragment','agent','path','legacy content',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memory_embeddings(fragment_id,provider,model,dimensions,vector,embedded_at) VALUES('legacy-fragment','provider','model',1,x'00000000',CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memory_insights(agent,content) VALUES('agent','legacy insight')`); err != nil {
+		t.Fatal(err)
 	}
 }
 

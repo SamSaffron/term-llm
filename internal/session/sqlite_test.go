@@ -537,20 +537,20 @@ func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
 	defer db.Close()
 
 	originalMigrations := migrations
-	migrations = []migration{{
-		version:     1,
-		description: "sentinel migration",
-		up: func(db schemaExecutor) error {
-			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
-			return err
-		},
-	}}
+	migrations = append([]migration(nil), originalMigrations...)
+	migrations[0].up = func(db schemaExecutor) error {
+		_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
+		return err
+	}
 	defer func() {
 		migrations = originalMigrations
 	}()
 
 	if err := initSchema(db); err != nil {
 		t.Fatalf("initSchema: %v", err)
+	}
+	if err := initSchema(db); err != nil {
+		t.Fatalf("current initSchema: %v", err)
 	}
 
 	var version int
@@ -615,14 +615,11 @@ func TestInitSchemaExistingDBWithoutSchemaVersionRunsMigrations(t *testing.T) {
 	}
 
 	originalMigrations := migrations
-	migrations = []migration{{
-		version:     1,
-		description: "sentinel migration",
-		up: func(db schemaExecutor) error {
-			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
-			return err
-		},
-	}}
+	migrations = append([]migration(nil), originalMigrations...)
+	migrations[0].up = func(db schemaExecutor) error {
+		_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
+		return err
+	}
 	defer func() {
 		migrations = originalMigrations
 	}()
@@ -662,16 +659,14 @@ func TestInitSchemaFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
 	}
 
 	originalMigrations := migrations
-	migrations = []migration{{
-		version:     1,
-		description: "failing migration",
-		up: func(db schemaExecutor) error {
-			if _, err := db.Exec(`CREATE TABLE partial_migration_sentinel (id INTEGER PRIMARY KEY)`); err != nil {
-				return err
-			}
-			return errors.New("injected migration failure")
-		},
-	}}
+	migrations = append([]migration(nil), originalMigrations...)
+	migrations[0].description = "failing migration"
+	migrations[0].up = func(db schemaExecutor) error {
+		if _, err := db.Exec(`CREATE TABLE partial_migration_sentinel (id INTEGER PRIMARY KEY)`); err != nil {
+			return err
+		}
+		return errors.New("injected migration failure")
+	}
 	defer func() {
 		migrations = originalMigrations
 	}()
@@ -2620,6 +2615,16 @@ CREATE TABLE sessions (
     output_tokens INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT
+);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
+    parts TEXT NOT NULL,
+    text_content TEXT,
+    duration_ms INTEGER,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sequence INTEGER NOT NULL
 );
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 INSERT INTO schema_version(version) VALUES (7);

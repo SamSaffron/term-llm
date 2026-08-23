@@ -523,69 +523,6 @@ type jobsV2Manager struct {
 	notifyCancel  context.CancelFunc
 }
 
-const jobsV2Schema = `
-CREATE TABLE IF NOT EXISTS jobs_v2 (
-	id TEXT PRIMARY KEY,
-	name TEXT NOT NULL UNIQUE,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	runner_type TEXT NOT NULL,
-	runner_config TEXT NOT NULL,
-	trigger_type TEXT NOT NULL,
-	trigger_config TEXT NOT NULL,
-	schedule_timezone TEXT,
-	concurrency_policy TEXT NOT NULL DEFAULT 'forbid',
-	max_concurrent_runs INTEGER NOT NULL DEFAULT 1,
-	retry_policy TEXT,
-	timeout_seconds INTEGER NOT NULL DEFAULT 300,
-	misfire_policy TEXT NOT NULL DEFAULT 'skip',
-	labels TEXT,
-	next_run_at TIMESTAMP,
-	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS job_runs_v2 (
-	id TEXT PRIMARY KEY,
-	job_id TEXT NOT NULL REFERENCES jobs_v2(id) ON DELETE CASCADE,
-	attempt INTEGER NOT NULL,
-	trigger TEXT NOT NULL,
-	scheduled_for TIMESTAMP NOT NULL,
-	status TEXT NOT NULL,
-	worker_id TEXT,
-	session_id TEXT,
-	started_at TIMESTAMP,
-	finished_at TIMESTAMP,
-	exit_code INTEGER,
-	error TEXT,
-	stdout TEXT,
-	stderr TEXT,
-	thinking TEXT,
-	response TEXT,
-	exit_reason TEXT,
-	truncated INTEGER NOT NULL DEFAULT 0,
-	turn_count INTEGER NOT NULL DEFAULT 0,
-	input_tokens INTEGER NOT NULL DEFAULT 0,
-	output_tokens INTEGER NOT NULL DEFAULT 0,
-	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_v2_next_run_at ON jobs_v2(next_run_at);
-CREATE INDEX IF NOT EXISTS idx_job_runs_v2_status ON job_runs_v2(status, scheduled_for);
-
-CREATE TABLE IF NOT EXISTS job_run_events_v2 (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	run_id TEXT NOT NULL REFERENCES job_runs_v2(id) ON DELETE CASCADE,
-	event_type TEXT NOT NULL,
-	message TEXT,
-	data TEXT,
-	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_job_run_events_v2_run_id_id ON job_run_events_v2(run_id, id);
-DROP INDEX IF EXISTS idx_job_run_events_v2_run_id;
-`
-
 func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*jobsV2Manager, error) {
 	return newJobsV2ManagerWithNotifier(dbPath, workers, llmExec, nil)
 }
@@ -623,41 +560,10 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 	// serialized before they reach SQLite's single-writer lock.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if err := execJobsV2Schema(db); err != nil {
+	if err := initJobsV2Schema(context.Background(), db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init jobs schema: %w", err)
 	}
-
-	migrations := []string{
-		`ALTER TABLE job_runs_v2 ADD COLUMN exit_reason TEXT`,
-		`ALTER TABLE job_runs_v2 ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_runs_v2 ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_runs_v2 ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_runs_v2 ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_runs_v2 ADD COLUMN session_id TEXT`,
-	}
-	for _, migration := range migrations {
-		_, _ = db.Exec(migration)
-	}
-	// Replace the narrow job_id/created_at index with covering indexes for the
-	// run-summary API. Large stdout/stderr/thinking/response columns sit before
-	// summary metadata in the table record; without covering indexes, SQLite
-	// walks overflow payload pages just to list recent runs. The job-scoped index
-	// serves /v2/runs?job_id=..., while the global index avoids a temp sort for
-	// all-job summaries used by the jobs CLI/status views.
-	for _, index := range []struct {
-		name string
-		sql  string
-	}{
-		{name: jobsV2RunSummaryIndexName, sql: jobsV2RunSummaryIndexSQL},
-		{name: jobsV2RunGlobalSummaryIndexName, sql: jobsV2RunGlobalSummaryIndexSQL},
-	} {
-		if _, err := db.Exec(index.sql); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("init jobs run summary index %s: %w", index.name, err)
-		}
-	}
-	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_job_runs_v2_job_id`)
 
 	notifyCtx, notifyCancel := context.WithCancel(context.Background())
 	mgr := &jobsV2Manager{
@@ -703,20 +609,6 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 	}
 
 	return mgr, nil
-}
-
-func execJobsV2Schema(db *sql.DB) error {
-	stmts := strings.Split(jobsV2Schema, ";")
-	for _, stmt := range stmts {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
-		}
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (m *jobsV2Manager) recoverRuns() error {

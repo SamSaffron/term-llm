@@ -19,9 +19,6 @@ func createWorkspaceTestSession(t *testing.T, store *SQLiteStore, id string) *Se
 }
 
 func TestWorkspaceGrantMigration46AndCRUDCascade(t *testing.T) {
-	if schemaVersion != 48 {
-		t.Fatalf("schemaVersion = %d, want 48", schemaVersion)
-	}
 	foundMigration := false
 	for _, migration := range migrations {
 		if migration.version == 46 {

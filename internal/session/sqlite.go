@@ -228,11 +228,10 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text_content ON message
 END;
 `
 
-// projectsSchema is kept separate from schema so existing databases below
-// migration 47 do not create any of the migration's objects before its
-// transaction begins. Fresh and already-current databases execute it directly;
-// upgrades create the same objects inside migration 47.
-const projectsSchema = `
+// projectsSchemaV47 freezes the SQL published by historical migrations 47/48.
+// Existing upgrades execute it only from an owning migration; it is never an
+// upgrade prelude.
+const projectsSchemaV47 = `
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -251,24 +250,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project_activity
     ON sessions(project_id, pinned DESC, last_message_at DESC, number DESC);
 `
 
-const messagesTableSchema = `
-CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer', 'event')),
-    parts TEXT NOT NULL,
-    text_content TEXT,
-    duration_ms INTEGER,
-    turn_index INTEGER DEFAULT 0,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    sequence INTEGER NOT NULL,
-    compaction_tail BOOLEAN DEFAULT FALSE,
-    client_message_id TEXT NOT NULL DEFAULT '',
-    response_id TEXT NOT NULL DEFAULT '',
-    assistant_segment_ordinal INTEGER NOT NULL DEFAULT -1,
-    segment_start_sequence INTEGER NOT NULL DEFAULT 0,
-    segment_end_sequence INTEGER NOT NULL DEFAULT 0
-)`
+const canonicalSessionSchema = schema + projectsSchemaV47
 
 func sqliteFileURI(path string) string {
 	slashPath := filepath.ToSlash(path)
@@ -335,14 +317,6 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		if err := initSchema(db); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("initialize schema: %w", err)
-		}
-		if _, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_message_id ON messages(session_id, client_message_id) WHERE client_message_id <> ''"); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("initialize client message identity index: %w", err)
-		}
-		if err := createMessageCountTriggers(db); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("initialize message_count triggers: %w", err)
 		}
 	}
 
@@ -420,7 +394,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // Increment when adding new migrations.
 const (
 	projectSchemaVersion = 47
-	schemaVersion        = 48
+	schemaVersion        = 49
 )
 
 // migration represents a schema migration.
@@ -430,14 +404,7 @@ type migration struct {
 	up          func(db schemaExecutor) error
 }
 
-type schemaExecutor interface {
-	Exec(query string, args ...any) (sql.Result, error)
-	Query(query string, args ...any) (*sql.Rows, error)
-}
-
-func withImmediateMigrationTx(ctx context.Context, db *sql.DB, fn func(schemaExecutor) error) error {
-	return sqliteutil.WithImmediateMigrationTx(ctx, db, func(exec sqliteutil.Executor) error { return fn(exec) })
-}
+type schemaExecutor = sqliteutil.Executor
 
 // migrations defines schema migrations for upgrading existing databases.
 // The base `schema` const always contains the FULL current schema.
@@ -829,7 +796,7 @@ var migrations = []migration{
 		version:     17,
 		description: "allow developer messages in messages table",
 		up: func(db schemaExecutor) error {
-			return rebuildMessagesTableForCurrentRoles(db)
+			return rebuildMessagesTableForRolesV17(db)
 		},
 	},
 	{
@@ -922,7 +889,7 @@ var migrations = []migration{
 		version:     22,
 		description: "allow event messages in messages table",
 		up: func(db schemaExecutor) error {
-			return rebuildMessagesTableForCurrentRoles(db)
+			return rebuildMessagesTableForRolesV22(db)
 		},
 	},
 	{
@@ -985,7 +952,7 @@ var migrations = []migration{
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
 			}
-			if err := createMessageCountTriggers(db); err != nil {
+			if err := createMessageCountTriggersV26(db); err != nil {
 				return fmt.Errorf("recreate message_count triggers: %w", err)
 			}
 			_, err = db.Exec(fmt.Sprintf(`
@@ -1010,7 +977,7 @@ var migrations = []migration{
 		version:     27,
 		description: "exclude non-chat-bubble rows from message_count",
 		up: func(db schemaExecutor) error {
-			if err := createMessageCountTriggers(db); err != nil {
+			if err := createMessageCountTriggersV27(db); err != nil {
 				return fmt.Errorf("recreate message_count triggers: %w", err)
 			}
 			_, err := db.Exec(fmt.Sprintf(`
@@ -1343,7 +1310,7 @@ var migrations = []migration{
 			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN project_id TEXT"); err != nil && !isDuplicateColumnError(err) {
 				return err
 			}
-			_, err := db.Exec(projectsSchema)
+			_, err := db.Exec(projectsSchemaV47)
 			return err
 		},
 	},
@@ -1356,8 +1323,30 @@ var migrations = []migration{
 			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN project_id TEXT"); err != nil && !isDuplicateColumnError(err) {
 				return err
 			}
-			_, err := db.Exec(projectsSchema)
+			_, err := db.Exec(projectsSchemaV47)
 			return err
+		},
+	},
+	{
+		version:     49,
+		description: "publish complete session schema and singleton marker",
+		up: func(db schemaExecutor) error {
+			// This forward reconciliation owns objects that older releases created
+			// outside their migration loop. It runs only after historical migrations,
+			// never as an upgrade prelude.
+			if _, err := db.Exec(canonicalSessionSchema); err != nil {
+				return fmt.Errorf("reconcile canonical session schema: %w", err)
+			}
+			if err := ensureCurrentSessionIndexes(db); err != nil {
+				return err
+			}
+			if err := createMessageCountTriggersV27(db); err != nil {
+				return fmt.Errorf("install current message count triggers: %w", err)
+			}
+			if _, err := db.Exec(fmt.Sprintf(`UPDATE sessions SET message_count = COALESCE((SELECT COUNT(*) FROM messages m WHERE m.session_id = sessions.id AND %s), 0)`, countableConversationMessageSQL("m", true))); err != nil {
+				return fmt.Errorf("backfill current message counts: %w", err)
+			}
+			return normalizeSessionMarker(db, 48)
 		},
 	},
 }
@@ -1417,9 +1406,19 @@ func (s *SQLiteStore) conversationMessageCountSelectSQL(sessionAlias string) str
 		" AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
 }
 
-func createMessageCountTriggers(db schemaExecutor) error {
+func createMessageCountTriggersV26(db schemaExecutor) error {
+	oldCountable := "(COALESCE(old.compaction_tail, FALSE) = FALSE AND old.role IN ('user', 'assistant'))"
+	newCountable := "(COALESCE(new.compaction_tail, FALSE) = FALSE AND new.role IN ('user', 'assistant'))"
+	return installMessageCountTriggers(db, oldCountable, newCountable)
+}
+
+func createMessageCountTriggersV27(db schemaExecutor) error {
 	oldCountable := countableConversationMessageSQL("old", true)
 	newCountable := countableConversationMessageSQL("new", true)
+	return installMessageCountTriggers(db, oldCountable, newCountable)
+}
+
+func installMessageCountTriggers(db schemaExecutor, oldCountable, newCountable string) error {
 	stmts := []string{
 		`DROP TRIGGER IF EXISTS messages_count_ai`,
 		`DROP TRIGGER IF EXISTS messages_count_ad`,
@@ -1464,29 +1463,49 @@ func createMessageCountTriggers(db schemaExecutor) error {
 	return nil
 }
 
-func rebuildMessagesTableForCurrentRoles(db schemaExecutor) error {
-	stmts := []string{
+func rebuildMessagesTableForRolesV17(db schemaExecutor) error {
+	return rebuildMessagesTableHistorical(db, "'user', 'assistant', 'system', 'tool', 'developer'")
+}
+
+func rebuildMessagesTableForRolesV22(db schemaExecutor) error {
+	return rebuildMessagesTableHistorical(db, "'user', 'assistant', 'system', 'tool', 'developer', 'event'")
+}
+
+// rebuildMessagesTableHistorical intentionally freezes the v17/v22 table shape.
+// Later canonical columns are added only by their owning migrations.
+func rebuildMessagesTableHistorical(db schemaExecutor, roles string) error {
+	statements := []string{
 		`DROP TRIGGER IF EXISTS messages_ai`,
 		`DROP TRIGGER IF EXISTS messages_ad`,
 		`DROP TRIGGER IF EXISTS messages_au`,
+		`DROP TRIGGER IF EXISTS messages_count_ai`,
+		`DROP TRIGGER IF EXISTS messages_count_ad`,
+		`DROP TRIGGER IF EXISTS messages_count_au`,
 		`DROP INDEX IF EXISTS idx_messages_session_id`,
 		`DROP INDEX IF EXISTS idx_messages_session_sequence`,
 		`DROP INDEX IF EXISTS idx_messages_session_role`,
+		`DROP INDEX IF EXISTS idx_messages_role_id`,
+		`DROP INDEX IF EXISTS idx_messages_role_created_id`,
+		`DROP INDEX IF EXISTS idx_messages_client_message_id`,
 		`DROP TABLE IF EXISTS messages_fts`,
 		`ALTER TABLE messages RENAME TO messages_old`,
-		messagesTableSchema,
-		`INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-		 SELECT id, session_id, role, parts, text_content, duration_ms, 0, created_at, sequence
-		 FROM messages_old`,
+		fmt.Sprintf(`CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL CHECK (role IN (%s)),
+			parts TEXT NOT NULL,
+			text_content TEXT,
+			duration_ms INTEGER,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			sequence INTEGER NOT NULL
+		)`, roles),
+		`INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, created_at, sequence)
+		 SELECT id, session_id, role, parts, text_content, duration_ms, created_at, sequence FROM messages_old`,
 		`DROP TABLE messages_old`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role)`,
-		`CREATE VIRTUAL TABLE messages_fts USING fts5(
-			text_content,
-			content='messages',
-			content_rowid='id'
-		)`,
+		`CREATE INDEX idx_messages_session_id ON messages(session_id, sequence)`,
+		`CREATE UNIQUE INDEX idx_messages_session_sequence ON messages(session_id, sequence)`,
+		`CREATE INDEX idx_messages_session_role ON messages(session_id, role)`,
+		`CREATE VIRTUAL TABLE messages_fts USING fts5(text_content, content='messages', content_rowid='id')`,
 		`INSERT INTO messages_fts(rowid, text_content) SELECT id, text_content FROM messages`,
 		`CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
 			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
@@ -1494,164 +1513,242 @@ func rebuildMessagesTableForCurrentRoles(db schemaExecutor) error {
 		`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
 			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
 		END`,
-		`CREATE TRIGGER messages_au AFTER UPDATE OF text_content ON messages BEGIN
+		`CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
 			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
 			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
 		END`,
 	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// initSchema initializes the database schema and runs any pending migrations.
-// Optimized for the common case: schema already current = single SELECT query.
-func initSchema(db *sql.DB) error {
-	// Fast path: check if schema is already current
-	var currentVersion int
-	err := db.QueryRow("SELECT version FROM schema_version").Scan(&currentVersion)
-	if err == nil && currentVersion >= schemaVersion {
-		// Schema is current, nothing to do
-		return nil
-	}
-
-	// Slow path: need to initialize or migrate
-	return initSchemaFull(db, err, currentVersion)
+type sessionMarkerState struct {
+	rows, distinct int
+	min, max       int
 }
 
-// initSchemaFull handles schema creation and migrations.
-// Only called when schema needs initialization or migration.
-func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
-	needsBootstrapVersion := versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table"))
-	preExistingSessionsTable := false
-	if needsBootstrapVersion {
-		var tableCount int
-		err := db.QueryRow(`
-			SELECT COUNT(*) FROM sqlite_master
-			WHERE type='table' AND name='sessions'
-		`).Scan(&tableCount)
-		if err != nil {
-			return fmt.Errorf("check sessions table before schema init: %w", err)
-		}
-		preExistingSessionsTable = tableCount > 0
-	}
+type sessionMarkerReader interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
 
-	// Create the common base schema (uses IF NOT EXISTS, safe to run multiple
-	// times). Migration-owned project objects are intentionally excluded for an
-	// existing pre-47 database so migration 47 remains all-or-nothing.
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("create base schema: %w", err)
-	}
-	// Create project objects directly only for a fresh database. Existing
-	// databases reach the project schema through migrations, including the
-	// version 48 repair for databases incorrectly marked as version 47.
-	createProjectsDirectly := needsBootstrapVersion && !preExistingSessionsTable
-	if createProjectsDirectly {
-		if _, err := db.Exec(projectsSchema); err != nil {
-			return fmt.Errorf("create projects schema: %w", err)
-		}
-	}
+func readSessionMarker(db sessionMarkerReader) (sessionMarkerState, error) {
+	var state sessionMarkerState
+	err := db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT version), COALESCE(MIN(version), 0), COALESCE(MAX(version), 0) FROM schema_version`).Scan(
+		&state.rows, &state.distinct, &state.min, &state.max,
+	)
+	return state, err
+}
 
-	// Create schema_version table if it doesn't exist
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS schema_version (
-			version INTEGER NOT NULL
+func normalizeSessionMarker(db schemaExecutor, version int) error {
+	state, err := func() (sessionMarkerState, error) {
+		var state sessionMarkerState
+		err := db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT version), COALESCE(MIN(version), 0), COALESCE(MAX(version), 0) FROM schema_version`).Scan(
+			&state.rows, &state.distinct, &state.min, &state.max,
 		)
-	`)
+		return state, err
+	}()
 	if err != nil {
-		return fmt.Errorf("create schema_version table: %w", err)
+		return fmt.Errorf("read legacy session schema marker: %w", err)
+	}
+	if state.distinct > 1 {
+		return fmt.Errorf("conflicting session schema markers range from %d to %d", state.min, state.max)
+	}
+	if state.rows > 0 && state.max != version {
+		return fmt.Errorf("session schema marker changed unexpectedly: observed %d, expected %d", state.max, version)
+	}
+	for _, statement := range []string{
+		`DROP TABLE IF EXISTS schema_version_new`,
+		`CREATE TABLE schema_version_new (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO schema_version_new(id, version) VALUES(1, ?)`, version); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP TABLE schema_version`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE schema_version_new RENAME TO schema_version`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureCurrentSessionIndexes(db schemaExecutor) error {
+	statements := []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_message_id ON messages(session_id, client_message_id) WHERE client_message_id <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_number ON sessions(number)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_origin ON sessions(origin)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_title_skipped ON sessions(archived, title_skipped_at, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_last_user_msg ON sessions(last_user_message_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_activity ON sessions(archived, COALESCE(pinned, FALSE) DESC, COALESCE(last_message_at, last_user_message_at, created_at) DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_last_user_activity ON sessions(archived, COALESCE(pinned, FALSE) DESC, COALESCE(last_user_message_at, created_at) DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("install current session index with %q: %w", statement, err)
+		}
+	}
+	return nil
+}
+
+// initSchema uses one aggregate marker query on the current fast path. Any slow
+// path acquires BEGIN IMMEDIATE and re-reads all state before writing.
+func initSchema(db *sql.DB) error {
+	state, err := readSessionMarker(db)
+	if err == nil {
+		if state.distinct > 1 {
+			return fmt.Errorf("conflicting session schema markers range from %d to %d", state.min, state.max)
+		}
+		if state.rows > 0 && state.max > schemaVersion {
+			return fmt.Errorf("session database schema version %d is newer than supported version %d", state.max, schemaVersion)
+		}
+		if state.rows == 1 && state.max == schemaVersion {
+			return nil
+		}
 	}
 
-	// Determine current version if we didn't get it earlier.
-	// versionErr is non-nil if schema_version table doesn't exist or has no rows.
-	// For fresh DBs we must use the pre-schema check above; after db.Exec(schema)
-	// the sessions table always exists and cannot distinguish fresh installs.
-	if needsBootstrapVersion {
-		if preExistingSessionsTable {
-			// Pre-migration DB - start at version 0, will run all migrations
-			currentVersion = 0
-		} else {
-			// Fresh DB - schema already has all columns, start at latest
-			currentVersion = schemaVersion
-		}
-
-		// Insert initial version record
-		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", currentVersion); err != nil {
-			return fmt.Errorf("insert initial version: %w", err)
-		}
-	} else if versionErr != nil {
-		return fmt.Errorf("get current version: %w", versionErr)
+	shared := make([]sqliteutil.Migration, len(migrations))
+	for i, migration := range migrations {
+		shared[i] = sqliteutil.Migration{Version: migration.version, Description: migration.description, Up: migration.up}
+	}
+	if err := sqliteutil.ValidateMigrations(shared, 1, schemaVersion, true); err != nil {
+		return fmt.Errorf("validate session migrations: %w", err)
 	}
 
-	// Run pending migrations. Each migration and its schema_version bump commit
-	// atomically under BEGIN IMMEDIATE. The current migration list contains only
-	// transaction-safe DDL/DML; future transaction-unsafe PRAGMA migrations should
-	// be handled explicitly outside this helper.
-	for _, m := range migrations {
-		if m.version > currentVersion {
-			if err := runSessionMigration(db, m); err != nil {
+	currentVersion := 0
+	if err := sqliteutil.WithImmediateMigrationTx(context.Background(), db, func(tx sqliteutil.Executor) error {
+		markerExists, err := sqliteutil.TableExists(tx, "schema_version")
+		if err != nil {
+			return fmt.Errorf("inspect session schema marker: %w", err)
+		}
+		sessionsExist, err := sqliteutil.TableExists(tx, "sessions")
+		if err != nil {
+			return fmt.Errorf("inspect sessions table: %w", err)
+		}
+		messagesExist, err := sqliteutil.TableExists(tx, "messages")
+		if err != nil {
+			return fmt.Errorf("inspect messages table: %w", err)
+		}
+
+		if !markerExists && !sessionsExist && !messagesExist {
+			userTables, err := sqliteutil.UserTableCount(tx)
+			if err != nil {
+				return fmt.Errorf("classify fresh session database: %w", err)
+			}
+			if userTables != 0 {
+				return fmt.Errorf("unknown unversioned session schema: found %d unrelated tables; restore a backup or move the database aside to recreate it", userTables)
+			}
+			if _, err := tx.Exec(canonicalSessionSchema); err != nil {
+				return fmt.Errorf("bootstrap canonical session schema: %w", err)
+			}
+			if err := ensureCurrentSessionIndexes(tx); err != nil {
 				return err
 			}
-			currentVersion = m.version
+			if err := createMessageCountTriggersV27(tx); err != nil {
+				return fmt.Errorf("bootstrap message count triggers: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`); err != nil {
+				return fmt.Errorf("create singleton session schema marker: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO schema_version(id, version) VALUES(1, ?)`, schemaVersion); err != nil {
+				return fmt.Errorf("publish session schema version %d: %w", schemaVersion, err)
+			}
+			currentVersion = schemaVersion
+			return nil
 		}
+		if sessionsExist != messagesExist || !sessionsExist {
+			return fmt.Errorf("unknown session schema: expected both sessions and messages baseline tables; restore a backup or move the database aside to recreate it")
+		}
+
+		if markerExists {
+			var locked sessionMarkerState
+			if err := tx.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT version), COALESCE(MIN(version), 0), COALESCE(MAX(version), 0) FROM schema_version`).Scan(
+				&locked.rows, &locked.distinct, &locked.min, &locked.max,
+			); err != nil {
+				return fmt.Errorf("read locked session schema marker: %w", err)
+			}
+			if locked.distinct > 1 {
+				return fmt.Errorf("conflicting session schema markers range from %d to %d", locked.min, locked.max)
+			}
+			if locked.rows == 0 {
+				if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES(0)`); err != nil {
+					return fmt.Errorf("publish empty session legacy baseline: %w", err)
+				}
+			} else {
+				currentVersion = locked.max
+			}
+			if currentVersion > schemaVersion {
+				return fmt.Errorf("session database schema version %d is newer than supported version %d", currentVersion, schemaVersion)
+			}
+			if currentVersion == schemaVersion && locked.rows != 1 {
+				return normalizeSessionMarker(tx, schemaVersion)
+			}
+			return nil
+		}
+
+		if _, err := tx.Exec(`CREATE TABLE schema_version (version INTEGER NOT NULL)`); err != nil {
+			return fmt.Errorf("create legacy session schema marker: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES(0)`); err != nil {
+			return fmt.Errorf("publish session legacy baseline: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	// Ensure indexes exist (handles fresh DBs where migrations don't run)
-	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)")
-	if err != nil {
-		return fmt.Errorf("ensure message sequence index: %w", err)
+	for _, migration := range migrations {
+		if migration.version <= currentVersion {
+			continue
+		}
+		if err := runSessionMigration(db, migration); err != nil {
+			return err
+		}
+		currentVersion = migration.version
 	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)")
+	finalState, err := readSessionMarker(db)
 	if err != nil {
-		return fmt.Errorf("ensure status index: %w", err)
+		return fmt.Errorf("read final session schema marker: %w", err)
 	}
-	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_number ON sessions(number)")
-	if err != nil {
-		return fmt.Errorf("ensure number index: %w", err)
+	if finalState.rows != 1 || finalState.distinct != 1 || finalState.max != schemaVersion {
+		return fmt.Errorf("session migrations ended with marker rows=%d distinct=%d version=%d, want one row at %d", finalState.rows, finalState.distinct, finalState.max, schemaVersion)
 	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_origin ON sessions(origin)")
-	if err != nil {
-		return fmt.Errorf("ensure origin index: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)")
-	if err != nil {
-		return fmt.Errorf("ensure pinned index: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_title_skipped ON sessions(archived, title_skipped_at, updated_at DESC)")
-	if err != nil {
-		return fmt.Errorf("ensure title_skipped index: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_user_msg ON sessions(last_user_message_at DESC)")
-	if err != nil {
-		return fmt.Errorf("ensure last_user_message_at index: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)")
-	if err != nil {
-		return fmt.Errorf("ensure last_message_at index: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_activity ON sessions(archived, COALESCE(pinned, FALSE) DESC, COALESCE(last_message_at, last_user_message_at, created_at) DESC)")
-	if err != nil {
-		return fmt.Errorf("ensure sidebar activity index: %w", err)
-	}
-	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_last_user_activity ON sessions(archived, COALESCE(pinned, FALSE) DESC, COALESCE(last_user_message_at, created_at) DESC)")
-	if err != nil {
-		return fmt.Errorf("ensure sidebar last-user activity index: %w", err)
-	}
-
 	return nil
 }
 
 func runSessionMigration(db *sql.DB, m migration) error {
-	ctx := context.Background()
-	return withImmediateMigrationTx(ctx, db, func(tx schemaExecutor) error {
+	return sqliteutil.WithImmediateMigrationTx(context.Background(), db, func(tx sqliteutil.Executor) error {
+		var state sessionMarkerState
+		if err := tx.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT version), COALESCE(MIN(version), 0), COALESCE(MAX(version), 0) FROM schema_version`).Scan(
+			&state.rows, &state.distinct, &state.min, &state.max,
+		); err != nil {
+			return fmt.Errorf("read marker before session migration %d (%s): %w", m.version, m.description, err)
+		}
+		if state.distinct != 1 || state.rows == 0 {
+			return fmt.Errorf("invalid marker before session migration %d (%s): rows=%d distinct=%d", m.version, m.description, state.rows, state.distinct)
+		}
+		if state.max >= m.version {
+			return nil
+		}
+		if state.max != m.version-1 {
+			return fmt.Errorf("session migration %d (%s) expected prior version %d, observed %d", m.version, m.description, m.version-1, state.max)
+		}
 		if err := m.up(tx); err != nil {
-			return fmt.Errorf("migration %d (%s): %w", m.version, m.description, err)
+			return fmt.Errorf("session migration %d (%s), prior version %d remains safely committed: %w", m.version, m.description, state.max, err)
 		}
 		if _, err := tx.Exec("UPDATE schema_version SET version = ?", m.version); err != nil {
-			return fmt.Errorf("update version to %d: %w", m.version, err)
+			return fmt.Errorf("publish session migration %d (%s): %w", m.version, m.description, err)
 		}
 		return nil
 	})
@@ -1662,9 +1759,8 @@ func isDuplicateColumnError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "duplicate column") ||
-		strings.Contains(errStr, "already exists")
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "duplicate column")
 }
 
 // cleanup removes old sessions based on configuration.

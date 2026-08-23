@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 
 	_ "modernc.org/sqlite"
 )
@@ -140,7 +141,7 @@ type Store struct {
 	sessionBytes map[string]int64 // retained-bytes budget cache per session
 }
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 const (
 	// Check after at most 8 MiB of retained input, or 64 metadata-only rows.
@@ -151,6 +152,7 @@ const (
 
 const schema = `
 CREATE TABLE IF NOT EXISTS schema_version (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
 	version INTEGER NOT NULL
 );
 
@@ -184,6 +186,7 @@ CREATE TABLE IF NOT EXISTS file_changes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_changes_session_path ON file_changes(session_id, path, seq);
+CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq);
 `
 
 func preparePrivateDBFile(path string) error {
@@ -270,53 +273,271 @@ func Open(path string, opts Options) (*Store, error) {
 	}, nil
 }
 
-func initSchema(db *sql.DB) error {
-	if _, err := db.Exec(schema); err != nil {
-		return err
-	}
+type filetrackMigration struct {
+	version     int
+	description string
+	up          func(sqliteutil.Executor) error
+}
 
-	var version int
-	err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
-	if err == sql.ErrNoRows {
-		tx, txErr := db.Begin()
-		if txErr != nil {
-			return fmt.Errorf("begin file change schema initialization: %w", txErr)
-		}
-		defer tx.Rollback()
-		if _, txErr = tx.Exec("CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq)"); txErr != nil {
-			return txErr
-		}
-		if _, txErr = tx.Exec("INSERT INTO schema_version (version) VALUES (?)", schemaVersion); txErr != nil {
-			return txErr
-		}
-		return tx.Commit()
+var filetrackMigrations = []filetrackMigration{
+	{
+		version:     2,
+		description: "add file change run identity and index",
+		up: func(tx sqliteutil.Executor) error {
+			exists, err := sqliteutil.ColumnExists(tx, "file_changes", "run_id")
+			if err != nil {
+				return fmt.Errorf("inspect file_changes.run_id: %w", err)
+			}
+			if !exists {
+				if _, err := tx.Exec(`ALTER TABLE file_changes ADD COLUMN run_id TEXT`); err != nil {
+					return fmt.Errorf("add file change run identity: %w", err)
+				}
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq)`); err != nil {
+				return fmt.Errorf("create file change run index: %w", err)
+			}
+			return nil
+		},
+	},
+	{
+		version:     3,
+		description: "canonicalize file history schema and enforce singleton marker",
+		up: func(tx sqliteutil.Executor) error {
+			if err := canonicalizeFileChangesTable(tx); err != nil {
+				return err
+			}
+			return normalizeFiletrackMarker(tx, 2)
+		},
+	},
+}
+
+func canonicalizeFileChangesTable(tx sqliteutil.Executor) error {
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_file_changes_session_path`,
+		`DROP INDEX IF EXISTS idx_file_changes_session_run`,
+		`ALTER TABLE file_changes RENAME TO file_changes_old`,
+		`CREATE TABLE file_changes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			run_id TEXT,
+			seq INTEGER NOT NULL,
+			path TEXT NOT NULL,
+			kind TEXT NOT NULL CHECK (kind IN ('create','modify','delete')),
+			tool_name TEXT,
+			tool_call_id TEXT,
+			before_hash TEXT,
+			after_hash TEXT,
+			before_size INTEGER NOT NULL DEFAULT 0,
+			after_size INTEGER NOT NULL DEFAULT 0,
+			adds INTEGER NOT NULL DEFAULT 0,
+			dels INTEGER NOT NULL DEFAULT 0,
+			truncated INTEGER NOT NULL DEFAULT 0,
+			is_binary INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(session_id, seq)
+		)`,
+		`INSERT INTO file_changes(id,session_id,run_id,seq,path,kind,tool_name,tool_call_id,before_hash,after_hash,before_size,after_size,adds,dels,truncated,is_binary,created_at)
+		 SELECT id,session_id,run_id,seq,path,kind,tool_name,tool_call_id,before_hash,after_hash,before_size,after_size,adds,dels,truncated,is_binary,created_at FROM file_changes_old`,
+		`DROP TABLE file_changes_old`,
+		`CREATE INDEX idx_file_changes_session_path ON file_changes(session_id, path, seq)`,
+		`CREATE INDEX idx_file_changes_session_run ON file_changes(session_id, run_id, seq)`,
 	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("canonicalize file history schema with %q: %w", statement, err)
+		}
+	}
+	return nil
+}
+
+type filetrackMarkerState struct {
+	rows, distinct int
+	min, max       int
+}
+
+type filetrackQueryRower interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func readFiletrackMarker(db filetrackQueryRower) (filetrackMarkerState, error) {
+	var state filetrackMarkerState
+	err := db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT version), COALESCE(MIN(version), 0), COALESCE(MAX(version), 0) FROM schema_version`).Scan(
+		&state.rows, &state.distinct, &state.min, &state.max,
+	)
+	return state, err
+}
+
+func normalizeFiletrackMarker(tx sqliteutil.Executor, expectedVersion int) error {
+	state, err := readFiletrackMarker(tx)
 	if err != nil {
 		return err
 	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin file change migration: %w", err)
+	if state.distinct > 1 {
+		return fmt.Errorf("conflicting file history schema markers range from %d to %d", state.min, state.max)
 	}
-	defer tx.Rollback()
-	if version < 2 {
-		if _, err := tx.Exec("ALTER TABLE file_changes ADD COLUMN run_id TEXT"); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-			return fmt.Errorf("add file change run identity: %w", err)
-		}
+	if state.rows > 0 && state.max != expectedVersion {
+		return fmt.Errorf("file history schema marker changed unexpectedly: observed %d, expected %d", state.max, expectedVersion)
 	}
-	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_file_changes_session_run ON file_changes(session_id, run_id, seq)"); err != nil {
-		return err
-	}
-	if version < schemaVersion {
-		if _, err := tx.Exec("UPDATE schema_version SET version = ?", schemaVersion); err != nil {
+	for _, statement := range []string{
+		`DROP TABLE IF EXISTS schema_version_new`,
+		`CREATE TABLE schema_version_new (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit file change migration: %w", err)
+	if _, err := tx.Exec(`INSERT INTO schema_version_new(id, version) VALUES(1, ?)`, expectedVersion); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE schema_version`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE schema_version_new RENAME TO schema_version`); err != nil {
+		return err
 	}
 	return nil
+}
+
+func initSchema(db *sql.DB) error {
+	state, err := readFiletrackMarker(db)
+	if err == nil {
+		if state.distinct > 1 {
+			return fmt.Errorf("conflicting file history schema markers range from %d to %d", state.min, state.max)
+		}
+		if state.rows > 0 && state.max > schemaVersion {
+			return fmt.Errorf("file history database schema version %d is newer than supported version %d", state.max, schemaVersion)
+		}
+		if state.rows == 1 && state.max == schemaVersion {
+			return nil
+		}
+	}
+
+	shared := make([]sqliteutil.Migration, len(filetrackMigrations))
+	for i, migration := range filetrackMigrations {
+		shared[i] = sqliteutil.Migration{Version: migration.version, Description: migration.description, Up: migration.up}
+	}
+	if err := sqliteutil.ValidateMigrations(shared, 2, schemaVersion, true); err != nil {
+		return fmt.Errorf("validate file history migrations: %w", err)
+	}
+
+	currentVersion := 1
+	if err := sqliteutil.WithImmediateMigrationTx(context.Background(), db, func(tx sqliteutil.Executor) error {
+		markerExists, err := sqliteutil.TableExists(tx, "schema_version")
+		if err != nil {
+			return fmt.Errorf("inspect file history marker table: %w", err)
+		}
+		changesExist, err := sqliteutil.TableExists(tx, "file_changes")
+		if err != nil {
+			return fmt.Errorf("inspect file history schema: %w", err)
+		}
+		blobsExist, err := sqliteutil.TableExists(tx, "blobs")
+		if err != nil {
+			return fmt.Errorf("inspect file history blobs schema: %w", err)
+		}
+
+		if !markerExists && !changesExist && !blobsExist {
+			userTables, err := sqliteutil.UserTableCount(tx)
+			if err != nil {
+				return fmt.Errorf("classify fresh file history database: %w", err)
+			}
+			if userTables != 0 {
+				return fmt.Errorf("unknown unversioned file history schema: found %d unrelated tables; restore a backup or move the database aside to recreate it", userTables)
+			}
+			if _, err := tx.Exec(schema); err != nil {
+				return fmt.Errorf("bootstrap file history schema: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO schema_version(id, version) VALUES(1, ?)`, schemaVersion); err != nil {
+				return fmt.Errorf("publish file history schema version %d: %w", schemaVersion, err)
+			}
+			currentVersion = schemaVersion
+			return nil
+		}
+		if markerExists {
+			state, err := readFiletrackMarker(tx)
+			if err != nil {
+				return fmt.Errorf("read locked file history marker: %w", err)
+			}
+			if state.distinct > 1 {
+				return fmt.Errorf("conflicting file history schema markers range from %d to %d", state.min, state.max)
+			}
+			if state.rows > 0 {
+				currentVersion = state.max
+			}
+			if currentVersion > schemaVersion {
+				return fmt.Errorf("file history database schema version %d is newer than supported version %d", currentVersion, schemaVersion)
+			}
+			if currentVersion == schemaVersion && state.rows != 1 {
+				return normalizeFiletrackMarker(tx, schemaVersion)
+			}
+		}
+
+		if !changesExist {
+			return fmt.Errorf("unknown file history schema: file_changes table is missing; restore a backup or move the database aside to recreate it")
+		}
+		if !blobsExist {
+			// The earliest supported test/release shape may omit blobs when no
+			// content was retained. Install only this v1 baseline table.
+			if _, err := tx.Exec(`CREATE TABLE blobs (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, compression TEXT NOT NULL DEFAULT 'gzip', data BLOB NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+				return fmt.Errorf("install file history v1 blobs table: %w", err)
+			}
+		}
+
+		if !markerExists {
+			if _, err := tx.Exec(`CREATE TABLE schema_version (version INTEGER NOT NULL)`); err != nil {
+				return fmt.Errorf("create legacy file history marker: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES(1)`); err != nil {
+				return fmt.Errorf("publish legacy file history baseline: %w", err)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	for _, migration := range filetrackMigrations {
+		if migration.version <= currentVersion {
+			continue
+		}
+		if err := runFiletrackMigration(db, migration); err != nil {
+			return err
+		}
+		currentVersion = migration.version
+	}
+	finalState, err := readFiletrackMarker(db)
+	if err != nil {
+		return fmt.Errorf("read final file history marker: %w", err)
+	}
+	if finalState.rows != 1 || finalState.distinct != 1 || finalState.max != schemaVersion {
+		return fmt.Errorf("file history migrations ended with marker rows=%d distinct=%d version=%d, want one row at %d", finalState.rows, finalState.distinct, finalState.max, schemaVersion)
+	}
+	return nil
+}
+
+func runFiletrackMigration(db *sql.DB, migration filetrackMigration) error {
+	return sqliteutil.WithImmediateMigrationTx(context.Background(), db, func(tx sqliteutil.Executor) error {
+		state, err := readFiletrackMarker(tx)
+		if err != nil {
+			return fmt.Errorf("read marker before file history migration %d (%s): %w", migration.version, migration.description, err)
+		}
+		if state.rows == 0 || state.distinct != 1 {
+			return fmt.Errorf("invalid marker before file history migration %d (%s): rows=%d distinct=%d", migration.version, migration.description, state.rows, state.distinct)
+		}
+		if state.max >= migration.version {
+			return nil
+		}
+		if state.max != migration.version-1 {
+			return fmt.Errorf("file history migration %d (%s) expected prior version %d, observed %d", migration.version, migration.description, migration.version-1, state.max)
+		}
+		if err := migration.up(tx); err != nil {
+			return fmt.Errorf("file history migration %d (%s), prior version %d remains safely committed: %w", migration.version, migration.description, state.max, err)
+		}
+		if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, migration.version); err != nil {
+			return fmt.Errorf("publish file history migration %d (%s): %w", migration.version, migration.description, err)
+		}
+		return nil
+	})
 }
 
 // Close closes the database.

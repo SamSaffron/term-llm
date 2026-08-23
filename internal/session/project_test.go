@@ -24,13 +24,10 @@ func newProjectTestStore(t *testing.T) *SQLiteStore {
 }
 
 func TestProjectMigrationsAndCRUDStableIdentity(t *testing.T) {
-	if projectSchemaVersion != 47 || schemaVersion != 48 {
-		t.Fatalf("schema versions = project %d/current %d, want 47/48", projectSchemaVersion, schemaVersion)
-	}
 	found47, found48 := false, false
 	for _, migration := range migrations {
 		found47 = found47 || migration.version == projectSchemaVersion
-		found48 = found48 || migration.version == schemaVersion
+		found48 = found48 || migration.version == 48
 	}
 	if !found47 || !found48 {
 		t.Fatalf("project migrations present = 47:%t 48:%t", found47, found48)
@@ -159,19 +156,23 @@ func TestProjectMigration48RepairsVersion47WithoutProjectColumn(t *testing.T) {
 func TestProjectMigration47FailureLeavesNoPartialSchema(t *testing.T) {
 	db := openProjectMigration46DB(t)
 	originalMigrations := migrations
-	migrations = []migration{{
-		version:     projectSchemaVersion,
-		description: "injected project migration failure",
-		up: func(db schemaExecutor) error {
+	migrations = append([]migration(nil), originalMigrations...)
+	for i := range migrations {
+		if migrations[i].version != projectSchemaVersion {
+			continue
+		}
+		migrations[i].description = "injected project migration failure"
+		migrations[i].up = func(db schemaExecutor) error {
 			if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN project_id TEXT"); err != nil {
 				return err
 			}
-			if _, err := db.Exec(projectsSchema); err != nil {
+			if _, err := db.Exec(projectsSchemaV47); err != nil {
 				return err
 			}
 			return errors.New("injected failure")
-		},
-	}}
+		}
+		break
+	}
 	t.Cleanup(func() { migrations = originalMigrations })
 
 	if err := initSchema(db); err == nil {
