@@ -121,7 +121,11 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 	}
 
 	if memoryDryRun {
-		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName)
+		lastUpdatedRecentAt, err := readLastUpdatedRecentAt(ctx, store, agentName)
+		if err != nil {
+			return err
+		}
+		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName, lastUpdatedRecentAt)
 		if err != nil {
 			return err
 		}
@@ -148,17 +152,23 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := withLockedRecentFile(recentPath, func() error {
-		if _, err := readLastUpdatedRecentAt(ctx, store, agentName); err != nil {
+		lastUpdatedRecentAt, err := readLastUpdatedRecentAt(ctx, store, agentName)
+		if err != nil {
 			return err
 		}
+		// Capture the next checkpoint before enumerating sessions so activity that
+		// arrives during this run remains eligible for the next one.
+		nextUpdatedRecentAt := time.Now().UTC()
 
-		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName)
+		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName, lastUpdatedRecentAt)
 		if err != nil {
 			return err
 		}
 		if strings.TrimSpace(input.Text) == "" {
-			if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), time.Now().UTC().Format(time.RFC3339)); err != nil {
-				return fmt.Errorf("update last update-recent timestamp: %w", err)
+			if input.Exhausted {
+				if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), nextUpdatedRecentAt.Format(time.RFC3339)); err != nil {
+					return fmt.Errorf("update last update-recent timestamp: %w", err)
+				}
 			}
 			return nil
 		}
@@ -191,9 +201,10 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		now := time.Now().UTC()
-		if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("update last update-recent timestamp: %w", err)
+		if input.Exhausted {
+			if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), nextUpdatedRecentAt.Format(time.RFC3339)); err != nil {
+				return fmt.Errorf("update last update-recent timestamp: %w", err)
+			}
 		}
 
 		return nil
@@ -431,8 +442,13 @@ func memoryCompactRecentUserPrompt(candidateRecent string) string {
 	return fmt.Sprintf("CANDIDATE RECENT MEMORY TO COMPACT:\n\n%s", candidateRecent)
 }
 
-func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, current *session.Session) ([]memoryUpdateRecentSession, error) {
-	complete, err := listCompleteSessions(ctx, sessStore)
+func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, current *session.Session) ([]memoryUpdateRecentSession, error) {
+	complete, err := sessStore.List(ctx, session.ListOptions{
+		Agent:            agentName,
+		Status:           session.StatusComplete,
+		UpdatedAtOrAfter: updatedAtOrAfter,
+		Limit:            -1,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list complete sessions: %w", err)
 	}
@@ -441,41 +457,23 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 	sessions := make([]memoryUpdateRecentSession, 0, len(complete)+1)
 
 	for _, summary := range complete {
-		sess, err := sessStore.Get(ctx, summary.ID)
-		if err != nil {
-			return nil, fmt.Errorf("get session %s: %w", summary.ID, err)
-		}
-		if sess == nil {
+		// Keep custom stores that ignore the new List filters from leaking another
+		// agent or an older session into this update.
+		if updateRecentSessionAgent(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
 			continue
-		}
-		if resolveMemoryAgent(sess.Agent) != agentName {
-			continue
-		}
-
-		status := summary.Status
-		if status == "" {
-			status = sess.Status
-		}
-		number := summary.Number
-		if number == 0 {
-			number = sess.Number
-		}
-		updatedAt := summary.UpdatedAt
-		if updatedAt.IsZero() {
-			updatedAt = sess.UpdatedAt
 		}
 
 		sessions = append(sessions, memoryUpdateRecentSession{
 			ID:        summary.ID,
-			Number:    number,
-			Status:    status,
-			UpdatedAt: updatedAt,
+			Number:    summary.Number,
+			Status:    summary.Status,
+			UpdatedAt: summary.UpdatedAt,
 		})
 		seen[summary.ID] = struct{}{}
 	}
 
 	if current != nil {
-		if _, exists := seen[current.ID]; !exists && resolveMemoryAgent(current.Agent) == agentName {
+		if _, exists := seen[current.ID]; !exists && updateRecentSessionAgent(current.Agent) == agentName && (updatedAtOrAfter.IsZero() || !current.UpdatedAt.Before(updatedAtOrAfter)) {
 			sessions = append(sessions, memoryUpdateRecentSession{
 				ID:        current.ID,
 				Number:    current.Number,
@@ -498,18 +496,27 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 	return sessions, nil
 }
 
-type memoryUpdateRecentInput struct {
-	Text    string
-	Offsets map[string]int
+func updateRecentSessionAgent(agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return "default"
+	}
+	return agent
 }
 
-func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string) (memoryUpdateRecentInput, error) {
+type memoryUpdateRecentInput struct {
+	Text      string
+	Offsets   map[string]int
+	Exhausted bool
+}
+
+func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string, updatedAtOrAfter time.Time) (memoryUpdateRecentInput, error) {
 	current, err := sessStore.GetCurrent(ctx)
 	if err != nil {
 		return memoryUpdateRecentInput{}, fmt.Errorf("get current session: %w", err)
 	}
 
-	sessions, err := listUpdateRecentSessions(ctx, sessStore, agentName, current)
+	sessions, err := listUpdateRecentSessions(ctx, sessStore, agentName, updatedAtOrAfter, current)
 	if err != nil {
 		return memoryUpdateRecentInput{}, err
 	}
@@ -521,8 +528,9 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 
 	trackedOffsets := map[string]int{}
 	var inputBuilder strings.Builder
+	exhausted := true
 
-	for _, sess := range sessions {
+	for i, sess := range sessions {
 		if currentID != "" && sess.ID == currentID {
 			continue
 		}
@@ -553,11 +561,12 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 		lastMessage := messages[len(messages)-1]
 		trackedOffsets[sess.ID] = lastMessage.Sequence + 1
 		if inputBuilder.Len() >= memoryUpdateRecentMaxInputChars {
+			exhausted = i == len(sessions)-1
 			break
 		}
 	}
 
-	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets}, nil
+	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: exhausted}, nil
 }
 
 func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []session.Message) string {

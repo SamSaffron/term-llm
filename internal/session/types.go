@@ -146,6 +146,7 @@ type SessionSummary struct {
 	Model               string             `json:"model"`
 	Mode                SessionMode        `json:"mode,omitempty"`
 	Origin              SessionOrigin      `json:"origin,omitempty"`
+	Agent               string             `json:"agent,omitempty"`
 	Archived            bool               `json:"archived,omitempty"`
 	Pinned              bool               `json:"pinned,omitempty"`
 	MessageCount        int                `json:"message_count"`
@@ -176,10 +177,12 @@ type ListOptions struct {
 	Provider         string                // Filter by provider
 	Model            string                // Filter by model
 	Mode             SessionMode           // Filter by mode (chat, ask, plan, exec)
+	Agent            string                // Filter by agent; empty persisted agents belong to "default"
 	Status           SessionStatus         // Filter by status
+	UpdatedAtOrAfter time.Time             // Include sessions updated at or after this timestamp
 	Tag              string                // Filter by tag (substring match)
 	Categories       []string              // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit            int                   // Max results (0 = use default)
+	Limit            int                   // Max results (0 = use default, negative = unlimited)
 	Offset           int                   // Pagination offset
 	BeforeNumber     int64                 // Keyset cursor: only sessions with number < this value
 	SortByNumberDesc bool                  // Order by session number descending instead of activity sort
