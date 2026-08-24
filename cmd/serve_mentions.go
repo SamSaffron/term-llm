@@ -104,7 +104,7 @@ func (s *serveServer) handleMentionSearch(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, serveMentionSearchResponse{Items: []serveMentionSearchItem{}})
 		return
 	}
-	root, err := s.resolveMentionSearchRootForProject(r.Context(), strings.TrimSpace(r.Header.Get("session_id")), req.ProjectID, req.WorktreeDir, req.NoProject, isFirstPartyUIResponseRequest(r))
+	root, err := s.resolveMentionSearchRootForProject(r.Context(), resolveRequestSessionID(r), req.ProjectID, req.WorktreeDir, req.NoProject, isFirstPartyUIResponseRequest(r))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return

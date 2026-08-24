@@ -956,6 +956,17 @@ async function waitFor(predicate, timeoutMs) {
   return predicate();
 }
 
+function testRequestHeadersUseProxySafeSessionHeader() {
+  const name = 'request headers use a proxy-safe session header';
+  const harness = createHarness();
+  const headers = harness.app.requestHeaders('sess-safe');
+  if (headers['X-Term-LLM-Session-ID'] !== 'sess-safe' || Object.prototype.hasOwnProperty.call(headers, 'session_id')) {
+    fail(name, 'session header did not migrate away from the underscore name', JSON.stringify(headers));
+    return;
+  }
+  pass(name);
+}
+
 async function testModelEffortOptionsFollowMetadata() {
   const name = 'model effort options follow /v1/models metadata';
   const harness = createHarness({
@@ -8988,6 +8999,7 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
 }
 
 (async () => {
+  await runAppStreamTest(testRequestHeadersUseProxySafeSessionHeader);
   await runAppStreamTest(testStaleSnapshotCannotReclaimOwnershipAfterRapidResponseSwitch);
   await runAppStreamTest(testUnknownSlashTextRemainsNormalMessage);
   await runAppStreamTest(testMainSkillUsesStructuredInvocationAndResponseStream);

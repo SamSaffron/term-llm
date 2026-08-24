@@ -262,7 +262,7 @@ func serveSkillSessionAuthorized(r *http.Request, sessionID, requestedSessionID 
 	// prevents a request from accidentally targeting a different URL session;
 	// it is not an authentication boundary. Numeric URL selectors are aliases for
 	// the canonical ID resolved by handleSessionByID.
-	claimed := strings.TrimSpace(r.Header.Get("session_id"))
+	claimed := resolveRequestSessionID(r)
 	return claimed != "" && (claimed == sessionID || claimed == requestedSessionID)
 }
 

@@ -49,10 +49,11 @@ func TestHubReverseConnectionNextRequestIDIsUnique(t *testing.T) {
 }
 
 func TestHubReverseNodeProxy(t *testing.T) {
-	var projectPath, projectQuery string
+	var projectPath, projectQuery, sessionHeader string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/chat/healthz":
+			sessionHeader = r.Header.Get(requestSessionIDHeader)
 		case "/chat/v1/projects/prj_one/worktrees/diff":
 			projectPath, projectQuery = r.URL.Path, r.URL.RawQuery
 		default:
@@ -77,6 +78,7 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	waitForReverseNode(t, s, "artist")
 
 	req := httptest.NewRequest(http.MethodGet, "/node/artist/healthz", nil)
+	req.Header.Set(requestSessionIDHeader, "sess-safe")
 	rec := httptest.NewRecorder()
 	s.handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -84,6 +86,9 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"agent":"artist"`) {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if sessionHeader != "sess-safe" {
+		t.Fatalf("reverse backend %s = %q, want sess-safe", requestSessionIDHeader, sessionHeader)
 	}
 	projectReq := httptest.NewRequest(http.MethodGet, "/node/artist/v1/projects/prj_one/worktrees/diff?dir=%2Fmanaged%2Fone", nil)
 	projectRec := httptest.NewRecorder()

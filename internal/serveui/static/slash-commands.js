@@ -113,7 +113,7 @@ const refreshSkillCommands = async (sessionId) => {
   const prefix = app.UI_PREFIX || '/ui';
   const headers = typeof app.requestHeaders === 'function'
     ? app.requestHeaders(id)
-    : { 'Content-Type': 'application/json', session_id: id };
+    : { 'Content-Type': 'application/json', 'X-Term-LLM-Session-ID': id };
   try {
     const response = await app.apiFetch(`${prefix}/v1/sessions/${encodeURIComponent(id)}/skills`, { headers });
     if (!response.ok) {
@@ -276,7 +276,7 @@ const scheduleMentionUpdate = (value, cursor) => {
     const context = mentionRequestContext();
     const headers = typeof app.requestHeaders === 'function'
       ? app.requestHeaders(context.sessionId)
-      : { 'Content-Type': 'application/json', ...(context.sessionId ? { session_id: context.sessionId } : {}) };
+      : { 'Content-Type': 'application/json', ...(context.sessionId ? { 'X-Term-LLM-Session-ID': context.sessionId } : {}) };
     mentionAbortController = typeof AbortController === 'function' ? new AbortController() : null;
     const sourceValue = value;
     const sourceCursor = cursor;

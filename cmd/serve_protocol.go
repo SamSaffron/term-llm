@@ -817,12 +817,16 @@ func decodeJSONBody(r *http.Request, dst any) error {
 	return nil
 }
 
+const (
+	requestSessionIDHeader       = "X-Term-LLM-Session-ID"
+	legacyRequestSessionIDHeader = "session_id"
+)
+
 func resolveRequestSessionID(r *http.Request) string {
-	sessionID := strings.TrimSpace(r.Header.Get("session_id"))
-	if sessionID != "" {
+	if sessionID := strings.TrimSpace(r.Header.Get(requestSessionIDHeader)); sessionID != "" {
 		return sessionID
 	}
-	return ""
+	return strings.TrimSpace(r.Header.Get(legacyRequestSessionIDHeader))
 }
 
 func ensureSessionID(w http.ResponseWriter) string {

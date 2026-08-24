@@ -2716,7 +2716,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Term-LLM-Session-ID, session_id, Idempotency-Key, X-Idempotency-Key, X-Term-LLM-Request-ID, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-branch-anchor-id, x-term-llm-ui-version")
 		}
 

@@ -255,7 +255,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// External /v1/responses callers follow OpenAI-style chaining:
 	// previous_response_id continues a conversation; no previous response means a
 	// fresh conversation, even if a session_id header is reused for persistence.
-	headerSessionID := strings.TrimSpace(r.Header.Get("session_id"))
+	headerSessionID := resolveRequestSessionID(r)
 	sessionID := ""
 	previousDurable := false
 	resolvedPreviousResponseID := req.PreviousResponseID

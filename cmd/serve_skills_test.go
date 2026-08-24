@@ -158,17 +158,20 @@ func TestServeSessionSkillsAuthorizeNumericSessionAlias(t *testing.T) {
 	store.sessions["sess-real"] = &session.Session{ID: "sess-real", Number: 1291, CWD: root}
 	srv := &serveServer{store: store, skillsSetup: setup}
 
-	request := func(claimed string) *httptest.ResponseRecorder {
+	request := func(header, claimed string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/1291/skills", nil)
-		req.Header.Set("session_id", claimed)
+		req.Header.Set(header, claimed)
 		rr := httptest.NewRecorder()
 		srv.handleSessionByID(rr, req)
 		return rr
 	}
-	if rr := request("1291"); rr.Code != http.StatusOK {
-		t.Fatalf("numeric alias status = %d body=%s", rr.Code, rr.Body.String())
+	if rr := request(requestSessionIDHeader, "1291"); rr.Code != http.StatusOK {
+		t.Fatalf("canonical numeric alias status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	if rr := request("1292"); rr.Code != http.StatusForbidden {
+	if rr := request(legacyRequestSessionIDHeader, "1291"); rr.Code != http.StatusOK {
+		t.Fatalf("legacy numeric alias status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := request(requestSessionIDHeader, "1292"); rr.Code != http.StatusForbidden {
 		t.Fatalf("foreign numeric alias status = %d, want 403; body=%s", rr.Code, rr.Body.String())
 	}
 }

@@ -185,7 +185,7 @@ GET    /v1/sessions/{session-id}/skill-runs/{run-id}/events
 DELETE /v1/sessions/{session-id}/skill-runs/{run-id}
 ```
 
-The invocation body is `{"name":"review","arguments":"staged"}`. The server resolves execution mode and returns either a normal response stream ID or an isolated run ID, child session ID, and event URL. Requests pass the server's normal bearer-token authentication and must send a `session_id` header matching the URL; run lookup also verifies that the run belongs to that session. This is a request-consistency check, not separate per-client authorization: a holder of the server token can access other server sessions by their IDs.
+The invocation body is `{"name":"review","arguments":"staged"}`. The server resolves execution mode and returns either a normal response stream ID or an isolated run ID, child session ID, and event URL. Requests pass the server's normal bearer-token authentication and must send an `X-Term-LLM-Session-ID` header matching the URL; the legacy `session_id` header remains accepted for compatibility. Run lookup also verifies that the run belongs to that session. This is a request-consistency check, not separate per-client authorization: a holder of the server token can access other server sessions by their IDs.
 
 ### Configuration
 

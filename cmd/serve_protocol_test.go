@@ -20,6 +20,35 @@ import (
 
 const onePixelPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg=="
 
+func TestResolveRequestSessionIDHeaderCompatibility(t *testing.T) {
+	tests := []struct {
+		name      string
+		canonical string
+		legacy    string
+		want      string
+	}{
+		{name: "canonical", canonical: "sess-new", want: "sess-new"},
+		{name: "legacy", legacy: "sess-old", want: "sess-old"},
+		{name: "canonical preferred", canonical: "sess-new", legacy: "sess-old", want: "sess-new"},
+		{name: "trimmed", canonical: "  sess-trim  ", want: "sess-trim"},
+		{name: "missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.canonical != "" {
+				req.Header.Set(requestSessionIDHeader, tt.canonical)
+			}
+			if tt.legacy != "" {
+				req.Header.Set(legacyRequestSessionIDHeader, tt.legacy)
+			}
+			if got := resolveRequestSessionID(req); got != tt.want {
+				t.Fatalf("resolveRequestSessionID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func makeOrientation6JPEG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))

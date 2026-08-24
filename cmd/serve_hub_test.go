@@ -38,9 +38,10 @@ func (f fakeHubResolver) Source() string             { return hub.SourceConfig }
 func (f fakeHubResolver) Nodes() ([]hub.Node, error) { return f.nodes, nil }
 
 func TestHubAuthProtectsDashboardAPIAndProxy(t *testing.T) {
-	var gotAuth string
+	var gotAuth, gotSessionID string
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotSessionID = r.Header.Get(requestSessionIDHeader)
 		io.WriteString(w, "ok")
 	})
 	s.requireAuth = true
@@ -64,12 +65,16 @@ func TestHubAuthProtectsDashboardAPIAndProxy(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/node/alpha/v1/models", nil)
 	req.Header.Set("Authorization", "bearer hub-secret")
+	req.Header.Set(requestSessionIDHeader, "sess-safe")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authorized proxy status = %d body=%q", rec.Code, rec.Body.String())
 	}
 	if gotAuth != "Bearer tkn-123" {
 		t.Fatalf("backend Authorization = %q, want node token injection", gotAuth)
+	}
+	if gotSessionID != "sess-safe" {
+		t.Fatalf("backend %s = %q, want sess-safe", requestSessionIDHeader, gotSessionID)
 	}
 }
 

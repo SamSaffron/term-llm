@@ -24,7 +24,7 @@ const requestHeaders = (sessionId, tokenOverride = '') => {
   const headers = { 'Content-Type': 'application/json' };
   const token = tokenOverride || state.token;
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (sessionId) headers.session_id = sessionId;
+  if (sessionId) headers['X-Term-LLM-Session-ID'] = sessionId;
   if (app.UI_VERSION) {
     headers['X-Term-LLM-UI-Version'] = app.UI_VERSION;
   }
