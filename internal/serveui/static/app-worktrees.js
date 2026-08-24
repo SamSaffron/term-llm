@@ -29,7 +29,7 @@ const worktreeApp = window.TermLLMApp || (window.TermLLMApp = {});
       case 'project_not_found': return 'This project no longer exists.';
       case 'project_archived': return 'Restore this project before creating a worktree.';
       case 'project_unavailable': return error?.message || 'This project is unavailable.';
-      case 'projects_disabled': return 'Project mode was disabled; reload the available workspace.';
+      case 'projects_disabled': return 'Worktrees are unavailable in no-project mode.';
       default: {
         const message = String(error?.message || '');
         return message && !/^Request failed \(\d+\)\.?$/.test(message) ? message : fallback;

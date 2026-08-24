@@ -1007,7 +1007,7 @@ const sendMessage = async (options = {}) => {
         project_archived: 'This project is archived. Restore it or start in another project.',
         project_unavailable: 'Project unavailable. Check its server path, then retry.',
         workspace_conflict: 'This conversation was bound elsewhere. Its server workspace has been reloaded.',
-        projects_disabled: 'Project mode was disabled; the legacy conversation list is active.',
+        projects_disabled: 'Project mode is unavailable. Retry to continue in the current workspace.',
         refresh_required: "The server's project support changed; hard-refresh this page to continue.",
       };
       err.message = projectCopy[err.code] || err.message;

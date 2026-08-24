@@ -930,7 +930,8 @@ function createFakeTimers() {
     assert(urls.some((url) => url.includes('cursor=opaque-null-cursor') && !url.includes('project_id=')), 'No project cursor was not fetched automatically');
   });
 
-  await run('disabled-mode capability flip clears stale node-scoped project drafts', async () => {
+  await run('no-project capability clears stale project drafts without a notification', async () => {
+    const notifications = [];
     const { app, elements, state, localStorage } = createHarness({
       initialStorage: {
         drafts: JSON.stringify([
@@ -942,6 +943,8 @@ function createFakeTimers() {
       },
       apiFetch: async () => new Response(JSON.stringify({ projects: { enabled: false }, worktrees: { enabled: false } }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     });
+    app.showToast = (message) => notifications.push(message);
+    state.projectsEnabled = true;
     state.lastProjectId = 'prj_old';
     state.projectDrafts = { prj_old: { prompt: 'stale project prompt', worktreeDir: '/managed/old', worktreeName: 'old' } };
     state.selectedWorktreeDir = '/managed/old';
@@ -957,8 +960,10 @@ function createFakeTimers() {
     assertEqual(state.selectedWorktreeDir, '', 'stale selected worktree directory is cleared');
     assertEqual(state.selectedWorktreeName, '', 'stale selected worktree name is cleared');
     assertEqual(state.worktrees.length, 0, 'stale project worktree list is cleared');
-    assertEqual(app.renderProjectSidebar(), false, 'disabled mode delegates to the legacy flat/date sidebar renderer');
-    assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 0, 'disabled mode leaves no project group rows');
+    assert(state.capabilitiesLoaded && !state.projectsEnabled, 'no-project mode is a loaded, supported capability state');
+    assertEqual(notifications.length, 0, 'entering no-project mode does not emit a toast');
+    assertEqual(app.renderProjectSidebar(), false, 'no-project mode delegates to the flat/date sidebar renderer');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group').length, 0, 'no-project mode leaves no project group rows');
   });
 
   await run('add project path disables text transformations and traps background focus', async () => {

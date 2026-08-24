@@ -249,7 +249,6 @@ const loadCapabilities = async () => {
       Object.keys(state.projectDrafts || {}).length > 0;
     if (!enabled && hadProjectState) {
       clearProjectDraftStorage();
-      app.showToast?.('Project mode was disabled; the legacy conversation list is active', 'info');
     }
     state.capabilitiesLoaded = true;
     state.projectsEnabled = enabled;
