@@ -1,0 +1,27 @@
+[Unit]
+Description=term-llm Web UI
+Documentation=https://term-llm.com/guides/web-ui-and-api/
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=exec
+WorkingDirectory=%h
+ExecStart=%h/.config/term-llm/systemd-web/run-term-llm-web.sh %h/.local/bin/term-llm 127.0.0.1 8080
+# Required on purpose: without this file, term-llm would generate a new bearer
+# token and invalidate saved browser/API credentials.
+EnvironmentFile=%h/.config/term-llm/systemd-web/.env
+
+# Keep this deployment's config and state together. Remove these lines to use
+# the account's normal ~/.config and ~/.local/share locations.
+Environment=XDG_CONFIG_HOME=%h/.config/term-llm/systemd-web/config
+Environment=XDG_DATA_HOME=%h/.config/term-llm/systemd-web/data
+Environment=XDG_CACHE_HOME=%h/.config/term-llm/systemd-web/cache
+
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

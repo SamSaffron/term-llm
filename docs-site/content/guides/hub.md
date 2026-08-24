@@ -327,6 +327,12 @@ A node can also be made hub-aware when opened directly (not through the proxy):
 term-llm serve web --hub-url http://127.0.0.1:8090/ --hub-node-id jarvis --hub-node-name Jarvis
 ```
 
+For a long-running Linux node, see the repository's
+[`serve web` systemd example](https://github.com/samsaffron/term-llm/tree/main/examples/systemd-serve-web).
+It includes an interactive installer with optional reverse connection and
+startup registration, including `TERM_LLM_HUB_REGISTRATION_TOKEN`, plus a daily
+check that restarts the node only after its installed binary changes.
+
 ## API
 
 ```text

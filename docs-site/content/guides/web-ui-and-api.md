@@ -264,6 +264,21 @@ term-llm serve web --auth none --host 127.0.0.1
 
 `--allow-no-auth` and `--auth none` are only valid for loopback use. Exposing an unauthenticated server beyond localhost would be idiotic.
 
+## Run as a systemd user service
+
+For a persistent Linux deployment, the repository includes a complete
+[`serve web` systemd example](https://github.com/samsaffron/term-llm/tree/main/examples/systemd-serve-web).
+It provides an interactive installer that finds the binary, generates a stable
+bearer token, optionally records provider and reverse-Hub credentials, writes
+and starts the user units, and prints the maintenance commands when it
+finishes. The installed 04:00 timer restarts the service only when the installed
+`term-llm` binary differs from the running executable.
+
+The same example can optionally register the Web UI as a reverse-connected Hub
+node. Its environment template documents the Hub URL and node arguments,
+`TERM_LLM_HUB_REGISTRATION_TOKEN`, and how the stable
+`TERM_LLM_SERVE_TOKEN` is used as the node bearer token.
+
 ## Useful flags
 
 Ordinary serve platforms default to Guardian-reviewed auto approval. To require human approval for unmatched actions, launch with `--approval prompt` (or set `serve.approval_mode: prompt`). Auto is fail-closed: serve startup fails if Guardian cannot initialize.

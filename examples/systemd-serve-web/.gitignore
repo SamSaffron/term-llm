@@ -1,0 +1,14 @@
+# Installer choices and local secrets (keep example templates tracked).
+.env
+.env.*
+!.env.example
+install.conf
+
+# Optional deployment-local term-llm configuration and runtime state.
+config/
+data/
+cache/
+
+# Also protect a config placed directly beside these example files, even though
+# the supplied unit uses config/term-llm/config.yaml.
+config.yaml

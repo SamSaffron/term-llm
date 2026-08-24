@@ -1,0 +1,11 @@
+[Unit]
+Description=Check daily for an updated term-llm binary
+Documentation=https://term-llm.com/guides/web-ui-and-api/
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=term-llm-web-update-check.service
+
+[Install]
+WantedBy=timers.target

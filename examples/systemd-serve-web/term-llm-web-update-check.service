@@ -1,0 +1,8 @@
+[Unit]
+Description=Restart term-llm Web UI if its binary changed
+Documentation=https://term-llm.com/guides/web-ui-and-api/
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2min
+ExecStart=%h/.config/term-llm/systemd-web/restart-if-binary-changed.sh term-llm-web.service %h/.local/bin/term-llm
