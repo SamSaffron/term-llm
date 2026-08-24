@@ -20,6 +20,8 @@ const (
 	fileChangeScopeUncommitted = string(gitdiff.ScopeUncommitted)
 	fileChangeScopeUnstaged    = string(gitdiff.ScopeUnstaged)
 	fileChangeScopeStaged      = string(gitdiff.ScopeStaged)
+	fileChangeDefaultContext   = 3
+	fileChangeMaxContext       = 100000
 )
 
 type fileChangeScopeSpec struct {
@@ -80,6 +82,15 @@ func requestedFileChangeSnapshot(r *http.Request) (int64, bool) {
 	}
 	seq, err := strconv.ParseInt(raw, 10, 64)
 	return seq, err == nil && seq > 0
+}
+
+func requestedFileChangeContext(r *http.Request) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("context"))
+	if raw == "" {
+		return fileChangeDefaultContext, true
+	}
+	lines, err := strconv.Atoi(raw)
+	return lines, err == nil && lines >= fileChangeDefaultContext && lines <= fileChangeMaxContext
 }
 
 type sessionGitRepoCacheEntry struct {
@@ -231,6 +242,11 @@ func (s *serveServer) handleSessionFileChangeDiff(w http.ResponseWriter, r *http
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "snapshot_seq must be a positive integer")
 		return
 	}
+	contextLines, ok := requestedFileChangeContext(r)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "context must be between 3 and 100000 lines")
+		return
+	}
 	var content *filetrack.FileDiffContent
 	var err error
 	if runs, ok := fileChangeScopeRunWindow(scope); ok {
@@ -252,17 +268,20 @@ func (s *serveServer) handleSessionFileChangeDiff(w http.ResponseWriter, r *http
 
 	hunks := []filetrack.Hunk{}
 	if !content.Truncated && !content.IsImage {
-		if built := filetrack.BuildHunks(content.Path, content.Before, content.After); built != nil {
+		if built := filetrack.BuildHunksWithContext(content.Path, content.Before, content.After, contextLines); built != nil {
 			hunks = built
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"path":      content.Path,
-		"kind":      content.Kind,
-		"lang":      strings.ToLower(strings.TrimPrefix(filepath.Ext(content.Path), ".")),
-		"truncated": content.Truncated,
-		"image":     content.IsImage,
-		"hunks":     hunks,
+		"path":           content.Path,
+		"kind":           content.Kind,
+		"lang":           strings.ToLower(strings.TrimPrefix(filepath.Ext(content.Path), ".")),
+		"truncated":      content.Truncated,
+		"image":          content.IsImage,
+		"context":        contextLines,
+		"old_line_count": filetrack.LineCount(content.Before),
+		"new_line_count": filetrack.LineCount(content.After),
+		"hunks":          hunks,
 	})
 }
 

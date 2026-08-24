@@ -39,6 +39,7 @@ const SHELL_ASSETS = [
   './intent-storage.js',
   './app-session-admin.js',
   './app-diff-scopes.js',
+  './app-diff-context.js',
   './app-diff-comments.js',
   './app-diff-queue.js',
   './app-diffs.js',

@@ -6,6 +6,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app-diffs.js'), 'utf8');
+const contextSource = fs.readFileSync(path.join(__dirname, 'app-diff-context.js'), 'utf8');
 const scopeSource = fs.readFileSync(path.join(__dirname, 'app-diff-scopes.js'), 'utf8');
 const cssSource = fs.readFileSync(path.join(__dirname, 'app.css'), 'utf8');
 const indexSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
@@ -427,6 +428,7 @@ function createHarness(options = {}) {
   context.globalThis = context;
   app.apiFetch = (...args) => context.fetch(...args);
   vm.runInNewContext(scopeSource, context, { filename: 'app-diff-scopes.js' });
+  vm.runInNewContext(contextSource, context, { filename: 'app-diff-context.js' });
   if (options.diffComments) vm.runInNewContext(commentSource, context, { filename: 'app-diff-comments.js' });
   vm.runInNewContext(source, context, { filename: 'app-diffs.js' });
 
@@ -475,6 +477,14 @@ async function run(name, fn) {
     assert(/\.diff-comment-cancel,\s*\.diff-comment-send\s*\{[^}]*padding-block:\s*calc\(0\.35rem \+ 1px\) calc\(0\.35rem - 1px\)/s.test(cssSource), 'Cancel and Send now text lacks optical vertical centering');
   });
 
+  await run('omitted-context control uses a balanced muted treatment', () => {
+    assert(contextSource.includes('Show ${row.hiddenCount} hidden'), 'context label is not verb-first');
+    assert(!contextSource.includes('diff-hunk-expand-icon') && !contextSource.includes('⋯'), 'decorative glyph was retained in the context control');
+    assert(/\.diff-hunk-expand\s*\{[^}]*display:\s*flex[^}]*justify-content:\s*center[^}]*color:\s*var\(--text-muted\)[^}]*text-align:\s*center/s.test(cssSource), 'context control is not centered and muted');
+    assert(/\.diff-show-more\s*\{[^}]*color:\s*var\(--text-muted\)/s.test(cssSource), 'row-cap control does not match the muted context controls');
+    assert(/\.diff-hunk-expand:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/s.test(cssSource), 'context control lacks a visible keyboard focus ring');
+  });
+
   await run('diff scope normalization is shared by picker and comments', () => {
     const { app } = createHarness();
     assertEqual(app.normalizeDiffScope('  STAGED '), 'staged', 'scope normalization did not trim and lowercase');
@@ -497,20 +507,61 @@ async function run(name, fn) {
       { old_start: 20, new_start: 21, lines: [{ t: 'add', s: 'tail' }] }
     ]);
 
-    assertEqual(rows[0].type, 'ctx', 'first row is context');
-    assertEqual(rows[0].oldNo, 3, 'context old line number');
-    assertEqual(rows[0].newNo, 3, 'context new line number');
-    assertEqual(rows[1].type, 'del', 'second row is deletion');
-    assertEqual(rows[1].oldNo, 4, 'deletion advances old number');
-    assertEqual(rows[1].newNo, 0, 'deletion has no new number');
-    assertEqual(rows[2].newNo, 4, 'first addition new number');
-    assertEqual(rows[3].newNo, 5, 'second addition new number');
-    assertEqual(rows[4].oldNo, 5, 'trailing context old number skips deletion');
-    assertEqual(rows[4].newNo, 6, 'trailing context new number counts additions');
-    assertEqual(rows[5].type, 'hunk', 'hunk separator between hunks');
-    assertEqual(rows[6].type, 'add', 'second hunk first row is an addition');
-    assertEqual(rows[6].oldNo, 0, 'addition has no old number');
-    assertEqual(rows[6].newNo, 21, 'second hunk new start');
+    assertEqual(rows[0].type, 'hunk', 'leading omitted region is a separator');
+    assertEqual(rows[0].hiddenCount, 2, 'leading hidden line count');
+    assertEqual(rows[1].type, 'ctx', 'first content row is context');
+    assertEqual(rows[1].oldNo, 3, 'context old line number');
+    assertEqual(rows[1].newNo, 3, 'context new line number');
+    assertEqual(rows[2].type, 'del', 'second content row is deletion');
+    assertEqual(rows[2].oldNo, 4, 'deletion advances old number');
+    assertEqual(rows[2].newNo, 0, 'deletion has no new number');
+    assertEqual(rows[3].newNo, 4, 'first addition new number');
+    assertEqual(rows[4].newNo, 5, 'second addition new number');
+    assertEqual(rows[5].oldNo, 5, 'trailing context old number skips deletion');
+    assertEqual(rows[5].newNo, 6, 'trailing context new number counts additions');
+    assertEqual(rows[6].type, 'hunk', 'hunk separator between hunks');
+    assertEqual(rows[7].type, 'add', 'second hunk first row is an addition');
+    assertEqual(rows[7].oldNo, 0, 'addition has no old number');
+    assertEqual(rows[7].newNo, 21, 'second hunk new start');
+  });
+
+  await run('buildDiffRowModel exposes omitted regions at file boundaries', () => {
+    const { app } = createHarness();
+    const rows = app.buildDiffRowModel([
+      { old_start: 4, new_start: 4, lines: [
+        { t: 'ctx', s: 'four' },
+        { t: 'del', s: 'old' },
+        { t: 'add', s: 'new' },
+        { t: 'ctx', s: 'six' }
+      ] }
+    ], { old: 10, new: 10 });
+
+    assertEqual(rows[0].type, 'hunk', 'leading omitted region is a separator');
+    assertEqual(rows[0].hiddenCount, 3, 'leading hidden line count');
+    assertEqual(rows[rows.length - 1].type, 'hunk', 'trailing omitted region is a separator');
+    assertEqual(rows[rows.length - 1].hiddenCount, 4, 'trailing hidden line count');
+  });
+
+  await run('context anchor restoration tolerates subpixel scroll drift', () => {
+    const { app, elements, document } = createHarness();
+    const row = document.createElement('div');
+    row.dataset.diffAnchor = 'ctx:4:4';
+    row.rect.top = 200;
+    elements.diffFileList.scrollTop = 40.5;
+
+    app.restoreDiffContextAnchor({ key: 'ctx:4:4', top: 20, scrollTop: 40 }, elements.diffFileList, [row]);
+    assertEqual(elements.diffFileList.scrollTop, 220.5, 'subpixel drift prevented anchor restoration');
+  });
+
+  await run('context anchor restoration does not override user scrolling', () => {
+    const { app, elements, document } = createHarness();
+    const row = document.createElement('div');
+    row.dataset.diffAnchor = 'ctx:4:4';
+    row.rect.top = 200;
+    elements.diffFileList.scrollTop = 75;
+
+    app.restoreDiffContextAnchor({ key: 'ctx:4:4', top: 20, scrollTop: 40 }, elements.diffFileList, [row]);
+    assertEqual(elements.diffFileList.scrollTop, 75, 'late expansion overrode the user’s newer scroll position');
   });
 
   await run('handleFileChangeEvent keeps sidebar closed and tracks files until explicit toggle', () => {
@@ -860,6 +911,57 @@ async function run(name, fn) {
     await more.dispatchEvent({ type: 'click' });
     assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 450, 'all rows rendered after opting in');
     assert(!elements.diffFileList.querySelector('.diff-show-more'), 'control gone once expanded');
+  });
+
+  await run('clicking an omitted region fetches the next context chunk', async () => {
+    const calls = [];
+    const makeLines = (context) => {
+      const before = Array.from({ length: Math.min(context, 19) }, (_, i) => ({ t: 'ctx', s: `line ${20 - Math.min(context, 19) + i}` }));
+      const after = Array.from({ length: Math.min(context, 30) }, (_, i) => ({ t: 'ctx', s: `line ${21 + i}` }));
+      return [...before, { t: 'del', s: 'old 20' }, { t: 'add', s: 'new 20' }, ...after];
+    };
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => {
+        calls.push(String(url));
+        if (!String(url).includes('/diff?')) return { ok: true, json: async () => ({ file_changes: [] }) };
+        const context = Number(new URLSearchParams(String(url).split('?')[1]).get('context')) || 3;
+        return { ok: true, json: async () => ({
+          path: '/context.txt', kind: 'modify', lang: '', truncated: false, context,
+          old_line_count: 50, new_line_count: 50,
+          hunks: [{ old_start: 20 - Math.min(context, 19), new_start: 20 - Math.min(context, 19), lines: makeLines(context) }]
+        }) };
+      }
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/context.txt', kind: 'modify', adds: 1, dels: 1, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const separators = elements.diffFileList.querySelectorAll('.diff-hunk-expand');
+    assertEqual(separators.length, 2, 'leading and trailing omitted regions rendered');
+    assertEqual(elementText(separators[0]), 'Show 16 hidden lines', 'separator reports its omitted line count');
+    elements.diffFileList.scrollTop = 40;
+    const originalRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function getDiffRect() {
+      if (this.classList.contains('diff-row') && this.parentNode) {
+        const top = this.parentNode.children.indexOf(this) * 10;
+        return { ...this.rect, top, bottom: top + 10 };
+      }
+      return originalRect.call(this);
+    };
+    try {
+      await separators[0].dispatchEvent({ type: 'click', stopPropagation() {} });
+      await flushTimers();
+      await flushTimers();
+    } finally {
+      Element.prototype.getBoundingClientRect = originalRect;
+    }
+
+    assert(calls.some((url) => url.includes('context=23')), 'context expansion did not request the next 20-line chunk');
+    assertEqual(elements.diffFileList.scrollTop, 190, 'inserted leading context did not preserve the adjacent row position');
+    const expanded = elements.diffFileList.querySelectorAll('.diff-hunk-expand');
+    assertEqual(expanded.length, 1, 'expanded leading context reached the start of the file');
+    assertEqual(elementText(expanded[0]), 'Show 7 hidden lines', 'remaining trailing region stayed expandable');
   });
 
   await run('event bursts coalesce accordion re-renders', async () => {

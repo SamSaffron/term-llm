@@ -295,7 +295,8 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, body = %v", code, body)
 		}
-		if body["kind"] != "create" || body["lang"] != "go" || body["truncated"] != false {
+		if body["kind"] != "create" || body["lang"] != "go" || body["truncated"] != false ||
+			body["context"] != float64(3) || body["old_line_count"] != float64(0) || body["new_line_count"] != float64(3) {
 			t.Fatalf("diff meta = %#v", body)
 		}
 		hunks, ok := body["hunks"].([]any)
@@ -394,6 +395,7 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 	t.Run("invalid snapshot sequence", func(t *testing.T) {
 		for _, path := range []string{
 			"/v1/sessions/sess-1/file-changes/diff?path=/work/a.go&scope=last_3_turns&snapshot_seq=nope",
+			"/v1/sessions/sess-1/file-changes/diff?path=/work/a.go&context=2",
 			"/v1/sessions/sess-image/file-changes/content?path=/work/preview.png&side=before&scope=last_3_turns&snapshot_seq=-1",
 		} {
 			code, _ := getSessionPath(t, srv, path)

@@ -29,6 +29,8 @@ const DIFF_HIGHLIGHT_MAX_ROWS = 1500;
 // Cap initially rendered rows per file so a huge retained diff cannot flood
 // the DOM; a "show more" control reveals further chunks on demand.
 const DIFF_RENDER_MAX_ROWS = 400;
+// Repeated omitted-region clicks reveal this much more surrounding context.
+const DIFF_CONTEXT_CHUNK_LINES = 20;
 // Show the filter input once the list is long enough for scanning to hurt.
 const DIFF_FILTER_MIN_FILES = 8;
 // How long transient feedback (update pulse, copied checkmark) stays applied.
@@ -59,6 +61,7 @@ const sessionDiffState = (sessionId) => {
       userExpanded: new Set(),   // paths the user explicitly expanded (blocks auto-collapse)
       autoExpandedPath: '',      // the file currently held open by live-follow
       rowLimits: new Map(),      // path -> rendered row cap raised by "show more"
+      contextLines: new Map(),   // path -> server-side unchanged context depth
       diffCache: new Map(),      // path -> { seq, rev, data }
       cacheRev: 0,               // bumped on every cache write; keys body rebuilds
       dirtyPaths: new Set(),     // cached diff is stale (newer change seen)
@@ -176,34 +179,7 @@ const setDiffMaximized = (on) => {
   return true;
 };
 
-// ===== Pure model building (node-tested) =====
-
-// buildDiffRowModel flattens server hunks into renderable rows with old/new
-// line numbers. Hunk separators appear between hunks, never before the first.
-const buildDiffRowModel = (hunks) => {
-  const rows = [];
-  (Array.isArray(hunks) ? hunks : []).forEach((hunk, index) => {
-    if (index > 0) rows.push({ type: 'hunk', oldNo: 0, newNo: 0, text: '' });
-    let oldNo = Number(hunk.old_start) || 1;
-    let newNo = Number(hunk.new_start) || 1;
-    (Array.isArray(hunk.lines) ? hunk.lines : []).forEach((line) => {
-      const text = String(line.s ?? '');
-      if (line.t === 'add') {
-        rows.push({ type: 'add', oldNo: 0, newNo, text });
-        newNo += 1;
-      } else if (line.t === 'del') {
-        rows.push({ type: 'del', oldNo, newNo: 0, text });
-        oldNo += 1;
-      } else {
-        rows.push({ type: 'ctx', oldNo, newNo, text });
-        oldNo += 1;
-        newNo += 1;
-      }
-    });
-  });
-  return rows;
-};
-
+const buildDiffRowModel = app.buildDiffRowModel;
 const countRowChanges = (rows) => {
   let adds = 0;
   let dels = 0;
@@ -396,6 +372,7 @@ const reconcileDiffPathState = (sessionId, ds) => {
   prune(ds.userCollapsed);
   prune(ds.userExpanded);
   prune(ds.rowLimits);
+  prune(ds.contextLines);
   prune(ds.diffCache);
   prune(ds.dirtyPaths);
   prune(ds.fetchErrors);
@@ -500,10 +477,11 @@ const fetchFileDiff = (sessionId, path) => {
   if (existingRequest) return existingRequest;
 
   const requestedScope = ds.scope;
+  const contextAtRequest = ds.contextLines.get(path) || 3;
   const { lastSeq: seqAtRequest = 0, snapshotSeq = 0 } = ds.files.get(path) || {};
   const request = (async () => {
     try {
-      const diffQuery = `${requestedScope === 'last_turn' ? '' : `&scope=${encodeURIComponent(requestedScope)}`}${Number(snapshotSeq) > 0 ? `&snapshot_seq=${snapshotSeq}` : ''}`;
+      const diffQuery = `${requestedScope === 'last_turn' ? '' : `&scope=${encodeURIComponent(requestedScope)}`}${Number(snapshotSeq) > 0 ? `&snapshot_seq=${snapshotSeq}` : ''}&context=${contextAtRequest}`;
       const url = `${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/file-changes/diff?path=${encodeURIComponent(path)}${diffQuery}`;
       const resp = await app.apiFetch(url, { headers: authHeaders() });
       if (!resp.ok) {
@@ -515,7 +493,7 @@ const fetchFileDiff = (sessionId, path) => {
       // rev, not seq, keys body rebuilds: a refetch can return newer server
       // content under an unchanged local seq (events missed while detached).
       ds.cacheRev += 1;
-      ds.diffCache.set(path, { seq: seqAtRequest, snapshotSeq, rev: ds.cacheRev, data });
+      ds.diffCache.set(path, { seq: seqAtRequest, snapshotSeq, context: contextAtRequest, rev: ds.cacheRev, data });
       ds.fetchErrors.delete(path);
 
       // A newer change may have landed mid-fetch; leave it dirty and schedule
@@ -777,6 +755,20 @@ const captureDiffCommentFocus = (body) => {
   return panel ? { key, kind: 'editor' } : { key, kind: 'marker', target: focused.classList?.contains?.('diff-comment-affordance') ? 'button' : 'row' };
 };
 
+const expandDiffContext = async (sessionId, path, anchor) => {
+  const ds = sessionDiffState(sessionId);
+  const current = ds.contextLines.get(path) || 3;
+  const next = current + DIFF_CONTEXT_CHUNK_LINES;
+  ds.contextLines.set(path, next);
+  const inflight = ds.inflight.get(path);
+  if (inflight) await inflight;
+  if ((ds.diffCache.get(path)?.context || 0) < next) await fetchFileDiff(sessionId, path);
+  if (sessionId !== state.activeSessionId) return;
+  renderDiffSidebar(sessionId);
+  const rows = currentDiffState()?.blocks.get(path)?.body?.querySelectorAll?.('.diff-row');
+  app.restoreDiffContextAnchor(anchor, elements.diffFileList, rows);
+};
+
 const renderDiffFileBody = (sessionId, ds, path, commentFocus = null) => {
   const body = createEl('div', 'diff-file-body');
   const cached = ds.diffCache.get(path);
@@ -810,7 +802,10 @@ const renderDiffFileBody = (sessionId, ds, path, commentFocus = null) => {
     return body;
   }
 
-  const rows = computeInlineEmphasis(buildDiffRowModel(cached.data.hunks));
+  const rows = computeInlineEmphasis(buildDiffRowModel(cached.data.hunks, {
+    old: cached.data.old_line_count,
+    new: cached.data.new_line_count
+  }));
 
   const limit = ds.rowLimits.get(path) || DIFF_RENDER_MAX_ROWS;
   let visibleRows = rows;
@@ -829,8 +824,13 @@ const renderDiffFileBody = (sessionId, ds, path, commentFocus = null) => {
   visibleRows.forEach((row, rowIndex) => {
     const rowEl = createEl('div', `diff-row ${row.type}`);
     if (row.type === 'hunk') {
-      rowEl.appendChild(createEl('span', 'diff-hunk-sep', '⋯'));
+      const expand = app.createDiffContextButton(createEl, row, (button) => {
+        const anchor = app.captureDiffContextAnchor(button, elements.diffFileList);
+        void expandDiffContext(sessionId, path, anchor);
+      });
+      rowEl.appendChild(expand);
     } else {
+      rowEl.dataset.diffAnchor = app.diffRowAnchorKey(row);
       rowEl.appendChild(createEl('span', 'diff-ln old', row.oldNo ? String(row.oldNo) : ''));
       rowEl.appendChild(createEl('span', 'diff-ln new', row.newNo ? String(row.newNo) : ''));
       rowEl.appendChild(renderDiffCode(row.type, row.text, lang, row.emph));

@@ -56,6 +56,7 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	branchCommandLines := 0
 	diffLines := map[string]int{}
 	diffScopeLines := 0
+	diffContextLines := 0
 	projectPickerLines := 0
 	guardianRenderLines := 0
 	for _, entry := range entries {
@@ -78,6 +79,8 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 			branchCommandLines = lineCount
 		} else if name == "app-diff-scopes.js" {
 			diffScopeLines = lineCount
+		} else if name == "app-diff-context.js" {
+			diffContextLines = lineCount
 		} else if name == "app-project-picker.js" {
 			projectPickerLines = lineCount
 		} else if name == "guardian-render.js" {
@@ -112,6 +115,9 @@ func TestConversationLifecycleSizeAndPurityBudgets(t *testing.T) {
 	}
 	if diffScopeLines == 0 || diffScopeLines > 100 {
 		t.Fatalf("diff scope vocabulary and availability controller=%d lines, budget=100", diffScopeLines)
+	}
+	if diffContextLines == 0 || diffContextLines > 120 {
+		t.Fatalf("diff context row model and expansion control=%d lines, budget=120", diffContextLines)
 	}
 	if guardianRenderLines == 0 || guardianRenderLines > 80 {
 		t.Fatalf("guardian renderer=%d lines, budget=80", guardianRenderLines)

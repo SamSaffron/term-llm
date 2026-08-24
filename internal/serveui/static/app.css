@@ -594,7 +594,7 @@
       padding: 0.45rem 0.75rem;
       border: 0;
       background: var(--bg-accent);
-      color: var(--link);
+      color: var(--text-muted);
       cursor: pointer;
       text-align: center;
       font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -603,6 +603,7 @@
 
     .diff-show-more:hover {
       background: var(--surface-2);
+      color: var(--text);
     }
 
     .diff-rows {
@@ -629,9 +630,41 @@
     .diff-rows.diff-rows-kind-delete .diff-row.del .diff-ln { background: var(--diff-file-del-ln-bg); }
 
     .diff-row.hunk {
-      padding: 0.15rem 0.6rem;
+      background: var(--bg-accent);
       color: var(--text-muted);
       user-select: none;
+    }
+
+    .diff-hunk-expand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 1.8rem;
+      padding: 0.15rem 0.6rem;
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.78rem;
+      text-align: center;
+    }
+
+    .diff-hunk-expand:hover:not(:disabled) {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .diff-hunk-expand:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      background: var(--surface-2);
+    }
+
+    .diff-hunk-expand:disabled {
+      color: var(--text-muted);
+      cursor: wait;
     }
 
     .diff-ln {

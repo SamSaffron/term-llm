@@ -1,6 +1,7 @@
 package filetrack
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,71 @@ func TestBuildHunksLineText(t *testing.T) {
 	}
 	if !foundDel || !foundAdd {
 		t.Fatalf("expected prefix-stripped del/add lines, got %+v", hunks)
+	}
+}
+
+func TestBuildHunksWithContextExpandsAndMerges(t *testing.T) {
+	oldLines := make([]string, 60)
+	newLines := make([]string, 60)
+	for i := range oldLines {
+		oldLines[i] = "line" + strconv.Itoa(i+1)
+		newLines[i] = oldLines[i]
+	}
+	newLines[9] = "changed10"
+	newLines[49] = "changed50"
+	oldContent := []byte(strings.Join(oldLines, "\n") + "\n")
+	newContent := []byte(strings.Join(newLines, "\n") + "\n")
+
+	base := BuildHunks("f", oldContent, newContent)
+	if len(base) != 2 {
+		t.Fatalf("base hunks = %d, want 2", len(base))
+	}
+	expanded := BuildHunksWithContext("f", oldContent, newContent, 10)
+	if len(expanded) != 2 {
+		t.Fatalf("expanded hunks = %d, want 2", len(expanded))
+	}
+	if expanded[0].OldStart != 1 || expanded[1].OldStart != 40 {
+		t.Fatalf("expanded starts = %d/%d, want 1/40", expanded[0].OldStart, expanded[1].OldStart)
+	}
+
+	full := BuildHunksWithContext("f", oldContent, newContent, 100)
+	if len(full) != 1 {
+		t.Fatalf("full hunks = %d, want 1", len(full))
+	}
+	oldCount, newCount := hunkLineCounts(full[0])
+	if full[0].OldStart != 1 || full[0].NewStart != 1 || oldCount != 60 || newCount != 60 {
+		t.Fatalf("full hunk = start %d/%d count %d/%d, want 1/1 count 60/60", full[0].OldStart, full[0].NewStart, oldCount, newCount)
+	}
+}
+
+func TestBuildHunksWithContextCreateAndDelete(t *testing.T) {
+	for _, tc := range []struct {
+		old string
+		new string
+	}{
+		{"", "one\ntwo\n"},
+		{"one\ntwo\n", ""},
+	} {
+		hunks := BuildHunksWithContext("f", []byte(tc.old), []byte(tc.new), 100)
+		if len(hunks) != 1 || len(hunks[0].Lines) != 2 {
+			t.Fatalf("BuildHunksWithContext(%q, %q) = %+v, want one complete two-line hunk", tc.old, tc.new, hunks)
+		}
+	}
+}
+
+func TestLineCount(t *testing.T) {
+	for _, tc := range []struct {
+		content string
+		want    int
+	}{
+		{"", 0},
+		{"one", 1},
+		{"one\n", 1},
+		{"one\ntwo\n", 2},
+	} {
+		if got := LineCount([]byte(tc.content)); got != tc.want {
+			t.Errorf("LineCount(%q) = %d, want %d", tc.content, got, tc.want)
+		}
 	}
 }
 
