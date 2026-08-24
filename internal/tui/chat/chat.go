@@ -966,12 +966,8 @@ func NewWithFastProviderAndApproval(cfg *config.Config, provider llm.Provider, f
 		if cwd, err := os.Getwd(); err == nil {
 			sess.CWD = cwd
 		}
-		// Persist new session
-		if store != nil {
-			ctx := context.Background()
-			_ = store.Create(ctx, sess)
-			_ = store.SetCurrent(ctx, sess.ID)
-		}
+		// Persist new session and infer its registered project from the CWD.
+		persistNewTUISession(context.Background(), store, sess)
 	}
 
 	// Load existing messages if resuming.

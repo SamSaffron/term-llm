@@ -567,6 +567,39 @@ func TestProjectSidebarCountsRespectArchivedSessionFilter(t *testing.T) {
 	}
 }
 
+func TestClaimProjectSessionsIsIdempotentAndSnapshotGuarded(t *testing.T) {
+	store := newProjectTestStore(t)
+	ctx := context.Background()
+	project := &Project{Name: "Claim", CanonicalDir: t.TempDir()}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	matching := createWorkspaceTestSession(t, store, "claim-matching")
+	moved := createWorkspaceTestSession(t, store, "claim-moved")
+	staleMoved := ProjectSessionMatch{ID: moved.ID, CWD: moved.CWD, WorktreeDir: moved.WorktreeDir}
+	moved.CWD = t.TempDir()
+	if err := store.Update(ctx, moved); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := store.ClaimProjectSessions(ctx, project.ID, []ProjectSessionMatch{
+		{ID: matching.ID, CWD: matching.CWD, WorktreeDir: matching.WorktreeDir},
+		staleMoved,
+	})
+	if err != nil || claimed != 1 {
+		t.Fatalf("first claim = %d, %v; want 1", claimed, err)
+	}
+	claimed, err = store.ClaimProjectSessions(ctx, project.ID, []ProjectSessionMatch{{ID: matching.ID, CWD: matching.CWD, WorktreeDir: matching.WorktreeDir}})
+	if err != nil || claimed != 0 {
+		t.Fatalf("second claim = %d, %v; want 0", claimed, err)
+	}
+	loadedMatching, _ := store.Get(ctx, matching.ID)
+	loadedMoved, _ := store.Get(ctx, moved.ID)
+	if loadedMatching.ProjectID != project.ID || loadedMoved.ProjectID != "" {
+		t.Fatalf("claimed sessions = matching %#v, moved %#v", loadedMatching, loadedMoved)
+	}
+}
+
 func TestBootstrapProjectIsAtomicAndIdempotent(t *testing.T) {
 	store := newProjectTestStore(t)
 	ctx := context.Background()

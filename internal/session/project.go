@@ -142,9 +142,11 @@ type ProjectStore interface {
 	ListProjects(ctx context.Context, opts ProjectListOptions) ([]Project, error)
 	GetProject(ctx context.Context, id string) (*Project, error)
 	GetProjectByCanonicalDir(ctx context.Context, canonicalDir string) (*Project, error)
+	HasActiveProjects(ctx context.Context) (bool, error)
 	CreateProject(ctx context.Context, project *Project) error
 	UpdateProject(ctx context.Context, id string, update ProjectUpdate) (*Project, error)
 	BootstrapProject(ctx context.Context, project *Project, matchingSessions []ProjectSessionMatch) error
+	ClaimProjectSessions(ctx context.Context, projectID string, matchingSessions []ProjectSessionMatch) (int, error)
 	Sidebar(ctx context.Context, opts SidebarOptions) ([]SidebarGroup, error)
 	AssignSessionProject(ctx context.Context, sessionID, projectID, expectedCWD, expectedWorktreeDir string) error
 }
@@ -193,6 +195,11 @@ func (s *loggingProjectStore) GetProjectByCanonicalDir(ctx context.Context, dir 
 	s.log("GetProjectByCanonicalDir", err)
 	return v, err
 }
+func (s *loggingProjectStore) HasActiveProjects(ctx context.Context) (bool, error) {
+	v, err := s.store.HasActiveProjects(ctx)
+	s.log("HasActiveProjects", err)
+	return v, err
+}
 func (s *loggingProjectStore) CreateProject(ctx context.Context, p *Project) error {
 	err := s.store.CreateProject(ctx, p)
 	s.log("CreateProject", err)
@@ -207,6 +214,11 @@ func (s *loggingProjectStore) BootstrapProject(ctx context.Context, p *Project, 
 	err := s.store.BootstrapProject(ctx, p, matches)
 	s.log("BootstrapProject", err)
 	return err
+}
+func (s *loggingProjectStore) ClaimProjectSessions(ctx context.Context, projectID string, matches []ProjectSessionMatch) (int, error) {
+	claimed, err := s.store.ClaimProjectSessions(ctx, projectID, matches)
+	s.log("ClaimProjectSessions", err)
+	return claimed, err
 }
 func (s *loggingProjectStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]SidebarGroup, error) {
 	v, err := s.store.Sidebar(ctx, opts)

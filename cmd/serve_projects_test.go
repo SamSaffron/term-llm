@@ -189,6 +189,68 @@ func TestCanonicalProjectStoragePathUsesWindowsCaseIdentity(t *testing.T) {
 	}
 }
 
+func TestProjectCreateClaimsMatchingHistoricalSessions(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	projectDir := t.TempDir()
+	otherDir := t.TempDir()
+	ctx := context.Background()
+	matching := &session.Session{ID: "historical-project-match", Provider: "mock", Model: "mock", CWD: projectDir, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	other := &session.Session{ID: "historical-project-other", Provider: "mock", Model: "mock", CWD: otherDir, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	for _, sess := range []*session.Session{matching, other} {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{"path":`+mustJSONQuote(projectDir)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleProjects(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var response projectCreateResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil || response.Project == nil {
+		t.Fatalf("response = %#v, %v", response, err)
+	}
+	gotMatching, _ := store.Get(ctx, matching.ID)
+	gotOther, _ := store.Get(ctx, other.ID)
+	if gotMatching.ProjectID != response.Project.ID || gotOther.ProjectID != "" {
+		t.Fatalf("historical assignment = matching %#v, other %#v", gotMatching, gotOther)
+	}
+}
+
+func TestProjectPatchRestoreClaimsSessionsCreatedWhileArchived(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	p := &session.Project{Name: "Restorable", CanonicalDir: root}
+	if err := store.CreateProject(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	archived := true
+	if _, err := store.UpdateProject(ctx, p.ID, session.ProjectUpdate{Archived: &archived}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	legacy := &session.Session{ID: "archived-project-history", Provider: "mock", Model: "mock", CWD: root, CreatedAt: now, UpdatedAt: now}
+	if err := store.Create(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/projects/"+p.ID, strings.NewReader(`{"archived":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleProjectByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	persisted, err := store.Get(ctx, legacy.ID)
+	if err != nil || persisted.ProjectID != p.ID {
+		t.Fatalf("restored history = %#v, %v", persisted, err)
+	}
+}
+
 func TestProjectHandlersDryRunCreateDuplicateArchiveRestore(t *testing.T) {
 	srv, _ := newServeProjectTestServer(t)
 	projectDir := t.TempDir()

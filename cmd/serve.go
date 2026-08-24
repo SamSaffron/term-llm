@@ -20,6 +20,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/filetrack"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mentions"
+	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/serve"
 	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
@@ -488,6 +489,19 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		default:
 			log.Printf("projects auto-disabled")
 		}
+	}
+
+	if projectsEnabled {
+		go func() {
+			reconcileCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			claimed, reconcileErr := projectpkg.ReconcileAll(reconcileCtx, store)
+			if reconcileErr != nil {
+				log.Printf("project history reconciliation failed: %v", reconcileErr)
+			} else if claimed > 0 {
+				log.Printf("project history reconciled (claimed=%d)", claimed)
+			}
+		}()
 	}
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)

@@ -112,6 +112,17 @@ func normalizeProjectForCreate(p *Project) error {
 	return nil
 }
 
+func (s *SQLiteStore) HasActiveProjects(ctx context.Context) (bool, error) {
+	if !s.hasProjectsTable || !s.hasProjectID {
+		return false, ErrProjectsUnsupported
+	}
+	var active bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE archived_at IS NULL)`).Scan(&active); err != nil {
+		return false, fmt.Errorf("check active projects: %w", err)
+	}
+	return active, nil
+}
+
 func (s *SQLiteStore) CreateProject(ctx context.Context, p *Project) error {
 	if !s.projectsAvailable() {
 		return ErrProjectsUnsupported
@@ -268,6 +279,52 @@ func (s *SQLiteStore) BootstrapProject(ctx context.Context, p *Project, matching
 	}
 	committed = true
 	return nil
+}
+
+func (s *SQLiteStore) ClaimProjectSessions(ctx context.Context, projectID string, matchingSessions []ProjectSessionMatch) (int, error) {
+	if !s.projectsAvailable() {
+		return 0, ErrProjectsUnsupported
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return 0, fmt.Errorf("project id is empty")
+	}
+	claimed := 0
+	err := retryOnBusy(ctx, 5, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin claim project sessions: %w", err)
+		}
+		defer tx.Rollback()
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE id = ? AND archived_at IS NULL`, projectID).Scan(&active); err != nil {
+			return fmt.Errorf("check claim project: %w", err)
+		}
+		if active == 0 {
+			return ErrNotFound
+		}
+		attemptClaimed := 0
+		for _, match := range matchingSessions {
+			result, err := tx.ExecContext(ctx, `
+				UPDATE sessions SET project_id = ?
+				WHERE id = ? AND project_id IS NULL
+				  AND COALESCE(cwd, '') = ?
+				  AND COALESCE(worktree_dir, '') = ?`,
+				projectID, match.ID, match.CWD, match.WorktreeDir)
+			if err != nil {
+				return fmt.Errorf("claim project session: %w", err)
+			}
+			if n, _ := result.RowsAffected(); n == 1 {
+				attemptClaimed++
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit claim project sessions: %w", err)
+		}
+		claimed = attemptClaimed
+		return nil
+	})
+	return claimed, err
 }
 
 func (s *SQLiteStore) AssignSessionProject(ctx context.Context, sessionID, projectID, expectedCWD, expectedWorktreeDir string) error {

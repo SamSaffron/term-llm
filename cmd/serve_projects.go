@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode"
 
+	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
 const (
@@ -36,11 +36,7 @@ type projectStatusCacheEntry struct {
 	detailed  bool
 }
 
-type resolvedProjectPath struct {
-	CanonicalDir string `json:"canonical_dir"`
-	DefaultName  string `json:"default_name"`
-	Git          bool   `json:"git"`
-}
+type resolvedProjectPath = projectpkg.Resolved
 
 type projectAPI struct {
 	session.Project
@@ -154,13 +150,7 @@ func containsProjectControl(path string) bool {
 }
 
 func canonicalProjectStoragePath(path, goos string) string {
-	path = filepath.Clean(path)
-	if goos == "windows" {
-		// Windows path identity is case-insensitive. Persist one normalized form so
-		// both application lookup and SQLite's exact UNIQUE constraint agree.
-		return strings.ToLower(path)
-	}
-	return path
+	return projectpkg.CanonicalStoragePathForOS(path, goos)
 }
 
 // resolveProjectPath is the single validator used by dry-run, create,
@@ -172,73 +162,11 @@ func resolveProjectPath(path string) (resolvedProjectPath, error) {
 }
 
 func resolveProjectPathContext(ctx context.Context, path string) (resolvedProjectPath, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return resolvedProjectPath{}, fmt.Errorf("path is required")
-	}
-	if containsProjectControl(path) {
-		return resolvedProjectPath{}, fmt.Errorf("path contains control characters")
-	}
-	if strings.HasPrefix(path, "~") || strings.Contains(path, "$") {
-		return resolvedProjectPath{}, fmt.Errorf("path must not use shell expansion")
-	}
-	if !filepath.IsAbs(path) {
-		return resolvedProjectPath{}, fmt.Errorf("path must be absolute")
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return resolvedProjectPath{}, fmt.Errorf("resolve absolute path: %w", err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return resolvedProjectPath{}, fmt.Errorf("resolve path: %w", err)
-	}
-	resolved = filepath.Clean(resolved)
-	if filepath.Dir(resolved) == resolved {
-		return resolvedProjectPath{}, fmt.Errorf("filesystem root cannot be registered; use --no-projects for container-wide mode")
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return resolvedProjectPath{}, fmt.Errorf("inspect path: %w", err)
-	}
-	if !info.IsDir() {
-		return resolvedProjectPath{}, fmt.Errorf("path is not a directory")
-	}
-	// Opening the directory catches common unreadable/unsearchable cases without
-	// recursively scanning operator data.
-	dir, err := os.Open(resolved)
-	if err != nil {
-		return resolvedProjectPath{}, fmt.Errorf("open directory: %w", err)
-	}
-	_ = dir.Close()
-
-	isGit := worktree.IsGitRepoContext(ctx, resolved)
-	if isGit {
-		resolved, err = worktree.MainRepoRootContext(ctx, resolved)
-		if err != nil {
-			return resolvedProjectPath{}, fmt.Errorf("resolve main repository: %w", err)
-		}
-		resolved, err = filepath.EvalSymlinks(resolved)
-		if err != nil {
-			return resolvedProjectPath{}, fmt.Errorf("canonicalize main repository: %w", err)
-		}
-		resolved = filepath.Clean(resolved)
-		if filepath.Dir(resolved) == resolved {
-			return resolvedProjectPath{}, fmt.Errorf("filesystem root cannot be registered; use --no-projects for container-wide mode")
-		}
-	}
-	defaultName := filepath.Base(resolved)
-	resolved = canonicalProjectStoragePath(resolved, runtime.GOOS)
-	return resolvedProjectPath{CanonicalDir: resolved, DefaultName: defaultName, Git: isGit}, nil
+	return projectpkg.Resolve(ctx, path)
 }
 
 func sameCanonicalProjectIdentity(actual, stored string) bool {
-	actual = filepath.Clean(actual)
-	stored = filepath.Clean(stored)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(actual, stored)
-	}
-	return actual == stored
+	return projectpkg.SameIdentity(actual, stored)
 }
 
 func projectStatus(p session.Project) projectAPI {
@@ -400,43 +328,7 @@ func initializeServeProjects(ctx context.Context, store session.Store, startupDi
 }
 
 func bootstrapMatchingSessions(ctx context.Context, store session.Store, root resolvedProjectPath) ([]session.ProjectSessionMatch, error) {
-	var matchingSessions []session.ProjectSessionMatch
-	matchesByWorkspace := make(map[string]bool)
-	before := int64(0)
-	for {
-		summaries, err := store.List(ctx, session.ListOptions{Archived: true, Limit: 200, BeforeNumber: before, SortByNumberDesc: true})
-		if err != nil {
-			return nil, err
-		}
-		if len(summaries) == 0 {
-			break
-		}
-		for _, summary := range summaries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if summary.ProjectID != "" {
-				continue
-			}
-			workspaceKey := strings.TrimSpace(summary.CWD) + "\x00" + strings.TrimSpace(summary.WorktreeDir)
-			matches, ok := matchesByWorkspace[workspaceKey]
-			if !ok {
-				candidate := session.Session{CWD: summary.CWD, WorktreeDir: summary.WorktreeDir}
-				matches = sessionMatchesProjectBindingContext(ctx, candidate, root)
-				matchesByWorkspace[workspaceKey] = matches
-			}
-			if matches {
-				matchingSessions = append(matchingSessions, session.ProjectSessionMatch{
-					ID: summary.ID, CWD: summary.CWD, WorktreeDir: summary.WorktreeDir,
-				})
-			}
-		}
-		before = summaries[len(summaries)-1].Number
-		if len(summaries) < 200 || before <= 0 {
-			break
-		}
-	}
-	return matchingSessions, nil
+	return projectpkg.MatchingSessionsForResolved(ctx, store, root)
 }
 
 func sessionMatchesProjectBinding(sess session.Session, project resolvedProjectPath) bool {
@@ -445,40 +337,8 @@ func sessionMatchesProjectBinding(sess session.Session, project resolvedProjectP
 	return sessionMatchesProjectBindingContext(ctx, sess, project)
 }
 
-func sessionMatchesProjectBindingContext(ctx context.Context, sess session.Session, project resolvedProjectPath) bool {
-	if project.Git {
-		cwd := strings.TrimSpace(sess.CWD)
-		worktreeDir := strings.TrimSpace(sess.WorktreeDir)
-		if worktreeDir != "" {
-			// A historical worktree snapshot is assignable only when both exact
-			// execution fields describe the same managed checkout. Merely having one
-			// field resolve to the repository would create an unusable project session.
-			if cwd == "" || !sameServePath(cwd, worktreeDir) {
-				return false
-			}
-			wt, err := managedWorktreeForRoot(project.CanonicalDir, worktreeDir)
-			if err != nil {
-				return false
-			}
-			root, err := worktree.MainRepoRootContext(ctx, wt.Dir)
-			return err == nil && sameServePath(root, project.CanonicalDir)
-		}
-		if cwd == "" || !worktree.IsGitRepoContext(ctx, cwd) {
-			return false
-		}
-		root, err := worktree.MainRepoRootContext(ctx, cwd)
-		return err == nil && sameServePath(root, project.CanonicalDir)
-	}
-	// Non-Git projects never have a legal worktree snapshot.
-	if strings.TrimSpace(sess.WorktreeDir) != "" {
-		return false
-	}
-	candidate := strings.TrimSpace(sess.CWD)
-	if candidate == "" {
-		return false
-	}
-	resolved, err := filepath.EvalSymlinks(candidate)
-	return err == nil && sameServePath(resolved, project.CanonicalDir)
+func sessionMatchesProjectBindingContext(ctx context.Context, sess session.Session, root resolvedProjectPath) bool {
+	return projectpkg.MatchesWorkspace(ctx, sess.CWD, sess.WorktreeDir, root)
 }
 
 func (s *serveServer) projectStore() (session.ProjectStore, bool) {
@@ -807,10 +667,14 @@ func (s *serveServer) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeProjectError(w, http.StatusBadRequest, "invalid_project", err.Error())
 			return
 		}
+		claimed, claimErr := projectpkg.ClaimMatchingSessions(r.Context(), s.store, *p)
+		if claimErr != nil {
+			log.Printf("[serve] reconcile project history after create: id=%s: %v", p.ID, claimErr)
+		}
 		api := projectStatus(*p)
 		response.Project = &api
 		response.Restored = wasArchived
-		log.Printf("[serve] project %s: id=%s path=%s", map[bool]string{true: "restored", false: "created"}[wasArchived], p.ID, p.CanonicalDir)
+		log.Printf("[serve] project %s: id=%s path=%s claimed=%d", map[bool]string{true: "restored", false: "created"}[wasArchived], p.ID, p.CanonicalDir, claimed)
 		writeJSON(w, http.StatusCreated, response)
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -868,6 +732,7 @@ func (s *serveServer) handleProjectByID(w http.ResponseWriter, r *http.Request) 
 			writeProjectError(w, http.StatusBadRequest, "invalid_project", "only name and archived may be changed")
 			return
 		}
+		wasArchived := p.Archived()
 		updated, err := projects.UpdateProject(r.Context(), id, session.ProjectUpdate{Name: req.Name, Archived: req.Archived})
 		if err != nil {
 			writeProjectError(w, http.StatusBadRequest, "invalid_project", err.Error())
@@ -881,7 +746,14 @@ func (s *serveServer) handleProjectByID(w http.ResponseWriter, r *http.Request) 
 				action = "restored"
 			}
 		}
-		log.Printf("[serve] project %s: id=%s path=%s", action, updated.ID, updated.CanonicalDir)
+		claimed := 0
+		if wasArchived && req.Archived != nil && !*req.Archived {
+			claimed, err = projectpkg.ClaimMatchingSessions(r.Context(), s.store, *updated)
+			if err != nil {
+				log.Printf("[serve] reconcile project history after restore: id=%s: %v", updated.ID, err)
+			}
+		}
+		log.Printf("[serve] project %s: id=%s path=%s claimed=%d", action, updated.ID, updated.CanonicalDir, claimed)
 		writeJSON(w, http.StatusOK, projectStatus(*updated))
 	default:
 		w.Header().Set("Allow", "GET, PATCH")
@@ -1103,6 +975,12 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		guardedRuntime.sessionMeta = persisted
 	}
 	releaseGuard()
+	claimed, claimErr := projectpkg.ClaimMatchingSessions(r.Context(), s.store, *project)
+	if claimErr != nil {
+		log.Printf("[serve] reconcile project history after assignment: id=%s: %v", project.ID, claimErr)
+	} else if claimed > 0 {
+		log.Printf("[serve] project history reconciled after assignment: id=%s claimed=%d", project.ID, claimed)
+	}
 	writeJSON(w, http.StatusOK, persisted)
 }
 

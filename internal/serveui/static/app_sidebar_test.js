@@ -857,7 +857,7 @@ function createFakeTimers() {
     assert(toggles[0].querySelector('.project-group-chevron').innerHTML.includes('<svg'), 'group disclosure uses an SVG chevron');
     assertEqual(groups[0].querySelector('.project-group-header').children[0], toggles[0], 'project name and disclosure share the left-side click target');
     assertEqual(toggles[0].querySelector('.project-group-label').textContent, 'Alpha', 'project name renders inside the disclosure control');
-    assertEqual(elements.sessionGroups.querySelectorAll('.project-group-action').length, 4, 'new-chat and menu are independent controls');
+    assertEqual(elements.sessionGroups.querySelectorAll('.project-group-action').length, 2, 'each active project renders only its overflow menu control');
     assertEqual(state.sessions[0].projectId, 'prj_alpha', 'grouped summary preserves stable project identity');
   });
 
@@ -1054,10 +1054,32 @@ function createFakeTimers() {
     const menu = menuTrigger.parentNode.children.find((child) => child.classList.contains('project-context-menu'));
     assert(menu && menu.getAttribute('role') === 'menu', 'project context menu renders with menu role');
     assertEqual(menu.getAttribute('aria-label'), 'Manage Menu project', 'menu has an accessible project label');
+    const newChat = menu.children.find((child) => child.textContent === 'New chat');
+    assert(newChat && newChat.getAttribute('role') === 'menuitem', 'new chat is available from the project overflow menu');
+    assertEqual(document.activeElement, newChat, 'new chat is the initially focused menu action');
     await document.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
     assert(!menuTrigger.parentNode.children.includes(menu), 'Escape dismisses project menu');
     assertEqual(menuTrigger.getAttribute('aria-expanded'), 'false', 'dismissal resets aria-expanded');
     assertEqual(document.activeElement, menuTrigger, 'Escape restores trigger focus');
+  });
+
+  await run('project overflow menu starts a new chat in that project', async () => {
+    const { app, elements, state } = createHarness();
+    let selectedProject = '';
+    app.createAndSwitchToFreshSession = (projectID) => { selectedProject = projectID; };
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{ project: { id: 'prj_new_chat', name: 'Chat project', canonical_dir: '/srv/chat', available: true, git: false }, sessions: [] }];
+    app.renderProjectSidebar();
+    const actions = elements.sessionGroups.querySelectorAll('.project-group-action');
+    assertEqual(actions.length, 1, 'active project header has no separate new-chat button');
+    const menuTrigger = actions[0];
+    await menuTrigger.dispatchEvent({ type: 'click', target: menuTrigger });
+    const menu = menuTrigger.parentNode.children.find((child) => child.classList.contains('project-context-menu'));
+    const newChat = menu.children.find((child) => child.textContent === 'New chat');
+    await newChat.dispatchEvent({ type: 'click', target: newChat });
+    assertEqual(selectedProject, 'prj_new_chat', 'new chat action targets the owning project');
+    assert(!menuTrigger.parentNode.children.includes(menu), 'new chat closes the overflow menu');
   });
 
   await run('archiving requires the documented explicit confirmation', async () => {

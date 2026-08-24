@@ -20,6 +20,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
@@ -1193,12 +1194,8 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 		m.pendingTerminalDirectory = cwd
 	}
 
-	// Persist new session
-	if m.store != nil {
-		ctx := context.Background()
-		_ = m.store.Create(ctx, m.sess)
-		_ = m.store.SetCurrent(ctx, m.sess.ID)
-	}
+	// Persist new session and infer its registered project from the CWD.
+	persistNewTUISession(context.Background(), m.store, m.sess)
 
 	// Clear conversation messages and input
 	m.messages = nil
@@ -2193,12 +2190,8 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 		m.pendingTerminalDirectory = cwd
 	}
 
-	// Persist to store
-	if m.store != nil {
-		ctx := context.Background()
-		_ = m.store.Create(ctx, m.sess)
-		_ = m.store.SetCurrent(ctx, m.sess.ID)
-	}
+	// Persist new session and infer its registered project from the CWD.
+	persistNewTUISession(context.Background(), m.store, m.sess)
 
 	// Clear conversation messages and input
 	m.messages = nil
@@ -4028,9 +4021,15 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		return m.showFooterError(fmt.Sprintf("Handover failed to resolve target system prompt: %v", err))
 	}
 
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, 2*time.Second)
+	assignedProject, _ := projectpkg.AssignSessionForDir(lookupCtx, m.store, newSess, newSess.CWD)
+	cancelLookup()
 	if err := m.store.Create(ctx, newSess); err != nil {
 		m.cancelHandoverTool()
 		return m.showFooterError(fmt.Sprintf("Handover failed to persist: %v", err))
+	}
+	if assignedProject != nil {
+		reconcileTUIProjectInBackground(m.store, *assignedProject)
 	}
 	cleanupNewSession := func() {
 		_ = m.store.Delete(context.Background(), newSess.ID)
@@ -4159,6 +4158,8 @@ func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agen
 		CompactionSeq: -1,
 	}
 	if m.sess != nil {
+		newSess.ProjectID = m.sess.ProjectID
+		newSess.ProjectName = m.sess.ProjectName
 		if worktreeDir := strings.TrimSpace(m.sess.WorktreeDir); worktreeDir != "" {
 			newSess.WorktreeDir = worktreeDir
 			newSess.CWD = worktreeDir

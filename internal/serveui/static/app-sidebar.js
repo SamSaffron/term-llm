@@ -535,9 +535,12 @@ const openProjectMenu = (project, anchor) => {
   details.title = project.canonical_dir || '';
   details.setAttribute('role', 'presentation');
   menu.appendChild(details);
+  const archived = Boolean(project.archived_at);
+  if (project.available && !archived) {
+    const newChat = createEl('button', '', 'New chat'); newChat.type = 'button'; newChat.setAttribute('role', 'menuitem'); newChat.addEventListener('click', () => { closeProjectMenu(false); app.createAndSwitchToFreshSession?.(project.id); }); menu.appendChild(newChat);
+  }
   const rename = createEl('button', '', 'Rename'); rename.type = 'button'; rename.setAttribute('role', 'menuitem');
   rename.addEventListener('click', () => { closeProjectMenu(false); openProjectManageModal(project, 'rename', anchor); });
-  const archived = Boolean(project.archived_at);
   const archive = createEl('button', '', archived ? 'Restore' : 'Archive'); archive.type = 'button'; archive.setAttribute('role', 'menuitem');
   archive.addEventListener('click', () => { closeProjectMenu(false); openProjectManageModal(project, 'archive', anchor); });
   menu.append(rename, archive);
@@ -559,7 +562,7 @@ const openProjectMenu = (project, anchor) => {
     if (next >= 0) { event.preventDefault?.(); items[next]?.focus?.(); }
   });
   (anchor.parentElement || anchor.parentNode)?.appendChild(menu);
-  rename.focus();
+  (menu.querySelector?.('button') || rename).focus();
 };
 
 document.addEventListener('click', (event) => {
@@ -631,9 +634,6 @@ const renderProjectGroup = (group) => {
         } finally { restore.disabled = false; }
       });
       header.appendChild(restore);
-    } else {
-      const add = createEl('button', 'project-group-action', '＋'); add.type = 'button'; add.setAttribute('aria-label', `New chat in ${project.name}`);
-      add.addEventListener('click', () => app.createAndSwitchToFreshSession?.(project.id)); header.appendChild(add);
     }
     const menu = createEl('button', 'project-group-action', '⋯'); menu.type = 'button'; menu.setAttribute('aria-label', `Manage ${project.name}`);
     menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false'); menu.setAttribute('aria-controls', 'projectContextMenu');
