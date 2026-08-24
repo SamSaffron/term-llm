@@ -477,10 +477,32 @@ pendingAsyncTests.push((async function testExternalAuth401RejectsUnsafeLoginURL(
   pass(name);
 })();
 
-(function testHubScopedStorageMigratesUnscopedKeysExceptToken() {
-  const name = 'hub scoped storage copies direct keys except token';
+(function testDirectHubAwareNodeKeepsUnscopedStorage() {
+  const name = 'direct Hub-aware node keeps direct storage and token';
   const testApp = loadAppCoreWith({
     hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis' },
+    initialStorage: {
+      term_llm_token: 'direct-token',
+      term_llm_active_session: 'sess_direct',
+      term_llm_selected_model: 'gpt-5.5'
+    }
+  });
+
+  if (testApp.STORAGE_KEYS.token !== 'term_llm_token') {
+    fail(name, `token key = ${JSON.stringify(testApp.STORAGE_KEYS.token)}`);
+    return;
+  }
+  if (testApp.state.token !== 'direct-token' || testApp.state.activeSessionId !== 'sess_direct' || testApp.state.selectedModel !== 'gpt-5.5') {
+    fail(name, `state did not read expected direct values: ${JSON.stringify({ token: testApp.state.token, activeSessionId: testApp.state.activeSessionId, selectedModel: testApp.state.selectedModel })}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testHubProxyScopedStorageMigratesUnscopedKeysExceptToken() {
+  const name = 'Hub-proxied storage copies direct keys except token';
+  const testApp = loadAppCoreWith({
+    hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis', nodeBasePath: '/chat' },
     initialStorage: {
       term_llm_token: 'direct-token',
       term_llm_active_session: 'sess_direct',
@@ -499,10 +521,10 @@ pendingAsyncTests.push((async function testExternalAuth401RejectsUnsafeLoginURL(
   pass(name);
 })();
 
-(function testHubScopedStorageKeepsExistingScopedValues() {
-  const name = 'hub scoped storage keeps existing scoped values over direct keys';
+(function testHubProxyScopedStorageKeepsExistingScopedValues() {
+  const name = 'Hub-proxied storage keeps existing scoped values over direct keys';
   const testApp = loadAppCoreWith({
-    hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis' },
+    hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis', nodeBasePath: '/chat' },
     initialStorage: {
       term_llm_token: 'direct-token',
       'term_llm_token:jarvis': 'scoped-token'

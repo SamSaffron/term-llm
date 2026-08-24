@@ -52,7 +52,7 @@ const parseSidebarSessionCategories = (raw) => {
 
 const STORAGE_KEYS = {};
 Object.entries(STORAGE_BASE_KEYS).forEach(([name, key]) => {
-  STORAGE_KEYS[name] = scopedStorageKey(key);
+  STORAGE_KEYS[name] = name === 'token' && HUB_CONTEXT && !HUB_CONTEXT.nodeBasePath ? key : scopedStorageKey(key);
 });
 
 const migrateHubScopedStorage = () => {
