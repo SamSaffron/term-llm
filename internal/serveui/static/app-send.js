@@ -801,6 +801,13 @@ const sendMessage = async (options = {}) => {
         }).catch(() => {}), 1000);
       }
     }
+    if (authoritativeSessionId) {
+      const provisionalSessionId = String(session?.id || '').trim();
+      if (!branchIntent && provisionalSessionId && provisionalSessionId !== authoritativeSessionId) {
+        app.noteNetworkDiagnostic?.('session-identity-mismatch', { provisionalSessionId, authoritativeSessionId, sessionNumber: headerSessionNumber, hubNodeId: String(window.TERM_LLM_HUB?.nodeId || '') });
+      }
+      session = app.reconcileServerSessionIdentity?.(session, { id: authoritativeSessionId, number: headerSessionNumber }) || session;
+    }
     if (headerSessionNumber > 0 && session.number !== headerSessionNumber) {
       session.number = headerSessionNumber;
       updateURL(sessionSlug(session));

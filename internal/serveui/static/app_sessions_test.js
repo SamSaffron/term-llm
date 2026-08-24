@@ -2547,6 +2547,80 @@ async function testNewQueryRefreshesHeaderAfterRuntimeMetadataLoads() {
   pass(name);
 }
 
+async function testReconcileServerSessionIdentityCollapsesDiscoveredCanonicalDuplicate() {
+  const name = 'authoritative session identity collapses a server duplicate discovered during POST';
+  const { app } = await createSessionsHarness();
+  let rekeyedTo = '';
+  let duplicateDestroyed = false;
+  const provisional = {
+    id: 'sess_client', number: 0, title: 'same title', messages: [],
+    transcript: { rekey(id) { rekeyedTo = id; } },
+  };
+  const discovered = {
+    id: 'sess_server', number: 1291, title: 'same title', _serverOnly: true,
+    transcript: { destroy() { duplicateDestroyed = true; } },
+  };
+  app.state.sessions = [provisional, discovered];
+  app.state.activeSessionId = provisional.id;
+  app.state.currentStreamSessionId = provisional.id;
+  app.state.queuedInterrupts = [{ sessionId: provisional.id, messageId: 'msg_q' }];
+  app.state.pendingInterruptCommits = [{ sessionId: provisional.id, messageId: 'msg_c' }];
+  app.state.pendingInterjections = [{ sessionId: provisional.id, messageId: 'msg_i' }];
+
+  const reconciled = app.reconcileServerSessionIdentity(provisional, { id: discovered.id, number: discovered.number });
+
+  const ownedIds = [
+    app.state.activeSessionId,
+    app.state.currentStreamSessionId,
+    ...app.state.queuedInterrupts.map((entry) => entry.sessionId),
+    ...app.state.pendingInterruptCommits.map((entry) => entry.sessionId),
+    ...app.state.pendingInterjections.map((entry) => entry.sessionId),
+  ];
+  if (reconciled !== provisional || app.state.sessions.length !== 1 || app.state.sessions[0] !== provisional) {
+    fail(name, 'optimistic session was not retained as the sole canonical object', JSON.stringify(app.state.sessions));
+    return;
+  }
+  if (provisional.id !== 'sess_server' || rekeyedTo !== 'sess_server' || !duplicateDestroyed) {
+    fail(name, 'provisional transcript identity or duplicate cleanup was incomplete', JSON.stringify({ provisional, rekeyedTo, duplicateDestroyed }));
+    return;
+  }
+  if (ownedIds.some((id) => id !== 'sess_server')) {
+    fail(name, 'session-owned state did not migrate to the authoritative identity', JSON.stringify(ownedIds));
+    return;
+  }
+  pass(name);
+}
+
+async function testMergeServerSessionsMatchesProvisionalSessionByKnownNumber() {
+  const name = 'server merge reuses a provisional session with the authoritative number';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (parsedTestURL(url)?.pathname === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [{
+          id: 'sess_server', number: 1291, short_title: 'same title', long_title: 'same title',
+          mode: 'chat', origin: 'web', archived: false, pinned: false, message_count: 2,
+        }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const provisional = { id: 'sess_client', number: 1291, title: 'same title', messages: [] };
+  app.state.sessions = [provisional];
+  app.state.activeSessionId = provisional.id;
+
+  await app.mergeServerSessions();
+
+  if (app.state.sessions.length !== 1 || app.state.sessions[0] !== provisional || provisional.id !== 'sess_server') {
+    fail(name, 'known session number created a second local sidebar entry', JSON.stringify(app.state.sessions));
+    return;
+  }
+  if (app.state.activeSessionId !== 'sess_server') {
+    fail(name, 'active ownership did not follow the authoritative server identity', app.state.activeSessionId);
+    return;
+  }
+  pass(name);
+}
+
 async function testMergeServerSessionsMigratesInterruptBuffersToRealSessionId() {
   const name = 'session id reconciliation migrates interrupt buffers to real session id';
   const { app } = await createSessionsHarness({
@@ -7868,6 +7942,8 @@ const runAppSessionsTest = async (testCase) => {
   await runAppSessionsTest(testUnresolvedNumericDeepLinkSkipsSessionScopedStartupRequests);
   await runAppSessionsTest(testNewQueryStartsDraftInsteadOfLastSession);
   await runAppSessionsTest(testNewQueryRefreshesHeaderAfterRuntimeMetadataLoads);
+  await runAppSessionsTest(testReconcileServerSessionIdentityCollapsesDiscoveredCanonicalDuplicate);
+  await runAppSessionsTest(testMergeServerSessionsMatchesProvisionalSessionByKnownNumber);
   await runAppSessionsTest(testMergeServerSessionsMigratesInterruptBuffersToRealSessionId);
   await runAppSessionsTest(testDeveloperMessagesAreHidden);
   await runAppSessionsTest(testRunErrorEventsConvertToErrorMessages);

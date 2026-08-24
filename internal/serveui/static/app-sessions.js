@@ -38,7 +38,6 @@ const resumeAndDrain = (session, options) => {
   });
 };
 
-
 const NO_PROJECT_SELECTION = '__no_project__';
 const projectDraftKey = (projectId) => `draft:${projectId || NO_PROJECT_SELECTION}`;
 
@@ -416,7 +415,6 @@ const switchToSession = async (sessionId, options = {}) => {
   void app.refreshBranchTree?.({ render: false });
   return session;
 };
-
 
 const {
   findSessionById, ensureSessionTranscript, refreshSessionMessagesFromTranscript, touchTranscriptSkeleton,
@@ -868,32 +866,32 @@ const applySelectedTranscriptSideload = (session, sideload, options = {}) => {
   }
 };
 
-const reconcileServerSessionIdentity = (session, serverSession) => {
-  if (!session || !serverSession) return session;
-
-  const nextId = String(serverSession.id || '').trim();
-  const previousId = String(session.id || '').trim();
-  if (!nextId || nextId === previousId) return session;
-
-  session.transcript?.rekey?.(nextId);
+const migrateSessionOwnership = (previousId, nextId) => {
+  if (!previousId || !nextId || previousId === nextId) return;
   app.rekeyPendingIntentStorage(previousId, nextId);
-  session.id = nextId;
-  if (state.activeSessionId === previousId) state.activeSessionId = nextId;
-  if (state.renameSessionId === previousId) state.renameSessionId = nextId;
-  if (state.currentStreamSessionId === previousId) state.currentStreamSessionId = nextId;
-  if (state.currentPlanSessionId === previousId) state.currentPlanSessionId = nextId;
-  if (state.askUser?.sessionId === previousId) state.askUser.sessionId = nextId;
-  if (state.approval?.sessionId === previousId) state.approval.sessionId = nextId;
-  for (const entry of state.queuedInterrupts) {
-    if (entry.sessionId === previousId) entry.sessionId = nextId;
-  }
-  for (const entry of state.pendingInterruptCommits) {
-    if (entry.sessionId === previousId) entry.sessionId = nextId;
-  }
-  for (const entry of state.pendingInterjections) {
-    if (entry.sessionId === previousId) entry.sessionId = nextId;
+  for (const key of ['activeSessionId', 'renameSessionId', 'currentStreamSessionId', 'currentPlanSessionId']) if (state[key] === previousId) state[key] = nextId;
+  for (const owner of [state.askUser, state.approval]) if (owner?.sessionId === previousId) owner.sessionId = nextId;
+  for (const entries of [state.queuedInterrupts, state.pendingInterruptCommits, state.pendingInterjections]) {
+    for (const entry of entries) if (entry.sessionId === previousId) entry.sessionId = nextId;
   }
   moveSessionProgressState(previousId, nextId);
+};
+
+const reconcileServerSessionIdentity = (session, serverSession) => {
+  if (!session || !serverSession) return session;
+  const nextId = String(serverSession.id || '').trim(), previousId = String(session.id || '').trim();
+  if (!nextId) return session;
+  const nextNumber = Number(serverSession.number || session.number || 0);
+  const duplicates = state.sessions.filter((candidate) => candidate !== session
+    && (String(candidate?.id || '').trim() === nextId || (nextNumber > 0 && Number(candidate?.number) === nextNumber)));
+  for (const duplicate of duplicates) {
+    migrateSessionOwnership(String(duplicate?.id || '').trim(), nextId);
+    duplicate?.transcript?.destroy?.();
+    state.sessions.splice(state.sessions.indexOf(duplicate), 1);
+  }
+  if (nextId === previousId) return session;
+  session.transcript?.rekey?.(nextId); session.id = nextId;
+  migrateSessionOwnership(previousId, nextId);
   return session;
 };
 
@@ -942,16 +940,15 @@ const mergeServerSessions = async (options = {}) => {
     const localById = new Map(state.sessions.map(s => [s.id, s]));
     const localByNumber = new Map(
       state.sessions
-        .filter(s => Number(s.number) > 0 && /^\d+$/.test(s.id))
+        .filter(s => Number(s.number) > 0)
         .map(s => [Number(s.number), s])
     );
 
     const mergeServerSession = (serverSession) => {
       if (!serverSession || typeof serverSession !== 'object') return null;
       const exact = localById.get(serverSession.id) || null;
-      const numberedStub = localByNumber.get(Number(serverSession.number)) || null;
-      let local = numberedStub || exact;
-      if (numberedStub && exact && numberedStub !== exact) state.sessions.splice(state.sessions.indexOf(exact), 1);
+      const numberedLocal = localByNumber.get(Number(serverSession.number)) || null;
+      let local = numberedLocal || exact;
       if (local) {
         reconcileServerSessionIdentity(local, serverSession);
         applyServerSessionSummary(local, serverSession);
@@ -1015,7 +1012,6 @@ const mergeServerSessions = async (options = {}) => {
     return result;
   }
 };
-
 
 // ===== Initialization =====
 const configuredStartupHydrationTimeout = Number(window.TERM_LLM_STARTUP_HYDRATION_TIMEOUT_MS);
@@ -1237,9 +1233,6 @@ const initialize = async () => {
     releaseStartupSplash();
   }
 };
-
-
-
 setInterval(refreshRelativeTimes, 60_000);
 
 Object.assign(app, {

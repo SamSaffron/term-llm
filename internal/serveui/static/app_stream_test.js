@@ -788,6 +788,7 @@ function createHarness(options = {}) {
         headers: {
           'x-response-id': responseId,
           ...(options.postSessionId ? { 'x-session-id': String(options.postSessionId) } : {}),
+          ...(options.postSessionNumber ? { 'x-session-number': String(options.postSessionNumber) } : {}),
           ...(options.postBranchAnchorId ? { 'x-branch-anchor-id': String(options.postBranchAnchorId) } : {}),
         },
       });
@@ -7932,6 +7933,45 @@ async function testSuccessfulNewChatSendClearsNewConversationDraft() {
   pass(name);
 }
 
+async function testSuccessfulNewChatAdoptsAuthoritativeSessionIdentity() {
+  const name = 'successful New Chat adopts the authoritative session identity before stream ownership';
+  const harness = createHarness({ postSessionId: 'sess_authoritative', postSessionNumber: 1291 });
+  const { app, elements, state, cleanup } = harness;
+  state.draftSessionActive = true;
+  state.activeSessionId = '';
+  elements.promptInput.value = 'authoritative handoff';
+  let reconciliation = null;
+  app.reconcileServerSessionIdentity = (session, summary) => {
+    reconciliation = { previousId: session.id, currentBefore: state.currentStreamSessionId, ...summary };
+    const previousId = session.id;
+    session.id = summary.id;
+    if (state.activeSessionId === previousId) state.activeSessionId = summary.id;
+    if (state.currentStreamSessionId === previousId) state.currentStreamSessionId = summary.id;
+    reconciliation.currentAfter = state.currentStreamSessionId;
+    return session;
+  };
+
+  await app.sendMessage();
+  await cleanup();
+
+  if (!reconciliation || reconciliation.previousId === 'sess_authoritative'
+      || reconciliation.id !== 'sess_authoritative' || reconciliation.number !== 1291) {
+    fail(name, 'ordinary send did not reconcile the response session headers', JSON.stringify(reconciliation));
+    return;
+  }
+  const created = state.sessions[0];
+  if (state.sessions.length !== 1 || created?.id !== 'sess_authoritative' || created?.number !== 1291) {
+    fail(name, 'new chat retained a provisional or duplicate sidebar session', JSON.stringify(state.sessions));
+    return;
+  }
+  if (state.activeSessionId !== 'sess_authoritative' || reconciliation.currentBefore !== reconciliation.previousId
+      || reconciliation.currentAfter !== 'sess_authoritative') {
+    fail(name, 'active stream ownership did not follow the authoritative session', JSON.stringify({ activeSessionId: state.activeSessionId, reconciliation }));
+    return;
+  }
+  pass(name);
+}
+
 function testClearDraftMessageForSessionRemovesLogicalBucket() {
   const name = 'clearDraftMessageForSession removes the matching conversation draft';
   const harness = createHarness();
@@ -9005,6 +9045,7 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testFailedSendKeepsSessionDraftAndRestagesComposer);
   await runAppStreamTest(testSuccessfulSendRemovesOnlyMatchingDraft);
   await runAppStreamTest(testSuccessfulNewChatSendClearsNewConversationDraft);
+  await runAppStreamTest(testSuccessfulNewChatAdoptsAuthoritativeSessionIdentity);
   await runAppStreamTest(testClearDraftMessageForSessionRemovesLogicalBucket);
   await runAppStreamTest(testDraftMessageLimitIsTen);
   await runAppStreamTest(testProjectDraftsAreNotArbitrarilyCapped);
