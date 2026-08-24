@@ -585,7 +585,7 @@ const projectHeadingLabel = (project) => {
   return suffix ? `${project.name} — ${suffix}` : project.name;
 };
 
-const renderProjectGroup = (group) => {
+const renderProjectGroup = (group, canonicalByID) => {
   const project = group.project || null;
   const id = project?.id || '__no_project__';
   const activeProjectID = state.sessions.find((session) => session.id === state.activeSessionId)?.projectId;
@@ -645,42 +645,41 @@ const renderProjectGroup = (group) => {
     unavailable.setAttribute('role', 'status');
     section.appendChild(unavailable);
   }
-  if (expanded) {
-    const opening = projectExpansionAnimations.delete(id);
-    const list = createEl('div', `project-session-list${opening ? ' is-opening' : ''}`); list.setAttribute('role', 'list'); list.setAttribute('aria-labelledby', headingId);
-    const canonicalByID = new Map((state.sessions || []).map((session) => [session.id, session]));
-    let sessions = (group.sessions || []).map((item) => {
-      const projected = projectSessionFromSummary(item, project);
-      const canonical = canonicalByID.get(projected.id);
-      return canonical ? {
-        ...projected,
-        ...canonical,
-        projectUnavailable: Boolean(project && !project.available),
-        projectUnavailableReason: String(project?.unavailable_reason || ''),
-      } : projected;
+  let sessions = (group.sessions || []).map((item) => {
+    const projected = projectSessionFromSummary(item, project);
+    const canonical = canonicalByID.get(projected.id);
+    return canonical ? {
+      ...projected,
+      ...canonical,
+      projectUnavailable: Boolean(project && !project.available),
+      projectUnavailableReason: String(project?.unavailable_reason || ''),
+    } : projected;
+  });
+  if (!state.sidebarSearchQuery) {
+    const known = new Set(sessions.map((session) => session.id));
+    (state.sessions || []).forEach((session) => {
+      if (String(session.projectId || '') === String(project?.id || '') && !known.has(session.id)) sessions.push(session);
     });
-    if (!state.sidebarSearchQuery) {
-      const known = new Set(sessions.map((session) => session.id));
-      (state.sessions || []).forEach((session) => {
-        if (String(session.projectId || '') === String(project?.id || '') && !known.has(session.id)) sessions.push(session);
-      });
-    }
-    if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) sessions = state.sidebarSearchResults.filter((item) => String(item.projectId || '') === String(project?.id || ''));
-    sessions.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created));
-    sessions.forEach((session) => { const row = renderProjectSessionRow(session); row.setAttribute('role', 'listitem'); list.appendChild(row); });
-    if (group.next_cursor && !state.sidebarSearchQuery) appendProjectPaginationSentinel(group, list);
+  }
+  if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) sessions = state.sidebarSearchResults.filter((item) => String(item.projectId || '') === String(project?.id || ''));
+  sessions.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created));
+  const visibleSessions = expanded ? sessions : sessions.filter((session) => session.pinned);
+  if (!expanded && visibleSessions.length) toggle.setAttribute('aria-label', `Expand ${headingLabel}; ${visibleSessions.length} pinned conversation${visibleSessions.length === 1 ? '' : 's'} shown`);
+  if (expanded || visibleSessions.length) {
+    const opening = expanded && projectExpansionAnimations.delete(id);
+    const list = createEl('div', `project-session-list${opening ? ' is-opening' : ''}${expanded ? '' : ' is-pinned-only'}`); list.setAttribute('role', 'list'); list.setAttribute('aria-labelledby', headingId);
+    visibleSessions.forEach((session) => { const row = renderProjectSessionRow(session); row.setAttribute('role', 'listitem'); list.appendChild(row); });
+    if (expanded && group.next_cursor && !state.sidebarSearchQuery) appendProjectPaginationSentinel(group, list);
     section.appendChild(list);
   }
   return section;
 };
-
 const projectInlineError = (message, retryAction) => {
   const error = createEl('div', 'project-inline-error'); error.setAttribute('role', 'alert');
   error.appendChild(createEl('span', '', message));
   const retry = createEl('button', '', 'Retry'); retry.type = 'button'; retry.addEventListener('click', retryAction); error.appendChild(retry);
   return error;
 };
-
 const renderProjectSidebar = () => {
   const container = elements.sessionGroups;
   disconnectProjectPagination();
@@ -695,6 +694,7 @@ const renderProjectSidebar = () => {
   }
   if (!state.projectsEnabled) return false;
   if (!container) return true;
+  const canonicalByID = new Map((state.sessions || []).map((session) => [session.id, session]));
   let groups = Array.isArray(state.sidebarGroups) ? state.sidebarGroups.slice() : [];
   if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) {
     const ids = new Set(state.sidebarSearchResults.map((session) => String(session.projectId || '')));
@@ -720,7 +720,7 @@ const renderProjectSidebar = () => {
   });
   const noProject = groups.filter((group) => group.no_project);
   const archived = groups.filter((group) => group.project?.archived_at);
-  const nodes = [...active.map(renderProjectGroup), ...noProject.map(renderProjectGroup)];
+  const nodes = [...active.map((group) => renderProjectGroup(group, canonicalByID)), ...noProject.map((group) => renderProjectGroup(group, canonicalByID))];
   if (state.projectsError) nodes.unshift(projectInlineError(state.projectsError, loadProjectSidebar));
   if (state.sidebarSearchError) {
     nodes.unshift(projectInlineError(state.sidebarSearchError, () => {
@@ -733,7 +733,7 @@ const renderProjectSidebar = () => {
     const details = createEl('details', 'archived-projects');
     const summary = createEl('summary', '', 'Archived projects'); details.appendChild(summary);
     archived.forEach((group) => {
-      const rendered = renderProjectGroup(group);
+      const rendered = renderProjectGroup(group, canonicalByID);
       if (rendered.classList.contains('active')) details.open = true;
       details.appendChild(rendered);
     });

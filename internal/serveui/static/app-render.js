@@ -2925,12 +2925,12 @@ const renderMessages = (forceScroll = false) => {
         const select = createEl('select', 'chip-select-hidden new-chat-project-select');
         select.setAttribute('aria-label', 'Context for new chat');
         select.tabIndex = -1;
-        const chat = createEl('option', '', 'Chat'); chat.value = ''; select.appendChild(chat);
-        (state.projects || []).filter((item) => item.available && !item.archived_at).forEach((item) => {
-          const option = createEl('option', '', item.name || 'Project'); option.value = item.id; select.appendChild(option);
-        });
-        select.value = String(state.activeProjectId || '');
-
+        const chat = createEl('option', '', 'Chat'); chat.value = ''; select.appendChild(chat); const activeProjectId = String(state.activeProjectId || '');
+        const selectableProjects = (state.projects || []).filter((item) => item.available && !item.archived_at); selectableProjects.forEach((item) => { const option = createEl('option', '', item.name || 'Project'); option.value = item.id; select.appendChild(option); });
+        if (activeProjectId && !selectableProjects.some((item) => item.id === activeProjectId)) {
+          const unavailable = createEl('option', '', `${(state.projects || []).find((item) => item.id === activeProjectId)?.name || 'Project'} (unavailable)`); unavailable.value = activeProjectId; unavailable.hidden = true; select.appendChild(unavailable);
+        }
+        select.value = activeProjectId;
         const selectedProjectLabel = () => Array.from(select.options || select.children || [])
           .find((option) => option.value === select.value)?.textContent || 'Chat';
         const trigger = createEl('button', 'new-chat-project-trigger');
