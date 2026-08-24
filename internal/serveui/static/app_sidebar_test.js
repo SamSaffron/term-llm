@@ -1157,7 +1157,43 @@ function createFakeTimers() {
     const group = elements.sessionGroups.querySelector('.project-group');
     assert(group.classList.contains('active'), 'No project group is marked active');
     assertEqual(group.querySelector('.project-group-toggle').getAttribute('aria-expanded'), 'false', 'active No project group remains user-collapsed');
-    assert(!group.querySelector('.project-session-list'), 'collapsed active project does not render its conversation list');
+    assert(!group.querySelector('.project-session-list'), 'collapsed active project does not render unpinned conversations');
+  });
+
+  await run('collapsed projects keep pinned conversations visible', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.projectExpansion.prj_pinned = false;
+    state.sessions = [{ id: 'pinned-session', title: 'Pinned', projectId: 'prj_pinned', pinned: true }];
+    state.sidebarGroups = [{
+      project: { id: 'prj_pinned', name: 'Pinned project', available: true },
+      next_cursor: 'later-conversations',
+      sessions: [
+        { id: 'pinned-session', summary: 'Pinned', project_id: 'prj_pinned', pinned: false, last_message_at: '2026-08-25T10:00:00Z' },
+        { id: 'server-pinned-session', summary: 'Server pinned', project_id: 'prj_pinned', pinned: true, last_message_at: '2026-08-25T09:00:00Z' },
+        { id: 'ordinary-session', summary: 'Ordinary', project_id: 'prj_pinned', pinned: false },
+      ],
+    }, {
+      project: { id: 'prj_unpinned', name: 'Unpinned project', available: true },
+      sessions: [{ id: 'only-ordinary-session', summary: 'Only ordinary', project_id: 'prj_unpinned', pinned: false }],
+    }];
+    state.projectExpansion.prj_unpinned = false;
+    app.renderProjectSidebar();
+    const groups = elements.sessionGroups.querySelectorAll('.project-group');
+    const group = groups.find((candidate) => candidate.dataset.projectId === 'prj_pinned');
+    const unpinnedGroup = groups.find((candidate) => candidate.dataset.projectId === 'prj_unpinned');
+    const toggle = group.querySelector('.project-group-toggle');
+    assertEqual(toggle.getAttribute('aria-expanded'), 'false', 'project remains collapsed');
+    assert(toggle.getAttribute('aria-label').includes('2 pinned conversations shown'), 'collapsed disclosure explains the visible pinned rows');
+    const list = group.querySelector('.project-session-list');
+    assert(list.classList.contains('is-pinned-only'), 'collapsed list is marked as pinned-only');
+    const rows = group.querySelectorAll('.session-row');
+    assertEqual(rows.length, 2, 'only pinned conversations remain visible while collapsed');
+    assertEqual(rows[0].dataset.sessionId, 'pinned-session', 'canonical pinned state overrides a stale server summary');
+    assertEqual(rows[1].dataset.sessionId, 'server-pinned-session', 'server-only pinned state remains visible');
+    assert(!group.querySelector('.project-pagination-sentinel'), 'collapsed projects do not paginate hidden conversations');
+    assert(!unpinnedGroup.querySelector('.project-session-list'), 'collapsed projects without pinned conversations keep their list hidden');
   });
 
   await run('sidebar refresh never scrolls the active project into view', () => {

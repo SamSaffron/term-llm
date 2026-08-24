@@ -2234,6 +2234,30 @@ async function run(name, fn) {
     assertEqual(selections[0]?.projectId, '', 'Chat selection switches to an unbound draft explicitly');
   });
 
+  await run('new-chat project picker preserves unavailable binding until Chat is selected', async () => {
+    const selections = [];
+    const { app, session, messages } = createHarness({
+      switchToDraftSession(options) { selections.push(options); },
+    });
+    session.messages = [];
+    app.state.projectsEnabled = true;
+    app.state.draftSessionActive = true;
+    app.state.activeProjectId = 'prj_removed';
+    app.state.projects = [];
+
+    app.renderMessages();
+    const select = messages.querySelector('.new-chat-project-select');
+    assert(select, 'new-chat project picker is rendered');
+    assertEqual(select.value, 'prj_removed', 'missing binding is not mistaken for the Chat option');
+    assertEqual(select.children.length, 2, 'picker retains a hidden option for the unavailable binding');
+    assertEqual(select.children[1].hidden, true, 'unavailable binding is excluded from picker choices');
+    assertEqual(select.children[1].value, 'prj_removed', 'hidden option represents the unavailable binding');
+
+    select.value = '';
+    await select.dispatchEvent({ type: 'change' });
+    assertEqual(selections[0]?.projectId, '', 'choosing Chat explicitly switches to an unbound draft');
+  });
+
   await run('renderMessages: incremental append reuses existing nodes', () => {
     const { app, session, messages } = createHarness();
     session.messages = [
