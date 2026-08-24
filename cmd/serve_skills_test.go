@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -605,6 +606,58 @@ func TestServeSkillRunResultSerializesWithRuntimeAndUpdatesHistory(t *testing.T)
 	runtime.mu.Unlock()
 	if len(history) != 2 || history[1].Role != llm.RoleDeveloper || !strings.Contains(llm.MessageText(history[1]), "runtime result") {
 		t.Fatalf("runtime history after skill result = %#v", history)
+	}
+}
+
+func TestServeSkillRunResultBatchFailureLeavesNoVisibleHalfCompletion(t *testing.T) {
+	setup, _ := serveSkillTestSetup(t)
+	activation, err := skills.NewActivator(setup.Registry).Activate(skills.ActivationRequest{Name: "forked", Origin: skills.SkillActivationUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newServeRuntimeTestStore()
+	store.sessions["sess-atomic-boundary"] = &session.Session{ID: "sess-atomic-boundary"}
+	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), nil), store: store, history: []llm.Message{llm.UserText("parent")}, historyPersisted: true}
+	manager := newServeSessionManager(time.Minute, 4, func(context.Context) (*serveRuntime, error) { return runtime, nil })
+	defer manager.Close()
+	if _, err := manager.GetOrCreate(context.Background(), "sess-atomic-boundary"); err != nil {
+		t.Fatal(err)
+	}
+	srv := &serveServer{store: store, sessionMgr: manager}
+	run := newServeSkillRun("skill-atomic-boundary", "sess-atomic-boundary", "child-atomic", activation, func() {})
+	run.finish(runpkg.ChildRunResult{RunID: run.ID, ChildSessionID: run.ChildSessionID, Output: "valuable child result", CompletedAt: time.Now()}, nil)
+
+	insertAttempts := 0
+	store.addMessageHook = func(context.Context, string, *session.Message) error {
+		insertAttempts++
+		if insertAttempts == 2 {
+			return errors.New("injected second insert failure")
+		}
+		return nil
+	}
+	srv.persistServeSkillRunResultAtBoundary(context.Background(), run, nil)
+	messages, _ := store.GetMessages(context.Background(), run.SessionID, 0, 0)
+	if len(messages) != 0 {
+		t.Fatalf("failed batch persisted half-completion: %#v", messages)
+	}
+	runtime.mu.Lock()
+	history := append([]llm.Message(nil), runtime.history...)
+	runtime.mu.Unlock()
+	if len(history) != 1 {
+		t.Fatalf("failed batch updated runtime history: %#v", history)
+	}
+
+	store.addMessageHook = nil
+	srv.persistServeSkillRunResultAtBoundary(context.Background(), run, nil)
+	messages, _ = store.GetMessages(context.Background(), run.SessionID, 0, 0)
+	if len(messages) != 2 || messages[0].Role != llm.RoleEvent || messages[1].Role != llm.RoleDeveloper {
+		t.Fatalf("retried batch messages = %#v", messages)
+	}
+	runtime.mu.Lock()
+	history = append([]llm.Message(nil), runtime.history...)
+	runtime.mu.Unlock()
+	if len(history) != 2 || history[1].Role != llm.RoleDeveloper || !strings.Contains(llm.MessageText(history[1]), "valuable child result") {
+		t.Fatalf("runtime history after retry = %#v", history)
 	}
 }
 

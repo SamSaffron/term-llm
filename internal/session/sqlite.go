@@ -2900,6 +2900,100 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	return err
 }
 
+// AddMessages appends a batch of messages in one transaction.
+func (s *SQLiteStore) AddMessages(ctx context.Context, sessionID string, messages []*Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	partsJSON := make([]string, len(messages))
+	for i, msg := range messages {
+		if msg == nil {
+			return fmt.Errorf("message %d is nil", i)
+		}
+		msg.SessionID = sessionID
+		if msg.CreatedAt.IsZero() {
+			msg.CreatedAt = time.Now()
+		}
+		serialized, err := msg.PartsJSONForStorage(s.cfg.StripImageBase64)
+		if err != nil {
+			return fmt.Errorf("serialize message %d parts: %w", i, err)
+		}
+		partsJSON[i] = serialized
+	}
+
+	var committed []messageInsertResult
+	err := retryOnBusy(ctx, 5, func() error {
+		results, err := s.addMessages(ctx, sessionID, messages, partsJSON)
+		if err != nil {
+			return err
+		}
+		committed = results
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i, result := range committed {
+		messages[i].ID = result.id
+		messages[i].Sequence = result.sequence
+	}
+	return nil
+}
+
+type messageInsertResult struct {
+	id       int64
+	sequence int
+}
+
+func (s *SQLiteStore) addMessages(ctx context.Context, sessionID string, messages []*Message, partsJSON []string) ([]messageInsertResult, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, fmt.Errorf("begin immediate transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	var maxSeq sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `SELECT MAX(sequence) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxSeq); err != nil {
+		return nil, fmt.Errorf("get max sequence: %w", err)
+	}
+	nextSequence := 0
+	if maxSeq.Valid {
+		nextSequence = int(maxSeq.Int64) + 1
+	}
+
+	results := make([]messageInsertResult, len(messages))
+	for i, msg := range messages {
+		sequence := msg.Sequence
+		if sequence < 0 {
+			sequence = nextSequence
+		}
+		if sequence >= nextSequence {
+			nextSequence = sequence + 1
+		}
+		id, _, err := s.insertMessageAndBumpSession(ctx, conn, sessionID, msg, partsJSON[i], sequence)
+		if err != nil {
+			return nil, fmt.Errorf("insert message %d: %w", i, err)
+		}
+		results[i] = messageInsertResult{id: id, sequence: sequence}
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+	committed = true
+	return results, nil
+}
+
 // AddMessageWithTranscriptRev adds a message and returns the revision bumped by
 // the same transaction.
 func (s *SQLiteStore) AddMessageWithTranscriptRev(ctx context.Context, sessionID string, msg *Message) (int64, error) {

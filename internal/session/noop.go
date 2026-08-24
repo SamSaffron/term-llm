@@ -52,6 +52,10 @@ func (s *NoopStore) AddMessage(ctx context.Context, sessionID string, msg *Messa
 	return nil
 }
 
+func (s *NoopStore) AddMessages(ctx context.Context, sessionID string, messages []*Message) error {
+	return nil
+}
+
 func (s *NoopStore) UpdateMessage(ctx context.Context, sessionID string, msg *Message) error {
 	return ErrNotFound
 }

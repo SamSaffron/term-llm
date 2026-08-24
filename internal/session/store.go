@@ -59,6 +59,9 @@ type Store interface {
 
 	// Message operations - stores full llm.Message with Parts
 	AddMessage(ctx context.Context, sessionID string, msg *Message) error
+	// AddMessages appends all messages atomically. Auto-allocated sequences preserve
+	// slice order; if any insert fails, none of the messages are committed.
+	AddMessages(ctx context.Context, sessionID string, messages []*Message) error
 	// UpdateMessage replaces the content of an existing message (by msg.ID) with
 	// the supplied msg (role, parts, text, duration, sequence are updated in
 	// place). Used for "persist as we go" upserts of an in-progress assistant

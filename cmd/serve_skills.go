@@ -1021,7 +1021,7 @@ func (s *serveServer) persistServeSkillRunResultAtBoundary(ctx context.Context, 
 				retryDelay = min(retryDelay*2, time.Second)
 			}
 			defer runtime.mu.Unlock()
-			if contextMessage := s.persistServeSkillRunResult(run, runErr); contextMessage != nil {
+			if contextMessage := s.persistServeSkillRunResult(ctx, run, runErr); contextMessage != nil {
 				runtime.history = append(runtime.history, *contextMessage)
 				runtime.refreshSideQuestionSnapshot(runtime.history)
 			}
@@ -1033,7 +1033,7 @@ func (s *serveServer) persistServeSkillRunResultAtBoundary(ctx context.Context, 
 	retryDelay := 25 * time.Millisecond
 	for {
 		persisted := manager.runIfSessionIdle(run.SessionID, func() {
-			s.persistServeSkillRunResult(run, runErr)
+			s.persistServeSkillRunResult(ctx, run, runErr)
 		})
 		if persisted {
 			return
@@ -1060,7 +1060,7 @@ func (s *serveServer) waitForServeSkillBoundaryRetry(ctx context.Context, delay 
 	}
 }
 
-func (s *serveServer) persistServeSkillRunResult(run *serveSkillRun, runErr error) *llm.Message {
+func (s *serveServer) persistServeSkillRunResult(ctx context.Context, run *serveSkillRun, runErr error) *llm.Message {
 	if s.store == nil || run == nil || run.Activation == nil {
 		return nil
 	}
@@ -1084,19 +1084,27 @@ func (s *serveServer) persistServeSkillRunResult(run *serveSkillRun, runErr erro
 		resultText += "\n\n" + output
 	}
 	visible := &session.Message{SessionID: run.SessionID, Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: resultText}}, TextContent: resultText, CreatedAt: completedAt, Sequence: -1}
-	if err := s.store.AddMessage(context.Background(), run.SessionID, visible); err != nil {
-		log.Printf("[serve] persist skill result event for %s: %v", run.SessionID, err)
-	}
-	var activeContext *llm.Message
+	messages := []*session.Message{visible}
+	var developer *session.Message
 	if strings.TrimSpace(output) != "" {
 		contextText := fmt.Sprintf("<isolated_skill_result name=%q run_id=%q child_session_id=%q status=%q>\n%s\n</isolated_skill_result>", run.SkillName, run.ID, childSessionID, status, output)
-		developer := &session.Message{SessionID: run.SessionID, Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: contextText}}, TextContent: contextText, CreatedAt: completedAt, Sequence: -1}
-		if err := s.store.AddMessage(context.Background(), run.SessionID, developer); err != nil {
-			log.Printf("[serve] persist skill result context for %s: %v", run.SessionID, err)
-		} else {
-			message := developer.ToLLMMessage()
-			activeContext = &message
-		}
+		developer = &session.Message{SessionID: run.SessionID, Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartSkillActivation, SkillActivation: provenance}, {Type: llm.PartText, Text: contextText}}, TextContent: contextText, CreatedAt: completedAt, Sequence: -1}
+		messages = append(messages, developer)
 	}
-	return activeContext
+
+	var err error
+	if len(messages) == 1 {
+		err = s.store.AddMessage(ctx, run.SessionID, visible)
+	} else {
+		err = s.store.AddMessages(ctx, run.SessionID, messages)
+	}
+	if err != nil {
+		log.Printf("[serve] persist skill result for %s: %v", run.SessionID, err)
+		return nil
+	}
+	if developer == nil {
+		return nil
+	}
+	message := developer.ToLLMMessage()
+	return &message
 }

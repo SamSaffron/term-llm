@@ -445,6 +445,33 @@ func (s *serveRuntimeTestStore) AddMessage(ctx context.Context, sessionID string
 	return nil
 }
 
+func (s *serveRuntimeTestStore) AddMessages(ctx context.Context, sessionID string, messages []*session.Message) error {
+	if s.addMessageHook != nil {
+		for _, msg := range messages {
+			if err := s.addMessageHook(ctx, sessionID, msg); err != nil {
+				return err
+			}
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	staged := make([]session.Message, len(messages))
+	nextID := s.nextID
+	for i, msg := range messages {
+		nextID++
+		msg.ID = nextID
+		copyMsg := *msg
+		if copyMsg.Sequence < 0 {
+			copyMsg.Sequence = len(s.messages[sessionID]) + i
+		}
+		staged[i] = copyMsg
+	}
+	s.nextID = nextID
+	s.messages[sessionID] = append(s.messages[sessionID], staged...)
+	s.addMessageCalls += len(messages)
+	return nil
+}
+
 func (s *serveRuntimeTestStore) UpdateMessage(ctx context.Context, sessionID string, msg *session.Message) error {
 	if s.updateMessageHook != nil {
 		if err := s.updateMessageHook(ctx, sessionID, msg); err != nil {

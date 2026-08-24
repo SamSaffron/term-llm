@@ -2912,6 +2912,50 @@ func TestSQLiteStoreMigratesCompactionCountColumn(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreAddMessagesRollsBackOnSecondInsertFailure(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	visible := NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "visible completion"}}}, -1)
+	developer := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "parent context"}}}, -1)
+	visible.ClientMessageID = "duplicate-batch-id"
+	developer.ClientMessageID = "duplicate-batch-id"
+
+	if err := store.AddMessages(ctx, sess.ID, []*Message{visible, developer}); err == nil {
+		t.Fatal("AddMessages succeeded despite second insert uniqueness violation")
+	}
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after failure: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("failed batch committed messages: %#v", messages)
+	}
+
+	developer.ClientMessageID = "retry-batch-id"
+	if err := store.AddMessages(ctx, sess.ID, []*Message{visible, developer}); err != nil {
+		t.Fatalf("AddMessages retry: %v", err)
+	}
+	messages, err = store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after retry: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Role != llm.RoleEvent || messages[1].Role != llm.RoleDeveloper {
+		t.Fatalf("retried batch messages = %#v", messages)
+	}
+	if messages[0].Sequence != 0 || messages[1].Sequence != 1 {
+		t.Fatalf("retried batch sequences = %d, %d", messages[0].Sequence, messages[1].Sequence)
+	}
+}
+
 func TestSQLiteStoreAddMessageConcurrentAutoSequence(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})

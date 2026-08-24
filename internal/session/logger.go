@@ -134,6 +134,13 @@ func (s *LoggingStore) AddMessage(ctx context.Context, sessionID string, msg *Me
 	return err
 }
 
+// AddMessages wraps Store.AddMessages with error logging.
+func (s *LoggingStore) AddMessages(ctx context.Context, sessionID string, messages []*Message) error {
+	err := s.Store.AddMessages(ctx, sessionID, messages)
+	s.logOnce("AddMessages", err)
+	return err
+}
+
 // AddMessageUnlogged performs an AddMessage operation without consuming the
 // wrapper's one-time warning. Callers use this only when they inspect and
 // recover a known error before retrying through AddMessage normally.
