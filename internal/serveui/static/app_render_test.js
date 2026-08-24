@@ -2220,6 +2220,8 @@ async function run(name, fn) {
     assertEqual(select.children[0].textContent, 'Chat', 'Chat is the first explicit option');
     const trigger = messages.querySelector('.new-chat-project-trigger');
     assert(trigger, 'project picker uses the shared popover trigger');
+    const projectPrefix = trigger.querySelector('.new-chat-project-label');
+    assertEqual(projectPrefix.hidden, false, 'Project prefix is shown for an actual project');
     await trigger.dispatchEvent({ type: 'click' });
     assertEqual(pickerPopover?.select, select, 'trigger opens the shared picker with its hidden select');
     assertEqual(pickerPopover?.config?.action?.label, 'Add project', 'picker includes project creation');
@@ -2227,6 +2229,8 @@ async function run(name, fn) {
     assertEqual(addProjectOptions?.returnFocus, trigger, 'add-project modal restores focus to the picker trigger');
     select.value = '';
     await select.dispatchEvent({ type: 'change' });
+    assertEqual(projectPrefix.hidden, true, 'Project prefix is hidden for Chat');
+    assertEqual(trigger.querySelector('.new-chat-project-value').textContent, 'Chat', 'Chat remains the visible selection label');
     assertEqual(selections[0]?.projectId, '', 'Chat selection switches to an unbound draft explicitly');
   });
 

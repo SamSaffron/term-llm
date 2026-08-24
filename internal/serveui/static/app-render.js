@@ -2939,12 +2939,12 @@ const renderMessages = (forceScroll = false) => {
         trigger.setAttribute('aria-haspopup', 'listbox');
         trigger.setAttribute('aria-controls', 'chipPopover');
         trigger.setAttribute('aria-expanded', 'false');
-        trigger.appendChild(createEl('span', 'new-chat-project-label', 'Project'));
+        const projectPrefix = createEl('span', 'new-chat-project-label', 'Project'); projectPrefix.hidden = !select.value; trigger.appendChild(projectPrefix);
         const selectedLabel = createEl('span', 'new-chat-project-value', selectedProjectLabel());
         trigger.appendChild(selectedLabel);
         trigger.appendChild(createEl('span', 'new-chat-project-chevron', '⌄'));
         select.addEventListener('change', () => {
-          selectedLabel.textContent = selectedProjectLabel();
+          selectedLabel.textContent = selectedProjectLabel(); projectPrefix.hidden = !select.value;
           void app.switchToDraftSession?.({ projectId: select.value, clearComposer: false, focusPrompt: false, closeSidebar: false });
         });
         trigger.addEventListener('click', () => {
