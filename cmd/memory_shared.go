@@ -55,11 +55,15 @@ func resolveMemoryAgent(sessionAgent string) string {
 	if strings.TrimSpace(memoryAgent) != "" {
 		return strings.TrimSpace(memoryAgent)
 	}
-	sessionAgent = strings.TrimSpace(sessionAgent)
-	if sessionAgent != "" {
-		return sessionAgent
+	return sessionAgentOrDefault(sessionAgent)
+}
+
+func sessionAgentOrDefault(agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return "default"
 	}
-	return "default"
+	return agent
 }
 
 func hasMemoryMiningTag(tags string) bool {

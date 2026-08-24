@@ -443,37 +443,53 @@ func memoryCompactRecentUserPrompt(candidateRecent string) string {
 }
 
 func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, current *session.Session) ([]memoryUpdateRecentSession, error) {
-	complete, err := sessStore.List(ctx, session.ListOptions{
-		Agent:            agentName,
-		Status:           session.StatusComplete,
-		UpdatedAtOrAfter: updatedAtOrAfter,
-		Limit:            -1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list complete sessions: %w", err)
-	}
+	const pageSize = 200
 
+	var beforeNumber int64
 	seen := map[string]struct{}{}
-	sessions := make([]memoryUpdateRecentSession, 0, len(complete)+1)
+	sessions := make([]memoryUpdateRecentSession, 0, pageSize+1)
 
-	for _, summary := range complete {
-		// Keep custom stores that ignore the new List filters from leaking another
-		// agent or an older session into this update.
-		if updateRecentSessionAgent(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
-			continue
+	for {
+		complete, err := sessStore.List(ctx, session.ListOptions{
+			Agent:            agentName,
+			Status:           session.StatusComplete,
+			Limit:            pageSize,
+			BeforeNumber:     beforeNumber,
+			SortByNumberDesc: true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list complete sessions: %w", err)
 		}
 
-		sessions = append(sessions, memoryUpdateRecentSession{
-			ID:        summary.ID,
-			Number:    summary.Number,
-			Status:    summary.Status,
-			UpdatedAt: summary.UpdatedAt,
-		})
-		seen[summary.ID] = struct{}{}
+		for _, summary := range complete {
+			// Keep custom stores that ignore List filters from leaking another
+			// agent or an older session into this update. UpdatedAt is compared in
+			// Go because existing SQLite rows may contain different UTC offsets.
+			if sessionAgentOrDefault(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
+				continue
+			}
+
+			sessions = append(sessions, memoryUpdateRecentSession{
+				ID:        summary.ID,
+				Number:    summary.Number,
+				Status:    summary.Status,
+				UpdatedAt: summary.UpdatedAt,
+			})
+			seen[summary.ID] = struct{}{}
+		}
+
+		if len(complete) < pageSize {
+			break
+		}
+		lastNumber := complete[len(complete)-1].Number
+		if lastNumber <= 0 {
+			return nil, fmt.Errorf("complete session %s is missing a session number", complete[len(complete)-1].ID)
+		}
+		beforeNumber = lastNumber
 	}
 
 	if current != nil {
-		if _, exists := seen[current.ID]; !exists && updateRecentSessionAgent(current.Agent) == agentName && (updatedAtOrAfter.IsZero() || !current.UpdatedAt.Before(updatedAtOrAfter)) {
+		if _, exists := seen[current.ID]; !exists && sessionAgentOrDefault(current.Agent) == agentName && (updatedAtOrAfter.IsZero() || !current.UpdatedAt.Before(updatedAtOrAfter)) {
 			sessions = append(sessions, memoryUpdateRecentSession{
 				ID:        current.ID,
 				Number:    current.Number,
@@ -494,14 +510,6 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 	})
 
 	return sessions, nil
-}
-
-func updateRecentSessionAgent(agent string) string {
-	agent = strings.TrimSpace(agent)
-	if agent == "" {
-		return "default"
-	}
-	return agent
 }
 
 type memoryUpdateRecentInput struct {
@@ -677,7 +685,7 @@ func memoryUpdateRecentMetaKey(agentName string) string {
 	if agentName == "" {
 		agentName = resolveMemoryAgent("")
 	}
-	return "last_update_recent_at_" + agentName
+	return "update_recent_exhausted_at_" + agentName
 }
 
 func updateRecentOffsetMetaKey(sessionID string) string {

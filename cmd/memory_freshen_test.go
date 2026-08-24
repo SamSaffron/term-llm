@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,7 +84,7 @@ func TestUpdateRecentSessionState(t *testing.T) {
 
 func TestMemoryUpdateRecentMetaKey(t *testing.T) {
 	key := memoryUpdateRecentMetaKey("jarvis")
-	if key != "last_update_recent_at_jarvis" {
+	if key != "update_recent_exhausted_at_jarvis" {
 		t.Fatalf("got %q", key)
 	}
 }
@@ -312,6 +313,29 @@ func TestReadLastUpdatedRecentAt_Missing(t *testing.T) {
 	}
 }
 
+func TestReadLastUpdatedRecentAtIgnoresLegacyCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	store, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// Older versions advanced this key even when the input cap left sessions
+	// unprocessed. Ignoring it on upgrade lets per-session offsets safely drain
+	// that backlog before the new exhausted-run checkpoint is established.
+	if err := store.SetMeta(ctx, "last_update_recent_at_jarvis", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+	ts, err := readLastUpdatedRecentAt(ctx, store, "jarvis")
+	if err != nil {
+		t.Fatalf("readLastUpdatedRecentAt: %v", err)
+	}
+	if !ts.IsZero() {
+		t.Fatalf("legacy checkpoint returned %v, want zero", ts)
+	}
+}
+
 func TestReadLastUpdatedRecentAt_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
@@ -376,8 +400,8 @@ func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.
 	if !strings.Contains(input.Text, "new activity") || strings.Contains(input.Text, "other activity") {
 		t.Fatalf("input text = %q, want only recent jarvis activity", input.Text)
 	}
-	if sessStore.listCalls != 1 {
-		t.Fatalf("List calls = %d, want 1", sessStore.listCalls)
+	if sessStore.listCalls != 6 {
+		t.Fatalf("List calls = %d, want 6 paginated scans", sessStore.listCalls)
 	}
 	if sessStore.getCalls != 0 {
 		t.Fatalf("Get calls = %d, want 0", sessStore.getCalls)
@@ -385,8 +409,8 @@ func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.
 	if len(sessStore.messageCalls) != 1 || sessStore.messageCalls["recent-jarvis"] != 1 {
 		t.Fatalf("GetMessagesFrom calls = %#v, want only recent-jarvis", sessStore.messageCalls)
 	}
-	if !sessStore.lastListOptions.UpdatedAtOrAfter.Equal(checkpoint) || sessStore.lastListOptions.Agent != "jarvis" {
-		t.Fatalf("List options = %#v, want agent and update checkpoint filters", sessStore.lastListOptions)
+	if sessStore.lastListOptions.Agent != "jarvis" || sessStore.lastListOptions.Status != session.StatusComplete {
+		t.Fatalf("List options = %#v, want agent and status filters", sessStore.lastListOptions)
 	}
 }
 
@@ -425,6 +449,53 @@ func TestCollectMemoryUpdateRecentInputNoOpDoesNotLoadHistoricalSessions(t *test
 	}
 }
 
+func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
+	oldMax := memoryUpdateRecentMaxInputChars
+	memoryUpdateRecentMaxInputChars = 1
+	t.Cleanup(func() { memoryUpdateRecentMaxInputChars = oldMax })
+
+	for _, tc := range []struct {
+		name      string
+		count     int
+		exhausted bool
+	}{
+		{name: "more sessions remain", count: 2, exhausted: false},
+		{name: "last session consumed", count: 1, exhausted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summaries := make([]session.SessionSummary, 0, tc.count)
+			messages := make(map[string][]session.Message, tc.count)
+			for i := 0; i < tc.count; i++ {
+				id := "session-" + strconv.Itoa(i+1)
+				summaries = append(summaries, session.SessionSummary{
+					ID: id, Number: int64(i + 1), Agent: "jarvis", Status: session.StatusComplete,
+					UpdatedAt: time.Date(2026, 8, 23, 10, i, 0, 0, time.UTC),
+				})
+				messages[id] = []session.Message{{Role: llm.RoleUser, TextContent: "activity", Sequence: 0}}
+			}
+			sessStore := &updateRecentCountingStore{
+				summaries: summaries, messages: messages, messageCalls: map[string]int{},
+			}
+			memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer memStore.Close()
+
+			input, err := collectMemoryUpdateRecentInput(context.Background(), memStore, sessStore, "jarvis", time.Time{})
+			if err != nil {
+				t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
+			}
+			if input.Exhausted != tc.exhausted {
+				t.Fatalf("Exhausted = %v, want %v", input.Exhausted, tc.exhausted)
+			}
+			if len(sessStore.messageCalls) != 1 {
+				t.Fatalf("GetMessagesFrom calls = %#v, want one capped session", sessStore.messageCalls)
+			}
+		})
+	}
+}
+
 type updateRecentCountingStore struct {
 	session.NoopStore
 	summaries       []session.SessionSummary
@@ -443,13 +514,19 @@ func (s *updateRecentCountingStore) List(_ context.Context, opts session.ListOpt
 		if opts.Status != "" && summary.Status != opts.Status {
 			continue
 		}
-		if opts.Agent != "" && updateRecentSessionAgent(summary.Agent) != strings.TrimSpace(opts.Agent) {
+		if opts.Agent != "" && sessionAgentOrDefault(summary.Agent) != strings.TrimSpace(opts.Agent) {
 			continue
 		}
-		if !opts.UpdatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(opts.UpdatedAtOrAfter) {
+		if opts.BeforeNumber > 0 && summary.Number >= opts.BeforeNumber {
 			continue
 		}
 		result = append(result, summary)
+	}
+	if opts.SortByNumberDesc {
+		sort.Slice(result, func(i, j int) bool { return result[i].Number > result[j].Number })
+	}
+	if opts.Limit > 0 && len(result) > opts.Limit {
+		result = result[:opts.Limit]
 	}
 	return result, nil
 }

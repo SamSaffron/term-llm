@@ -2591,10 +2591,6 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		query += " AND s.status = ?"
 		args = append(args, string(opts.Status))
 	}
-	if !opts.UpdatedAtOrAfter.IsZero() {
-		query += " AND s.updated_at >= ?"
-		args = append(args, opts.UpdatedAtOrAfter.UTC())
-	}
 	if opts.Tag != "" {
 		// Substring match on comma-separated tags
 		query += " AND (',' || s.tags || ',' LIKE '%,' || ? || ',%')"

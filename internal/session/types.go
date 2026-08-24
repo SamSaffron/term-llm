@@ -179,7 +179,6 @@ type ListOptions struct {
 	Mode             SessionMode           // Filter by mode (chat, ask, plan, exec)
 	Agent            string                // Filter by agent; empty persisted agents belong to "default"
 	Status           SessionStatus         // Filter by status
-	UpdatedAtOrAfter time.Time             // Include sessions updated at or after this timestamp
 	Tag              string                // Filter by tag (substring match)
 	Categories       []string              // Sidebar/web categories (all, chat, web, ask, plan, exec)
 	Limit            int                   // Max results (0 = use default, negative = unlimited)

@@ -484,7 +484,7 @@ func TestSQLiteStoreListByNumberCursorReturnsCompleteSessions(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreListFiltersByAgentAndUpdatedAt(t *testing.T) {
+func TestSQLiteStoreListFiltersByAgent(t *testing.T) {
 	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
@@ -492,53 +492,47 @@ func TestSQLiteStoreListFiltersByAgentAndUpdatedAt(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
-	checkpoint := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
-	seed := []struct {
-		id        string
-		agent     string
-		updatedAt time.Time
-	}{
-		{id: "old-jarvis", agent: "jarvis", updatedAt: checkpoint.Add(-time.Hour)},
-		{id: "recent-jarvis", agent: "jarvis", updatedAt: checkpoint},
-		{id: "recent-other", agent: "other", updatedAt: checkpoint.Add(time.Minute)},
-		{id: "recent-default", updatedAt: checkpoint.Add(time.Minute)},
-	}
-	for _, candidate := range seed {
+	for i := 0; i < 60; i++ {
 		sess := &Session{
-			ID:       candidate.id,
+			ID:       fmt.Sprintf("jarvis-%d", i),
 			Provider: "test",
 			Model:    "test-model",
 			Mode:     ModeChat,
-			Agent:    candidate.agent,
+			Agent:    "jarvis",
 			Status:   StatusComplete,
 		}
 		if err := store.Create(ctx, sess); err != nil {
-			t.Fatalf("Create(%s): %v", candidate.id, err)
+			t.Fatalf("Create(%s): %v", sess.ID, err)
 		}
-		if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, candidate.updatedAt, candidate.id); err != nil {
-			t.Fatalf("set updated_at for %s: %v", candidate.id, err)
+	}
+	for _, sess := range []*Session{
+		{ID: "other", Provider: "test", Model: "test-model", Mode: ModeChat, Agent: "other", Status: StatusComplete},
+		{ID: "default", Provider: "test", Model: "test-model", Mode: ModeChat, Status: StatusComplete},
+	} {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%s): %v", sess.ID, err)
 		}
 	}
 
-	got, err := store.List(ctx, ListOptions{
-		Agent:            "jarvis",
-		Status:           StatusComplete,
-		UpdatedAtOrAfter: checkpoint,
-		Limit:            -1,
-	})
+	got, err := store.List(ctx, ListOptions{Agent: "jarvis", Status: StatusComplete, Limit: -1})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "recent-jarvis" || got[0].Agent != "jarvis" {
-		t.Fatalf("List = %#v, want recent jarvis summary with agent", got)
+	if len(got) != 60 {
+		t.Fatalf("len(List) = %d, want all 60 jarvis sessions", len(got))
+	}
+	for _, summary := range got {
+		if summary.Agent != "jarvis" {
+			t.Fatalf("List returned agent %q for session %s", summary.Agent, summary.ID)
+		}
 	}
 
-	got, err = store.List(ctx, ListOptions{Agent: "default", UpdatedAtOrAfter: checkpoint, Limit: -1})
+	got, err = store.List(ctx, ListOptions{Agent: "default", Limit: -1})
 	if err != nil {
 		t.Fatalf("List default agent: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "recent-default" {
-		t.Fatalf("default-agent List = %#v, want recent-default", got)
+	if len(got) != 1 || got[0].ID != "default" {
+		t.Fatalf("default-agent List = %#v, want default session", got)
 	}
 }
 
