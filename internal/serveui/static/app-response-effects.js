@@ -247,6 +247,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   }
 
   if (event === 'response.interjection') {
+    if (lifecycleResult?.duplicate) return { terminal: false };
     const clientMessageId = String(payload?.client_message_id || '').trim();
     if (!clientMessageId) return { terminal: false, protocolError: 'interjection missing client_message_id' };
     const intent = app.commitPendingInterjection?.(session, clientMessageId, {

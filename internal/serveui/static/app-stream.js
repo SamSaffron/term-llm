@@ -146,7 +146,6 @@ const classifyRecoverableContinuationFailure = (error, previousResponseId = '') 
   return '';
 };
 
-
 const parseSSEStream = async (stream, onEvent, options = {}) => {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -257,7 +256,6 @@ const isTransientPreResponsePostError = (err) => {
   const message = String(err?.message || '').toLowerCase();
   return name === 'TypeError' || name === 'NetworkError' || message.includes('network') || message.includes('failed to fetch');
 };
-
 
 const setActiveResponseTracking = (session, responseId) => {
   if (!session) return;
@@ -598,7 +596,6 @@ const createResponseStreamState = (session, options = {}) => {
   };
 };
 
-
 const replayPayloadResponseID = (payload, fallback = '') => String(
   payload?.response_id || payload?.response?.id || fallback || ''
 ).trim();
@@ -631,10 +628,16 @@ const reduceHistoricalReplayEvent = (stage, event, payload) => {
 const mergeHistoricalReplayStage = async (session, _streamState, stage, isCurrent) => {
   const transcript = session?.transcript;
   if (!transcript) throw new Error('historical replay requires a transcript');
-  const merged = await window.TermLLMConversation.enqueueDetachedReplay(transcript, stage.events, isCurrent);
+  let effectsAfterSequence = stage.after;
+  const replayIsCurrent = () => {
+    if (!isCurrent()) return false;
+    effectsAfterSequence = responseEventSequence(session, stage.responseId);
+    return true;
+  };
+  const merged = await window.TermLLMConversation.enqueueDetachedReplay(transcript, stage.events, replayIsCurrent);
   if (!merged || !isCurrent()) return false;
   for (const item of stage.events) {
-    if (item?.event !== 'response.interjection') continue;
+    if (item?.event !== 'response.interjection' || Number(item.payload?.sequence_number) <= effectsAfterSequence) continue;
     const payload = item.payload || {};
     const clientMessageId = String(payload.client_message_id || payload.interjection_id || '').trim();
     if (!clientMessageId) continue;
@@ -1321,8 +1324,6 @@ const cancelActiveResponse = async (session) => {
   }
 };
 
-
-
 // ===== File attachment =====
 // Attachment helpers live in app-attachments.js (a dependency leaf). They are
 // pulled off the app bag via the destructure at the top of this file.
@@ -1353,7 +1354,6 @@ const setStreaming = (streaming) => {
     }
   }
 };
-
 
 const runtimeHasPendingAskUser = (syncResult, callId) => {
   const runtimeState = app.runtimeStateFromSyncResult(syncResult);
@@ -1430,7 +1430,6 @@ const addErrorMessage = (text, session) => {
   };
   appendStreamMessageNode(session, message);
 };
-
 
 Object.assign(app, {
   requestHeaders,

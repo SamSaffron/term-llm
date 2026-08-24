@@ -181,6 +181,83 @@ func TestHubReverseNodeProxyStreamsChunkedResponse(t *testing.T) {
 	}
 }
 
+func TestHubReverseNodeProxyStreamsIncrementalSSE(t *testing.T) {
+	firstEvent := "data: first\n\n"
+	secondEvent := "data: second\n\n"
+	releaseBackend := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseBackend) }) }
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/events" {
+			t.Errorf("backend path = %q", r.URL.Path)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, firstEvent)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-releaseBackend
+		_, _ = io.WriteString(w, secondEvent)
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+	defer release()
+
+	connectorCtx, stopConnector := context.WithCancel(context.Background())
+	defer stopConnector()
+	go runHubReverseConnector(connectorCtx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRequest()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, hubTS.URL+"/node/artist/events", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	type readResult struct {
+		body string
+		err  error
+	}
+	firstRead := make(chan readResult, 1)
+	go func() {
+		resp, err := hubTS.Client().Do(request)
+		if err != nil {
+			firstRead <- readResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			firstRead <- readResult{err: errors.New(resp.Status + ": " + string(body))}
+			return
+		}
+		buf := make([]byte, len(firstEvent))
+		if _, err := io.ReadFull(resp.Body, buf); err != nil {
+			firstRead <- readResult{err: err}
+			return
+		}
+		firstRead <- readResult{body: string(buf)}
+	}()
+
+	select {
+	case result := <-firstRead:
+		if result.err != nil {
+			t.Fatalf("read first SSE event: %v", result.err)
+		}
+		if result.body != firstEvent {
+			t.Fatalf("first SSE event = %q, want %q", result.body, firstEvent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first reverse SSE event was buffered until the backend response completed")
+	}
+}
+
 func TestHubReverseNodeProxyRejectsOversizedRequestBody(t *testing.T) {
 	backendCalled := make(chan struct{}, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

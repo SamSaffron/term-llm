@@ -6005,6 +6005,159 @@ async function testHistoricalReplayCommitsExactInterjectionBeforeFreshEvents() {
   pass(name);
 }
 
+async function testHistoricalReplaySkipsInterjectionEffectsAlreadyAppliedByPostStream() {
+  const name = 'historical replay does not repeat interjection effects after the POST stream wins the race';
+  const responseId = 'resp_interjection_replay_race';
+  const harness = createHarness({ responseId });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_interjection_replay_race',
+    title: 'Replay race',
+    messages: [],
+    activeResponseId: responseId,
+    latestRunEpoch: 1,
+    lastSequenceNumber: 0,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  session.transcript = new ConversationController(session.id);
+  session.transcript.setActiveRun(responseId, 0, 1);
+  app.trackPendingInterruptCommit(session.id, 'steer once', 'msg_replay_race');
+  app.trackPendingInterjection(session.id, 'steer once', 'msg_replay_race', 'interject');
+
+  let releaseBlocker;
+  const blocker = session.transcript.commands.enqueue(() => new Promise((resolve) => { releaseBlocker = resolve; }));
+  const originalCommit = app.commitPendingInterjection;
+  let commitCalls = 0;
+  app.commitPendingInterjection = (...args) => {
+    commitCalls += 1;
+    return originalCommit(...args);
+  };
+
+  const payload = {
+    response_id: responseId,
+    run_epoch: 1,
+    sequence_number: 1,
+    client_message_id: 'msg_replay_race',
+    text: 'steer once',
+  };
+  const body = strictResponseBytes([
+    'event: response.interjection\n',
+    `data: ${JSON.stringify(payload)}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''), responseId, 1);
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(body);
+      controller.close();
+    },
+  });
+
+  let failure = '';
+  try {
+    const replayConsume = app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+      responseId,
+      runEpoch: 1,
+      replayAfterSequence: 0,
+      replayThroughSequence: 1,
+    });
+    const replayDidQueue = await waitFor(() => session.transcript.commands.tail !== blocker, 1000);
+    if (!replayDidQueue) throw new Error('historical replay did not queue behind transcript work');
+
+    app.applyResponseStreamEvent(session, app.createResponseStreamState(session), 'response.interjection', payload);
+    releaseBlocker();
+    releaseBlocker = null;
+    await replayConsume;
+
+    const userMessages = projectedMessages(session).filter((message) => message.role === 'user' && message.id === 'msg_replay_race');
+    if (commitCalls !== 1) failure = `interjection commit effects ran ${commitCalls} times, want 1`;
+    else if (userMessages.length !== 1) failure = `projected interjection rows = ${userMessages.length}, want 1`;
+    else if (app.responseEventSequence(session, responseId) !== 1) failure = `response cursor = ${app.responseEventSequence(session, responseId)}, want 1`;
+  } finally {
+    releaseBlocker?.();
+    app.commitPendingInterjection = originalCommit;
+    await cleanup();
+  }
+  if (failure) {
+    fail(name, failure);
+    return;
+  }
+  pass(name);
+}
+
+async function testPostStreamSkipsInterjectionEffectsAlreadyAppliedByHistoricalReplay() {
+  const name = 'POST stream does not repeat interjection effects after historical replay wins the race';
+  const responseId = 'resp_interjection_post_race';
+  const harness = createHarness({ responseId });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_interjection_post_race',
+    title: 'POST race',
+    messages: [],
+    activeResponseId: responseId,
+    latestRunEpoch: 1,
+    lastSequenceNumber: 0,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = responseId;
+  session.transcript = new ConversationController(session.id);
+  session.transcript.setActiveRun(responseId, 0, 1);
+  app.trackPendingInterruptCommit(session.id, 'replay once', 'msg_post_race');
+  app.trackPendingInterjection(session.id, 'replay once', 'msg_post_race', 'interject');
+
+  const originalCommit = app.commitPendingInterjection;
+  let commitCalls = 0;
+  app.commitPendingInterjection = (...args) => {
+    commitCalls += 1;
+    return originalCommit(...args);
+  };
+  const payload = {
+    response_id: responseId,
+    run_epoch: 1,
+    sequence_number: 1,
+    client_message_id: 'msg_post_race',
+    text: 'replay once',
+  };
+  const body = strictResponseBytes([
+    'event: response.interjection\n',
+    `data: ${JSON.stringify(payload)}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''), responseId, 1);
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(body);
+      controller.close();
+    },
+  });
+
+  let failure = '';
+  try {
+    await app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+      responseId,
+      runEpoch: 1,
+      replayAfterSequence: 0,
+      replayThroughSequence: 1,
+    });
+    app.applyResponseStreamEvent(session, app.createResponseStreamState(session), 'response.interjection', payload);
+
+    const userMessages = projectedMessages(session).filter((message) => message.role === 'user' && message.id === 'msg_post_race');
+    if (commitCalls !== 1) failure = `interjection commit effects ran ${commitCalls} times, want 1`;
+    else if (userMessages.length !== 1) failure = `projected interjection rows = ${userMessages.length}, want 1`;
+  } finally {
+    app.commitPendingInterjection = originalCommit;
+    await cleanup();
+  }
+  if (failure) {
+    fail(name, failure);
+    return;
+  }
+  pass(name);
+}
+
 async function testHeartbeatTakeoverRetiresQueuedHistoricalReplay() {
   const name = 'heartbeat takeover retires historical replay queued behind transcript work';
   const responseId = 'resp_queued_replay_takeover';
@@ -8925,6 +9078,8 @@ async function testUncommittedInlineInterjectionRetainsProviderAnchorAsFollowUp(
   await runAppStreamTest(testFirstPartySteerSkipsDecidingPhaseAndSendsDelivery);
   await runAppStreamTest(testInterjectionDeliveryPreservesStackOrder);
   await runAppStreamTest(testHistoricalReplayCommitsExactInterjectionBeforeFreshEvents);
+  await runAppStreamTest(testHistoricalReplaySkipsInterjectionEffectsAlreadyAppliedByPostStream);
+  await runAppStreamTest(testPostStreamSkipsInterjectionEffectsAlreadyAppliedByHistoricalReplay);
   await runAppStreamTest(testHeartbeatTakeoverRetiresQueuedHistoricalReplay);
   await runAppStreamTest(testPendingInterjectionCanCancelWhileClassifying);
   await runAppStreamTest(testClassificationCancelDeletesAcceptedInterjection);

@@ -169,7 +169,35 @@ func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	bodyWriter := io.Writer(w)
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.HasPrefix(contentType, "text/event-stream") || resp.Header.Get("Content-Length") == "" {
+		bodyWriter = &hubFlushingWriter{dst: w, controller: http.NewResponseController(w)}
+	}
+	_, _ = io.Copy(bodyWriter, resp.Body)
+}
+
+type hubFlushingWriter struct {
+	dst              io.Writer
+	controller       *http.ResponseController
+	flushUnsupported bool
+}
+
+func (w *hubFlushingWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if err != nil || w.flushUnsupported {
+		return n, err
+	}
+	if err := w.controller.Flush(); err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			w.flushUnsupported = true
+			return n, nil
+		}
+		// Once flushing fails, the downstream stream is no longer usable; stop
+		// copying rather than continuing to consume the reverse connection.
+		return n, err
+	}
+	return n, nil
 }
 
 func hubStripHopByHopHeaders(h http.Header) {
