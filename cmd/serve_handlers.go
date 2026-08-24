@@ -1815,7 +1815,8 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sessionID := parts[0]
+	requestedSessionID := parts[0]
+	sessionID := requestedSessionID
 	// If the path segment is purely numeric, resolve via session number.
 	if num, err := strconv.ParseInt(sessionID, 10, 64); err == nil && num > 0 && s.store != nil {
 		sess, err := s.store.GetByNumber(r.Context(), num)
@@ -1841,7 +1842,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if suffix == "skills" || suffix == "skills/invoke" || strings.HasPrefix(suffix, "skill-runs/") {
-		s.handleSessionSkills(w, r, sessionID, suffix)
+		s.handleSessionSkills(w, r, sessionID, requestedSessionID, suffix)
 		return
 	}
 

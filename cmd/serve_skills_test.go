@@ -51,6 +51,20 @@ func (r *fakeServeSkillChildRunner) callCount() int {
 	return r.calls
 }
 
+type numberedServeSkillStore struct{ *serveRuntimeTestStore }
+
+func (s *numberedServeSkillStore) GetByNumber(_ context.Context, number int64) (*session.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sess := range s.sessions {
+		if sess != nil && sess.Number == number {
+			copySess := *sess
+			return &copySess, nil
+		}
+	}
+	return nil, nil
+}
+
 func TestSessionMessageEntriesExposeSkillProvenance(t *testing.T) {
 	srv := &serveServer{}
 	provenance := &llm.SkillActivationProvenance{
@@ -135,6 +149,27 @@ func TestServeSessionSkillsListingVisibilityCollisionAndOwnership(t *testing.T) 
 	srv.handleSessionByID(foreignInvokeRR, foreignInvoke)
 	if foreignInvokeRR.Code != http.StatusForbidden {
 		t.Fatalf("foreign session invocation status = %d, want 403", foreignInvokeRR.Code)
+	}
+}
+
+func TestServeSessionSkillsAuthorizeNumericSessionAlias(t *testing.T) {
+	setup, root := serveSkillTestSetup(t)
+	store := &numberedServeSkillStore{serveRuntimeTestStore: newServeRuntimeTestStore()}
+	store.sessions["sess-real"] = &session.Session{ID: "sess-real", Number: 1291, CWD: root}
+	srv := &serveServer{store: store, skillsSetup: setup}
+
+	request := func(claimed string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/1291/skills", nil)
+		req.Header.Set("session_id", claimed)
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		return rr
+	}
+	if rr := request("1291"); rr.Code != http.StatusOK {
+		t.Fatalf("numeric alias status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr := request("1292"); rr.Code != http.StatusForbidden {
+		t.Fatalf("foreign numeric alias status = %d, want 403; body=%s", rr.Code, rr.Body.String())
 	}
 }
 

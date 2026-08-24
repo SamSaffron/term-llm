@@ -220,8 +220,8 @@ func (run *serveSkillRun) subscriberOverflowed(id int) bool {
 	return run.subscriberDropped[id]
 }
 
-func (s *serveServer) handleSessionSkills(w http.ResponseWriter, r *http.Request, sessionID, suffix string) {
-	if !serveSkillSessionAuthorized(r, sessionID) {
+func (s *serveServer) handleSessionSkills(w http.ResponseWriter, r *http.Request, sessionID, requestedSessionID, suffix string) {
+	if !serveSkillSessionAuthorized(r, sessionID, requestedSessionID) {
 		writeOpenAIError(w, http.StatusForbidden, "permission_error", "session_id header does not match the requested session")
 		return
 	}
@@ -257,12 +257,13 @@ func (s *serveServer) handleSessionSkills(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func serveSkillSessionAuthorized(r *http.Request, sessionID string) bool {
+func serveSkillSessionAuthorized(r *http.Request, sessionID, requestedSessionID string) bool {
 	// Serve currently trusts possession of a session ID. This header check only
 	// prevents a request from accidentally targeting a different URL session;
-	// it is not an authentication boundary.
+	// it is not an authentication boundary. Numeric URL selectors are aliases for
+	// the canonical ID resolved by handleSessionByID.
 	claimed := strings.TrimSpace(r.Header.Get("session_id"))
-	return claimed != "" && claimed == sessionID
+	return claimed != "" && (claimed == sessionID || claimed == requestedSessionID)
 }
 
 func (s *serveServer) sessionForProjectDiscovery(ctx context.Context, sess *session.Session) (*session.Session, error) {
