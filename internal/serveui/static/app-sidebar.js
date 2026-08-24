@@ -580,11 +580,30 @@ const projectHeadingLabel = (project) => {
   if (!project) return 'Chat';
   const duplicate = (state.projects || []).filter((candidate) => String(candidate.name || '').localeCompare(String(project.name || ''), undefined, { sensitivity: 'accent' }) === 0).length > 1;
   if (!duplicate) return project.name || 'Project';
-  const parts = String(project.canonical_dir || '').split(/[\\/]+/).filter(Boolean);
-  const suffix = parts.slice(-2).join('/');
+  const parts = String(project.canonical_dir || '').split(/[\\/]+/).filter(Boolean); const suffix = parts.slice(-2).join('/');
   return suffix ? `${project.name} — ${suffix}` : project.name;
 };
-
+const projectGroupSessions = (group) => {
+  const project = group.project || null;
+  const canonicalByID = new Map((state.sessions || []).map((session) => [session.id, session]));
+  let sessions = (group.sessions || []).map((item) => {
+    const projected = projectSessionFromSummary(item, project);
+    const canonical = canonicalByID.get(projected.id);
+    return canonical ? { ...projected, ...canonical, projectUnavailable: Boolean(project && !project.available), projectUnavailableReason: String(project?.unavailable_reason || '') } : projected;
+  });
+  if (!state.sidebarSearchQuery) {
+    const known = new Set(sessions.map((session) => session.id)); (state.sessions || []).forEach((session) => { if (String(session.projectId || '') === String(project?.id || '') && !known.has(session.id)) sessions.push(session); });
+  }
+  if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) sessions = state.sidebarSearchResults.filter((item) => String(item.projectId || '') === String(project?.id || ''));
+  return sessions.sort((a, b) => (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created));
+};
+const renderPinnedSessions = (groups) => {
+  const seen = new Set(); const sessions = groups.flatMap(projectGroupSessions).filter((session) => { if (!session.pinned || seen.has(session.id)) return false; seen.add(session.id); return true; });
+  if (!sessions.length) return null;
+  const section = createEl('section', 'session-group pinned-sessions'); section.appendChild(createEl('h3', '', 'Pinned'));
+  sessions.sort((a, b) => (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created)).forEach((session) => section.appendChild(renderProjectSessionRow(session)));
+  return section;
+};
 const renderProjectGroup = (group) => {
   const project = group.project || null;
   const id = project?.id || '__no_project__';
@@ -593,11 +612,8 @@ const renderProjectGroup = (group) => {
     ? Boolean(project && String(state.activeProjectId || '') === String(project.id || ''))
     : String(activeProjectID || '') === String(project?.id || '');
   const expanded = projectExpanded(id);
-  const section = createEl('section', `project-group${active ? ' active' : ''}${project?.archived_at ? ' archived' : ''}${project && !project.available ? ' unavailable' : ''}`);
-  section.dataset.projectId = String(project?.id || '');
-  const headingId = `project-heading-${String(id).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-  const header = createEl('div', 'project-group-header');
-  const headingLabel = projectHeadingLabel(project);
+  const section = createEl('section', `project-group${active ? ' active' : ''}${project?.archived_at ? ' archived' : ''}${project && !project.available ? ' unavailable' : ''}`); section.dataset.projectId = String(project?.id || '');
+  const headingId = `project-heading-${String(id).replace(/[^a-zA-Z0-9_-]/g, '-')}`; const header = createEl('div', 'project-group-header'); const headingLabel = projectHeadingLabel(project);
   const toggle = createEl('button', 'project-group-toggle'); toggle.type = 'button'; toggle.id = headingId;
   toggle.setAttribute('aria-expanded', String(expanded));
   toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${headingLabel}${project?.canonical_dir ? ` — ${project.canonical_dir}` : ''}`);
@@ -648,25 +664,7 @@ const renderProjectGroup = (group) => {
   if (expanded) {
     const opening = projectExpansionAnimations.delete(id);
     const list = createEl('div', `project-session-list${opening ? ' is-opening' : ''}`); list.setAttribute('role', 'list'); list.setAttribute('aria-labelledby', headingId);
-    const canonicalByID = new Map((state.sessions || []).map((session) => [session.id, session]));
-    let sessions = (group.sessions || []).map((item) => {
-      const projected = projectSessionFromSummary(item, project);
-      const canonical = canonicalByID.get(projected.id);
-      return canonical ? {
-        ...projected,
-        ...canonical,
-        projectUnavailable: Boolean(project && !project.available),
-        projectUnavailableReason: String(project?.unavailable_reason || ''),
-      } : projected;
-    });
-    if (!state.sidebarSearchQuery) {
-      const known = new Set(sessions.map((session) => session.id));
-      (state.sessions || []).forEach((session) => {
-        if (String(session.projectId || '') === String(project?.id || '') && !known.has(session.id)) sessions.push(session);
-      });
-    }
-    if (state.sidebarSearchQuery && Array.isArray(state.sidebarSearchResults) && !state.sidebarSearchError) sessions = state.sidebarSearchResults.filter((item) => String(item.projectId || '') === String(project?.id || ''));
-    sessions.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastMessageAt || b.created) - (a.lastMessageAt || a.created));
+    const sessions = projectGroupSessions(group).filter((session) => !session.pinned);
     sessions.forEach((session) => { const row = renderProjectSessionRow(session); row.setAttribute('role', 'listitem'); list.appendChild(row); });
     if (group.next_cursor && !state.sidebarSearchQuery) appendProjectPaginationSentinel(group, list);
     section.appendChild(list);
@@ -720,7 +718,8 @@ const renderProjectSidebar = () => {
   });
   const noProject = groups.filter((group) => group.no_project);
   const archived = groups.filter((group) => group.project?.archived_at);
-  const nodes = [...active.map(renderProjectGroup), ...noProject.map(renderProjectGroup)];
+  const pinned = renderPinnedSessions(groups);
+  const nodes = [...(pinned ? [pinned] : []), ...active.map(renderProjectGroup), ...noProject.map(renderProjectGroup)];
   if (state.projectsError) nodes.unshift(projectInlineError(state.projectsError, loadProjectSidebar));
   if (state.sidebarSearchError) {
     nodes.unshift(projectInlineError(state.sidebarSearchError, () => {

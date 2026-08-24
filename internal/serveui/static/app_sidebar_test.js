@@ -861,6 +861,29 @@ function createFakeTimers() {
     assertEqual(state.sessions[0].projectId, 'prj_alpha', 'grouped summary preserves stable project identity');
   });
 
+  await run('pinned conversations stay in a section above projects', () => {
+    const { app, elements, state } = createHarness();
+    state.capabilitiesLoaded = true;
+    state.projectsEnabled = true;
+    state.sidebarGroups = [{
+      project: { id: 'prj_alpha', name: 'Alpha', available: true },
+      sessions: [
+        { id: 'recent', summary: 'Recent chat', project_id: 'prj_alpha', created_at: '2026-08-21T12:00:00Z' },
+        { id: 'pinned', summary: 'Pinned chat', project_id: 'prj_alpha', pinned: true, created_at: '2026-08-20T12:00:00Z' },
+      ],
+    }];
+
+    app.renderProjectSidebar();
+
+    const pinnedSection = elements.sessionGroups.children[0];
+    assert(pinnedSection.classList.contains('pinned-sessions'), 'pinned section renders first');
+    assertEqual(pinnedSection.querySelector('h3').textContent, 'Pinned', 'pinned section is labelled');
+    assertEqual(pinnedSection.querySelector('.session-row').dataset.sessionId, 'pinned', 'pinned conversation renders in the top section');
+    const project = elements.sessionGroups.querySelector('.project-group');
+    assertEqual(project.querySelectorAll('.session-row').length, 1, 'pinned conversation is not duplicated in its project');
+    assertEqual(project.querySelector('.session-row').dataset.sessionId, 'recent', 'regular conversation stays in its project');
+  });
+
   await run('reload restores the remembered valid project draft context', async () => {
     const { app, state } = createHarness({
       apiFetch: async (url) => String(url).endsWith('/v1/capabilities')
