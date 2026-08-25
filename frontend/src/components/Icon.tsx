@@ -26,7 +26,7 @@ const paths: Record<IconName, JSX.Element> = {
   check: <path d="m5 12 4 4L19 6" />,
   'chevron-right': <path d="m9 18 6-6-6-6" />,
   close: <><path d="M6 6l12 12" /><path d="M18 6 6 18" /></>,
-  copy: <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
+  copy: <><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>,
   diff: <><path d="M8 5v14" /><path d="M5 8h6" /><path d="M16 5v6" /><path d="M13 8h6" /><path d="M13 16h6" /></>,
   edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></>,
   expand: <><path d="M8 3H3v5" /><path d="m3 3 6 6" /><path d="M16 3h5v5" /><path d="m21 3-6 6" /><path d="M8 21H3v-5" /><path d="m3 21 6-6" /><path d="M16 21h5v-5" /><path d="m21 21-6-6" /></>,

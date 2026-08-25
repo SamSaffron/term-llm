@@ -148,6 +148,11 @@ export interface DiffFile {
   patch?: string;
   lastChangedAt?: number;
   sequence?: number;
+  snapshotSeq?: number;
+  truncated?: boolean;
+  context?: number;
+  oldLineCount?: number;
+  newLineCount?: number;
   expanded?: boolean;
   loading?: boolean;
   error?: string;
@@ -163,6 +168,7 @@ export interface DiffComment {
   sessionId?: string;
   scope?: string;
   context?: string;
+  fileChangeSeq?: number;
 }
 
 export interface PlanStep {

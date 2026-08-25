@@ -6,12 +6,12 @@ describe('transcript domain', () => {
   it('converts text, measured media, tools and compaction rows', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const messages = convertServerMessages([
-      { id: 1, sequence: 0, role: 'user', client_message_id: 'c1', parts: [{ type: 'text', text: 'hello' }, { type: 'image', image_url: '/image.png', mime_type: 'image/png', width: 800, height: 400 }] },
+      { id: 1, sequence: 0, role: 'user', client_message_id: 'c1', interrupt_state: 'queue', parts: [{ type: 'text', text: 'hello' }, { type: 'image', image_url: '/image.png', mime_type: 'image/png', width: 800, height: 400 }] },
       { id: 2, sequence: 1, role: 'assistant', response_id: 'r1', assistant_segment_ordinal: 0, parts: [{ type: 'text', text: 'answer' }] },
       { id: 3, sequence: 2, role: 'tool', parts: [{ type: 'function_call', call_id: 't1', name: 'read_file', arguments: '{}' }] },
       { id: 4, sequence: 3, role: 'compaction', parts: [{ type: 'text', text: 'summary' }] },
     ]);
-    expect(messages[0]).toMatchObject({ role: 'user', content: 'hello', clientMessageId: 'c1', attachments: [{ width: 800, height: 400 }] });
+    expect(messages[0]).toMatchObject({ role: 'user', content: 'hello', clientMessageId: 'c1', interruptState: 'queue', attachments: [{ width: 800, height: 400 }] });
     expect(messages[1]).toMatchObject({ role: 'assistant', responseId: 'r1', content: 'answer' });
     expect(messages[2].tools?.[0]).toMatchObject({ id: 't1', name: 'read_file' });
     expect(messages[3]).toMatchObject({ role: 'compaction-boundary', rawContent: 'summary' });
@@ -34,7 +34,8 @@ describe('transcript domain', () => {
     const messages = Array.from({ length: 1_000 }, (_, index): Message => ({ id: String(index), role: index % 5 === 0 ? 'user' : 'assistant', content: String(index), created: index }));
     const read = vi.fn((message: Message) => message.content); const contexts = indexTranscriptTurns(messages, read);
     expect(read).toHaveBeenCalledTimes(messages.length); expect(contexts.size).toBe(messages.length);
-    expect(contexts.get(messages[4])?.turnText).toBe(['0', '1', '2', '3', '4'].join('\n\n'));
+    expect(contexts.get(messages[1])?.copyTarget).toBe(false);
+    expect(contexts.get(messages[4])).toMatchObject({ turnText: ['0', '1', '2', '3', '4'].join('\n\n'), copyTarget: true });
   });
 
   it('hands projected rows off atomically to matching durable identities', () => {

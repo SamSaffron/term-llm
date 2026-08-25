@@ -15,5 +15,5 @@ npm run typecheck
 npm test
 npm run build
 
-echo "Updated frontend/package.json, package-lock.json, and internal/serveui/static/dist."
-echo "Review dependency release notes, generated assets, payload measurements, and git diff before committing."
+echo "Updated frontend/package.json and frontend/package-lock.json."
+echo "Review dependency release notes, payload measurements, and git diff before committing."

@@ -5,19 +5,20 @@ import { endpoints, type Endpoints } from '../api/endpoints';
 import { initialProjection, reduceResponse, ResponseProtocolError, type ResponseEvent, type ResponseProjection } from '../domain/response';
 import { applyRuntimeToRequest, supportedEfforts, type ModelOption } from '../domain/runtime';
 import { convertServerMessages, mergeDurableProjection, sanitizeSession } from '../domain/transcript';
-import { normalizeDiffScope, parseUnifiedPatch, sortDiffFiles } from '../domain/diff';
+import { linesFromHunks, normalizeDiffScope, parseUnifiedPatch, sortDiffFiles } from '../domain/diff';
 import type { ActiveRun, ApprovalPrompt, AskUserPrompt, Attachment, CurrentPlan, DiffComment, DiffFile, Goal, Message, Project, Session } from '../domain/types';
 import { clearDraft, migrateScopedStorage, persistPendingIntent, readDrafts, readJSON, readPendingIntents, removeSessionPendingIntents, saveDraft, writeJSON, type PendingIntentRegistry, type StorageKeys } from '../platform/storage';
 import { sessionIDFromLocation, updateSessionRoute } from '../platform/routing';
 import { enableNotifications, hardRefreshAssets, syncTokenCookie } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
 
-export type Modal = '' | 'settings' | 'rename' | 'ask-user' | 'approval' | 'mcp' | 'goal' | 'widgets' | 'branch' | 'project' | 'worktrees' | 'skills';
+export type Modal = '' | 'settings' | 'rename' | 'ask-user' | 'approval' | 'mcp' | 'goal' | 'widgets' | 'branch' | 'branch-context' | 'project' | 'worktrees' | 'skills';
 export interface Toast { id: string; message: string; kind: 'info' | 'success' | 'error' }
 export interface RuntimeOption extends ModelOption { [key: string]: unknown }
 export interface SideQuestionState { visible: boolean; running: boolean; question: string; response: string; error: string; history: Array<{ question: string; response: string }> }
 export interface DiffState { open: boolean; sessionId: string; scope: string; loading: boolean; files: DiffFile[]; filter: string; comments: DiffComment[]; error: string; maximized: boolean; width: number }
 export interface PendingInterjection { id: string; sessionId: string; content: string; state: 'sending' | 'pending' | 'committed' | 'failed' }
+interface SendOptions { contentParts?: Record<string, unknown>[]; inputText?: string; displayContent?: string; preserveComposer?: boolean; diffComments?: DiffComment[]; onTransportStarted?: () => void; onTransportFailed?: (error: unknown) => void }
 export interface HubAgent { id: string; name: string; target: string; active: boolean; attention: boolean }
 
 const uuid = (): string => globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
@@ -102,6 +103,8 @@ export class AppStore {
   readonly selectedDraftWorktree = signal('');
   readonly skills = signal<Record<string, unknown>[]>([]);
   readonly branchTree = signal<Record<string, unknown> | null>(null);
+  readonly branchPathCount = signal(0);
+  readonly branchTarget = signal('');
   readonly lightbox = signal<{ src: string; type: 'image' | 'video' } | null>(null);
   readonly renameTarget = signal<Session | null>(null);
   readonly projectTarget = signal<Session | null>(null);
@@ -178,10 +181,12 @@ export class AppStore {
     this.installLifecycle();
     this.startup.value = 'Connecting to term-llm…';
     try {
-      const [capabilities, providers, sidebar] = await Promise.all([
-        this.endpoints.capabilities().catch(() => ({})), this.endpoints.providers(), this.endpoints.sidebar(this.showHidden.value),
-      ]);
+      const capabilities = await this.endpoints.capabilities().catch(() => ({}));
       this.applyCapabilities(capabilities);
+      const [providers, sidebar] = await Promise.all([
+        this.endpoints.providers(),
+        this.projectsEnabled.value ? this.endpoints.sidebar(this.showHidden.value) : this.endpoints.sessions(`limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`),
+      ]);
       this.applyProviders(providers);
       this.applySidebar(sidebar);
       await this.loadModels().catch(() => undefined);
@@ -269,8 +274,17 @@ export class AppStore {
   }
 
   private applyProviders(data: Record<string, unknown>): void {
-    const values = listFrom(data, 'providers', 'items').map((entry) => ({ ...entry, id: String(entry.id || entry.name || ''), name: String(entry.display_name || entry.name || entry.id || '') }));
+    const values = listFrom(data, 'data', 'providers', 'items').map((entry) => ({
+      ...entry,
+      id: String(entry.id || entry.name || ''),
+      name: String(entry.display_name || entry.name || entry.id || ''),
+      models: Array.isArray(entry.models) ? entry.models : [],
+    })).filter((entry) => entry.id);
     this.providers.value = values;
+    if (this.selectedProvider.value && !values.some((provider) => provider.id === this.selectedProvider.value)) {
+      this.selectedProvider.value = '';
+      this.storage.removeItem(this.keys.selectedProvider);
+    }
   }
 
   private sessionFrom(value: Record<string, unknown>): Session {
@@ -283,7 +297,7 @@ export class AppStore {
   }
 
   private applySidebar(data: Record<string, unknown>): void {
-    const direct = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
+    const direct = listFrom(data, 'data', 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const groups = listFrom(data, 'groups'); const projects: Project[] = []; const ungrouped: Session[] = [...direct];
     for (const group of groups) {
       const sessions = listFrom(group, 'sessions', 'items');
@@ -306,9 +320,18 @@ export class AppStore {
 
   async loadModels(provider = this.selectedProvider.value): Promise<void> {
     const epoch = ++this.modelEpoch; this.modelAbort?.abort(); const controller = new AbortController(); this.modelAbort = controller;
-    const data = await this.endpoints.models(provider, controller.signal);
+    let data: Record<string, unknown>;
+    try { data = await this.endpoints.models(provider, controller.signal); }
+    catch (error) { if (controller.signal.aborted || epoch !== this.modelEpoch) return; throw error; }
     if (controller.signal.aborted || epoch !== this.modelEpoch) return;
-    this.models.value = listFrom(data, 'models', 'items').map((entry) => ({ ...entry, id: String(entry.id || entry.name || ''), name: String(entry.display_name || entry.name || entry.id || ''), provider: String(entry.provider || '') })) as RuntimeOption[];
+    this.models.value = listFrom(data, 'data', 'models', 'items').map((entry) => ({
+      ...entry,
+      id: String(entry.id || entry.name || ''),
+      name: String(entry.display_name || entry.name || entry.id || ''),
+      provider: String(entry.provider || provider || ''),
+      efforts: Array.isArray(entry.reasoning_efforts) ? entry.reasoning_efforts.map(String) : Array.isArray(entry.efforts) ? entry.efforts.map(String) : undefined,
+      default_effort: String(entry.default_reasoning_effort || entry.default_effort || ''),
+    })).filter((entry) => entry.id) as RuntimeOption[];
     if (provider !== this.selectedProvider.peek()) return;
     if (this.selectedModel.value && !this.models.value.some((model) => model.id === this.selectedModel.value)) {
       const matching = this.models.value.find((model) => model.id === this.selectedModel.value.replace(/[-_](?:none|minimal|low|medium|high|xhigh|max)$/i, ''));
@@ -316,14 +339,17 @@ export class AppStore {
     }
   }
 
-  async refreshSidebar(): Promise<void> { this.applySidebar(await this.endpoints.sidebar(this.showHidden.value)); }
+  async refreshSidebar(): Promise<void> {
+    const data = this.projectsEnabled.value ? await this.endpoints.sidebar(this.showHidden.value) : await this.endpoints.sessions(`limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`);
+    this.applySidebar(data);
+  }
 
   async selectSession(session: Session, replace = false): Promise<void> {
     this.persistCurrentDraft();
     const epoch = ++this.selectionEpoch;
     batch(() => {
       this.activeSessionId.value = session.id; this.activeProjectId.value = session.projectId || ''; this.draftActive.value = false;
-      this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null;
+      this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null; this.branchTree.value = null; this.branchPathCount.value = 0;
       if (this.diff.value.sessionId !== session.id) this.diff.value = { ...this.diff.value, sessionId: session.id, files: [], error: '', comments: this.diff.value.comments.filter((comment) => !comment.sessionId || comment.sessionId === session.id) };
     });
     this.storage.setItem(this.keys.activeSession, session.id); this.storage.removeItem(this.keys.draftSessionActive);
@@ -333,6 +359,7 @@ export class AppStore {
     const current = this.sessions.value.find((entry) => entry.id === this.activeSessionId.value) || session;
     await this.loadSkills(current.id).catch(() => { if (epoch === this.selectionEpoch) this.skills.value = []; });
     if (epoch !== this.selectionEpoch) return;
+    void this.refreshBranchTree(current.id);
     if (current.activeResponseId) await this.resumeResponse(current.id, current.activeResponseId);
     this.sidebarOpen.value = false; void this.recoverSideQuestion();
   }
@@ -340,7 +367,7 @@ export class AppStore {
   newChat(replace = false, projectId = ''): void {
     this.persistCurrentDraft(); ++this.selectionEpoch;
     const selectedProject = projectId && this.projects.value.some((project) => project.id === projectId && !project.archived && project.available !== false) ? projectId : '';
-    batch(() => { this.activeSessionId.value = ''; this.activeProjectId.value = selectedProject; this.draftActive.value = true; this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null; this.skills.value = []; });
+    batch(() => { this.activeSessionId.value = ''; this.activeProjectId.value = selectedProject; this.draftActive.value = true; this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null; this.skills.value = []; this.branchTree.value = null; this.branchPathCount.value = 0; });
     this.storage.removeItem(this.keys.activeSession); this.storage.setItem(this.keys.draftSessionActive, '1');
     if (selectedProject) this.storage.setItem(this.keys.lastProject, selectedProject);
     updateSessionRoute(this.config.prefix, null, replace); this.restoreDraftFor(this.draftStorageID());
@@ -405,11 +432,11 @@ export class AppStore {
     } catch (error) { if (epoch === this.selectionEpoch) this.toast(error, 'error'); }
   }
 
-  async send(): Promise<void> {
-    const content = this.prompt.value.trim(); const attachments = [...this.attachments.value];
-    if ((!content && !attachments.length) || this.streaming.value) return;
+  async send(options: SendOptions = {}): Promise<void> {
+    const promptContent = this.prompt.value.trim(); const inputText = options.inputText ?? promptContent; const content = options.displayContent ?? inputText; const attachments = options.contentParts ? [] : [...this.attachments.value];
+    if ((!inputText && !attachments.length && !options.contentParts?.length) || this.streaming.value) return;
     const clientMessageId = uuid(); const requestId = uuid(); let session = this.activeSession.value;
-    const optimistic: Message = { id: `pending_${clientMessageId}`, role: 'user', content, created: Date.now(), clientMessageId, attachments };
+    const optimistic: Message = { id: `pending_${clientMessageId}`, role: 'user', content, created: Date.now(), clientMessageId, attachments, diffComments: options.diffComments };
     if (!session) {
       const project = this.activeProjectId.value;
       session = { id: `draft_${uuid()}`, name: '', title: content.slice(0, 72) || 'New chat', mode: 'chat', origin: 'web', archived: false, pinned: false, created: Date.now(), lastMessageAt: Date.now(), projectId: project, projectName: this.projects.value.find((entry) => entry.id === project)?.name, worktreeDir: this.selectedDraftWorktree.value || undefined, messages: [] };
@@ -421,13 +448,15 @@ export class AppStore {
     catch (error) { this.toast(error, 'error'); return; }
     this.sessions.value = this.sessions.value.map((entry) => entry.id === sessionId ? { ...entry, messages: [...entry.messages, optimistic], lastMessageAt: Date.now() } : entry);
     this.trackIntent(sessionId, { id: optimistic.id, clientMessageId, content, created: optimistic.created, attachments: optimistic.attachments });
-    batch(() => { this.prompt.value = ''; this.attachments.value = []; });
+    if (!options.preserveComposer) batch(() => { this.prompt.value = ''; this.attachments.value = []; });
     const run: ActiveRun = { responseId: `pending_${uuid()}`, sessionId, epoch: 1, status: 'connecting', lastSequence: 0, startedRev: session.transcriptRev || 0, reconnects: 0, requestId };
     this.runs.value = { ...this.runs.value, [sessionId]: initialProjection(run) };
     const postAbort = new AbortController(); this.postAborts.set(sessionId, postAbort);
     let ownerID = sessionId;
     try {
-      const inputContent: unknown = attachmentParts.length > 0 ? [...attachmentParts, ...(content ? [{ type: 'input_text', text: content }] : [])] : content;
+      const inputContent: unknown = options.contentParts?.length
+        ? [...options.contentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
+        : attachmentParts.length > 0 ? [...attachmentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])] : inputText;
       const requestBody: Record<string, unknown> = { stream: true, include_server_tools: true, client_message_id: clientMessageId, input: [{ type: 'message', role: 'user', client_message_id: clientMessageId, content: inputContent }] };
       if (session.lastResponseId) requestBody.previous_response_id = session.lastResponseId;
       else if (this.projectsEnabled.value) { if (session.projectId) requestBody.project_id = session.projectId; else requestBody.no_project = true; }
@@ -447,6 +476,7 @@ export class AppStore {
       }
       const durableSessionId = response.headers.get('x-session-id') || sessionId; const responseId = response.headers.get('x-response-id') || '';
       if (!responseId) throw new Error('Server did not return a response id.');
+      options.onTransportStarted?.();
       if (durableSessionId !== sessionId) { this.rekeySession(sessionId, durableSessionId); ownerID = durableSessionId; }
       const projection = this.runs.value[ownerID] || this.runs.value[sessionId];
       this.runs.value = { ...this.runs.value, [ownerID]: { ...projection, run: { ...projection.run, responseId, sessionId: ownerID, status: 'streaming' } } };
@@ -455,8 +485,9 @@ export class AppStore {
       const current = this.runs.value[ownerID]; if (current && ['connecting', 'streaming'].includes(current.run.status)) await this.resumeResponse(ownerID, responseId);
     } catch (error) {
       if (!postAbort.signal.aborted) {
+        options.onTransportFailed?.(error);
         this.failRun(ownerID, error);
-        if (this.activeSessionId.peek() === ownerID && !this.prompt.peek()) { this.prompt.value = content; this.attachments.value = attachments; }
+        if (!options.preserveComposer && this.activeSessionId.peek() === ownerID && !this.prompt.peek()) { this.prompt.value = promptContent; this.attachments.value = attachments; }
       }
     } finally { if (this.postAborts.get(sessionId) === postAbort) this.postAborts.delete(sessionId); }
   }
@@ -695,7 +726,18 @@ export class AppStore {
   setPreference(name: 'provider' | 'model' | 'effort' | 'reasoning' | 'agent', value: string, commit = true): void {
     const map = { provider: [this.selectedProvider, this.keys.selectedProvider], model: [this.selectedModel, this.keys.selectedModel], effort: [this.selectedEffort, this.keys.selectedEffort], reasoning: [this.selectedReasoningMode, this.keys.selectedReasoningMode], agent: [this.selectedAgent, this.keys.selectedAgent] } as const;
     const [target, key] = map[name]; target.value = value; if (value) this.storage.setItem(key, value); else this.storage.removeItem(key);
-    if (name === 'provider') void this.loadModels().catch((error) => this.toast(error, 'error'));
+    if (name === 'provider') {
+      this.selectedModel.value = '';
+      this.storage.removeItem(this.keys.selectedModel);
+      const provider = this.providers.peek().find((entry) => entry.id === value);
+      const fallback = Array.isArray(provider?.models) ? provider.models : [];
+      this.models.value = fallback.map((entry) => {
+        const source: Record<string, unknown> = entry && typeof entry === 'object' ? entry as Record<string, unknown> : { id: entry };
+        const id = String(source.id || source.name || '');
+        return { ...source, id, name: String(source.display_name || source.name || id), provider: value } as RuntimeOption;
+      }).filter((entry) => entry.id);
+      void this.loadModels().catch((error) => this.toast(error, 'error'));
+    }
     if (commit && name === 'effort' && this.streaming.value && this.activeSession.value) {
       void this.endpoints.runtime(this.activeSession.value.id, 'effort', { model: this.selectedModel.value || this.activeSession.value.activeModel, provider: this.selectedProvider.value || this.activeSession.value.activeProvider, reasoning_effort: value }).catch((error) => this.toast(error, 'error'));
     }
@@ -751,7 +793,14 @@ export class AppStore {
     this.prompt.value += `${this.prompt.value ? '\n' : ''}Current location: ${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`;
   }
 
-  async loadBranchTree(): Promise<void> { const session = this.activeSession.value; if (!session) return; this.branchTree.value = await this.endpoints.tree(session.id); this.modal.value = 'branch'; }
+  async refreshBranchTree(sessionId = this.activeSessionId.peek()): Promise<Record<string, unknown> | null> {
+    if (!sessionId) { this.branchTree.value = null; this.branchPathCount.value = 0; return null; }
+    try {
+      const tree = await this.endpoints.tree(sessionId); if (this.activeSessionId.peek() !== sessionId) return null;
+      this.branchTree.value = tree; this.branchPathCount.value = Math.max(1, Number(tree.path_count) || 1); return tree;
+    } catch { if (this.activeSessionId.peek() === sessionId) { this.branchTree.value = null; this.branchPathCount.value = 0; } return null; }
+  }
+  async loadBranchTree(): Promise<void> { const tree = await this.refreshBranchTree(); if (tree && this.branchPathCount.value > 1) this.modal.value = 'branch'; }
   async branchCommand(kind: 'fork' | 'thread', message = ''): Promise<void> {
     const session = this.activeSession.value;
     if (!session || this.draftActive.value) { this.toast('Start the conversation before creating a thread or fork.', 'error'); return; }
@@ -762,6 +811,7 @@ export class AppStore {
     try { await this.branchFrom(String(anchor), 'clean', '', message.trim()); }
     catch (error) { if (!this.prompt.value) this.prompt.value = original; this.toast(error, 'error'); }
   }
+  openBranchContext(messageId: string): void { this.branchTarget.value = messageId; this.modal.value = 'branch-context'; }
   async branchFrom(messageId: string, context: string, focus = '', autoSend = ''): Promise<void> {
     const session = this.activeSession.value; if (!session) return;
     const data = await this.endpoints.branch(session.id, { anchor_message_id: Number(messageId) || 0, expected_rev: session.transcriptRev || 0, idempotency_key: uuid() });
@@ -785,7 +835,18 @@ export class AppStore {
     this.diff.value = { ...this.diff.value, sessionId: owner, scope, loading: true, error: '' };
     try {
       const data = await this.endpoints.fileChanges(owner, scope); if (this.activeSessionId.peek() !== owner) return;
-      const files = sortDiffFiles(listFrom(data, 'files', 'changes').map((entry) => ({ path: String(entry.path || ''), old_path: String(entry.old_path || ''), status: String(entry.status || entry.kind || ''), additions: Number(entry.additions) || 0, deletions: Number(entry.deletions) || 0, binary: Boolean(entry.binary), image: Boolean(entry.image || entry.is_image), beforeURL: String(entry.before_url || entry.old_url || ''), afterURL: String(entry.after_url || entry.new_url || ''), lastChangedAt: Number(entry.last_changed_at || entry.updated_at) || 0, sequence: Number(entry.sequence || entry.seq) || 0 })));
+      const existing = new Map(this.diff.value.files.map((file) => [file.path, file]));
+      const files = sortDiffFiles(listFrom(data, 'file_changes', 'files', 'changes').map((entry) => {
+        const path = String(entry.path || ''); const previous = existing.get(path);
+        return {
+          path, old_path: String(entry.old_path || ''), status: String(entry.status || entry.kind || ''),
+          additions: Number(entry.adds ?? entry.additions) || 0, deletions: Number(entry.dels ?? entry.deletions) || 0,
+          binary: Boolean(entry.binary || entry.is_binary), image: Boolean(entry.image || entry.is_image),
+          beforeURL: String(entry.before_url || entry.old_url || previous?.beforeURL || ''), afterURL: String(entry.after_url || entry.new_url || previous?.afterURL || ''),
+          lastChangedAt: Number(entry.last_changed_at || entry.updated_at) || 0, sequence: Number(entry.seq ?? entry.sequence) || 0,
+          snapshotSeq: Number(entry.snapshot_seq) || 0, expanded: previous?.expanded, lines: previous?.lines, patch: previous?.patch,
+        };
+      }).filter((entry) => entry.path));
       this.diff.value = { ...this.diff.value, files, loading: false };
     } catch (error) { if (this.activeSessionId.peek() === owner) this.diff.value = { ...this.diff.value, loading: false, error: error instanceof Error ? error.message : String(error) }; }
   }
@@ -794,19 +855,45 @@ export class AppStore {
     if (file.lines && !context) { this.diff.value = { ...this.diff.value, files: this.diff.value.files.map((entry) => entry.path === file.path ? { ...entry, expanded: !entry.expanded } : entry) }; return; }
     this.diff.value = { ...this.diff.value, files: this.diff.value.files.map((entry) => entry.path === file.path ? { ...entry, loading: true, error: '' } : entry) };
     try {
-      const data = await this.endpoints.fileDiff(session.id, file.path, this.diff.value.scope, context); const lines = Array.isArray(data.lines) ? data.lines as DiffFile['lines'] : parseUnifiedPatch(String(data.diff || data.patch || ''));
-      this.diff.value = { ...this.diff.value, files: this.diff.value.files.map((entry) => entry.path === file.path ? { ...entry, expanded: true, loading: false, lines, patch: String(data.diff || data.patch || entry.patch || ''), beforeURL: String(data.before_url || entry.beforeURL || ''), afterURL: String(data.after_url || entry.afterURL || '') } : entry) };
+      const data = await this.endpoints.fileDiff(session.id, file.path, this.diff.value.scope, context, file.snapshotSeq || 0);
+      const lines = Array.isArray(data.hunks) ? linesFromHunks(data.hunks) : Array.isArray(data.lines) ? data.lines as DiffFile['lines'] : parseUnifiedPatch(String(data.diff || data.patch || ''));
+      const image = Boolean(data.image || file.image); const status = String(data.kind || file.status || '').toLowerCase();
+      const beforeURL = image && !['add', 'added', 'create', 'created'].includes(status) ? this.endpoints.fileContentURL(session.id, file.path, this.diff.value.scope, 'before', file.snapshotSeq || 0) : String(data.before_url || file.beforeURL || '');
+      const afterURL = image && !['delete', 'deleted', 'remove', 'removed'].includes(status) ? this.endpoints.fileContentURL(session.id, file.path, this.diff.value.scope, 'after', file.snapshotSeq || 0) : String(data.after_url || file.afterURL || '');
+      this.diff.value = { ...this.diff.value, files: this.diff.value.files.map((entry) => entry.path === file.path ? {
+        ...entry, status: String(data.kind || entry.status || ''), expanded: true, loading: false, lines,
+        image, truncated: Boolean(data.truncated), context: Number(data.context) || context || 3,
+        oldLineCount: Number(data.old_line_count) || 0, newLineCount: Number(data.new_line_count) || 0,
+        patch: String(data.diff || data.patch || entry.patch || ''), beforeURL, afterURL,
+      } : entry) };
     } catch (error) { this.diff.value = { ...this.diff.value, files: this.diff.value.files.map((entry) => entry.path === file.path ? { ...entry, loading: false, error: error instanceof Error ? error.message : String(error) } : entry) }; }
   }
   queueDiffComment(comment: DiffComment): void {
-    const sessionId = this.activeSessionId.peek(); const value = { ...comment, sessionId };
+    const sessionId = this.activeSessionId.peek(); const value = { ...comment, id: comment.id || uuid(), sessionId };
     const comments = [...this.diff.value.comments.filter((entry) => !(entry.sessionId === sessionId && entry.path === comment.path && entry.side === comment.side && entry.line === comment.line)), value];
     this.diff.value = { ...this.diff.value, comments }; writeJSON(this.storage, this.keys.diffCommentQueue, comments);
   }
   async sendDiffComments(): Promise<void> {
     const session = this.activeSession.value; const comments = this.diff.value.comments.filter((comment) => !comment.sessionId || comment.sessionId === session?.id);
-    if (!session || !comments.length) return; await this.endpoints.diffComments(session.id, comments);
-    const remaining = this.diff.value.comments.filter((comment) => comment.sessionId && comment.sessionId !== session.id); this.diff.value = { ...this.diff.value, comments: remaining }; writeJSON(this.storage, this.keys.diffCommentQueue, remaining); this.toast('Comments queued for the agent.', 'success');
+    if (!session || !comments.length) return;
+    if (this.streaming.value) { this.toast('Wait for the current response before sending inline comments.', 'info'); return; }
+    const payloads = comments.map((comment) => {
+      const scope = normalizeDiffScope(comment.scope || this.diff.value.scope); const turnScope = ['last_turn', 'last_3_turns'].includes(scope);
+      return { id: comment.id || uuid(), path: comment.path, scope, side: comment.side, line: comment.line, file_change_seq: turnScope ? Number(comment.fileChangeSeq) || 0 : 0, line_text: comment.context || '', instruction: comment.body };
+    });
+    if (payloads.some((comment) => ['last_turn', 'last_3_turns'].includes(comment.scope) && comment.file_change_seq <= 0)) { this.toast('Refresh the diff before sending these comments so their file snapshot can be anchored.', 'error'); return; }
+    const inputText = payloads.length === 1
+      ? `[Inline diff instruction]\n${payloads[0].path}:${payloads[0].line} — ${payloads[0].instruction}`
+      : `[Inline diff instructions] (${payloads.length} anchored comments)\n\n${payloads.map((comment) => `${comment.path}:${comment.line} — ${comment.instruction}`).join('\n')}`;
+    await this.send({
+      contentParts: payloads.map((diff_comment) => ({ type: 'diff_comment', diff_comment })), inputText,
+      displayContent: payloads.length === 1 ? payloads[0].instruction : `${payloads.length} inline comments`, preserveComposer: true, diffComments: comments,
+      onTransportStarted: () => {
+        const remaining = this.diff.peek().comments.filter((comment) => comment.sessionId && comment.sessionId !== session.id);
+        this.diff.value = { ...this.diff.peek(), comments: remaining }; writeJSON(this.storage, this.keys.diffCommentQueue, remaining); this.toast('Comments sent to the agent.', 'success');
+      },
+      onTransportFailed: (error) => this.toast(error, 'error'),
+    });
   }
   resizeDiff(width: number): void { this.diff.value = { ...this.diff.value, width }; this.storage.setItem(this.keys.diffSidebarWidth, String(Math.round(width))); }
 
@@ -875,7 +962,7 @@ export class AppStore {
     const controller = new AbortController(); this.skillRunAborts.set(runId, controller);
     try {
       const separator = cursor.eventsURL.includes('?') ? '&' : '?';
-      const response = await this.api.request(`${cursor.eventsURL}${separator}after=${encodeURIComponent(cursor.sequence)}`, { signal: controller.signal, headers: { Accept: 'text/event-stream' } }, { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' });
+      const response = await this.api.request(`${cursor.eventsURL}${separator}after=${encodeURIComponent(cursor.sequence)}`, { signal: controller.signal, headers: { Accept: 'text/event-stream', 'X-Term-LLM-Session-ID': cursor.sessionId } }, { policy: 'stream', retries: 0, timeoutMs: 0, auth: 'session' });
       if (!response.ok || !response.body) throw new APIError((await response.text()) || `Skill run stream returned ${response.status}`, response.status);
       for await (const frame of decodeSSE(response.body, controller.signal)) {
         let envelope: Record<string, unknown>; try { envelope = JSON.parse(frame.data) as Record<string, unknown>; } catch { continue; }

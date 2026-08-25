@@ -1,7 +1,7 @@
 ---
 title: "Installation"
 weight: 2
-description: "Install term-llm with the one-liner, `go install`, or a local source build."
+description: "Install term-llm with the one-liner, a release archive, or a local source build."
 kicker: "Install"
 source_readme_heading: "Installation"
 featured: true
@@ -21,19 +21,18 @@ Or with options:
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
 ```
 
-### Go install
-
-```bash
-go install github.com/samsaffron/term-llm@latest
-```
-
 ### Build from source
+
+Source builds require Go, Node.js 24 or newer, npm, and Make:
 
 ```bash
 git clone https://github.com/samsaffron/term-llm
 cd term-llm
-go build
+make build
+./term-llm version
 ```
+
+`make build` generates the embedded web UI before compiling the Go binary. Those generated bundles are not checked into Git, so plain `go build` from a fresh checkout is not sufficient. Use the one-line installer for a self-contained release binary without source-build dependencies.
 
 ### Shell completions
 

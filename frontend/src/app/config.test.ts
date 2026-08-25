@@ -35,10 +35,11 @@ describe('bootstrap configuration and storage', () => {
     expect(mergePendingIntents({ s1: [{ id: 'a', clientMessageId: 'a', content: 'A', created: 2 }] }, { s1: [{ id: 'b', clientMessageId: 'b', content: 'B', created: 1 }] }).s1.map((entry) => entry.id)).toEqual(['b', 'a']);
   });
 
-  it('rebases node-local media without touching foreign origins or double rebasing', () => {
-    const config = readInjectedConfig({ TERM_LLM_UI_PREFIX: '/chat/nodes/n1', TERM_LLM_HUB: { nodeId: 'n1', nodeBasePath: '/chat/nodes/n1' } } as Window);
-    expect(new URL(rebaseHubAssetURL(config, '/files/a.png')).pathname).toBe('/chat/nodes/n1/files/a.png');
-    expect(new URL(rebaseHubAssetURL(config, '/chat/nodes/n1/files/a.png')).pathname).toBe('/chat/nodes/n1/files/a.png');
+  it('rebases node-local media from the backend base onto the public Hub mount', () => {
+    const config = readInjectedConfig({ TERM_LLM_UI_PREFIX: '/node/Dev', TERM_LLM_HUB: { nodeId: 'Dev', nodeBasePath: '/ui' } } as Window);
+    expect(new URL(rebaseHubAssetURL(config, '/ui/images/history-a.png')).pathname).toBe('/node/Dev/images/history-a.png');
+    expect(new URL(rebaseHubAssetURL(config, '/files/a.png?download=1')).pathname).toBe('/node/Dev/files/a.png');
+    expect(new URL(rebaseHubAssetURL(config, '/node/Dev/images/history-a.png')).pathname).toBe('/node/Dev/images/history-a.png');
     expect(rebaseHubAssetURL(config, 'https://elsewhere.test/a')).toBe('https://elsewhere.test/a');
   });
 });

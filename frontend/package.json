@@ -10,8 +10,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test",
-    "check:generated": "npm run build && git diff --exit-code -- ../internal/serveui/static/dist"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@preact/signals": "2.11.1",

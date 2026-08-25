@@ -64,7 +64,12 @@ export async function decorateRichContent(root: HTMLElement, source: string): Pr
   if (needsHighlight(root)) {
     highlightPromise ||= import('./rich-highlight');
     work.push(highlightPromise.then(({ highlight }) => {
-      root.querySelectorAll<HTMLElement>('pre code').forEach((block) => { if (!block.dataset.highlighted) highlight.highlightElement(block); });
+      root.querySelectorAll<HTMLElement>('pre code').forEach((block) => {
+        if (block.dataset.highlighted) return;
+        const language = [...block.classList].map((name) => /^language-(.+)$/.exec(name)?.[1] || '').find(Boolean);
+        if (language && !highlight.getLanguage(language)) { block.dataset.highlighted = 'yes'; return; }
+        highlight.highlightElement(block);
+      });
     }));
   }
   if (needsKatex(source)) {

@@ -12,6 +12,17 @@ const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = n
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('bootstraps no-project mode without calling the project-only sidebar endpoint', async () => {
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false }, worktrees: { enabled: true } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] })); store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] })); store.endpoints.sidebar = vi.fn(async () => { throw new Error('project sidebar must not be called'); });
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+    await store.bootstrap();
+    expect(store.endpoints.sessions).toHaveBeenCalledWith('limit=30&include_archived=0'); expect(store.endpoints.sidebar).not.toHaveBeenCalled();
+    expect(store.startupDone.value).toBe(true); expect(store.draftActive.value).toBe(true); expect(store.projectsEnabled.value).toBe(false);
+  });
+
   it('restores persisted pending intents and draft worktree selection', () => {
     const seed = new AppStore(config);
     persistPendingIntent(localStorage, seed.keys.pendingIntents, 's1', { id: 'pending-c1', clientMessageId: 'c1', content: 'safe pending message', created: 2 });
@@ -37,6 +48,38 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeSession.value).toMatchObject({ activeModel: 'gpt-next', activeEffort: 'medium' });
   });
 
+  it('loads file summaries and structured hunks from the real diff contracts', async () => {
+    const store = new AppStore(config); store.sessions.value = [session()]; store.activeSessionId.value = 's1'; store.draftActive.value = false;
+    store.endpoints.fileChanges = vi.fn(async () => ({ scope: 'last_turn', git: true, file_changes: [{ path: 'main.go', kind: 'modify', adds: 2, dels: 1, seq: 9, snapshot_seq: 8 }] }));
+    store.endpoints.fileDiff = vi.fn(async () => ({ path: 'main.go', kind: 'modify', context: 3, old_line_count: 3, new_line_count: 3, hunks: [{ old_start: 2, new_start: 2, lines: [{ t: 'del', s: 'old' }, { t: 'add', s: 'new' }] }] }));
+    await store.loadDiff();
+    expect(store.diff.value.files[0]).toMatchObject({ path: 'main.go', additions: 2, deletions: 1, sequence: 9, snapshotSeq: 8 });
+    await store.expandDiff(store.diff.value.files[0]);
+    expect(store.endpoints.fileDiff).toHaveBeenCalledWith('s1', 'main.go', 'last_turn', 0, 8);
+    expect(store.diff.value.files[0]).toMatchObject({ expanded: true, context: 3, oldLineCount: 3, newLineCount: 3, lines: [
+      { kind: 'hunk', content: '@@ -2 +2 @@' }, { kind: 'delete', content: 'old', oldLine: 2 }, { kind: 'add', content: 'new', newLine: 2 },
+    ] });
+  });
+
+  it('sends queued diff comments as response input parts, not the read-only history endpoint', async () => {
+    const store = new AppStore(config); store.sessions.value = [session()]; store.activeSessionId.value = 's1'; store.draftActive.value = false;
+    store.queueDiffComment({ path: 'main.go', side: 'new', line: 12, body: 'Keep this guard.', scope: 'last_turn', context: 'if ready {', fileChangeSeq: 9 });
+    let options: Record<string, unknown> | undefined;
+    store.send = vi.fn(async (value) => { options = value as unknown as Record<string, unknown>; (value as { onTransportStarted?: () => void }).onTransportStarted?.(); });
+    await store.sendDiffComments();
+    expect(options).toMatchObject({ inputText: expect.stringContaining('main.go:12'), displayContent: 'Keep this guard.', preserveComposer: true });
+    expect(options?.contentParts).toEqual([expect.objectContaining({ type: 'diff_comment', diff_comment: expect.objectContaining({ path: 'main.go', line: 12, file_change_seq: 9, line_text: 'if ready {', instruction: 'Keep this guard.' }) })]);
+    expect(store.diff.value.comments).toEqual([]);
+  });
+
+  it('keeps the Paths control hidden until the server reports multiple paths', async () => {
+    const store = new AppStore(config); store.sessions.value = [session()]; store.activeSessionId.value = 's1';
+    store.endpoints.tree = vi.fn(async () => ({ root_session_id: 's1', active_session_id: 's1', path_count: 1, nodes: [{ session_id: 's1' }] }));
+    await store.refreshBranchTree(); expect(store.branchPathCount.value).toBe(1); expect(store.modal.value).toBe('');
+    store.endpoints.tree = vi.fn(async () => ({ root_session_id: 's1', active_session_id: 's1', path_count: 2, nodes: [{ session_id: 's1' }, { session_id: 's2' }] }));
+    await store.loadBranchTree(); expect(store.branchPathCount.value).toBe(2); expect(store.modal.value).toBe('branch');
+  });
+
   it('starts normal and isolated skill runs from their server responses', async () => {
     const normal = new AppStore(config); normal.sessions.value = [session()]; normal.activeSessionId.value = 's1'; normal.draftActive.value = false;
     normal.endpoints.invokeSkill = vi.fn(async () => ({ execution: 'inline', response_id: 'r-skill', run_epoch: 2, started_rev: 4 }));
@@ -51,7 +94,11 @@ describe('AppStore compatibility behavior', () => {
     isolated.api.request = vi.fn(async () => new Response('data: {"sequence":1,"type":"skill_run.completed","data":{"status":"completed","output":"done"}}\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
     await isolated.invokeSkill('research', 'topic');
     await vi.waitFor(() => expect(isolated.sessions.value[0].messages.find((message) => message.role === 'skill-run')).toMatchObject({ status: 'completed', content: 'done' }));
-    expect(isolated.api.request).toHaveBeenCalledWith(expect.stringContaining('/ui/v1/sessions/s1/skill-runs/run-1/events?after=0'), expect.anything(), expect.objectContaining({ policy: 'stream' }));
+    expect(isolated.api.request).toHaveBeenCalledWith(
+      expect.stringContaining('/ui/v1/sessions/s1/skill-runs/run-1/events?after=0'),
+      expect.objectContaining({ headers: expect.objectContaining({ 'X-Term-LLM-Session-ID': 's1' }) }),
+      expect.objectContaining({ policy: 'stream' }),
+    );
   });
 
   it('submits ask-user dismissal through the server contract', async () => {
@@ -63,14 +110,51 @@ describe('AppStore compatibility behavior', () => {
     expect(store.askUser.value).toBeNull();
   });
 
+  it('parses provider and model metadata from the real OpenAI list contracts', async () => {
+    const store = new AppStore(config);
+    const internals = store as unknown as { applyProviders(data: Record<string, unknown>): void };
+    internals.applyProviders({ object: 'list', data: [{ name: 'openai', configured: true, is_default: true, default_model: 'gpt-5-high', models: ['gpt-5'] }] });
+    expect(store.providers.value).toEqual([expect.objectContaining({ id: 'openai', name: 'openai', is_default: true, default_model: 'gpt-5-high', models: ['gpt-5'] })]);
+    store.selectedProvider.value = 'openai';
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [{ id: 'gpt-5', reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'high', reasoning_modes: ['standard', 'pro'] }] }));
+    await store.loadModels();
+    expect(store.models.value).toEqual([expect.objectContaining({ id: 'gpt-5', name: 'gpt-5', provider: 'openai', efforts: ['low', 'high'], default_effort: 'high', reasoning_modes: ['standard', 'pro'] })]);
+  });
+
+  it('clears invalid persisted providers and stale models when the provider changes', async () => {
+    const store = new AppStore(config); localStorage.setItem(store.keys.selectedProvider, 'removed'); store.selectedProvider.value = 'removed';
+    const internals = store as unknown as { applyProviders(data: Record<string, unknown>): void };
+    internals.applyProviders({ object: 'list', data: [{ name: 'new', models: ['fallback'] }] });
+    expect(store.selectedProvider.value).toBe(''); expect(localStorage.getItem(store.keys.selectedProvider)).toBeNull();
+    store.selectedModel.value = 'old'; localStorage.setItem(store.keys.selectedModel, 'old');
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [{ id: 'fresh' }] }));
+    store.setPreference('provider', 'new');
+    expect(store.selectedModel.value).toBe(''); expect(store.models.value.map((entry) => entry.id)).toEqual(['fallback']);
+    await vi.waitFor(() => expect(store.models.value.map((entry) => entry.id)).toEqual(['fresh']));
+  });
+
   it('routes every provider model refresh through one abortable generation guard', async () => {
     const store = new AppStore(config); const first = deferred<Record<string, unknown>>(); const second = deferred<Record<string, unknown>>();
     const requests: Array<{ provider: string; signal?: AbortSignal }> = [];
     store.endpoints.models = vi.fn((provider, signal) => { requests.push({ provider, signal }); return provider === 'first' ? first.promise : second.promise; });
     const old = store.loadModels('first'); const current = store.loadModels('second');
     expect(requests[0].signal?.aborted).toBe(true);
-    second.resolve({ models: [{ id: 'new', name: 'New' }] }); await current;
-    first.resolve({ models: [{ id: 'stale', name: 'Stale' }] }); await old;
+    second.resolve({ object: 'list', data: [{ id: 'new', name: 'New' }] }); await current;
+    first.resolve({ object: 'list', data: [{ id: 'stale', name: 'Stale' }] }); await old;
+    expect(store.models.value.map((model) => model.id)).toEqual(['new']);
+  });
+
+  it('treats an aborted stale model refresh as successful cancellation', async () => {
+    const store = new AppStore(config);
+    store.endpoints.models = vi.fn((provider, signal) => {
+      if (provider === 'current') return Promise.resolve({ object: 'list', data: [{ id: 'new', name: 'New' }] });
+      return new Promise<Record<string, unknown>>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason || new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    });
+    const stale = store.loadModels('stale');
+    await expect(store.loadModels('current')).resolves.toBeUndefined();
+    await expect(stale).resolves.toBeUndefined();
     expect(store.models.value.map((model) => model.id)).toEqual(['new']);
   });
 

@@ -1,1 +1,0 @@
-import{a as e,i as g,n as s,o as a,r,t}from"./highlight.js";a.registerLanguage("javascript",e);a.registerLanguage("js",e);a.registerLanguage("typescript",g);a.registerLanguage("ts",g);a.registerLanguage("json",r);a.registerLanguage("bash",s);a.registerLanguage("sh",s);a.registerLanguage("go",t);export{a as highlight};

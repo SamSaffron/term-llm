@@ -22,6 +22,24 @@ export function parseUnifiedPatch(patch: string): DiffLine[] {
   });
 }
 
+export function linesFromHunks(value: unknown): DiffLine[] {
+  if (!Array.isArray(value)) return [];
+  const result: DiffLine[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const hunk = candidate as Record<string, unknown>; let oldLine = Number(hunk.old_start) || 0; let newLine = Number(hunk.new_start) || 0;
+    result.push({ kind: 'hunk', content: `@@ -${oldLine} +${newLine} @@` });
+    for (const candidateLine of Array.isArray(hunk.lines) ? hunk.lines : []) {
+      if (!candidateLine || typeof candidateLine !== 'object') continue;
+      const source = candidateLine as Record<string, unknown>; const type = String(source.t || source.type || 'ctx'); const content = String(source.s ?? source.text ?? '');
+      if (type === 'add') result.push({ kind: 'add', content, newLine: newLine++ });
+      else if (type === 'del' || type === 'delete') result.push({ kind: 'delete', content, oldLine: oldLine++ });
+      else result.push({ kind: 'context', content, oldLine: oldLine++, newLine: newLine++ });
+    }
+  }
+  return result;
+}
+
 export function sortDiffFiles(files: DiffFile[]): DiffFile[] {
   return [...files].sort((left, right) => Number(right.lastChangedAt || 0) - Number(left.lastChangedAt || 0) || left.path.localeCompare(right.path));
 }
@@ -51,7 +69,7 @@ export function clampDiffWidth(value: number, viewport: number): number {
 
 export function fileKind(file: DiffFile): 'add' | 'delete' | 'modify' | 'rename' {
   const value = String(file.status || '').toLowerCase();
-  if (['a', 'add', 'added', 'created'].includes(value)) return 'add';
+  if (['a', 'add', 'added', 'create', 'created'].includes(value)) return 'add';
   if (['d', 'delete', 'deleted', 'removed'].includes(value)) return 'delete';
   if (['r', 'rename', 'renamed'].includes(value)) return 'rename';
   return 'modify';

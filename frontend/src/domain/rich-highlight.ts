@@ -4,6 +4,8 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import json from 'highlight.js/lib/languages/json';
 import bash from 'highlight.js/lib/languages/bash';
 import go from 'highlight.js/lib/languages/go';
+import plaintext from 'highlight.js/lib/languages/plaintext';
+import xml from 'highlight.js/lib/languages/xml';
 import 'highlight.js/styles/github-dark.css';
 
 highlight.registerLanguage('javascript', javascript);
@@ -14,4 +16,9 @@ highlight.registerLanguage('json', json);
 highlight.registerLanguage('bash', bash);
 highlight.registerLanguage('sh', bash);
 highlight.registerLanguage('go', go);
+highlight.registerLanguage('plaintext', plaintext);
+highlight.registerLanguage('text', plaintext);
+highlight.registerLanguage('txt', plaintext);
+highlight.registerLanguage('gitattributes', plaintext);
+highlight.registerLanguage('xml', xml);
 export { highlight };

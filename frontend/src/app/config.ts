@@ -85,9 +85,11 @@ export function rebaseHubAssetURL(config: AppConfig, value: string): string {
   try {
     const url = new URL(value, location.href);
     if (url.origin !== location.origin || !url.pathname.startsWith('/')) return value;
-    const base = config.hub.nodeBasePath.replace(/\/$/, '');
-    if (url.pathname.startsWith(`${base}/`)) return url.href;
-    url.pathname = `${base}${url.pathname}`;
+    const mount = config.prefix.replace(/\/$/, '');
+    if (url.pathname === mount || url.pathname.startsWith(`${mount}/`)) return url.href;
+    const nodeBase = config.hub.nodeBasePath.replace(/\/$/, '');
+    const nodePath = url.pathname === nodeBase ? '/' : url.pathname.startsWith(`${nodeBase}/`) ? url.pathname.slice(nodeBase.length) : url.pathname;
+    url.pathname = `${mount}${nodePath.startsWith('/') ? nodePath : `/${nodePath}`}`;
     return url.href;
   } catch {
     return value;

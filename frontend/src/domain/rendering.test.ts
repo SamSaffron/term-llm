@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { renderMarkdown, stableMarkdownBoundary } from './markdown';
+import { describe, expect, it, vi } from 'vitest';
+import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import { activeMentionAtCursor, applyCompletion, composerCompletions, mentionCompletions } from './completions';
 
 describe('markdown security and streaming', () => {
@@ -12,6 +12,16 @@ describe('markdown security and streaming', () => {
     const html = renderMarkdown('Price is $5 and inline is \\(x^2\\).');
     expect(html).toContain('$5'); expect(html).toContain('\\(x^2\\)');
   });
+  it('highlights supported fence aliases and silently leaves unknown languages alone', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const root = document.createElement('div');
+    root.innerHTML = '<pre><code class="language-text">plain</code></pre><pre><code class="language-html">&lt;p&gt;hello&lt;/p&gt;</code></pre><pre><code class="language-gitattributes">*.js text</code></pre><pre><code class="language-unknown-fence">value</code></pre>';
+    await decorateRichContent(root, '');
+    expect(warn).not.toHaveBeenCalled();
+    expect(root.querySelectorAll('[data-highlighted="yes"]')).toHaveLength(4);
+    warn.mockRestore();
+  });
+
   it('does not expose an unterminated fenced tail as stable markdown', () => {
     const input = 'paragraph\n\n```ts\nconst x = 1';
     expect(stableMarkdownBoundary(input)).toBe('paragraph\n\n'.length);

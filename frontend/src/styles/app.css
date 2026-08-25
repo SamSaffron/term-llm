@@ -2356,9 +2356,12 @@
     }
 
     .chip-popover-backdrop {
+      appearance: none;
       position: fixed;
       inset: 0;
       z-index: 999;
+      padding: 0;
+      border: 0;
       background: transparent;
     }
 
@@ -2694,7 +2697,9 @@
 
     .chat-scroll {
       min-height: 0;
+      min-width: 0;
       flex: 1;
+      overflow-x: hidden;
       overflow-y: auto;
       padding: 1.25rem calc(1.1rem + var(--safe-right)) 1rem calc(1.1rem + var(--safe-left));
       position: relative;
@@ -2702,8 +2707,11 @@
     }
 
     .messages {
+      width: 100%;
       max-width: 900px;
+      min-width: 0;
       margin: 0 auto;
+      box-sizing: border-box;
       display: flex;
       flex-direction: column;
       gap: 0.85rem;
@@ -2729,6 +2737,9 @@
 
     .message {
       width: min(100%, 820px);
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
       display: flex;
       flex-direction: column;
       gap: 0.45rem;
@@ -2817,12 +2828,16 @@
     }
 
     .message-body {
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 0.85rem 1rem;
       line-height: 1.6;
       font-size: 0.96rem;
-      overflow-x: auto;
+      overflow-x: hidden;
+      overflow-wrap: anywhere;
       white-space: pre-wrap;
       word-wrap: break-word;
       background: var(--surface);
@@ -2925,6 +2940,9 @@
     }
 
     .markdown-body {
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: anywhere;
       white-space: normal;
     }
 
@@ -2975,6 +2993,8 @@
     }
 
     .markdown-body pre {
+      max-width: 100%;
+      box-sizing: border-box;
       margin: 0.6em 0;
       padding: 0;
       border-radius: 8px;
@@ -3046,6 +3066,13 @@
       position: relative;
       padding: 0;
       transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+    }
+
+    .turn-action-btn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      flex: none;
     }
 
     .turn-action-btn:hover,
@@ -3131,6 +3158,8 @@
 
     .markdown-body table {
       width: 100%;
+      max-width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
       margin: 0.6rem 0;
       font-size: 0.9rem;
@@ -3140,6 +3169,7 @@
     .markdown-body td {
       border: 1px solid var(--border);
       padding: 0.35rem 0.5rem;
+      overflow-wrap: anywhere;
       text-align: left;
       vertical-align: top;
     }
@@ -3437,6 +3467,17 @@
       color: var(--accent-amber);
       font-size: 0.76rem;
       flex-shrink: 0;
+    }
+
+    .tool-group-entry-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .tool-group-entry-body > .message.tool,
+    .tool-group-entry-body .tool-card {
+      margin: 0;
+      width: 100%;
     }
 
     .tool-group-entry .tool-entry-status.done {
@@ -5465,7 +5506,7 @@
 .branch-tree-point { grid-template-columns: 1.4rem 1fr; }
 .branch-tree-item {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: .6rem;
   align-items: start;
   width: 100%;
@@ -5475,8 +5516,12 @@
   background: transparent;
   color: var(--text);
   text-align: left;
-  cursor: pointer;
+  cursor: default;
 }
+.branch-tree-item-content { min-width: 0; }
+.branch-tree-item-title { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; }
+.branch-origin-preview { margin-top: .2rem; color: var(--text-muted); font-size: .82rem; overflow-wrap: anywhere; }
+.branch-origin-meta { margin-top: .2rem; color: var(--text-muted); font-size: .72rem; }
 .branch-tree-item:hover,
 .branch-tree-item:focus-visible { background: var(--surface-2); border-color: var(--border); }
 .branch-tree-item.active { border-color: var(--border); background: var(--surface-2); }
@@ -6007,8 +6052,8 @@
   display: flex;
 }
 .project-group { position: relative; }
-.project-group-toggle { overflow: hidden; }
-.project-group-label { flex: 1 1 auto; }
+.project-group-toggle { overflow: hidden; text-align: left; }
+.project-group-label { flex: 1 1 auto; text-align: left; }
 .project-count {
   flex: none;
   min-width: 1.35rem;

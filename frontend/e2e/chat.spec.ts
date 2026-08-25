@@ -8,8 +8,8 @@ async function mockAPI(page: Page, options: { holdStream?: boolean } = {}) {
     const request = route.request(); const url = new URL(request.url()); const path = url.pathname; requests.push({ method: request.method(), url: path });
     const json = (value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
     if (path.endsWith('/v1/capabilities')) return json({ widgets: [{ id: 'status', name: 'Status', url: '../widgets/status/' }] });
-    if (path.endsWith('/v1/providers')) return json({ providers: [{ id: 'openai', name: 'OpenAI' }] });
-    if (path.endsWith('/v1/models')) return json({ models: [{ id: 'gpt-test', name: 'GPT Test', provider: 'openai' }] });
+    if (path.endsWith('/v1/providers')) return json({ object: 'list', data: [{ name: 'openai', configured: true, is_default: true, default_model: 'gpt-test', models: ['gpt-test'] }] });
+    if (path.endsWith('/v1/models')) return json({ object: 'list', data: [{ id: 'gpt-test', owned_by: 'openai', reasoning_efforts: ['low', 'medium', 'high'] }] });
     if (path.endsWith('/v1/sidebar')) return json({ sessions: [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)] });
     if (path.endsWith('/v1/sessions/status')) return json({ sessions: [] });
     if (path.endsWith('/v1/sessions') && url.searchParams.get('selected_only') === '1') {

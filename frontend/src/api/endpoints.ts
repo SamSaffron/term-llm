@@ -1,8 +1,9 @@
 import type { APIClient } from './client';
-import type { DiffComment, Goal } from '../domain/types';
+import type { Goal } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
 const encoded = (value: string): string => encodeURIComponent(value);
+const sessionHeaders = (id: string): Record<string, string> => ({ 'X-Term-LLM-Session-ID': id });
 export const endpoints = (api: APIClient) => ({
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
@@ -34,9 +35,12 @@ export const endpoints = (api: APIClient) => ({
   refineTitle: (id: string) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {}),
   setProject: (id: string, projectId: string) => api.post(`/v1/sessions/${encoded(id)}/project`, { project_id: projectId }, 'idempotent-mutation', { 'Idempotency-Key': `project_${id}_${projectId || 'none'}` }),
   projects: (query = '') => api.get<Record<string, unknown>>(`/v1/projects${query ? `?${query}` : ''}`),
-  createProject: (body: unknown) => api.post<Record<string, unknown>>('/v1/projects', body),
   patchProject: (id: string, body: unknown) => api.patch(`/v1/projects/${encoded(id)}`, body),
-  projectDirectories: (query: string, signal?: AbortSignal) => api.get<Record<string, unknown>>(`/v1/project-directories?q=${encoded(query)}`, signal),
+  projectDirectories: (path = '', showHidden = false, signal?: AbortSignal) => {
+    const params = new URLSearchParams(); if (path) params.set('path', path); if (showHidden) params.set('show_hidden', '1');
+    return api.get<Record<string, unknown>>(`/v1/project-directories${params.size ? `?${params}` : ''}`, signal);
+  },
+  createProject: (body: unknown, dryRun = false) => api.post<Record<string, unknown>>(`/v1/projects${dryRun ? '?dry_run=1' : ''}`, body),
   runtime: (id: string, operation: string, body: unknown) => api.post(`/v1/sessions/${encoded(id)}/runtime/${operation}`, body, 'idempotent-mutation', { 'Idempotency-Key': `runtime_${id}_${operation}_${JSON.stringify(body)}` }),
   compact: (id: string) => api.post(`/v1/sessions/${encoded(id)}/runtime/compact`, {}),
   mutateTranscript: (id: string, operation: 'undo' | 'redo', body: unknown) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/runtime/${operation}`, body),
@@ -51,13 +55,14 @@ export const endpoints = (api: APIClient) => ({
   tree: (id: string, signal?: AbortSignal) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/tree`, signal),
   branch: (id: string, body: unknown) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/branches`, body),
   pathNotes: (id: string, body: unknown) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/path-notes`, body),
-  skills: (id: string) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/skills`),
-  invokeSkill: (id: string, body: unknown, key: string) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/skills/invoke`, body, 'idempotent-mutation', { 'Idempotency-Key': `skill_${key}` }),
-  skillRun: (id: string, runId: string) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/skill-runs/${encoded(runId)}`),
-  cancelSkillRun: (id: string, runId: string) => api.delete(`/v1/sessions/${encoded(id)}/skill-runs/${encoded(runId)}`),
+  skills: (id: string) => api.json<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/skills`, { headers: sessionHeaders(id) }, { policy: 'safe-read', auth: 'session' }),
+  invokeSkill: (id: string, body: unknown, key: string) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/skills/invoke`, body, 'idempotent-mutation', { ...sessionHeaders(id), 'Idempotency-Key': `skill_${key}` }),
+  skillRun: (id: string, runId: string) => api.json<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/skill-runs/${encoded(runId)}`, { headers: sessionHeaders(id) }, { policy: 'safe-read', auth: 'session' }),
+  cancelSkillRun: (id: string, runId: string) => api.json(`/v1/sessions/${encoded(id)}/skill-runs/${encoded(runId)}`, { method: 'DELETE', headers: sessionHeaders(id) }, { policy: 'idempotent-mutation', auth: 'session' }),
   fileChanges: (id: string, scope: string) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/file-changes${scope ? `?scope=${encoded(scope)}` : ''}`),
-  fileDiff: (id: string, path: string, scope: string, context = 0) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/file-changes/diff?path=${encoded(path)}&scope=${encoded(scope)}${context ? `&context=${context}` : ''}`),
-  diffComments: (id: string, comments: DiffComment[]) => api.post(`/v1/sessions/${encoded(id)}/diff-comments`, { comments }),
+  fileDiff: (id: string, path: string, scope: string, context = 0, snapshotSeq = 0) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/file-changes/diff?path=${encoded(path)}&scope=${encoded(scope)}${context ? `&context=${context}` : ''}${snapshotSeq ? `&snapshot_seq=${snapshotSeq}` : ''}`),
+  fileContentURL: (id: string, path: string, scope: string, side: 'before' | 'after', snapshotSeq = 0) => api.url(`/v1/sessions/${encoded(id)}/file-changes/content?path=${encoded(path)}&scope=${encoded(scope)}&side=${side}${snapshotSeq ? `&snapshot_seq=${snapshotSeq}` : ''}`),
+  diffComments: (id: string) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/diff-comments`),
   legacyWorktrees: () => api.get<Record<string, unknown>>('/v1/worktrees'),
   projectWorktrees: (id: string) => api.get<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees`),
   createProjectWorktree: (id: string, body: unknown) => api.post<Record<string, unknown>>(`/v1/projects/${encoded(id)}/worktrees`, body),

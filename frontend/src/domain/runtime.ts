@@ -29,7 +29,19 @@ export function compactModelLabel(value: string): string {
 
 export function supportedEfforts(model: ModelOption | undefined): string[] {
   const values = model?.efforts || (Array.isArray(model?.reasoning_efforts) ? model.reasoning_efforts as string[] : []);
-  return ['', ...new Set(values.map(String).filter(Boolean))];
+  return ['', ...new Set((values.length ? values : EFFORTS).map(String).filter(Boolean))];
+}
+
+export function defaultProvider(providers: ModelOption[]): ModelOption | undefined {
+  return providers.find((provider) => provider.is_default === true) || providers[0];
+}
+
+export function defaultModel(provider: ModelOption | undefined): string {
+  const configured = String(provider?.default_model || '').trim();
+  if (configured) return configured;
+  const models = Array.isArray(provider?.models) ? provider.models : [];
+  const first = models.find((model) => typeof model === 'string' || (model && typeof model === 'object'));
+  return typeof first === 'string' ? first : String((first as { id?: unknown } | undefined)?.id || '');
 }
 
 export function supportsReasoningMode(model: ModelOption | undefined, mode: string): boolean {

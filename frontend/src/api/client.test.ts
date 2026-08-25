@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { APIClient, APIError, decodeSSE } from './client';
 import { readInjectedConfig } from '../app/config';
+import { endpoints } from './endpoints';
 
 const config = readInjectedConfig({ TERM_LLM_UI_PREFIX: '/ui', TERM_LLM_UI_VERSION: 'v1' } as Window);
 
@@ -32,6 +33,28 @@ describe('API transport', () => {
     const auth = vi.fn(); const api = new APIClient(config, { getToken: () => '', onAuthRequired: auth });
     await expect(api.get('/v1/providers')).rejects.toEqual(expect.objectContaining<Partial<APIError>>({ status: 401, message: 'bad token' }));
     expect(auth).toHaveBeenCalledOnce();
+  });
+
+  it('sends session ownership on every session-bound skill request', async () => {
+    const request = vi.fn(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', request);
+    const api = new APIClient(config, { getToken: () => 'secret', onAuthRequired: vi.fn() });
+    const skills = endpoints(api);
+    await skills.skills('session/1');
+    await skills.invokeSkill('session/1', { name: 'review' }, 'request-1');
+    await skills.skillRun('session/1', 'run/1');
+    await skills.cancelSkillRun('session/1', 'run/1');
+    expect(request).toHaveBeenCalledTimes(4);
+    const calls = request.mock.calls as unknown as Array<[string, RequestInit]>;
+    for (const [, init] of calls) {
+      expect(new Headers(init.headers).get('X-Term-LLM-Session-ID')).toBe('session/1');
+    }
+    expect(calls.map(([url]) => String(url))).toEqual([
+      '/ui/v1/sessions/session%2F1/skills',
+      '/ui/v1/sessions/session%2F1/skills/invoke',
+      '/ui/v1/sessions/session%2F1/skill-runs/run%2F1',
+      '/ui/v1/sessions/session%2F1/skill-runs/run%2F1',
+    ]);
   });
 
   it('decodes fragmented CRLF and multiline SSE events', async () => {

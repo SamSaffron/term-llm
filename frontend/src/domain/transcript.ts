@@ -28,6 +28,7 @@ function sourceRowID(message: ServerMessage): string | number | null { const val
 function withSource(entry: Message, message: ServerMessage): Message {
   if (message.response_id) entry.responseId = text(message.response_id);
   if (message.client_message_id) entry.clientMessageId = text(message.client_message_id);
+  if (message.interrupt_state) entry.interruptState = text(message.interrupt_state).toLowerCase();
   if (entry.role === 'assistant' && Number.isFinite(Number(message.assistant_segment_ordinal))) entry.assistantSegmentOrdinal = Math.max(0, Math.trunc(Number(message.assistant_segment_ordinal)));
   const row = sourceRowID(message); if (row != null) entry.durableSourceRowIds = [...new Set([...(entry.durableSourceRowIds as Array<string | number> || []), row])];
   if (Number.isFinite(Number(message.sequence))) entry.serverSeq = Number(message.sequence);
@@ -77,7 +78,9 @@ function guardianReviews(value: unknown): GuardianReview[] | undefined {
 function attachmentsFromUser(parts: ServerPart[], rebase: (value: string) => string): { attachments: Attachment[]; comments: DiffComment[]; content: string } {
   const attachments: Attachment[] = []; const comments: DiffComment[] = []; const content: string[] = [];
   for (const part of parts) {
-    if (part.type === 'diff_comment' && record(part.diff_comment)) comments.push(part.diff_comment as unknown as DiffComment);
+    if (part.type === 'diff_comment' && record(part.diff_comment)) {
+      const source = record(part.diff_comment)!; comments.push({ id: text(source.id), path: text(source.path), side: text(source.side) === 'old' ? 'old' : 'new', line: Number(source.line) || 0, body: text(source.instruction || source.body), scope: text(source.scope), context: text(source.line_text || source.context), fileChangeSeq: Number(source.file_change_seq || source.fileChangeSeq) || 0 });
+    }
     else if (part.type === 'image' && part.image_url) {
       const width = Number(part.width); const height = Number(part.height); const valid = width > 0 && height > 0;
       attachments.push({ name: text(part.filename || part.name) || 'image', type: text(part.mime_type) || 'image/*', url: rebase(text(part.image_url)), previewURL: rebase(text(part.image_url)), ...(valid ? { width: Math.round(width), height: Math.round(height) } : {}) });
@@ -173,16 +176,20 @@ export function sanitizeSession(source: Record<string, unknown>, options: Conver
   };
 }
 
-export interface TranscriptRowContext { index: number; turnText: string }
+export interface TranscriptRowContext { index: number; turnText: string; copyTarget: boolean }
 export function indexTranscriptTurns(messages: Message[], messageText: (message: Message) => string): Map<Message, TranscriptRowContext> {
   const result = new Map<Message, TranscriptRowContext>();
   let start = 0;
   while (start < messages.length) {
-    let end = start + 1; while (end < messages.length && messages[end].role !== 'user') end += 1;
+    let end = start + 1; while (end < messages.length && !(messages[end].role === 'user' && !messages[end].askUser)) end += 1;
     const parts: string[] = [];
-    for (let index = start; index < end; index += 1) { const value = messageText(messages[index]); if (value) parts.push(value); }
+    let copyTarget = -1;
+    for (let index = start; index < end; index += 1) {
+      const value = messageText(messages[index]); if (value) parts.push(value);
+      if (messages[index].role === 'assistant' && messages[index].content.trim()) copyTarget = index;
+    }
     const turnText = parts.join('\n\n');
-    for (let index = start; index < end; index += 1) result.set(messages[index], { index, turnText });
+    for (let index = start; index < end; index += 1) result.set(messages[index], { index, turnText, copyTarget: index === copyTarget });
     start = end;
   }
   return result;
