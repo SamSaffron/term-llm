@@ -173,6 +173,21 @@ export function sanitizeSession(source: Record<string, unknown>, options: Conver
   };
 }
 
+export interface TranscriptRowContext { index: number; turnText: string }
+export function indexTranscriptTurns(messages: Message[], messageText: (message: Message) => string): Map<Message, TranscriptRowContext> {
+  const result = new Map<Message, TranscriptRowContext>();
+  let start = 0;
+  while (start < messages.length) {
+    let end = start + 1; while (end < messages.length && messages[end].role !== 'user') end += 1;
+    const parts: string[] = [];
+    for (let index = start; index < end; index += 1) { const value = messageText(messages[index]); if (value) parts.push(value); }
+    const turnText = parts.join('\n\n');
+    for (let index = start; index < end; index += 1) result.set(messages[index], { index, turnText });
+    start = end;
+  }
+  return result;
+}
+
 export interface TranscriptRun { type: 'gap' | 'messages'; key: string; messages?: Message[]; count?: number; height?: number }
 export function windowTranscript(messages: Message[], maxTurns = 80, _nearTail = true): TranscriptRun[] {
   if (messages.length <= maxTurns) return [{ type: 'messages', key: 'all', messages }];

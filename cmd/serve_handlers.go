@@ -291,6 +291,10 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 			serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
 			return
 		}
+		if strings.HasPrefix(assetName, "dist/") {
+			http.NotFound(w, r)
+			return
+		}
 		if extension := filepath.Ext(assetName); extension == ".js" || extension == ".mjs" || extension == ".css" {
 			http.NotFound(w, r)
 			return

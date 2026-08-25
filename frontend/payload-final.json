@@ -4,13 +4,13 @@
     "brotli_quality": 11,
     "gzip_level": 6,
     "html": "representative rendered production bootstrap",
-    "lazy": "deterministic rich-highlight and rich-katex entry chunks plus their highlight and KaTeX JS/CSS dependencies; glyph-dependent KaTeX font requests are excluded in both baselines",
+    "lazy": "generated rich-highlight and rich-katex chunks plus generated highlight/KaTeX JS/CSS; glyph-dependent fonts excluded",
     "route": "/ui/",
     "webrtc": false
   },
   "dist_sha256": {
     "dist/app.css": "d03e45f1282b9ff5b074076a3a12d1f69394b985df29a68a72efc329f2d25d40",
-    "dist/app.js": "ed38e236247baa0a07f508b890a7033215394a734f8e9f17754650cba31388e6",
+    "dist/app.js": "5cfd2dd141eec728f65a810a3cebc4fecae01139b8fff3d7771f3d63e50dff66",
     "dist/chunks/highlight.css": "cf8f05a4ce22400fc202a56ef4007741bb0422d3b7a62746576cdcef16c64149",
     "dist/chunks/highlight.js": "6768804cadb087f1bf43e7ff11e8608af5bc253fb0431dceba427493fe4bd4ae",
     "dist/chunks/katex.css": "ef249425cac67682668250a3f493fa3736a0b1e92850bd0de09533914df9c33e",
@@ -22,12 +22,12 @@
   "kind": "final",
   "lazy_vendor": {
     "assets": [
-      "dist/chunks/rich-highlight.js",
-      "dist/chunks/highlight.js",
       "dist/chunks/highlight.css",
-      "dist/chunks/rich-katex.js",
+      "dist/chunks/highlight.js",
+      "dist/chunks/katex.css",
       "dist/chunks/katex.js",
-      "dist/chunks/katex.css"
+      "dist/chunks/rich-highlight.js",
+      "dist/chunks/rich-katex.js"
     ],
     "requests": 6,
     "sizes": {
@@ -38,9 +38,9 @@
   },
   "preact": {
     "combined_total": {
-      "brotli11": 89029,
-      "gzip6": 102022,
-      "raw": 373960
+      "brotli11": 91360,
+      "gzip6": 104764,
+      "raw": 382120
     },
     "first_party_css": {
       "brotli11": 18018,
@@ -48,19 +48,28 @@
       "raw": 117955
     },
     "first_party_js": {
-      "brotli11": 40348,
-      "gzip6": 46759,
-      "raw": 157066
+      "brotli11": 42679,
+      "gzip6": 49501,
+      "raw": 165226
     },
     "first_party_total": {
-      "brotli11": 59731,
-      "gzip6": 69737,
-      "raw": 279405
+      "brotli11": 62062,
+      "gzip6": 72479,
+      "raw": 287565
     },
     "html": {
       "brotli11": 1365,
       "gzip6": 1714,
       "raw": 4384
+    },
+    "initial_assets": {
+      "first_party": [
+        "dist/app.css",
+        "dist/app.js"
+      ],
+      "vendor": [
+        "dist/chunks/vendor.js"
+      ]
     },
     "requests": {
       "combined": 4,
@@ -78,20 +87,20 @@
       "raw": 94555
     }
   },
-  "schema": 1,
-  "service_worker_precache": {
+  "schema": 2,
+  "service_worker_cache": {
     "assets": [
       "manifest.webmanifest",
       "icon-512.png",
       "dist/app.css",
-      "dist/app.js",
-      "dist/chunks/vendor.js"
+      "dist/app.js"
     ],
-    "requests": 5,
-    "sizes": {
-      "brotli11": 383653,
-      "gzip6": 396458,
-      "raw": 665833
-    }
+    "candidate_sizes": {
+      "brotli11": 356686,
+      "gzip6": 366915,
+      "raw": 579438
+    },
+    "install_requests": 0,
+    "strategy": "opportunistic cache allowlist; install performs no asset fetches"
   }
 }

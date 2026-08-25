@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { convertServerMessages, mergeDurableProjection, sanitizeSession, windowTranscript } from './transcript';
+import { convertServerMessages, indexTranscriptTurns, mergeDurableProjection, sanitizeSession, windowTranscript } from './transcript';
 import type { Message } from './types';
 
 describe('transcript domain', () => {
@@ -28,6 +28,13 @@ describe('transcript domain', () => {
     expect(runs[0]).toMatchObject({ type: 'gap' });
     expect(runs[1].messages?.at(-1)?.id).toBe('239');
     expect(runs[1].messages?.filter((message) => message.role === 'user').length).toBe(3);
+  });
+
+  it('indexes copy-turn text in one transcript pass', () => {
+    const messages = Array.from({ length: 1_000 }, (_, index): Message => ({ id: String(index), role: index % 5 === 0 ? 'user' : 'assistant', content: String(index), created: index }));
+    const read = vi.fn((message: Message) => message.content); const contexts = indexTranscriptTurns(messages, read);
+    expect(read).toHaveBeenCalledTimes(messages.length); expect(contexts.size).toBe(messages.length);
+    expect(contexts.get(messages[4])?.turnText).toBe(['0', '1', '2', '3', '4'].join('\n\n'));
   });
 
   it('hands projected rows off atomically to matching durable identities', () => {

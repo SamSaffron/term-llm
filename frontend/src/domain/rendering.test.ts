@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderMarkdown, stableMarkdownBoundary } from './markdown';
-import { applyCompletion, composerCompletions } from './completions';
+import { activeMentionAtCursor, applyCompletion, composerCompletions, mentionCompletions } from './completions';
 
 describe('markdown security and streaming', () => {
   it('sanitizes active content and hardens external links', () => {
@@ -24,6 +24,25 @@ describe('composer completion', () => {
     expect(composerCompletions('/co', []).map((entry) => entry.value)).toContain('/compact');
     expect(composerCompletions('ask @ja', ['jarvis', 'other']).map((entry) => entry.value)).toEqual(['@jarvis']);
     expect(composerCompletions('me@example.com', ['example'])).toEqual([]);
+    expect(activeMentionAtCursor('open @src/domain', 16)).toMatchObject({ query: 'src/domain' });
     expect(applyCompletion('please /co', '/compact')).toBe('please /compact ');
+  });
+
+  it('restores branch commands and live skill filtering while streaming', () => {
+    const skills = [
+      { name: 'review', description: 'Review changes', argument_hint: '[scope]', execution: 'isolated', source: 'local' },
+      { name: 'explain', description: 'Explain code', execution: 'main', source: 'user' },
+      { name: 'compact', collides_with_builtin: true },
+    ];
+    const values = composerCompletions('/', [], skills, true).map((entry) => entry.value);
+    expect(values).toEqual(expect.arrayContaining(['/fork', '/thread', '/tree', '/side', '/review']));
+    expect(values).not.toEqual(expect.arrayContaining(['/compact', '/undo', '/explain']));
+    expect(composerCompletions('/', [], skills).filter((entry) => entry.value === '/compact')).toHaveLength(1);
+    expect(composerCompletions('/', [], skills).find((entry) => entry.value === '/review')?.label).toBe('/review [scope]');
+  });
+
+  it('applies server mention ranges without damaging text after the caret', () => {
+    const [completion] = mentionCompletions({ active: true, token: { start_utf16: 7, end_utf16: 11, query: 'typ' }, items: [{ path: 'types.go', kind: 'file', insert_text: '@types.go', segments: [] }] });
+    expect(applyCompletion('review @typ now', completion)).toBe('review @types.go now');
   });
 });

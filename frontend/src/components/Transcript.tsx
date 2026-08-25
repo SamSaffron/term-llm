@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Message, ToolCall } from '../domain/types';
-import { windowTranscript } from '../domain/transcript';
+import { indexTranscriptTurns, windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
 import { copyText } from '../platform/browser';
@@ -54,15 +54,15 @@ function MessageRow({ message, streaming, turnText }: { message: Message; stream
 export function Transcript() {
   const store = useStore(); const scroll = useRef<HTMLElement>(null); const [nearTail, setNearTail] = useState(true); const [turnLimit, setTurnLimit] = useState(80); const [clock, setClock] = useState(0); const anchorHeight = useRef(0);
   const messages = store.visibleMessages.value; const runs = useMemo(() => windowTranscript(messages, turnLimit, nearTail), [messages, turnLimit, nearTail]);
+  const rowContexts = useMemo(() => indexTranscriptTurns(messages, (message) => message.content || message.tools?.map((tool) => `${tool.name}\n${toolSummary(tool)}\n${tool.result || ''}`).join('\n') || ''), [messages]);
   useEffect(() => { setTurnLimit(80); }, [store.activeSession.value?.id]);
   useEffect(() => { const timer = window.setInterval(() => setClock((value) => value + 1), 60_000); return () => clearInterval(timer); }, []); void clock;
   useEffect(() => { const element = scroll.current; if (!element || !nearTail) return; requestAnimationFrame(() => element.scrollTo({ top: element.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })); }, [messages.length, messages.at(-1)?.content, nearTail]);
   useLayoutEffect(() => { const element = scroll.current; if (element && anchorHeight.current) { element.scrollTop += element.scrollHeight - anchorHeight.current; anchorHeight.current = 0; } }, [turnLimit]);
-  const turnText = (index: number): string => { let start = index; while (start > 0 && messages[start].role !== 'user') start -= 1; let end = index + 1; while (end < messages.length && messages[end].role !== 'user') end += 1; return messages.slice(start, end).map((message) => message.content || message.tools?.map((tool) => `${tool.name}\n${toolSummary(tool)}\n${tool.result || ''}`).join('\n') || '').filter(Boolean).join('\n\n'); };
   const activeRun = store.activeProjection.value;
   return <section class="chat-scroll" id="chatScroll" ref={scroll} onScroll={(event) => { const element = event.currentTarget; setNearTail(element.scrollHeight - element.scrollTop - element.clientHeight < 96); }}>
     <div class="messages" id="messages" data-session-id={store.activeSession.value?.id || ''}>{!messages.length && <div class="empty-chat"><h2>{store.config.title || 'How can I help?'}</h2><p>Start a conversation with your agent.</p></div>}
-      {runs.map((run) => run.type === 'gap' ? <button key={run.key} class="transcript-gap" style={{ height: `${run.height}px` }} onClick={() => { anchorHeight.current = scroll.current?.scrollHeight || 0; setTurnLimit((value) => value + 80); }}>Load {run.count} earlier messages</button> : run.messages?.map((message) => { const index = messages.indexOf(message); const streaming = Boolean(activeRun && message.role === 'assistant' && message.responseId === activeRun.run.responseId && ['connecting', 'streaming'].includes(activeRun.run.status)); return <MessageRow key={message.id} message={message} streaming={streaming} turnText={turnText(index)} />; }))}
+      {runs.map((run) => run.type === 'gap' ? <button key={run.key} class="transcript-gap" style={{ height: `${run.height}px` }} onClick={() => { anchorHeight.current = scroll.current?.scrollHeight || 0; setTurnLimit((value) => value + 80); }}>Load {run.count} earlier messages</button> : run.messages?.map((message) => { const context = rowContexts.get(message); const streaming = Boolean(activeRun && message.role === 'assistant' && message.responseId === activeRun.run.responseId && ['connecting', 'streaming'].includes(activeRun.run.status)); return <MessageRow key={message.id} message={message} streaming={streaming} turnText={context?.turnText || message.content} />; }))}
       {activeRun?.phase && <div class="message phase transient" role="status">{activeRun.phase}</div>}{activeRun?.modelSwap && <div class="message model-swap transient" role="status">{activeRun.modelSwap.content}</div>}{activeRun?.retry && <div class="provider-retry" role="status">Retrying provider{activeRun.retry.attempt ? ` · attempt ${activeRun.retry.attempt}` : ''}…</div>}{store.streaming.value && <div class="streaming-indicator" aria-label="Assistant is responding"><span /><span /><span /></div>}
     </div>
   </section>;

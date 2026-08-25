@@ -7,6 +7,7 @@ import { AppStore } from './app-store';
 
 const config: AppConfig = { prefix: '/ui', version: 'v1', sidebarCategories: ['all'], agentName: '', agentNames: ['jarvis'], title: '', locationSharing: true, worktrees: true, hub: null, vapidKey: '', webRTC: false, signalingURL: '' };
 const session = (): Session => ({ id: 's1', title: 'Test', name: '', mode: 'chat', origin: 'web', archived: false, pinned: false, created: 1, lastMessageAt: 1, messages: [] });
+const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 
 beforeEach(() => localStorage.clear());
 
@@ -60,5 +61,36 @@ describe('AppStore compatibility behavior', () => {
     await store.answerAskUser([], true);
     expect(submit).toHaveBeenCalledWith('s1', { call_id: 'ask1', cancelled: true });
     expect(store.askUser.value).toBeNull();
+  });
+
+  it('routes every provider model refresh through one abortable generation guard', async () => {
+    const store = new AppStore(config); const first = deferred<Record<string, unknown>>(); const second = deferred<Record<string, unknown>>();
+    const requests: Array<{ provider: string; signal?: AbortSignal }> = [];
+    store.endpoints.models = vi.fn((provider, signal) => { requests.push({ provider, signal }); return provider === 'first' ? first.promise : second.promise; });
+    const old = store.loadModels('first'); const current = store.loadModels('second');
+    expect(requests[0].signal?.aborted).toBe(true);
+    second.resolve({ models: [{ id: 'new', name: 'New' }] }); await current;
+    first.resolve({ models: [{ id: 'stale', name: 'Stale' }] }); await old;
+    expect(store.models.value.map((model) => model.id)).toEqual(['new']);
+  });
+
+  it('does not let stale session state overwrite a prompt opened by the live stream', async () => {
+    const store = new AppStore(config); store.sessions.value = [session()]; store.activeSessionId.value = 's1'; store.draftActive.value = false;
+    const state = deferred<Record<string, unknown>>(); store.endpoints.sessionState = vi.fn(() => state.promise); store.endpoints.selectedSession = vi.fn(async () => ({ selected_session: { id: 's1' }, selected_transcript: { bodies: { messages: [] } } }));
+    const loading = store.loadSession('s1');
+    const live = { sessionId: 's1', callId: 'live', questions: [{ question: 'Live?', options: [] }] }; store.askUser.value = live;
+    state.resolve({ pending_ask_user: { call_id: 'stale', questions: [{ question: 'Stale?', options: [] }] } }); await loading;
+    expect(store.askUser.value).toBe(live);
+  });
+
+  it('coalesces simultaneous lifecycle recovery before opening one SSE subscription', async () => {
+    const store = new AppStore(config); const active = session(); store.sessions.value = [active]; store.activeSessionId.value = active.id;
+    const run: ActiveRun = { responseId: 'r1', sessionId: active.id, epoch: 1, status: 'streaming', lastSequence: 4, startedRev: 0, reconnects: 0 }; store.runs.value = { s1: initialProjection(run) };
+    const status = deferred<void>(); const internals = store as unknown as { recover(): Promise<void>; refreshStatus(): Promise<void> };
+    internals.refreshStatus = vi.fn(() => status.promise); store.streamResponse = vi.fn(async () => undefined);
+    const first = internals.recover(); const second = internals.recover(); expect(internals.refreshStatus).toHaveBeenCalledOnce();
+    status.resolve(); await Promise.all([first, second]); expect(store.streamResponse).toHaveBeenCalledOnce();
+    (store as unknown as { streamAborts: Map<string, AbortController> }).streamAborts.set('s1', new AbortController());
+    internals.refreshStatus = vi.fn(async () => undefined); await internals.recover(); expect(store.streamResponse).toHaveBeenCalledOnce();
   });
 });

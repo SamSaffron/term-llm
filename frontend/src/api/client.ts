@@ -33,6 +33,7 @@ export interface RequestClassification {
   retries: number;
   timeoutMs: number;
 }
+interface TransportRequestInit extends RequestInit { __termLLMRetrySafe?: boolean }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const RETRYABLE_STATUSES = new Set([408, 425, 429]);
@@ -112,17 +113,21 @@ export class APIClient {
   async request(path: string, init: RequestInit = {}, policyOrControls?: FetchPolicy | RequestControls): Promise<Response> {
     const controls: RequestControls = typeof policyOrControls === 'string' ? { policy: policyOrControls } : { ...(policyOrControls || {}) };
     const classification = classifyRequest(init, controls);
+    const targetURL = this.url(path);
+    const sameOrigin = new URL(targetURL, location.href).origin === location.origin;
     const headers = new Headers(init.headers);
     headers.set('Accept', headers.get('Accept') || 'application/json');
     const token = this.hooks.getToken();
-    if (controls.auth !== 'ignore' && token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+    if (!sameOrigin && controls.auth !== 'caller') headers.delete('Authorization');
+    if (controls.auth !== 'ignore' && sameOrigin && token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
     if (this.config.version) headers.set('X-Term-LLM-UI-Version', this.config.version);
     if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     let lastError: unknown;
     for (let attempt = 0; attempt <= classification.retries; attempt += 1) {
       const timed = timeoutSignal(init.signal, classification.timeoutMs);
       try {
-        const response = await fetch(this.url(path), { ...init, signal: timed.signal, headers, credentials: 'same-origin' });
+        const transportInit: TransportRequestInit = { ...init, signal: timed.signal, headers, credentials: sameOrigin ? 'same-origin' : 'omit', __termLLMRetrySafe: classification.retryable };
+        const response = await fetch(targetURL, transportInit);
         const serverVersion = response.headers.get('X-Term-LLM-UI-Version');
         if (serverVersion && this.config.version && serverVersion !== this.config.version) this.hooks.onVersionMismatch?.();
         if (response.status === 401 && controls.auth === 'session' && !externalAuthRedirecting) {

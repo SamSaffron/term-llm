@@ -33,6 +33,20 @@ const listFrom = (value: Record<string, unknown>, ...keys: string[]): Record<str
   for (const key of keys) if (Array.isArray(value[key])) return array(value[key]);
   return [];
 };
+const askUserPrompt = (value: unknown, sessionId: string): AskUserPrompt | null => {
+  const source = recordValue(value); if (!source || !Array.isArray(source.questions) || !source.questions.length) return null;
+  const callId = String(source.callId || source.call_id || ''); if (!callId) return null;
+  return { sessionId: String(source.sessionId || source.session_id || sessionId), callId, questions: source.questions as AskUserPrompt['questions'] };
+};
+const approvalPrompt = (value: unknown, sessionId: string): ApprovalPrompt | null => {
+  const source = recordValue(value); if (!source) return null;
+  const id = String(source.id || source.approval_id || ''); const options = Array.isArray(source.options) ? source.options as ApprovalPrompt['options'] : [];
+  if (!id || !options?.length) return null;
+  return {
+    ...source, sessionId: String(source.sessionId || source.session_id || sessionId), id, options,
+    resumeAutoAvailable: Boolean(source.resumeAutoAvailable || source.resume_auto_available),
+  } as ApprovalPrompt;
+};
 
 export class AppStore {
   readonly keys: StorageKeys;
@@ -112,6 +126,8 @@ export class AppStore {
   private lifecycleInstalled = false;
   private selectionEpoch = 0;
   private modelEpoch = 0;
+  private skillEpoch = 0;
+  private recoverPromise: Promise<void> | null = null;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
 
@@ -214,13 +230,21 @@ export class AppStore {
     });
   }
 
-  private async recover(): Promise<void> {
+  private recover(): Promise<void> {
+    if (this.recoverPromise) return this.recoverPromise;
+    const request = this.performRecovery();
+    const tracked = request.finally(() => { if (this.recoverPromise === tracked) this.recoverPromise = null; });
+    this.recoverPromise = tracked;
+    return tracked;
+  }
+
+  private async performRecovery(): Promise<void> {
     if (navigator.onLine === false) { this.networkState.value = 'offline'; return; }
     await this.refreshStatus().catch(() => undefined);
     const active = this.sessions.value.filter((session) => this.runs.value[session.id] && ['connecting', 'streaming'].includes(this.runs.value[session.id].run.status));
     for (const session of active) {
       const run = this.runs.value[session.id].run;
-      if (run.responseId && !run.responseId.startsWith('pending_')) void this.streamResponse(run.responseId, run.sessionId, run.lastSequence);
+      if (run.responseId && !run.responseId.startsWith('pending_') && !this.streamAborts.has(session.id)) void this.streamResponse(run.responseId, run.sessionId, run.lastSequence);
     }
   }
 
@@ -280,11 +304,12 @@ export class AppStore {
     this.projects.value = projects.map((project) => ({ ...project, sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary) }));
   }
 
-  async loadModels(): Promise<void> {
+  async loadModels(provider = this.selectedProvider.value): Promise<void> {
     const epoch = ++this.modelEpoch; this.modelAbort?.abort(); const controller = new AbortController(); this.modelAbort = controller;
-    const data = await this.endpoints.models(this.selectedProvider.value, controller.signal);
+    const data = await this.endpoints.models(provider, controller.signal);
     if (controller.signal.aborted || epoch !== this.modelEpoch) return;
     this.models.value = listFrom(data, 'models', 'items').map((entry) => ({ ...entry, id: String(entry.id || entry.name || ''), name: String(entry.display_name || entry.name || entry.id || ''), provider: String(entry.provider || '') })) as RuntimeOption[];
+    if (provider !== this.selectedProvider.peek()) return;
     if (this.selectedModel.value && !this.models.value.some((model) => model.id === this.selectedModel.value)) {
       const matching = this.models.value.find((model) => model.id === this.selectedModel.value.replace(/[-_](?:none|minimal|low|medium|high|xhigh|max)$/i, ''));
       if (matching) this.setPreference('model', matching.id, false);
@@ -306,6 +331,8 @@ export class AppStore {
     await this.loadSession(session.id, epoch);
     if (epoch !== this.selectionEpoch) return;
     const current = this.sessions.value.find((entry) => entry.id === this.activeSessionId.value) || session;
+    await this.loadSkills(current.id).catch(() => { if (epoch === this.selectionEpoch) this.skills.value = []; });
+    if (epoch !== this.selectionEpoch) return;
     if (current.activeResponseId) await this.resumeResponse(current.id, current.activeResponseId);
     this.sidebarOpen.value = false; void this.recoverSideQuestion();
   }
@@ -313,7 +340,7 @@ export class AppStore {
   newChat(replace = false, projectId = ''): void {
     this.persistCurrentDraft(); ++this.selectionEpoch;
     const selectedProject = projectId && this.projects.value.some((project) => project.id === projectId && !project.archived && project.available !== false) ? projectId : '';
-    batch(() => { this.activeSessionId.value = ''; this.activeProjectId.value = selectedProject; this.draftActive.value = true; this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null; });
+    batch(() => { this.activeSessionId.value = ''; this.activeProjectId.value = selectedProject; this.draftActive.value = true; this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null; this.skills.value = []; });
     this.storage.removeItem(this.keys.activeSession); this.storage.setItem(this.keys.draftSessionActive, '1');
     if (selectedProject) this.storage.setItem(this.keys.lastProject, selectedProject);
     updateSessionRoute(this.config.prefix, null, replace); this.restoreDraftFor(this.draftStorageID());
@@ -350,6 +377,7 @@ export class AppStore {
   }
 
   async loadSession(id: string, epoch = this.selectionEpoch): Promise<void> {
+    const sampledAskUser = this.askUser.peek(); const sampledApproval = this.approval.peek();
     try {
       const [state, selected] = await Promise.all([this.endpoints.sessionState(id), this.endpoints.selectedSession(id)]);
       if (epoch !== this.selectionEpoch || this.activeSessionId.peek() !== id) return;
@@ -358,9 +386,9 @@ export class AppStore {
       const serverMessages = listFrom(bodies, 'messages', 'items'); const incoming = this.sessionFrom({ id, ...selectedSource, messages: serverMessages });
       const currentIndex = this.sessions.value.findIndex((session) => session.id === id || (incoming.id && session.id === incoming.id));
       const current = currentIndex >= 0 ? this.sessions.value[currentIndex] : undefined; const updated = this.mergeSession(current, incoming);
-       if (currentIndex >= 0) this.sessions.value = this.sessions.value.map((session, index) => index === currentIndex ? updated : session); else this.sessions.value = [updated, ...this.sessions.value];
-       this.retireCommittedIntents(updated.id, updated.messages);
-       if (updated.id !== id) this.rekeySession(id, updated.id, selectedSource);
+      if (currentIndex >= 0) this.sessions.value = this.sessions.value.map((session, index) => index === currentIndex ? updated : session); else this.sessions.value = [updated, ...this.sessions.value];
+      this.retireCommittedIntents(updated.id, updated.messages);
+      if (updated.id !== id) this.rekeySession(id, updated.id, selectedSource);
       const planSource = state.current_plan || selectedSource.plan_summary;
       if (planSource && typeof planSource === 'object') {
         const raw = planSource as Record<string, unknown>; const plan = raw.plan || raw.steps;
@@ -368,8 +396,10 @@ export class AppStore {
       } else this.currentPlan.value = null;
       this.goal.value = state.goal && typeof state.goal === 'object' ? state.goal as Goal : updated.goal || null;
       this.applyWidgetStatus(selected.widget_status);
-      const pendingAsk = state.pending_ask_user; if (pendingAsk && typeof pendingAsk === 'object') { this.askUser.value = pendingAsk as AskUserPrompt; this.modal.value = 'ask-user'; }
-      const pendingApproval = state.pending_approval; if (pendingApproval && typeof pendingApproval === 'object') { this.approval.value = pendingApproval as ApprovalPrompt; this.modal.value = 'approval'; }
+      const asks = Array.isArray(state.pending_ask_users) ? state.pending_ask_users : [state.pending_ask_user];
+      const approvals = Array.isArray(state.pending_approvals) ? state.pending_approvals : [state.pending_approval];
+      if (this.askUser.peek() === sampledAskUser) this.askUser.value = askUserPrompt(asks.find(Boolean), updated.id);
+      if (this.approval.peek() === sampledApproval) this.approval.value = approvalPrompt(approvals.find(Boolean), updated.id);
       const activeResponse = String(state.active_response_id || updated.activeResponseId || '');
       if (activeResponse) this.sessions.value = this.sessions.value.map((session) => session.id === updated.id ? { ...session, activeResponseId: activeResponse } : session);
     } catch (error) { if (epoch === this.selectionEpoch) this.toast(error, 'error'); }
@@ -511,8 +541,8 @@ export class AppStore {
     this.runs.value = { ...this.runs.value, [sessionId]: next };
     if (Object.keys(runtimePatch).length) this.sessions.value = this.sessions.value.map((session) => session.id === sessionId ? { ...session, ...Object.fromEntries(Object.entries(runtimePatch).filter(([, value]) => value !== undefined)) } : session);
     if (next.plan !== current.plan && sessionId === this.activeSessionId.peek()) this.currentPlan.value = next.plan;
-    if (next.askUser && next.askUser !== current.askUser) { this.askUser.value = next.askUser; this.modal.value = 'ask-user'; }
-    if (next.approval && next.approval !== current.approval) { this.approval.value = next.approval; this.modal.value = 'approval'; }
+    if (next.askUser && next.askUser !== current.askUser) this.askUser.value = next.askUser;
+    if (next.approval && next.approval !== current.approval) this.approval.value = next.approval;
     if (event.type === 'response.interjection') {
       const clientID = String(event.client_message_id || event.interjection_id || '');
       this.interjections.value = this.interjections.value.filter((entry) => entry.id !== clientID);
@@ -676,8 +706,8 @@ export class AppStore {
   }
   async enableNotifications(): Promise<void> { const enabled = await enableNotifications(this.config, this.endpoints); this.notificationsEnabled.value = enabled; if (enabled) this.storage.setItem(this.keys.notificationsEnabled, '1'); else this.storage.removeItem(this.keys.notificationsEnabled); }
 
-  async answerAskUser(answers: unknown = [], cancelled = false): Promise<void> { const prompt = this.askUser.value; if (!prompt) return; await this.endpoints.askUser(prompt.sessionId, cancelled ? { call_id: prompt.callId, cancelled: true } : { call_id: prompt.callId, answers }); this.askUser.value = null; this.modal.value = ''; }
-  async decideApproval(choice: number, resumeAuto = false): Promise<void> { const prompt = this.approval.value; if (!prompt) return; await this.endpoints.approval(prompt.sessionId, { approval_id: prompt.id, choice, resume_auto: resumeAuto }); this.approval.value = null; this.modal.value = ''; }
+  async answerAskUser(answers: unknown = [], cancelled = false): Promise<void> { const prompt = this.askUser.value; if (!prompt) return; await this.endpoints.askUser(prompt.sessionId, cancelled ? { call_id: prompt.callId, cancelled: true } : { call_id: prompt.callId, answers }); this.askUser.value = null; }
+  async decideApproval(choice: number, resumeAuto = false): Promise<void> { const prompt = this.approval.value; if (!prompt) return; await this.endpoints.approval(prompt.sessionId, { approval_id: prompt.id, choice, resume_auto: resumeAuto }); this.approval.value = null; }
 
   async recoverSideQuestion(): Promise<void> {
     const session = this.activeSession.value; if (!session) return;
@@ -722,7 +752,27 @@ export class AppStore {
   }
 
   async loadBranchTree(): Promise<void> { const session = this.activeSession.value; if (!session) return; this.branchTree.value = await this.endpoints.tree(session.id); this.modal.value = 'branch'; }
-  async branchFrom(messageId: string, context: string, focus = ''): Promise<void> { const session = this.activeSession.value; if (!session) return; const data = await this.endpoints.branch(session.id, { anchor_message_id: Number(messageId) || 0, expected_rev: session.transcriptRev || 0, idempotency_key: uuid() }); const child = data.session && typeof data.session === 'object' ? data.session as Record<string, unknown> : data; const id = String(child.id || data.session_id || ''); if (id && (context === 'notes' || context === 'focused')) await this.endpoints.pathNotes(id, { mode: context, ...(context === 'focused' ? { focus } : {}) }); await this.refreshSidebar(); const target = this.sessions.value.find((entry) => entry.id === id); if (target) await this.selectSession(target); this.modal.value = ''; }
+  async branchCommand(kind: 'fork' | 'thread', message = ''): Promise<void> {
+    const session = this.activeSession.value;
+    if (!session || this.draftActive.value) { this.toast('Start the conversation before creating a thread or fork.', 'error'); return; }
+    if (this.attachments.value.length) { this.toast('Create the thread or fork before attaching files or images.', 'error'); return; }
+    const anchor = kind === 'thread' ? 0 : [...this.visibleMessages.value].reverse().find((entry) => Number(entry.durableRowId) > 0)?.durableRowId || 0;
+    if (kind === 'fork' && !anchor) { this.toast('The conversation does not yet have a durable completed boundary to fork from.', 'error'); return; }
+    const original = this.prompt.value; this.prompt.value = '';
+    try { await this.branchFrom(String(anchor), 'clean', '', message.trim()); }
+    catch (error) { if (!this.prompt.value) this.prompt.value = original; this.toast(error, 'error'); }
+  }
+  async branchFrom(messageId: string, context: string, focus = '', autoSend = ''): Promise<void> {
+    const session = this.activeSession.value; if (!session) return;
+    const data = await this.endpoints.branch(session.id, { anchor_message_id: Number(messageId) || 0, expected_rev: session.transcriptRev || 0, idempotency_key: uuid() });
+    const child = data.session && typeof data.session === 'object' ? data.session as Record<string, unknown> : data; const id = String(child.id || data.session_id || '');
+    if (id && (context === 'notes' || context === 'focused')) await this.endpoints.pathNotes(id, { mode: context, ...(context === 'focused' ? { focus } : {}) });
+    await this.refreshSidebar();
+    let target = this.sessions.value.find((entry) => entry.id === id);
+    if (!target && id) { target = this.sessionFrom({ ...child, id }); this.sessions.value = [target, ...this.sessions.value]; }
+    if (target) { await this.selectSession(target); if (autoSend) { this.prompt.value = autoSend; await this.send(); } }
+    this.modal.value = '';
+  }
 
   async toggleDiff(): Promise<void> {
     const session = this.activeSession.value; if (!session) return;
@@ -782,7 +832,13 @@ export class AppStore {
   async promoteWorktree(dir: string, branch: string): Promise<void> { await this.endpoints.promoteWorktree(this.worktreeProjectID(), dir, branch); await this.loadWorktrees(); this.toast('Worktree promoted.', 'success'); }
   async removeWorktree(dir: string, force = false): Promise<Record<string, unknown>> { const result = await this.endpoints.removeWorktree(this.worktreeProjectID(), dir, force); await this.loadWorktrees(); return result || {}; }
 
-  async loadSkills(): Promise<void> { const session = this.activeSession.value; if (!session) return; const data = await this.endpoints.skills(session.id); this.skills.value = listFrom(data, 'skills', 'items'); }
+  async loadSkills(sessionId = this.activeSession.value?.id || ''): Promise<void> {
+    const epoch = ++this.skillEpoch;
+    if (!sessionId) { this.skills.value = []; return; }
+    const data = await this.endpoints.skills(sessionId);
+    if (epoch !== this.skillEpoch || this.activeSessionId.peek() !== sessionId) return;
+    this.skills.value = listFrom(data, 'skills', 'items');
+  }
   private skillRunTerminal(status: unknown): boolean { return ['complete', 'completed', 'failed', 'cancelled'].includes(String(status || '').toLowerCase()); }
   private updateSkillRunMessage(sessionId: string, runId: string, patch: Record<string, unknown>): void {
     this.sessions.value = this.sessions.value.map((session) => {

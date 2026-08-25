@@ -16,6 +16,15 @@ describe('API transport', () => {
     expect(url).toBe('/ui/v1/providers');
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer secret');
     expect((init.headers as Headers).get('X-Term-LLM-UI-Version')).toBe('v1');
+    expect((init as RequestInit & { __termLLMRetrySafe?: boolean }).__termLLMRetrySafe).toBe(true);
+  });
+
+  it('never forwards the stored bearer token to a foreign origin', async () => {
+    const request = vi.fn(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', request); const api = new APIClient(config, { getToken: () => 'secret', onAuthRequired: vi.fn() });
+    await api.request('https://elsewhere.test/v1/data', { headers: { Authorization: 'Bearer accidental' } }, { policy: 'safe-read' });
+    const [, init] = request.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Headers).has('Authorization')).toBe(false); expect(init.credentials).toBe('omit');
   });
 
   it('coordinates auth-required and typed errors', async () => {

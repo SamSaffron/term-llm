@@ -6,6 +6,7 @@ interface WebRTCRequestInit extends RequestInit { __termLLMRetrySafe?: boolean }
 interface PendingRequest {
   onHeaders(headers: HeadersInit, status: number): void;
   onChunk(fragment: string): void;
+  onChunkFailure(error: unknown): void;
   onDone(status: number): void;
   fallback(): void;
 }
@@ -318,7 +319,8 @@ export function installWebRTC(): () => void {
     if (frame.type === 'headers') {
       pending.onHeaders(frame.headers || {}, frame.status || 200);
     } else if (frame.type === 'chunk') {
-      pending.onChunk(frame.data || '');
+      try { pending.onChunk(frame.data || ''); }
+      catch (error) { pending.onChunkFailure(error); }
     } else if (frame.type === 'done') {
       pending.onDone(frame.status || 200);
       pendingRequests.delete(frame.id);
@@ -431,8 +433,8 @@ export function installWebRTC(): () => void {
 
   function isAPIPath(urlStr: string): boolean {
     try {
-      const path = new URL(urlStr, window.location.origin).pathname;
-      return path.startsWith(UI_PREFIX + '/v1/');
+      const url = new URL(urlStr, window.location.origin);
+      return url.origin === window.location.origin && url.pathname.startsWith(UI_PREFIX + '/v1/');
     } catch (_e) {
       return false;
     }
@@ -623,9 +625,13 @@ export function installWebRTC(): () => void {
           }
           const chunk = typeof fragment === 'string' ? fragment : '';
           responseBytes += chunk.length;
-          if (streamController) {
-            streamController.enqueue(encoder.encode(chunk));
-          }
+          if (streamController) streamController.enqueue(encoder.encode(chunk));
+        },
+        onChunkFailure(error) {
+          diag('chunk delivery failed: ' + errorMessage(error));
+          cleanup('chunk-delivery-failure');
+          errorStream(error);
+          triggerRenegotiation();
         },
         onDone(status) {
           serverDone = true;

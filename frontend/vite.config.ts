@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 import type { Plugin } from 'vite';
 import preact from '@preact/preset-vite';
 import { resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 function deterministicStyles(): Plugin {
   return {
@@ -23,7 +24,15 @@ function deterministicStyles(): Plugin {
       for (const output of Object.values(bundle)) {
         if (output.type !== 'chunk') continue;
         for (const [before, after] of renamed) output.code = output.code.replaceAll(before, after);
+        output.code = output.code.replaceAll('./assets/highlight.css', './chunks/highlight.css').replaceAll('./assets/katex.css', './chunks/katex.css');
       }
+    },
+    closeBundle() {
+      // Vite injects __vite__mapDeps after Rollup's generateBundle hooks. Keep
+      // those generated preload URLs aligned with the deterministic CSS moves.
+      const entry = resolve(import.meta.dirname, '../internal/serveui/static/dist/app.js');
+      const code = readFileSync(entry, 'utf8').replaceAll('./assets/highlight.css', './chunks/highlight.css').replaceAll('./assets/katex.css', './chunks/katex.css');
+      writeFileSync(entry, code);
     },
   };
 }

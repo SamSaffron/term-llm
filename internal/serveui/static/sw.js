@@ -1,11 +1,9 @@
-const SHELL_CACHE = 'term-llm-shell-v5';
+const SHELL_CACHE = 'term-llm-shell-v6';
 const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
   './dist/app.css',
   './dist/app.js',
-  './dist/chunks/vendor.js',
-  // term-llm:webrtc-shell-asset
 ];
 
 const putIfCacheable = async (cache, request, response) => {
@@ -60,9 +58,10 @@ self.addEventListener('fetch', (event) => {
     const networkFetch = fetch(request)
       .then((response) => putIfCacheable(cache, request, response))
       .catch(() => null);
-    // Versioned shell assets may use stale-while-revalidate because their URL
-    // changes with every embedded build. Unversioned lazy Vite chunks must be
-    // network-first so a newly deployed app never executes an old cached chunk.
+    // The rendered HTML requests these versioned shell URLs directly, so they
+    // are safe for stale-while-revalidate. Vite imports every stable-named
+    // chunk without an AssetVersion query; all chunks therefore stay
+    // network-first so a deployment cannot execute an old dependency graph.
     if (cached && isShellAsset) {
       void networkFetch;
       return cached;

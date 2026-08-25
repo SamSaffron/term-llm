@@ -1,11 +1,13 @@
 import type { APIClient } from './client';
 import type { DiffComment, Goal } from '../domain/types';
+import type { MentionSearchResponse } from '../domain/completions';
 
 const encoded = (value: string): string => encodeURIComponent(value);
 export const endpoints = (api: APIClient) => ({
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
   models: (provider = '', signal?: AbortSignal) => api.get<Record<string, unknown>>(`/v1/models${provider ? `?provider=${encoded(provider)}` : ''}`, signal),
+  mentionSearch: (body: unknown, sessionId = '', signal?: AbortSignal) => api.json<MentionSearchResponse>('/v1/mentions/search', { method: 'POST', signal, headers: sessionId ? { 'X-Term-LLM-Session-ID': sessionId } : undefined, body: JSON.stringify(body) }, { policy: 'safe-read', auth: 'session' }),
   sidebar: (hidden: boolean) => api.get<Record<string, unknown>>(`/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${hidden ? '1' : '0'}`),
   projectSessions: (projectId: string, cursor: string, hidden: boolean) => api.get<Record<string, unknown>>(`/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${hidden ? '1' : '0'}`),
   noProjectSessions: (cursor: string, hidden: boolean) => api.get<Record<string, unknown>>(`/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${hidden ? '1' : '0'}`),
@@ -34,7 +36,7 @@ export const endpoints = (api: APIClient) => ({
   projects: (query = '') => api.get<Record<string, unknown>>(`/v1/projects${query ? `?${query}` : ''}`),
   createProject: (body: unknown) => api.post<Record<string, unknown>>('/v1/projects', body),
   patchProject: (id: string, body: unknown) => api.patch(`/v1/projects/${encoded(id)}`, body),
-  projectDirectories: (query: string) => api.get<Record<string, unknown>>(`/v1/project-directories?q=${encoded(query)}`),
+  projectDirectories: (query: string, signal?: AbortSignal) => api.get<Record<string, unknown>>(`/v1/project-directories?q=${encoded(query)}`, signal),
   runtime: (id: string, operation: string, body: unknown) => api.post(`/v1/sessions/${encoded(id)}/runtime/${operation}`, body, 'idempotent-mutation', { 'Idempotency-Key': `runtime_${id}_${operation}_${JSON.stringify(body)}` }),
   compact: (id: string) => api.post(`/v1/sessions/${encoded(id)}/runtime/compact`, {}),
   mutateTranscript: (id: string, operation: 'undo' | 'redo', body: unknown) => api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/runtime/${operation}`, body),

@@ -840,7 +840,7 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 
 func TestHandleUI_UnknownScriptAndStyleDoNotReturnSPAShell(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
-	for _, path := range []string{"/missing.js", "/dist/chunks/missing.mjs", "/missing.css"} {
+	for _, path := range []string{"/missing.js", "/dist/chunks/missing.mjs", "/missing.css", "/dist/assets/missing.woff2", "/dist/assets/missing.png", "/dist/chunks/missing"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 		srv.handleUI(rr, req)
@@ -1032,13 +1032,14 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 		`'./icon-512.png?v=` + version + `'`,
 		`'./dist/app.css?v=` + version + `'`,
 		`'./dist/app.js?v=` + version + `'`,
-		`'./dist/chunks/vendor.js?v=` + version + `'`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
 	}
 	for _, snippet := range []string{
+		`'./dist/chunks/vendor.js`,
+		`'./dist/chunks/webrtc.js`,
 		`'./dist/chunks/katex.js`,
 		`'./dist/chunks/highlight.js`,
 	} {

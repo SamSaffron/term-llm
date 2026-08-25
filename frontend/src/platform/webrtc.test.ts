@@ -179,6 +179,23 @@ describe('WebRTC platform bridge', () => {
     expect(harness.apiCalls()).toBe(1); expect(harness.recoveries()).toBe(0); expect(channel.readyState).toBe('open');
   });
 
+  it('keeps same-path foreign-origin requests on HTTPS', async () => {
+    const harness = await enabledHarness(); cleanupRTC = harness.cleanup; const channel = harness.channels[0];
+    await expect(window.fetch('https://elsewhere.test/ui/v1/sessions/status')).resolves.toMatchObject({ ok: true });
+    expect(channel.sent.some((frame) => frame.path === '/ui/v1/sessions/status')).toBe(false); expect(harness.apiCalls()).toBe(1);
+  });
+
+  it('degrades the transport when delivering a rendered response chunk fails', async () => {
+    const NativeTextEncoder = TextEncoder;
+    vi.stubGlobal('TextEncoder', class extends NativeTextEncoder { override encode(_input?: string): Uint8Array<ArrayBuffer> { throw new Error('simulated render delivery failure'); } });
+    const harness = await enabledHarness(); cleanupRTC = harness.cleanup; const channel = harness.channels[0]; const patched = window.fetch;
+    const pending = window.fetch('/ui/v1/responses/r1/events'); const request = channel.sent.find((frame) => frame.path === '/ui/v1/responses/r1/events')!;
+    channel.receive({ id: request.id, type: 'headers', status: 200, headers: {} }); const response = await pending;
+    channel.receive({ id: request.id, type: 'chunk', data: 'data: rendered\n\n' });
+    await expect(response.text()).rejects.toThrow('simulated render delivery failure');
+    expect(harness.recoveries()).toBe(1); expect(window.fetch).not.toBe(patched);
+  });
+
   it('never replays an unsafe mutation whose first-frame outcome is ambiguous', async () => {
     const harness = await enabledHarness(); cleanupRTC = harness.cleanup;
     const pending = window.fetch('/ui/v1/non-idempotent-action', { method: 'POST', body: '{}' });

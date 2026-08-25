@@ -27,8 +27,8 @@ var (
 	renderManifestOnce sync.Once
 	renderManifest     []byte
 
-	renderServiceWorkerOnce [2]sync.Once
-	renderServiceWorker     [2][]byte
+	renderServiceWorkerOnce sync.Once
+	renderServiceWorker     []byte
 )
 
 // AssetVersion returns a stable hash of every embedded UI asset.
@@ -112,35 +112,27 @@ func RenderManifest() []byte {
 }
 
 // RenderServiceWorker returns the service worker with a versioned cache key and
-// generated shell asset URLs. It is cached per WebRTC option set.
-func RenderServiceWorker(opts RenderOptions) []byte {
-	cacheIndex := 0
-	if opts.WebRTC {
-		cacheIndex = 1
-	}
-	renderServiceWorkerOnce[cacheIndex].Do(func() {
+// generated shell asset URLs. Stable-named Vite chunks deliberately remain
+// unversioned and network-first because module imports do not inherit the entry
+// module's AssetVersion query.
+func RenderServiceWorker(_ RenderOptions) []byte {
+	renderServiceWorkerOnce.Do(func() {
 		data, err := StaticAsset("sw.js")
 		if err != nil {
 			return
 		}
 		for _, replacement := range []struct{ old, new string }{
-			{"term-llm-shell-v5", "term-llm-shell-" + AssetVersion()},
+			{"term-llm-shell-v6", "term-llm-shell-" + AssetVersion()},
 			{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
 			{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
 			{"'./dist/app.css'", "'./" + versioned("dist/app.css") + "'"},
 			{"'./dist/app.js'", "'./" + versioned("dist/app.js") + "'"},
-			{"'./dist/chunks/vendor.js'", "'./" + versioned("dist/chunks/vendor.js") + "'"},
 		} {
 			data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))
 		}
-		webrtcAsset := ""
-		if opts.WebRTC {
-			webrtcAsset = "'./" + versioned("dist/chunks/webrtc.js") + "',"
-		}
-		data = bytes.Replace(data, []byte(`// term-llm:webrtc-shell-asset`), []byte(webrtcAsset), 1)
-		renderServiceWorker[cacheIndex] = data
+		renderServiceWorker = data
 	})
-	return renderServiceWorker[cacheIndex]
+	return renderServiceWorker
 }
 
 // StaticAsset returns a copy of an embedded serve-ui asset.

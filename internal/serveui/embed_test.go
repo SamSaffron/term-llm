@@ -52,7 +52,7 @@ func TestBundlePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"window.TermLLMApp", "preact/compat", "legacy-bridge"} {
+	for _, forbidden := range []string{"window.TermLLMApp", "preact/compat", "legacy-bridge", "./assets/highlight.css", "./assets/katex.css"} {
 		if bytes.Contains(js, []byte(forbidden)) {
 			t.Errorf("production bundle contains forbidden compatibility path %q", forbidden)
 		}
@@ -84,24 +84,27 @@ func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	}
 }
 
-func TestRenderServiceWorkerVersionsGeneratedShell(t *testing.T) {
+func TestRenderServiceWorkerVersionsOnlyDirectShellAssets(t *testing.T) {
 	without := string(RenderServiceWorker(RenderOptions{}))
 	with := string(RenderServiceWorker(RenderOptions{WebRTC: true}))
 	for _, want := range []string{
 		"term-llm-shell-" + AssetVersion(),
+		"'./manifest.webmanifest?v=" + AssetVersion() + "'",
+		"'./icon-512.png?v=" + AssetVersion() + "'",
 		"'./dist/app.css?v=" + AssetVersion() + "'",
 		"'./dist/app.js?v=" + AssetVersion() + "'",
-		"'./dist/chunks/vendor.js?v=" + AssetVersion() + "'",
 	} {
 		if !strings.Contains(without, want) {
 			t.Errorf("service worker missing %q", want)
 		}
 	}
-	if strings.Contains(without, "dist/chunks/webrtc.js?v=") {
-		t.Fatal("WebRTC chunk is present when feature is disabled")
+	for _, chunk := range []string{"vendor.js?v=", "webrtc.js?v=", "highlight.js?v=", "katex.js?v="} {
+		if strings.Contains(without, chunk) || strings.Contains(with, chunk) {
+			t.Errorf("stable-named chunk %q must remain unversioned and network-first", chunk)
+		}
 	}
-	if !strings.Contains(with, "dist/chunks/webrtc.js?v="+AssetVersion()) {
-		t.Fatal("WebRTC chunk is absent when feature is enabled")
+	if without != with {
+		t.Fatal("WebRTC must not add a versioned URL that differs from the chunk URL imported by Vite")
 	}
 }
 

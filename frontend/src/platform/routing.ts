@@ -14,5 +14,5 @@ export function sessionIDFromLocation(prefix: string, pathname = location.pathna
 export function updateSessionRoute(prefix: string, session: Session | null, replace = false): void {
   const path = session ? `${prefix}/chat/${encodeURIComponent(sessionSlug(session))}` : `${prefix}/`;
   const method = replace ? 'replaceState' : 'pushState';
-  if (`${location.pathname}${location.search}` !== path) history[method](null, '', path);
+  if (location.pathname !== path) history[method](null, '', path);
 }

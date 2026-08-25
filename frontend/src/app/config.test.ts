@@ -3,6 +3,12 @@ import { parseSidebarCategories, readInjectedConfig, rebaseHubAssetURL } from '.
 import { mergePendingIntents, migrateScopedStorage, storageKeys } from '../platform/storage';
 
 describe('bootstrap configuration and storage', () => {
+  it('installs complete isolated Web Storage globals on modern Node', () => {
+    localStorage.setItem('key', 'local'); sessionStorage.setItem('key', 'session');
+    expect(localStorage.getItem('key')).toBe('local'); expect(sessionStorage.getItem('key')).toBe('session');
+    expect(localStorage).not.toBe(sessionStorage); localStorage.removeItem('key'); expect(localStorage.length).toBe(0);
+  });
+
   it('reads injected values only when bootstrap asks for them', () => {
     const target = { TERM_LLM_UI_PREFIX: '/chat/nodes/alpha', TERM_LLM_UI_VERSION: 'abc', TERM_LLM_AGENT_NAMES: ['a', 'a', 'b'], TERM_LLM_HUB: { nodeId: 'alpha', nodeBasePath: '/chat/nodes/alpha' }, __WEBRTC_ENABLED__: true, __WEBRTC_SIGNALING_URL__: 'https://signal' } as Window;
     expect(readInjectedConfig(target)).toMatchObject({ prefix: '/chat/nodes/alpha', version: 'abc', agentNames: ['a', 'b'], webRTC: true, signalingURL: 'https://signal' });

@@ -2,10 +2,24 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ ! -x "$root/frontend/node_modules/.bin/playwright" ]]; then
+  echo "frontend smoke dependencies are missing; run 'cd frontend && npm ci' first" >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to run the frontend browser smoke" >&2
+  exit 1
+fi
 if [[ -n "${TERM_LLM_SMOKE_PORT:-}" ]]; then
   port="$TERM_LLM_SMOKE_PORT"
 else
-  port="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { console.log(server.address().port); server.close(); });')"
+  port="$(python3 - <<'PY'
+import socket
+with socket.socket() as server:
+    server.bind(('127.0.0.1', 0))
+    print(server.getsockname()[1])
+PY
+)"
 fi
 url="http://127.0.0.1:${port}/ui/"
 binary="$(mktemp "${TMPDIR:-/tmp}/term-llm-browser-smoke.XXXXXX")"

@@ -108,8 +108,8 @@
       "raw": 61860
     }
   },
-  "schema": 1,
-  "service_worker_precache": {
+  "schema": 2,
+  "service_worker_cache": {
     "assets": [
       "manifest.webmanifest",
       "icon-512.png",
@@ -130,25 +130,25 @@
       "app-attachments.js",
       "app-stream.js",
       "app-response-effects.js",
-      "app-composer.js",
       "app-send.js",
       "app-runtime.js",
       "app-interject.js",
       "app-modals.js",
+      "app-composer.js",
       "app-skills.js",
       "side-question.js",
       "app-project-picker.js",
       "app-sidebar.js",
-      "app-mcp.js",
-      "app-goals-location.js",
-      "app-message-convert.js",
-      "intent-storage.js",
-      "app-session-admin.js",
       "app-sessions.js",
       "app-path-notes.js",
       "app-branching.js",
       "app-branch-commands.js",
       "app-session-events.js",
+      "app-mcp.js",
+      "app-goals-location.js",
+      "app-message-convert.js",
+      "intent-storage.js",
+      "app-session-admin.js",
       "app-diff-scopes.js",
       "app-diff-context.js",
       "app-diff-comments.js",
@@ -158,11 +158,12 @@
       "vendor/marked/marked.umd.min.js",
       "vendor/dompurify/purify.min.js"
     ],
-    "requests": 46,
-    "sizes": {
+    "candidate_sizes": {
       "brotli11": 558910,
       "gzip6": 601124,
       "raw": 1569542
-    }
+    },
+    "install_requests": 0,
+    "strategy": "opportunistic cache allowlist; install performs no asset fetches"
   }
 }
