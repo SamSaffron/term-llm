@@ -99,6 +99,117 @@ describe('AppStore compatibility behavior', () => {
     expect(store.selectedDraftWorktree.value).toBe('/tmp/feature');
   });
 
+  it('rolls back an optimistic message when the response was never accepted', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.prompt.value = 'never submitted';
+    store.endpoints.createResponse = vi.fn(
+      async () => new Response('invalid request', { status: 400 }),
+    );
+
+    await store.send();
+
+    expect(store.sessions.value[0].messages).toEqual([]);
+    expect(store.pendingIntents.value).toEqual({});
+    expect(store.visibleMessages.value).toEqual([
+      expect.objectContaining({ role: 'error', content: 'invalid request' }),
+    ]);
+    expect(store.prompt.value).toBe('never submitted');
+  });
+
+  it('clears uncommitted persisted intents after an authoritative idle reload', async () => {
+    const seed = new AppStore(config);
+    persistPendingIntent(localStorage, seed.keys.pendingIntents, 's1', {
+      id: 'pending_stale',
+      clientMessageId: 'stale',
+      content: 'never reached the server',
+      created: Date.now() - 20 * 60_000,
+    });
+    const store = new AppStore(config);
+    store.sessions.value = [
+      {
+        ...session(),
+        messages: [
+          {
+            id: 'pending_stale',
+            role: 'user',
+            content: 'never reached the server',
+            created: Date.now() - 20 * 60_000,
+            clientMessageId: 'stale',
+          },
+        ],
+      },
+    ];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+
+    await store.loadSession('s1');
+
+    expect(store.pendingIntents.value).toEqual({});
+    expect(store.sessions.value[0].messages).toEqual([]);
+    expect(store.visibleMessages.value).toEqual([]);
+  });
+
+  it('reconciles stale pending intents during idle status polling', async () => {
+    const seed = new AppStore(config);
+    persistPendingIntent(localStorage, seed.keys.pendingIntents, 's1', {
+      id: 'pending_polled',
+      clientMessageId: 'polled',
+      content: 'not submitted',
+      created: Date.now() - 20 * 60_000,
+    });
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [{ id: 's1', active_response_id: '', transcript_rev: 1 }],
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', transcript_rev: 1 },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    const internals = store as unknown as { refreshStatus(): Promise<void> };
+
+    await internals.refreshStatus();
+
+    await vi.waitFor(() => expect(store.pendingIntents.value).toEqual({}));
+    expect(store.visibleMessages.value).toEqual([]);
+  });
+
+  it('keeps an unresolved persisted intent while the server reports an active response', async () => {
+    const seed = new AppStore(config);
+    persistPendingIntent(localStorage, seed.keys.pendingIntents, 's1', {
+      id: 'pending_active',
+      clientMessageId: 'active',
+      content: 'still submitting',
+      created: Date.now(),
+    });
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.sessionState = vi.fn(async () => ({ active_response_id: 'r1' }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+
+    await store.loadSession('s1');
+
+    expect(store.pendingIntents.value.s1).toHaveLength(1);
+    expect(store.visibleMessages.value).toEqual([
+      expect.objectContaining({ clientMessageId: 'active', pending: true }),
+    ]);
+  });
+
   it('applies runtime metadata from response lifecycle events', () => {
     const store = new AppStore(config);
     const active = session();

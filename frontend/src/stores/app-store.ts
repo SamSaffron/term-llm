@@ -549,12 +549,16 @@ export class AppStore {
     return sanitizeSession(value, { rebaseAssetURL: (url) => rebaseHubAssetURL(this.config, url) });
   }
 
-  private mergeSession(existing: Session | undefined, incoming: Session): Session {
+  private mergeSession(
+    existing: Session | undefined,
+    incoming: Session,
+    replaceMessages = false,
+  ): Session {
     if (!existing) return incoming;
     return {
       ...existing,
       ...incoming,
-      messages: incoming.messages.length ? incoming.messages : existing.messages,
+      messages: replaceMessages || incoming.messages.length ? incoming.messages : existing.messages,
       usage: incoming.usage || existing.usage,
       goal: incoming.goal ?? existing.goal,
       fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary,
@@ -814,13 +818,13 @@ export class AppStore {
         (session) => session.id === id || (incoming.id && session.id === incoming.id),
       );
       const current = currentIndex >= 0 ? this.sessions.value[currentIndex] : undefined;
-      const updated = this.mergeSession(current, incoming);
+      // selected_transcript is authoritative here, including an empty transcript.
+      const updated = this.mergeSession(current, incoming, true);
       if (currentIndex >= 0)
         this.sessions.value = this.sessions.value.map((session, index) =>
           index === currentIndex ? updated : session,
         );
       else this.sessions.value = [updated, ...this.sessions.value];
-      this.retireCommittedIntents(updated.id, updated.messages);
       if (updated.id !== id) this.rekeySession(id, updated.id, selectedSource);
       const planSource = state.current_plan || selectedSource.plan_summary;
       if (planSource && typeof planSource === 'object') {
@@ -844,6 +848,8 @@ export class AppStore {
       if (this.approval.peek() === sampledApproval)
         this.approval.value = approvalPrompt(approvals.find(Boolean), updated.id);
       const activeResponse = String(state.active_response_id || updated.activeResponseId || '');
+      if (activeResponse) this.retireCommittedIntents(updated.id, incoming.messages);
+      else this.retireIntent(updated.id);
       if (activeResponse)
         this.sessions.value = this.sessions.value.map((session) =>
           session.id === updated.id ? { ...session, activeResponseId: activeResponse } : session,
@@ -1029,6 +1035,8 @@ export class AppStore {
       if (current && ['connecting', 'streaming'].includes(current.run.status))
         await this.resumeResponse(ownerID, responseId);
     } catch (error) {
+      if (error instanceof APIError || postAbort.signal.aborted)
+        this.rollbackOptimisticIntent(ownerID, clientMessageId);
       if (!postAbort.signal.aborted) {
         options.onTransportFailed?.(error);
         this.failRun(ownerID, error);
@@ -1245,9 +1253,9 @@ export class AppStore {
       });
       if (targetRev && incoming.transcriptRev && incoming.transcriptRev < targetRev) return;
       this.sessions.value = this.sessions.value.map((session) =>
-        session.id === sessionId ? this.mergeSession(session, incoming) : session,
+        session.id === sessionId ? this.mergeSession(session, incoming, true) : session,
       );
-      this.retireCommittedIntents(sessionId, incoming.messages);
+      this.retireIntent(sessionId);
     } catch {
       /* Status polling will retry durable reconciliation. */
     }
@@ -1380,6 +1388,20 @@ export class AppStore {
     } catch (error) {
       this.toast(error, 'error');
     }
+  }
+
+  private rollbackOptimisticIntent(sessionId: string, clientMessageId: string): void {
+    this.sessions.value = this.sessions.value.map((session) =>
+      session.id === sessionId
+        ? {
+            ...session,
+            messages: session.messages.filter(
+              (message) => message.clientMessageId !== clientMessageId,
+            ),
+          }
+        : session,
+    );
+    this.retireIntent(sessionId, clientMessageId);
   }
 
   private failRun(sessionId: string, error: unknown): void {
@@ -2589,7 +2611,7 @@ export class AppStore {
         window.setTimeout(() => void this.resumeResponse(session.id, activeResponseId), 0);
       if (
         !activeResponseId &&
-        session.activeResponseId &&
+        (session.activeResponseId || this.pendingIntents.peek()[session.id]?.length) &&
         transcriptRev >= (this.runs.peek()[session.id]?.run.finalRev || 0)
       )
         window.setTimeout(() => void this.refreshSessionMessages(session.id, transcriptRev), 0);
