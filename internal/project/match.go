@@ -14,45 +14,74 @@ import (
 // belongs to project. Git snapshots resolve to the main repository; non-Git
 // projects require an exact resolved directory match.
 func MatchesWorkspace(ctx context.Context, cwd, worktreeDir string, project Resolved) bool {
+	workspace, ok := resolveWorkspaceIdentity(ctx, cwd, worktreeDir)
+	return ok && workspace.Git == project.Git && SameIdentity(workspace.CanonicalDir, project.CanonicalDir)
+}
+
+type workspaceIdentity struct {
+	CanonicalDir string
+	Git          bool
+}
+
+// resolveWorkspaceIdentity validates an immutable session execution snapshot
+// and reduces it to the same identity used by registered projects.
+func resolveWorkspaceIdentity(ctx context.Context, cwd, worktreeDir string) (workspaceIdentity, bool) {
 	cwd = strings.TrimSpace(cwd)
 	worktreeDir = strings.TrimSpace(worktreeDir)
-	if project.Git {
-		if worktreeDir != "" {
-			// Persisted managed-worktree snapshots always bind both execution fields
-			// to the same checkout. Reject partial or inconsistent legacy rows.
-			if cwd == "" || !SamePath(cwd, worktreeDir) {
-				return false
-			}
-			wt, err := worktree.Get(worktreeDir)
-			if err != nil || !SamePath(wt.RepoRoot, project.CanonicalDir) {
-				return false
-			}
-			managedRoot, err := worktree.ManagedRoot(project.CanonicalDir)
-			if err != nil {
-				return false
-			}
-			wtDir, err := canonicalBoundary(wt.Dir)
-			if err != nil {
-				return false
-			}
-			managedRoot, err = canonicalBoundary(managedRoot)
-			if err != nil || wtDir == managedRoot || !withinDir(wtDir, managedRoot) {
-				return false
-			}
-			root, err := worktree.MainRepoRootContext(ctx, wtDir)
-			return err == nil && SamePath(root, project.CanonicalDir)
+	if worktreeDir != "" {
+		// Persisted managed-worktree snapshots always bind both execution fields
+		// to the same checkout. Reject partial or inconsistent legacy rows.
+		if cwd == "" || !SamePath(cwd, worktreeDir) {
+			return workspaceIdentity{}, false
 		}
-		if cwd == "" || !worktree.IsGitRepoContext(ctx, cwd) {
-			return false
+		wt, err := worktree.Get(worktreeDir)
+		if err != nil {
+			return workspaceIdentity{}, false
 		}
+		managedRoot, err := worktree.ManagedRoot(wt.RepoRoot)
+		if err != nil {
+			return workspaceIdentity{}, false
+		}
+		wtDir, err := canonicalBoundary(wt.Dir)
+		if err != nil {
+			return workspaceIdentity{}, false
+		}
+		managedRoot, err = canonicalBoundary(managedRoot)
+		if err != nil || wtDir == managedRoot || !withinDir(wtDir, managedRoot) {
+			return workspaceIdentity{}, false
+		}
+		root, err := worktree.MainRepoRootContext(ctx, wtDir)
+		if err != nil || !SamePath(root, wt.RepoRoot) {
+			return workspaceIdentity{}, false
+		}
+		canonical, ok := canonicalWorkspaceDir(root)
+		return workspaceIdentity{CanonicalDir: canonical, Git: true}, ok
+	}
+	if cwd == "" {
+		return workspaceIdentity{}, false
+	}
+	if worktree.IsGitRepoContext(ctx, cwd) {
 		root, err := worktree.MainRepoRootContext(ctx, cwd)
-		return err == nil && SamePath(root, project.CanonicalDir)
+		if err != nil {
+			return workspaceIdentity{}, false
+		}
+		canonical, ok := canonicalWorkspaceDir(root)
+		return workspaceIdentity{CanonicalDir: canonical, Git: true}, ok
 	}
-	if worktreeDir != "" || cwd == "" {
-		return false
+	canonical, ok := canonicalWorkspaceDir(cwd)
+	return workspaceIdentity{CanonicalDir: canonical}, ok
+}
+
+func canonicalWorkspaceDir(path string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
 	}
-	resolved, err := filepath.EvalSymlinks(cwd)
-	return err == nil && SamePath(resolved, project.CanonicalDir)
+	resolved, err = canonicalBoundary(resolved)
+	if err != nil {
+		return "", false
+	}
+	return CanonicalStoragePath(resolved), true
 }
 
 // SamePath compares filesystem paths after best-effort canonicalization.

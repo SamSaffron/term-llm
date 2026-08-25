@@ -133,6 +133,12 @@ func ClaimMatchingSessions(ctx context.Context, store session.Store, p session.P
 // currently available project. Unavailable project paths are skipped so a later
 // run can repair them when the filesystem is mounted again.
 func ReconcileAll(ctx context.Context, store session.Store) (int, error) {
+	return reconcileAll(ctx, store, resolveWorkspaceIdentity)
+}
+
+type reconciliationWorkspaceResolver func(context.Context, string, string) (workspaceIdentity, bool)
+
+func reconcileAll(ctx context.Context, store session.Store, resolveWorkspace reconciliationWorkspaceResolver) (int, error) {
 	projects, ok := session.AsProjectStore(store)
 	if !ok {
 		return 0, nil
@@ -141,18 +147,87 @@ func ReconcileAll(ctx context.Context, store session.Store) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list projects for reconciliation: %w", err)
 	}
+
+	available := make([]session.Project, 0, len(list))
+	projectsByWorkspace := make(map[workspaceIdentity]string, len(list))
+	for _, p := range list {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if strings.TrimSpace(p.ID) == "" || p.Archived() {
+			continue
+		}
+		root, err := Resolve(ctx, p.CanonicalDir)
+		if err != nil || !SameIdentity(root.CanonicalDir, p.CanonicalDir) {
+			continue
+		}
+		available = append(available, p)
+		projectsByWorkspace[workspaceIdentity{CanonicalDir: root.CanonicalDir, Git: root.Git}] = p.ID
+	}
+	if len(available) == 0 {
+		return 0, ctx.Err()
+	}
+
+	matchesByProject := make(map[string][]session.ProjectSessionMatch, len(available))
+	projectByWorkspace := make(map[string]string)
+	before := int64(0)
+	for {
+		summaries, err := store.List(ctx, session.ListOptions{
+			Archived:         true,
+			NoProject:        true,
+			Limit:            reconciliationPageSize,
+			BeforeNumber:     before,
+			SortByNumberDesc: true,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("list unassigned sessions: %w", err)
+		}
+		if len(summaries) == 0 {
+			break
+		}
+		for _, summary := range summaries {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+			if summary.ProjectID != "" {
+				continue
+			}
+			key := strings.TrimSpace(summary.CWD) + "\x00" + strings.TrimSpace(summary.WorktreeDir)
+			projectID, resolved := projectByWorkspace[key]
+			if !resolved {
+				if workspace, ok := resolveWorkspace(ctx, summary.CWD, summary.WorktreeDir); ok {
+					projectID = projectsByWorkspace[workspace]
+				}
+				projectByWorkspace[key] = projectID
+			}
+			if projectID != "" {
+				matchesByProject[projectID] = append(matchesByProject[projectID], session.ProjectSessionMatch{
+					ID: summary.ID, CWD: summary.CWD, WorktreeDir: summary.WorktreeDir,
+				})
+			}
+		}
+		before = summaries[len(summaries)-1].Number
+		if len(summaries) < reconciliationPageSize || before <= 0 {
+			break
+		}
+	}
+
 	total := 0
 	var errs []error
-	for _, p := range list {
+	for _, p := range available {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		claimed, err := ClaimMatchingSessions(ctx, store, p)
+		matches := matchesByProject[p.ID]
+		if len(matches) == 0 {
+			continue
+		}
+		claimed, err := projects.ClaimProjectSessions(ctx, p.ID, matches)
 		if err != nil {
-			if errors.Is(err, ErrProjectUnavailable) || errors.Is(err, session.ErrNotFound) {
+			if errors.Is(err, session.ErrNotFound) {
 				continue
 			}
-			errs = append(errs, fmt.Errorf("reconcile project %s: %w", p.ID, err))
+			errs = append(errs, fmt.Errorf("reconcile project %s: claim matching project sessions: %w", p.ID, err))
 			continue
 		}
 		total += claimed

@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,6 +71,63 @@ func TestReconcileAllSkipsUnavailableProject(t *testing.T) {
 	claimed, err := ReconcileAll(ctx, store)
 	if err != nil || claimed != 0 {
 		t.Fatalf("unavailable reconciliation = %d, %v", claimed, err)
+	}
+}
+
+func TestReconcileAllResolvesEachWorkspaceOnceAcrossProjects(t *testing.T) {
+	store := newAssignmentStore(t)
+	ctx := context.Background()
+	const projectCount = 4
+	const workspaceCount = 13
+
+	projects := make([]*session.Project, projectCount)
+	for i := range projects {
+		projects[i] = &session.Project{Name: fmt.Sprintf("Project %d", i), CanonicalDir: t.TempDir()}
+		if err := store.CreateProject(ctx, projects[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projectByWorkspace := make(map[string]*session.Project, workspaceCount)
+	sessionByWorkspace := make(map[string]string, workspaceCount)
+	now := time.Now()
+	for i := 0; i < workspaceCount; i++ {
+		cwd := filepath.Join(t.TempDir(), fmt.Sprintf("persisted-workspace-%d", i))
+		projectByWorkspace[cwd] = projects[i%projectCount]
+		sessionID := fmt.Sprintf("legacy-workspace-%d", i)
+		sessionByWorkspace[cwd] = sessionID
+		sess := &session.Session{
+			ID: sessionID, Provider: "mock", Model: "mock", CWD: cwd,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resolverCalls := 0
+	claimed, err := reconcileAll(ctx, store, func(_ context.Context, cwd, _ string) (workspaceIdentity, bool) {
+		resolverCalls++
+		p := projectByWorkspace[cwd]
+		if p == nil {
+			return workspaceIdentity{}, false
+		}
+		return workspaceIdentity{CanonicalDir: p.CanonicalDir}, true
+	})
+	if err != nil || claimed != workspaceCount {
+		t.Fatalf("reconciliation = %d, %v; want %d", claimed, err, workspaceCount)
+	}
+	if resolverCalls != workspaceCount {
+		t.Fatalf("workspace resolver calls = %d; want %d (one per workspace, not %d projects x %d workspaces)", resolverCalls, workspaceCount, projectCount, workspaceCount)
+	}
+	for cwd, wantProject := range projectByWorkspace {
+		sess, err := store.Get(ctx, sessionByWorkspace[cwd])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.ProjectID != wantProject.ID {
+			t.Fatalf("workspace %q project = %q; want %q", cwd, sess.ProjectID, wantProject.ID)
+		}
 	}
 }
 
