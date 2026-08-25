@@ -1353,7 +1353,6 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
 		projectCursorValue := strings.TrimSpace(r.URL.Query().Get("cursor"))
 		var projectCursor *session.ProjectSessionCursor
-		noProject := false
 		if projectCursorValue != "" {
 			cursor, decodeErr := session.DecodeProjectSessionCursor(projectCursorValue)
 			if decodeErr != nil || cursor.ProjectID != projectID {
@@ -1361,13 +1360,21 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			projectCursor = &cursor
-			noProject = cursor.ProjectID == ""
 		}
 		groupPage := projectID != "" || projectCursor != nil
+		// An explicit limit opts the flat listing into keyset pagination so
+		// the projects-disabled sidebar can scroll infinitely like project
+		// groups do; legacy callers without a limit keep the bounded snapshot.
+		rawLimit := strings.TrimSpace(r.URL.Query().Get("limit"))
+		paged := groupPage || rawLimit != ""
+		// Ungrouped pages cover the project-less sessions (the "No project"
+		// sidebar group) while projects are enabled, and every session when
+		// projects are disabled and the sidebar is one flat list.
+		noProject := paged && projectID == "" && s.projectsEnabled
 		limit := 100
-		if groupPage {
+		if paged {
 			limit = 13
-			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+			if rawLimit != "" {
 				if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
 					limit = min(parsed, 100) + 1
 				}
@@ -1387,9 +1394,15 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
 			return
 		}
-		if groupPage && len(sessions) == limit {
+		if paged && len(sessions) == limit {
 			pageSize := limit - 1
-			nextCursor = session.EncodeProjectSessionCursor(sessions[pageSize-1])
+			boundary := sessions[pageSize-1]
+			if projectID == "" {
+				// Ungrouped-listing cursors stay bound to the ungrouped listing
+				// even when the boundary session carries a legacy project ID.
+				boundary.ProjectID = ""
+			}
+			nextCursor = session.EncodeProjectSessionCursor(boundary)
 			sessions = sessions[:pageSize]
 		}
 	}

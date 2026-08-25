@@ -1,4 +1,4 @@
-import type { Attachment } from '../domain/types';
+import type { Attachment, DiffComment } from '../domain/types';
 import type { HubContext } from '../app/config';
 
 export const STORAGE_BASE_KEYS = {
@@ -64,6 +64,48 @@ export function writeJSON(storage: Storage, key: string, value: unknown): void {
   } catch {
     /* Storage pressure/private mode. */
   }
+}
+
+function normalizeQueuedDiffComment(entry: unknown, ownerSessionId = ''): DiffComment | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const raw = entry as Record<string, unknown>;
+  const side = String(raw.side || '').toLowerCase();
+  const line = Number(raw.line) || 0;
+  const path = String(raw.path || '');
+  // Legacy queues (pre-Preact UI) stored the text as `instruction`.
+  const body = String(raw.body ?? raw.instruction ?? '').trim();
+  if (!path || !body || (side !== 'old' && side !== 'new') || line <= 0) return null;
+  const comment: DiffComment = { path, side, line, body };
+  if (raw.id) comment.id = String(raw.id);
+  const sessionId = String(raw.sessionId || ownerSessionId || '');
+  if (sessionId) comment.sessionId = sessionId;
+  if (raw.scope) comment.scope = String(raw.scope);
+  const context = raw.context ?? raw.line_text;
+  if (context != null && context !== '') comment.context = String(context);
+  const seq = Number(raw.fileChangeSeq ?? raw.file_change_seq) || 0;
+  if (seq > 0) comment.fileChangeSeq = seq;
+  return comment;
+}
+
+export function readDiffCommentQueue(storage: Storage, key: string): DiffComment[] {
+  const raw = readJSON<unknown>(storage, key, null);
+  if (Array.isArray(raw))
+    return raw
+      .map((entry) => normalizeQueuedDiffComment(entry))
+      .filter((comment): comment is DiffComment => comment !== null);
+  // Legacy format: { v: 1, sessions: { [sessionId]: { mode, items: [...] } } }.
+  const sessions = (raw as { sessions?: unknown } | null)?.sessions;
+  if (!sessions || typeof sessions !== 'object') return [];
+  const comments: DiffComment[] = [];
+  for (const [sessionId, value] of Object.entries(sessions as Record<string, unknown>)) {
+    const items = (value as { items?: unknown } | null)?.items;
+    for (const item of Array.isArray(items) ? items : []) {
+      const comment = normalizeQueuedDiffComment(item, sessionId);
+      if (comment) comments.push(comment);
+    }
+  }
+  writeJSON(storage, key, comments);
+  return comments;
 }
 
 export interface PendingIntent {

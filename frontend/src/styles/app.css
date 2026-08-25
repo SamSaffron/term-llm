@@ -2388,8 +2388,11 @@ select {
 }
 
 .session-meta {
-  font-size: 0.77rem;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--text-muted);
+  font-size: 0.77rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -3808,7 +3811,6 @@ dialog.chip-popover::backdrop {
 .markdown-body code,
 .compaction-raw,
 .tool-details pre,
-.tool-entry-args .arg-value,
 .approval-path {
   direction: ltr;
   text-align: left;
@@ -4002,24 +4004,48 @@ dialog.chip-popover::backdrop {
 }
 
 .tool-arrow {
-  transition: transform 0.14s ease;
   color: var(--text-muted);
   width: 1rem;
   text-align: center;
   flex-shrink: 0;
 }
 
-.tool-toggle[aria-expanded='true'] .tool-arrow {
-  transform: rotate(90deg);
+.tool-arrow svg {
+  display: block;
+  width: 0.82rem;
+  height: 0.82rem;
+  margin-inline: auto;
+  transition: transform 0.14s ease;
+}
+
+.tool-toggle[aria-expanded='true'] .tool-arrow,
+.tool-group-toggle[aria-expanded='true'] .tool-arrow {
   color: var(--text);
 }
 
+.tool-toggle[aria-expanded='true'] .tool-arrow svg,
+.tool-group-toggle[aria-expanded='true'] .tool-arrow svg {
+  transform: rotate(90deg);
+}
+
+/* The tool name is never truncated; the summary yields space instead. */
 .tool-name {
+  flex-shrink: 0;
   font-weight: 600;
-  min-width: 0;
   white-space: nowrap;
+}
+
+.tool-summary {
+  min-width: 0;
   overflow: hidden;
+  color: var(--text-muted);
+  font:
+    0.74rem ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-status {
@@ -4027,6 +4053,14 @@ dialog.chip-popover::backdrop {
   color: var(--text-muted);
   font-size: 0.78rem;
   flex-shrink: 0;
+}
+
+.tool-status.done {
+  color: var(--accent-green);
+}
+
+.tool-status.error {
+  color: var(--accent-red, #ef4444);
 }
 
 .tool-details {
@@ -4082,11 +4116,6 @@ dialog.chip-popover::backdrop {
   background: var(--surface-2);
 }
 
-.tool-group-toggle[aria-expanded='true'] .tool-arrow {
-  transform: rotate(90deg);
-  color: var(--text);
-}
-
 .tool-group-summary {
   font-weight: 600;
   min-width: 0;
@@ -4103,24 +4132,19 @@ dialog.chip-popover::backdrop {
 
 .tool-group-entry {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.15rem 0.75rem;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0 0.75rem;
   font-size: 0.88rem;
 }
 
-.tool-group-entry .tool-entry-name {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tool-group-entry .tool-entry-status {
-  margin-left: auto;
-  color: var(--accent-amber);
-  font-size: 0.76rem;
+.tool-entry-icon {
   flex-shrink: 0;
+  width: 1.1rem;
+  padding-top: 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .tool-group-entry-body {
@@ -4141,84 +4165,23 @@ dialog.chip-popover::backdrop {
   background: transparent;
 }
 
-.tool-group-entry .tool-entry-status.done {
-  color: var(--accent-green);
+/* Nested toggles drop the card padding so their status glyphs line up
+   with the group header's, which keeps its own 0.75rem inset. */
+.tool-group-entry-body .tool-toggle {
+  padding: 0.45rem 0;
+  gap: 0.45rem;
+  border-radius: 6px;
 }
 
-.tool-group-entry .tool-entry-status.error {
-  color: var(--accent-red, #ef4444);
-}
-
-.tool-entry-args {
-  padding: 0.25rem 0.75rem 0.35rem 2rem;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-.tool-entry-args .arg-line {
-  display: flex;
-  gap: 0.4rem;
-}
-
-.tool-entry-args .arg-label {
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.tool-entry-args .arg-value {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-all;
-  min-width: 0;
+.tool-group-entry-body .tool-details {
+  border-top: 0;
+  padding: 0.1rem 0 0.55rem;
 }
 
 .message.guardian-notice {
   color: var(--accent-amber);
   background: color-mix(in srgb, var(--accent-amber) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent-amber) 25%, transparent);
-}
-
-.tool-entry-guardian {
-  margin: 0 0.75rem 0.45rem 2rem;
-  display: grid;
-  gap: 0.2rem;
-  font-size: 0.76rem;
-}
-
-.tool-guardian-review {
-  display: flex;
-  gap: 0.4rem;
-  color: var(--accent-amber);
-}
-
-.tool-guardian-review.approved {
-  color: var(--accent-green);
-}
-
-.tool-guardian-review.denied,
-.tool-guardian-review.error {
-  color: var(--accent-red, #ef4444);
-}
-
-.tool-guardian-text {
-  color: inherit;
-}
-
-.tool-guardian-badge {
-  margin-left: auto;
-  color: var(--accent-green);
-  font-size: 0.72rem;
-  white-space: nowrap;
-}
-
-.tool-guardian-badge.denied {
-  color: var(--accent-red, #ef4444);
-}
-
-.tool-guardian-badge.warning {
-  color: var(--accent-amber);
 }
 
 .subagent-result {
@@ -7661,6 +7624,29 @@ dialog.chip-popover::backdrop {
   line-height: 1.35;
 }
 
+/* The Preact UI hosts the project picker inside the generic `.modal` shell,
+   which already pads its content; strip the edge-to-edge spacing the
+   standalone project modal used and align radii with the modal inputs. */
+.modal .project-modal-fields {
+  padding: 0.2rem 0 0;
+}
+
+.modal .project-choice {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.modal .project-path-control input {
+  border-radius: 8px 0 0 8px;
+}
+
+.modal .project-browse-button {
+  border-radius: 0 8px 8px 0;
+}
+
+.modal .project-resolution-summary {
+  margin: 1rem 0 0;
+}
+
 .project-modal-footer {
   display: flex;
   align-items: center;
@@ -7927,13 +7913,8 @@ dialog.chip-popover::backdrop {
   opacity: 0.68;
 }
 
-.session-title {
-  display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
-}
-
 .session-pin {
+  margin-right: 0.35rem;
   color: var(--text-muted);
   font-size: 0.55rem;
 }
@@ -7973,30 +7954,25 @@ dialog.chip-popover::backdrop {
   display: flex;
 }
 
-.project-group {
+/* Flip dropdown menus above their trigger when the viewport has no room below. */
+.session-menu.open-up {
+  top: auto;
+  bottom: calc(100% + 0.35rem);
+}
+
+.session-menu.project-menu.open-up {
+  top: auto;
+  bottom: calc(100% + 0.25rem);
+}
+
+/* Anchor the project menu to the header row, not the whole expanded group. */
+.project-group-header {
   position: relative;
 }
 
 .project-group-toggle {
   overflow: hidden;
   text-align: left;
-}
-
-.project-group-label {
-  flex: 1 1 auto;
-  text-align: left;
-}
-
-.project-count {
-  flex: none;
-  min-width: 1.35rem;
-  padding: 0.08rem 0.35rem;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-muted);
-  font-size: 0.68rem;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
 }
 
 .project-unavailable-badge {
@@ -8007,8 +7983,7 @@ dialog.chip-popover::backdrop {
 }
 
 .sidebar-loading,
-.sidebar-error,
-.sidebar-load-more {
+.sidebar-error {
   margin: 0.4rem 0.55rem;
   color: var(--text-muted);
   font-size: 0.78rem;
@@ -8018,8 +7993,7 @@ dialog.chip-popover::backdrop {
   color: var(--danger);
 }
 
-.sidebar-error button,
-.sidebar-load-more {
+.sidebar-error button {
   margin-left: 0.4rem;
   padding: 0.25rem 0.45rem;
   border: 1px solid var(--border);
@@ -8193,36 +8167,6 @@ dialog.chip-popover::backdrop {
 
 .tool-group .message.tool {
   width: 100%;
-}
-
-.tool-toggle .tool-arrow svg {
-  width: 0.82rem;
-  height: 0.82rem;
-}
-
-.tool-toggle[aria-expanded='true'] .tool-arrow {
-  transform: none;
-}
-
-.tool-toggle[aria-expanded='true'] .tool-arrow svg {
-  transform: rotate(90deg);
-}
-
-.tool-summary {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font:
-    0.74rem ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-status.done {
-  color: var(--accent-green);
 }
 
 .tool-result {
@@ -8468,7 +8412,6 @@ mark.diff-word {
 }
 
 .widgets-modal-list,
-.project-picker-list,
 .worktree-list,
 .skills-list {
   display: grid;
@@ -8476,7 +8419,6 @@ mark.diff-word {
 }
 
 .widget-row,
-.project-picker-row,
 .worktree-row,
 .skill-row {
   appearance: none;
@@ -8496,7 +8438,6 @@ mark.diff-word {
 }
 
 .widget-row:hover,
-.project-picker-row:hover,
 .worktree-row:hover,
 .skill-row:hover,
 .worktree-row.selected,
@@ -8506,7 +8447,6 @@ mark.diff-word {
 }
 
 .widget-row small,
-.project-picker-row small,
 .worktree-row small,
 .skill-row small {
   grid-column: 1 / -1;

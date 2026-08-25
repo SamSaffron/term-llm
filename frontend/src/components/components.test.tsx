@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/preact';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
@@ -330,6 +330,9 @@ describe('Preact-owned chat surfaces', () => {
     expect(group).toHaveAttribute('aria-expanded', 'false');
     expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
+    const failed = document.querySelector('.tool-status.error');
+    expect(failed).toHaveTextContent('✕');
+    expect(failed).not.toHaveTextContent('error');
   });
 
   it('ports the compact turn-copy control and transient copied feedback', async () => {
@@ -474,6 +477,26 @@ describe('Preact-owned chat surfaces', () => {
     expect(
       container.querySelector('.hub-agent-link[aria-current="true"] .hub-agent-name'),
     ).toHaveTextContent('Dev');
+  });
+
+  it('auto-loads older sidebar conversations through the pagination sentinels', async () => {
+    const store = createStore();
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', sessions: [], has_more: true, next_cursor: 'cursor-1' },
+    ];
+    store.noProjectCursor.value = 'no-project-cursor';
+    store.loadMoreProject = vi.fn(async () => undefined);
+    store.loadMoreNoProject = vi.fn(async () => undefined);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    expect(container.querySelectorAll('.project-pagination-sentinel')).toHaveLength(2);
+    expect(container.querySelector('.sidebar-load-more')).toBeNull();
+    await waitFor(() => expect(store.loadMoreProject).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(store.loadMoreNoProject).toHaveBeenCalled());
   });
 
   it('debounces project mentions with session/worktree context and keeps agent matches', async () => {

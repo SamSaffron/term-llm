@@ -1,13 +1,84 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { Project, Session } from '../domain/types';
 import { displayName } from '../app/config';
 import { readJSON, writeJSON } from '../platform/storage';
 import { Icon } from './Icon';
 
+/** Flip a dropdown menu above its trigger when it would overflow the viewport. */
+function useMenuFlip(open: boolean) {
+  const menu = useRef<HTMLDivElement>(null);
+  const [up, setUp] = useState(false);
+  useLayoutEffect(() => {
+    if (!open) {
+      setUp(false);
+      return;
+    }
+    const rect = menu.current?.getBoundingClientRect();
+    if (rect && rect.bottom > window.innerHeight - 8 && rect.top - rect.height > 8) setUp(true);
+  }, [open]);
+  return { menu, up };
+}
+
+/** Auto-loads older conversations when scrolled into view, like the old sidebar. */
+function PaginationSentinel({ load }: { load: () => Promise<void> }) {
+  const node = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const loader = useRef(load);
+  loader.current = load;
+  const fallbackFired = useRef(false);
+  useEffect(() => {
+    const target = node.current;
+    if (!target || state !== 'idle') return;
+    const trigger = async () => {
+      setState('loading');
+      try {
+        await loader.current();
+        setState('idle');
+      } catch {
+        setState('error');
+        setTimeout(() => setState('idle'), 5000);
+      }
+    };
+    if (typeof IntersectionObserver !== 'function') {
+      if (fallbackFired.current) return;
+      fallbackFired.current = true;
+      const timer = setTimeout(() => void trigger(), 0);
+      return () => clearTimeout(timer);
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer.disconnect();
+        void trigger();
+      },
+      // Prefetch well before the sentinel is visible so scrolling feels
+      // continuous instead of pausing at the bottom of the list.
+      { rootMargin: '480px 0px' },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [state]);
+  return (
+    <div
+      ref={node}
+      class={`project-pagination-sentinel ${state === 'idle' ? '' : state}`}
+      role="status"
+      aria-label={
+        state === 'loading'
+          ? 'Loading older conversations'
+          : 'More conversations load automatically'
+      }
+    >
+      {state === 'error' ? 'Couldn’t load older conversations' : ''}
+    </div>
+  );
+}
+
 function SessionMenu({ session }: { session: Session }) {
   const store = useStore();
   const [open, setOpen] = useState(false);
+  const { menu, up } = useMenuFlip(open);
   const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -31,11 +102,12 @@ function SessionMenu({ session }: { session: Session }) {
           setOpen(!open);
         }}
       >
-        •••
+        ⋯
       </button>
       {open && (
         <div
-          class="session-menu"
+          ref={menu}
+          class={`session-menu ${up ? 'open-up' : ''}`}
           role="menu"
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => {
@@ -149,6 +221,15 @@ function ProjectGroup({ project }: { project: Project }) {
   );
   const [open, setOpen] = useState(expansion[project.id] !== false);
   const [menu, setMenu] = useState(false);
+  const { menu: menuRef, up } = useMenuFlip(menu);
+  useEffect(() => {
+    if (!menu) return;
+    const close = (event: MouseEvent) => {
+      if (!(event.target as HTMLElement).closest('.project-group-header')) setMenu(false);
+    };
+    addEventListener('click', close);
+    return () => removeEventListener('click', close);
+  }, [menu]);
   const toggle = () => {
     const value = !open;
     setOpen(value);
@@ -163,12 +244,17 @@ function ProjectGroup({ project }: { project: Project }) {
       data-project-id={project.id}
     >
       <div class="project-group-header">
-        <button class="project-group-toggle" type="button" aria-expanded={open} onClick={toggle}>
+        <button
+          class="project-group-toggle"
+          type="button"
+          aria-expanded={open}
+          title={project.path || `${open ? 'Collapse' : 'Expand'} ${project.name}`}
+          onClick={toggle}
+        >
           <span class="project-group-label">{project.name}</span>
           {project.available === false && (
             <span class="project-unavailable-badge">Unavailable</span>
           )}
-          <span class="project-count">{project.sessionCount ?? sessions.length}</span>
           <span class="project-group-chevron">
             <Icon name="chevron-right" />
           </span>
@@ -179,12 +265,19 @@ function ProjectGroup({ project }: { project: Project }) {
           aria-label={`Actions for project ${project.name}`}
           aria-haspopup="menu"
           aria-expanded={menu}
-          onClick={() => setMenu(!menu)}
+          onClick={(event) => {
+            event.stopPropagation();
+            setMenu(!menu);
+          }}
         >
-          •••
+          ⋯
         </button>
         {menu && (
-          <div class="session-menu project-menu open" role="menu">
+          <div
+            ref={menuRef}
+            class={`session-menu project-menu open ${up ? 'open-up' : ''}`}
+            role="menu"
+          >
             <button
               role="menuitem"
               onClick={() => {
@@ -237,12 +330,7 @@ function ProjectGroup({ project }: { project: Project }) {
             />
           ))}
           {project.has_more && (
-            <button
-              class="sidebar-load-more"
-              onClick={() => void store.loadMoreProject(project.id)}
-            >
-              Load more
-            </button>
+            <PaginationSentinel load={() => store.loadMoreProject(project.id)} />
           )}
         </div>
       )}
@@ -456,6 +544,9 @@ export function Sidebar() {
                       {regular.map((session) => (
                         <SessionRow key={session.id} session={session} />
                       ))}
+                      {store.noProjectCursor.value && (
+                        <PaginationSentinel load={() => store.loadMoreNoProject()} />
+                      )}
                     </section>
                   )}
                 </>

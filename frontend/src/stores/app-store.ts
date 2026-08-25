@@ -38,8 +38,8 @@ import {
   clearDraft,
   migrateScopedStorage,
   persistPendingIntent,
+  readDiffCommentQueue,
   readDrafts,
-  readJSON,
   readPendingIntents,
   removeSessionPendingIntents,
   saveDraft,
@@ -178,6 +178,7 @@ export class AppStore {
 
   readonly sessions = signal<Session[]>([]);
   readonly projects = signal<Project[]>([]);
+  readonly noProjectCursor = signal('');
   readonly projectsEnabled = signal(false);
   readonly worktreesEnabled = signal(false);
   readonly activeProjectId = signal('');
@@ -307,7 +308,7 @@ export class AppStore {
     this.diff.value = {
       ...this.diff.value,
       width: Math.max(320, Number(storage.getItem(this.keys.diffSidebarWidth)) || 420),
-      comments: readJSON<DiffComment[]>(storage, this.keys.diffCommentQueue, []),
+      comments: readDiffCommentQueue(storage, this.keys.diffCommentQueue),
     };
     syncTokenCookie(config.prefix, this.token.value);
     this.api = new APIClient(config, {
@@ -572,6 +573,9 @@ export class AppStore {
     const groups = listFrom(data, 'groups');
     const projects: Project[] = [];
     const ungrouped: Session[] = [...direct];
+    // Flat listings (projects disabled) carry the cursor at the top level;
+    // project sidebars carry it on their "no project" group below.
+    this.noProjectCursor.value = String(data.next_cursor || '');
     for (const group of groups) {
       const sessions = listFrom(group, 'sessions', 'items');
       const projectSource =
@@ -580,6 +584,7 @@ export class AppStore {
           : null;
       if (!projectSource || group.no_project) {
         ungrouped.push(...sessions.map((entry) => this.sessionFrom(entry)));
+        this.noProjectCursor.value = String(group.next_cursor || '');
         continue;
       }
       const project: Project = {
@@ -2495,6 +2500,21 @@ export class AppStore {
           }
         : entry,
     );
+  }
+
+  async loadMoreNoProject(): Promise<void> {
+    const cursor = this.noProjectCursor.peek();
+    if (!cursor) return;
+    const data = await this.endpoints.noProjectSessions(cursor, this.showHidden.value);
+    const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
+    const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
+    incoming.forEach((entry) =>
+      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry)),
+    );
+    this.sessions.value = [...existing.values()].sort(
+      (a, b) => Number(b.pinned) - Number(a.pinned) || b.lastMessageAt - a.lastMessageAt,
+    );
+    this.noProjectCursor.value = String(data.next_cursor || '');
   }
   async mutateProject(project: Project, patch: Record<string, unknown>): Promise<void> {
     await this.endpoints.patchProject(project.id, patch);

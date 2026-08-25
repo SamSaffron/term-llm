@@ -1336,6 +1336,80 @@ func TestProjectSessionCursorIsBoundToItsGroup(t *testing.T) {
 	}
 }
 
+func TestFlatSessionListingPaginatesWhenProjectsDisabled(t *testing.T) {
+	srv, store := newServeProjectTestServer(t)
+	srv.projectsEnabled = false
+	ctx := context.Background()
+	legacy := &session.Project{Name: "Legacy", CanonicalDir: t.TempDir()}
+	if err := store.CreateProject(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		now := base.Add(time.Duration(i) * time.Minute)
+		sess := &session.Session{ID: fmt.Sprintf("flat-%d", i), Provider: "mock", Model: "mock", Origin: session.OriginWeb, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		if i < 2 {
+			// Sessions assigned while projects were enabled still belong to
+			// the flat listing once projects are disabled.
+			sess.ProjectID = legacy.ID
+			sess.CWD = legacy.CanonicalDir
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := func(target string) ([]string, string) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		srv.handleSessions(rr, httptest.NewRequest(http.MethodGet, target, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", target, rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Sessions []struct {
+				ID string `json:"id"`
+			} `json:"sessions"`
+			NextCursor string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(payload.Sessions))
+		for _, entry := range payload.Sessions {
+			ids = append(ids, entry.ID)
+		}
+		return ids, payload.NextCursor
+	}
+
+	got, cursor := page("/v1/sessions?limit=2")
+	if len(got) != 2 || cursor == "" {
+		t.Fatalf("first page = %v cursor=%q, want 2 sessions and a cursor", got, cursor)
+	}
+	for steps := 0; cursor != ""; steps++ {
+		if steps > 5 {
+			t.Fatalf("cursor never terminated; collected %v", got)
+		}
+		ids, next := page("/v1/sessions?limit=2&cursor=" + cursor)
+		got = append(got, ids...)
+		cursor = next
+	}
+	if len(got) != 5 {
+		t.Fatalf("paged sessions = %v, want all 5", got)
+	}
+	want := []string{"flat-4", "flat-3", "flat-2", "flat-1", "flat-0"}
+	for i, id := range want {
+		if got[i] != id {
+			t.Fatalf("paged order = %v, want %v", got, want)
+		}
+	}
+
+	// Legacy callers without an explicit limit keep the bounded snapshot.
+	all, legacyCursor := page("/v1/sessions")
+	if len(all) != 5 || legacyCursor != "" {
+		t.Fatalf("legacy listing = %d sessions cursor=%q, want 5 and no cursor", len(all), legacyCursor)
+	}
+}
+
 func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	srv, store := newServeProjectTestServer(t)
 	ctx := context.Background()

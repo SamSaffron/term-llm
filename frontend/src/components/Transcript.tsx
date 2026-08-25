@@ -96,10 +96,12 @@ function Tool({ tool }: { tool: ToolCall }) {
           <span class="tool-name">{tool.name}</span>
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
           <span
-            class={`tool-status ${tool.status === 'done' ? 'done' : ''}`}
-            aria-label={tool.status === 'done' ? 'Complete' : undefined}
+            class={`tool-status ${tool.status === 'done' ? 'done' : tool.status === 'error' ? 'error' : ''}`}
+            aria-label={
+              tool.status === 'done' ? 'Complete' : tool.status === 'error' ? 'Failed' : undefined
+            }
           >
-            {tool.status === 'running' ? 'running…' : tool.status === 'done' ? '✓' : tool.status}
+            {tool.status === 'running' ? 'running…' : tool.status === 'done' ? '✓' : '✕'}
           </span>
         </button>
         {expanded && (
@@ -213,7 +215,9 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>
         {visible.map((tool) => (
           <div class="tool-group-entry" key={tool.id}>
-            <span aria-hidden="true">{toolIcon(tool.name)}</span>
+            <span class="tool-entry-icon" aria-hidden="true">
+              {toolIcon(tool.name)}
+            </span>
             <div class="tool-group-entry-body">
               <Tool tool={tool} />
             </div>

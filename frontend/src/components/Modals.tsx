@@ -985,49 +985,81 @@ function ProjectPicker() {
   const breadcrumbs = Array.isArray(listing?.breadcrumbs)
     ? (listing.breadcrumbs as Array<Record<string, unknown>>)
     : [];
+  const pickerProjects = store.projects.value.filter(
+    (project) => !project.archived && project.available !== false,
+  );
   return (
     <Overlay title={target ? 'Move to project' : 'Add project'} wide>
-      {target && (
-        <section class="project-assign-notice">
-          <span class="project-assign-notice-icon">i</span>
-          <div>
-            <strong>Grouping only</strong>
-            <span>Moving a conversation does not move files or change its current workspace.</span>
-          </div>
-        </section>
-      )}
-      <div class="project-picker-list">
-        {target && (
-          <button class="project-picker-row" onClick={() => void store.assignProject('')}>
-            <strong>No project</strong>
-          </button>
-        )}
-        {store.projects.value
-          .filter((project) => !project.archived && project.available !== false)
-          .map((project) => (
-            <button
-              class="project-picker-row"
-              key={project.id}
-              onClick={() =>
-                target
-                  ? void store.assignProject(project.id)
-                  : void store.startProjectChat(project.id)
-              }
-            >
-              <strong>{project.name}</strong>
-              <small>{project.path}</small>
-              {project.git && <span class="project-browser-badge">Git</span>}
-            </button>
-          ))}
-      </div>
       <section class="project-modal-fields">
+        {target && (
+          <section class="project-assign-notice">
+            <span class="project-assign-notice-icon">i</span>
+            <div>
+              <strong>Grouping only</strong>
+              <span>
+                Moving a conversation does not move files or change its current workspace.
+              </span>
+            </div>
+          </section>
+        )}
+        {(target || pickerProjects.length > 0) && (
+          <div class="project-field">
+            <div class="project-field-label-row">
+              <span class="project-field-label">
+                {target ? 'Choose a project' : 'Existing projects'}
+              </span>
+            </div>
+            <div class="project-choice-list">
+              {target && (
+                <button
+                  type="button"
+                  class="project-choice"
+                  onClick={() => void store.assignProject('')}
+                >
+                  <span class="project-choice-content">
+                    <span class="project-choice-name-row">
+                      <strong class="project-choice-name">No project</strong>
+                    </span>
+                    <span class="project-choice-meta">
+                      Show this conversation outside any project group.
+                    </span>
+                  </span>
+                </button>
+              )}
+              {pickerProjects.map((project) => (
+                <button
+                  type="button"
+                  class="project-choice"
+                  key={project.id}
+                  onClick={() =>
+                    target
+                      ? void store.assignProject(project.id)
+                      : void store.startProjectChat(project.id)
+                  }
+                >
+                  <span class="project-choice-content">
+                    <span class="project-choice-name-row">
+                      <strong class="project-choice-name">{project.name}</strong>
+                      {project.git && <span class="project-browser-badge">Git</span>}
+                    </span>
+                    <code class="project-choice-path">{project.path}</code>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div class="project-field">
-          <label class="project-field-label" for="projectPathInput">
-            Folder on server
-          </label>
+          <div class="project-field-label-row">
+            <label class="project-field-label" for="projectPathInput">
+              Folder on server
+            </label>
+            {target && <span class="project-field-optional">Or create a new project</span>}
+          </div>
           <div class="project-path-control">
             <input
               id="projectPathInput"
+              class="project-path-input"
               aria-label="Project path"
               placeholder="/path/to/project"
               value={path}

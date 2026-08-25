@@ -63,6 +63,52 @@ describe('AppStore compatibility behavior', () => {
     expect(store.projectsEnabled.value).toBe(false);
   });
 
+  it('paginates the no-project sidebar group with the cursor from the sidebar payload', async () => {
+    const store = new AppStore(config);
+    store.projectsEnabled.value = true;
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [
+        {
+          no_project: true,
+          next_cursor: 'cursor-1',
+          sessions: [{ id: 's1', title: 'First', created_at: 2, last_message_at: 2 }],
+        },
+      ],
+    }));
+    await store.refreshSidebar();
+    expect(store.noProjectCursor.value).toBe('cursor-1');
+
+    store.endpoints.noProjectSessions = vi.fn(async () => ({
+      sessions: [{ id: 's2', title: 'Older', created_at: 1, last_message_at: 1 }],
+    }));
+    await store.loadMoreNoProject();
+    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('cursor-1', false);
+    expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
+    expect(store.noProjectCursor.value).toBe('');
+    // Without a cursor no further pages are requested.
+    await store.loadMoreNoProject();
+    expect(store.endpoints.noProjectSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it('paginates the flat listing with the top-level cursor when projects are disabled', async () => {
+    const store = new AppStore(config);
+    store.projectsEnabled.value = false;
+    store.endpoints.sessions = vi.fn(async () => ({
+      sessions: [{ id: 's1', title: 'First', created_at: 2, last_message_at: 2 }],
+      next_cursor: 'flat-cursor',
+    }));
+    await store.refreshSidebar();
+    expect(store.noProjectCursor.value).toBe('flat-cursor');
+
+    store.endpoints.noProjectSessions = vi.fn(async () => ({
+      sessions: [{ id: 's2', title: 'Older', created_at: 1, last_message_at: 1 }],
+    }));
+    await store.loadMoreNoProject();
+    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('flat-cursor', false);
+    expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
+    expect(store.noProjectCursor.value).toBe('');
+  });
+
   it('restores persisted pending intents and draft worktree selection', () => {
     const seed = new AppStore(config);
     persistPendingIntent(localStorage, seed.keys.pendingIntents, 's1', {
