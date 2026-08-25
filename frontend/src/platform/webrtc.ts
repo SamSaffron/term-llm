@@ -1,8 +1,25 @@
 // Browser WebRTC frame protocol bridge.
-interface SignalingSession { session_id: string; stun_url?: string; turn_url?: string; turn_username?: string; turn_credential?: string }
-interface SignalingAnswer { type: 'answer'; sdp: string }
-interface WebRTCFrame { id: string; type: 'headers' | 'chunk' | 'done'; headers?: HeadersInit; status?: number; data?: string }
-interface WebRTCRequestInit extends RequestInit { __termLLMRetrySafe?: boolean }
+interface SignalingSession {
+  session_id: string;
+  stun_url?: string;
+  turn_url?: string;
+  turn_username?: string;
+  turn_credential?: string;
+}
+interface SignalingAnswer {
+  type: 'answer';
+  sdp: string;
+}
+interface WebRTCFrame {
+  id: string;
+  type: 'headers' | 'chunk' | 'done';
+  headers?: HeadersInit;
+  status?: number;
+  data?: string;
+}
+interface WebRTCRequestInit extends RequestInit {
+  __termLLMRetrySafe?: boolean;
+}
 interface PendingRequest {
   onHeaders(headers: HeadersInit, status: number): void;
   onChunk(fragment: string): void;
@@ -10,7 +27,8 @@ interface PendingRequest {
   onDone(status: number): void;
   fallback(): void;
 }
-const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 //
 // When window.__WEBRTC_ENABLED__ is set (injected by the server at startup),
@@ -51,7 +69,7 @@ export function installWebRTC(): () => void {
   const MUTATION_RESPONSE_TIMEOUT_MS = 5000;
   const responseTimeoutForMethod = (method: string): number => {
     const normalized = String(method || 'GET').toUpperCase();
-    return (normalized === 'GET' || normalized === 'HEAD' || normalized === 'OPTIONS')
+    return normalized === 'GET' || normalized === 'HEAD' || normalized === 'OPTIONS'
       ? READ_RESPONSE_TIMEOUT_MS
       : MUTATION_RESPONSE_TIMEOUT_MS;
   };
@@ -93,9 +111,7 @@ export function installWebRTC(): () => void {
   // ---------------------------------------------------------------------------
 
   const _params = new URLSearchParams(window.location.search);
-  const diagEnabled = !!(
-    window.__WEBRTC_DIAGNOSTICS__ || _params.has('webrtc_diag')
-  );
+  const diagEnabled = !!(window.__WEBRTC_DIAGNOSTICS__ || _params.has('webrtc_diag'));
   const forceTurn = _params.has('webrtc_turn');
 
   // t0 is the timestamp when initWebRTC() starts, used for relative timings.
@@ -103,13 +119,19 @@ export function installWebRTC(): () => void {
 
   function diag(msg: string): void {
     if (!diagEnabled) return;
-    const elapsed = diagT0 ? ((performance.now() - diagT0) | 0) : 0;
+    const elapsed = diagT0 ? (performance.now() - diagT0) | 0 : 0;
     console.log('[webrtc] +' + elapsed + 'ms ' + msg);
   }
 
   function diagQueue(state: string, fallback: string): void {
-    diag('queue state=' + state + ' pending=' + pendingRequests.size +
-      ' fallback=' + (fallback || 'none'));
+    diag(
+      'queue state=' +
+        state +
+        ' pending=' +
+        pendingRequests.size +
+        ' fallback=' +
+        (fallback || 'none'),
+    );
   }
 
   function noteTransportState(transportState: string, detail: string): void {
@@ -149,10 +171,15 @@ export function installWebRTC(): () => void {
         diag('session request failed status=' + sessResp.status);
         return false;
       }
-      const sess = await sessResp.json() as SignalingSession;
-      diag('session created id=' + sess.session_id +
-        (sess.turn_url ? ' turn=' + sess.turn_url : ' no-turn') +
-        ' (' + ((performance.now() - sessStart) | 0) + 'ms)');
+      const sess = (await sessResp.json()) as SignalingSession;
+      diag(
+        'session created id=' +
+          sess.session_id +
+          (sess.turn_url ? ' turn=' + sess.turn_url : ' no-turn') +
+          ' (' +
+          ((performance.now() - sessStart) | 0) +
+          'ms)',
+      );
 
       // 2. Build ICE server list from session response.
       const iceServers: RTCIceServer[] = [
@@ -181,12 +208,19 @@ export function installWebRTC(): () => void {
       // Log each ICE candidate as it is gathered.
       peer.onicecandidate = (e) => {
         if (e.candidate) {
-          diag('ICE candidate: ' + e.candidate.type + ' ' +
-            e.candidate.protocol + ' ' + e.candidate.address +
-            ':' + e.candidate.port +
-            (e.candidate.relatedAddress
-              ? ' raddr=' + e.candidate.relatedAddress + ':' + e.candidate.relatedPort
-              : ''));
+          diag(
+            'ICE candidate: ' +
+              e.candidate.type +
+              ' ' +
+              e.candidate.protocol +
+              ' ' +
+              e.candidate.address +
+              ':' +
+              e.candidate.port +
+              (e.candidate.relatedAddress
+                ? ' raddr=' + e.candidate.relatedAddress + ':' + e.candidate.relatedPort
+                : ''),
+          );
         } else {
           diag('ICE candidate gathering done (null sentinel)');
         }
@@ -206,7 +240,10 @@ export function installWebRTC(): () => void {
       // Whatever candidates are ready at that point are included in the offer.
       await Promise.race([
         new Promise<void>((resolve) => {
-          if (peer.iceGatheringState === 'complete') { resolve(); return; }
+          if (peer.iceGatheringState === 'complete') {
+            resolve();
+            return;
+          }
           peer.onicegatheringstatechange = () => {
             if (peer.iceGatheringState === 'complete') resolve();
           };
@@ -228,7 +265,11 @@ export function installWebRTC(): () => void {
       });
       if (!sendResp.ok) {
         diag('offer post failed status=' + sendResp.status);
-        try { peer.close(); } catch { /* ignore */ }
+        try {
+          peer.close();
+        } catch {
+          /* ignore */
+        }
         return false;
       }
       diag('offer sent (' + ((performance.now() - offerStart) | 0) + 'ms)');
@@ -237,7 +278,11 @@ export function installWebRTC(): () => void {
       const answer = await pollForAnswer(sess.session_id, ICE_TIMEOUT_MS);
       if (!answer) {
         diag('answer timeout — falling back to HTTPS');
-        try { peer.close(); } catch { /* ignore */ }
+        try {
+          peer.close();
+        } catch {
+          /* ignore */
+        }
         return false; // timed out — HTTPS remains available while retrying
       }
       diag('answer received');
@@ -248,12 +293,16 @@ export function installWebRTC(): () => void {
       await Promise.race([
         waitForDataChannelOpen(dc),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('WebRTC connect timeout')), ICE_TIMEOUT_MS)
+          setTimeout(() => reject(new Error('WebRTC connect timeout')), ICE_TIMEOUT_MS),
         ),
       ]);
 
       // 8. Connected — wire up handlers and patch fetch.
-      if (disposed) { dc.close(); peer.close(); return false; }
+      if (disposed) {
+        dc.close();
+        peer.close();
+        return false;
+      }
       dataChannel = dc;
       dc.onmessage = handleMessage;
       dc.onclose = () => onChannelClose(dc);
@@ -269,7 +318,11 @@ export function installWebRTC(): () => void {
       const message = errorMessage(error);
       diag('init error: ' + message);
       if (pc) {
-        try { pc.close(); } catch { /* ignore */ }
+        try {
+          pc.close();
+        } catch {
+          /* ignore */
+        }
       }
       noteTransportState('https', message || 'negotiation-failed');
       return false;
@@ -278,13 +331,19 @@ export function installWebRTC(): () => void {
 
   function waitForDataChannelOpen(dc: RTCDataChannel): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      if (dc.readyState === 'open') { resolve(); return; }
+      if (dc.readyState === 'open') {
+        resolve();
+        return;
+      }
       dc.onopen = () => resolve();
       dc.onerror = () => reject(new Error('WebRTC data channel failed to open'));
     });
   }
 
-  async function pollForAnswer(sessionId: string, timeoutMs: number): Promise<SignalingAnswer | null> {
+  async function pollForAnswer(
+    sessionId: string,
+    timeoutMs: number,
+  ): Promise<SignalingAnswer | null> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
@@ -292,11 +351,11 @@ export function installWebRTC(): () => void {
       try {
         const resp = await originalFetch(
           SIGNALING_URL + '/signal?session_id=' + encodeURIComponent(sessionId),
-          { signal: AbortSignal.timeout(Math.min(remaining, 12000)) }
+          { signal: AbortSignal.timeout(Math.min(remaining, 12000)) },
         );
         if (resp.status === 204 || resp.status === 408) continue;
         if (!resp.ok) return null;
-        const msg = await resp.json() as SignalingAnswer;
+        const msg = (await resp.json()) as SignalingAnswer;
         if (msg.type === 'answer') return msg;
       } catch (_e) {
         return null;
@@ -311,7 +370,11 @@ export function installWebRTC(): () => void {
 
   function handleMessage(event: MessageEvent<string>): void {
     let frame: WebRTCFrame;
-    try { frame = JSON.parse(event.data) as WebRTCFrame; } catch { return; }
+    try {
+      frame = JSON.parse(event.data) as WebRTCFrame;
+    } catch {
+      return;
+    }
 
     const pending = pendingRequests.get(frame.id);
     if (!pending) return;
@@ -319,8 +382,11 @@ export function installWebRTC(): () => void {
     if (frame.type === 'headers') {
       pending.onHeaders(frame.headers || {}, frame.status || 200);
     } else if (frame.type === 'chunk') {
-      try { pending.onChunk(frame.data || ''); }
-      catch (error) { pending.onChunkFailure(error); }
+      try {
+        pending.onChunk(frame.data || '');
+      } catch (error) {
+        pending.onChunkFailure(error);
+      }
     } else if (frame.type === 'done') {
       pending.onDone(frame.status || 200);
       pendingRequests.delete(frame.id);
@@ -378,7 +444,14 @@ export function installWebRTC(): () => void {
     const index = Math.min(renegotiationAttempt, RENEGOTIATION_BACKOFF_MS.length - 1);
     const delay = immediate ? 0 : RENEGOTIATION_BACKOFF_MS[index];
     noteTransportState('retrying', reason + ':' + delay + 'ms');
-    diag('renegotiation scheduled reason=' + reason + ' delay=' + delay + 'ms attempt=' + (renegotiationAttempt + 1));
+    diag(
+      'renegotiation scheduled reason=' +
+        reason +
+        ' delay=' +
+        delay +
+        'ms attempt=' +
+        (renegotiationAttempt + 1),
+    );
     renegotiationTimer = setTimeout(async () => {
       renegotiationTimer = null;
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -386,7 +459,7 @@ export function installWebRTC(): () => void {
         return;
       }
       renegotiating = true;
-      let connected = false;
+      let connected: boolean;
       try {
         connected = await initWebRTC();
       } finally {
@@ -406,7 +479,11 @@ export function installWebRTC(): () => void {
     const previousChannel = dataChannel;
     dataChannel = null;
     if (previousChannel) {
-      try { previousChannel.close(); } catch (_e) { /* ignore */ }
+      try {
+        previousChannel.close();
+      } catch (_e) {
+        /* ignore */
+      }
     }
     restoreHTTPSFetch('data channel degraded');
 
@@ -420,11 +497,17 @@ export function installWebRTC(): () => void {
   // Patched fetch — routes /v1/ API calls over the data channel
   // ---------------------------------------------------------------------------
 
-  const patchedFetch: typeof fetch = (input: RequestInfo | URL, options: WebRTCRequestInit = {}): Promise<Response> => {
+  const patchedFetch: typeof fetch = (
+    input: RequestInfo | URL,
+    options: WebRTCRequestInit = {},
+  ): Promise<Response> => {
     const urlStr = input instanceof Request ? input.url : input.toString();
     if (dataChannel && dataChannel.readyState === 'open' && isAPIPath(urlStr)) {
       // Bodies over 100 KiB expand again inside one data-channel frame, so use HTTPS.
-      if ((options.body === undefined || typeof options.body === 'string') && (!options.body || new Blob([options.body]).size <= 100 * 1024)) {
+      if (
+        (options.body === undefined || typeof options.body === 'string') &&
+        (!options.body || new Blob([options.body]).size <= 100 * 1024)
+      ) {
         return webrtcFetch(urlStr, options);
       }
     }
@@ -447,13 +530,16 @@ export function installWebRTC(): () => void {
       let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
       let resolved = false;
       let gotResponse = false;
-      let requestSent = false, serverDone = false;
+      let requestSent = false,
+        serverDone = false;
       let cleaned = false;
       const reqStart = performance.now();
 
       const urlObj = new URL(urlStr, window.location.origin);
       const method = (options.method || 'GET').toUpperCase();
-      const transportRetrySafe = responseTimeoutForMethod(method) === READ_RESPONSE_TIMEOUT_MS || options.__termLLMRetrySafe === true;
+      const transportRetrySafe =
+        responseTimeoutForMethod(method) === READ_RESPONSE_TIMEOUT_MS ||
+        options.__termLLMRetrySafe === true;
       const responseTimeoutMs = responseTimeoutForMethod(method);
       const path = urlObj.pathname + (urlObj.search || '');
       const signal = options.signal;
@@ -463,19 +549,29 @@ export function installWebRTC(): () => void {
       diag('→ ' + method + ' ' + path + ' (' + bodySize + 'b)');
 
       const stream = new ReadableStream<Uint8Array>({
-        start(controller) { streamController = controller; },
-        cancel() { cleanup('stream-cancel'); },
+        start(controller) {
+          streamController = controller;
+        },
+        cancel() {
+          cleanup('stream-cancel');
+        },
       });
 
       let responseBytes = 0;
       let streamWatchdogId: ReturnType<typeof setTimeout> | null = null;
 
       function resolveOnce(response: Response | Promise<Response>): void {
-        if (!resolved) { resolved = true; resolve(response); }
+        if (!resolved) {
+          resolved = true;
+          resolve(response);
+        }
       }
 
       function rejectOnce(error: unknown): void {
-        if (!resolved) { resolved = true; reject(error); }
+        if (!resolved) {
+          resolved = true;
+          reject(error);
+        }
       }
 
       // Central cleanup — idempotent, called from every exit path. If the
@@ -487,30 +583,52 @@ export function installWebRTC(): () => void {
         cleaned = true;
         clearTimeout(responseTimer);
         if (streamWatchdogId !== null) clearTimeout(streamWatchdogId);
-        if (requestSent && !serverDone && (gotResponse || transportRetrySafe) && requestChannel?.readyState === 'open') {
+        if (
+          requestSent &&
+          !serverDone &&
+          (gotResponse || transportRetrySafe) &&
+          requestChannel?.readyState === 'open'
+        ) {
           try {
             requestChannel.send(JSON.stringify({ id: reqId, type: 'cancel' }));
             diag('↯ cancel ' + method + ' ' + path + ' reason=' + reason);
-          } catch (_e) { /* channel shutdown will cancel the peer context */ }
+          } catch (_e) {
+            /* channel shutdown will cancel the peer context */
+          }
         }
         pendingRequests.delete(reqId);
         if (abortHandler && signal) {
-          try { signal.removeEventListener('abort', abortHandler); } catch { /* ignore */ }
+          try {
+            signal.removeEventListener('abort', abortHandler);
+          } catch {
+            /* ignore */
+          }
         }
         diag('cleanup ' + method + ' ' + path + ' reason=' + reason);
-        diagQueue('settled', reason.includes('fallback') || reason.includes('timeout') ? 'https' : 'none');
+        diagQueue(
+          'settled',
+          reason.includes('fallback') || reason.includes('timeout') ? 'https' : 'none',
+        );
       }
 
       function closeStream(): void {
         if (streamController) {
-          try { streamController.close(); } catch (_e) { /* ignore */ }
+          try {
+            streamController.close();
+          } catch (_e) {
+            /* ignore */
+          }
           streamController = null;
         }
       }
 
       function errorStream(error: unknown): void {
         if (streamController) {
-          try { streamController.error(error); } catch { /* ignore */ }
+          try {
+            streamController.error(error);
+          } catch {
+            /* ignore */
+          }
           streamController = null;
         }
       }
@@ -519,8 +637,15 @@ export function installWebRTC(): () => void {
       function resetStreamWatchdog(): void {
         if (streamWatchdogId !== null) clearTimeout(streamWatchdogId);
         streamWatchdogId = setTimeout(() => {
-          diag('⚠ stream watchdog (' + STREAM_WATCHDOG_MS + 'ms) ' +
-            method + ' ' + path + ' — closing stale stream');
+          diag(
+            '⚠ stream watchdog (' +
+              STREAM_WATCHDOG_MS +
+              'ms) ' +
+              method +
+              ' ' +
+              path +
+              ' — closing stale stream',
+          );
           cleanup('stream-watchdog');
           closeStream();
           triggerRenegotiation();
@@ -531,7 +656,15 @@ export function installWebRTC(): () => void {
       const responseTimer = setTimeout(() => {
         if (gotResponse) return; // already got data, all good
 
-        diag('⚠ timeout (' + responseTimeoutMs + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
+        diag(
+          '⚠ timeout (' +
+            responseTimeoutMs +
+            'ms) ' +
+            method +
+            ' ' +
+            path +
+            ' — falling back to HTTPS',
+        );
 
         cleanup('first-frame-timeout');
         closeStream();
@@ -539,7 +672,9 @@ export function installWebRTC(): () => void {
         if (transportRetrySafe) {
           resolveOnce(originalFetch(urlStr, options));
         } else {
-          const error = new Error('WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.');
+          const error = new Error(
+            'WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.',
+          );
           error.name = 'UnknownMutationOutcomeError';
           rejectOnce(error);
         }
@@ -587,7 +722,8 @@ export function installWebRTC(): () => void {
       }
 
       // Null-body statuses per Fetch spec — Response constructor forbids a body.
-      const nullBodyStatus = (status: number): boolean => status === 101 || status === 204 || status === 205 || status === 304;
+      const nullBodyStatus = (status: number): boolean =>
+        status === 101 || status === 204 || status === 205 || status === 304;
 
       // fallback: called by drainPendingToHTTPS() when the channel dies.
       function fallback(): void {
@@ -600,7 +736,9 @@ export function installWebRTC(): () => void {
             diag('↩ fallback ' + method + ' ' + path);
             resolveOnce(originalFetch(urlStr, options));
           } else {
-            const error = new Error('WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.');
+            const error = new Error(
+              'WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.',
+            );
             error.name = 'UnknownMutationOutcomeError';
             rejectOnce(error);
           }
@@ -614,7 +752,10 @@ export function installWebRTC(): () => void {
       pendingRequests.set(reqId, {
         onHeaders(headers, status) {
           markGotResponse();
-          const response = new Response(nullBodyStatus(status) ? null : stream, { status, headers: new Headers(headers) });
+          const response = new Response(nullBodyStatus(status) ? null : stream, {
+            status,
+            headers: new Headers(headers),
+          });
           maybeReloadForUIVersion(response);
           resolveOnce(response);
         },
@@ -637,8 +778,19 @@ export function installWebRTC(): () => void {
           serverDone = true;
           markGotResponse();
           const latency = (performance.now() - reqStart) | 0;
-          diag('← ' + status + ' ' + method + ' ' + path +
-            ' (' + responseBytes + 'b, ' + latency + 'ms)');
+          diag(
+            '← ' +
+              status +
+              ' ' +
+              method +
+              ' ' +
+              path +
+              ' (' +
+              responseBytes +
+              'b, ' +
+              latency +
+              'ms)',
+          );
           cleanup('done');
           if (!resolved) {
             resolveOnce(new Response(nullBodyStatus(status) ? null : stream, { status }));
@@ -654,9 +806,8 @@ export function installWebRTC(): () => void {
 
       // Carry over all request headers (Authorization, session_id, Content-Type, …).
       if (options.headers) {
-        const h = options.headers instanceof Headers
-          ? options.headers
-          : new Headers(options.headers);
+        const h =
+          options.headers instanceof Headers ? options.headers : new Headers(options.headers);
         for (const [k, v] of h.entries()) headersObj[k] = v;
       }
 
@@ -665,7 +816,8 @@ export function installWebRTC(): () => void {
         method,
         path,
         headers: Object.keys(headersObj).length ? headersObj : undefined,
-        body: typeof options.body === 'string' && options.body ? strToBase64(options.body) : undefined,
+        body:
+          typeof options.body === 'string' && options.body ? strToBase64(options.body) : undefined,
       };
 
       try {
@@ -700,7 +852,7 @@ export function installWebRTC(): () => void {
   const startPersistentWebRTC = async (): Promise<void> => {
     if (disposed || renegotiating || (dataChannel && dataChannel.readyState === 'open')) return;
     renegotiating = true;
-    let connected = false;
+    let connected: boolean;
     try {
       connected = await initWebRTC();
     } finally {
@@ -720,8 +872,10 @@ export function installWebRTC(): () => void {
     window.addEventListener('online', onOnline);
     window.addEventListener('pageshow', onPageShow);
   }
-  if (typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', onVisibility);
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startPersistentWebRTC);
+  if (typeof document.addEventListener === 'function')
+    document.addEventListener('visibilitychange', onVisibility);
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', startPersistentWebRTC);
   else void startPersistentWebRTC();
 
   return () => {
@@ -735,7 +889,13 @@ export function installWebRTC(): () => void {
     renegotiationTimer = null;
     const channel = dataChannel;
     dataChannel = null;
-    if (channel) { try { channel.close(); } catch { /* ignore */ } }
+    if (channel) {
+      try {
+        channel.close();
+      } catch {
+        /* ignore */
+      }
+    }
     if (window.fetch === patchedFetch) window.fetch = originalFetch;
     for (const request of [...pendingRequests.values()]) request.fallback();
     pendingRequests.clear();

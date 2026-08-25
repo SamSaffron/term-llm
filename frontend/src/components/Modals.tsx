@@ -1,138 +1,1315 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
-import type { Goal } from '../domain/types';
 import { Icon } from './Icon';
 
-function Overlay({ title, children, wide = false, close = true, onEscape }: { title: string; children: preact.ComponentChildren; wide?: boolean; close?: boolean; onEscape?: () => void }) {
-  const store = useStore(); const dialog = useRef<HTMLDivElement>(null); const label = useId();
+function Overlay({
+  title,
+  children,
+  wide = false,
+  close = true,
+  onEscape,
+}: {
+  title: string;
+  children: preact.ComponentChildren;
+  wide?: boolean;
+  close?: boolean;
+  onEscape?: () => void;
+}) {
+  const store = useStore();
+  const dialog = useRef<HTMLDivElement>(null);
+  const label = useId();
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null; const shell = document.getElementById('appShell'); if (shell) shell.inert = true;
-    requestAnimationFrame(() => dialog.current?.querySelector<HTMLElement>('[autofocus],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])')?.focus());
-    return () => { if (shell) shell.inert = false; previous?.focus({ preventScroll: true }); };
+    const previous = document.activeElement as HTMLElement | null;
+    const shell = document.getElementById('appShell');
+    if (shell) shell.inert = true;
+    requestAnimationFrame(() =>
+      dialog.current
+        ?.querySelector<HTMLElement>(
+          '[autofocus],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
+        )
+        ?.focus(),
+    );
+    return () => {
+      if (shell) shell.inert = false;
+      previous?.focus({ preventScroll: true });
+    };
   }, []);
-  return <div class="modal-overlay" role="presentation" onMouseDown={(event) => { if (close && event.target === event.currentTarget) store.modal.value = ''; }}><div ref={dialog} class={`modal ${wide ? 'wide-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby={label} tabIndex={-1} onKeyDown={(event) => {
-    if (event.key === 'Escape' && (close || onEscape)) { event.preventDefault(); if (onEscape) onEscape(); else store.modal.value = ''; return; } if (event.key !== 'Tab') return;
-    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])')]; if (!items.length) { event.preventDefault(); event.currentTarget.focus(); return; }
-    const first = items[0]; const last = items.at(-1)!; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-  }}><div class="modal-title-row"><h2 id={label}>{title}</h2>{close && <button class="icon-btn" type="button" aria-label={`Close ${title}`} onClick={() => { store.modal.value = ''; }}><Icon name="close" /></button>}</div>{children}</div></div>;
+  return (
+    <div
+      class="modal-overlay"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (close && event.target === event.currentTarget) store.modal.value = '';
+      }}
+    >
+      <div
+        ref={dialog}
+        class={`modal ${wide ? 'wide-modal' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={label}
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && (close || onEscape)) {
+            event.preventDefault();
+            if (onEscape) onEscape();
+            else store.modal.value = '';
+            return;
+          }
+          if (event.key !== 'Tab') return;
+          const items = [
+            ...event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+            ),
+          ];
+          if (!items.length) {
+            event.preventDefault();
+            event.currentTarget.focus();
+            return;
+          }
+          const first = items[0];
+          const last = items.at(-1)!;
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+      >
+        <div class="modal-title-row">
+          <h2 id={label}>{title}</h2>
+          {close && (
+            <button
+              class="icon-btn"
+              type="button"
+              aria-label={`Close ${title}`}
+              onClick={() => {
+                store.modal.value = '';
+              }}
+            >
+              <Icon name="close" />
+            </button>
+          )}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 function Settings() {
-  const store = useStore(); const [token, setToken] = useState(store.token.value); const [provider, setProvider] = useState(store.selectedProvider.value); const [model, setModel] = useState(store.selectedModel.value); const [effort, setEffort] = useState(store.selectedEffort.value); const [reasoning, setReasoning] = useState(store.selectedReasoningMode.value); const [agent, setAgent] = useState(store.selectedAgent.value);
-  const save = () => { store.setPreference('provider', provider); store.setPreference('model', model); store.setPreference('effort', effort); store.setPreference('reasoning', reasoning); store.setPreference('agent', agent); store.saveSettings(token); };
-  return <Overlay title="Settings" close={!store.authRequired.value}><div class="settings-field"><label class="settings-label" for="providerSelect">Provider</label><select class="settings-select" id="providerSelect" value={provider} onChange={(event) => { setProvider(event.currentTarget.value); setModel(''); void store.loadModels(event.currentTarget.value).catch(() => undefined); }}><option value="">Auto (server default)</option>{store.providers.value.map((entry) => <option value={entry.id} key={entry.id}>{entry.name}</option>)}</select></div>
-    <div class="settings-field"><label class="settings-label" for="modelSelect">Model</label><select class="settings-select" id="modelSelect" value={model} onChange={(event) => setModel(event.currentTarget.value)}><option value="">Auto (server default)</option>{store.models.value.map((entry) => <option value={entry.id} key={entry.id}>{entry.name || entry.id}</option>)}</select></div>
-    <div class="settings-field"><label class="settings-label" for="effortSelect">Effort</label><select class="settings-select" id="effortSelect" value={effort} onChange={(event) => setEffort(event.currentTarget.value)}>{['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => <option value={value} key={value}>{value || 'Auto (server default)'}</option>)}</select></div>
-    <div class="settings-field"><label class="settings-label" for="reasoningModeSelect">Reasoning mode</label><select class="settings-select" id="reasoningModeSelect" value={reasoning} onChange={(event) => setReasoning(event.currentTarget.value)}><option value="standard">Standard</option><option value="pro">Pro</option></select></div>
-    {store.config.agentNames.length > 1 && <div class="settings-field"><label class="settings-label" for="agentSelect">Agent</label><select class="settings-select" id="agentSelect" value={agent} onChange={(event) => setAgent(event.currentTarget.value)}><option value="">Default</option>{store.config.agentNames.map((name) => <option value={name} key={name}>{name}</option>)}</select></div>}
-    <div class="settings-field"><label class="settings-label" for="authTokenInput">Bearer token</label><input id="authTokenInput" type="password" value={token} placeholder="paste your bearer token" autoComplete="off" onInput={(event) => setToken(event.currentTarget.value)} /></div>
-    <div class="settings-field"><label class="settings-toggle"><span class="settings-label settings-label-inline">Show hidden sessions</span><input type="checkbox" checked={store.showHidden.value} onChange={(event) => { store.showHidden.value = event.currentTarget.checked; store.storage.setItem(store.keys.showHiddenSessions, event.currentTarget.checked ? '1' : '0'); void store.refreshSidebar(); }} /></label></div>
-    <div class="settings-field"><label class="settings-toggle"><span class="settings-label settings-label-inline">Show widgets in sidebar</span><input type="checkbox" checked={store.showWidgets.value} onChange={(event) => { store.showWidgets.value = event.currentTarget.checked; store.storage.setItem(store.keys.showWidgetsSidebar, event.currentTarget.checked ? '1' : '0'); }} /></label></div>
-    {store.config.vapidKey && <div class="settings-field"><button class="btn" disabled={store.notificationsEnabled.value} onClick={() => void store.enableNotifications()}>{store.notificationsEnabled.value ? 'Notifications enabled' : 'Enable notifications'}</button></div>}
-    <div class="modal-actions">{!store.authRequired.value && <button class="btn" type="button" onClick={() => { store.modal.value = ''; }}>Cancel</button>}<button class="btn primary" type="button" onClick={save}>Save</button></div>
-  </Overlay>;
+  const store = useStore();
+  const [token, setToken] = useState(store.token.value);
+  const [provider, setProvider] = useState(store.selectedProvider.value);
+  const [model, setModel] = useState(store.selectedModel.value);
+  const [effort, setEffort] = useState(store.selectedEffort.value);
+  const [reasoning, setReasoning] = useState(store.selectedReasoningMode.value);
+  const [agent, setAgent] = useState(store.selectedAgent.value);
+  const save = () => {
+    store.setPreference('provider', provider);
+    store.setPreference('model', model);
+    store.setPreference('effort', effort);
+    store.setPreference('reasoning', reasoning);
+    store.setPreference('agent', agent);
+    store.saveSettings(token);
+  };
+  return (
+    <Overlay title="Settings" close={!store.authRequired.value}>
+      <div class="settings-field">
+        <label class="settings-label" for="providerSelect">
+          Provider
+        </label>
+        <select
+          class="settings-select"
+          id="providerSelect"
+          value={provider}
+          onChange={(event) => {
+            setProvider(event.currentTarget.value);
+            setModel('');
+            void store.loadModels(event.currentTarget.value).catch(() => undefined);
+          }}
+        >
+          <option value="">Auto (server default)</option>
+          {store.providers.value.map((entry) => (
+            <option value={entry.id} key={entry.id}>
+              {entry.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label" for="modelSelect">
+          Model
+        </label>
+        <select
+          class="settings-select"
+          id="modelSelect"
+          value={model}
+          onChange={(event) => setModel(event.currentTarget.value)}
+        >
+          <option value="">Auto (server default)</option>
+          {store.models.value.map((entry) => (
+            <option value={entry.id} key={entry.id}>
+              {entry.name || entry.id}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label" for="effortSelect">
+          Effort
+        </label>
+        <select
+          class="settings-select"
+          id="effortSelect"
+          value={effort}
+          onChange={(event) => setEffort(event.currentTarget.value)}
+        >
+          {['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => (
+            <option value={value} key={value}>
+              {value || 'Auto (server default)'}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label" for="reasoningModeSelect">
+          Reasoning mode
+        </label>
+        <select
+          class="settings-select"
+          id="reasoningModeSelect"
+          value={reasoning}
+          onChange={(event) => setReasoning(event.currentTarget.value)}
+        >
+          <option value="standard">Standard</option>
+          <option value="pro">Pro</option>
+        </select>
+      </div>
+      {store.config.agentNames.length > 1 && (
+        <div class="settings-field">
+          <label class="settings-label" for="agentSelect">
+            Agent
+          </label>
+          <select
+            class="settings-select"
+            id="agentSelect"
+            value={agent}
+            onChange={(event) => setAgent(event.currentTarget.value)}
+          >
+            <option value="">Default</option>
+            {store.config.agentNames.map((name) => (
+              <option value={name} key={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <div class="settings-field">
+        <label class="settings-label" for="authTokenInput">
+          Bearer token
+        </label>
+        <input
+          id="authTokenInput"
+          type="password"
+          value={token}
+          placeholder="paste your bearer token"
+          autoComplete="off"
+          onInput={(event) => setToken(event.currentTarget.value)}
+        />
+      </div>
+      <div class="settings-field">
+        <label class="settings-toggle">
+          <span class="settings-label settings-label-inline">Show hidden sessions</span>
+          <input
+            type="checkbox"
+            checked={store.showHidden.value}
+            onChange={(event) => {
+              store.showHidden.value = event.currentTarget.checked;
+              store.storage.setItem(
+                store.keys.showHiddenSessions,
+                event.currentTarget.checked ? '1' : '0',
+              );
+              void store.refreshSidebar();
+            }}
+          />
+        </label>
+      </div>
+      <div class="settings-field">
+        <label class="settings-toggle">
+          <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
+          <input
+            type="checkbox"
+            checked={store.showWidgets.value}
+            onChange={(event) => {
+              store.showWidgets.value = event.currentTarget.checked;
+              store.storage.setItem(
+                store.keys.showWidgetsSidebar,
+                event.currentTarget.checked ? '1' : '0',
+              );
+            }}
+          />
+        </label>
+      </div>
+      {store.config.vapidKey && (
+        <div class="settings-field">
+          <button
+            class="btn"
+            disabled={store.notificationsEnabled.value}
+            onClick={() => void store.enableNotifications()}
+          >
+            {store.notificationsEnabled.value ? 'Notifications enabled' : 'Enable notifications'}
+          </button>
+        </div>
+      )}
+      <div class="modal-actions">
+        {!store.authRequired.value && (
+          <button
+            class="btn"
+            type="button"
+            onClick={() => {
+              store.modal.value = '';
+            }}
+          >
+            Cancel
+          </button>
+        )}
+        <button class="btn primary" type="button" onClick={save}>
+          Save
+        </button>
+      </div>
+    </Overlay>
+  );
 }
 
 function Rename() {
-  const store = useStore(); const target = store.renameTarget.value; const [title, setTitle] = useState(target?.title || ''); const [detail, setDetail] = useState(''); const [loading, setLoading] = useState(false);
-  return <Overlay title="Rename session"><p>Choose the label shown in the sidebar, or let AI suggest a better title.</p><div class="settings-field"><label class="settings-label">Session name</label><input autoFocus value={title} onInput={(event) => setTitle(event.currentTarget.value)} /></div>{detail && <div class="settings-field"><label class="settings-label">Detail</label><textarea value={detail} onInput={(event) => setDetail(event.currentTarget.value)} /></div>}<button class="btn rename-improve-btn" disabled={loading} onClick={() => { setLoading(true); void store.improveTitle().then((value) => { setTitle(value.title); setDetail(value.detail); }).finally(() => setLoading(false)); }}>{loading ? 'Improving…' : 'Improve title with AI'}</button><div class="modal-actions"><button class="btn" onClick={() => { store.modal.value = ''; }}>Cancel</button><button class="btn primary" onClick={() => void store.renameSession(title)}>Save</button></div></Overlay>;
+  const store = useStore();
+  const target = store.renameTarget.value;
+  const [title, setTitle] = useState(target?.title || '');
+  const [detail, setDetail] = useState('');
+  const [loading, setLoading] = useState(false);
+  return (
+    <Overlay title="Rename session">
+      <p>Choose the label shown in the sidebar, or let AI suggest a better title.</p>
+      <div class="settings-field">
+        <label class="settings-label">Session name</label>
+        <input autoFocus value={title} onInput={(event) => setTitle(event.currentTarget.value)} />
+      </div>
+      {detail && (
+        <div class="settings-field">
+          <label class="settings-label">Detail</label>
+          <textarea value={detail} onInput={(event) => setDetail(event.currentTarget.value)} />
+        </div>
+      )}
+      <button
+        class="btn rename-improve-btn"
+        disabled={loading}
+        onClick={() => {
+          setLoading(true);
+          void store
+            .improveTitle()
+            .then((value) => {
+              setTitle(value.title);
+              setDetail(value.detail);
+            })
+            .finally(() => setLoading(false));
+        }}
+      >
+        {loading ? 'Improving…' : 'Improve title with AI'}
+      </button>
+      <div class="modal-actions">
+        <button
+          class="btn"
+          onClick={() => {
+            store.modal.value = '';
+          }}
+        >
+          Cancel
+        </button>
+        <button class="btn primary" onClick={() => void store.renameSession(title)}>
+          Save
+        </button>
+      </div>
+    </Overlay>
+  );
 }
 
 function AskUser() {
-  const store = useStore(); const prompt = store.askUser.value; const [answers, setAnswers] = useState<Record<number, string[]>>({}); const [custom, setCustom] = useState<Record<number, string>>({}); const [tab, setTab] = useState(0); const [error, setError] = useState(''); const [sending, setSending] = useState(false); if (!prompt) return null;
+  const store = useStore();
+  const prompt = store.askUser.value;
+  const [answers, setAnswers] = useState<Record<number, string[]>>({});
+  const [custom, setCustom] = useState<Record<number, string>>({});
+  const [tab, setTab] = useState(0);
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  if (!prompt) return null;
   const question = prompt.questions[tab];
-  const validate = (item: typeof prompt.questions[number], index: number) => {
-    const selected = answers[index] || []; const own = custom[index]?.trim();
-    if (item.multi_select && !selected.length) throw new Error(`${item.header || `Question ${index + 1}`}: choose at least one option.`);
-    if (!item.multi_select && !selected.length && !own) throw new Error(`${item.header || `Question ${index + 1}`}: choose or enter an answer.`);
-    return { question_index: index, header: item.header, selected: own || selected.join(', '), selected_list: item.multi_select ? selected : undefined, is_custom: Boolean(own), is_multi_select: Boolean(item.multi_select) };
+  const validate = (item: (typeof prompt.questions)[number], index: number) => {
+    const selected = answers[index] || [];
+    const own = custom[index]?.trim();
+    if (item.multi_select && !selected.length)
+      throw new Error(`${item.header || `Question ${index + 1}`}: choose at least one option.`);
+    if (!item.multi_select && !selected.length && !own)
+      throw new Error(`${item.header || `Question ${index + 1}`}: choose or enter an answer.`);
+    return {
+      question_index: index,
+      header: item.header,
+      selected: own || selected.join(', '),
+      selected_list: item.multi_select ? selected : undefined,
+      is_custom: Boolean(own),
+      is_multi_select: Boolean(item.multi_select),
+    };
   };
   const submit = async (cancelled = false) => {
-    setError(''); setSending(true);
-    try { await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled); }
-    catch (value) { setError(value instanceof Error ? value.message : String(value)); }
-    finally { setSending(false); }
+    setError('');
+    setSending(true);
+    try {
+      await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled);
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    } finally {
+      setSending(false);
+    }
   };
-  const dismiss = () => { if (tab > 0) setTab(tab - 1); else void submit(true); };
-  const next = () => { try { validate(question, tab); setError(''); setTab(tab + 1); } catch (value) { setError(value instanceof Error ? value.message : String(value)); } };
-  return <Overlay title={prompt.questions.length > 1 ? `Question ${tab + 1} of ${prompt.questions.length}` : 'Answer question'} close={false} onEscape={dismiss}><p>The agent needs your input to continue.</p>{prompt.questions.length > 1 && <div class="ask-user-steps">{prompt.questions.map((_item, index) => <button class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`} onClick={() => setTab(index)}>{index + 1}</button>)}</div>}<fieldset class="ask-user-question"><legend class="ask-user-question-text">{question.header && <strong>{question.header}: </strong>}{question.question}</legend>{question.options?.map((option) => <label class="ask-user-option" key={option.label}><input type={question.multi_select ? 'checkbox' : 'radio'} name={`question-${tab}`} value={option.label} checked={(answers[tab] || []).includes(option.label)} onChange={(event) => { const current = answers[tab] || []; setAnswers({ ...answers, [tab]: question.multi_select ? event.currentTarget.checked ? [...current, option.label] : current.filter((value) => value !== option.label) : [option.label] }); setCustom({ ...custom, [tab]: '' }); }} /><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span></label>)}{!question.multi_select && <label class="ask-user-custom"><span>Other</span><textarea placeholder="Type your answer…" value={custom[tab] || ''} onInput={(event) => { setCustom({ ...custom, [tab]: event.currentTarget.value }); setAnswers({ ...answers, [tab]: [] }); }} /></label>}</fieldset>{error && <div class="modal-error">{error}</div>}<div class="modal-actions"><button class="btn" disabled={sending} onClick={dismiss}>{tab > 0 ? 'Back' : sending ? 'Dismissing…' : 'Dismiss'}</button>{tab < prompt.questions.length - 1 ? <button class="btn primary" disabled={sending} onClick={next}>Next</button> : <button class="btn primary" disabled={sending} onClick={() => void submit()}>{sending ? 'Sending…' : 'Continue'}</button>}</div></Overlay>;
+  const dismiss = () => {
+    if (tab > 0) setTab(tab - 1);
+    else void submit(true);
+  };
+  const next = () => {
+    try {
+      validate(question, tab);
+      setError('');
+      setTab(tab + 1);
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    }
+  };
+  return (
+    <Overlay
+      title={
+        prompt.questions.length > 1
+          ? `Question ${tab + 1} of ${prompt.questions.length}`
+          : 'Answer question'
+      }
+      close={false}
+      onEscape={dismiss}
+    >
+      <p>The agent needs your input to continue.</p>
+      {prompt.questions.length > 1 && (
+        <div class="ask-user-steps">
+          {prompt.questions.map((_item, index) => (
+            <button
+              class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
+              onClick={() => setTab(index)}
+            >
+              {index + 1}
+            </button>
+          ))}
+        </div>
+      )}
+      <fieldset class="ask-user-question">
+        <legend class="ask-user-question-text">
+          {question.header && <strong>{question.header}: </strong>}
+          {question.question}
+        </legend>
+        {question.options?.map((option) => (
+          <label class="ask-user-option" key={option.label}>
+            <input
+              type={question.multi_select ? 'checkbox' : 'radio'}
+              name={`question-${tab}`}
+              value={option.label}
+              checked={(answers[tab] || []).includes(option.label)}
+              onChange={(event) => {
+                const current = answers[tab] || [];
+                setAnswers({
+                  ...answers,
+                  [tab]: question.multi_select
+                    ? event.currentTarget.checked
+                      ? [...current, option.label]
+                      : current.filter((value) => value !== option.label)
+                    : [option.label],
+                });
+                setCustom({ ...custom, [tab]: '' });
+              }}
+            />
+            <span>
+              <strong>{option.label}</strong>
+              {option.description && <small>{option.description}</small>}
+            </span>
+          </label>
+        ))}
+        {!question.multi_select && (
+          <label class="ask-user-custom">
+            <span>Other</span>
+            <textarea
+              placeholder="Type your answer…"
+              value={custom[tab] || ''}
+              onInput={(event) => {
+                setCustom({ ...custom, [tab]: event.currentTarget.value });
+                setAnswers({ ...answers, [tab]: [] });
+              }}
+            />
+          </label>
+        )}
+      </fieldset>
+      {error && <div class="modal-error">{error}</div>}
+      <div class="modal-actions">
+        <button class="btn" disabled={sending} onClick={dismiss}>
+          {tab > 0 ? 'Back' : sending ? 'Dismissing…' : 'Dismiss'}
+        </button>
+        {tab < prompt.questions.length - 1 ? (
+          <button class="btn primary" disabled={sending} onClick={next}>
+            Next
+          </button>
+        ) : (
+          <button class="btn primary" disabled={sending} onClick={() => void submit()}>
+            {sending ? 'Sending…' : 'Continue'}
+          </button>
+        )}
+      </div>
+    </Overlay>
+  );
 }
 
 function Approval() {
-  const store = useStore(); const prompt = store.approval.value; const options = prompt?.options || []; const deny = options.find((option) => option.choice === 'deny')?.index ?? options.at(-1)?.index ?? 0; const [choice, setChoice] = useState(options.find((option) => option.choice !== 'deny')?.index ?? 0); const [resume, setResume] = useState(false); const [error, setError] = useState(''); if (!prompt) return null;
-  const decide = async (selected: number) => { try { await store.decideApproval(selected, resume); } catch (value) { setError(value instanceof Error ? value.message : String(value)); } };
-  return <Overlay title={prompt.title || 'Access Request'} close={false} onEscape={() => void decide(deny)}>{prompt.intro && <div class="approval-intro">{prompt.intro}</div>}{prompt.path && <code class="approval-path">{prompt.path}</code>}<div class="approval-body">{prompt.body}</div>{options.filter((option) => option.choice !== 'deny').map((option) => <label class="approval-option"><input type="radio" name="approval" checked={choice === option.index} onChange={() => setChoice(option.index)} />{option.label || option.title || option.choice}</label>)}{prompt.resumeAutoAvailable && <label><input type="checkbox" checked={resume} onChange={(event) => setResume(event.currentTarget.checked)} /> Resume Guardian auto-approval</label>}{prompt.note && <div class="approval-note">{prompt.note}</div>}{error && <div class="modal-error">{error}</div>}<div class="modal-actions"><button class="btn" onClick={() => void decide(deny)}>Deny</button><button class="btn primary" onClick={() => void decide(choice)}>Approve</button></div></Overlay>;
+  const store = useStore();
+  const prompt = store.approval.value;
+  const options = prompt?.options || [];
+  const deny =
+    options.find((option) => option.choice === 'deny')?.index ?? options.at(-1)?.index ?? 0;
+  const [choice, setChoice] = useState(
+    options.find((option) => option.choice !== 'deny')?.index ?? 0,
+  );
+  const [resume, setResume] = useState(false);
+  const [error, setError] = useState('');
+  if (!prompt) return null;
+  const decide = async (selected: number) => {
+    try {
+      await store.decideApproval(selected, resume);
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    }
+  };
+  return (
+    <Overlay
+      title={prompt.title || 'Access Request'}
+      close={false}
+      onEscape={() => void decide(deny)}
+    >
+      {prompt.intro && <div class="approval-intro">{prompt.intro}</div>}
+      {prompt.path && <code class="approval-path">{prompt.path}</code>}
+      <div class="approval-body">{prompt.body}</div>
+      {options
+        .filter((option) => option.choice !== 'deny')
+        .map((option) => (
+          <label class="approval-option">
+            <input
+              type="radio"
+              name="approval"
+              checked={choice === option.index}
+              onChange={() => setChoice(option.index)}
+            />
+            {option.label || option.title || option.choice}
+          </label>
+        ))}
+      {prompt.resumeAutoAvailable && (
+        <label>
+          <input
+            type="checkbox"
+            checked={resume}
+            onChange={(event) => setResume(event.currentTarget.checked)}
+          />{' '}
+          Resume Guardian auto-approval
+        </label>
+      )}
+      {prompt.note && <div class="approval-note">{prompt.note}</div>}
+      {error && <div class="modal-error">{error}</div>}
+      <div class="modal-actions">
+        <button class="btn" onClick={() => void decide(deny)}>
+          Deny
+        </button>
+        <button class="btn primary" onClick={() => void decide(choice)}>
+          Approve
+        </button>
+      </div>
+    </Overlay>
+  );
 }
 
-function MCP() { const store = useStore(); const state = store.mcp.value; return <Overlay title="MCP servers"><p>Turn on configured servers for this chat. Changes save immediately.</p>{state.loading && <p>Loading…</p>}{state.error && <div class="modal-error">{state.error}</div>}<div class="mcp-server-list">{state.available.map((name) => <label class="mcp-server-row" key={name}><span>{name}</span><input type="checkbox" checked={state.enabled.includes(name)} disabled={store.streaming.value} onChange={() => void store.toggleMCP(name)} /></label>)}</div></Overlay>; }
-function GoalModal() { const store = useStore(); const current = store.goal.value; const [objective, setObjective] = useState(current?.objective || ''); const [budget, setBudget] = useState(current?.token_budget ? String(current.token_budget) : ''); const save = () => void store.saveGoal({ objective: objective.trim(), token_budget: Number(budget) || undefined, status: 'active' }); return <Overlay title="Session goal"><p>Set a persistent objective the agent can keep pursuing across automatic continuations.</p><label class="settings-label">Objective</label><textarea class="goal-objective-input" rows={5} value={objective} onInput={(event) => setObjective(event.currentTarget.value)} /><label class="settings-label">Token budget (optional)</label><input type="number" min={1} value={budget} onInput={(event) => setBudget(event.currentTarget.value)} /><div class="modal-actions goal-actions">{current && <button class="btn" onClick={() => void store.saveGoal({ action: 'clear' })}>Clear</button>}{current?.status === 'paused' ? <button class="btn" onClick={() => void store.saveGoal({ action: 'resume' })}>Resume</button> : current && <button class="btn" onClick={() => void store.saveGoal({ action: 'pause' })}>Pause</button>}<button class="btn primary" disabled={!objective.trim()} onClick={save}>Set goal</button></div></Overlay>; }
-function Widgets() { const store = useStore(); return <Overlay title="Widgets"><div class="widgets-modal-list">{store.widgets.value.map((widget) => <a class="widget-row" key={widget.id} href={widget.url} title={widget.description}><span>{widget.name}{widget.state && widget.state !== 'stopped' ? ` · ${widget.state}` : ''}</span><span>→</span></a>)}</div></Overlay>; }
+function MCP() {
+  const store = useStore();
+  const state = store.mcp.value;
+  return (
+    <Overlay title="MCP servers">
+      <p>Turn on configured servers for this chat. Changes save immediately.</p>
+      {state.loading && <p>Loading…</p>}
+      {state.error && <div class="modal-error">{state.error}</div>}
+      <div class="mcp-server-list">
+        {state.available.map((name) => (
+          <label class="mcp-server-row" key={name}>
+            <span>{name}</span>
+            <input
+              type="checkbox"
+              checked={state.enabled.includes(name)}
+              disabled={store.streaming.value}
+              onChange={() => void store.toggleMCP(name)}
+            />
+          </label>
+        ))}
+      </div>
+    </Overlay>
+  );
+}
+function GoalModal() {
+  const store = useStore();
+  const current = store.goal.value;
+  const [objective, setObjective] = useState(current?.objective || '');
+  const [budget, setBudget] = useState(current?.token_budget ? String(current.token_budget) : '');
+  const save = () =>
+    void store.saveGoal({
+      objective: objective.trim(),
+      token_budget: Number(budget) || undefined,
+      status: 'active',
+    });
+  return (
+    <Overlay title="Session goal">
+      <p>Set a persistent objective the agent can keep pursuing across automatic continuations.</p>
+      <label class="settings-label">Objective</label>
+      <textarea
+        class="goal-objective-input"
+        rows={5}
+        value={objective}
+        onInput={(event) => setObjective(event.currentTarget.value)}
+      />
+      <label class="settings-label">Token budget (optional)</label>
+      <input
+        type="number"
+        min={1}
+        value={budget}
+        onInput={(event) => setBudget(event.currentTarget.value)}
+      />
+      <div class="modal-actions goal-actions">
+        {current && (
+          <button class="btn" onClick={() => void store.saveGoal({ action: 'clear' })}>
+            Clear
+          </button>
+        )}
+        {current?.status === 'paused' ? (
+          <button class="btn" onClick={() => void store.saveGoal({ action: 'resume' })}>
+            Resume
+          </button>
+        ) : (
+          current && (
+            <button class="btn" onClick={() => void store.saveGoal({ action: 'pause' })}>
+              Pause
+            </button>
+          )
+        )}
+        <button class="btn primary" disabled={!objective.trim()} onClick={save}>
+          Set goal
+        </button>
+      </div>
+    </Overlay>
+  );
+}
+function Widgets() {
+  const store = useStore();
+  return (
+    <Overlay title="Widgets">
+      <div class="widgets-modal-list">
+        {store.widgets.value.map((widget) => (
+          <a class="widget-row" key={widget.id} href={widget.url} title={widget.description}>
+            <span>
+              {widget.name}
+              {widget.state && widget.state !== 'stopped' ? ` · ${widget.state}` : ''}
+            </span>
+            <span>→</span>
+          </a>
+        ))}
+      </div>
+    </Overlay>
+  );
+}
 
 function BranchContext() {
-  const store = useStore(); const [focus, setFocus] = useState(''); const [mode, setMode] = useState<'choices' | 'focused'>('choices'); const anchor = store.branchTarget.value;
-  const choose = (context: 'clean' | 'notes' | 'focused') => { if (context === 'focused' && mode !== 'focused') { setMode('focused'); return; } void store.branchFrom(anchor, context, focus.trim()); };
-  return <Overlay title="Start a conversation path" onEscape={() => mode === 'focused' ? setMode('choices') : (store.modal.value = '')}><p>Choose how much context to carry after this turn.</p>{mode === 'choices' ? <div class="branch-context-choices"><button type="button" onClick={() => choose('clean')}><strong>Clean branch</strong><small>Continue only with context up to this turn.</small></button><button type="button" onClick={() => choose('notes')}><strong>Bring concise notes</strong><small>Prepare a short summary of useful later discoveries.</small></button><button type="button" onClick={() => choose('focused')}><strong>Focused context</strong><small>Tell the agent which later information matters.</small></button></div> : <div class="branch-context-focus"><label for="branchContextFocus">What should this path carry forward?</label><textarea id="branchContextFocus" autoFocus rows={5} value={focus} placeholder="For example: preserve the database findings, but not the abandoned UI approach." onInput={(event) => setFocus(event.currentTarget.value)} /><div class="modal-actions"><button class="btn" onClick={() => setMode('choices')}>Back</button><button class="btn primary" disabled={!focus.trim()} onClick={() => choose('focused')}>Create path</button></div></div>}<p class="branch-tree-note">Filesystem and tool side effects are not undone.</p></Overlay>;
+  const store = useStore();
+  const [focus, setFocus] = useState('');
+  const [mode, setMode] = useState<'choices' | 'focused'>('choices');
+  const anchor = store.branchTarget.value;
+  const choose = (context: 'clean' | 'notes' | 'focused') => {
+    if (context === 'focused' && mode !== 'focused') {
+      setMode('focused');
+      return;
+    }
+    void store.branchFrom(anchor, context, focus.trim());
+  };
+  return (
+    <Overlay
+      title="Start a conversation path"
+      onEscape={() => (mode === 'focused' ? setMode('choices') : (store.modal.value = ''))}
+    >
+      <p>Choose how much context to carry after this turn.</p>
+      {mode === 'choices' ? (
+        <div class="branch-context-choices">
+          <button type="button" onClick={() => choose('clean')}>
+            <strong>Clean branch</strong>
+            <small>Continue only with context up to this turn.</small>
+          </button>
+          <button type="button" onClick={() => choose('notes')}>
+            <strong>Bring concise notes</strong>
+            <small>Prepare a short summary of useful later discoveries.</small>
+          </button>
+          <button type="button" onClick={() => choose('focused')}>
+            <strong>Focused context</strong>
+            <small>Tell the agent which later information matters.</small>
+          </button>
+        </div>
+      ) : (
+        <div class="branch-context-focus">
+          <label for="branchContextFocus">What should this path carry forward?</label>
+          <textarea
+            id="branchContextFocus"
+            autoFocus
+            rows={5}
+            value={focus}
+            placeholder="For example: preserve the database findings, but not the abandoned UI approach."
+            onInput={(event) => setFocus(event.currentTarget.value)}
+          />
+          <div class="modal-actions">
+            <button class="btn" onClick={() => setMode('choices')}>
+              Back
+            </button>
+            <button class="btn primary" disabled={!focus.trim()} onClick={() => choose('focused')}>
+              Create path
+            </button>
+          </div>
+        </div>
+      )}
+      <p class="branch-tree-note">Filesystem and tool side effects are not undone.</p>
+    </Overlay>
+  );
 }
 
 function BranchTree() {
-  const store = useStore(); const tree = store.branchTree.value; const nodes = tree && Array.isArray(tree.nodes) ? tree.nodes as Array<Record<string, unknown>> : []; const active = String(tree?.active_session_id || store.activeSessionId.value); const root = String(tree?.root_session_id || '');
-  return <Overlay title={`${Math.max(1, Number(tree?.path_count) || nodes.length)} conversation paths`} wide><p>Switch between independently resumable paths in this conversation.</p><div class="branch-tree-list">{nodes.map((node, index) => {
-    const id = String(node.session_id || ''); const current = id === active; const session = store.sessions.value.find((entry) => entry.id === id || (node.session_number && entry.number === Number(node.session_number))); const role = String(node.anchor_role || 'assistant');
-    return <section class={`branch-tree-item ${current ? 'active' : ''}`} key={id || String(index)}><span class={`branch-tree-role ${role}`}>{role === 'user' ? 'U' : 'A'}</span><div class="branch-tree-item-content"><div class="branch-tree-item-title"><strong>{String(node.title || session?.title || `Path ${index + 1}`)}</strong>{id === root && <span class="project-browser-badge">Origin</span>}{current && <span class="project-browser-badge is-added">Current</span>}</div>{node.anchor_preview && <div class="branch-origin-preview">Branched after “{String(node.anchor_preview)}”</div>}<div class="branch-origin-meta">{node.session_number ? `Conversation #${String(node.session_number)}` : ''}{node.created_at ? ` · ${new Date(String(node.created_at)).toLocaleString()}` : ''}</div></div>{!current && <button class="btn" type="button" disabled={!session} title={session ? 'Open this path' : 'This path is not loaded in the sidebar'} onClick={() => { if (session) void store.selectSession(session); store.modal.value = ''; }}>Open</button>}</section>;
-  })}</div><p class="branch-tree-note">Create a new path from the compact “Branch from here” action on an assistant turn. Branching rewinds conversation context, not filesystem or tool side effects.</p></Overlay>;
+  const store = useStore();
+  const tree = store.branchTree.value;
+  const nodes =
+    tree && Array.isArray(tree.nodes) ? (tree.nodes as Array<Record<string, unknown>>) : [];
+  const active = String(tree?.active_session_id || store.activeSessionId.value);
+  const root = String(tree?.root_session_id || '');
+  return (
+    <Overlay
+      title={`${Math.max(1, Number(tree?.path_count) || nodes.length)} conversation paths`}
+      wide
+    >
+      <p>Switch between independently resumable paths in this conversation.</p>
+      <div class="branch-tree-list">
+        {nodes.map((node, index) => {
+          const id = String(node.session_id || '');
+          const current = id === active;
+          const session = store.sessions.value.find(
+            (entry) =>
+              entry.id === id ||
+              (node.session_number && entry.number === Number(node.session_number)),
+          );
+          const role = String(node.anchor_role || 'assistant');
+          return (
+            <section
+              class={`branch-tree-item ${current ? 'active' : ''}`}
+              key={id || String(index)}
+            >
+              <span class={`branch-tree-role ${role}`}>{role === 'user' ? 'U' : 'A'}</span>
+              <div class="branch-tree-item-content">
+                <div class="branch-tree-item-title">
+                  <strong>{String(node.title || session?.title || `Path ${index + 1}`)}</strong>
+                  {id === root && <span class="project-browser-badge">Origin</span>}
+                  {current && <span class="project-browser-badge is-added">Current</span>}
+                </div>
+                {node.anchor_preview && (
+                  <div class="branch-origin-preview">
+                    Branched after “{String(node.anchor_preview)}”
+                  </div>
+                )}
+                <div class="branch-origin-meta">
+                  {node.session_number ? `Conversation #${String(node.session_number)}` : ''}
+                  {node.created_at
+                    ? ` · ${new Date(String(node.created_at)).toLocaleString()}`
+                    : ''}
+                </div>
+              </div>
+              {!current && (
+                <button
+                  class="btn"
+                  type="button"
+                  disabled={!session}
+                  title={session ? 'Open this path' : 'This path is not loaded in the sidebar'}
+                  onClick={() => {
+                    if (session) void store.selectSession(session);
+                    store.modal.value = '';
+                  }}
+                >
+                  Open
+                </button>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      <p class="branch-tree-note">
+        Create a new path from the compact “Branch from here” action on an assistant turn. Branching
+        rewinds conversation context, not filesystem or tool side effects.
+      </p>
+    </Overlay>
+  );
 }
 
 function Worktrees() {
-  const store = useStore(); const [name, setName] = useState(''); const [selected, setSelected] = useState<Record<string, unknown> | null>(null); const [diff, setDiff] = useState(''); const [branch, setBranch] = useState(''); const [error, setError] = useState(''); const draft = store.draftActive.value;
+  const store = useStore();
+  const [name, setName] = useState('');
+  const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
+  const [diff, setDiff] = useState('');
+  const [branch, setBranch] = useState('');
+  const [error, setError] = useState('');
+  const draft = store.draftActive.value;
   const dir = String(selected?.dir || selected?.path || '');
-  return <Overlay title="Worktrees" wide>{store.worktreeError.value && <div class="modal-error">{store.worktreeError.value}<button onClick={() => void store.loadWorktrees()}>Retry</button></div>}<div class="worktree-list"><button class="worktree-row" onClick={() => draft ? store.chooseDraftWorktree('') : setSelected({ root: true })}><strong>Project root</strong></button>{store.worktrees.value.map((worktree, index) => <button class={`worktree-row ${selected === worktree ? 'selected' : ''}`} key={String(worktree.dir || worktree.path || index)} onClick={() => { if (draft) store.chooseDraftWorktree(String(worktree.dir || worktree.path || '')); else setSelected(worktree); }}><strong>{String(worktree.name || worktree.branch || 'worktree')}</strong><small>{String(worktree.dir || worktree.path || '')}</small>{Array.isArray(worktree.in_use) && worktree.in_use.length > 0 && <span>In use</span>}</button>)}</div>{selected && !draft && dir && <div class="worktree-actions"><button onClick={() => void store.worktreeDiff(dir).then(setDiff).catch((value) => setError(String(value)))}>View diff</button><button onClick={() => void store.mergeWorktree(dir).catch((value) => setError(String(value)))}>Merge</button><input placeholder="Branch name" value={branch} onInput={(event) => setBranch(event.currentTarget.value)} /><button disabled={!branch.trim()} onClick={() => void store.promoteWorktree(dir, branch).catch((value) => setError(String(value)))}>Promote</button><button class="danger" onClick={() => void store.removeWorktree(dir).catch(async (value) => { if (value instanceof Error && confirm(`${value.message}\nForce remove?`)) await store.removeWorktree(dir, true); else setError(String(value)); })}>Remove</button>{diff && <pre>{diff}</pre>}{error && <div class="modal-error">{error}</div>}</div>}<form onSubmit={(event) => { event.preventDefault(); if (name.trim()) void store.createWorktree(name.trim()).then(() => setName('')); }}><input placeholder="New worktree name" value={name} onInput={(event) => setName(event.currentTarget.value)} /><button class="btn primary" type="submit">Create</button></form></Overlay>;
+  return (
+    <Overlay title="Worktrees" wide>
+      {store.worktreeError.value && (
+        <div class="modal-error">
+          {store.worktreeError.value}
+          <button onClick={() => void store.loadWorktrees()}>Retry</button>
+        </div>
+      )}
+      <div class="worktree-list">
+        <button
+          class="worktree-row"
+          onClick={() => (draft ? store.chooseDraftWorktree('') : setSelected({ root: true }))}
+        >
+          <strong>Project root</strong>
+        </button>
+        {store.worktrees.value.map((worktree, index) => (
+          <button
+            class={`worktree-row ${selected === worktree ? 'selected' : ''}`}
+            key={String(worktree.dir || worktree.path || index)}
+            onClick={() => {
+              if (draft) store.chooseDraftWorktree(String(worktree.dir || worktree.path || ''));
+              else setSelected(worktree);
+            }}
+          >
+            <strong>{String(worktree.name || worktree.branch || 'worktree')}</strong>
+            <small>{String(worktree.dir || worktree.path || '')}</small>
+            {Array.isArray(worktree.in_use) && worktree.in_use.length > 0 && <span>In use</span>}
+          </button>
+        ))}
+      </div>
+      {selected && !draft && dir && (
+        <div class="worktree-actions">
+          <button
+            onClick={() =>
+              void store
+                .worktreeDiff(dir)
+                .then(setDiff)
+                .catch((value) => setError(String(value)))
+            }
+          >
+            View diff
+          </button>
+          <button
+            onClick={() => void store.mergeWorktree(dir).catch((value) => setError(String(value)))}
+          >
+            Merge
+          </button>
+          <input
+            placeholder="Branch name"
+            value={branch}
+            onInput={(event) => setBranch(event.currentTarget.value)}
+          />
+          <button
+            disabled={!branch.trim()}
+            onClick={() =>
+              void store.promoteWorktree(dir, branch).catch((value) => setError(String(value)))
+            }
+          >
+            Promote
+          </button>
+          <button
+            class="danger"
+            onClick={() =>
+              void store.removeWorktree(dir).catch(async (value) => {
+                if (value instanceof Error && confirm(`${value.message}\nForce remove?`))
+                  await store.removeWorktree(dir, true);
+                else setError(String(value));
+              })
+            }
+          >
+            Remove
+          </button>
+          {diff && <pre>{diff}</pre>}
+          {error && <div class="modal-error">{error}</div>}
+        </div>
+      )}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (name.trim()) void store.createWorktree(name.trim()).then(() => setName(''));
+        }}
+      >
+        <input
+          placeholder="New worktree name"
+          value={name}
+          onInput={(event) => setName(event.currentTarget.value)}
+        />
+        <button class="btn primary" type="submit">
+          Create
+        </button>
+      </form>
+    </Overlay>
+  );
 }
-function Skills() { const store = useStore(); const [selected, setSelected] = useState(''); const [args, setArgs] = useState(''); return <Overlay title="Skills"><div class="skills-list">{store.skills.value.map((skill) => { const name = String(skill.name || skill.id || ''); return <button class={`skill-row ${selected === name ? 'selected' : ''}`} key={name} onClick={() => setSelected(name)}><strong>{name}</strong><small>{String(skill.description || '')}</small></button>; })}</div>{selected && <form onSubmit={(event) => { event.preventDefault(); void store.invokeSkill(selected, args); }}><label class="settings-label">Arguments for {selected}</label><textarea value={args} onInput={(event) => setArgs(event.currentTarget.value)} /><button class="btn primary" type="submit">Run skill</button></form>}</Overlay>; }
+function Skills() {
+  const store = useStore();
+  const [selected, setSelected] = useState('');
+  const [args, setArgs] = useState('');
+  return (
+    <Overlay title="Skills">
+      <div class="skills-list">
+        {store.skills.value.map((skill) => {
+          const name = String(skill.name || skill.id || '');
+          return (
+            <button
+              class={`skill-row ${selected === name ? 'selected' : ''}`}
+              key={name}
+              onClick={() => setSelected(name)}
+            >
+              <strong>{name}</strong>
+              <small>{String(skill.description || '')}</small>
+            </button>
+          );
+        })}
+      </div>
+      {selected && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void store.invokeSkill(selected, args);
+          }}
+        >
+          <label class="settings-label">Arguments for {selected}</label>
+          <textarea value={args} onInput={(event) => setArgs(event.currentTarget.value)} />
+          <button class="btn primary" type="submit">
+            Run skill
+          </button>
+        </form>
+      )}
+    </Overlay>
+  );
+}
 
 function ProjectPicker() {
-  const store = useStore(); const target = store.projectTarget.value;
-  const [path, setPath] = useState(''); const [name, setName] = useState(''); const [browser, setBrowser] = useState(false); const [showHidden, setShowHidden] = useState(false);
-  const [listing, setListing] = useState<Record<string, unknown> | null>(null); const [loading, setLoading] = useState(false); const [preview, setPreview] = useState<Record<string, unknown> | null>(null); const [error, setError] = useState('');
-  const changePath = (value: string) => { setPath(value); setPreview(null); setError(''); }; const changeName = (value: string) => { setName(value); setPreview(null); setError(''); };
+  const store = useStore();
+  const target = store.projectTarget.value;
+  const [path, setPath] = useState('');
+  const [name, setName] = useState('');
+  const [browser, setBrowser] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+  const [listing, setListing] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState('');
+  const changePath = (value: string) => {
+    setPath(value);
+    setPreview(null);
+    setError('');
+  };
+  const changeName = (value: string) => {
+    setName(value);
+    setPreview(null);
+    setError('');
+  };
   const loadDirectory = async (directory = '') => {
-    setLoading(true); setError(''); const controller = new AbortController();
-    try { setListing(await store.endpoints.projectDirectories(directory, showHidden, controller.signal)); setBrowser(true); }
-    catch (value) { setError(value instanceof Error ? value.message : String(value)); }
-    finally { setLoading(false); }
-  };
-  const complete = async (id: string) => { await store.refreshSidebar(); if (target) await store.assignProject(id); else await store.startProjectChat(id); store.modal.value = ''; };
-  const submit = async () => {
-    if (!path.trim()) return; setLoading(true); setError('');
+    setLoading(true);
+    setError('');
+    const controller = new AbortController();
     try {
-      const data = await store.endpoints.createProject({ path: path.trim(), name: name.trim() }, !preview);
-      const project = data.project && typeof data.project === 'object' ? data.project as Record<string, unknown> : null; const existing = String(data.existing_project_id || project?.id || '');
-      if (!preview) { if (data.duplicate && existing && !project?.archived_at) { await complete(existing); return; } setPreview(data); return; }
-      await complete(String(project?.id || data.id || existing));
-    } catch (value) { setError(value instanceof Error ? value.message : String(value)); }
-    finally { setLoading(false); }
+      setListing(
+        await store.endpoints.projectDirectories(directory, showHidden, controller.signal),
+      );
+      setBrowser(true);
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    } finally {
+      setLoading(false);
+    }
   };
-  const entries = Array.isArray(listing?.entries) ? listing.entries as Array<Record<string, unknown>> : []; const breadcrumbs = Array.isArray(listing?.breadcrumbs) ? listing.breadcrumbs as Array<Record<string, unknown>> : [];
-  return <Overlay title={target ? 'Move to project' : 'Add project'} wide>
-    {target && <section class="project-assign-notice"><span class="project-assign-notice-icon">i</span><div><strong>Grouping only</strong><span>Moving a conversation does not move files or change its current workspace.</span></div></section>}
-    <div class="project-picker-list">{target && <button class="project-picker-row" onClick={() => void store.assignProject('')}><strong>No project</strong></button>}{store.projects.value.filter((project) => !project.archived && project.available !== false).map((project) => <button class="project-picker-row" key={project.id} onClick={() => target ? void store.assignProject(project.id) : void store.startProjectChat(project.id)}><strong>{project.name}</strong><small>{project.path}</small>{project.git && <span class="project-browser-badge">Git</span>}</button>)}</div>
-    <section class="project-modal-fields"><div class="project-field"><label class="project-field-label" for="projectPathInput">Folder on server</label><div class="project-path-control"><input id="projectPathInput" aria-label="Project path" placeholder="/path/to/project" value={path} autoCapitalize="none" autoCorrect="off" spellcheck={false} onInput={(event) => changePath(event.currentTarget.value)} /><button type="button" class="project-browse-button" aria-expanded={browser} onClick={() => browser ? setBrowser(false) : void loadDirectory(path.trim())}>{browser ? 'Hide browser' : 'Browse'}</button></div></div>
-      {browser && <section class="project-directory-browser"><div class="project-browser-toolbar"><button class="project-browser-icon-button" type="button" title="Parent folder" disabled={!listing?.parent} onClick={() => void loadDirectory(String(listing?.parent || ''))}>↑</button><button class="project-browser-icon-button" type="button" title="Home folder" onClick={() => void loadDirectory(String(listing?.home || ''))}>⌂</button><nav class="project-browser-breadcrumbs" aria-label="Folder path">{breadcrumbs.map((item, index) => <button type="button" aria-current={index === breadcrumbs.length - 1 ? 'page' : undefined} onClick={() => void loadDirectory(String(item.path || ''))}>{String(item.label || item.path || '')}</button>)}</nav><label class="project-browser-hidden"><input type="checkbox" checked={showHidden} onChange={(event) => { const checked = event.currentTarget.checked; setShowHidden(checked); void store.endpoints.projectDirectories(String(listing?.path || ''), checked).then(setListing).catch((value) => setError(String(value))); }} />Hidden</label></div>
-        <div class="project-browser-list" role="listbox" aria-busy={loading}>{loading ? <div class="project-browser-skeleton"><span /><span /></div> : entries.length ? entries.map((entry) => <button type="button" class="project-browser-row" role="option" onClick={() => void loadDirectory(String(entry.path || ''))}><span class="project-browser-folder-icon">◇</span><span class="project-browser-row-name">{String(entry.name || entry.path || '')}</span><span class="project-browser-row-meta">{entry.git && <span class="project-browser-badge">Git</span>}{entry.existing_project_id && <span class="project-browser-badge is-added">Added</span>}<span>›</span></span></button>) : <div class="project-browser-empty"><strong>No subfolders here</strong></div>}</div>
-        <div class="project-browser-footer"><div class="project-browser-status">{entries.length} folder{entries.length === 1 ? '' : 's'}</div><button class="btn project-use-folder" type="button" disabled={!listing?.path} onClick={() => { changePath(String(listing?.path || '')); setBrowser(false); }}>Select folder</button></div></section>}
-      <div class="project-field"><div class="project-field-label-row"><label class="project-field-label" for="projectNameInput">Display name</label><span class="project-field-optional">Optional</span></div><input id="projectNameInput" aria-label="Project name" placeholder="Defaults to the folder name" value={name} onInput={(event) => changeName(event.currentTarget.value)} /><div class="project-field-hint">Use a short name that is easy to spot in the sidebar.</div></div>
-    </section>
-    {preview && <div class="project-resolution-summary"><div class="project-resolution-top"><strong>{preview.git ? 'Git repository ready' : 'Folder ready'}</strong>{preview.git && <span class="project-browser-badge">Git root</span>}</div><code>{String(preview.canonical_dir || '')}</code><span class="project-resolution-note">{preview.duplicate && (preview.project as Record<string, unknown> | undefined)?.archived_at ? 'This archived project will be restored.' : preview.git ? 'Conversations will use the repository root.' : 'Conversations will use this folder.'}</span></div>}
-    {error && <div class="modal-error" role="alert">{error}</div>}<div class="modal-actions"><button class="btn" onClick={() => { store.modal.value = ''; }}>Cancel</button><button class="btn primary" disabled={!path.trim() || loading} onClick={() => void submit()}>{loading ? 'Checking…' : preview ? (preview.duplicate ? 'Restore project' : 'Add project') : 'Preview'}</button></div>
-  </Overlay>;
+  const complete = async (id: string) => {
+    await store.refreshSidebar();
+    if (target) await store.assignProject(id);
+    else await store.startProjectChat(id);
+    store.modal.value = '';
+  };
+  const submit = async () => {
+    if (!path.trim()) return;
+    setLoading(true);
+    setError('');
+    try {
+      const data = await store.endpoints.createProject(
+        { path: path.trim(), name: name.trim() },
+        !preview,
+      );
+      const project =
+        data.project && typeof data.project === 'object'
+          ? (data.project as Record<string, unknown>)
+          : null;
+      const existing = String(data.existing_project_id || project?.id || '');
+      if (!preview) {
+        if (data.duplicate && existing && !project?.archived_at) {
+          await complete(existing);
+          return;
+        }
+        setPreview(data);
+        return;
+      }
+      await complete(String(project?.id || data.id || existing));
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const entries = Array.isArray(listing?.entries)
+    ? (listing.entries as Array<Record<string, unknown>>)
+    : [];
+  const breadcrumbs = Array.isArray(listing?.breadcrumbs)
+    ? (listing.breadcrumbs as Array<Record<string, unknown>>)
+    : [];
+  return (
+    <Overlay title={target ? 'Move to project' : 'Add project'} wide>
+      {target && (
+        <section class="project-assign-notice">
+          <span class="project-assign-notice-icon">i</span>
+          <div>
+            <strong>Grouping only</strong>
+            <span>Moving a conversation does not move files or change its current workspace.</span>
+          </div>
+        </section>
+      )}
+      <div class="project-picker-list">
+        {target && (
+          <button class="project-picker-row" onClick={() => void store.assignProject('')}>
+            <strong>No project</strong>
+          </button>
+        )}
+        {store.projects.value
+          .filter((project) => !project.archived && project.available !== false)
+          .map((project) => (
+            <button
+              class="project-picker-row"
+              key={project.id}
+              onClick={() =>
+                target
+                  ? void store.assignProject(project.id)
+                  : void store.startProjectChat(project.id)
+              }
+            >
+              <strong>{project.name}</strong>
+              <small>{project.path}</small>
+              {project.git && <span class="project-browser-badge">Git</span>}
+            </button>
+          ))}
+      </div>
+      <section class="project-modal-fields">
+        <div class="project-field">
+          <label class="project-field-label" for="projectPathInput">
+            Folder on server
+          </label>
+          <div class="project-path-control">
+            <input
+              id="projectPathInput"
+              aria-label="Project path"
+              placeholder="/path/to/project"
+              value={path}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellcheck={false}
+              onInput={(event) => changePath(event.currentTarget.value)}
+            />
+            <button
+              type="button"
+              class="project-browse-button"
+              aria-expanded={browser}
+              onClick={() => (browser ? setBrowser(false) : void loadDirectory(path.trim()))}
+            >
+              {browser ? 'Hide browser' : 'Browse'}
+            </button>
+          </div>
+        </div>
+        {browser && (
+          <section class="project-directory-browser">
+            <div class="project-browser-toolbar">
+              <button
+                class="project-browser-icon-button"
+                type="button"
+                title="Parent folder"
+                disabled={!listing?.parent}
+                onClick={() => void loadDirectory(String(listing?.parent || ''))}
+              >
+                ↑
+              </button>
+              <button
+                class="project-browser-icon-button"
+                type="button"
+                title="Home folder"
+                onClick={() => void loadDirectory(String(listing?.home || ''))}
+              >
+                ⌂
+              </button>
+              <nav class="project-browser-breadcrumbs" aria-label="Folder path">
+                {breadcrumbs.map((item, index) => (
+                  <button
+                    type="button"
+                    aria-current={index === breadcrumbs.length - 1 ? 'page' : undefined}
+                    onClick={() => void loadDirectory(String(item.path || ''))}
+                  >
+                    {String(item.label || item.path || '')}
+                  </button>
+                ))}
+              </nav>
+              <label class="project-browser-hidden">
+                <input
+                  type="checkbox"
+                  checked={showHidden}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked;
+                    setShowHidden(checked);
+                    void store.endpoints
+                      .projectDirectories(String(listing?.path || ''), checked)
+                      .then(setListing)
+                      .catch((value) => setError(String(value)));
+                  }}
+                />
+                Hidden
+              </label>
+            </div>
+            <div class="project-browser-list" role="listbox" aria-busy={loading}>
+              {loading ? (
+                <div class="project-browser-skeleton">
+                  <span />
+                  <span />
+                </div>
+              ) : entries.length ? (
+                entries.map((entry) => (
+                  <button
+                    type="button"
+                    class="project-browser-row"
+                    role="option"
+                    onClick={() => void loadDirectory(String(entry.path || ''))}
+                  >
+                    <span class="project-browser-folder-icon">◇</span>
+                    <span class="project-browser-row-name">
+                      {String(entry.name || entry.path || '')}
+                    </span>
+                    <span class="project-browser-row-meta">
+                      {entry.git && <span class="project-browser-badge">Git</span>}
+                      {entry.existing_project_id && (
+                        <span class="project-browser-badge is-added">Added</span>
+                      )}
+                      <span>›</span>
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div class="project-browser-empty">
+                  <strong>No subfolders here</strong>
+                </div>
+              )}
+            </div>
+            <div class="project-browser-footer">
+              <div class="project-browser-status">
+                {entries.length} folder{entries.length === 1 ? '' : 's'}
+              </div>
+              <button
+                class="btn project-use-folder"
+                type="button"
+                disabled={!listing?.path}
+                onClick={() => {
+                  changePath(String(listing?.path || ''));
+                  setBrowser(false);
+                }}
+              >
+                Select folder
+              </button>
+            </div>
+          </section>
+        )}
+        <div class="project-field">
+          <div class="project-field-label-row">
+            <label class="project-field-label" for="projectNameInput">
+              Display name
+            </label>
+            <span class="project-field-optional">Optional</span>
+          </div>
+          <input
+            id="projectNameInput"
+            aria-label="Project name"
+            placeholder="Defaults to the folder name"
+            value={name}
+            onInput={(event) => changeName(event.currentTarget.value)}
+          />
+          <div class="project-field-hint">
+            Use a short name that is easy to spot in the sidebar.
+          </div>
+        </div>
+      </section>
+      {preview && (
+        <div class="project-resolution-summary">
+          <div class="project-resolution-top">
+            <strong>{preview.git ? 'Git repository ready' : 'Folder ready'}</strong>
+            {preview.git && <span class="project-browser-badge">Git root</span>}
+          </div>
+          <code>{String(preview.canonical_dir || '')}</code>
+          <span class="project-resolution-note">
+            {preview.duplicate &&
+            (preview.project as Record<string, unknown> | undefined)?.archived_at
+              ? 'This archived project will be restored.'
+              : preview.git
+                ? 'Conversations will use the repository root.'
+                : 'Conversations will use this folder.'}
+          </span>
+        </div>
+      )}
+      {error && (
+        <div class="modal-error" role="alert">
+          {error}
+        </div>
+      )}
+      <div class="modal-actions">
+        <button
+          class="btn"
+          onClick={() => {
+            store.modal.value = '';
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          class="btn primary"
+          disabled={!path.trim() || loading}
+          onClick={() => void submit()}
+        >
+          {loading
+            ? 'Checking…'
+            : preview
+              ? preview.duplicate
+                ? 'Restore project'
+                : 'Add project'
+              : 'Preview'}
+        </button>
+      </div>
+    </Overlay>
+  );
 }
 
 export function SideQuestion() {
-  const store = useStore(); const state = store.sideQuestion.value; const [question, setQuestion] = useState('');
-  useEffect(() => { if (!state.visible) return; const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') void store.closeSideQuestion(); }; addEventListener('keydown', escape); return () => removeEventListener('keydown', escape); }, [state.visible, store]);
-  if (!state.visible) return null; return <div class="side-question-overlay" role="dialog" aria-modal="true" aria-label="Side question"><div class="side-question-panel"><div class="side-question-header"><strong>Side question</strong><button class="icon-btn" aria-label="Close side question" onClick={() => void store.closeSideQuestion()}><Icon name="close" /></button></div>{state.history.map((entry, index) => <div class="side-question-transcript side-question-exchange" key={index}><div class="side-question-user">{entry.question}</div><div class="side-question-assistant">{entry.response}</div></div>)}{state.response && !state.history.some((entry) => entry.response === state.response) && <div class="side-question-assistant">{state.response}</div>}{state.error && <div class="side-question-error">{state.error}</div>}<form class="side-question-composer" onSubmit={(event) => { event.preventDefault(); if (!question.trim()) return; void store.askSideQuestion(question); setQuestion(''); }}><input autoFocus value={question} placeholder="Ask a follow-up…" onInput={(event) => setQuestion(event.currentTarget.value)} /><button class="side-question-send" type="submit" aria-label="Send side question" disabled={state.running}>{state.running ? '…' : <Icon name="send" />}</button></form></div></div>;
+  const store = useStore();
+  const state = store.sideQuestion.value;
+  const [question, setQuestion] = useState('');
+  useEffect(() => {
+    if (!state.visible) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') void store.closeSideQuestion();
+    };
+    addEventListener('keydown', escape);
+    return () => removeEventListener('keydown', escape);
+  }, [state.visible, store]);
+  if (!state.visible) return null;
+  return (
+    <div class="side-question-overlay" role="dialog" aria-modal="true" aria-label="Side question">
+      <div class="side-question-panel">
+        <div class="side-question-header">
+          <strong>Side question</strong>
+          <button
+            class="icon-btn"
+            aria-label="Close side question"
+            onClick={() => void store.closeSideQuestion()}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+        {state.history.map((entry, index) => (
+          <div class="side-question-transcript side-question-exchange" key={index}>
+            <div class="side-question-user">{entry.question}</div>
+            <div class="side-question-assistant">{entry.response}</div>
+          </div>
+        ))}
+        {state.response && !state.history.some((entry) => entry.response === state.response) && (
+          <div class="side-question-assistant">{state.response}</div>
+        )}
+        {state.error && <div class="side-question-error">{state.error}</div>}
+        <form
+          class="side-question-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!question.trim()) return;
+            void store.askSideQuestion(question);
+            setQuestion('');
+          }}
+        >
+          <input
+            autoFocus
+            value={question}
+            placeholder="Ask a follow-up…"
+            onInput={(event) => setQuestion(event.currentTarget.value)}
+          />
+          <button
+            class="side-question-send"
+            type="submit"
+            aria-label="Send side question"
+            disabled={state.running}
+          >
+            {state.running ? '…' : <Icon name="send" />}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 export function Modals() {
-  const store = useStore(); const modal = store.approval.value ? 'approval' : store.askUser.value ? 'ask-user' : store.modal.value;
-  switch (modal) { case 'settings': return <Settings />; case 'rename': return <Rename />; case 'project': return <ProjectPicker />; case 'ask-user': return <AskUser />; case 'approval': return <Approval />; case 'mcp': return <MCP />; case 'goal': return <GoalModal />; case 'widgets': return <Widgets />; case 'skills': return <Skills />; case 'branch': return <BranchTree />; case 'branch-context': return <BranchContext />; case 'worktrees': return <Worktrees />; default: return null; }
+  const store = useStore();
+  const modal = store.approval.value
+    ? 'approval'
+    : store.askUser.value
+      ? 'ask-user'
+      : store.modal.value;
+  switch (modal) {
+    case 'settings':
+      return <Settings />;
+    case 'rename':
+      return <Rename />;
+    case 'project':
+      return <ProjectPicker />;
+    case 'ask-user':
+      return <AskUser />;
+    case 'approval':
+      return <Approval />;
+    case 'mcp':
+      return <MCP />;
+    case 'goal':
+      return <GoalModal />;
+    case 'widgets':
+      return <Widgets />;
+    case 'skills':
+      return <Skills />;
+    case 'branch':
+      return <BranchTree />;
+    case 'branch-context':
+      return <BranchContext />;
+    case 'worktrees':
+      return <Worktrees />;
+    default:
+      return null;
+  }
 }

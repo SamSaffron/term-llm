@@ -1,21 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
-import { activeMentionAtCursor, applyCompletion, composerCompletions, mentionCompletions } from './completions';
+import {
+  activeMentionAtCursor,
+  applyCompletion,
+  composerCompletions,
+  mentionCompletions,
+} from './completions';
 
 describe('markdown security and streaming', () => {
   it('sanitizes active content and hardens external links', () => {
-    const html = renderMarkdown('[safe](https://example.com) <script>alert(1)</script><img src=x onerror=alert(1)>');
-    expect(html).not.toContain('<script'); expect(html).not.toContain('onerror');
-    expect(html).toContain('target="_blank"'); expect(html).toContain('rel="noopener noreferrer"');
+    const html = renderMarkdown(
+      '[safe](https://example.com) <script>alert(1)</script><img src=x onerror=alert(1)>',
+    );
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('onerror');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
   });
   it('keeps strict math syntax as text until the lazy decorator and avoids currency delimiters', () => {
     const html = renderMarkdown('Price is $5 and inline is \\(x^2\\).');
-    expect(html).toContain('$5'); expect(html).toContain('\\(x^2\\)');
+    expect(html).toContain('$5');
+    expect(html).toContain('\\(x^2\\)');
   });
   it('highlights supported fence aliases and silently leaves unknown languages alone', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const root = document.createElement('div');
-    root.innerHTML = '<pre><code class="language-text">plain</code></pre><pre><code class="language-html">&lt;p&gt;hello&lt;/p&gt;</code></pre><pre><code class="language-gitattributes">*.js text</code></pre><pre><code class="language-unknown-fence">value</code></pre>';
+    root.innerHTML =
+      '<pre><code class="language-text">plain</code></pre><pre><code class="language-html">&lt;p&gt;hello&lt;/p&gt;</code></pre><pre><code class="language-gitattributes">*.js text</code></pre><pre><code class="language-unknown-fence">value</code></pre>';
     await decorateRichContent(root, '');
     expect(warn).not.toHaveBeenCalled();
     expect(root.querySelectorAll('[data-highlighted="yes"]')).toHaveLength(4);
@@ -32,7 +43,9 @@ describe('markdown security and streaming', () => {
 describe('composer completion', () => {
   it('matches slash commands and agent mentions without treating email as mention', () => {
     expect(composerCompletions('/co', []).map((entry) => entry.value)).toContain('/compact');
-    expect(composerCompletions('ask @ja', ['jarvis', 'other']).map((entry) => entry.value)).toEqual(['@jarvis']);
+    expect(composerCompletions('ask @ja', ['jarvis', 'other']).map((entry) => entry.value)).toEqual(
+      ['@jarvis'],
+    );
     expect(composerCompletions('me@example.com', ['example'])).toEqual([]);
     expect(activeMentionAtCursor('open @src/domain', 16)).toMatchObject({ query: 'src/domain' });
     expect(applyCompletion('please /co', '/compact')).toBe('please /compact ');
@@ -40,19 +53,35 @@ describe('composer completion', () => {
 
   it('restores branch commands and live skill filtering while streaming', () => {
     const skills = [
-      { name: 'review', description: 'Review changes', argument_hint: '[scope]', execution: 'isolated', source: 'local' },
+      {
+        name: 'review',
+        description: 'Review changes',
+        argument_hint: '[scope]',
+        execution: 'isolated',
+        source: 'local',
+      },
       { name: 'explain', description: 'Explain code', execution: 'main', source: 'user' },
       { name: 'compact', collides_with_builtin: true },
     ];
     const values = composerCompletions('/', [], skills, true).map((entry) => entry.value);
-    expect(values).toEqual(expect.arrayContaining(['/fork', '/thread', '/tree', '/side', '/review']));
+    expect(values).toEqual(
+      expect.arrayContaining(['/fork', '/thread', '/tree', '/side', '/review']),
+    );
     expect(values).not.toEqual(expect.arrayContaining(['/compact', '/undo', '/explain']));
-    expect(composerCompletions('/', [], skills).filter((entry) => entry.value === '/compact')).toHaveLength(1);
-    expect(composerCompletions('/', [], skills).find((entry) => entry.value === '/review')?.label).toBe('/review [scope]');
+    expect(
+      composerCompletions('/', [], skills).filter((entry) => entry.value === '/compact'),
+    ).toHaveLength(1);
+    expect(
+      composerCompletions('/', [], skills).find((entry) => entry.value === '/review')?.label,
+    ).toBe('/review [scope]');
   });
 
   it('applies server mention ranges without damaging text after the caret', () => {
-    const [completion] = mentionCompletions({ active: true, token: { start_utf16: 7, end_utf16: 11, query: 'typ' }, items: [{ path: 'types.go', kind: 'file', insert_text: '@types.go', segments: [] }] });
+    const [completion] = mentionCompletions({
+      active: true,
+      token: { start_utf16: 7, end_utf16: 11, query: 'typ' },
+      items: [{ path: 'types.go', kind: 'file', insert_text: '@types.go', segments: [] }],
+    });
     expect(applyCompletion('review @typ now', completion)).toBe('review @types.go now');
   });
 });

@@ -1,0 +1,8 @@
+dist/
+coverage/
+node_modules/
+package-lock.json
+payload-*.json
+payload-*.md
+parity-top-20.md
+test-parity.md

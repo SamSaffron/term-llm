@@ -16,8 +16,10 @@ describe('syntax theme', () => {
   });
 
   it('scopes tokens to highlighted markdown and diff code', () => {
-    expect(appCSS).toContain(':is(.markdown-body, .diff-code) :is(.hljs-doctag, .hljs-keyword');
-    expect(appCSS).toContain('.diff-code :is(.hljs-addition, .hljs-deletion)');
+    expect(appCSS).toMatch(
+      /:is\(\.markdown-body,\s*\.diff-code\)\s*:is\(\s*\.hljs-doctag,\s*\.hljs-keyword/,
+    );
+    expect(appCSS).toMatch(/\.diff-code\s*:is\(\s*\.hljs-addition,\s*\.hljs-deletion\)/);
     expect(appCSS).toContain('background: transparent');
   });
 });

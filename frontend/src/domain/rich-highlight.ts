@@ -43,10 +43,24 @@ highlight.registerLanguage('c', c);
 highlight.registerLanguage('csharp', csharp);
 highlight.registerLanguage('cs', csharp);
 
-const DIFF_LANGUAGE_ALIASES: Record<string, string> = { jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', tsx: 'typescript', zsh: 'bash', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', h: 'c' };
+const DIFF_LANGUAGE_ALIASES: Record<string, string> = {
+  jsx: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  tsx: 'typescript',
+  zsh: 'bash',
+  cc: 'cpp',
+  cxx: 'cpp',
+  hpp: 'cpp',
+  h: 'c',
+};
 export function highlightDiffLine(source: string, language: string): string {
   const name = DIFF_LANGUAGE_ALIASES[language] || language;
   if (!source || !highlight.getLanguage(name)) return '';
-  try { return highlight.highlight(source, { language: name, ignoreIllegals: true }).value; } catch { return ''; }
+  try {
+    return highlight.highlight(source, { language: name, ignoreIllegals: true }).value;
+  } catch {
+    return '';
+  }
 }
 export { highlight };

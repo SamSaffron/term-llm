@@ -3,9 +3,20 @@ import { fileKind, linesFromHunks } from './diff';
 
 describe('structured diff contracts', () => {
   it('converts server hunks into numbered display lines', () => {
-    expect(linesFromHunks([{ old_start: 4, new_start: 7, lines: [
-      { t: 'ctx', s: 'same' }, { t: 'del', s: 'old' }, { t: 'add', s: 'new' }, { t: 'ctx', s: 'tail' },
-    ] }])).toEqual([
+    expect(
+      linesFromHunks([
+        {
+          old_start: 4,
+          new_start: 7,
+          lines: [
+            { t: 'ctx', s: 'same' },
+            { t: 'del', s: 'old' },
+            { t: 'add', s: 'new' },
+            { t: 'ctx', s: 'tail' },
+          ],
+        },
+      ]),
+    ).toEqual([
       { kind: 'hunk', content: '@@ -4 +7 @@' },
       { kind: 'context', content: 'same', oldLine: 4, newLine: 7 },
       { kind: 'delete', content: 'old', oldLine: 5 },

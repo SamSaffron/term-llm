@@ -1,94 +1,733 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { DiffFile, DiffLine } from '../domain/types';
-import { clampDiffWidth, fileKind, inlineEmphasis, linesFromHunks, unifiedPatchForFile } from '../domain/diff';
+import {
+  clampDiffWidth,
+  fileKind,
+  inlineEmphasis,
+  linesFromHunks,
+  unifiedPatchForFile,
+} from '../domain/diff';
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
 import { Icon } from './Icon';
 
-function DiffCode({ line, emphasis, lang }: { line: DiffLine; emphasis?: [number, number]; lang: string }) {
+function DiffCode({
+  line,
+  emphasis,
+  lang,
+}: {
+  line: DiffLine;
+  emphasis?: [number, number];
+  lang: string;
+}) {
   const [html, setHTML] = useState('');
   useEffect(() => {
-    let live = true; setHTML('');
-    if (!lang || !line.content || emphasis) return () => { live = false; };
-    void import('../domain/rich-highlight').then(({ highlightDiffLine }) => { if (live) setHTML(highlightDiffLine(line.content, lang)); });
-    return () => { live = false; };
+    let live = true;
+    setHTML('');
+    if (!lang || !line.content || emphasis)
+      return () => {
+        live = false;
+      };
+    void import('../domain/rich-highlight').then(({ highlightDiffLine }) => {
+      if (live) setHTML(highlightDiffLine(line.content, lang));
+    });
+    return () => {
+      live = false;
+    };
   }, [line.content, lang, emphasis]);
-  if (emphasis && emphasis[1] > emphasis[0]) return <span class="diff-code">{line.content.slice(0, emphasis[0])}<mark class="diff-word">{line.content.slice(emphasis[0], emphasis[1])}</mark>{line.content.slice(emphasis[1])}</span>;
-  return html ? <span class="diff-code" dangerouslySetInnerHTML={{ __html: html }} /> : <span class="diff-code">{line.content}</span>;
+  if (emphasis && emphasis[1] > emphasis[0])
+    return (
+      <span class="diff-code">
+        {line.content.slice(0, emphasis[0])}
+        <mark class="diff-word">{line.content.slice(emphasis[0], emphasis[1])}</mark>
+        {line.content.slice(emphasis[1])}
+      </span>
+    );
+  return html ? (
+    <span class="diff-code" dangerouslySetInnerHTML={{ __html: html }} />
+  ) : (
+    <span class="diff-code">{line.content}</span>
+  );
 }
 
-function Line({ line, emphasis, lang, commentKey, commenting, body, onComment, onBody, onCancel, onSubmit }: { line: DiffLine; emphasis?: [number, number]; lang: string; commentKey: string; commenting: boolean; body: string; onComment: (key: string) => void; onBody: (value: string) => void; onCancel: () => void; onSubmit: (event: SubmitEvent) => void }) {
+function Line({
+  line,
+  emphasis,
+  lang,
+  commentKey,
+  commenting,
+  body,
+  onComment,
+  onBody,
+  onCancel,
+  onSubmit,
+}: {
+  line: DiffLine;
+  emphasis?: [number, number];
+  lang: string;
+  commentKey: string;
+  commenting: boolean;
+  body: string;
+  onComment: (key: string) => void;
+  onBody: (value: string) => void;
+  onCancel: () => void;
+  onSubmit: (event: SubmitEvent) => void;
+}) {
   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
-  const kind = line.kind === 'add' ? 'add' : line.kind === 'delete' ? 'del' : line.kind === 'hunk' ? 'hunk' : 'ctx';
-  return <div class={`diff-row ${kind}`} data-commentable={Boolean(number && line.kind !== 'hunk')}><span class="diff-ln">{line.oldLine || ''}</span><span class="diff-ln">{line.newLine || ''}</span><DiffCode line={line} emphasis={emphasis} lang={lang} />
-    {number && line.kind !== 'hunk' && <button class="diff-comment-affordance" type="button" aria-label={`Comment on line ${number}`} aria-expanded={commenting} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); onComment(commentKey); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onComment(commentKey); } }}><Icon name="add" /></button>}
-    {commenting && <form class="diff-comment-panel diff-comment-editor" onSubmit={onSubmit}><textarea autoFocus aria-label="Inline comment" value={body} onInput={(event) => onBody(event.currentTarget.value)} /><div class="diff-comment-editor-actions"><button class="diff-comment-cancel" type="button" onClick={onCancel}>Cancel</button><button class="diff-comment-send" type="submit">Queue</button></div></form>}
-  </div>;
+  const kind =
+    line.kind === 'add'
+      ? 'add'
+      : line.kind === 'delete'
+        ? 'del'
+        : line.kind === 'hunk'
+          ? 'hunk'
+          : 'ctx';
+  return (
+    <div class={`diff-row ${kind}`} data-commentable={Boolean(number && line.kind !== 'hunk')}>
+      <span class="diff-ln">{line.oldLine || ''}</span>
+      <span class="diff-ln">{line.newLine || ''}</span>
+      <DiffCode line={line} emphasis={emphasis} lang={lang} />
+      {number && line.kind !== 'hunk' && (
+        <button
+          class="diff-comment-affordance"
+          type="button"
+          aria-label={`Comment on line ${number}`}
+          aria-expanded={commenting}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onComment(commentKey);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              event.stopPropagation();
+              onComment(commentKey);
+            }
+          }}
+        >
+          <Icon name="add" />
+        </button>
+      )}
+      {commenting && (
+        <form class="diff-comment-panel diff-comment-editor" onSubmit={onSubmit}>
+          <textarea
+            autoFocus
+            aria-label="Inline comment"
+            value={body}
+            onInput={(event) => onBody(event.currentTarget.value)}
+          />
+          <div class="diff-comment-editor-actions">
+            <button class="diff-comment-cancel" type="button" onClick={onCancel}>
+              Cancel
+            </button>
+            <button class="diff-comment-send" type="submit">
+              Queue
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
 }
 
-function DiffAction({ label, glyph, value }: { label: string; glyph: string; value: () => string | Promise<string> }) {
-  const [copied, setCopied] = useState(false); const timer = useRef<number | undefined>(undefined);
-  useEffect(() => () => { if (timer.current !== undefined) clearTimeout(timer.current); }, []);
-  const copy = async (event: MouseEvent) => { event.stopPropagation(); try { const text = await value(); if (!text) return; await copyText(text); setCopied(true); if (timer.current !== undefined) clearTimeout(timer.current); timer.current = window.setTimeout(() => { setCopied(false); timer.current = undefined; }, 700); } catch { /* Copy actions fail silently like the legacy control. */ } };
-  return <button class={`diff-action-btn ${copied ? 'copied' : ''}`} type="button" title={label} aria-label={label} onClick={(event) => void copy(event)}>{glyph}</button>;
+function DiffAction({
+  label,
+  glyph,
+  value,
+}: {
+  label: string;
+  glyph: string;
+  value: () => string | Promise<string>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (timer.current !== undefined) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const copy = async (event: MouseEvent) => {
+    event.stopPropagation();
+    try {
+      const text = await value();
+      if (!text) return;
+      await copyText(text);
+      setCopied(true);
+      if (timer.current !== undefined) clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => {
+        setCopied(false);
+        timer.current = undefined;
+      }, 700);
+    } catch {
+      /* Copy actions fail silently like the legacy control. */
+    }
+  };
+  return (
+    <button
+      class={`diff-action-btn ${copied ? 'copied' : ''}`}
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={(event) => void copy(event)}
+    >
+      {glyph}
+    </button>
+  );
 }
 
 function splitDiffPath(path: string): { base: string; dir: string } {
-  const display = String(path || '').replace(/^\/+/, ''); const index = display.lastIndexOf('/');
-  return index < 0 ? { base: display, dir: '' } : { base: display.slice(index + 1), dir: display.slice(0, index) };
+  const display = String(path || '').replace(/^\/+/, '');
+  const index = display.lastIndexOf('/');
+  return index < 0
+    ? { base: display, dir: '' }
+    : { base: display.slice(index + 1), dir: display.slice(0, index) };
 }
 
 function File({ file }: { file: DiffFile }) {
-  const store = useStore(); const [limit, setLimit] = useState(500); const [commenting, setCommenting] = useState(''); const [body, setBody] = useState(''); const lines = file.lines || []; const kind = fileKind(file); const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify'; const name = splitDiffPath(file.path);
+  const store = useStore();
+  const [limit, setLimit] = useState(500);
+  const [commenting, setCommenting] = useState('');
+  const [body, setBody] = useState('');
+  const lines = file.lines || [];
+  const kind = fileKind(file);
+  const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
+  const name = splitDiffPath(file.path);
   const emphasis = new Map<number, [number, number]>();
-  for (let index = 0; index + 1 < lines.length; index += 1) if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') { const ranges = inlineEmphasis(lines[index].content, lines[index + 1].content); emphasis.set(index, ranges.old); emphasis.set(index + 1, ranges.new); }
-  const submitComment = (event: SubmitEvent, line: DiffLine) => { event.preventDefault(); const number = line.kind === 'delete' ? line.oldLine : line.newLine; if (!body.trim() || !number) return; store.queueDiffComment({ path: file.path, side: line.kind === 'delete' ? 'old' : 'new', line: number, body: body.trim(), scope: store.diff.value.scope, context: line.content, fileChangeSeq: file.snapshotSeq || file.sequence || 0 }); setBody(''); setCommenting(''); };
+  for (let index = 0; index + 1 < lines.length; index += 1)
+    if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') {
+      const ranges = inlineEmphasis(lines[index].content, lines[index + 1].content);
+      emphasis.set(index, ranges.old);
+      emphasis.set(index + 1, ranges.new);
+    }
+  const submitComment = (event: SubmitEvent, line: DiffLine) => {
+    event.preventDefault();
+    const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+    if (!body.trim() || !number) return;
+    store.queueDiffComment({
+      path: file.path,
+      side: line.kind === 'delete' ? 'old' : 'new',
+      line: number,
+      body: body.trim(),
+      scope: store.diff.value.scope,
+      context: line.content,
+      fileChangeSeq: file.snapshotSeq || file.sequence || 0,
+    });
+    setBody('');
+    setCommenting('');
+  };
   const patch = async () => {
     if (file.lines || file.patch) return unifiedPatchForFile(file);
-    const data = await store.endpoints.fileDiff(store.activeSessionId.peek(), file.path, store.diff.peek().scope, 0, file.snapshotSeq || 0); if (data.image || data.truncated) return '';
-    return unifiedPatchForFile({ ...file, lines: linesFromHunks(data.hunks), patch: String(data.diff || data.patch || '') });
+    const data = await store.endpoints.fileDiff(
+      store.activeSessionId.peek(),
+      file.path,
+      store.diff.peek().scope,
+      0,
+      file.snapshotSeq || 0,
+    );
+    if (data.image || data.truncated) return '';
+    return unifiedPatchForFile({
+      ...file,
+      lines: linesFromHunks(data.hunks),
+      patch: String(data.diff || data.patch || ''),
+    });
   };
   const toggle = () => void store.expandDiff(file);
-  return <section class={`diff-file diff-file-${legacyKind}`}>
-    <div class={`diff-file-row ${file.expanded ? 'expanded' : ''}`} role="button" tabIndex={0} title={file.path} data-path={file.path} aria-expanded={file.expanded} onClick={toggle} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } }}>
-      <span class="diff-chevron">▸</span><span class={`diff-kind-badge diff-kind-${legacyKind}`}>{legacyKind === 'create' ? 'A' : legacyKind === 'delete' ? 'D' : 'M'}</span><span class="diff-file-name"><span class="diff-file-base">{name.base}</span>{name.dir && <span class="diff-file-dir">{name.dir}</span>}</span>
-      <span class="diff-file-counts">{file.truncated ? <span class="diff-count-muted">–</span> : <>{Boolean(file.additions) && <span class="diff-count-add">+{file.additions}</span>}{Boolean(file.deletions) && <span class="diff-count-del">−{file.deletions}</span>}</>}</span>
-      <span class="diff-file-actions"><DiffAction label={`Copy path ${file.path}`} glyph="⧉" value={() => file.path} />{!file.image && <DiffAction label={`Copy diff for ${file.path}`} glyph="±" value={patch} />}</span>
-    </div>
-    {file.expanded && <div class="diff-file-body">{file.loading && <div class="diff-loading">Loading…</div>}{file.error && <div class="diff-error">{file.error}<button class="diff-retry" onClick={() => void store.expandDiff({ ...file, lines: undefined })}>Retry</button></div>}{file.truncated && <div class="diff-error">This file was too large to retain a text diff.</div>}{file.image ? <div class={`diff-image-comparison diff-image-${legacyKind}`}>{kind !== 'add' && file.beforeURL && <figure class="diff-image-side"><figcaption class="diff-image-label">Before</figcaption><img class="diff-image-preview" src={rebaseHubAssetURL(store.config, file.beforeURL)} alt={`Before ${file.path}`} /></figure>}{kind !== 'delete' && file.afterURL && <figure class="diff-image-side"><figcaption class="diff-image-label">After</figcaption><img class="diff-image-preview" src={rebaseHubAssetURL(store.config, file.afterURL)} alt={`After ${file.path}`} /></figure>}</div> : <><div class={`diff-rows diff-rows-kind-${legacyKind}`}>{lines.slice(0, limit).map((line, index) => { const key = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`; return <Line key={key} line={line} emphasis={emphasis.get(index)} lang={lines.length <= 1500 ? file.lang || '' : ''} commentKey={key} commenting={commenting === key} body={body} onComment={(next) => { setBody(''); setCommenting(next); }} onBody={setBody} onCancel={() => { setBody(''); setCommenting(''); }} onSubmit={(event) => submitComment(event, line)} />; })}{lines.length > limit && <button class="diff-show-more" onClick={() => setLimit((value) => Math.min(lines.length, value + 500))}>Show {Math.min(500, lines.length - limit)} more lines</button>}</div>{!file.truncated && lines.length > 0 && (file.context || 3) < Math.max(file.oldLineCount || 0, file.newLineCount || 0) && <div class="diff-bulk-toggle"><button class="diff-hunk-expand" type="button" onClick={() => void store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)))}>Show more context</button><button class="diff-hunk-expand" type="button" onClick={() => void store.expandDiff(file, 100_000)}>Show full file</button></div>}</>}</div>}
-  </section>;
+  return (
+    <section class={`diff-file diff-file-${legacyKind}`}>
+      <div
+        class={`diff-file-row ${file.expanded ? 'expanded' : ''}`}
+        role="button"
+        tabIndex={0}
+        title={file.path}
+        data-path={file.path}
+        aria-expanded={file.expanded}
+        onClick={toggle}
+        onKeyDown={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            (event.key === 'Enter' || event.key === ' ')
+          ) {
+            event.preventDefault();
+            toggle();
+          }
+        }}
+      >
+        <span class="diff-chevron">▸</span>
+        <span class={`diff-kind-badge diff-kind-${legacyKind}`}>
+          {legacyKind === 'create' ? 'A' : legacyKind === 'delete' ? 'D' : 'M'}
+        </span>
+        <span class="diff-file-name">
+          <span class="diff-file-base">{name.base}</span>
+          {name.dir && <span class="diff-file-dir">{name.dir}</span>}
+        </span>
+        <span class="diff-file-counts">
+          {file.truncated ? (
+            <span class="diff-count-muted">–</span>
+          ) : (
+            <>
+              {Boolean(file.additions) && <span class="diff-count-add">+{file.additions}</span>}
+              {Boolean(file.deletions) && <span class="diff-count-del">−{file.deletions}</span>}
+            </>
+          )}
+        </span>
+        <span class="diff-file-actions">
+          <DiffAction label={`Copy path ${file.path}`} glyph="⧉" value={() => file.path} />
+          {!file.image && (
+            <DiffAction label={`Copy diff for ${file.path}`} glyph="±" value={patch} />
+          )}
+        </span>
+      </div>
+      {file.expanded && (
+        <div class="diff-file-body">
+          {file.loading && <div class="diff-loading">Loading…</div>}
+          {file.error && (
+            <div class="diff-error">
+              {file.error}
+              <button
+                class="diff-retry"
+                onClick={() => void store.expandDiff({ ...file, lines: undefined })}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {file.truncated && (
+            <div class="diff-error">This file was too large to retain a text diff.</div>
+          )}
+          {file.image ? (
+            <div class={`diff-image-comparison diff-image-${legacyKind}`}>
+              {kind !== 'add' && file.beforeURL && (
+                <figure class="diff-image-side">
+                  <figcaption class="diff-image-label">Before</figcaption>
+                  <img
+                    class="diff-image-preview"
+                    src={rebaseHubAssetURL(store.config, file.beforeURL)}
+                    alt={`Before ${file.path}`}
+                  />
+                </figure>
+              )}
+              {kind !== 'delete' && file.afterURL && (
+                <figure class="diff-image-side">
+                  <figcaption class="diff-image-label">After</figcaption>
+                  <img
+                    class="diff-image-preview"
+                    src={rebaseHubAssetURL(store.config, file.afterURL)}
+                    alt={`After ${file.path}`}
+                  />
+                </figure>
+              )}
+            </div>
+          ) : (
+            <>
+              <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
+                {lines.slice(0, limit).map((line, index) => {
+                  const key = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
+                  return (
+                    <Line
+                      key={key}
+                      line={line}
+                      emphasis={emphasis.get(index)}
+                      lang={lines.length <= 1500 ? file.lang || '' : ''}
+                      commentKey={key}
+                      commenting={commenting === key}
+                      body={body}
+                      onComment={(next) => {
+                        setBody('');
+                        setCommenting(next);
+                      }}
+                      onBody={setBody}
+                      onCancel={() => {
+                        setBody('');
+                        setCommenting('');
+                      }}
+                      onSubmit={(event) => submitComment(event, line)}
+                    />
+                  );
+                })}
+                {lines.length > limit && (
+                  <button
+                    class="diff-show-more"
+                    onClick={() => setLimit((value) => Math.min(lines.length, value + 500))}
+                  >
+                    Show {Math.min(500, lines.length - limit)} more lines
+                  </button>
+                )}
+              </div>
+              {!file.truncated &&
+                lines.length > 0 &&
+                (file.context || 3) < Math.max(file.oldLineCount || 0, file.newLineCount || 0) && (
+                  <div class="diff-bulk-toggle">
+                    <button
+                      class="diff-hunk-expand"
+                      type="button"
+                      onClick={() =>
+                        void store.expandDiff(
+                          file,
+                          Math.min(100_000, Math.max(12, (file.context || 3) * 4)),
+                        )
+                      }
+                    >
+                      Show more context
+                    </button>
+                    <button
+                      class="diff-hunk-expand"
+                      type="button"
+                      onClick={() => void store.expandDiff(file, 100_000)}
+                    >
+                      Show full file
+                    </button>
+                  </div>
+                )}
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 const DIFF_SCOPE_OPTIONS = [
-  ['last_turn', 'Last turn'], ['last_3_turns', 'Last 3 turns'], ['uncommitted', 'Uncommitted'], ['unstaged', 'Unstaged'], ['staged', 'Staged'],
+  ['last_turn', 'Last turn'],
+  ['last_3_turns', 'Last 3 turns'],
+  ['uncommitted', 'Uncommitted'],
+  ['unstaged', 'Unstaged'],
+  ['staged', 'Staged'],
 ] as const;
 
 function DiffScopePicker() {
-  const store = useStore(); const state = store.diff.value; const [open, setOpen] = useState(false); const trigger = useRef<HTMLButtonElement>(null); const popover = useRef<HTMLDialogElement>(null);
-  const options = state.git ? DIFF_SCOPE_OPTIONS : DIFF_SCOPE_OPTIONS.slice(0, 2); const label = DIFF_SCOPE_OPTIONS.find(([value]) => value === state.scope)?.[1] || 'Last turn';
+  const store = useStore();
+  const state = store.diff.value;
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDialogElement>(null);
+  const options = state.git ? DIFF_SCOPE_OPTIONS : DIFF_SCOPE_OPTIONS.slice(0, 2);
+  const label = DIFF_SCOPE_OPTIONS.find(([value]) => value === state.scope)?.[1] || 'Last turn';
   useLayoutEffect(() => {
-    if (!open || !trigger.current || !popover.current) return; const panel = popover.current; if (!panel.open) panel.showModal();
-    const rect = trigger.current.getBoundingClientRect(); const panelRect = panel.getBoundingClientRect(); panel.style.left = `${Math.max(6, Math.min(rect.left, innerWidth - panelRect.width - 6))}px`; const below = rect.bottom + 4; panel.style.top = `${below + panelRect.height < innerHeight - 6 ? below : Math.max(6, rect.top - panelRect.height - 4)}px`;
+    if (!open || !trigger.current || !popover.current) return;
+    const panel = popover.current;
+    if (!panel.open) panel.showModal();
+    const rect = trigger.current.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    panel.style.left = `${Math.max(6, Math.min(rect.left, innerWidth - panelRect.width - 6))}px`;
+    const below = rect.bottom + 4;
+    panel.style.top = `${below + panelRect.height < innerHeight - 6 ? below : Math.max(6, rect.top - panelRect.height - 4)}px`;
   }, [open]);
-  const choose = (scope: string) => { setOpen(false); if (scope === state.scope) return; store.diff.value = { ...store.diff.peek(), scope, files: [], error: '' }; void store.loadDiff(); };
-  return <><button ref={trigger} type="button" class="chip-trigger diff-scope-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label="Change scope" onClick={() => setOpen((value) => !value)}><span class="chip-label">{label}</span><svg class="diff-scope-chevron" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 4 4 4-4" /></svg></button>{open && <dialog ref={popover} class="chip-popover diff-scope-popover" aria-label="Change scope" onCancel={(event) => { event.preventDefault(); setOpen(false); trigger.current?.focus(); }} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>{options.map(([value, text]) => <button type="button" class="chip-popover-item" role="option" aria-selected={value === state.scope} onClick={() => choose(value)}><span class="chip-popover-item-label">{text}</span></button>)}</dialog>}</>;
+  const choose = (scope: string) => {
+    setOpen(false);
+    if (scope === state.scope) return;
+    store.diff.value = { ...store.diff.peek(), scope, files: [], error: '' };
+    void store.loadDiff();
+  };
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        class="chip-trigger diff-scope-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Change scope"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span class="chip-label">{label}</span>
+        <svg
+          class="diff-scope-chevron"
+          viewBox="0 0 12 8"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m2 2 4 4 4-4" />
+        </svg>
+      </button>
+      {open && (
+        <dialog
+          ref={popover}
+          class="chip-popover diff-scope-popover"
+          aria-label="Change scope"
+          onCancel={(event) => {
+            event.preventDefault();
+            setOpen(false);
+            trigger.current?.focus();
+          }}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setOpen(false);
+          }}
+        >
+          {options.map(([value, text]) => (
+            <button
+              type="button"
+              class="chip-popover-item"
+              role="option"
+              aria-selected={value === state.scope}
+              onClick={() => choose(value)}
+            >
+              <span class="chip-popover-item-label">{text}</span>
+            </button>
+          ))}
+        </dialog>
+      )}
+    </>
+  );
 }
 
 export function DiffSidebar() {
-  const store = useStore(); const state = store.diff.value; const aside = useRef<HTMLElement>(null);
-  useEffect(() => { if (!state.open) return; const escape = (event: KeyboardEvent) => { if (event.key !== 'Escape') return; const target = event.target as HTMLInputElement; if (target?.matches('input[type="search"]') && target.value) { store.diff.value = { ...store.diff.peek(), filter: '' }; target.value = ''; } else store.diff.value = { ...store.diff.peek(), maximized: false, open: state.maximized ? true : false }; }; addEventListener('keydown', escape); return () => removeEventListener('keydown', escape); }, [state.open, state.maximized, store]);
-  if (!state.open) return null; const files = state.files.filter((file) => file.path.toLowerCase().includes(state.filter.toLowerCase())); const comments = state.comments.filter((comment) => !comment.sessionId || comment.sessionId === state.sessionId); const allExpanded = state.files.length > 0 && state.files.every((file) => file.expanded); const adds = state.files.reduce((sum, file) => sum + (file.additions || 0), 0); const dels = state.files.reduce((sum, file) => sum + (file.deletions || 0), 0);
-  const startResize = (event: PointerEvent) => { const startX = event.clientX; const startWidth = state.width; const move = (next: PointerEvent) => store.resizeDiff(clampDiffWidth(startWidth + startX - next.clientX, innerWidth)); const finish = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', finish); }; addEventListener('pointermove', move); addEventListener('pointerup', finish, { once: true }); };
-  return <aside ref={aside} class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`} id="diffSidebar" aria-label="Session file changes" style={state.maximized ? undefined : { width: `${state.width}px` }}><div class="diff-resize-handle" role="separator" aria-label="Resize changes panel" aria-orientation="vertical" tabIndex={0} onPointerDown={startResize} onDblClick={() => store.resizeDiff(420)} />
-    <div class="diff-sidebar-header"><DiffScopePicker /><span class="diff-sidebar-totals">{adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}{dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}</span><button class="icon-btn diff-bulk-toggle" type="button" aria-label={`${allExpanded ? 'Collapse' : 'Expand'} all files`} title={`${allExpanded ? 'Collapse' : 'Expand'} all`} data-action={allExpanded ? 'collapse' : 'expand'} onClick={() => { if (allExpanded) store.diff.value = { ...store.diff.peek(), files: store.diff.peek().files.map((file) => ({ ...file, expanded: false })) }; else { store.diff.value = { ...store.diff.peek(), files: store.diff.peek().files.map((file) => file.lines ? { ...file, expanded: true } : file) }; state.files.filter((file) => !file.lines).forEach((file) => void store.expandDiff(file)); } }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="diff-bulk-expand-icon"><path d="m7 9 5-5 5 5" /><path d="m7 15 5 5 5-5" /></g><g class="diff-bulk-collapse-icon"><path d="m7 4 5 5 5-5" /><path d="m7 20 5-5 5 5" /></g></svg></button><button class="icon-btn diff-sidebar-maximize" type="button" aria-label={state.maximized ? 'Restore changes' : 'Maximize changes'} data-action={state.maximized ? 'restore' : 'maximize'} onClick={() => { store.diff.value = { ...state, maximized: !state.maximized }; }}><Icon name={state.maximized ? 'restore' : 'expand'} /></button><button class="icon-btn diff-sidebar-close" type="button" aria-label="Hide changes" onClick={() => { store.diff.value = { ...state, open: false }; }}><Icon name="close" /></button></div>
-    {(state.files.length > 8 || state.filter) && <div class="diff-filter-row"><input class="diff-filter-input" type="search" placeholder="Filter files…" aria-label="Filter changed files" value={state.filter} onInput={(event) => { store.diff.value = { ...state, filter: event.currentTarget.value }; }} /></div>}
-    <div class="diff-file-list" aria-label="Changed files">{state.loading && <div class="diff-loading">Loading changes…</div>}{state.error && <div class="diff-error">{state.error}<button class="diff-retry" onClick={() => void store.loadDiff()}>Retry</button></div>}{files.map((file) => <File key={file.path} file={file} />)}{!state.loading && !state.error && !files.length && <div class="diff-empty">No file changes in this scope.</div>}</div>
-    <div class="diff-queue-status" role="status">{comments.length ? `${comments.length} inline comment${comments.length === 1 ? '' : 's'} queued.` : 'No inline comments queued.'}</div>{comments.length > 0 && <div class="diff-queue-bar"><span class="diff-queue-count">{comments.length} queued</span><button class="diff-queue-discard" type="button" onClick={() => { const remaining = state.comments.filter((comment) => comment.sessionId && comment.sessionId !== state.sessionId); store.diff.value = { ...state, comments: remaining }; }}>Discard</button><button class="diff-queue-send" type="button" onClick={() => void store.sendDiffComments()}>Send comments</button></div>}
-  </aside>;
+  const store = useStore();
+  const state = store.diff.value;
+  const aside = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!state.open) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const target = event.target as HTMLInputElement;
+      if (target?.matches('input[type="search"]') && target.value) {
+        store.diff.value = { ...store.diff.peek(), filter: '' };
+        target.value = '';
+      } else
+        store.diff.value = {
+          ...store.diff.peek(),
+          maximized: false,
+          open: state.maximized ? true : false,
+        };
+    };
+    addEventListener('keydown', escape);
+    return () => removeEventListener('keydown', escape);
+  }, [state.open, state.maximized, store]);
+  if (!state.open) return null;
+  const files = state.files.filter((file) =>
+    file.path.toLowerCase().includes(state.filter.toLowerCase()),
+  );
+  const comments = state.comments.filter(
+    (comment) => !comment.sessionId || comment.sessionId === state.sessionId,
+  );
+  const allExpanded = state.files.length > 0 && state.files.every((file) => file.expanded);
+  const adds = state.files.reduce((sum, file) => sum + (file.additions || 0), 0);
+  const dels = state.files.reduce((sum, file) => sum + (file.deletions || 0), 0);
+  const startResize = (event: PointerEvent) => {
+    const startX = event.clientX;
+    const startWidth = state.width;
+    const move = (next: PointerEvent) =>
+      store.resizeDiff(clampDiffWidth(startWidth + startX - next.clientX, innerWidth));
+    const finish = () => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', finish);
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', finish, { once: true });
+  };
+  return (
+    <aside
+      ref={aside}
+      class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
+      id="diffSidebar"
+      aria-label="Session file changes"
+      style={state.maximized ? undefined : { width: `${state.width}px` }}
+    >
+      <div
+        class="diff-resize-handle"
+        role="separator"
+        aria-label="Resize changes panel"
+        aria-orientation="vertical"
+        tabIndex={0}
+        onPointerDown={startResize}
+        onDblClick={() => store.resizeDiff(420)}
+      />
+      <div class="diff-sidebar-header">
+        <DiffScopePicker />
+        <span class="diff-sidebar-totals">
+          {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
+          {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
+        </span>
+        <button
+          class="icon-btn diff-bulk-toggle"
+          type="button"
+          aria-label={`${allExpanded ? 'Collapse' : 'Expand'} all files`}
+          title={`${allExpanded ? 'Collapse' : 'Expand'} all`}
+          data-action={allExpanded ? 'collapse' : 'expand'}
+          onClick={() => {
+            if (allExpanded)
+              store.diff.value = {
+                ...store.diff.peek(),
+                files: store.diff.peek().files.map((file) => ({ ...file, expanded: false })),
+              };
+            else {
+              store.diff.value = {
+                ...store.diff.peek(),
+                files: store.diff
+                  .peek()
+                  .files.map((file) => (file.lines ? { ...file, expanded: true } : file)),
+              };
+              state.files
+                .filter((file) => !file.lines)
+                .forEach((file) => void store.expandDiff(file));
+            }
+          }}
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <g class="diff-bulk-expand-icon">
+              <path d="m7 9 5-5 5 5" />
+              <path d="m7 15 5 5 5-5" />
+            </g>
+            <g class="diff-bulk-collapse-icon">
+              <path d="m7 4 5 5 5-5" />
+              <path d="m7 20 5-5 5 5" />
+            </g>
+          </svg>
+        </button>
+        <button
+          class="icon-btn diff-sidebar-maximize"
+          type="button"
+          aria-label={state.maximized ? 'Restore changes' : 'Maximize changes'}
+          data-action={state.maximized ? 'restore' : 'maximize'}
+          onClick={() => {
+            store.diff.value = { ...state, maximized: !state.maximized };
+          }}
+        >
+          <Icon name={state.maximized ? 'restore' : 'expand'} />
+        </button>
+        <button
+          class="icon-btn diff-sidebar-close"
+          type="button"
+          aria-label="Hide changes"
+          onClick={() => {
+            store.diff.value = { ...state, open: false };
+          }}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+      {(state.files.length > 8 || state.filter) && (
+        <div class="diff-filter-row">
+          <input
+            class="diff-filter-input"
+            type="search"
+            placeholder="Filter files…"
+            aria-label="Filter changed files"
+            value={state.filter}
+            onInput={(event) => {
+              store.diff.value = { ...state, filter: event.currentTarget.value };
+            }}
+          />
+        </div>
+      )}
+      <div class="diff-file-list" aria-label="Changed files">
+        {state.loading && <div class="diff-loading">Loading changes…</div>}
+        {state.error && (
+          <div class="diff-error">
+            {state.error}
+            <button class="diff-retry" onClick={() => void store.loadDiff()}>
+              Retry
+            </button>
+          </div>
+        )}
+        {files.map((file) => (
+          <File key={file.path} file={file} />
+        ))}
+        {!state.loading && !state.error && !files.length && (
+          <div class="diff-empty">No file changes in this scope.</div>
+        )}
+      </div>
+      <div class="diff-queue-status" role="status">
+        {comments.length
+          ? `${comments.length} inline comment${comments.length === 1 ? '' : 's'} queued.`
+          : 'No inline comments queued.'}
+      </div>
+      {comments.length > 0 && (
+        <div class="diff-queue-bar">
+          <span class="diff-queue-count">{comments.length} queued</span>
+          <button
+            class="diff-queue-discard"
+            type="button"
+            onClick={() => {
+              const remaining = state.comments.filter(
+                (comment) => comment.sessionId && comment.sessionId !== state.sessionId,
+              );
+              store.diff.value = { ...state, comments: remaining };
+            }}
+          >
+            Discard
+          </button>
+          <button
+            class="diff-queue-send"
+            type="button"
+            onClick={() => void store.sendDiffComments()}
+          >
+            Send comments
+          </button>
+        </div>
+      )}
+    </aside>
+  );
 }
 
 export function PlanSurface() {
-  const store = useStore(); const plan = store.currentPlan.value; if (!plan || !store.planOpen.value) return null;
-  return <aside class="plan-panel open" id="planPanel" role="complementary" aria-labelledby="planPanelTitle"><div class="plan-surface-header"><h2 id="planPanelTitle">Current plan</h2><span class="plan-surface-progress">{plan.plan.filter((step) => step.status === 'completed').length}/{plan.plan.length}</span><button class="icon-btn" type="button" aria-label="Close current plan" onClick={() => { store.planOpen.value = false; }}><Icon name="close" /></button></div><div class="plan-surface-body">{plan.explanation && <p class="current-plan-explanation">{plan.explanation}</p>}<div class="current-plan-checklist">{plan.plan.map((step, index) => <div class={`current-plan-step current-plan-step-${step.status}`} key={`${index}-${step.step}`}><span class="current-plan-step-marker">{step.status === 'completed' ? <Icon name="check" /> : step.status === 'in_progress' ? '●' : '○'}</span><div class="current-plan-step-content"><div class="current-plan-step-text">{step.step}</div><div class="current-plan-step-state">{step.status.replace('_', ' ')}</div></div></div>)}</div></div></aside>;
+  const store = useStore();
+  const plan = store.currentPlan.value;
+  if (!plan || !store.planOpen.value) return null;
+  return (
+    <aside
+      class="plan-panel open"
+      id="planPanel"
+      role="complementary"
+      aria-labelledby="planPanelTitle"
+    >
+      <div class="plan-surface-header">
+        <h2 id="planPanelTitle">Current plan</h2>
+        <span class="plan-surface-progress">
+          {plan.plan.filter((step) => step.status === 'completed').length}/{plan.plan.length}
+        </span>
+        <button
+          class="icon-btn"
+          type="button"
+          aria-label="Close current plan"
+          onClick={() => {
+            store.planOpen.value = false;
+          }}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+      <div class="plan-surface-body">
+        {plan.explanation && <p class="current-plan-explanation">{plan.explanation}</p>}
+        <div class="current-plan-checklist">
+          {plan.plan.map((step, index) => (
+            <div
+              class={`current-plan-step current-plan-step-${step.status}`}
+              key={`${index}-${step.step}`}
+            >
+              <span class="current-plan-step-marker">
+                {step.status === 'completed' ? (
+                  <Icon name="check" />
+                ) : step.status === 'in_progress' ? (
+                  '●'
+                ) : (
+                  '○'
+                )}
+              </span>
+              <div class="current-plan-step-content">
+                <div class="current-plan-step-text">{step.step}</div>
+                <div class="current-plan-step-state">{step.status.replace('_', ' ')}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
 }

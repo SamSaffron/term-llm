@@ -1,6 +1,15 @@
 export type MessageRole =
-  | 'user' | 'assistant' | 'error' | 'guardian-notice' | 'tool-group'
-  | 'compaction' | 'compaction-boundary' | 'model-swap' | 'phase' | 'skill-run' | 'path-note';
+  | 'user'
+  | 'assistant'
+  | 'error'
+  | 'guardian-notice'
+  | 'tool-group'
+  | 'compaction'
+  | 'compaction-boundary'
+  | 'model-swap'
+  | 'phase'
+  | 'skill-run'
+  | 'path-note';
 
 export interface Attachment {
   id?: string;
@@ -218,7 +227,8 @@ export interface ApprovalPrompt {
   resumeAutoAvailable?: boolean;
 }
 
-export type RunStatus = 'idle' | 'connecting' | 'streaming' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
+export type RunStatus =
+  'idle' | 'connecting' | 'streaming' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
 
 export interface ActiveRun {
   responseId: string;
