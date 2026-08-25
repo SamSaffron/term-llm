@@ -796,6 +796,12 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 			api := s.cachedProjectStatus(statusCtx, *groups[i].Project, i < maxEagerProjectStatusChecks)
 			groups[i].Project = &api.Project
 		}
+		for j := range groups[i].Sessions {
+			// Legacy sessions predate provider_key and retain Provider.Name() as a
+			// display label (for example, "ChatGPT (gpt-5.6-sol, effort=low)").
+			// The runtime picker must receive the canonical key, never that label.
+			groups[i].Sessions[j].ProviderKey = sessionSummaryProviderKey(s.cfgRef, groups[i].Sessions[j])
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
 }

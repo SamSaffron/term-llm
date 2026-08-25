@@ -550,6 +550,20 @@ describe('AppStore compatibility behavior', () => {
     await vi.waitFor(() => expect(store.models.value.map((entry) => entry.id)).toEqual(['fresh']));
   });
 
+  it('does not reload models when the provider preference is unchanged', () => {
+    const store = new AppStore(config);
+    store.selectedProvider.value = 'chatgpt';
+    store.selectedModel.value = 'gpt-5.6-sol';
+    store.models.value = [{ id: 'gpt-5.6-sol', name: 'gpt-5.6-sol' }];
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+
+    store.setPreference('provider', 'chatgpt', false);
+
+    expect(store.endpoints.models).not.toHaveBeenCalled();
+    expect(store.selectedModel.value).toBe('gpt-5.6-sol');
+    expect(store.models.value.map((model) => model.id)).toEqual(['gpt-5.6-sol']);
+  });
+
   it('routes every provider model refresh through one abortable generation guard', async () => {
     const store = new AppStore(config);
     const first = deferred<Record<string, unknown>>();

@@ -1412,6 +1412,7 @@ func TestFlatSessionListingPaginatesWhenProjectsDisabled(t *testing.T) {
 
 func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	srv, store := newServeProjectTestServer(t)
+	srv.cfgRef = &config.Config{Providers: map[string]config.ProviderConfig{}}
 	ctx := context.Background()
 	project := &session.Project{Name: "HTTP project", CanonicalDir: t.TempDir()}
 	if err := store.CreateProject(ctx, project); err != nil {
@@ -1419,7 +1420,7 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		now := time.Now().Add(time.Duration(i) * time.Second)
-		sess := &session.Session{ID: fmt.Sprintf("http-project-%d", i), Provider: "mock", Model: "mock", ProjectID: project.ID, CWD: project.CanonicalDir, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+		sess := &session.Session{ID: fmt.Sprintf("http-project-%d", i), Provider: "ChatGPT (gpt-5.6-sol, effort=low)", Model: "gpt-5.6-sol", ProjectID: project.ID, CWD: project.CanonicalDir, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
 		if err := store.Create(ctx, sess); err != nil {
 			t.Fatal(err)
 		}
@@ -1438,6 +1439,9 @@ func TestSidebarAndStatusHTTPExposeBoundedProjectMetadata(t *testing.T) {
 	group := sidebarPayload.Groups[0]
 	if group.Project == nil || group.Project.ID != project.ID || group.SessionCount != 3 || len(group.Sessions) != 1 || group.NextCursor == "" {
 		t.Fatalf("bounded sidebar group = %#v", group)
+	}
+	if got := group.Sessions[0].ProviderKey; got != "chatgpt" {
+		t.Fatalf("sidebar provider_key = %q, want canonical chatgpt", got)
 	}
 
 	statusRR := httptest.NewRecorder()

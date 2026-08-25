@@ -1622,10 +1622,11 @@ export class AppStore {
       agent: [this.selectedAgent, this.keys.selectedAgent],
     } as const;
     const [target, key] = map[name];
+    const changed = target.peek() !== value;
     target.value = value;
     if (value) this.storage.setItem(key, value);
     else this.storage.removeItem(key);
-    if (name === 'provider') {
+    if (name === 'provider' && changed) {
       this.selectedModel.value = '';
       this.storage.removeItem(this.keys.selectedModel);
       const provider = this.providers.peek().find((entry) => entry.id === value);
