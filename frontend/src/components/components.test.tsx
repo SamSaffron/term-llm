@@ -297,11 +297,38 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
+    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status')).not.toHaveTextContent('done');
     expect(screen.queryByText('Assistant')).not.toBeInTheDocument();
     expect(screen.getByText('now')).toBeInTheDocument();
     await userEvent.click(group);
     expect(group).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('path: main.go')).toBeInTheDocument();
+  });
+
+  it('collapses reloaded tool groups with failures without labeling the group as an error', () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          { id: 'read', name: 'read_file', status: 'done' },
+          { id: 'shell', name: 'shell', status: 'error', result: 'exit status 1' },
+        ],
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
+    expect(group).toHaveAttribute('aria-expanded', 'false');
+    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
   });
 
   it('ports the compact turn-copy control and transient copied feedback', async () => {

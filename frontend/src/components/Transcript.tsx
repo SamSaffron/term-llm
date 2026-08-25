@@ -95,8 +95,11 @@ function Tool({ tool }: { tool: ToolCall }) {
           </span>
           <span class="tool-name">{tool.name}</span>
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
-          <span class={`tool-status ${tool.status === 'done' ? 'done' : ''}`}>
-            {tool.status === 'running' ? 'running…' : tool.status}
+          <span
+            class={`tool-status ${tool.status === 'done' ? 'done' : ''}`}
+            aria-label={tool.status === 'done' ? 'Complete' : undefined}
+          >
+            {tool.status === 'running' ? 'running…' : tool.status === 'done' ? '✓' : tool.status}
           </span>
         </button>
         {expanded && (
@@ -176,7 +179,7 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
     (tool) =>
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
   );
-  const active = visible.some((tool) => tool.status === 'running' || tool.status === 'error');
+  const active = visible.some((tool) => tool.status === 'running');
   const [expanded, setExpanded] = useState(active);
   useEffect(() => {
     if (active) setExpanded(true);
@@ -184,11 +187,7 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
   if (!visible.length) return null;
   if (visible.length === 1) return <Tool tool={visible[0]} />;
   const names = [...new Set(visible.map((tool) => tool.name))];
-  const status = visible.some((tool) => tool.status === 'error')
-    ? 'error'
-    : visible.some((tool) => tool.status === 'running')
-      ? 'running…'
-      : 'done';
+  const running = visible.some((tool) => tool.status === 'running');
   return (
     <article class="tool-group-card">
       <button
@@ -204,7 +203,12 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
           {visible.length} tool calls · {names.slice(0, 3).join(', ')}
           {names.length > 3 ? '…' : ''}
         </span>
-        <span class={`tool-status ${status === 'done' ? 'done' : ''}`}>{status}</span>
+        <span
+          class={`tool-status ${running ? '' : 'done'}`}
+          aria-label={running ? undefined : 'Complete'}
+        >
+          {running ? 'running…' : '✓'}
+        </span>
       </button>
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>
         {visible.map((tool) => (

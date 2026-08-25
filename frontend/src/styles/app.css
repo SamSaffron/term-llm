@@ -4089,8 +4089,8 @@ dialog.chip-popover::backdrop {
 }
 
 .tool-group-details {
-  border-top: 1px solid var(--border);
   display: none;
+  padding: 0.15rem 0;
 }
 
 .tool-group-details.open {
@@ -4101,13 +4101,8 @@ dialog.chip-popover::backdrop {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.4rem 0.75rem;
+  padding: 0.15rem 0.75rem;
   font-size: 0.88rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.tool-group-entry:last-child {
-  border-bottom: none;
 }
 
 .tool-group-entry .tool-entry-name {
@@ -4133,6 +4128,13 @@ dialog.chip-popover::backdrop {
 .tool-group-entry-body .tool-card {
   margin: 0;
   width: 100%;
+}
+
+.tool-group-entry-body .tool-card {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .tool-group-entry .tool-entry-status.done {
