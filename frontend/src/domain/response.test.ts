@@ -1,0 +1,77 @@
+import { describe, expect, it } from 'vitest';
+import { initialProjection, reduceResponse, RESPONSE_EVENT_TYPES, ResponseProtocolError } from './response';
+import type { ActiveRun } from './types';
+
+const run: ActiveRun = { responseId: 'r1', sessionId: 's1', epoch: 1, status: 'connecting', lastSequence: 0, startedRev: 0, reconnects: 0 };
+const event = (type: string, sequence_number: number, rest: Record<string, unknown> = {}) => ({ type, response_id: 'r1', run_epoch: 1, sequence_number, ...rest });
+
+describe('response projection', () => {
+  it('inventories every server event handled by the reducer', () => {
+    expect(RESPONSE_EVENT_TYPES).toEqual(expect.arrayContaining([
+      'response.created', 'response.output_text.delta', 'response.output_item.added', 'response.function_call_arguments.delta',
+      'response.tool_exec.start', 'response.tool_exec.end', 'response.guardian.review', 'response.compaction',
+      'response.model_swap.progress', 'response.interjection', 'response.ask_user.prompt', 'response.approval.prompt',
+      'response.file_change', 'response.completed', 'response.cancelled', 'response.failed', 'response.stream_error',
+    ]));
+    expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
+  });
+
+  it('streams stable assistant segments without replacing earlier content', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(projection, event('response.created', 1));
+    projection = reduceResponse(projection, event('response.output_text.delta', 2, { delta: 'Hello', assistant_segment_ordinal: 0 }));
+    projection = reduceResponse(projection, event('response.output_text.new_segment', 3, { assistant_segment_ordinal: 1 }));
+    projection = reduceResponse(projection, event('response.output_text.delta', 4, { delta: 'after tool', assistant_segment_ordinal: 1 }));
+    expect(projection.messages.map((message) => message.content)).toEqual(['Hello', 'after tool']);
+    expect(projection.messages.map((message) => message.id)).toEqual(['r1:assistant:0', 'r1:assistant:1']);
+  });
+
+  it('assembles tool calls, arguments, guardian review and completion', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(projection, event('response.output_item.added', 1, { item: { type: 'function_call', call_id: 'c1', name: 'shell' } }));
+    projection = reduceResponse(projection, event('response.function_call_arguments.delta', 2, { call_id: 'c1', delta: '{"command":' }));
+    projection = reduceResponse(projection, event('response.function_call_arguments.delta', 3, { call_id: 'c1', delta: '"pwd"}' }));
+    projection = reduceResponse(projection, event('response.guardian.review', 4, { call_id: 'c1', outcome: 'approved', message: 'safe' }));
+    projection = reduceResponse(projection, event('response.tool_exec.end', 5, { call_id: 'c1', output: '/tmp' }));
+    expect(projection.messages[0].tools?.[0]).toMatchObject({ name: 'shell', arguments: '{"command":"pwd"}', status: 'done', result: '/tmp', guardianReviews: [{ outcome: 'approved', message: 'safe' }] });
+  });
+
+  it('ignores duplicates and rejects sequence gaps or stale epochs for snapshot recovery', () => {
+    const first = reduceResponse(initialProjection(run), event('response.output_text.delta', 1, { delta: 'one' }));
+    expect(reduceResponse(first, event('response.output_text.delta', 1, { delta: 'duplicate' }))).toBe(first);
+    expect(() => reduceResponse(first, event('response.output_text.delta', 3, { delta: 'gap' }))).toThrow(ResponseProtocolError);
+    expect(() => reduceResponse(first, { ...event('response.output_text.delta', 2, { delta: 'old' }), run_epoch: 0 })).toThrow(ResponseProtocolError);
+  });
+
+  it('rejects incomplete ownership envelopes instead of accepting ambiguous events', () => {
+    const projection = initialProjection(run);
+    expect(() => reduceResponse(projection, { type: 'response.output_text.delta', run_epoch: 1, sequence_number: 1, delta: 'missing owner' })).toThrow(ResponseProtocolError);
+    expect(() => reduceResponse(projection, { type: 'response.output_text.delta', response_id: 'r1', sequence_number: 1, delta: 'missing epoch' })).toThrow(ResponseProtocolError);
+  });
+
+  it('ignores empty and finalized argument deltas and flushes unmatched guardian reviews', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(projection, event('response.output_text.delta', 1, { delta: '' }));
+    expect(projection.messages).toEqual([]);
+    projection = reduceResponse(projection, event('response.output_item.added', 2, { item: { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{"done":true}' } }));
+    projection = reduceResponse(projection, event('response.output_item.done', 3, { item: { type: 'function_call', call_id: 'c1', arguments: '{"done":true}' } }));
+    projection = reduceResponse(projection, event('response.function_call_arguments.delta', 4, { call_id: 'c1', delta: 'ignored' }));
+    projection = reduceResponse(projection, event('response.guardian.review', 5, { call_id: 'missing', outcome: 'warning', message: 'manual review' }));
+    projection = reduceResponse(projection, event('response.completed', 6));
+    expect(projection.messages[0].tools?.[0].arguments).toBe('{"done":true}');
+    expect(projection.messages.at(-1)).toMatchObject({ role: 'guardian-notice', content: 'manual review (unmatched tool call missing)' });
+  });
+
+  it('projects prompts, plans, file changes and terminal states', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(projection, event('response.ask_user.prompt', 1, { call_id: 'ask1', questions: [{ question: 'Choose?', options: [] }] }));
+    projection = reduceResponse(projection, event('response.approval.prompt', 2, { approval_id: 'a1', path: '/tmp' }));
+    projection = reduceResponse(projection, event('response.file_change', 3));
+    projection = reduceResponse(projection, event('response.completed', 4, { usage: { total_tokens: 12 } }));
+    expect(projection.askUser?.callId).toBe('ask1');
+    expect(projection.approval?.id).toBe('a1');
+    expect(projection.fileChangeRevision).toBe(1);
+    expect(projection.run.status).toBe('completed');
+    expect(projection.usage?.total_tokens).toBe(12);
+  });
+});

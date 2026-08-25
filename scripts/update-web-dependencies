@@ -1,94 +1,19 @@
 #!/usr/bin/env bash
-#
-# Downloads web UI vendor dependencies into internal/serveui/static/vendor/
-# and updates version-busting query strings in index.html.
-#
+# Update pinned Web UI runtime dependencies and regenerate committed assets.
 set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root/frontend"
 
-STATIC="internal/serveui/static"
-HTML="$STATIC/index.html"
-VENDOR="$STATIC/vendor"
+npm install --save-exact \
+  preact@latest \
+  @preact/signals@latest \
+  marked@latest \
+  dompurify@latest \
+  katex@latest \
+  highlight.js@latest
+npm run typecheck
+npm test
+npm run build
 
-if [ ! -f "$HTML" ]; then
-  echo "Error: $HTML not found. Run from repo root." >&2
-  exit 1
-fi
-
-# --- Version checks ---
-
-katex_latest() {
-  curl -sf "https://data.jsdelivr.com/v1/packages/npm/katex" | grep -oP '"latest"\s*:\s*"\K[^"]+' | head -1
-}
-
-cdnjs_latest() {
-  local lib="$1"
-  curl -sf "https://api.cdnjs.com/libraries/${lib}?fields=version" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4
-}
-
-echo "Checking latest versions..."
-KATEX_VER=$(katex_latest)
-HLJS_VER=$(cdnjs_latest "highlight.js")
-MARKED_VER=$(cdnjs_latest "marked")
-PURIFY_VER=$(cdnjs_latest "dompurify")
-
-echo "  katex:        $KATEX_VER"
-echo "  highlight.js: $HLJS_VER"
-echo "  marked:       $MARKED_VER"
-echo "  dompurify:    $PURIFY_VER"
-echo
-
-# --- Download helper ---
-
-dl() {
-  local url="$1" dest="$2"
-  mkdir -p "$(dirname "$dest")"
-  echo "  $dest"
-  curl -sfL "$url" -o "$dest"
-}
-
-# --- KaTeX ---
-echo "Downloading KaTeX $KATEX_VER..."
-KATEX_BASE="https://cdn.jsdelivr.net/npm/katex@${KATEX_VER}/dist"
-dl "$KATEX_BASE/katex.min.css" "$VENDOR/katex/katex.min.css"
-dl "$KATEX_BASE/katex.min.js" "$VENDOR/katex/katex.min.js"
-dl "$KATEX_BASE/contrib/auto-render.min.js" "$VENDOR/katex/auto-render.min.js"
-
-# Download KaTeX woff2 fonts referenced by katex.min.css
-echo "Downloading KaTeX fonts..."
-FONT_DIR="$VENDOR/katex/fonts"
-mkdir -p "$FONT_DIR"
-# Extract font filenames from CSS url(fonts/...)
-font_files=$(grep -oP 'url\(fonts/\K[^)]+\.woff2' "$VENDOR/katex/katex.min.css" | sort -u)
-for f in $font_files; do
-  dl "$KATEX_BASE/fonts/$f" "$FONT_DIR/$f"
-done
-
-# --- Highlight.js ---
-echo "Downloading highlight.js $HLJS_VER..."
-HLJS_BASE="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${HLJS_VER}"
-dl "$HLJS_BASE/highlight.min.js" "$VENDOR/hljs/highlight.min.js"
-dl "$HLJS_BASE/styles/github-dark.min.css" "$VENDOR/hljs/github-dark.min.css"
-dl "$HLJS_BASE/styles/github.min.css" "$VENDOR/hljs/github.min.css"
-
-# --- Marked ---
-echo "Downloading marked $MARKED_VER..."
-dl "https://cdnjs.cloudflare.com/ajax/libs/marked/${MARKED_VER}/lib/marked.umd.min.js" \
-   "$VENDOR/marked/marked.umd.min.js"
-
-# --- DOMPurify ---
-echo "Downloading DOMPurify $PURIFY_VER..."
-dl "https://cdnjs.cloudflare.com/ajax/libs/dompurify/${PURIFY_VER}/purify.min.js" \
-   "$VENDOR/dompurify/purify.min.js"
-
-# --- Update version query strings in index.html ---
-echo
-echo "Updating $HTML version strings..."
-
-# Replace ?v=OLD with ?v=NEW for each library path prefix
-sed -i -E "s|(vendor/katex/[^?]+\?v=)[0-9.]+|\1${KATEX_VER}|g" "$HTML"
-sed -i -E "s|(vendor/hljs/[^?]+\?v=)[0-9.]+|\1${HLJS_VER}|g" "$HTML"
-sed -i -E "s|(vendor/marked/[^?]+\?v=)[0-9.]+|\1${MARKED_VER}|g" "$HTML"
-sed -i -E "s|(vendor/dompurify/[^?]+\?v=)[0-9.]+|\1${PURIFY_VER}|g" "$HTML"
-
-echo
-echo "Done. Versions: katex=$KATEX_VER hljs=$HLJS_VER marked=$MARKED_VER dompurify=$PURIFY_VER"
+echo "Updated frontend/package.json, package-lock.json, and internal/serveui/static/dist."
+echo "Review dependency release notes, generated assets, payload measurements, and git diff before committing."

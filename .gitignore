@@ -3,5 +3,10 @@ term-llm
 .cache/*
 .gocache/*
 *.lock
+!frontend/package-lock.json
+frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+frontend/coverage/
 __pycache__/
 *.pyc

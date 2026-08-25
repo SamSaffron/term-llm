@@ -2,51 +2,10 @@ const SHELL_CACHE = 'term-llm-shell-v5';
 const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icon-512.png',
-  './app.css',
-  './markdown-setup.js',
-  './markdown-streaming.js',
-  './decoration.js',
-  './transcript-window.js',
-  './active-response.js',
-  './conversation.js',
-  './app-core.js',
-  './toast.js',
-  './app-network.js',
-  './app-plan.js',
-  './slash-commands.js',
-  './guardian-render.js',
-  './app-render.js',
-  './app-attachments.js',
-  './app-stream.js',
-  './app-response-effects.js',
-  './app-send.js',
-  './app-runtime.js',
-  './app-interject.js',
-  './app-modals.js',
-  './app-composer.js',
-  './app-skills.js',
-  './side-question.js',
-  './app-project-picker.js',
-  './app-sidebar.js',
-  './app-sessions.js',
-  './app-path-notes.js',
-  './app-branching.js',
-  './app-branch-commands.js',
-  './app-session-events.js',
-  './app-mcp.js',
-  './app-goals-location.js',
-  './app-message-convert.js',
-  './intent-storage.js',
-  './app-session-admin.js',
-  './app-diff-scopes.js',
-  './app-diff-context.js',
-  './app-diff-comments.js',
-  './app-diff-queue.js',
-  './app-diffs.js',
-  './app-worktrees.js',
+  './dist/app.css',
+  './dist/app.js',
+  './dist/chunks/vendor.js',
   // term-llm:webrtc-shell-asset
-  './vendor/marked/marked.umd.min.js?v=16.3.0',
-  './vendor/dompurify/purify.min.js?v=3.2.7'
 ];
 
 const putIfCacheable = async (cache, request, response) => {
@@ -101,12 +60,15 @@ self.addEventListener('fetch', (event) => {
     const networkFetch = fetch(request)
       .then((response) => putIfCacheable(cache, request, response))
       .catch(() => null);
-    if (cached) {
+    // Versioned shell assets may use stale-while-revalidate because their URL
+    // changes with every embedded build. Unversioned lazy Vite chunks must be
+    // network-first so a newly deployed app never executes an old cached chunk.
+    if (cached && isShellAsset) {
       void networkFetch;
       return cached;
     }
     const response = await networkFetch;
-    return response || Response.error();
+    return response || cached || Response.error();
   })());
 });
 

@@ -270,13 +270,17 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
 		if data, err := serveui.StaticAsset(assetName); err == nil {
-			contentType := mime.TypeByExtension(filepath.Ext(assetName))
-			if contentType == "" {
-				// mime.TypeByExtension may return empty for .woff2 on some systems.
-				switch filepath.Ext(assetName) {
-				case ".woff2":
-					contentType = "font/woff2"
-				default:
+			extension := filepath.Ext(assetName)
+			contentType := mime.TypeByExtension(extension)
+			switch extension {
+			case ".js", ".mjs":
+				contentType = "text/javascript; charset=utf-8"
+			case ".css":
+				contentType = "text/css; charset=utf-8"
+			case ".woff2":
+				contentType = "font/woff2"
+			default:
+				if contentType == "" {
 					contentType = http.DetectContentType(data)
 				}
 			}
@@ -287,9 +291,13 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 			serveEmbeddedUIBytes(w, r, data, contentType, cacheControl, true)
 			return
 		}
+		if extension := filepath.Ext(assetName); extension == ".js" || extension == ".mjs" || extension == ".css" {
+			http.NotFound(w, r)
+			return
+		}
 	}
 
-	// SPA catch-all: serve index.html for all other paths.
+	// SPA catch-all: serve index.html only for extensionless application routes.
 	serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", "no-cache, no-store, must-revalidate", false)
 }
 
@@ -353,15 +361,12 @@ func (s *serveServer) prewarmUIAssetCache() {
 
 		// Static shell assets (SW precache list minus the PNG icon).
 		assetNames := []string{
-			"app.css",
-			"app-core.js", "app-render.js", "app-stream.js",
-			"app-sessions.js",
-			"markdown-setup.js", "markdown-streaming.js", "decoration.js",
-			"vendor/marked/marked.umd.min.js",
-			"vendor/dompurify/purify.min.js",
+			"dist/app.css",
+			"dist/app.js",
+			"dist/chunks/vendor.js",
 		}
 		if s.webrtcEnabled {
-			assetNames = append(assetNames, "app-webrtc.js")
+			assetNames = append(assetNames, "dist/chunks/webrtc.js")
 		}
 		for _, name := range assetNames {
 			if data, err := serveui.StaticAsset(name); err == nil {

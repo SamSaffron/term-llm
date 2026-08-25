@@ -26,7 +26,6 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          # no npm install in this repo — node binary caching is handled by the action itself
 
       - name: Check gofmt
         run: |
@@ -73,13 +72,53 @@ jobs:
         timeout-minutes: 10
         run: npx --yes --package @playwright/test@1.62.1 playwright install --with-deps chromium
 
-      - name: Browser lifecycle smoke
-        timeout-minutes: 5
-        run: scripts/browser_lifecycle_smoke.sh
-
       - name: Hub passkey browser smoke
         timeout-minutes: 5
         run: scripts/hub_passkey_smoke.sh
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck and test frontend
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Check frontend network policy
+        run: scripts/check_frontend_network_policy.sh
+
+      - name: Build and verify generated assets
+        working-directory: frontend
+        run: npm run check:generated
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 10
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser chat smoke
+        timeout-minutes: 5
+        run: scripts/browser_lifecycle_smoke.sh
 
   cross-build:
     runs-on: ubuntu-latest

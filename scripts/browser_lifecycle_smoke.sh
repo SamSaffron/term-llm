@@ -34,7 +34,6 @@ for _ in $(seq 1 80); do
 done
 curl -fsS "${url}healthz" >/dev/null
 
-cd "$root/internal/serveui"
-TERM_LLM_SMOKE_URL="$url" npx --yes --package @playwright/test@1.62.1 sh -c \
-  'export NODE_PATH="$(dirname "$(dirname "$(command -v playwright)")")"; playwright test browser_lifecycle.spec.js --workers=1 --reporter=line --output="'"$results"'"'
+cd "$root/frontend"
+TERM_LLM_SMOKE_URL="$url" npm run test:e2e -- --workers=1 --reporter=line --output="$results"
 smoke_succeeded=true

@@ -558,15 +558,15 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 		t.Error("/ should inject TERM_LLM_UI_VERSION")
 	}
 
-	// 2. /app.css serves static assets
-	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+	// 2. /dist/app.css serves the generated static asset.
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("/app.css status = %d, want 200", rr.Code)
+		t.Fatalf("/dist/app.css status = %d, want 200", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), ".app {") {
-		t.Error("/app.css should contain app styles")
+	if !strings.Contains(rr.Body.String(), ".app{") {
+		t.Error("/dist/app.css should contain minified app styles")
 	}
 
 	// 3. /images/ serves images via handleImage (empty filename → 404)
@@ -749,12 +749,12 @@ func TestNormalizeBasePath_ProducesValidRoutes(t *testing.T) {
 			t.Errorf("basePath=%q: handleUI(/) status=%d, want 200", bp, rr.Code)
 		}
 
-		// handleUI serves assets at "/app.css" (basePath stripped)
-		req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+		// handleUI serves generated assets after the base path is stripped.
+		req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
 		rr = httptest.NewRecorder()
 		srv.handleUI(rr, req)
 		if rr.Code != http.StatusOK {
-			t.Errorf("basePath=%q: handleUI(/app.css) status=%d, want 200", bp, rr.Code)
+			t.Errorf("basePath=%q: handleUI(/dist/app.css) status=%d, want 200", bp, rr.Code)
 		}
 
 		// handleImage rejects empty filename at "/images/" (basePath stripped)
@@ -812,12 +812,10 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 		contentType string
 		bodySnippet string
 	}{
-		{name: "css", path: "/app.css", contentType: "text/css", bodySnippet: ".app {"},
-		{name: "js", path: "/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
+		{name: "css", path: "/dist/app.css", contentType: "text/css; charset=utf-8", bodySnippet: ".app{"},
+		{name: "module_js", path: "/dist/app.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "__TERM_LLM_TEST__"},
+		{name: "lazy_chunk_js", path: "/dist/chunks/katex.js", contentType: "text/javascript; charset=utf-8", bodySnippet: "katex"},
 		{name: "manifest", path: "/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
-		{name: "vendor_subdir_js", path: "/vendor/katex/katex.min.js", contentType: "text/javascript", bodySnippet: "katex"},
-		{name: "vendor_subdir_css", path: "/vendor/hljs/github-dark.min.css", contentType: "text/css", bodySnippet: ".hljs"},
-		{name: "vendor_woff2", path: "/vendor/katex/fonts/KaTeX_Main-Regular.woff2", contentType: "font/woff2", bodySnippet: ""},
 	}
 
 	for _, tt := range tests {
@@ -840,11 +838,26 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 	}
 }
 
+func TestHandleUI_UnknownScriptAndStyleDoNotReturnSPAShell(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	for _, path := range []string{"/missing.js", "/dist/chunks/missing.mjs", "/missing.css"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		srv.handleUI(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404", path, rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), `<div id="root">`) {
+			t.Errorf("%s returned SPA shell", path)
+		}
+	}
+}
+
 func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 
-	// Versioned asset gets immutable caching.
-	req := httptest.NewRequest(http.MethodGet, "/vendor/katex/katex.min.js?v=0.16.38", nil)
+	// Versioned generated asset gets immutable caching.
+	req := httptest.NewRequest(http.MethodGet, "/dist/chunks/katex.js?v="+serveui.AssetVersion(), nil)
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -855,7 +868,7 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	}
 
 	// Unversioned asset gets no-cache.
-	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css", nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -869,12 +882,12 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 	version := serveui.AssetVersion()
-	wantBody, err := serveui.StaticAsset("app.css")
+	wantBody, err := serveui.StaticAsset("dist/app.css")
 	if err != nil {
-		t.Fatalf("StaticAsset(app.css): %v", err)
+		t.Fatalf("StaticAsset(dist/app.css): %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req := httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
@@ -906,7 +919,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("decompressed body mismatch")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -919,7 +932,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("plain body mismatch")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodGet, "/dist/app.css?v="+version, nil)
 	req.Header.Set("If-None-Match", etag)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
@@ -930,7 +943,7 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 		t.Fatalf("conditional response body length = %d, want 0", rr.Body.Len())
 	}
 
-	req = httptest.NewRequest(http.MethodHead, "/app.css?v="+version, nil)
+	req = httptest.NewRequest(http.MethodHead, "/dist/app.css?v="+version, nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
@@ -979,25 +992,22 @@ func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
 	for _, snippet := range []string{
 		`href="manifest.webmanifest?v=` + version + `"`,
 		`href="icon-512.png?v=` + version + `"`,
-		`href="app.css?v=` + version + `"`,
-		`src="app-core.js?v=` + version + `"`,
-		`src="app-render.js?v=` + version + `"`,
-		`src="app-stream.js?v=` + version + `"`,
-		`src="app-sessions.js?v=` + version + `"`,
-		`.startup-splash {`,
-		`@keyframes startup-spin {`,
+		`href="dist/app.css?v=` + version + `"`,
+		`type="module" src="dist/app.js?v=` + version + `"`,
+		`.startup-splash{`,
+		`@keyframes startup-spin{`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
 	}
-	if strings.Index(body, `.startup-splash {`) > strings.Index(body, `href="app.css?v=`+version+`"`) {
-		t.Fatalf("expected inline startup styles before app.css link")
+	if strings.Index(body, `.startup-splash{`) > strings.Index(body, `href="dist/app.css?v=`+version+`"`) {
+		t.Fatalf("expected inline startup styles before generated CSS link")
 	}
 	for _, snippet := range []string{
-		`src="vendor/katex/katex.min.js?v=0.16.38"`,
-		`src="vendor/hljs/highlight.min.js?v=11.11.1"`,
-		`href="vendor/katex/katex.min.css?v=0.16.38"`,
+		`vendor/marked`,
+		`vendor/dompurify`,
+		`dist/chunks/katex.js`,
 	} {
 		if strings.Contains(body, snippet) {
 			t.Fatalf("did not expect eager optional markdown asset %q in index", snippet)
@@ -1020,20 +1030,17 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 		`term-llm-shell-` + version,
 		`'./manifest.webmanifest?v=` + version + `'`,
 		`'./icon-512.png?v=` + version + `'`,
-		`'./app.css?v=` + version + `'`,
-		`'./app-core.js?v=` + version + `'`,
-		`'./app-render.js?v=` + version + `'`,
-		`'./app-stream.js?v=` + version + `'`,
-		`'./app-sessions.js?v=` + version + `'`,
+		`'./dist/app.css?v=` + version + `'`,
+		`'./dist/app.js?v=` + version + `'`,
+		`'./dist/chunks/vendor.js?v=` + version + `'`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
 	}
 	for _, snippet := range []string{
-		`'./vendor/katex/katex.min.js?v=0.16.38'`,
-		`'./vendor/hljs/highlight.min.js?v=11.11.1'`,
-		`'./vendor/hljs/github-dark.min.css?v=11.11.1'`,
+		`'./dist/chunks/katex.js`,
+		`'./dist/chunks/highlight.js`,
 	} {
 		if strings.Contains(body, snippet) {
 			t.Fatalf("did not expect lazy optional asset %q in shell precache", snippet)

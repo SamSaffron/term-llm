@@ -41,27 +41,20 @@ func TestServeWebRTC_InjectsHeadSnippet(t *testing.T) {
 	}
 }
 
-func TestRenderIndexHTML_DropsWebRTCScriptWhenDisabled(t *testing.T) {
-	s := &serveServer{
-		cfg:               serveServerConfig{basePath: "/ui"},
-		webrtcHeadSnippet: "",
-	}
-	html := string(s.renderIndexHTML())
-	if strings.Contains(html, "app-webrtc.js") {
-		t.Error("renderIndexHTML should omit app-webrtc.js script tag when WebRTC is disabled")
-	}
-}
-
-func TestRenderIndexHTML_KeepsWebRTCScriptWhenEnabled(t *testing.T) {
-	snippet := `<script>window.__WEBRTC_ENABLED__=true;</script>`
-	s := &serveServer{
-		cfg:               serveServerConfig{basePath: "/ui"},
-		webrtcEnabled:     true,
-		webrtcHeadSnippet: snippet,
-	}
-	html := string(s.renderIndexHTML())
-	if !strings.Contains(html, "app-webrtc.js") {
-		t.Error("renderIndexHTML should include app-webrtc.js script tag when WebRTC is enabled")
+func TestRenderIndexHTMLUsesSingleModuleForWebRTC(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		s := &serveServer{
+			cfg:               serveServerConfig{basePath: "/ui"},
+			webrtcEnabled:     enabled,
+			webrtcHeadSnippet: map[bool]string{true: `<script>window.__WEBRTC_ENABLED__=true;</script>`}[enabled],
+		}
+		html := string(s.renderIndexHTML())
+		if strings.Count(html, `type="module" src="dist/app.js`) != 1 {
+			t.Fatalf("enabled=%v: expected one application module", enabled)
+		}
+		if strings.Contains(html, "app-webrtc.js") {
+			t.Fatalf("enabled=%v: legacy WebRTC script remains", enabled)
+		}
 	}
 }
 
@@ -90,9 +83,9 @@ func TestHandleUIServiceWorkerWebRTCAssetOption(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
 			body := rec.Body.String()
-			hasWebRTC := strings.Contains(body, "app-webrtc.js")
+			hasWebRTC := strings.Contains(body, "dist/chunks/webrtc.js")
 			if hasWebRTC != tt.wantWebRTC {
-				t.Fatalf("app-webrtc.js presence = %v, want %v", hasWebRTC, tt.wantWebRTC)
+				t.Fatalf("WebRTC chunk presence = %v, want %v", hasWebRTC, tt.wantWebRTC)
 			}
 			if strings.Contains(body, "term-llm:webrtc-shell-asset") {
 				t.Fatal("service worker response should not contain WebRTC placeholder")
