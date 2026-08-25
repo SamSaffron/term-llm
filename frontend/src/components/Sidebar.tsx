@@ -26,7 +26,7 @@ function SessionRow({ session }: { session: Session }) {
   return <div class={`session-row ${session.archived ? 'archived' : ''} ${running ? 'is-active' : ''}`}>
     <button class={`session-btn ${active ? 'active' : ''}`} type="button" aria-label={session.title || session.name || 'New chat'} aria-current={active ? 'page' : undefined} title={session.longTitle || session.title} onMouseDown={(event) => event.preventDefault()} onClick={() => void store.selectSession(session)}>
       <span class="session-title">{session.pinned && <span class="session-pin" aria-label="Pinned">◆</span>}{session.title || session.name || 'New chat'}</span>
-      <span class="session-meta">{session.projectUnavailable ? 'Project unavailable' : session.longTitle || session.workingDir || (session.messageCount != null ? `${session.messageCount} messages` : '')}</span>
+      <span class="session-meta">{session.projectUnavailable ? 'Project unavailable' : session.longTitle || session.workingDir || (session.messageCount != null ? `${session.messageCount} ${session.messageCount === 1 ? 'message' : 'messages'}` : '')}</span>
       {running && <span class="session-progress" aria-label="Response in progress" />}
     </button><SessionMenu session={session} />
   </div>;
