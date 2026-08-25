@@ -40,7 +40,7 @@ function useAdaptiveStreamingValue(value: string, streaming: boolean): string {
   return streaming ? rendered : value;
 }
 
-export function Markdown({ value, className = 'markdown', streaming = false, rebase, onMedia }: MarkdownProps) {
+export function Markdown({ value, className = 'markdown-body', streaming = false, rebase, onMedia }: MarkdownProps) {
   const renderValue = useAdaptiveStreamingValue(value, streaming); const state = useRef(createStreamingState());
   if (!streaming) { state.current = createStreamingState(); return <Rendered value={renderValue} className={className} rebase={rebase} onMedia={onMedia} />; }
   const analysis = analyzeStableMarkdownBoundary(renderValue, 1024); state.current.latestContent = renderValue; state.current.stableLength = analysis.boundary; state.current.lastBoundaryOperations = analysis.operations;

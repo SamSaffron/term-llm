@@ -9,8 +9,8 @@
     "webrtc": false
   },
   "dist_sha256": {
-    "dist/app.css": "d03e45f1282b9ff5b074076a3a12d1f69394b985df29a68a72efc329f2d25d40",
-    "dist/app.js": "5cfd2dd141eec728f65a810a3cebc4fecae01139b8fff3d7771f3d63e50dff66",
+    "dist/app.css": "71a0bbadbeb7f60a974e83c2c3f52096c2677bb1e211cc9678f86ee30463c009",
+    "dist/app.js": "d325a20ba027bf67a3c03e5223a448005b05f9524ee3f9c3c2620f7a45d13e3d",
     "dist/chunks/highlight.css": "cf8f05a4ce22400fc202a56ef4007741bb0422d3b7a62746576cdcef16c64149",
     "dist/chunks/highlight.js": "6768804cadb087f1bf43e7ff11e8608af5bc253fb0431dceba427493fe4bd4ae",
     "dist/chunks/katex.css": "ef249425cac67682668250a3f493fa3736a0b1e92850bd0de09533914df9c33e",
@@ -38,24 +38,24 @@
   },
   "preact": {
     "combined_total": {
-      "brotli11": 91360,
-      "gzip6": 104764,
-      "raw": 382120
+      "brotli11": 94593,
+      "gzip6": 108819,
+      "raw": 400462
     },
     "first_party_css": {
-      "brotli11": 18018,
-      "gzip6": 21264,
-      "raw": 117955
+      "brotli11": 19767,
+      "gzip6": 23639,
+      "raw": 129583
     },
     "first_party_js": {
-      "brotli11": 42679,
-      "gzip6": 49501,
-      "raw": 165226
+      "brotli11": 44163,
+      "gzip6": 51181,
+      "raw": 171940
     },
     "first_party_total": {
-      "brotli11": 62062,
-      "gzip6": 72479,
-      "raw": 287565
+      "brotli11": 65295,
+      "gzip6": 76534,
+      "raw": 305907
     },
     "html": {
       "brotli11": 1365,
@@ -96,9 +96,9 @@
       "dist/app.js"
     ],
     "candidate_sizes": {
-      "brotli11": 356686,
-      "gzip6": 366915,
-      "raw": 579438
+      "brotli11": 359919,
+      "gzip6": 370970,
+      "raw": 597780
     },
     "install_requests": 0,
     "strategy": "opportunistic cache allowlist; install performs no asset fetches"

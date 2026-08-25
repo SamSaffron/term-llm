@@ -36,7 +36,7 @@ export function App({ store }: { store: AppStore }) {
   return <ErrorBoundary><StoreContext.Provider value={store}>
     <div class="toast-region" id="toastRegion" aria-label="Notifications" aria-live="polite">{store.toasts.value.map((toast) => <div key={toast.id} class={`toast toast-${toast.kind}`} role={toast.kind === 'error' ? 'alert' : 'status'}>{toast.message}</div>)}</div>
     {!store.startupDone.value && <div class="startup-splash" id="startupSplash" role="status" aria-live="polite"><div class="startup-card"><div class="startup-mark" aria-hidden="true">⌘</div><div class="startup-title">term-llm</div><div class="startup-subtitle" id="startupStatus">{store.startup.value}</div><div class="startup-spinner" aria-hidden="true" /></div></div>}
-    <div class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''}`} id="appShell" aria-hidden={!store.startupDone.value || undefined}>
+    <div class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planOpen.value ? 'plan-open' : ''}`} id="appShell" aria-hidden={!store.startupDone.value || undefined}>
       <Sidebar />
       <main class="main" id="appMain">
         <Header />

@@ -1,5 +1,6 @@
 import { useStore } from '../app/context';
 import { compactModelLabel, supportedEfforts } from '../domain/runtime';
+import { Icon } from './Icon';
 
 export function Header() {
   const store = useStore(); const session = store.activeSession.value; const model = store.models.value.find((entry) => entry.id === store.selectedModel.value);
@@ -9,7 +10,7 @@ export function Header() {
   return <header class="main-header" tabIndex={-1}>
     <div class="header-title-row">
       <div class="header-left">
-        <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" onClick={() => { store.sidebarOpen.value = true; }}>☰</button>
+        <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" onClick={() => { store.sidebarOpen.value = true; }}><Icon name="menu" /></button>
         <div class="header-title-context"><h1 class="header-title" id="activeSessionTitle">{session?.title || 'Chat'}</h1>{(session?.projectName || project?.name) && <span class="header-project-subtitle" id="activeProjectSubtitle">{session?.projectName || project?.name}</span>}</div>
         {store.networkState.value !== 'online' && <span class={`connection-state ${store.networkState.value === 'offline' ? 'bad' : ''}`} id="connectionState" aria-live="polite">{store.networkState.value === 'retrying' ? 'Reconnecting…' : store.networkState.value}</span>}
       </div>
@@ -25,12 +26,12 @@ export function Header() {
         {tokenCount > 0 && <><span class="chip-sep header-tokens-sep" id="headerTokensSep">·</span><span class="header-tokens" id="headerTokens">{tokenCount.toLocaleString()} tokens</span></>}
         </div>
         <div class="header-context-actions">
-          {showWorktree && <button type="button" class={`chip-trigger worktree-trigger ${session && !store.draftActive.value ? 'locked' : ''}`} id="chipWorktreeTrigger" aria-label="Worktree" onClick={() => { store.modal.value = 'worktrees'; void store.loadWorktrees(); }}>⌥ {(session?.worktreeDir || store.selectedDraftWorktree.value).split('/').pop() || 'root'}</button>}
+          {showWorktree && <button type="button" class={`chip-trigger worktree-trigger ${session && !store.draftActive.value ? 'locked' : ''}`} id="chipWorktreeTrigger" aria-label="Worktree" onClick={() => { store.modal.value = 'worktrees'; void store.loadWorktrees(); }}><Icon name="branch" /><span class="chip-label">{(session?.worktreeDir || store.selectedDraftWorktree.value).split('/').pop() || 'root'}</span></button>}
           {session && <button class="header-action branch-tree-trigger" id="branchTreeBtn" type="button" aria-haspopup="dialog" onClick={() => void store.loadBranchTree()}>Paths</button>}
           {store.currentPlan.value && <button class="header-action plan-toggle" id="planToggleBtn" type="button" aria-expanded={store.planOpen.value} onClick={() => { store.diff.value = { ...store.diff.value, open: false }; store.planOpen.value = !store.planOpen.value; }}><span>Plan</span><span class="plan-toggle-progress">{store.currentPlan.value.plan.filter((step) => step.status === 'completed').length}/{store.currentPlan.value.plan.length}</span></button>}
         </div>
       </div>
-      {session && <button class="icon-btn diff-toggle header-action" id="diffToggleBtn" type="button" aria-label="Toggle file changes" onClick={() => void store.toggleDiff()}><span class="diff-toggle-badge">{store.diff.value.files.reduce((sum, file) => sum + (file.additions || 0) + (file.deletions || 0), 0) || ''}</span>±</button>}
+      {session && <button class="icon-btn diff-toggle header-action" id="diffToggleBtn" type="button" aria-label="Toggle file changes" onClick={() => void store.toggleDiff()}><Icon name="diff" /><span class="diff-toggle-badge">{store.diff.value.files.reduce((sum, file) => sum + (file.additions || 0) + (file.deletions || 0), 0) || ''}</span></button>}
     </div>
   </header>;
 }

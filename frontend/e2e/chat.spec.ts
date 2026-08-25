@@ -66,6 +66,26 @@ test('loads, navigates sessions, opens settings and preserves normal namespace h
   expect(await page.evaluate(() => ({ legacy: 'TermLLMApp' in window, test: '__TERM_LLM_TEST__' in window }))).toEqual({ legacy: false, test: false });
 });
 
+test('desktop shell uses authored controls, message hierarchy and diff rows', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'desktop visual structure');
+  await open(page);
+  const sessionButton = page.getByRole('button', { name: 'First chat', exact: true });
+  await expect(sessionButton).toHaveCSS('display', 'flex');
+  await expect(sessionButton).toHaveCSS('border-radius', '8px');
+  await expect(page.locator('#newChatBtn svg')).toBeVisible();
+  await expect(page.locator('#attachBtn svg')).toBeVisible();
+  await expect(page.locator('.message-body')).toHaveCSS('border-radius', '12px');
+  expect(await page.locator('.message-meta').evaluate((element) => parseFloat(getComputedStyle(element).columnGap) > 0)).toBe(true);
+
+  await page.getByRole('button', { name: 'Toggle file changes' }).click();
+  await expect(page.locator('#diffSidebar')).toBeVisible();
+  await expect(page.locator('.diff-scope-select')).toHaveCSS('display', 'block');
+  await expect(page.locator('.diff-file-row')).toHaveCSS('display', 'flex');
+  await expect(page.locator('.diff-file-toggle')).toHaveCSS('border-top-width', '0px');
+  await page.locator('.diff-file-row').hover();
+  await expect(page.locator('.diff-action-btn svg')).toBeVisible();
+});
+
 test('sends through public composer UI and reduces a streamed response', async ({ page }) => {
   const requests = await open(page);
   await page.getByRole('textbox', { name: 'Message' }).fill('Hello');
@@ -94,13 +114,20 @@ test('opens diff UI, expands a file and queues an inline comment', async ({ page
   await expect(page.getByText('1 inline comment queued.')).toBeVisible();
 });
 
-test('mobile viewport opens sidebar and keeps composer usable', async ({ page }, testInfo) => {
+test('mobile viewport opens a styled sidebar and returns to a usable composer', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'mobile-only interaction');
   await open(page);
   await page.getByRole('button', { name: 'Open sidebar' }).click();
-  await expect(page.locator('#sidebar')).toHaveClass(/open/);
+  const sidebar = page.locator('#sidebar');
+  await expect(sidebar).toHaveClass(/open/);
+  await expect(sidebar).toHaveCSS('visibility', 'visible');
+  await expect(page.locator('#newChatBtn')).toHaveCSS('display', 'flex');
+  await expect(page.locator('#newChatBtn svg')).toBeVisible();
   await page.locator('#newChatBtn').click();
+  await expect(sidebar).not.toHaveClass(/open/);
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '22px');
+  await expect(page.locator('#sendBtn svg')).toBeVisible();
 });
 
 test('explicit browser-test bridge is gated and excludes credentials', async ({ page }) => {
