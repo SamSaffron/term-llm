@@ -9,6 +9,7 @@ import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { DiffSidebar } from './Panels';
 import type { AppConfig } from '../app/config';
 
 const config: AppConfig = { prefix: '/ui', version: 'v1', sidebarCategories: ['all'], agentName: '', agentNames: ['jarvis'], title: '', locationSharing: true, worktrees: true, hub: null, vapidKey: '', webRTC: false, signalingURL: '' };
@@ -27,19 +28,51 @@ describe('Preact-owned chat surfaces', () => {
   it('restores the compact runtime chip and unified runtime popover', async () => {
     const store = createStore();
     store.providers.value = [{ id: 'openai', name: 'openai', is_default: true, default_model: 'openai/gpt-5', models: ['openai/gpt-5'] }];
-    store.models.value = [{ id: 'openai/gpt-5', name: 'openai/gpt-5', provider: 'openai', reasoning_efforts: ['low', 'high'] }];
+    store.models.value = [{ id: 'openai/gpt-5', name: 'openai/gpt-5', provider: 'openai', reasoning_efforts: ['low', 'medium', 'high'] }]; store.selectedEffort.value = 'medium';
     render(<StoreContext.Provider value={store}><Header /></StoreContext.Provider>);
     const trigger = screen.getByRole('button', { name: 'Runtime settings' });
-    expect(trigger).toHaveTextContent('gpt-5'); expect(trigger.querySelector('.effort-meter')).not.toBeNull();
+    expect(trigger).toHaveTextContent('gpt-5'); expect(trigger.querySelectorAll('.effort-meter-bar')).toHaveLength(4); expect(trigger).toHaveAttribute('data-effort-level', 'medium');
     await userEvent.click(trigger);
-    const dialog = screen.getByRole('dialog', { name: 'Runtime settings' });
+    const dialog = screen.getByRole('dialog', { name: 'Runtime settings' }); expect(dialog.tagName).toBe('DIALOG'); expect(dialog).toHaveAttribute('open');
     expect(dialog).toHaveTextContent('Provider, model, and effort for the next reply');
     expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: 'Runtime model' })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toHaveTextContent('high');
     expect(screen.queryByRole('button', { name: /paths/ })).not.toBeInTheDocument();
     act(() => { store.branchPathCount.value = 2; }); expect(screen.getByRole('button', { name: '2 paths' })).toBeInTheDocument();
-    await userEvent.keyboard('{Escape}'); expect(dialog).not.toBeInTheDocument(); expect(trigger).toHaveFocus();
+    fireEvent(dialog, new Event('cancel', { cancelable: true })); expect(dialog).not.toBeInTheDocument(); expect(trigger).toHaveFocus();
+  });
+
+  it('renders legacy additions and deletions instead of one combined diff count', () => {
+    const store = createStore(); store.sessions.value = [{ ...store.sessions.value[0], fileChangeSummary: { fileCount: 2, additions: 2, deletions: 2, git: true } }];
+    render(<StoreContext.Provider value={store}><Header /></StoreContext.Provider>);
+    const toggle = screen.getByRole('button', { name: 'Toggle file changes: 2 changed files (+2 −2)' });
+    expect(toggle.querySelector('.diff-toggle-stat-add')).toHaveTextContent('+2'); expect(toggle.querySelector('.diff-toggle-stat-del')).toHaveTextContent('−2');
+    expect(toggle.querySelector('.diff-toggle-badge')).not.toHaveTextContent('4');
+  });
+
+  it('matches the legacy diff scope popover and syntax-highlights code rows', async () => {
+    const store = createStore(); store.diff.value = { ...store.diff.value, open: true, sessionId: 's1', git: true, files: [{ path: 'job.rb', status: 'modify', additions: 1, deletions: 0, expanded: true, lang: 'rb', lines: [{ kind: 'context', content: 'def perform', oldLine: 1, newLine: 1 }, { kind: 'add', content: '  puts "done"', newLine: 2 }] }] };
+    store.endpoints.fileChanges = vi.fn(async () => ({ git: true, scope: 'uncommitted', file_changes: [] }));
+    render(<StoreContext.Provider value={store}><DiffSidebar /></StoreContext.Provider>);
+    const scope = screen.getByRole('button', { name: 'Change scope' }); expect(scope).toHaveTextContent('Last turn');
+    await userEvent.click(scope); const picker = screen.getByRole('dialog', { name: 'Change scope' }); expect(picker.querySelector('[aria-selected="true"]')).toHaveTextContent('Last turn');
+    await vi.waitFor(() => expect(document.querySelector('.diff-code .hljs-keyword')).toHaveTextContent('def'));
+    await userEvent.click(screen.getByRole('option', { name: 'Uncommitted' })); expect(store.diff.value.scope).toBe('uncommitted'); expect(store.endpoints.fileChanges).toHaveBeenCalledWith('s1', 'uncommitted');
+  });
+
+  it('ports the tiny legacy diff actions and transient copied state', async () => {
+    vi.useFakeTimers(); const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard'); const writeText = vi.fn(async () => undefined); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      const store = createStore(); store.diff.value = { ...store.diff.value, open: true, sessionId: 's1', files: [{ path: '/home/sam/project/main.go', status: 'create', additions: 1, deletions: 0, lines: [{ kind: 'hunk', content: '@@ -1 +1 @@' }, { kind: 'add', content: 'package main', newLine: 1 }] }] };
+      const { container } = render(<StoreContext.Provider value={store}><DiffSidebar /></StoreContext.Provider>);
+      const row = container.querySelector('.diff-file-row')!; expect(row.querySelector('.diff-kind-badge')).toHaveTextContent('A'); expect(row.querySelector('.diff-file-base')).toHaveTextContent('main.go'); expect(row.querySelector('.diff-file-dir')).toHaveTextContent('home/sam/project'); expect(row).not.toHaveTextContent('/home/sam/project/main.go');
+      const path = screen.getByRole('button', { name: 'Copy path /home/sam/project/main.go' }); const patch = screen.getByRole('button', { name: 'Copy diff for /home/sam/project/main.go' });
+      expect(path).toHaveTextContent('⧉'); expect(path.querySelector('svg')).toBeNull(); expect(patch).toHaveTextContent('±'); expect(screen.queryByText('Patch')).not.toBeInTheDocument();
+      await act(async () => { fireEvent.click(path); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); }); expect(writeText).toHaveBeenCalledWith('/home/sam/project/main.go'); expect(path).toHaveClass('copied');
+      await act(async () => { fireEvent.click(patch); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); }); expect(writeText).toHaveBeenLastCalledWith('--- a//home/sam/project/main.go\n+++ b//home/sam/project/main.go\n@@ -1 +1 @@\n+package main\n'); expect(patch).toHaveClass('copied');
+      await act(async () => { await vi.advanceTimersByTimeAsync(700); }); expect(path).not.toHaveClass('copied'); expect(patch).not.toHaveClass('copied');
+    } finally { if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor); else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }); vi.useRealTimers(); }
   });
 
   it('renders keyed messages, sanitized markdown and expandable tool details', async () => {

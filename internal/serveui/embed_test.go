@@ -12,7 +12,7 @@ func TestGeneratedBundleAssets(t *testing.T) {
 	for _, name := range []string{
 		"dist/app.js", "dist/app.css", "dist/chunks/vendor.js",
 		"dist/chunks/rich-highlight.js", "dist/chunks/rich-katex.js",
-		"dist/chunks/highlight.js", "dist/chunks/highlight.css", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js",
+		"dist/chunks/highlight.js", "dist/chunks/katex.js", "dist/chunks/katex.css", "dist/chunks/webrtc.js",
 	} {
 		body, err := StaticAsset(name)
 		if err != nil {
@@ -29,7 +29,7 @@ func TestGeneratedBundleAssets(t *testing.T) {
 
 func TestProductionBundleSizeBudgets(t *testing.T) {
 	budgets := map[string]struct{ raw, gzip int }{
-		"dist/app.js":  {raw: 190_000, gzip: 62_000},
+		"dist/app.js":  {raw: 194_000, gzip: 62_000},
 		"dist/app.css": {raw: 135_000, gzip: 26_000},
 	}
 	for name, budget := range budgets {

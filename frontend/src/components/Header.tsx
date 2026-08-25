@@ -1,57 +1,52 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { compactModelLabel, defaultModel, defaultProvider, splitModelEffort, supportedEfforts } from '../domain/runtime';
 import { Icon } from './Icon';
 
 function EffortMeter() {
-  return <svg class="effort-meter" viewBox="0 0 8 12" aria-hidden="true" focusable="false">
-    <rect class="effort-meter-bar effort-meter-bar-1" x="0" y="7" width="1.4" height="5" rx="0.7" />
-    <rect class="effort-meter-bar effort-meter-bar-2" x="2.2" y="5" width="1.4" height="7" rx="0.7" />
-    <rect class="effort-meter-bar effort-meter-bar-3" x="4.4" y="3" width="1.4" height="9" rx="0.7" />
-    <rect class="effort-meter-bar effort-meter-bar-4" x="6.6" y="1" width="1.4" height="11" rx="0.7" />
-  </svg>;
+  return <span class="effort-meter" aria-hidden="true"><span class="effort-meter-bar effort-meter-bar-1" /><span class="effort-meter-bar effort-meter-bar-2" /><span class="effort-meter-bar effort-meter-bar-3" /><span class="effort-meter-bar effort-meter-bar-4" /></span>;
 }
 
 function RuntimePicker() {
-  const store = useStore(); const [open, setOpen] = useState(false); const trigger = useRef<HTMLButtonElement>(null); const popover = useRef<HTMLDivElement>(null);
+  const store = useStore(); const [open, setOpen] = useState(false); const trigger = useRef<HTMLButtonElement>(null); const popover = useRef<HTMLDialogElement>(null);
   const locked = store.streaming.value; const selectedProvider = locked ? (store.activeSession.value?.activeProvider || store.selectedProvider.value) : store.selectedProvider.value;
   const provider = store.providers.value.find((entry) => entry.id === selectedProvider) || defaultProvider(store.providers.value);
   const selectedModel = locked ? (store.activeSession.value?.activeModel || store.selectedModel.value) : store.selectedModel.value;
   const fallbackModel = defaultModel(provider); const split = splitModelEffort(selectedModel || fallbackModel, store.selectedEffort.value || store.activeSession.value?.activeEffort || '');
   const model = store.models.value.find((entry) => entry.id === split.model); const efforts = supportedEfforts(model);
   const effort = split.effort && efforts.includes(split.effort) ? split.effort : '';
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus(); } };
-    addEventListener('keydown', close); return () => removeEventListener('keydown', close);
-  }, [open]);
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popover.current) return;
     const rect = trigger.current.getBoundingClientRect(); const panel = popover.current; const margin = 6;
+    if (!panel.open) panel.showModal();
     if (innerWidth <= 540) { panel.style.left = 'calc(0.5rem + var(--safe-left))'; panel.style.top = 'auto'; panel.style.bottom = 'calc(0.5rem + var(--safe-bottom))'; return; }
     const panelRect = panel.getBoundingClientRect(); panel.style.left = `${Math.max(margin, Math.min(rect.left, innerWidth - panelRect.width - margin))}px`;
     const below = rect.bottom + 4; panel.style.top = `${below + panelRect.height <= innerHeight - margin ? below : Math.max(margin, rect.top - panelRect.height - 4)}px`; panel.style.bottom = 'auto';
   }, [open]);
-  return <div class={`model-picker ${locked ? 'locked' : ''}`} id="modelPicker" onKeyDown={(event) => { if (open && event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus(); } }}>
-    <div class="model-chip model-chip-primary" data-chip="model" id="chipModel">
-      <button ref={trigger} type="button" class="chip-trigger narrow-header-action header-action" id="chipModelTrigger" aria-haspopup="dialog" aria-expanded={open} aria-label="Runtime settings" data-effort-level={effort || 'auto'} title={locked ? 'View runtime and queue reasoning effort for the next model turn' : 'Choose provider, model, and reasoning effort'} onClick={() => setOpen((value) => !value)}>
-        <span class={`chip-label ${!selectedModel && fallbackModel ? 'stats-muted' : ''}`} id="chipModelLabel">{compactModelLabel(split.model) || 'Auto'}</span><EffortMeter />
+  const picker = <div class={`model-picker ${locked ? 'locked' : ''}`}>
+    <div class="model-chip model-chip-primary" data-chip="model">
+      <button ref={trigger} type="button" class="chip-trigger narrow-header-action header-action" aria-haspopup="dialog" aria-expanded={open} aria-label="Runtime settings" data-effort-level={effort || 'auto'} title={locked ? 'View runtime and queue reasoning effort for the next model turn' : 'Choose provider, model, and reasoning effort'} onClick={() => setOpen((value) => !value)}>
+        <span class={`chip-label ${!selectedModel && fallbackModel ? 'stats-muted' : ''}`}>{compactModelLabel(split.model) || 'Auto'}</span><EffortMeter />
       </button>
     </div>
-    {open && <><button type="button" class="chip-popover-backdrop" aria-label="Close runtime settings" onClick={() => setOpen(false)} /><div ref={popover} class="chip-popover chip-popover-runtime" role="dialog" aria-label="Runtime settings">
-      <div class="runtime-popover-header"><div class="runtime-popover-title">Runtime</div><div class="runtime-popover-hint">Provider, model, and effort for the next reply</div></div>
-      <div class="runtime-popover-fields">
-        <label class="runtime-popover-field"><span class="runtime-popover-label">Provider</span><select class="runtime-popover-select" aria-label="Provider" disabled={locked} value={store.selectedProvider.value} onChange={(event) => store.setPreference('provider', event.currentTarget.value)}><option value="">Auto (server default)</option>{store.providers.value.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}{entry.is_default ? ' (default)' : ''}</option>)}</select></label>
-        <label class="runtime-popover-field"><span class="runtime-popover-label">Model</span><select class="runtime-popover-select" aria-label="Runtime model" disabled={locked} value={store.selectedModel.value} onChange={(event) => store.setPreference('model', event.currentTarget.value)}><option value="">Auto (server default)</option>{store.models.value.map((entry) => <option key={entry.id} value={entry.id}>{compactModelLabel(entry.name)}</option>)}</select></label>
-        <label class="runtime-popover-field"><span class="runtime-popover-label">Effort</span><select class="runtime-popover-select" aria-label="Reasoning effort" value={store.selectedEffort.value} onChange={(event) => store.setPreference('effort', event.currentTarget.value)}>{efforts.map((entry) => <option key={entry || 'auto'} value={entry}>{entry || 'Auto (server default)'}</option>)}</select></label>
-      </div>
-    </div></>}
   </div>;
+  const overlay = open ? <dialog ref={popover} class="chip-popover chip-popover-runtime" aria-label="Runtime settings" onCancel={(event) => { event.preventDefault(); setOpen(false); trigger.current?.focus(); }} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+    <div class="runtime-popover-header"><div class="runtime-popover-title">Runtime</div><div class="runtime-popover-hint">Provider, model, and effort for the next reply</div></div>
+    <div class="runtime-popover-fields">
+      <label class="runtime-popover-field"><span class="runtime-popover-label">Provider</span><select class="runtime-popover-select" aria-label="Provider" disabled={locked} value={store.selectedProvider.value} onChange={(event) => store.setPreference('provider', event.currentTarget.value)}><option value="">Auto (server default)</option>{store.providers.value.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}{entry.is_default ? ' (default)' : ''}</option>)}</select></label>
+      <label class="runtime-popover-field"><span class="runtime-popover-label">Model</span><select class="runtime-popover-select" aria-label="Runtime model" disabled={locked} value={store.selectedModel.value} onChange={(event) => store.setPreference('model', event.currentTarget.value)}><option value="">Auto (server default)</option>{store.models.value.map((entry) => <option key={entry.id} value={entry.id}>{compactModelLabel(entry.name)}</option>)}</select></label>
+      <label class="runtime-popover-field"><span class="runtime-popover-label">Effort</span><select class="runtime-popover-select" aria-label="Reasoning effort" value={store.selectedEffort.value} onChange={(event) => store.setPreference('effort', event.currentTarget.value)}>{efforts.map((entry) => <option key={entry || 'auto'} value={entry}>{entry || 'Auto (server default)'}</option>)}</select></label>
+    </div>
+  </dialog> : null;
+  return <>{picker}{overlay}</>;
 }
 
 export function Header() {
   const store = useStore(); const session = store.activeSession.value;
   const tokenCount = Number(session?.usage?.total_tokens || 0);
+  const loadedDiff = session && store.diff.value.sessionId === session.id && store.diff.value.files.length ? store.diff.value.files : null; const summary = session?.fileChangeSummary;
+  const diffFileCount = loadedDiff?.length ?? summary?.fileCount ?? 0; const diffAdds = loadedDiff?.reduce((sum, file) => sum + (file.additions || 0), 0) ?? summary?.additions ?? 0; const diffDels = loadedDiff?.reduce((sum, file) => sum + (file.deletions || 0), 0) ?? summary?.deletions ?? 0;
+  const showDiff = Boolean(session && (diffFileCount > 0 || summary?.git)); const diffTitle = `${diffFileCount} changed ${diffFileCount === 1 ? 'file' : 'files'}${diffAdds || diffDels ? ` (${diffAdds ? `+${diffAdds}` : ''}${diffAdds && diffDels ? ' ' : ''}${diffDels ? `−${diffDels}` : ''})` : ''}`;
   const project = store.projects.value.find((entry) => entry.id === (session?.projectId || store.activeProjectId.value));
   const showWorktree = store.worktreesEnabled.value && (!store.projectsEnabled.value || Boolean(project?.git && project.available !== false));
   return <header class="main-header" tabIndex={-1}>
@@ -72,7 +67,7 @@ export function Header() {
           {store.currentPlan.value && <button class="header-action plan-toggle" id="planToggleBtn" type="button" aria-expanded={store.planOpen.value} onClick={() => { store.diff.value = { ...store.diff.value, open: false }; store.planOpen.value = !store.planOpen.value; }}><span>Plan</span><span class="plan-toggle-progress">{store.currentPlan.value.plan.filter((step) => step.status === 'completed').length}/{store.currentPlan.value.plan.length}</span></button>}
         </div>
       </div>
-      {session && <button class="icon-btn diff-toggle header-action" id="diffToggleBtn" type="button" aria-label="Toggle file changes" onClick={() => void store.toggleDiff()}><Icon name="diff" /><span class="diff-toggle-badge">{store.diff.value.files.reduce((sum, file) => sum + (file.additions || 0) + (file.deletions || 0), 0) || ''}</span></button>}
+      {showDiff && <button class={`icon-btn diff-toggle header-action ${store.diff.value.open ? 'active' : ''}`} id="diffToggleBtn" type="button" aria-label={`Toggle file changes: ${diffTitle}`} title={diffTitle} onClick={() => void store.toggleDiff()}><span class={`diff-toggle-badge ${!diffAdds && !diffDels ? 'no-stats' : ''}`}><span class="diff-toggle-file-count" data-file-count={diffFileCount}><span class="diff-toggle-file-icon" aria-hidden="true" /></span>{diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}{diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}</span></button>}
     </div>
   </header>;
 }

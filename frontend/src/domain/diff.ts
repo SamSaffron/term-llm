@@ -60,7 +60,8 @@ export function inlineEmphasis(oldText: string, newText: string): { old: [number
 
 export function unifiedPatchForFile(file: DiffFile): string {
   if (file.patch) return String(file.patch);
-  return (file.lines || []).map((line) => line.kind === 'hunk' ? line.content : `${line.kind === 'add' ? '+' : line.kind === 'delete' ? '-' : ' '}${line.content}`).join('\n');
+  const body = (file.lines || []).map((line) => line.kind === 'hunk' ? line.content : `${line.kind === 'add' ? '+' : line.kind === 'delete' ? '-' : ' '}${line.content}`).join('\n');
+  return body ? `--- a/${file.path}\n+++ b/${file.path}\n${body}\n` : '';
 }
 
 export function clampDiffWidth(value: number, viewport: number): number {

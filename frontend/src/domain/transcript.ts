@@ -161,7 +161,7 @@ export function convertServerMessages(input: ServerMessage[], options: ConvertOp
 
 export function sanitizeSession(source: Record<string, unknown>, options: ConvertOptions = {}): Session {
   const messages = Array.isArray(source.messages) ? convertServerMessages(source.messages as ServerMessage[], options) : [];
-  const archived = source.archived_at ? true : Boolean(source.archived);
+  const archived = source.archived_at ? true : Boolean(source.archived); const fileSummary = record(source.file_change_summary || source.fileChangeSummary);
   return {
     id: text(source.id) || randomID('sess'), number: Number(source.number || source.session_number) || undefined,
     name: text(source.name), title: text(source.generated_short_title || source.short_title || source.title || source.name || source.summary) || 'New chat',
@@ -172,6 +172,7 @@ export function sanitizeSession(source: Record<string, unknown>, options: Conver
     projectId: text(source.project_id), projectName: text(source.project_name), projectUnavailable: Boolean(source.project_unavailable), projectUnavailableReason: text(source.project_unavailable_reason),
     workingDir: text(source.working_dir || source.cwd), worktreeDir: text(source.worktree_dir), messages, messageCount: Number(source.message_count) || messages.filter((message) => ['user', 'assistant'].includes(message.role)).length,
     transcriptRev: Number(source.transcript_rev || source.rev) || 0, usage: record(source.usage) as Session['usage'] || undefined, goal: record(source.goal) as Session['goal'] || null,
+    fileChangeSummary: fileSummary ? { fileCount: Number(fileSummary.file_count ?? fileSummary.fileCount) || 0, additions: Number(fileSummary.adds ?? fileSummary.additions) || 0, deletions: Number(fileSummary.dels ?? fileSummary.deletions) || 0, git: Boolean(fileSummary.git) } : undefined,
     mcpServers: Array.isArray(source.mcp_servers) ? source.mcp_servers.map(String) : [], mcpEnabled: Array.isArray(source.mcp_enabled) ? source.mcp_enabled.map(String) : [],
   };
 }

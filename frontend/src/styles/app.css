@@ -56,6 +56,18 @@
       --diff-del-ln-bg: rgba(248, 81, 73, 0.30);
       --diff-file-del-bg: rgba(248, 81, 73, 0.07);
       --diff-file-del-ln-bg: rgba(248, 81, 73, 0.12);
+      /* GitHub Dark syntax palette. Kept as variables so highlighted diff and
+         markdown code follow the same system theme without re-highlighting. */
+      --syntax-text: #c9d1d9;
+      --syntax-keyword: #ff7b72;
+      --syntax-entity: #d2a8ff;
+      --syntax-constant: #79c0ff;
+      --syntax-string: #a5d6ff;
+      --syntax-variable: #ffa657;
+      --syntax-comment: #8b949e;
+      --syntax-tag: #7ee787;
+      --syntax-heading: #58a6ff;
+      --syntax-bullet: #f2cc60;
     }
 
     @media (prefers-color-scheme: light) {
@@ -93,6 +105,18 @@
         --diff-del-ln-bg: rgba(207, 34, 46, 0.20);
         --diff-file-del-bg: rgba(207, 34, 46, 0.05);
         --diff-file-del-ln-bg: rgba(207, 34, 46, 0.08);
+        /* GitHub Light syntax palette: deliberately uses the dark, saturated
+           Primer values so tokens stay legible over red/green diff tints. */
+        --syntax-text: #24292f;
+        --syntax-keyword: #cf222e;
+        --syntax-entity: #8250df;
+        --syntax-constant: #0550ae;
+        --syntax-string: #0a3069;
+        --syntax-variable: #953800;
+        --syntax-comment: #57606a;
+        --syntax-tag: #116329;
+        --syntax-heading: #0969da;
+        --syntax-bullet: #6e5509;
       }
     }
 
@@ -330,6 +354,15 @@
       color: var(--text);
       font-size: 0.82rem;
       font-weight: 500;
+    }
+
+    .diff-scope-popover .chip-popover-item {
+      appearance: none;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      font: inherit;
+      text-align: left;
     }
 
     .diff-scope-chevron {
@@ -684,6 +717,72 @@
       min-width: 0;
       padding-left: 0.55em;
       overflow-wrap: anywhere; /* break unbroken tokens so nothing scrolls off-screen */
+      color: var(--syntax-text);
+    }
+
+    /* System-aware GitHub syntax colors. The highlight module is shared by
+       markdown and diffs, but diff lines are not themselves `.hljs` nodes, so
+       scope token rules to both containers. Two-class specificity also keeps a
+       lazily loaded highlight.js stylesheet from replacing the active palette. */
+    .markdown-body .hljs,
+    .diff-code {
+      color: var(--syntax-text);
+    }
+
+    .markdown-body .hljs {
+      background: var(--surface-2);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-doctag, .hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-variable.language_) {
+      color: var(--syntax-keyword);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-title, .hljs-title.class_, .hljs-title.class_.inherited__, .hljs-title.function_) {
+      color: var(--syntax-entity);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-attr, .hljs-attribute, .hljs-literal, .hljs-meta, .hljs-number, .hljs-operator, .hljs-variable, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id) {
+      color: var(--syntax-constant);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-regexp, .hljs-string, .hljs-meta .hljs-string) {
+      color: var(--syntax-string);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-built_in, .hljs-symbol) {
+      color: var(--syntax-variable);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-comment, .hljs-code, .hljs-formula) {
+      color: var(--syntax-comment);
+    }
+
+    :is(.markdown-body, .diff-code) :is(.hljs-name, .hljs-quote, .hljs-selector-tag, .hljs-selector-pseudo) {
+      color: var(--syntax-tag);
+    }
+
+    :is(.markdown-body, .diff-code) .hljs-subst,
+    :is(.markdown-body, .diff-code) :is(.hljs-emphasis, .hljs-strong) {
+      color: var(--syntax-text);
+    }
+
+    :is(.markdown-body, .diff-code) .hljs-section {
+      color: var(--syntax-heading);
+      font-weight: 700;
+    }
+
+    :is(.markdown-body, .diff-code) .hljs-bullet {
+      color: var(--syntax-bullet);
+    }
+
+    :is(.markdown-body, .diff-code) .hljs-emphasis { font-style: italic; }
+    :is(.markdown-body, .diff-code) .hljs-strong { font-weight: 700; }
+
+    /* A language grammar may emit markup addition/deletion tokens inside an
+       already tinted diff row. Never let that nested token hide the row tint. */
+    .diff-code :is(.hljs-addition, .hljs-deletion) {
+      color: inherit;
+      background: transparent;
     }
 
     .diff-row[data-commentable="true"]:focus-visible {
@@ -1033,9 +1132,25 @@
     }
 
     .diff-toggle .diff-toggle-file-icon {
-      width: 0.95rem;
-      height: 0.95rem;
+      position: relative;
+      width: 0.72rem;
+      height: 0.9rem;
       display: block;
+      border: 1.5px solid currentColor;
+      border-radius: 1px;
+      box-sizing: border-box;
+    }
+
+    .diff-toggle .diff-toggle-file-icon::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      top: 5px;
+      height: 1.5px;
+      background: currentColor;
+      box-shadow: 0 2.5px 0 currentColor;
+      opacity: 0.8;
     }
 
     .diff-toggle-stat-add { color: var(--accent-green); }
@@ -2286,8 +2401,10 @@
     }
 
     .effort-meter {
-      display: block;
-      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 0.8px;
+      flex: 0 0 8px;
       width: 8px;
       height: 12px;
       margin-left: 0.34rem;
@@ -2295,10 +2412,19 @@
     }
 
     .effort-meter-bar {
-      fill: currentColor;
+      display: block;
+      width: 1.4px;
+      min-width: 1.4px;
+      border-radius: 0.7px;
+      background: currentColor;
       opacity: 0.22;
       transition: opacity 0.15s ease;
     }
+
+    .effort-meter-bar-1 { height: 5px; }
+    .effort-meter-bar-2 { height: 7px; }
+    .effort-meter-bar-3 { height: 9px; }
+    .effort-meter-bar-4 { height: 11px; }
 
     .narrow-header-action[data-effort-level="minimal"] .effort-meter-bar-1,
     .narrow-header-action[data-effort-level="low"] .effort-meter-bar-1,
@@ -2476,7 +2602,16 @@
     .chip-popover-item-action::before { display: none; }
     .chip-popover-item-action-icon { width: 1rem; flex: none; color: var(--text); text-align: center; }
 
+    dialog.chip-popover {
+      margin: 0;
+    }
+
+    dialog.chip-popover::backdrop {
+      background: transparent;
+    }
+
     .chip-popover-runtime {
+      z-index: 10000;
       min-width: 280px;
       padding: 0.75rem;
     }
@@ -2565,7 +2700,8 @@
     }
 
     @media (max-width: 540px) {
-      .chip-popover-backdrop {
+      .chip-popover-backdrop,
+      dialog.chip-popover::backdrop {
         background: rgba(0, 0, 0, 0.4);
       }
       .chip-popover {
@@ -6242,28 +6378,6 @@
 }
 .diff-scope-select:hover,
 .diff-scope-select:focus-visible { border-color: var(--border-strong); outline: none; }
-.diff-file-row { cursor: default; }
-.diff-file-toggle {
-  appearance: none;
-  display: flex;
-  align-items: center;
-  gap: .42rem;
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.diff-chevron { display: grid; place-items: center; }
-.diff-chevron svg { width: .85rem; height: .85rem; }
-.diff-file-row.expanded .diff-chevron { transform: rotate(90deg); }
-.diff-file-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diff-action-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; }
-.diff-patch-action { width: auto; padding-inline: .35rem; }
 .diff-file-body { overflow: hidden; }
 .diff-row {
   position: relative;

@@ -16,7 +16,7 @@ export type Modal = '' | 'settings' | 'rename' | 'ask-user' | 'approval' | 'mcp'
 export interface Toast { id: string; message: string; kind: 'info' | 'success' | 'error' }
 export interface RuntimeOption extends ModelOption { [key: string]: unknown }
 export interface SideQuestionState { visible: boolean; running: boolean; question: string; response: string; error: string; history: Array<{ question: string; response: string }> }
-export interface DiffState { open: boolean; sessionId: string; scope: string; loading: boolean; files: DiffFile[]; filter: string; comments: DiffComment[]; error: string; maximized: boolean; width: number }
+export interface DiffState { open: boolean; sessionId: string; scope: string; git: boolean; loading: boolean; files: DiffFile[]; filter: string; comments: DiffComment[]; error: string; maximized: boolean; width: number }
 export interface PendingInterjection { id: string; sessionId: string; content: string; state: 'sending' | 'pending' | 'committed' | 'failed' }
 interface SendOptions { contentParts?: Record<string, unknown>[]; inputText?: string; displayContent?: string; preserveComposer?: boolean; diffComments?: DiffComment[]; onTransportStarted?: () => void; onTransportFailed?: (error: unknown) => void }
 export interface HubAgent { id: string; name: string; target: string; active: boolean; attention: boolean }
@@ -95,7 +95,7 @@ export class AppStore {
   readonly approval = signal<ApprovalPrompt | null>(null);
   readonly sideQuestion = signal<SideQuestionState>({ visible: false, running: false, question: '', response: '', error: '', history: [] });
   readonly interjections = signal<PendingInterjection[]>([]);
-  readonly diff = signal<DiffState>({ open: false, sessionId: '', scope: 'last_turn', loading: false, files: [], filter: '', comments: [], error: '', maximized: false, width: 420 });
+  readonly diff = signal<DiffState>({ open: false, sessionId: '', scope: 'last_turn', git: false, loading: false, files: [], filter: '', comments: [], error: '', maximized: false, width: 420 });
   readonly goal = signal<Goal | null>(null);
   readonly mcp = signal<{ available: string[]; enabled: string[]; loading: boolean; error: string }>({ available: [], enabled: [], loading: false, error: '' });
   readonly worktrees = signal<Record<string, unknown>[]>([]);
@@ -293,7 +293,7 @@ export class AppStore {
 
   private mergeSession(existing: Session | undefined, incoming: Session): Session {
     if (!existing) return incoming;
-    return { ...existing, ...incoming, messages: incoming.messages.length ? incoming.messages : existing.messages, usage: incoming.usage || existing.usage, goal: incoming.goal ?? existing.goal };
+    return { ...existing, ...incoming, messages: incoming.messages.length ? incoming.messages : existing.messages, usage: incoming.usage || existing.usage, goal: incoming.goal ?? existing.goal, fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary };
   }
 
   private applySidebar(data: Record<string, unknown>): void {
@@ -350,7 +350,7 @@ export class AppStore {
     batch(() => {
       this.activeSessionId.value = session.id; this.activeProjectId.value = session.projectId || ''; this.draftActive.value = false;
       this.currentPlan.value = null; this.askUser.value = null; this.approval.value = null; this.branchTree.value = null; this.branchPathCount.value = 0;
-      if (this.diff.value.sessionId !== session.id) this.diff.value = { ...this.diff.value, sessionId: session.id, files: [], error: '', comments: this.diff.value.comments.filter((comment) => !comment.sessionId || comment.sessionId === session.id) };
+      if (this.diff.value.sessionId !== session.id) this.diff.value = { ...this.diff.value, sessionId: session.id, git: Boolean(session.fileChangeSummary?.git), files: [], error: '', comments: this.diff.value.comments.filter((comment) => !comment.sessionId || comment.sessionId === session.id) };
     });
     this.storage.setItem(this.keys.activeSession, session.id); this.storage.removeItem(this.keys.draftSessionActive);
     updateSessionRoute(this.config.prefix, session, replace); this.restoreDraftFor(session.id); this.syncRuntimeFromSession(session);
@@ -847,7 +847,7 @@ export class AppStore {
           snapshotSeq: Number(entry.snapshot_seq) || 0, expanded: previous?.expanded, lines: previous?.lines, patch: previous?.patch,
         };
       }).filter((entry) => entry.path));
-      this.diff.value = { ...this.diff.value, files, loading: false };
+      this.diff.value = { ...this.diff.value, files, git: Boolean(data.git), loading: false };
     } catch (error) { if (this.activeSessionId.peek() === owner) this.diff.value = { ...this.diff.value, loading: false, error: error instanceof Error ? error.message : String(error) }; }
   }
   async expandDiff(file: DiffFile, context = 0): Promise<void> {
@@ -862,7 +862,7 @@ export class AppStore {
       const afterURL = image && !['delete', 'deleted', 'remove', 'removed'].includes(status) ? this.endpoints.fileContentURL(session.id, file.path, this.diff.value.scope, 'after', file.snapshotSeq || 0) : String(data.after_url || file.afterURL || '');
       this.diff.value = { ...this.diff.value, files: this.diff.value.files.map((entry) => entry.path === file.path ? {
         ...entry, status: String(data.kind || entry.status || ''), expanded: true, loading: false, lines,
-        image, truncated: Boolean(data.truncated), context: Number(data.context) || context || 3,
+        image, truncated: Boolean(data.truncated), context: Number(data.context) || context || 3, lang: String(data.lang || ''),
         oldLineCount: Number(data.old_line_count) || 0, newLineCount: Number(data.new_line_count) || 0,
         patch: String(data.diff || data.patch || entry.patch || ''), beforeURL, afterURL,
       } : entry) };

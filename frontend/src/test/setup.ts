@@ -24,3 +24,4 @@ for (const name of ['localStorage', 'sessionStorage'] as const) {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear(); });
 Object.defineProperty(window, 'matchMedia', { configurable: true, value: vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })) });
 Object.defineProperty(Element.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
+Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.setAttribute('open', ''); } });

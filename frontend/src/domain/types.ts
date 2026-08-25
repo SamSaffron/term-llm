@@ -112,6 +112,7 @@ export interface Session {
   mcpEnabled?: string[];
   messageCount?: number;
   transcriptRev?: number;
+  fileChangeSummary?: { fileCount: number; additions: number; deletions: number; git: boolean };
 }
 
 export interface Project {
@@ -153,6 +154,7 @@ export interface DiffFile {
   context?: number;
   oldLineCount?: number;
   newLineCount?: number;
+  lang?: string;
   expanded?: boolean;
   loading?: boolean;
   error?: string;

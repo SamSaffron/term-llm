@@ -18,8 +18,8 @@ describe('transcript domain', () => {
   });
 
   it('sanitizes server session defaults and seconds timestamps', () => {
-    const session = sanitizeSession({ id: 's1', created_at: 1_700_000_000, title: '', pinned: 1, messages: [] });
-    expect(session).toMatchObject({ id: 's1', title: 'New chat', mode: 'chat', origin: 'web', pinned: true, created: 1_700_000_000_000 });
+    const session = sanitizeSession({ id: 's1', created_at: 1_700_000_000, title: '', pinned: 1, file_change_summary: { file_count: 2, adds: 7, dels: 3, git: true }, messages: [] });
+    expect(session).toMatchObject({ id: 's1', title: 'New chat', mode: 'chat', origin: 'web', pinned: true, created: 1_700_000_000_000, fileChangeSummary: { fileCount: 2, additions: 7, deletions: 3, git: true } });
   });
 
   it('windows old turns behind a stable gap and always keeps the tail', () => {
