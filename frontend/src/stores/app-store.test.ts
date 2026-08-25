@@ -90,6 +90,30 @@ describe('AppStore compatibility behavior', () => {
     expect(store.endpoints.noProjectSessions).toHaveBeenCalledTimes(1);
   });
 
+  it('archives locally without discarding loaded no-project pages', async () => {
+    const store = new AppStore(config);
+    const loaded = Array.from({ length: 48 }, (_, index) => ({
+      ...session(),
+      id: `s${index + 1}`,
+      title: `Conversation ${index + 1}`,
+      lastMessageAt: 48 - index,
+    }));
+    store.projectsEnabled.value = true;
+    store.sessions.value = loaded;
+    store.noProjectCursor.value = 'cursor-48';
+    store.endpoints.patchSession = vi.fn(async () => ({}));
+    store.refreshSidebar = vi.fn(async () => undefined);
+
+    await store.archiveSession(loaded[39]);
+
+    expect(store.endpoints.patchSession).toHaveBeenCalledWith('s40', { archived: true });
+    expect(store.refreshSidebar).not.toHaveBeenCalled();
+    expect(store.sessions.value).toHaveLength(47);
+    expect(store.sessions.value.some((entry) => entry.id === 's40')).toBe(false);
+    expect(store.sessions.value.some((entry) => entry.id === 's48')).toBe(true);
+    expect(store.noProjectCursor.value).toBe('cursor-48');
+  });
+
   it('paginates the flat listing with the top-level cursor when projects are disabled', async () => {
     const store = new AppStore(config);
     store.projectsEnabled.value = false;

@@ -1570,8 +1570,29 @@ export class AppStore {
     await this.refreshSidebar();
   }
   async archiveSession(session: Session): Promise<void> {
-    await this.mutateSession(session, { archived: !session.archived });
-    if (session.id === this.activeSessionId.value && !session.archived) this.newChat();
+    const archived = !session.archived;
+    await this.endpoints.patchSession(session.id, { archived });
+    const keepVisible = this.showHidden.peek() || !archived;
+    const reconcile = (entries: Session[]): Session[] =>
+      entries.flatMap((entry) => {
+        if (entry.id !== session.id) return [entry];
+        return keepVisible ? [{ ...entry, archived }] : [];
+      });
+    this.sessions.value = reconcile(this.sessions.peek());
+    this.projects.value = this.projects.peek().map((project) => {
+      const contained = Boolean(project.sessions?.some((entry) => entry.id === session.id));
+      if (!contained) return project;
+      return {
+        ...project,
+        sessions: reconcile(project.sessions || []),
+        sessionCount:
+          !keepVisible && project.sessionCount != null
+            ? Math.max(0, project.sessionCount - 1)
+            : project.sessionCount,
+      };
+    });
+    if (this.searchResults.peek()) this.searchResults.value = reconcile(this.searchResults.peek()!);
+    if (session.id === this.activeSessionId.value && archived) this.newChat();
   }
   async removeSession(session: Session): Promise<void> {
     await this.endpoints.deleteSession(session.id);

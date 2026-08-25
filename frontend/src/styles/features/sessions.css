@@ -45,17 +45,26 @@
   align-items: stretch;
   margin: 0 var(--sidebar-row-gutter);
   overflow: visible;
+  max-height: 8rem;
   transform-origin: top center;
   transition:
-    height 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 0.22s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.18s ease,
     transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .session-row.is-hiding {
   overflow: hidden;
+  max-height: 0;
   opacity: 0;
+  pointer-events: none;
   transform: translateX(8px) scale(0.985);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-row {
+    transition-duration: 0.01ms;
+  }
 }
 
 .session-row .session-btn {

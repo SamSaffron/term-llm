@@ -75,7 +75,7 @@ function PaginationSentinel({ load }: { load: () => Promise<void> }) {
   );
 }
 
-function SessionMenu({ session }: { session: Session }) {
+function SessionMenu({ session, onHide }: { session: Session; onHide: () => void }) {
   const store = useStore();
   const [open, setOpen] = useState(false);
   const { menu, up } = useMenuFlip(open);
@@ -149,7 +149,8 @@ function SessionMenu({ session }: { session: Session }) {
           <button
             role="menuitem"
             onClick={() => {
-              void store.archiveSession(session);
+              if (session.archived) void store.archiveSession(session);
+              else onHide();
               setOpen(false);
             }}
           >
@@ -173,12 +174,35 @@ function SessionMenu({ session }: { session: Session }) {
 
 function SessionRow({ session }: { session: Session }) {
   const store = useStore();
+  const row = useRef<HTMLDivElement>(null);
+  const [hiding, setHiding] = useState(false);
   const active = store.activeSessionId.value === session.id;
   const projection = store.runs.value[session.id];
   const running =
     projection && ['connecting', 'streaming', 'cancelling'].includes(projection.run.status);
+  const hide = () => {
+    setHiding(true);
+    const node = row.current;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      void store.archiveSession(session).catch((error) => {
+        setHiding(false);
+        store.toast(error, 'error');
+      });
+    };
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.propertyName === 'max-height') finish();
+    };
+    node?.addEventListener('transitionend', onTransitionEnd);
+    window.setTimeout(finish, 500);
+  };
   return (
-    <div class={`session-row ${session.archived ? 'archived' : ''} ${running ? 'is-active' : ''}`}>
+    <div
+      ref={row}
+      class={`session-row ${session.archived ? 'archived' : ''} ${running ? 'is-active' : ''} ${hiding ? 'is-hiding' : ''}`}
+    >
       <button
         class={`session-btn ${active ? 'active' : ''}`}
         type="button"
@@ -207,7 +231,7 @@ function SessionRow({ session }: { session: Session }) {
         </span>
         {running && <span class="session-progress" aria-label="Response in progress" />}
       </button>
-      <SessionMenu session={session} />
+      <SessionMenu session={session} onHide={hide} />
     </div>
   );
 }

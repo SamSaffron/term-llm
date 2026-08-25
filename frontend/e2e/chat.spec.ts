@@ -11,6 +11,7 @@ const session = (id: string, title: string, number: number) => ({
   last_message_at: 1_700_000_001,
   pinned: false,
   archived: false,
+  file_change_summary: { file_count: 1, adds: 2, dels: 1, git: true },
 });
 
 async function mockAPI(page: Page, options: { holdStream?: boolean } = {}) {
@@ -23,7 +24,10 @@ async function mockAPI(page: Page, options: { holdStream?: boolean } = {}) {
     const json = (value: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
     if (path.endsWith('/v1/capabilities'))
-      return json({ widgets: [{ id: 'status', name: 'Status', url: '../widgets/status/' }] });
+      return json({
+        projects: { enabled: true },
+        widgets: [{ id: 'status', name: 'Status', url: '../widgets/status/' }],
+      });
     if (path.endsWith('/v1/providers'))
       return json({
         object: 'list',
@@ -184,11 +188,14 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
 
   await page.getByRole('button', { name: 'Toggle file changes' }).click();
   await expect(page.locator('#diffSidebar')).toBeVisible();
-  await expect(page.locator('.diff-scope-select')).toHaveCSS('display', 'block');
-  await expect(page.locator('.diff-file-row')).toHaveCSS('display', 'flex');
-  await expect(page.locator('.diff-file-toggle')).toHaveCSS('border-top-width', '0px');
-  await page.locator('.diff-file-row').hover();
-  await expect(page.locator('.diff-action-btn svg')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Change scope' })).toBeVisible();
+  const diffRow = page.locator('.diff-file-row[data-path="frontend/src/main.tsx"]');
+  await expect(diffRow).toHaveCSS('display', 'flex');
+  await expect(diffRow).toHaveCSS('border-top-width', '0px');
+  await diffRow.hover();
+  await expect(
+    page.getByRole('button', { name: 'Copy path frontend/src/main.tsx', exact: true }),
+  ).toBeVisible();
 });
 
 test('sends through public composer UI and reduces a streamed response', async ({ page }) => {
@@ -218,9 +225,10 @@ test('cancels an active response from the public stop control', async ({ page })
 test('opens diff UI, expands a file and queues an inline comment', async ({ page }) => {
   await open(page);
   await page.getByRole('button', { name: 'Toggle file changes' }).click();
-  await expect(page.getByText('frontend/src/main.tsx')).toBeVisible();
-  await page.getByRole('button', { name: 'Toggle diff for frontend/src/main.tsx' }).click();
-  await expect(page.getByText('+new')).toBeVisible();
+  const fileToggle = page.locator('.diff-file-row[data-path="frontend/src/main.tsx"]');
+  await expect(fileToggle).toBeVisible();
+  await fileToggle.click();
+  await expect(page.locator('.diff-row.add .diff-code').first()).toHaveText('new');
   await page
     .getByRole('button', { name: /Comment on line 1/ })
     .first()

@@ -479,6 +479,52 @@ describe('Preact-owned chat surfaces', () => {
     ).toHaveTextContent('Dev');
   });
 
+  it('collapses a hidden session before removing it from the sidebar', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.activeSessionId.value = '';
+      store.archiveSession = vi.fn(async (session) => {
+        store.sessions.value = store.sessions.value.filter((entry) => entry.id !== session.id);
+      });
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+      const scroller = container.querySelector<HTMLElement>('.sidebar-content');
+      if (!scroller) throw new Error('sidebar scroller missing');
+      scroller.scrollTop = 180;
+
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Hide' }));
+
+      const row = container.querySelector('.session-row');
+      expect(row).toHaveClass('is-hiding');
+      expect(store.archiveSession).not.toHaveBeenCalled();
+      expect(scroller.scrollTop).toBe(180);
+
+      const transitionEnd = (propertyName: string) => {
+        const event = new Event('transitionend', { bubbles: true });
+        Object.defineProperty(event, 'propertyName', { value: propertyName });
+        fireEvent(row as Element, event);
+      };
+      transitionEnd('opacity');
+      expect(store.archiveSession).not.toHaveBeenCalled();
+
+      await act(async () => {
+        transitionEnd('max-height');
+        await Promise.resolve();
+      });
+
+      expect(store.archiveSession).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }));
+      expect(container.querySelector('.session-row')).toBeNull();
+      expect(scroller.scrollTop).toBe(180);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('auto-loads older sidebar conversations through the pagination sentinels', async () => {
     const store = createStore();
     store.projectsEnabled.value = true;
