@@ -59,7 +59,7 @@ export function defaultModel(provider: ModelOption | undefined): string {
 }
 
 export function supportsReasoningMode(model: ModelOption | undefined, mode: string): boolean {
-  return mode === 'standard' || Boolean(model?.reasoning_modes?.includes(mode));
+  return Boolean(model?.reasoning_modes?.includes(mode));
 }
 
 export interface RuntimeSelection {

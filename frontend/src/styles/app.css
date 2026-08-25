@@ -1618,12 +1618,16 @@ select {
 .header-context-actions {
   display: inline-flex;
   align-items: center;
-  gap: 0;
+  gap: var(--header-cluster-gap);
   flex: 0 0 auto;
   margin-left: 0;
   min-width: 0;
   font-size: 0.8rem;
   color: var(--text-muted);
+}
+
+.header-context-actions:empty {
+  display: none;
 }
 
 .header-context-actions .model-chip[data-chip='worktree'] {
@@ -1641,7 +1645,6 @@ select {
 .plan-toggle {
   position: relative;
   gap: 0.28rem;
-  margin-left: var(--header-cluster-gap);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2587,6 +2590,7 @@ select {
 .header-controls-row {
   display: flex;
   align-items: center;
+  gap: var(--header-cluster-gap);
   min-width: 0;
   overflow: visible;
   flex: 0 0 auto;
@@ -6362,7 +6366,6 @@ dialog.chip-popover::backdrop {
 }
 
 .branch-tree-trigger {
-  margin-left: var(--header-cluster-gap);
   white-space: nowrap;
 }
 
@@ -8027,18 +8030,6 @@ dialog.chip-popover::backdrop {
 }
 
 /* Header */
-.model-chip::after {
-  content: '';
-  width: 0.35rem;
-  height: 0.35rem;
-  margin-left: -0.85rem;
-  border-right: 1.4px solid currentcolor;
-  border-bottom: 1.4px solid currentcolor;
-  opacity: 0.5;
-  pointer-events: none;
-  transform: rotate(45deg) translateY(-0.12rem);
-}
-
 .chip-trigger:is(select) {
   -webkit-appearance: none;
   appearance: none;

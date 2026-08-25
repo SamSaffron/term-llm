@@ -4,6 +4,12 @@ import { describe, expect, it } from 'vitest';
 
 const appCSS = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8');
 
+describe('header styles', () => {
+  it('does not add a redundant chevron beside the runtime effort meter', () => {
+    expect(appCSS).not.toContain('.model-chip::after');
+  });
+});
+
 describe('syntax theme', () => {
   it('defines contrasting dark and light palettes', () => {
     expect(appCSS).toContain('--syntax-text: #c9d1d9');

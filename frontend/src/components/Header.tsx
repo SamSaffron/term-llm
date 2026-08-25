@@ -303,25 +303,25 @@ export function Header() {
               </button>
             )}
           </div>
-        </div>
-        {showDiff && (
-          <button
-            class={`icon-btn diff-toggle header-action ${store.diff.value.open ? 'active' : ''}`}
-            id="diffToggleBtn"
-            type="button"
-            aria-label={`Toggle file changes: ${diffTitle}`}
-            title={diffTitle}
-            onClick={() => void store.toggleDiff()}
-          >
-            <span class={`diff-toggle-badge ${!diffAdds && !diffDels ? 'no-stats' : ''}`}>
-              <span class="diff-toggle-file-count" data-file-count={diffFileCount}>
-                <span class="diff-toggle-file-icon" aria-hidden="true" />
+          {showDiff && (
+            <button
+              class={`icon-btn diff-toggle header-action ${store.diff.value.open ? 'active' : ''}`}
+              id="diffToggleBtn"
+              type="button"
+              aria-label={`Toggle file changes: ${diffTitle}`}
+              title={diffTitle}
+              onClick={() => void store.toggleDiff()}
+            >
+              <span class={`diff-toggle-badge ${!diffAdds && !diffDels ? 'no-stats' : ''}`}>
+                <span class="diff-toggle-file-count" data-file-count={diffFileCount}>
+                  <span class="diff-toggle-file-icon" aria-hidden="true" />
+                </span>
+                {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}
+                {diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}
               </span>
-              {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}
-              {diffDels > 0 && <span class="diff-toggle-stat-del">−{diffDels}</span>}
-            </span>
-          </button>
-        )}
+            </button>
+          )}
+        </div>
       </div>
     </header>
   );

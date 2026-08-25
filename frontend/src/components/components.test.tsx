@@ -132,6 +132,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(toggle.querySelector('.diff-toggle-stat-add')).toHaveTextContent('+2');
     expect(toggle.querySelector('.diff-toggle-stat-del')).toHaveTextContent('−2');
     expect(toggle.querySelector('.diff-toggle-badge')).not.toHaveTextContent('4');
+    expect(toggle.closest('.header-controls-row')).not.toBeNull();
   });
 
   it('matches the legacy diff scope popover and syntax-highlights code rows', async () => {
