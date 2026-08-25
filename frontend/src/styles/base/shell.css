@@ -1,0 +1,127 @@
+/* Startup splash and the top-level `.app` layout grid. */
+
+.startup-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(1.5rem + var(--safe-top)) calc(1.5rem + var(--safe-right))
+    calc(1.5rem + var(--safe-bottom)) calc(1.5rem + var(--safe-left));
+  background: var(--bg);
+  transition:
+    opacity 180ms ease,
+    visibility 180ms ease;
+}
+
+.startup-splash.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.startup-card {
+  width: min(320px, 100%);
+  padding: 1.5rem 1.35rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-strong);
+  text-align: center;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.startup-mark {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 0.9rem;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 1.45rem;
+  font-weight: 800;
+}
+
+.startup-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.startup-subtitle {
+  margin-top: 0.4rem;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.startup-spinner {
+  width: 22px;
+  height: 22px;
+  margin: 1rem auto 0;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-strong);
+  animation: spin 0.8s linear infinite;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0;
+  min-height: var(--app-height);
+  height: var(--app-height);
+  width: 100%;
+  background: transparent;
+  position: fixed;
+  top: var(--app-offset-top);
+  left: 0;
+  right: 0;
+  z-index: 1;
+  overflow: hidden;
+  transition: grid-template-columns var(--layout-transition-duration) ease;
+}
+
+.app.sidebar-collapsed {
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 0;
+}
+
+.app.diff-open {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(
+      --diff-sidebar-user-width,
+      var(--diff-sidebar-width)
+    );
+}
+
+.app.plan-open {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--plan-sidebar-width);
+}
+
+.app.sidebar-collapsed.diff-open {
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) var(
+      --diff-sidebar-user-width,
+      var(--diff-sidebar-width)
+    );
+}
+
+.app.sidebar-collapsed.plan-open {
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) var(--plan-sidebar-width);
+}
+
+/* Disable the column transition while dragging the resize handle so the
+       panel tracks the pointer without lag. */
+.app.diff-resizing {
+  transition: none;
+  user-select: none;
+}

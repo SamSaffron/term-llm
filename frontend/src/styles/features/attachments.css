@@ -1,0 +1,119 @@
+/* Attachment chips, drop zone, message attachments and inline video. */
+
+.attachments {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.35rem 0.3rem 0;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+  max-width: 200px;
+}
+
+.attachment-chip img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attachment-chip .att-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.attachment-chip .att-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 0.15rem;
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.attachment-chip .att-remove:hover {
+  color: var(--danger);
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgb(255 255 255 / 4%);
+  border: 2px dashed var(--border-strong);
+  border-radius: 8px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  color: var(--text);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.drop-overlay.hidden {
+  display: none;
+}
+
+.message-attachments {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
+.message-attachments img {
+  /* Keep these caps coupled to app-render.js; TestAttachmentImageSizeLimitsStayCoupled enforces it. */
+  display: block;
+  max-width: min(360px, 100%);
+  max-height: 270px;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.message-attachments img:hover {
+  opacity: 0.85;
+}
+
+.message-attachments .att-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.markdown-body img {
+  cursor: zoom-in;
+}
+
+.video-link {
+  text-decoration-style: dotted;
+}
+
+.video-link::after {
+  content: ' ▶';
+  font-size: 0.75em;
+  opacity: 0.7;
+}

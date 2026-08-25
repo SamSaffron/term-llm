@@ -1,8 +1,41 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const appCSS = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8');
+const stylesRoot = resolve(process.cwd(), 'src/styles');
+
+// `app.css` is a manifest of ordered `@import`s. Resolve it the way the bundler
+// does so these assertions keep covering every rule regardless of which module
+// file a given block currently lives in.
+function readStylesheet(path: string): string {
+  const source = readFileSync(path, 'utf8');
+  return source.replace(/@import\s+['"]([^'"]+)['"];/g, (_match, specifier: string) =>
+    readStylesheet(resolve(dirname(path), specifier)),
+  );
+}
+
+const appCSS = readStylesheet(resolve(stylesRoot, 'app.css'));
+
+describe('stylesheet manifest', () => {
+  it('inlines every module and keeps the Preact integration layer last', () => {
+    const manifest = readFileSync(resolve(stylesRoot, 'app.css'), 'utf8');
+    const imports = [...manifest.matchAll(/@import\s+['"]\.\/([^'"]+)['"];/g)].map((m) => m[1]);
+
+    expect(imports.length).toBeGreaterThan(1);
+    expect(imports[0]).toBe('base/tokens.css');
+    expect(imports.at(-1)).toBe('integration/preact-overrides.css');
+
+    // The manifest must stay import-only so its order is unambiguously the
+    // cascade order.
+    const statements = manifest
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    expect(statements).toHaveLength(imports.length);
+    expect(statements.every((line) => line.startsWith('@import '))).toBe(true);
+  });
+});
 
 describe('header styles', () => {
   it('does not add a redundant chevron beside the runtime effort meter', () => {

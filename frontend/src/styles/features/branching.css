@@ -1,0 +1,370 @@
+/* Conversation branching. */
+
+/* Conversation branching */
+.branch-hidden {
+  display: none !important;
+}
+
+.pending-branch-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.55rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.pending-branch-banner[hidden] {
+  display: none;
+}
+
+.pending-branch-banner button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.branch-origin-divider {
+  width: min(100%, 820px);
+  display: grid;
+  grid-template-columns: minmax(1rem, 1fr) auto minmax(1rem, 1fr);
+  align-items: center;
+  gap: 0.8rem;
+  margin: 0.55rem 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.branch-origin-line {
+  height: 1px;
+  background: var(--border);
+}
+
+.branch-origin-divider button {
+  border: 0;
+  padding: 0.25rem 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.16rem;
+}
+
+.branch-origin-divider button:hover {
+  color: var(--text);
+}
+
+.branch-context-status {
+  width: min(100%, 820px);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.65rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.branch-context-status small {
+  flex-basis: 100%;
+}
+
+.branch-context-status.failed {
+  flex-wrap: wrap;
+  color: var(--error-text);
+}
+
+.branch-context-status button {
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  padding: 0.32rem 0.5rem;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.branch-context-spinner {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex: none;
+  border: 2px solid var(--border);
+  border-top-color: var(--text-muted);
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+
+.message.path-note {
+  max-width: 46rem;
+  margin: 0.65rem auto;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.message.path-note details {
+  border: 1px dashed var(--border);
+  border-radius: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface-2);
+}
+
+.message.path-note summary {
+  cursor: pointer;
+  font-style: italic;
+}
+
+.message.path-note .path-note-body {
+  margin-top: 0.65rem;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.branch-tree-trigger {
+  white-space: nowrap;
+}
+
+.branch-tree-modal,
+.branch-context-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 48%);
+}
+
+.branch-tree-modal[hidden],
+.branch-context-modal[hidden] {
+  display: none;
+}
+
+.branch-tree-card,
+.branch-context-card {
+  width: min(36rem, 100%);
+  max-height: min(42rem, calc(100dvh - 2rem));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--surface);
+  box-shadow: var(--shadow-strong);
+  padding: 1rem;
+}
+
+.branch-tree-card:focus {
+  outline: none;
+}
+
+.branch-tree-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.branch-tree-header p,
+.branch-tree-note {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 0.25rem 0 0;
+}
+
+.branch-tree-list {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.branch-tree-section {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.branch-tree-section-title {
+  padding: 0 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.branch-tree-role {
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.branch-tree-role.user {
+  color: var(--accent-strong);
+}
+
+.branch-tree-point {
+  grid-template-columns: 1.4rem 1fr;
+}
+
+.branch-tree-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: start;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: default;
+}
+
+.branch-tree-item-content {
+  min-width: 0;
+}
+
+.branch-tree-item-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.branch-origin-preview {
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.branch-origin-meta {
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.branch-tree-item:hover,
+.branch-tree-item:focus-visible {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.branch-tree-item.active {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.branch-tree-item small {
+  display: block;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+}
+
+.branch-context-choices {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.branch-context-choices button {
+  display: block;
+  width: 100%;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.branch-context-choices button:hover,
+.branch-context-choices button:focus-visible {
+  background: var(--surface-2);
+  border-color: var(--accent);
+}
+
+.branch-context-choices small {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+}
+
+.branch-context-focus {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+
+.branch-context-choices[hidden],
+.branch-context-focus[hidden] {
+  display: none;
+}
+
+.branch-context-focus label {
+  font-weight: 600;
+}
+
+.branch-context-focus textarea {
+  resize: vertical;
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.branch-context-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.branch-context-actions button {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.branch-context-actions button[type='submit'] {
+  background: var(--accent);
+  color: var(--accent-contrast, white);
+  border-color: var(--accent);
+}
+
+@media (width <= 640px) {
+  .branch-tree-modal,
+  .branch-context-modal {
+    align-items: end;
+    padding: 0;
+  }
+
+  .branch-tree-card,
+  .branch-context-card {
+    width: 100%;
+    max-height: 80dvh;
+    border-radius: 1rem 1rem 0 0;
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+}

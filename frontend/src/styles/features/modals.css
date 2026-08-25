@@ -1,0 +1,149 @@
+/* Generic modal shell and the rename-session dialog. */
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--panel-fade-duration) ease;
+  z-index: 15;
+}
+
+.sidebar-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal-overlay.hidden {
+  display: none;
+}
+
+.modal {
+  width: min(480px, 100%);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 1.15rem;
+  box-shadow: var(--shadow-strong);
+}
+
+.modal h2 {
+  margin: 0 0 0.8rem;
+  font-size: 1.05rem;
+}
+
+.modal p {
+  margin: 0 0 0.85rem;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.modal input:not([type='radio'], [type='checkbox']),
+.modal textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 0.78rem 0.85rem;
+  color: var(--text);
+  resize: vertical;
+}
+
+.modal input:not([type='radio'], [type='checkbox']):focus,
+.modal textarea:focus {
+  outline: 2px solid var(--border-strong);
+  border-color: var(--border-strong);
+}
+
+.rename-improve-btn {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  margin-top: 0.15rem;
+  margin-bottom: 0.3rem;
+}
+
+.rename-improve-btn.is-loading::before {
+  content: '';
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: 50%;
+  border: 2px solid currentcolor;
+  border-top-color: transparent;
+  animation: title-spin 0.8s linear infinite;
+}
+
+.rename-generated-note {
+  margin-top: -0.3rem !important;
+  font-size: 0.82rem !important;
+}
+
+.modal-error {
+  min-height: 1.1rem;
+  color: var(--danger);
+  font-size: 0.84rem;
+  margin-top: 0.5rem;
+}
+
+.modal-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.btn {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 0.62rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.15s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.btn.primary {
+  border-color: var(--border-strong);
+  background: var(--gradient-accent-strong);
+  color: var(--btn-accent-text);
+  font-weight: 700;
+}
+
+.btn.primary:hover:not(:disabled) {
+  opacity: 0.85;
+  background: var(--gradient-accent-strong);
+}
+
+.btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.rename-session-modal {
+  width: min(420px, 100%);
+}
+
+.rename-session-modal .hidden {
+  display: none;
+}
