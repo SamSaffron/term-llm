@@ -626,6 +626,48 @@ describe('AppStore compatibility behavior', () => {
     expect(store.models.value.map((model) => model.id)).toEqual(['new']);
   });
 
+  it('finishes bootstrap while a restored response stream remains open', async () => {
+    const store = new AppStore(config);
+    const openStream = deferred<void>();
+    const active = { ...session(), active_response_id: 'r1' };
+    store.endpoints.capabilities = vi.fn(async () => ({
+      projects: { enabled: false },
+      widgets: [{ id: 'status', name: 'Status', url: '/widgets/status/' }],
+    }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({ sessions: [active] }));
+    store.endpoints.sessionState = vi.fn(async () => ({
+      active_response_id: 'r1',
+      pending_ask_user: {
+        call_id: 'call-1',
+        questions: [{ question: 'Choose?', options: [{ label: 'Continue' }] }],
+      },
+    }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: active,
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.skills = vi.fn(async () => ({ skills: [] }));
+    store.endpoints.response = vi.fn(async () => ({
+      id: 'r1',
+      session_id: 's1',
+      run_epoch: 1,
+      status: 'in_progress',
+      last_sequence_number: 4,
+    }));
+    store.streamResponse = vi.fn(() => openStream.promise);
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+    await store.bootstrap();
+
+    expect(store.startupDone.value).toBe(true);
+    expect(store.askUser.value).toEqual(
+      expect.objectContaining({ sessionId: 's1', callId: 'call-1' }),
+    );
+    await vi.waitFor(() => expect(store.streamResponse).toHaveBeenCalledWith('r1', 's1', 4));
+  });
+
   it('does not let stale session state overwrite a prompt opened by the live stream', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];

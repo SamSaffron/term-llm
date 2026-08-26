@@ -195,6 +195,13 @@ export function Composer() {
   const pending = store.interjections.value.filter(
     (entry) => entry.sessionId === store.activeSession.value?.id,
   );
+  const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
+  const interjecting = store.streaming.value && hasDraft;
+  const sendLabel = bindingBlocked
+    ? 'Project unavailable'
+    : interjecting
+      ? 'Interject'
+      : 'Send message';
   return (
     <footer
       class="composer"
@@ -511,17 +518,15 @@ export function Composer() {
               </button>
             )}
             <button
-              class={`send-btn ${store.streaming.value ? 'interject' : ''}`}
+              class={`send-btn ${interjecting ? 'interject' : ''}`}
               id="sendBtn"
               type="button"
-              title={bindingBlocked ? 'Project unavailable' : ''}
-              aria-label={store.streaming.value ? 'Interject' : 'Send message'}
-              disabled={
-                bindingBlocked || (!store.prompt.value.trim() && !store.attachments.value.length)
-              }
+              title={sendLabel}
+              aria-label={sendLabel}
+              disabled={bindingBlocked || !hasDraft}
               onClick={sendOrCommand}
             >
-              <Icon class="arrow" name="send" />
+              <Icon class="arrow" name={interjecting ? 'interject' : 'send'} />
             </button>
           </div>
         </div>

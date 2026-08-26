@@ -715,7 +715,7 @@ export class AppStore {
     });
     if (epoch !== this.selectionEpoch) return;
     void this.refreshBranchTree(current.id);
-    if (current.activeResponseId) await this.resumeResponse(current.id, current.activeResponseId);
+    if (current.activeResponseId) void this.resumeResponse(current.id, current.activeResponseId);
     this.sidebarOpen.value = false;
     void this.recoverSideQuestion();
   }

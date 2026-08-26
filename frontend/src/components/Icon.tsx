@@ -11,6 +11,7 @@ type IconName =
   | 'diff'
   | 'edit'
   | 'expand'
+  | 'interject'
   | 'menu'
   | 'microphone'
   | 'panel'
@@ -80,6 +81,12 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="m3 21 6-6" />
       <path d="M16 21h5v-5" />
       <path d="m21 21-6-6" />
+    </>
+  ),
+  interject: (
+    <>
+      <path d="M5 6v7a2 2 0 0 0 2 2h12" />
+      <path d="m14 10 5 5-5 5" />
     </>
   ),
   menu: (

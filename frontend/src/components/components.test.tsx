@@ -12,6 +12,7 @@ import { Header } from './Header';
 import { DiffSidebar } from './Panels';
 import { ChipPicker } from './ChipPicker';
 import type { AppConfig } from '../app/config';
+import { initialProjection } from '../domain/response';
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -261,8 +262,66 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('Question')).toBeInTheDocument();
     expect(screen.getByText('Answer').tagName).toBe('STRONG');
     await userEvent.click(screen.getByRole('button', { name: /read_file/ }));
-    expect(screen.getByText(/"path": "x"/)).toBeInTheDocument();
+    const argument = document.querySelector('.tool-argument');
+    expect(argument?.querySelector('dt')).toHaveTextContent('path');
+    expect(argument?.querySelector('dd')).toHaveTextContent('x');
+    expect(screen.queryByText(/"path": "x"/)).not.toBeInTheDocument();
     expect(screen.getByText('ok')).toBeInTheDocument();
+  });
+
+  it('formats tool parameters as readable typed rows and preserves partial argument fallbacks', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'shell',
+            name: 'shell',
+            arguments: JSON.stringify({
+              command: 'printf "hello\\nworld"',
+              description: 'Print two lines',
+              timeout_seconds: 15,
+              approved: true,
+              modes: ['safe', 'fast'],
+            }),
+            status: 'error',
+            result: 'cancelled',
+          },
+          {
+            id: 'partial',
+            name: 'write_file',
+            arguments: '{"path":"notes.txt","content":',
+            status: 'error',
+          },
+        ],
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /2 tool calls/ }));
+    const rows = Array.from(document.querySelectorAll('.tool-argument'));
+    expect(rows.map((row) => row.querySelector('dt')?.textContent)).toEqual([
+      'command',
+      'description',
+      'timeout_seconds',
+      'approved',
+      'modes',
+    ]);
+    expect(screen.getByText('printf "hello\\nworld"')).toHaveClass('tool-argument-text');
+    expect(screen.getByText('15')).toHaveClass('tool-argument-literal');
+    expect(screen.getByText('true')).toHaveClass('tool-argument-literal');
+    expect(screen.getByText('["safe","fast"]')).toHaveClass('tool-argument-structured');
+    expect(document.querySelector('.tool-arguments-fallback')).toHaveTextContent(
+      '{"path":"notes.txt","content":',
+    );
   });
 
   it('groups completed tool calls compactly and omits redundant role labels', async () => {
@@ -477,6 +536,40 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Reusable picker' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it('morphs the send icon into the interjection icon while streaming with a draft', async () => {
+    const store = createStore();
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    const send = screen.getByRole('button', { name: 'Send message' });
+    const sendIcon = send.querySelector('.arrow')?.innerHTML;
+    expect(send).toBeDisabled();
+    expect(send).not.toHaveClass('interject');
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
+
+    const interject = screen.getByRole('button', { name: 'Interject' });
+    expect(interject).toBeEnabled();
+    expect(interject).toHaveClass('interject');
+    expect(interject).toHaveAttribute('title', 'Interject');
+    expect(interject.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
+    expect(interject.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {
