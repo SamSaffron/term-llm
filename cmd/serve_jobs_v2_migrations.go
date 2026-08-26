@@ -9,7 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
-const jobsV2SchemaVersion = 1
+const jobsV2SchemaVersion = 2
 
 const jobsV2MarkerSchema = `CREATE TABLE jobs_v2_schema_version (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -58,6 +58,8 @@ var jobsV2BootstrapStatements = []string{
 		turn_count INTEGER NOT NULL DEFAULT 0,
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
+		notification_pending INTEGER NOT NULL DEFAULT 0,
+		notification_delivered_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
@@ -72,6 +74,7 @@ var jobsV2BootstrapStatements = []string{
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE INDEX idx_job_run_events_v2_run_id_id ON job_run_events_v2(run_id, id)`,
+	`CREATE INDEX idx_job_runs_v2_notification_pending ON job_runs_v2(notification_pending, finished_at) WHERE notification_pending = 1`,
 	jobsV2RunSummaryIndexSQL,
 	jobsV2RunGlobalSummaryIndexSQL,
 	jobsV2MarkerSchema,
@@ -89,6 +92,11 @@ var jobsV2Migrations = []jobsV2Migration{
 		description: "adopt legacy jobs schema and reconcile run metadata and indexes",
 		up:          reconcileLegacyJobsV2Schema,
 	},
+	{
+		version:     2,
+		description: "persist queued-agent completion notification delivery state",
+		up:          addJobsV2NotificationState,
+	},
 }
 
 var jobsV2LegacyColumns = []struct {
@@ -104,6 +112,33 @@ var jobsV2LegacyColumns = []struct {
 	{name: "input_tokens", definition: "INTEGER NOT NULL DEFAULT 0", typeName: "INTEGER", notNull: true, defaultSQL: "0"},
 	{name: "output_tokens", definition: "INTEGER NOT NULL DEFAULT 0", typeName: "INTEGER", notNull: true, defaultSQL: "0"},
 	{name: "session_id", definition: "TEXT", typeName: "TEXT"},
+	{name: "notification_pending", definition: "INTEGER NOT NULL DEFAULT 0", typeName: "INTEGER", notNull: true, defaultSQL: "0"},
+	{name: "notification_delivered_at", definition: "TIMESTAMP", typeName: "TIMESTAMP"},
+}
+
+func addJobsV2NotificationState(tx sqliteutil.Executor) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "notification_pending", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "notification_delivered_at", definition: "TIMESTAMP"},
+	}
+	for _, column := range columns {
+		exists, err := sqliteutil.ColumnExists(tx, "job_runs_v2", column.name)
+		if err != nil {
+			return fmt.Errorf("inspect job_runs_v2.%s: %w", column.name, err)
+		}
+		if !exists {
+			if _, err := tx.Exec(`ALTER TABLE job_runs_v2 ADD COLUMN "` + column.name + `" ` + column.definition); err != nil {
+				return fmt.Errorf("add job_runs_v2.%s: %w", column.name, err)
+			}
+		}
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_job_runs_v2_notification_pending ON job_runs_v2(notification_pending, finished_at) WHERE notification_pending = 1`); err != nil {
+		return fmt.Errorf("create pending run notification index: %w", err)
+	}
+	return nil
 }
 
 func reconcileLegacyJobsV2Schema(tx sqliteutil.Executor) error {
@@ -176,6 +211,7 @@ func canonicalizeLegacyJobsV2Tables(tx sqliteutil.Executor) error {
 	statements := []string{
 		`DROP INDEX IF EXISTS idx_job_runs_v2_job_id`,
 		`DROP INDEX IF EXISTS idx_job_runs_v2_status`,
+		`DROP INDEX IF EXISTS idx_job_runs_v2_notification_pending`,
 		`DROP INDEX IF EXISTS idx_job_runs_v2_summary_by_job_created`,
 		`DROP INDEX IF EXISTS idx_job_runs_v2_summary_created`,
 		`DROP INDEX IF EXISTS idx_job_run_events_v2_run_id`,
@@ -204,11 +240,13 @@ func canonicalizeLegacyJobsV2Tables(tx sqliteutil.Executor) error {
 			turn_count INTEGER NOT NULL DEFAULT 0,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
+			notification_pending INTEGER NOT NULL DEFAULT 0,
+			notification_delivered_at TIMESTAMP,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`INSERT INTO job_runs_v2(id,job_id,attempt,trigger,scheduled_for,status,worker_id,session_id,started_at,finished_at,exit_code,error,stdout,stderr,thinking,response,exit_reason,truncated,turn_count,input_tokens,output_tokens,created_at,updated_at)
-		 SELECT id,job_id,attempt,trigger,scheduled_for,status,worker_id,session_id,started_at,finished_at,exit_code,error,stdout,stderr,thinking,response,exit_reason,truncated,turn_count,input_tokens,output_tokens,created_at,updated_at FROM job_runs_v2_old`,
+		`INSERT INTO job_runs_v2(id,job_id,attempt,trigger,scheduled_for,status,worker_id,session_id,started_at,finished_at,exit_code,error,stdout,stderr,thinking,response,exit_reason,truncated,turn_count,input_tokens,output_tokens,notification_pending,notification_delivered_at,created_at,updated_at)
+		 SELECT id,job_id,attempt,trigger,scheduled_for,status,worker_id,session_id,started_at,finished_at,exit_code,error,stdout,stderr,thinking,response,exit_reason,truncated,turn_count,input_tokens,output_tokens,notification_pending,notification_delivered_at,created_at,updated_at FROM job_runs_v2_old`,
 		`CREATE TABLE job_run_events_v2 (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			run_id TEXT NOT NULL REFERENCES job_runs_v2(id) ON DELETE CASCADE,

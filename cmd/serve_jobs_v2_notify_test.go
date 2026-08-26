@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -662,5 +663,139 @@ func TestJobsV2CloseCancelsCompletionNotification(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("notification attempts after shutdown = %d, want 1", got)
+	}
+}
+
+func TestJobsV2PendingNotificationSurvivesShutdownAndIsDeliveredOnce(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs.db")
+	notifyStarted := make(chan struct{}, 1)
+	mgr, err := newJobsV2ManagerWithNotifier(dbPath, 0, nil, func(ctx context.Context, _ jobsV2Run, _ jobsV2Job, _ jobsV2RunStatus, _ jobsV2RunResult, _ string, _ bool, _ string) error {
+		notifyStarted <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
+	}
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "durable-notify-shutdown",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+	if err := mgr.finishRun(run.ID, jobsV2RunSucceeded, jobsV2RunResult{Stdout: "ok"}, nil, run.Attempt); err != nil {
+		t.Fatalf("finishRun: %v", err)
+	}
+	select {
+	case <-notifyStarted:
+	case <-time.After(time.Second):
+		t.Fatal("completion notification did not start")
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var deliveries atomic.Int32
+	delivered := make(chan struct{}, 1)
+	mgr, err = newJobsV2ManagerWithNotifier(dbPath, 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+		deliveries.Add(1)
+		delivered <- struct{}{}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reopen jobs manager: %v", err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		_ = mgr.Close()
+		t.Fatal("pending completion notification was not replayed")
+	}
+	waitForServeCondition(t, time.Second, func() bool {
+		var marked int
+		return mgr.db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2 WHERE id = ? AND notification_pending = 0 AND notification_delivered_at IS NOT NULL`, run.ID).Scan(&marked) == nil && marked == 1
+	}, "completion notification delivery marker")
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("close reopened manager: %v", err)
+	}
+
+	mgr, err = newJobsV2ManagerWithNotifier(dbPath, 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+		deliveries.Add(1)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("second reopen jobs manager: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("close second reopened manager: %v", err)
+	}
+	if got := deliveries.Load(); got != 1 {
+		t.Fatalf("successful notification deliveries = %d, want exactly 1", got)
+	}
+}
+
+func TestJobsV2PendingNotificationSurvivesCrashBeforeDispatch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs.db")
+	var deliveries atomic.Int32
+	mgr, err := newJobsV2ManagerWithNotifier(dbPath, 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+		deliveries.Add(1)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2ManagerWithNotifier: %v", err)
+	}
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "durable-notify-crash",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob: %v", err)
+	}
+	result := jobsV2RunResult{Stdout: "ok"}
+	if err := mgr.finishRunInternal(run.ID, jobsV2RunSucceeded, result, nil, run.Attempt, false); err != nil {
+		t.Fatalf("persist terminal run without dispatch: %v", err)
+	}
+	if got := deliveries.Load(); got != 0 {
+		t.Fatalf("notification deliveries before simulated crash = %d, want 0", got)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	delivered := make(chan struct{}, 1)
+	mgr, err = newJobsV2ManagerWithNotifier(dbPath, 0, nil, func(context.Context, jobsV2Run, jobsV2Job, jobsV2RunStatus, jobsV2RunResult, string, bool, string) error {
+		deliveries.Add(1)
+		delivered <- struct{}{}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reopen jobs manager: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("crash-window completion notification was not replayed")
+	}
+	if got := deliveries.Load(); got != 1 {
+		t.Fatalf("notification deliveries after reopen = %d, want 1", got)
 	}
 }

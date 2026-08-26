@@ -600,6 +600,11 @@ func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsE
 		_ = db.Close()
 		return nil, err
 	}
+	if err := mgr.replayPendingRunDoneNotifications(); err != nil {
+		notifyCancel()
+		_ = db.Close()
+		return nil, err
+	}
 
 	mgr.wg.Add(1)
 	go mgr.schedulerLoop()
@@ -664,7 +669,7 @@ func (m *jobsV2Manager) recoverRuns() error {
 			InputTokens:  run.InputTokens,
 			OutputTokens: run.OutputTokens,
 		}
-		if err := m.finishRun(run.ID, jobsV2RunFailed, result, errors.New("worker lost before run could finish"), run.Attempt); err != nil {
+		if err := m.finishRunInternal(run.ID, jobsV2RunFailed, result, errors.New("worker lost before run could finish"), run.Attempt, false); err != nil {
 			return fmt.Errorf("recover interrupted run %s: %w", run.ID, err)
 		}
 	}
@@ -1437,6 +1442,10 @@ func (m *jobsV2Manager) finishRunWithRetry(runID string, status jobsV2RunStatus,
 }
 
 func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {
+	return m.finishRunInternal(runID, status, result, runErr, attempt, true)
+}
+
+func (m *jobsV2Manager) finishRunInternal(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int, enqueueNotification bool) error {
 	now := time.Now().UTC()
 	exitReason, truncated := classifyRunError(runErr, result)
 	var errText string
@@ -1444,18 +1453,22 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		errText = runErr.Error()
 	}
 	cancelledErrText := context.Canceled.Error()
-	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
+	notificationPending := m.notifyDone != nil && jobsV2NotifyTerminalStatus(status)
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, notification_pending = ?, notification_delivered_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
 		jobsV2RunCancelRequested, jobsV2RunCancelled, status,
 		now, result.ExitCode,
 		jobsV2RunCancelRequested, cancelledErrText, errText,
 		result.Stdout, result.Stderr, result.Thinking, result.Response, result.SessionID,
 		jobsV2RunCancelRequested, exitReasonCancelled, exitReason,
-		boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
+		boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens, boolToInt(notificationPending),
 		runID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
 	if err != nil {
-		return err
+		return fmt.Errorf("persist run completion: %w", err)
 	}
-	affected, _ := res.RowsAffected()
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect run completion: %w", err)
+	}
 	if affected == 0 {
 		return nil
 	}
@@ -1481,7 +1494,9 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		"input_tokens":  result.InputTokens,
 		"output_tokens": result.OutputTokens,
 	})
-	m.enqueueRunDoneNotification(run, status, result, exitReason, truncated, errText)
+	if enqueueNotification {
+		m.enqueueRunDoneNotification(run, status, result, exitReason, truncated, errText)
+	}
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
 		job, err := m.GetJob(run.JobID)
@@ -1516,6 +1531,53 @@ func jobsV2NotifyTerminalStatus(status jobsV2RunStatus) bool {
 	default:
 		return false
 	}
+}
+
+func (m *jobsV2Manager) replayPendingRunDoneNotifications() error {
+	if m == nil || m.notifyDone == nil {
+		return nil
+	}
+	rows, err := m.db.Query(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE notification_pending = 1 AND status IN (?, ?, ?, ?) ORDER BY finished_at, id`, jobsV2RunSucceeded, jobsV2RunFailed, jobsV2RunCancelled, jobsV2RunTimedOut)
+	if err != nil {
+		return fmt.Errorf("load pending completion notifications: %w", err)
+	}
+
+	var pending []jobsV2Run
+	for rows.Next() {
+		run, err := scanRunV2(rows)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan pending completion notification: %w", err)
+		}
+		pending = append(pending, run)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("scan pending completion notifications: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close pending completion notifications query: %w", err)
+	}
+
+	for _, run := range pending {
+		result := jobsV2RunResult{
+			Stdout:       run.Stdout,
+			Stderr:       run.Stderr,
+			Thinking:     run.Thinking,
+			Response:     run.Response,
+			SessionID:    run.SessionID,
+			ExitReason:   run.ExitReason,
+			Truncated:    run.Truncated,
+			TurnCount:    run.TurnCount,
+			InputTokens:  run.InputTokens,
+			OutputTokens: run.OutputTokens,
+		}
+		if run.ExitCode != nil {
+			result.ExitCode = *run.ExitCode
+		}
+		m.enqueueRunDoneNotification(run, run.Status, result, run.ExitReason, run.Truncated, run.Error)
+	}
+	return nil
 }
 
 func (m *jobsV2Manager) enqueueRunDoneNotification(run jobsV2Run, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
@@ -1564,6 +1626,9 @@ func (m *jobsV2Manager) notifyRunDone(run jobsV2Run, status jobsV2RunStatus, res
 		notifyErr = m.notifyDone(attemptCtx, run, job, status, result, exitReason, truncated, errText)
 		cancelAttempt()
 		if notifyErr == nil {
+			if _, err := m.db.Exec(`UPDATE job_runs_v2 SET notification_pending = 0, notification_delivered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND notification_pending = 1`, run.ID); err != nil {
+				log.Printf("jobs v2: completion notification for run %q was delivered but could not be marked complete: %v", run.ID, err)
+			}
 			return
 		}
 		if notifyCtx.Err() != nil {

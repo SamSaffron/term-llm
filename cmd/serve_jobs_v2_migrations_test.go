@@ -25,6 +25,50 @@ func TestJobsV2MigrationListInvariants(t *testing.T) {
 	}
 }
 
+func TestJobsV2MigratesNotificationDeliveryStateFromVersionOne(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := execJobsV2Schema(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`DROP INDEX idx_job_runs_v2_notification_pending`,
+		`ALTER TABLE job_runs_v2 DROP COLUMN notification_delivered_at`,
+		`ALTER TABLE job_runs_v2 DROP COLUMN notification_pending`,
+		`UPDATE jobs_v2_schema_version SET version = 1`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("prepare version one schema: %v\n%s", err, statement)
+		}
+	}
+
+	if err := initJobsV2Schema(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"notification_pending", "notification_delivered_at"} {
+		exists, err := sqliteutil.ColumnExists(db, "job_runs_v2", column)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("missing migrated column %s", column)
+		}
+	}
+	var version, indexes int
+	if err := db.QueryRow(`SELECT version FROM jobs_v2_schema_version WHERE id = 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_job_runs_v2_notification_pending'`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if version != jobsV2SchemaVersion || indexes != 1 {
+		t.Fatalf("migrated version=%d pending indexes=%d, want version=%d and one index", version, indexes, jobsV2SchemaVersion)
+	}
+}
+
 func TestJobsV2FreshAndCurrentPathsRunZeroMigrationCallbacks(t *testing.T) {
 	original := jobsV2Migrations
 	jobsV2Migrations = append([]jobsV2Migration(nil), original...)
@@ -173,6 +217,7 @@ func TestJobsV2MigrationRepairsEveryIndividualLegacyColumnHole(t *testing.T) {
 				`DROP TABLE jobs_v2_schema_version`,
 				`DROP INDEX IF EXISTS idx_job_runs_v2_summary_by_job_created`,
 				`DROP INDEX IF EXISTS idx_job_runs_v2_summary_created`,
+				`DROP INDEX IF EXISTS idx_job_runs_v2_notification_pending`,
 				`ALTER TABLE job_runs_v2 DROP COLUMN "` + column.name + `"`,
 			} {
 				if _, err := db.Exec(statement); err != nil {
