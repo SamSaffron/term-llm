@@ -1599,8 +1599,8 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
-  it('does not add code-copy controls while markdown is streaming', () => {
-    render(<Markdown value={'```sh\necho "hello"\n```'} streaming />);
+  it('does not add code-copy controls while a markdown fence is open', () => {
+    render(<Markdown value={'```sh\necho "hello"'} streaming />);
     expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
   });
 
@@ -1614,6 +1614,119 @@ describe('Preact-owned chat surfaces', () => {
         await vi.advanceTimersByTimeAsync(33);
       });
       expect(container).toHaveTextContent('second');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps one code node while an open fence grows and commits it once', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = 'intro\n\n```ts\nconst value = 1';
+      const { container, rerender } = render(<Markdown value={first} streaming />);
+      const pre = container.querySelector('pre');
+      const code = container.querySelector('pre code');
+      expect(pre).not.toBeNull();
+      expect(code).toHaveTextContent('const value = 1');
+      expect(code).not.toHaveAttribute('data-highlighted');
+
+      const second = `${first};\nconsole.log(value);`;
+      rerender(<Markdown value={second} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(33);
+      });
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(code).toHaveTextContent('console.log(value);');
+      expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
+
+      const closed = `${second}\n\`\`\`\ntrailing prose`;
+      rerender(<Markdown value={closed} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(33);
+      });
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(screen.getAllByRole('button', { name: 'Copy code' })).toHaveLength(1);
+      expect(container).toHaveTextContent('trailing prose');
+
+      rerender(<Markdown value={closed} />);
+      expect(container.querySelector('pre')).toBe(pre);
+      expect(container.querySelector('pre code')).toBe(code);
+      expect(screen.getAllByRole('button', { name: 'Copy code' })).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves completed fence nodes across every single-character chunk boundary', async () => {
+    vi.useFakeTimers();
+    try {
+      const source = 'before\n\n```js\nconst one = 1;\n```\nbetween\n\n~~~py\nprint(2)\n~~~\nafter';
+      const { container, rerender } = render(<Markdown value="" streaming />);
+      let firstBlock: HTMLPreElement | null = null;
+      let secondBlock: HTMLPreElement | null = null;
+      for (let index = 1; index <= source.length; index += 1) {
+        rerender(<Markdown value={source.slice(0, index)} streaming />);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(33);
+        });
+        const first =
+          container.querySelector('.streaming-stable > pre > code.language-js')?.closest('pre') ||
+          null;
+        const second =
+          container.querySelector('.streaming-stable > pre > code.language-py')?.closest('pre') ||
+          null;
+        if (first) {
+          if (!firstBlock) firstBlock = first;
+          else expect(first).toBe(firstBlock);
+        }
+        if (second) {
+          if (!secondBlock) secondBlock = second;
+          else expect(second).toBe(secondBlock);
+        }
+      }
+      const seen = [firstBlock, secondBlock] as HTMLPreElement[];
+      expect(seen.every(Boolean)).toBe(true);
+      expect(container.querySelectorAll('.code-copy-btn')).toHaveLength(2);
+      rerender(<Markdown value={source} />);
+      expect([...container.querySelectorAll('pre')]).toEqual(seen);
+      expect(container).toHaveTextContent('before');
+      expect(container).toHaveTextContent('after');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('appends safe plain streaming text without replacing its text node', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(<Markdown value="first" streaming />);
+      const tail = container.querySelector('.streaming-tail');
+      const text = tail?.firstChild;
+      rerender(<Markdown value="first second" streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(33);
+      });
+      expect(container.querySelector('.streaming-tail')?.firstChild).toBe(text);
+      expect(text).toHaveTextContent('first second');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rebuilds canonically after a replacement streaming snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(<Markdown value={'```ts\nold'} streaming />);
+      const oldCode = container.querySelector('code');
+      rerender(<Markdown value={'```py\nnew'} streaming />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(33);
+      });
+      expect(container.querySelector('code')).not.toBe(oldCode);
+      expect(container).toHaveTextContent('new');
+      expect(container).not.toHaveTextContent('old');
     } finally {
       vi.useRealTimers();
     }

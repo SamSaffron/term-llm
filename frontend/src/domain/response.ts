@@ -128,7 +128,6 @@ function tool(
     return [
       replaceMessage(messages, group, {
         status: 'running',
-        toolGroupClosed: false,
         tools: [...(group.tools || []), entry],
       }),
       entry,

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { decorateRichContent, renderMarkdown, stableMarkdownBoundary } from './markdown';
 import {
+  analyzeStreamingMarkdown,
+  findActiveFencedCodeBlock,
+  hasIncrementalGlobalMarkdownSyntax,
+  inspectFencedCodeBlock,
+} from './markdown-streaming';
+import {
   activeMentionAtCursor,
   applyCompletion,
   composerCompletions,
@@ -37,6 +43,40 @@ describe('markdown security and streaming', () => {
     const input = 'paragraph\n\n```ts\nconst x = 1';
     expect(stableMarkdownBoundary(input)).toBe('paragraph\n\n'.length);
     expect(stableMarkdownBoundary('**done**')).toBe('**done**'.length);
+  });
+
+  it('reports active fenced-code metadata without accepting partial closing markers', () => {
+    const input = 'intro\n\n~~~~ typescript extra\nconst value = `x`;\n~~~';
+    const block = findActiveFencedCodeBlock(input);
+    expect(block).toMatchObject({
+      type: 'fenced-code',
+      sourceStart: 'intro\n\n'.length,
+      language: 'typescript',
+      char: '~',
+      width: 4,
+      indent: 0,
+    });
+    expect(findActiveFencedCodeBlock('  ```ts\nvalue')).toMatchObject({
+      indent: 2,
+      language: 'ts',
+    });
+    expect(analyzeStreamingMarkdown(input, 0).activeBlock).toEqual(block);
+    expect(inspectFencedCodeBlock(input, block!)).toMatchObject({
+      closeStart: null,
+      contentEnd: input.lastIndexOf('~~~'),
+    });
+
+    const closed = `${input}~\nfollowing`;
+    expect(inspectFencedCodeBlock(closed, block!)).toMatchObject({
+      closeStart: input.lastIndexOf('~~~'),
+      closeEnd: input.length + 2,
+    });
+  });
+
+  it('latches globally sensitive markdown onto the canonical fallback path', () => {
+    expect(hasIncrementalGlobalMarkdownSyntax('[name]: https://example.com')).toBe(true);
+    expect(hasIncrementalGlobalMarkdownSyntax('    indented code')).toBe(true);
+    expect(hasIncrementalGlobalMarkdownSyntax('```md\n[name]: still code\n```')).toBe(false);
   });
 });
 

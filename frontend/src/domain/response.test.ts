@@ -221,6 +221,43 @@ describe('response projection', () => {
     });
   });
 
+  it('preserves recovery provenance when a sibling tool joins before closure', () => {
+    let projection: ReturnType<typeof initialProjection> = {
+      ...initialProjection(run),
+      messages: [
+        {
+          id: 'recovered-tools',
+          role: 'tool-group' as const,
+          content: '',
+          created: 1,
+          responseId: 'r1',
+          status: 'done',
+          tools: [{ id: 'c1', name: 'shell', status: 'running' as const }],
+        },
+      ],
+    };
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'c2', name: 'read_file' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, { call_id: 'c2', output: 'contents' }),
+    );
+    projection = reduceResponse(projection, event('response.completed', 3));
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({
+      toolGroupClosed: true,
+      tools: [
+        { id: 'c1', status: 'running' },
+        { id: 'c2', status: 'done' },
+      ],
+    });
+  });
+
   it('matches durable grouping for sequential completed tool calls', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(

@@ -9,8 +9,23 @@ export interface StreamingMarkdownState {
   lastBoundaryOperations: number;
 }
 interface Fence {
-  char: string;
+  char: '`' | '~';
   width: number;
+}
+export interface ActiveFencedCodeBlock extends Fence {
+  type: 'fenced-code';
+  sourceStart: number;
+  contentStart: number;
+  indent: number;
+  language: string;
+}
+export interface FencedCodeInspection {
+  closeStart: number | null;
+  closeEnd: number | null;
+  contentEnd: number;
+}
+export interface StreamingMarkdownAnalysis extends StableBoundaryAnalysis {
+  activeBlock: ActiveFencedCodeBlock | null;
 }
 export interface StableBoundaryAnalysis {
   boundary: number;
@@ -38,8 +53,9 @@ export function nextStreamingRenderDelay(contentLength: unknown): number {
 }
 
 function fenceMarker(line: unknown): Fence | null {
-  const match = String(line || '').match(/^[ \t]{0,3}(`{3,}|~{3,})/);
-  return match ? { char: match[1][0], width: match[1].length } : null;
+  const match = String(line || '').match(/^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)$/);
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
+  return { char: match[1][0] as Fence['char'], width: match[1].length };
 }
 function isFenceClose(line: unknown, active: Fence | null): boolean {
   if (!active) return false;
@@ -79,6 +95,96 @@ export function countCodeFencesFast(text: unknown): number {
 }
 export function isInCodeBlockFast(text: unknown, position: number): boolean {
   return Boolean(scanFenceState(text, position).active);
+}
+
+/** Finds an opening fence whose line is complete but whose closing line has not
+ * arrived yet. This intentionally treats a possible closing marker at EOF as
+ * mutable: a later character can still turn it back into code. */
+export function findActiveFencedCodeBlock(text: unknown): ActiveFencedCodeBlock | null {
+  const value = String(text || '');
+  let active:
+    | (Fence & { sourceStart: number; contentStart: number; indent: number; language: string })
+    | null = null;
+  let lineStart = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 10) continue;
+    const line = value.slice(lineStart, index).replace(/\r$/, '');
+    const marker = fenceMarker(line);
+    if (!active && marker) {
+      const indent = line.match(/^[ \t]{0,3}/)?.[0].length || 0;
+      const info = line.slice(indent + marker.width).trim();
+      active = {
+        ...marker,
+        sourceStart: lineStart,
+        contentStart: index + 1,
+        indent,
+        language: info.split(/\s+/, 1)[0] || '',
+      };
+    } else if (active && marker?.char === active.char && isFenceClose(line, active)) {
+      active = null;
+    }
+    lineStart = index + 1;
+  }
+  return active ? { type: 'fenced-code', ...active } : null;
+}
+
+export function findNextFencedCodeBlock(text: unknown, from = 0): ActiveFencedCodeBlock | null {
+  const value = String(text || '');
+  let lineStart = Math.max(0, Math.min(value.length, from));
+  if (lineStart > 0 && value[lineStart - 1] !== '\n') {
+    const nextLine = value.indexOf('\n', lineStart);
+    if (nextLine < 0) return null;
+    lineStart = nextLine + 1;
+  }
+  for (let index = lineStart; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 10) continue;
+    const line = value.slice(lineStart, index).replace(/\r$/, '');
+    const marker = fenceMarker(line);
+    if (marker) {
+      const indent = line.match(/^[ \t]{0,3}/)?.[0].length || 0;
+      const info = line.slice(indent + marker.width).trim();
+      return {
+        type: 'fenced-code',
+        ...marker,
+        sourceStart: lineStart,
+        contentStart: index + 1,
+        indent,
+        language: info.split(/\s+/, 1)[0] || '',
+      };
+    }
+    lineStart = index + 1;
+  }
+  return null;
+}
+
+export function inspectFencedCodeBlock(
+  text: unknown,
+  active: ActiveFencedCodeBlock,
+  finalized = false,
+): FencedCodeInspection {
+  const value = String(text || '');
+  let lineStart = active.contentStart;
+  for (let index = lineStart; index <= value.length; index += 1) {
+    const complete = index < value.length ? value.charCodeAt(index) === 10 : finalized;
+    if (!complete) continue;
+    const line = value.slice(lineStart, index).replace(/\r$/, '');
+    const marker = fenceMarker(line);
+    if (marker?.char === active.char && isFenceClose(line, active)) {
+      return {
+        closeStart: lineStart,
+        closeEnd: index < value.length ? index + 1 : index,
+        contentEnd: lineStart,
+      };
+    }
+    lineStart = index + 1;
+  }
+
+  // Do not append an incomplete line that can still become the closing fence.
+  const pending = value.slice(lineStart);
+  const trimmed = pending.replace(/^[ \t]{0,3}/, '');
+  const run = trimmed.match(new RegExp(`^\\${active.char}+[ \\t]*$`));
+  const contentEnd = run ? lineStart : value.length;
+  return { closeStart: null, closeEnd: null, contentEnd };
 }
 
 function withoutFencedCode(text: unknown): string {
@@ -228,6 +334,19 @@ export function canStreamPlainTextTail(text: unknown): boolean {
 export function appendedTextIsPlainSafe(text: unknown): boolean {
   return !/[`[\]()!*_~<\\$|#>\r\n]/.test(String(text || ''));
 }
+
+/** Constructs that can change the interpretation of source committed much
+ * earlier are kept on the canonical-render fallback path. */
+export function hasIncrementalGlobalMarkdownSyntax(text: unknown): boolean {
+  const value = withoutFencedCode(text);
+  return (
+    /^ {0,3}\[[^\]\r\n]+\]:\s*\S/m.test(value) ||
+    /^(?: {4}|\t)\S/m.test(value) ||
+    /^ {0,3}<(?:address|article|aside|base|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/)/im.test(
+      value,
+    )
+  );
+}
 export function canStreamPlainTextTailIncremental(
   state: StreamingMarkdownState | null,
   text: unknown,
@@ -312,4 +431,13 @@ export function analyzeStableMarkdownBoundary(
 }
 export function findStableMarkdownBoundary(text: unknown, minTailLength: number): number {
   return analyzeStableMarkdownBoundary(text, minTailLength).boundary;
+}
+
+export function analyzeStreamingMarkdown(
+  text: unknown,
+  minTailLength: number,
+  options: { maxMutableChars?: number; maxOperations?: number } = {},
+): StreamingMarkdownAnalysis {
+  const stable = analyzeStableMarkdownBoundary(text, minTailLength, options);
+  return { ...stable, activeBlock: findActiveFencedCodeBlock(text) };
 }
