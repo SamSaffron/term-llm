@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import {
   activeMentionAtCursor,
@@ -11,6 +11,12 @@ import {
 } from '../domain/completions';
 import { VoiceRecorder } from '../platform/voice';
 import { Icon } from './Icon';
+
+function resizePrompt(element: HTMLTextAreaElement | null): void {
+  if (!element) return;
+  element.style.height = 'auto';
+  if (element.value) element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+}
 
 export function Composer() {
   const store = useStore();
@@ -25,6 +31,7 @@ export function Composer() {
   const [projectMentions, setProjectMentions] = useState<MentionSearchResponse | null>(null);
   const voice = useMemo(() => new VoiceRecorder(), []);
   useEffect(() => () => voice.cancel(), [voice]);
+  useLayoutEffect(() => resizePrompt(textarea.current), [store.prompt.value]);
 
   const session = store.draftActive.value ? null : store.activeSession.value;
   const projectId =
@@ -167,10 +174,7 @@ export function Composer() {
       void store.invokeSkill(skill.name, skill.args);
       return;
     }
-    if (store.streaming.value)
-      void store.interject(value).then(() => {
-        if (store.prompt.peek().trim() === value) store.prompt.value = '';
-      });
+    if (store.streaming.value) void store.interject(value);
     else void store.send();
   };
   const toggleVoice = async () => {
@@ -448,8 +452,7 @@ export function Composer() {
                 event.currentTarget.selectionStart ?? event.currentTarget.value.length;
               setCursor(nextCursor);
               setDismissed('');
-              event.currentTarget.style.height = 'auto';
-              event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 200)}px`;
+              resizePrompt(event.currentTarget);
               setCompletionIndex(0);
             }}
             onKeyUp={(event) => {

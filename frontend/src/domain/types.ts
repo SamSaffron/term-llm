@@ -70,6 +70,8 @@ export interface Message {
   assistantSegmentOrdinal?: number;
   attachments?: Attachment[];
   tools?: ToolCall[];
+  /** Streaming-only membership boundary; execution status may be done while the group remains appendable. */
+  toolGroupClosed?: boolean;
   usage?: Usage;
   status?: string;
   title?: string;

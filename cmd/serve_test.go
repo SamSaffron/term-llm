@@ -6368,6 +6368,49 @@ func TestHandleSessionByID_PatchRenameAndArchive(t *testing.T) {
 	if !updated.Pinned {
 		t.Fatal("Pinned = false, want true")
 	}
+
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	cached := *updated
+	rt := &serveRuntime{sessionMeta: &cached}
+	putTestSession(mgr, sess.ID, rt)
+	srv.sessionMgr = mgr
+
+	// runOnce holds this mutex for the entire provider stream. Renaming is a
+	// durable metadata write and must not wait for that stream to finish merely
+	// to refresh the runtime's cache.
+	rt.mu.Lock()
+	streamingBody := strings.NewReader(`{"name":"Renamed while streaming"}`)
+	streamingReq := httptest.NewRequest(http.MethodPatch, "/v1/sessions/sess-rename", streamingBody)
+	streamingReq.Header.Set("Content-Type", "application/json")
+	streamingRR := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.handleSessionByID(streamingRR, streamingReq)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		rt.mu.Unlock()
+	case <-time.After(time.Second):
+		rt.mu.Unlock()
+		<-done
+		t.Fatal("metadata PATCH waited for the active runtime lock")
+	}
+	if streamingRR.Code != http.StatusOK {
+		t.Fatalf("streaming rename status = %d, want 200 body=%s", streamingRR.Code, streamingRR.Body.String())
+	}
+	persisted, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get after streaming rename: %v", err)
+	}
+	if persisted.Name != "Renamed while streaming" {
+		t.Fatalf("persisted Name = %q, want streaming rename", persisted.Name)
+	}
+	if cached.Name != "Renamed session" {
+		t.Fatalf("busy runtime cache changed without its lock: %q", cached.Name)
+	}
 }
 
 func TestHandleTranscribe_Success(t *testing.T) {

@@ -91,14 +91,18 @@ function replaceMessage(messages: Message[], target: Message, patch: Partial<Mes
 }
 function closeToolGroups(messages: Message[]): Message[] {
   return messages.map((message) =>
-    message.role !== 'tool-group' || message.status !== 'running'
+    message.role !== 'tool-group' || message.toolGroupClosed === true
       ? message
       : {
           ...message,
           status: 'done',
-          tools: message.tools?.map((tool) =>
-            tool.status === 'running' ? { ...tool, status: 'done' } : tool,
-          ),
+          toolGroupClosed: true,
+          tools:
+            message.toolGroupClosed === false
+              ? message.tools?.map((tool) =>
+                  tool.status === 'running' ? { ...tool, status: 'done' } : tool,
+                )
+              : message.tools,
         },
   );
 }
@@ -110,14 +114,11 @@ function tool(
   pending: Record<string, GuardianReview[]> = {},
 ): [Message[], ToolCall] {
   if (!id) throw new ResponseProtocolError('Tool event is missing call_id', 'gap');
-  const group = [...messages]
-    .reverse()
-    .find(
-      (message) =>
-        message.role === 'tool-group' &&
-        message.responseId === responseId &&
-        message.status !== 'done',
-    );
+  const tail = messages.at(-1);
+  const group =
+    tail?.role === 'tool-group' && tail.responseId === responseId && tail.toolGroupClosed !== true
+      ? tail
+      : undefined;
   const existing = messages
     .flatMap((message) => message.tools || [])
     .find((entry) => entry.id === id);
@@ -127,6 +128,7 @@ function tool(
     return [
       replaceMessage(messages, group, {
         status: 'running',
+        toolGroupClosed: false,
         tools: [...(group.tools || []), entry],
       }),
       entry,
@@ -141,6 +143,7 @@ function tool(
         created: Date.now(),
         responseId,
         status: 'running',
+        toolGroupClosed: false,
         tools: [entry],
       },
     ],
@@ -429,7 +432,10 @@ export function reduceResponse(
           },
         };
       return review.message
-        ? { ...next, messages: appendNotice(messages, event, review.message) }
+        ? {
+            ...next,
+            messages: appendNotice(closeToolGroups(messages), event, review.message),
+          }
         : next;
     }
     case 'response.interjection': {

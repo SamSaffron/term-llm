@@ -510,16 +510,25 @@ export function DiffSidebar() {
   const adds = state.files.reduce((sum, file) => sum + (file.additions || 0), 0);
   const dels = state.files.reduce((sum, file) => sum + (file.deletions || 0), 0);
   const startResize = (event: PointerEvent) => {
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    const shell = handle.closest('.app');
     const startX = event.clientX;
     const startWidth = state.width;
     const move = (next: PointerEvent) =>
       store.resizeDiff(clampDiffWidth(startWidth + startX - next.clientX, innerWidth));
-    const finish = () => {
+    const finish = (next: PointerEvent) => {
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', finish);
+      removeEventListener('pointercancel', finish);
+      shell?.classList.remove('diff-resizing');
+      handle.releasePointerCapture?.(next.pointerId);
     };
+    handle.setPointerCapture?.(event.pointerId);
+    shell?.classList.add('diff-resizing');
     addEventListener('pointermove', move);
     addEventListener('pointerup', finish, { once: true });
+    addEventListener('pointercancel', finish, { once: true });
   };
   return (
     <aside
@@ -527,7 +536,6 @@ export function DiffSidebar() {
       class={`diff-sidebar open ${state.maximized ? 'maximized' : ''}`}
       id="diffSidebar"
       aria-label="Session file changes"
-      style={state.maximized ? undefined : { width: `${state.width}px` }}
     >
       <div
         class="diff-resize-handle"

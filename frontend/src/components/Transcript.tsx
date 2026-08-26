@@ -110,6 +110,7 @@ function toolIcon(name: string): string {
         write_file: '✏️',
         edit_file: '✏️',
         web_search: '🔍',
+        grep: '🔍',
         read_url: '🌐',
         image_generate: '🎨',
         spawn_agent: '🤖',
@@ -117,6 +118,14 @@ function toolIcon(name: string): string {
     )[name.toLowerCase()] || '🔧'
   );
 }
+function guardianReviewReason(message: string, outcome: string): string {
+  const text = message.trim().replace(/^guardian:\s*/i, '');
+  if (!text) return '';
+  return outcome === 'denied' || outcome === 'error'
+    ? text.replace(/^(?:denied|error)\b[:;,.\s-]*/i, '').trim()
+    : text;
+}
+
 function formatUsage(message: Message): string {
   const usage = message.usage || {};
   const details =
@@ -128,8 +137,10 @@ function formatUsage(message: Message): string {
 
 function Tool({ tool }: { tool: ToolCall }) {
   const store = useStore();
-  const [expanded, setExpanded] = useState(tool.status === 'error');
+  const failed = tool.status === 'error' || tool.resultStatus === 'error';
+  const [expanded, setExpanded] = useState(failed);
   const summary = toolSummary(tool);
+  const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
   if (tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error')
     return null;
   return (
@@ -141,34 +152,35 @@ function Tool({ tool }: { tool: ToolCall }) {
           aria-expanded={expanded}
           onClick={() => setExpanded(!expanded)}
         >
-          <span class="tool-arrow">
-            <Icon name="chevron-right" />
-          </span>
           <span class="tool-name">{tool.name}</span>
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
           <span
-            class={`tool-status ${tool.status === 'done' ? 'done' : tool.status === 'error' ? 'error' : ''}`}
-            aria-label={
-              tool.status === 'done' ? 'Complete' : tool.status === 'error' ? 'Failed' : undefined
-            }
+            class={`tool-status ${failed ? 'error' : tool.status === 'done' ? 'done' : ''}`}
+            aria-label={failed ? 'Failed' : tool.status === 'done' ? 'Complete' : undefined}
           >
-            {tool.status === 'running' ? 'running…' : tool.status === 'done' ? '✓' : '✕'}
+            {tool.status === 'running' ? 'running…' : failed ? '✕' : '✓'}
           </span>
         </button>
         {expanded && (
           <div class="tool-details open">
             <ToolArguments raw={tool.arguments || ''} />
-            {tool.guardianReviews?.map((review, index) => (
-              <div
-                class={`guardian-review guardian-${review.outcome || 'notice'}`}
-                key={`${review.outcome}-${index}`}
-              >
-                <strong>{review.outcome || 'Guardian review'}</strong>
-                {review.message && <span>{review.message}</span>}
-                {(review.command || review.path) && <code>{review.command || review.path}</code>}
-              </div>
-            ))}
-            {tool.result && (
+            {tool.guardianReviews?.map((review, index) => {
+              const outcome = String(review.outcome || 'notice').toLowerCase();
+              const denied = outcome === 'denied' || outcome === 'error';
+              const label = outcome === 'approved' ? 'approved' : denied ? 'denied' : outcome;
+              const reason =
+                outcome === 'approved' ? '' : guardianReviewReason(review.message || '', outcome);
+              return (
+                <div
+                  class={`guardian-review guardian-${denied ? 'denied' : outcome}`}
+                  key={`${outcome}-${index}`}
+                >
+                  <strong>{label}</strong>
+                  {reason && <span>{reason}</span>}
+                </div>
+              );
+            })}
+            {tool.result && !failed && (
               <pre class="tool-result">
                 <code>{tool.result}</code>
               </pre>
@@ -208,10 +220,11 @@ function Tool({ tool }: { tool: ToolCall }) {
                 </button>
               );
             })}
-            {summary && (
-              <button class="tool-copy text-action" onClick={() => void copyText(summary)}>
-                Copy details
-              </button>
+            {failureReason && (
+              <div class="tool-failure-reason" role="alert">
+                <strong>Failure</strong>
+                <pre>{failureReason}</pre>
+              </div>
             )}
           </div>
         )}
@@ -439,8 +452,11 @@ function MessageRow({
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
           >
-            ◇ {message.content || 'Context compacted'}
-            {message.lineCount ? ` · ${message.lineCount} lines` : ''}
+            <Icon name="compact" class="compaction-icon" />
+            <span>
+              {message.content || 'Context compacted'}
+              {message.lineCount ? ` · ${message.lineCount} lines` : ''}
+            </span>
           </button>
           {expanded && message.rawContent && (
             <Markdown value={message.rawContent} className="compaction-raw markdown-body" />

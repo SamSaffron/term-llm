@@ -29,8 +29,8 @@ func TestGeneratedBundleAssets(t *testing.T) {
 
 func TestProductionBundleSizeBudgets(t *testing.T) {
 	budgets := map[string]struct{ raw, gzip int }{
-		"dist/app.js":  {raw: 218_500, gzip: 65_000},
-		"dist/app.css": {raw: 136_000, gzip: 26_000},
+		"dist/app.js":  {raw: 219_900, gzip: 65_500},
+		"dist/app.css": {raw: 136_900, gzip: 26_000},
 	}
 	for name, budget := range budgets {
 		body, err := StaticAsset(name)

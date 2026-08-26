@@ -58,16 +58,6 @@
   opacity: 0.68;
 }
 
-.session-progress {
-  position: absolute;
-  top: 0.8rem;
-  right: 2.75rem;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22c55e;
-}
-
 .session-row-menu {
   z-index: 6;
 }
@@ -313,15 +303,24 @@
 }
 
 .guardian-review {
-  display: grid;
-  gap: 0.25rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
   margin-top: 0.55rem;
   color: var(--accent-amber);
   font-size: 0.78rem;
 }
 
-.guardian-review code {
-  overflow-wrap: anywhere;
+.guardian-review.guardian-approved {
+  color: var(--accent-green);
+}
+
+.guardian-review.guardian-denied {
+  color: var(--danger);
+}
+
+.guardian-review span {
+  color: var(--text-muted);
 }
 
 .streaming-markdown {

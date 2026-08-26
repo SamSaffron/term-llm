@@ -5,6 +5,7 @@ import {
   RESPONSE_EVENT_TYPES,
   ResponseProtocolError,
 } from './response';
+import { convertServerMessages } from './transcript';
 import type { ActiveRun } from './types';
 
 const run: ActiveRun = {
@@ -103,6 +104,182 @@ describe('response projection', () => {
       result: '/tmp',
       guardianReviews: [{ outcome: 'approved', message: 'safe' }],
     });
+  });
+
+  it('keeps sequential tool activity in one group until a transcript boundary', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'c1', name: 'shell' },
+      }),
+    );
+    const groupID = projection.messages[0].id;
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, { call_id: 'c1', output: '/tmp' }),
+    );
+    expect(projection.messages[0]).toMatchObject({ status: 'done', toolGroupClosed: false });
+
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 3, {
+        item: { type: 'function_call', call_id: 'c2', name: 'read_file' },
+      }),
+    );
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({ id: groupID, status: 'running' });
+    expect(projection.messages[0].tools?.map((tool) => tool.id)).toEqual(['c1', 'c2']);
+
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 4, { call_id: 'c2', output: 'contents' }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_text.delta', 5, {
+        delta: 'between batches',
+        assistant_segment_ordinal: 0,
+      }),
+    );
+    expect(projection.messages[0]).toMatchObject({ status: 'done', toolGroupClosed: true });
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 6, {
+        item: { type: 'function_call', call_id: 'c3', name: 'grep' },
+      }),
+    );
+    expect(projection.messages.map((message) => message.role)).toEqual([
+      'tool-group',
+      'assistant',
+      'tool-group',
+    ]);
+    expect(projection.messages[2].tools?.map((tool) => tool.id)).toEqual(['c3']);
+  });
+
+  it('does not reopen a closed tool-group that remains at the transcript tail', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'c1', name: 'shell' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, { call_id: 'c1', output: '/tmp' }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_text.new_segment', 3, { assistant_segment_ordinal: 1 }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 4, {
+        item: { type: 'function_call', call_id: 'c2', name: 'read_file' },
+      }),
+    );
+
+    expect(projection.messages.map((message) => message.role)).toEqual([
+      'tool-group',
+      'assistant',
+      'tool-group',
+    ]);
+    expect(projection.messages[0]).toMatchObject({
+      role: 'tool-group',
+      toolGroupClosed: true,
+    });
+    expect(projection.messages[2].tools?.map((tool) => tool.id)).toEqual(['c2']);
+  });
+
+  it('closes recovery-seeded membership without fabricating tool completion', () => {
+    let projection: ReturnType<typeof initialProjection> = {
+      ...initialProjection(run),
+      messages: [
+        {
+          id: 'recovered-tools',
+          role: 'tool-group' as const,
+          content: '',
+          created: 1,
+          responseId: 'r1',
+          status: 'done',
+          tools: [{ id: 'c1', name: 'shell', status: 'running' as const }],
+        },
+      ],
+    };
+    projection = reduceResponse(
+      projection,
+      event('response.output_text.delta', 1, {
+        delta: 'after recovery',
+        assistant_segment_ordinal: 1,
+      }),
+    );
+
+    expect(projection.messages[0]).toMatchObject({
+      toolGroupClosed: true,
+      tools: [{ id: 'c1', status: 'running' }],
+    });
+  });
+
+  it('matches durable grouping for sequential completed tool calls', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 1, {
+        item: { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 2, { call_id: 'c1', output: '/tmp' }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 3, {
+        item: { type: 'function_call', call_id: 'c2', name: 'read_file', arguments: '{}' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.tool_exec.end', 4, { call_id: 'c2', output: 'contents' }),
+    );
+
+    const durable = convertServerMessages([
+      {
+        id: 1,
+        role: 'assistant',
+        response_id: 'r1',
+        parts: [{ type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' }],
+      },
+      {
+        id: 2,
+        role: 'tool',
+        response_id: 'r1',
+        parts: [{ type: 'tool_result', call_id: 'c1', name: 'shell', output: '/tmp' }],
+      },
+      {
+        id: 3,
+        role: 'assistant',
+        response_id: 'r1',
+        parts: [{ type: 'function_call', call_id: 'c2', name: 'read_file', arguments: '{}' }],
+      },
+      {
+        id: 4,
+        role: 'tool',
+        response_id: 'r1',
+        parts: [{ type: 'tool_result', call_id: 'c2', name: 'read_file', output: 'contents' }],
+      },
+    ]);
+    const shape = (messages: typeof projection.messages) =>
+      messages.map((message) => ({
+        role: message.role,
+        tools: message.tools?.map((tool) => ({
+          id: tool.id,
+          name: tool.name,
+          status: tool.status,
+        })),
+      }));
+    expect(shape(projection.messages)).toEqual(shape(durable));
   });
 
   it('ignores duplicates and rejects sequence gaps or stale epochs for snapshot recovery', () => {

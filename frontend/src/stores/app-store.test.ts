@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
 import type { ActiveRun, Session } from '../domain/types';
-import { persistPendingIntent, saveDraft } from '../platform/storage';
+import { persistPendingIntent, readDrafts, saveDraft } from '../platform/storage';
 import { AppStore } from './app-store';
 
 const config: AppConfig = {
@@ -358,6 +358,113 @@ describe('AppStore compatibility behavior', () => {
     expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
   });
 
+  it('retires a terminal projection once its durable transcript revision is loaded', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    const projection = initialProjection({
+      responseId: 'r1',
+      sessionId: 's1',
+      epoch: 1,
+      status: 'streaming',
+      lastSequence: 3,
+      startedRev: 1,
+      reconnects: 0,
+    });
+    store.runs.value = {
+      s1: {
+        ...projection,
+        messages: [
+          {
+            id: 'r1:assistant:0',
+            role: 'assistant',
+            content: 'identical answer',
+            created: 2,
+            responseId: 'r1',
+            assistantSegmentOrdinal: 0,
+          },
+        ],
+        run: {
+          ...projection.run,
+          status: 'completed',
+          finalRev: 5,
+          durableHandoff: true,
+        },
+      },
+    };
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', title: 'Test', transcript_rev: 6 },
+      selected_transcript: {
+        bodies: {
+          rev: 5,
+          // Deliberately omit response identity: retirement is revision-based.
+          messages: [
+            {
+              id: 42,
+              sequence: 1,
+              role: 'assistant',
+              parts: [{ type: 'text', text: 'identical answer' }],
+            },
+          ],
+        },
+      },
+    }));
+    store.endpoints.sessionState = vi.fn(async () => ({ lastResponseId: 'r1' }));
+    const response = vi.fn(async () => ({}));
+    store.endpoints.response = response;
+    const internals = store as unknown as {
+      refreshSessionMessages(sessionId: string, targetRev: number): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+
+    await internals.refreshSessionMessages('s1', 5);
+
+    expect(store.runs.value.s1).toBeUndefined();
+    expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+      'identical answer',
+    ]);
+    await internals.resumeResponse('s1', 'r1');
+    expect(response).not.toHaveBeenCalled();
+  });
+
+  it('keeps the live projection when transcript bodies are older than the handoff', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), transcriptRev: 2 }];
+    const projection = initialProjection({
+      responseId: 'r1',
+      sessionId: 's1',
+      epoch: 1,
+      status: 'streaming',
+      lastSequence: 3,
+      startedRev: 1,
+      reconnects: 0,
+    });
+    store.runs.value = {
+      s1: {
+        ...projection,
+        run: {
+          ...projection.run,
+          status: 'completed',
+          finalRev: 5,
+          durableHandoff: true,
+        },
+      },
+    };
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', transcript_rev: 6 },
+      selected_transcript: { bodies: { rev: 4, messages: [] } },
+    }));
+    store.endpoints.sessionState = vi.fn(async () => ({}));
+    const internals = store as unknown as {
+      refreshSessionMessages(sessionId: string, targetRev: number): Promise<void>;
+    };
+
+    await internals.refreshSessionMessages('s1', 5);
+
+    expect(store.runs.value.s1?.run.responseId).toBe('r1');
+    expect(store.sessions.value[0].transcriptRev).toBe(2);
+  });
+
   it('rolls back an optimistic message when the response was never accepted', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -376,6 +483,59 @@ describe('AppStore compatibility behavior', () => {
       expect.objectContaining({ role: 'error', content: 'invalid request' }),
     ]);
     expect(store.prompt.value).toBe('never submitted');
+  });
+
+  it('sends interjection images even when navigation occurs before acceptance', async () => {
+    const store = new AppStore(config);
+    const other = { ...session(), id: 's2', title: 'Other' };
+    store.sessions.value = [session(), other];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.prompt.value = 'inspect this image';
+    store.attachments.value = [
+      {
+        id: 'image-1',
+        name: 'example.png',
+        type: 'image/png',
+        dataURL: 'data:image/png;base64,aW1hZ2U=',
+        previewURL: 'data:image/png;base64,aW1hZ2U=',
+      },
+    ];
+    const accepted = deferred<Record<string, unknown>>();
+    store.endpoints.interrupt = vi.fn(() => accepted.promise);
+
+    const request = store.interject(store.prompt.value);
+    await vi.waitFor(() => expect(store.endpoints.interrupt).toHaveBeenCalledOnce());
+    (store as unknown as { persistCurrentDraft(): void }).persistCurrentDraft();
+    store.activeSessionId.value = 's2';
+    store.prompt.value = 'draft in another conversation';
+    store.attachments.value = [];
+    accepted.resolve({});
+    await request;
+
+    expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        message: 'inspect this image',
+        delivery: 'steer',
+        content: [
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U=',
+            filename: 'example.png',
+          },
+          { type: 'input_text', text: 'inspect this image' },
+        ],
+      }),
+      expect.any(String),
+    );
+    expect(store.prompt.value).toBe('draft in another conversation');
+    expect(readDrafts(localStorage, store.keys.draftMessages)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ sessionId: 's1' })]),
+    );
+    expect(store.interjections.value).toEqual([
+      expect.objectContaining({ sessionId: 's1', content: 'inspect this image', state: 'pending' }),
+    ]);
   });
 
   it('clears uncommitted persisted intents after an authoritative idle reload', async () => {

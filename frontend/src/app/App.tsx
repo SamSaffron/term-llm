@@ -91,6 +91,7 @@ export function App({ store }: { store: AppStore }) {
         <div
           class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planOpen.value ? 'plan-open' : ''}`}
           id="appShell"
+          style={{ '--diff-sidebar-user-width': `${store.diff.value.width}px` }}
           aria-hidden={!store.startupDone.value || undefined}
         >
           <Sidebar />

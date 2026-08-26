@@ -25,6 +25,15 @@ function sessionRelativeTime(value: number): string {
     : `${month} ${date.getFullYear()}`;
 }
 
+function sessionBucket(value: number): 'Today' | 'Yesterday' | 'This week' | 'Older' {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (value >= today) return 'Today';
+  if (value >= today - 86_400_000) return 'Yesterday';
+  if (value >= today - 6 * 86_400_000) return 'This week';
+  return 'Older';
+}
+
 /** Flip a dropdown menu above its trigger when it would overflow the viewport. */
 function useMenuFlip(open: boolean) {
   const menu = useRef<HTMLDivElement>(null);
@@ -244,10 +253,44 @@ function SessionRow({ session }: { session: Session }) {
           {messageCount} {messageCount === 1 ? 'message' : 'messages'} ·{' '}
           {sessionRelativeTime(activityAt)}
         </span>
-        {running && <span class="session-progress" aria-label="Response in progress" />}
       </button>
       <SessionMenu session={session} onHide={hide} />
     </div>
+  );
+}
+
+function SessionDateGroups({
+  sessions,
+  nested = false,
+}: {
+  sessions: Session[];
+  nested?: boolean;
+}) {
+  const labels = ['Today', 'Yesterday', 'This week', 'Older'] as const;
+  return (
+    <>
+      {labels.map((label) => {
+        const entries = sessions.filter(
+          (session) => sessionBucket(session.lastMessageAt || session.created) === label,
+        );
+        if (!entries.length) return null;
+        return nested ? (
+          <section class="session-date-group" key={label}>
+            <h4>{label}</h4>
+            {entries.map((session) => (
+              <SessionRow key={session.id} session={session} />
+            ))}
+          </section>
+        ) : (
+          <section class="session-group" key={label}>
+            <h3>{label}</h3>
+            {entries.map((session) => (
+              <SessionRow key={session.id} session={session} />
+            ))}
+          </section>
+        );
+      })}
+    </>
   );
 }
 
@@ -292,9 +335,7 @@ function NoProjectGroup({ sessions }: { sessions: Session[] }) {
       </h3>
       {open ? (
         <div class="session-group-list is-opening">
-          {sessions.map((session) => (
-            <SessionRow key={session.id} session={session} />
-          ))}
+          <SessionDateGroups sessions={sessions} nested />
           {store.noProjectCursor.value && (
             <PaginationSentinel load={() => store.loadMoreNoProject()} />
           )}
@@ -338,7 +379,19 @@ function ProjectGroup({ project }: { project: Project }) {
     setOpen(value);
     writeJSON(store.storage, store.keys.projectExpansion, { ...expansion, [project.id]: value });
   };
-  const sessions = project.sessions || [];
+  const listedSessionIDs = new Set((project.sessions || []).map((session) => session.id));
+  const sessions = [
+    ...(project.sessions || []).map(
+      (session) => store.sessions.value.find((entry) => entry.id === session.id) || session,
+    ),
+    ...store.sessions.value.filter(
+      (session) => session.projectId === project.id && !listedSessionIDs.has(session.id),
+    ),
+  ].sort(
+    (left, right) =>
+      Number(right.pinned) - Number(left.pinned) ||
+      (right.lastMessageAt || right.created) - (left.lastMessageAt || left.created),
+  );
   const regular = sessions.filter((session) => !session.pinned);
   const activeSession =
     store.activeSession.value?.projectId === project.id && !store.activeSession.value.pinned
@@ -426,12 +479,7 @@ function ProjectGroup({ project }: { project: Project }) {
       </div>
       {open ? (
         <div class="project-session-list is-opening">
-          {regular.map((session) => (
-            <SessionRow
-              key={session.id}
-              session={store.sessions.value.find((entry) => entry.id === session.id) || session}
-            />
-          ))}
+          <SessionDateGroups sessions={regular} nested />
           {project.has_more && (
             <PaginationSentinel load={() => store.loadMoreProject(project.id)} />
           )}
@@ -652,15 +700,12 @@ export function Sidebar() {
                     (store.projectsEnabled.value ? (
                       <NoProjectGroup sessions={regular} />
                     ) : (
-                      <section class="session-group session-ungrouped">
-                        <h3>Chats</h3>
-                        {regular.map((session) => (
-                          <SessionRow key={session.id} session={session} />
-                        ))}
+                      <div class="flat-session-date-groups">
+                        <SessionDateGroups sessions={regular} />
                         {store.noProjectCursor.value && (
                           <PaginationSentinel load={() => store.loadMoreNoProject()} />
                         )}
-                      </section>
+                      </div>
                     ))}
                 </>
               )}

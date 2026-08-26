@@ -25,8 +25,11 @@ export interface ServerMessage {
   role?: string;
   created_at?: number | string;
   response_id?: string;
+  responseId?: string;
   client_message_id?: string;
+  clientMessageId?: string;
   assistant_segment_ordinal?: number;
+  assistantSegmentOrdinal?: number;
   parts?: ServerPart[];
   compaction_tail?: boolean;
   transcriptEmptyBody?: boolean;
@@ -56,14 +59,14 @@ function sourceRowID(message: ServerMessage): string | number | null {
   return value == null || value === '' ? null : value;
 }
 function withSource(entry: Message, message: ServerMessage): Message {
-  if (message.response_id) entry.responseId = text(message.response_id);
-  if (message.client_message_id) entry.clientMessageId = text(message.client_message_id);
+  const responseID = message.response_id ?? message.responseId;
+  const clientMessageID = message.client_message_id ?? message.clientMessageId;
+  const segmentOrdinal = message.assistant_segment_ordinal ?? message.assistantSegmentOrdinal;
+  if (responseID) entry.responseId = text(responseID);
+  if (clientMessageID) entry.clientMessageId = text(clientMessageID);
   if (message.interrupt_state) entry.interruptState = text(message.interrupt_state).toLowerCase();
-  if (entry.role === 'assistant' && Number.isFinite(Number(message.assistant_segment_ordinal)))
-    entry.assistantSegmentOrdinal = Math.max(
-      0,
-      Math.trunc(Number(message.assistant_segment_ordinal)),
-    );
+  if (entry.role === 'assistant' && Number.isFinite(Number(segmentOrdinal)))
+    entry.assistantSegmentOrdinal = Math.max(0, Math.trunc(Number(segmentOrdinal)));
   const row = sourceRowID(message);
   if (row != null)
     entry.durableSourceRowIds = [
@@ -670,32 +673,79 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
   const clientIDs = new Set(durable.map((message) => message.clientMessageId).filter(Boolean));
   const responseSegments = new Set(
     durable
-      .filter((message) => message.responseId)
+      .filter((message) => message.role === 'assistant' && message.responseId)
       .map((message) => `${message.responseId}:${message.assistantSegmentOrdinal || 0}`),
   );
   const toolIDs = new Set(durable.flatMap((message) => message.tools || []).map((tool) => tool.id));
-  return [
-    ...durable,
-    ...projected.filter((message) => {
-      if (
-        message.role === 'user' &&
-        message.clientMessageId &&
-        clientIDs.has(message.clientMessageId)
-      )
-        return false;
-      if (
-        message.role === 'assistant' &&
-        message.responseId &&
-        responseSegments.has(`${message.responseId}:${message.assistantSegmentOrdinal || 0}`)
-      )
-        return false;
-      if (
-        message.role === 'tool-group' &&
-        message.tools?.length &&
-        message.tools.every((tool) => toolIDs.has(tool.id))
-      )
-        return false;
-      return true;
-    }),
-  ];
+  const pending = projected.filter((message) => {
+    if (
+      message.role === 'user' &&
+      message.clientMessageId &&
+      clientIDs.has(message.clientMessageId)
+    )
+      return false;
+    if (
+      message.role === 'assistant' &&
+      message.responseId &&
+      responseSegments.has(`${message.responseId}:${message.assistantSegmentOrdinal || 0}`)
+    )
+      return false;
+    if (
+      message.role === 'tool-group' &&
+      message.tools?.length &&
+      message.tools.every((tool) => toolIDs.has(tool.id))
+    )
+      return false;
+    return true;
+  });
+  const output = [...durable];
+  for (const message of pending) {
+    const previous = output.at(-1);
+    if (
+      previous?.role === 'tool-group' &&
+      previous.toolGroupClosed !== true &&
+      message.role === 'tool-group' &&
+      previous.responseId === message.responseId &&
+      output.length === durable.length
+    ) {
+      const tools = [...(previous.tools || [])];
+      for (const incoming of message.tools || []) {
+        const index = tools.findIndex((tool) => tool.id === incoming.id);
+        if (index < 0) {
+          tools.push(incoming);
+          continue;
+        }
+        const defined = Object.fromEntries(
+          Object.entries(incoming).filter(([, value]) => value !== undefined),
+        ) as Partial<ToolCall>;
+        const status =
+          incoming.status === undefined ||
+          (tools[index].status !== 'running' && incoming.status === 'running')
+            ? tools[index].status
+            : incoming.status;
+        tools[index] = { ...tools[index], ...defined, status };
+      }
+      output[output.length - 1] = {
+        ...previous,
+        ...message,
+        id: previous.id,
+        created: previous.created,
+        durableRowId: previous.durableRowId,
+        durableSourceRowIds: [
+          ...new Set([
+            ...((previous.durableSourceRowIds as Array<string | number> | undefined) || []),
+            ...((message.durableSourceRowIds as Array<string | number> | undefined) || []),
+          ]),
+        ],
+        tools,
+      };
+      continue;
+    }
+    if (message.role === 'tool-group' && message.tools?.length) {
+      const tools = message.tools.filter((tool) => !toolIDs.has(tool.id));
+      if (!tools.length) continue;
+      output.push(tools.length === message.tools.length ? message : { ...message, tools });
+    } else output.push(message);
+  }
+  return output;
 }

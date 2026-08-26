@@ -10,7 +10,7 @@
   align-items: center;
   gap: 0.15rem;
   min-width: 0;
-  padding-inline: var(--sidebar-row-gutter);
+  padding-inline: 0;
 }
 
 .project-group-label {
@@ -28,7 +28,7 @@
   justify-content: flex-start;
   gap: 0.35rem;
   height: 2.15rem;
-  padding: 0.48rem var(--sidebar-row-padding-inline);
+  padding: 0.48rem 0.75rem;
   border: 0;
   border-radius: 0.4rem;
   background: transparent;
@@ -80,12 +80,29 @@
   min-height: 2rem;
   border-radius: 0.4rem;
   cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.project-group-header:hover .project-group-action,
+.project-group-header:focus-within .project-group-action {
+  opacity: 1;
 }
 
 .project-group-action:hover,
 .project-group-action:focus-visible {
   color: var(--text);
   background: var(--surface-2);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .project-group-action,
+  .project-group-chevron {
+    opacity: 1;
+  }
 }
 
 .project-group.unavailable .project-group-toggle {

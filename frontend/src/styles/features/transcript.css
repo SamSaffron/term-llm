@@ -278,6 +278,9 @@
 }
 
 .compaction-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   background: transparent;
@@ -286,6 +289,12 @@
   font: inherit;
   font-size: 0.82rem;
   cursor: pointer;
+}
+
+.compaction-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
 }
 
 .compaction-toggle:hover {
@@ -427,8 +436,9 @@
   opacity: 1;
 }
 
-@media (hover: none) {
-  .code-copy-btn {
+@media (hover: none), (pointer: coarse) {
+  .code-copy-btn,
+  .math-copy-btn {
     opacity: 0.72;
   }
 }
@@ -740,7 +750,7 @@
   color: inherit;
   padding: 0.65rem 0.75rem;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.6rem;
   cursor: pointer;
   text-align: left;
@@ -837,7 +847,7 @@
 .tool-argument {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  align-items: start;
+  align-items: baseline;
   gap: 0.6rem;
   min-width: 0;
   line-height: 1.45;
@@ -899,6 +909,26 @@
   font-size: 0.83rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.tool-failure-reason {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+.tool-details .tool-failure-reason pre {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
 }
 
 .tool-group-card {

@@ -23,6 +23,16 @@
   text-transform: uppercase;
 }
 
+.session-date-group h4 {
+  margin: 0;
+  padding: 0.42rem 0.75rem 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .session-group h3.collapsible-session-group-heading {
   padding: 0;
 }
@@ -232,8 +242,9 @@
   opacity: 1;
 }
 
-@media (hover: none) and (pointer: coarse) {
-  .session-menu-trigger {
+@media (hover: none), (pointer: coarse) {
+  .session-menu-trigger,
+  .session-group-chevron {
     opacity: 1;
   }
 }

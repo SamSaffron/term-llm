@@ -2537,16 +2537,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 
 		if s.sessionMgr != nil {
 			if rt, ok := s.sessionMgr.Get(sessionID); ok {
-				rt.mu.Lock()
-				if rt.sessionMeta != nil {
-					rt.sessionMeta.Name = sess.Name
-					rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
-					rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
-					rt.sessionMeta.TitleSource = sess.TitleSource
-					rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
-					rt.sessionMeta.TitleBasisMsgSeq = sess.TitleBasisMsgSeq
-				}
-				rt.mu.Unlock()
+				trySyncRuntimeSessionMetadata(rt, sess)
 			}
 		}
 	}
@@ -2575,6 +2566,29 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		"pinned":                sess.Pinned,
 		"created_at":            sess.CreatedAt.UnixMilli(),
 	})
+}
+
+// trySyncRuntimeSessionMetadata refreshes the runtime cache only when it is idle.
+// An active stream owns rt.mu for its full run, so metadata endpoints must treat
+// the already-updated store as authoritative rather than waiting on that lock.
+func trySyncRuntimeSessionMetadata(rt *serveRuntime, sess *session.Session) bool {
+	if rt == nil || sess == nil || !rt.mu.TryLock() {
+		return false
+	}
+	defer rt.mu.Unlock()
+	if rt.sessionMeta == nil {
+		return true
+	}
+	rt.sessionMeta.Name = sess.Name
+	rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
+	rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
+	rt.sessionMeta.TitleSource = sess.TitleSource
+	rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
+	rt.sessionMeta.TitleBasisMsgSeq = sess.TitleBasisMsgSeq
+	rt.sessionMeta.Archived = sess.Archived
+	rt.sessionMeta.Pinned = sess.Pinned
+	rt.sessionMeta.Origin = sess.Origin
+	return true
 }
 
 func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -2633,18 +2647,7 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok {
-			rt.mu.Lock()
-			if rt.sessionMeta != nil {
-				rt.sessionMeta.Name = sess.Name
-				rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
-				rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
-				rt.sessionMeta.TitleSource = sess.TitleSource
-				rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
-				rt.sessionMeta.Archived = sess.Archived
-				rt.sessionMeta.Pinned = sess.Pinned
-				rt.sessionMeta.Origin = sess.Origin
-			}
-			rt.mu.Unlock()
+			trySyncRuntimeSessionMetadata(rt, sess)
 		}
 	}
 

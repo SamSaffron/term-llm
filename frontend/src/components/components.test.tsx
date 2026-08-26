@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/preact
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
+import { App } from '../app/App';
 import { AppStore } from '../stores/app-store';
 import { Transcript } from './Transcript';
 import { Composer } from './Composer';
@@ -136,6 +137,29 @@ describe('Preact-owned chat surfaces', () => {
     expect(toggle.querySelector('.diff-toggle-stat-del')).toHaveTextContent('−2');
     expect(toggle.querySelector('.diff-toggle-badge')).not.toHaveTextContent('4');
     expect(toggle.closest('.header-controls-row')).not.toBeNull();
+  });
+
+  it('resizes the grid column with the changes panel handle', () => {
+    const store = createStore();
+    store.startupDone.value = true;
+    store.bootstrap = vi.fn(async () => undefined);
+    store.diff.value = { ...store.diff.value, open: true, width: 555 };
+    const { container } = render(<App store={store} />);
+    const shell = container.querySelector<HTMLElement>('#appShell')!;
+    const sidebar = container.querySelector<HTMLElement>('#diffSidebar')!;
+    const handle = screen.getByRole('separator', { name: 'Resize changes panel' });
+
+    expect(shell.style.getPropertyValue('--diff-sidebar-user-width')).toBe('555px');
+    expect(sidebar.style.width).toBe('');
+
+    fireEvent.pointerDown(handle, { clientX: 600, pointerId: 1 });
+    expect(shell).toHaveClass('diff-resizing');
+    fireEvent.pointerMove(window, { clientX: 500, pointerId: 1 });
+    expect(store.diff.value.width).toBe(655);
+    expect(shell.style.getPropertyValue('--diff-sidebar-user-width')).toBe('655px');
+    expect(sidebar.style.width).toBe('');
+    fireEvent.pointerUp(window, { clientX: 500, pointerId: 1 });
+    expect(shell).not.toHaveClass('diff-resizing');
   });
 
   it('matches the legacy diff scope popover and syntax-highlights code rows', async () => {
@@ -315,6 +339,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(argument?.querySelector('dd')).toHaveTextContent('x');
     expect(screen.queryByText(/"path": "x"/)).not.toBeInTheDocument();
     expect(screen.getByText('ok')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy details' })).not.toBeInTheDocument();
   });
 
   it('formats tool parameters as readable typed rows and preserves partial argument fallbacks', async () => {
@@ -413,6 +438,110 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(group);
     expect(group).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('path: main.go')).toBeInTheDocument();
+  });
+
+  it('uses a search icon for grep and omits redundant per-tool chevrons', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'grep',
+            name: 'grep',
+            arguments: '{"pattern":"needle","path":"frontend"}',
+            status: 'done',
+            result: 'match',
+          },
+          {
+            id: 'read',
+            name: 'read_file',
+            arguments: '{"path":"frontend/index.ts"}',
+            status: 'done',
+            result: 'content',
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /2 tool calls · grep, read_file/ }));
+    expect(container.querySelector('.tool-entry-icon')).toHaveTextContent('🔍');
+    expect(container.querySelector('.tool-toggle .tool-arrow')).toBeNull();
+    expect(container.querySelector('.tool-group-toggle .tool-arrow')).not.toBeNull();
+  });
+
+  it('renders concise Guardian outcomes and places failure reasons last', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'approved-shell',
+            name: 'shell',
+            arguments: '{"description":"Safe command"}',
+            status: 'done',
+            result: 'ok',
+            guardianReviews: [
+              {
+                outcome: 'approved',
+                message: 'guardian: approved (low risk; clearly user-authorized)',
+                command: 'do-not-repeat-this-command',
+              },
+            ],
+          },
+          {
+            id: 'denied-edit',
+            name: 'edit_file',
+            arguments: '{"path":"restricted.txt"}',
+            status: 'error',
+            result: 'write access denied for restricted.txt',
+            guardianReviews: [
+              {
+                outcome: 'denied',
+                message: 'guardian: denied: outside approved workspace',
+                command: 'do-not-repeat-denied-command',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /2 tool calls/ }));
+    const shellToggle = [...container.querySelectorAll<HTMLButtonElement>('.tool-toggle')].find(
+      (button) => button.querySelector('.tool-name')?.textContent === 'shell',
+    )!;
+    await userEvent.click(shellToggle);
+
+    const approved = container.querySelector('.guardian-approved')!;
+    const denied = container.querySelector('.guardian-denied')!;
+    expect(approved).toHaveTextContent(/^approved$/);
+    expect(denied.querySelector('strong')).toHaveTextContent('denied');
+    expect(denied.querySelector('span')).toHaveTextContent('outside approved workspace');
+    expect(container).not.toHaveTextContent('do-not-repeat-this-command');
+    expect(container).not.toHaveTextContent('do-not-repeat-denied-command');
+
+    const failure = container.querySelector('.tool-failure-reason')!;
+    expect(failure).toHaveTextContent('Failure');
+    expect(failure).toHaveTextContent('write access denied for restricted.txt');
+    expect(failure.parentElement?.lastElementChild).toBe(failure);
   });
 
   it('collapses reloaded tool groups with failures without labeling the group as an error', () => {
@@ -634,6 +763,30 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.send).toHaveBeenCalledOnce();
   });
 
+  it('shrinks the composer after sending a multiline prompt', async () => {
+    const store = createStore();
+    store.send = vi.fn(async () => {
+      store.prompt.value = '';
+    });
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+    Object.defineProperty(input, 'scrollHeight', {
+      configurable: true,
+      get: () => (input.value ? 260 : 36),
+    });
+
+    fireEvent.input(input, { target: { value: 'one\ntwo\nthree\nfour\nfive' } });
+    expect(input.style.height).toBe('200px');
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(input.style.height).toBe('auto'));
+    expect(store.send).toHaveBeenCalledOnce();
+  });
+
   it('offers slash and mention completions through an accessible listbox', async () => {
     const store = createStore();
     render(
@@ -764,6 +917,62 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('dialog', { name: 'Assign project' })).toBeInTheDocument();
   });
 
+  it('shows only the leading activity dot while a sidebar conversation is streaming', () => {
+    const store = createStore();
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(container.querySelector('.session-row')).toHaveClass('is-active');
+    expect(container.querySelector('.session-progress')).not.toBeInTheDocument();
+  });
+
+  it('adds a newly created project conversation to the sidebar immediately', () => {
+    const store = createStore();
+    const existing = { ...store.sessions.value[0], projectId: 'p1', projectName: 'Alpha' };
+    store.sessions.value = [existing];
+    store.projectsEnabled.value = true;
+    store.projects.value = [{ id: 'p1', name: 'Alpha', sessions: [existing], has_more: false }];
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Brand new conversation' }),
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      store.sessions.value = [
+        {
+          ...existing,
+          id: 'draft_new',
+          title: 'Brand new conversation',
+          lastMessageAt: Date.now(),
+          messages: [{ id: 'pending_1', role: 'user', content: 'Hello', created: Date.now() }],
+        },
+        ...store.sessions.value,
+      ];
+    });
+
+    expect(screen.getByRole('button', { name: 'Brand new conversation' })).toBeVisible();
+  });
+
   it('always shows sidebar message counts and relative activity instead of title previews', () => {
     vi.useFakeTimers();
     try {
@@ -806,6 +1015,67 @@ describe('Preact-owned chat surfaces', () => {
       expect(
         screen.queryByText('DSA Compliance HTML Mock with details that repeat the title'),
       ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps non-empty date sections inside project mode groups', () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date(2026, 7, 26, 12).getTime();
+      vi.setSystemTime(now);
+      const store = createStore();
+      const base = { ...store.sessions.value[0], projectId: 'p1', projectName: 'Alpha' };
+      const projectSessions = [
+        { ...base, lastMessageAt: now - 60 * 60 * 1000 },
+        {
+          ...base,
+          id: 's2',
+          title: 'Yesterday chat',
+          lastMessageAt: new Date(2026, 7, 25, 12).getTime(),
+        },
+        {
+          ...base,
+          id: 's3',
+          title: 'Week chat',
+          lastMessageAt: new Date(2026, 7, 23, 12).getTime(),
+        },
+        {
+          ...base,
+          id: 's4',
+          title: 'Older chat',
+          lastMessageAt: new Date(2026, 4, 22, 12).getTime(),
+        },
+      ];
+      const ungrouped = {
+        ...base,
+        id: 's5',
+        title: 'Ungrouped yesterday',
+        projectId: undefined,
+        projectName: undefined,
+        lastMessageAt: new Date(2026, 7, 25, 10).getTime(),
+      };
+      store.sessions.value = [...projectSessions, ungrouped];
+      store.projectsEnabled.value = true;
+      store.projects.value = [{ id: 'p1', name: 'Alpha', sessions: projectSessions }];
+
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+
+      expect(
+        [...container.querySelectorAll('[data-project-id="p1"] h4')].map((heading) =>
+          heading.textContent?.trim(),
+        ),
+      ).toEqual(['Today', 'Yesterday', 'This week', 'Older']);
+      expect(
+        [...container.querySelectorAll('.session-ungrouped h4')].map((heading) =>
+          heading.textContent?.trim(),
+        ),
+      ).toEqual(['Yesterday']);
     } finally {
       vi.useRealTimers();
     }

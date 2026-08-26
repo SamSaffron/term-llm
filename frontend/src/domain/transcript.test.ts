@@ -127,6 +127,24 @@ describe('transcript domain', () => {
     });
   });
 
+  it('normalizes camel-case response identity from recovery payloads', () => {
+    const messages = convertServerMessages([
+      {
+        id: 1,
+        sequence: 0,
+        role: 'assistant',
+        responseId: 'r1',
+        assistantSegmentOrdinal: 2,
+        parts: [{ type: 'text', text: 'answer' }],
+      },
+    ]);
+    expect(messages[0]).toMatchObject({
+      responseId: 'r1',
+      assistantSegmentOrdinal: 2,
+      content: 'answer',
+    });
+  });
+
   it('hands projected rows off atomically to matching durable identities', () => {
     const projected: Message[] = [
       { id: 'p1', role: 'user', content: 'question', created: 1, clientMessageId: 'c1' },
@@ -145,5 +163,93 @@ describe('transcript domain', () => {
       durableRowId: index + 1,
     }));
     expect(mergeDurableProjection(durable, projected)).toEqual(durable);
+  });
+
+  it('coalesces partially durable tool activity without duplicating completed calls', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-tools',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        status: 'done',
+        tools: [
+          {
+            id: 'c1',
+            name: 'shell',
+            status: 'done',
+            result: '/tmp',
+            guardianReviews: [{ outcome: 'approved', message: 'safe' }],
+          },
+        ],
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'projected-tools',
+        role: 'tool-group',
+        content: '',
+        created: 2,
+        responseId: 'r1',
+        status: 'running',
+        tools: [
+          { id: 'c1', name: 'shell', status: 'running', guardianReviews: undefined },
+          { id: 'c2', name: 'read_file', status: 'running' },
+        ],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'durable-tools', status: 'running' });
+    expect(merged[0].tools?.map((tool) => tool.id)).toEqual(['c1', 'c2']);
+    expect(merged[0].tools?.[0]).toMatchObject({
+      status: 'done',
+      guardianReviews: [{ outcome: 'approved', message: 'safe' }],
+    });
+  });
+
+  it('does not reconcile tool groups across a structural boundary', () => {
+    const durable: Message[] = [
+      {
+        id: 'durable-tools',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        responseId: 'r1',
+        tools: [{ id: 'c1', name: 'shell', status: 'done' }],
+      },
+      {
+        id: 'durable-answer',
+        role: 'assistant',
+        content: 'between batches',
+        created: 2,
+        responseId: 'r1',
+        assistantSegmentOrdinal: 1,
+      },
+    ];
+    const projected: Message[] = [
+      {
+        id: 'projected-tools',
+        role: 'tool-group',
+        content: '',
+        created: 3,
+        responseId: 'r1',
+        tools: [
+          { id: 'c1', name: 'shell', status: 'done' },
+          { id: 'c2', name: 'read_file', status: 'running' },
+        ],
+      },
+    ];
+
+    const merged = mergeDurableProjection(durable, projected);
+    expect(merged.map((message) => message.role)).toEqual([
+      'tool-group',
+      'assistant',
+      'tool-group',
+    ]);
+    expect(merged[0].tools?.map((tool) => tool.id)).toEqual(['c1']);
+    expect(merged[2].tools?.map((tool) => tool.id)).toEqual(['c2']);
   });
 });

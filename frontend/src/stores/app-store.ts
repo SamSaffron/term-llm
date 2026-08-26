@@ -309,6 +309,9 @@ export class AppStore {
 
   private readonly streamAborts = new Map<string, AbortController>();
   private readonly postAborts = new Map<string, AbortController>();
+  // A response with a confirmed durable handoff must never be projected again.
+  // Late snapshot/replay requests may still finish after transcript reconciliation.
+  private readonly retiredResponses = new Set<string>();
   private readonly skillRunAborts = new Map<string, AbortController>();
   private readonly skillRunCursors = new Map<
     string,
@@ -1158,6 +1161,7 @@ export class AppStore {
   }
 
   async streamResponse(responseId: string, sessionId: string, after: number): Promise<void> {
+    if (this.retiredResponses.has(responseId)) return;
     this.streamAborts.get(sessionId)?.abort();
     const abort = new AbortController();
     this.streamAborts.set(sessionId, abort);
@@ -1302,12 +1306,35 @@ export class AppStore {
       if (!source || !bodies) return;
       const incoming = this.sessionFrom({
         ...source,
+        // The bodies revision is the generation of the messages being installed.
+        // Prefer it over summary metadata, which may have advanced independently.
+        transcript_rev: bodies.rev ?? source.transcript_rev ?? source.rev,
         messages: listFrom(bodies, 'messages', 'items'),
       });
-      if (targetRev && incoming.transcriptRev && incoming.transcriptRev < targetRev) return;
-      this.sessions.value = this.sessions.value.map((session) =>
-        session.id === sessionId ? this.mergeSession(session, incoming, true) : session,
+      const incomingRev = incoming.transcriptRev || 0;
+      // Never combine a terminal projection with transcript bodies whose
+      // generation cannot prove that they contain the durable handoff.
+      if (targetRev && incomingRev < targetRev) return;
+      const projection = this.runs.peek()[sessionId];
+      const finalRev = projection?.run.finalRev || 0;
+      const retireProjection = Boolean(
+        projection &&
+        ['completed', 'cancelled', 'failed'].includes(projection.run.status) &&
+        projection.run.durableHandoff === true &&
+        finalRev > 0 &&
+        incomingRev >= finalRev,
       );
+      batch(() => {
+        this.sessions.value = this.sessions.value.map((session) =>
+          session.id === sessionId ? this.mergeSession(session, incoming, true) : session,
+        );
+        if (retireProjection && projection) {
+          this.retiredResponses.add(projection.run.responseId);
+          const runs = { ...this.runs.peek() };
+          if (runs[sessionId]?.run.responseId === projection.run.responseId) delete runs[sessionId];
+          this.runs.value = runs;
+        }
+      });
       this.retireIntent(sessionId);
       const state = await stateRequest;
       if (state) {
@@ -1324,8 +1351,12 @@ export class AppStore {
   }
 
   private async resumeResponse(sessionId: string, responseId: string): Promise<void> {
+    if (this.retiredResponses.has(responseId)) return;
     try {
       const snapshot = await this.endpoints.response(responseId);
+      // A transcript refresh can complete while the snapshot request is in
+      // flight. Never let that late snapshot resurrect a retired projection.
+      if (this.retiredResponses.has(responseId)) return;
       const recovery = recordValue(snapshot.recovery) || {};
       const existing =
         this.runs.value[sessionId] ||
@@ -1416,24 +1447,64 @@ export class AppStore {
   async interject(content: string): Promise<void> {
     const session = this.activeSession.value;
     const value = content.trim();
-    if (!session || !value) return;
+    const attachments = [...this.attachments.value];
+    if (!session || (!value && !attachments.length)) return;
     const id = uuid();
     const entry: PendingInterjection = {
       id,
       sessionId: session.id,
-      content: value,
+      content: value || attachments.map((attachment) => attachment.name).join(', '),
       state: 'sending',
     };
     this.interjections.value = [...this.interjections.value, entry];
     try {
+      const attachmentParts = await Promise.all(
+        attachments.map((attachment) => this.attachmentInput(attachment)),
+      );
+      const contentParts = [
+        ...attachmentParts,
+        ...(value ? [{ type: 'input_text', text: value }] : []),
+      ];
       await this.endpoints.interrupt(
         session.id,
-        { message: value, interjection_id: id, client_message_id: id, delivery: 'steer' },
+        {
+          message: value,
+          ...(attachmentParts.length ? { content: contentParts } : {}),
+          interjection_id: id,
+          client_message_id: id,
+          delivery: 'steer',
+        },
         id,
       );
       this.interjections.value = this.interjections.value.map((candidate) =>
         candidate.id === id ? { ...candidate, state: 'pending' } : candidate,
       );
+      const draft = readDrafts(this.storage, this.keys.draftMessages).find(
+        (candidate) => candidate.sessionId === session.id,
+      );
+      const submittedIDs = new Set(
+        attachments.map((attachment) => attachment.id).filter((id): id is string => Boolean(id)),
+      );
+      if (draft?.content.trim() === value)
+        saveDraft(this.storage, this.keys.draftMessages, {
+          ...draft,
+          content: '',
+          attachments: (draft.attachments || []).filter(
+            (attachment) => !attachment.id || !submittedIDs.has(attachment.id),
+          ),
+          updated: Date.now(),
+        });
+      if (this.activeSessionId.peek() === session.id)
+        batch(() => {
+          if (this.prompt.peek().trim() === value) this.prompt.value = '';
+          const submitted = new Set(attachments);
+          this.attachments.value = this.attachments
+            .peek()
+            .filter(
+              (attachment) =>
+                !submitted.has(attachment) && (!attachment.id || !submittedIDs.has(attachment.id)),
+            );
+        });
     } catch (error) {
       this.interjections.value = this.interjections.value.map((candidate) =>
         candidate.id === id ? { ...candidate, state: 'failed' } : candidate,

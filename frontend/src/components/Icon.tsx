@@ -7,6 +7,7 @@ type IconName =
   | 'check'
   | 'chevron-right'
   | 'close'
+  | 'compact'
   | 'copy'
   | 'diff'
   | 'edit'
@@ -48,6 +49,15 @@ const paths: Record<IconName, JSX.Element> = {
     <>
       <path d="M6 6l12 12" />
       <path d="M18 6 6 18" />
+    </>
+  ),
+  compact: (
+    <>
+      <path d="M12 3.2V9" />
+      <path d="m8.9 5.9 3.1 3.1 3.1-3.1" />
+      <path d="M4.5 12h15" />
+      <path d="M12 20.8V15" />
+      <path d="m8.9 18.1 3.1-3.1 3.1 3.1" />
     </>
   ),
   copy: (

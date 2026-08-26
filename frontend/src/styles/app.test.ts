@@ -43,6 +43,28 @@ describe('header styles', () => {
   });
 });
 
+describe('touch affordances', () => {
+  it('keeps hover-revealed controls visible without a precise hovering pointer', () => {
+    const touchRules = [
+      ...appCSS.matchAll(/@media \(hover: none\), \(pointer: coarse\) \{([\s\S]*?)\n\}/g),
+    ]
+      .map((match) => match[1])
+      .join('\n');
+
+    for (const selector of [
+      '.project-group-action',
+      '.project-group-chevron',
+      '.session-menu-trigger',
+      '.session-group-chevron',
+      '.code-copy-btn',
+      '.math-copy-btn',
+      '.diff-comment-affordance',
+    ]) {
+      expect(touchRules).toContain(selector);
+    }
+  });
+});
+
 describe('syntax theme', () => {
   it('defines contrasting dark and light palettes', () => {
     expect(appCSS).toContain('--syntax-text: #c9d1d9');
