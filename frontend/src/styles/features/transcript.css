@@ -362,6 +362,7 @@
 }
 
 .markdown-body pre {
+  position: relative;
   max-width: 100%;
   box-sizing: border-box;
   margin: 0.6em 0;
@@ -401,8 +402,14 @@
   z-index: 1;
 }
 
-.markdown-body pre:hover .code-copy-btn {
+.markdown-body pre:hover .code-copy-btn,
+.code-copy-btn:focus-visible {
   opacity: 1;
+}
+
+.code-copy-btn svg {
+  width: 15px;
+  height: 15px;
 }
 
 .code-copy-btn:hover {
@@ -413,6 +420,17 @@
 .code-copy-btn.copied {
   color: var(--accent-green);
   opacity: 1;
+}
+
+.code-copy-btn.copy-failed {
+  color: var(--danger);
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .code-copy-btn {
+    opacity: 0.72;
+  }
 }
 
 .turn-action-panel {

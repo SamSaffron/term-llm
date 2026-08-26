@@ -23,6 +23,62 @@
   text-transform: uppercase;
 }
 
+.session-group h3.collapsible-session-group-heading {
+  padding: 0;
+}
+
+.session-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem 0.35rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.session-group-toggle:hover {
+  color: var(--text);
+}
+
+.session-group-toggle:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--border-strong);
+  outline-offset: -2px;
+}
+
+.session-group-chevron {
+  display: inline-flex;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.session-group-toggle[aria-expanded='false'] .session-group-chevron,
+.session-group-toggle:hover .session-group-chevron,
+.session-group-toggle:focus-visible .session-group-chevron {
+  opacity: 1;
+}
+
+.session-group-chevron svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  transition: transform 0.16s ease;
+}
+
+.session-group-toggle[aria-expanded='true'] .session-group-chevron svg {
+  transform: rotate(90deg);
+}
+
+.session-group-list.is-opening {
+  animation: project-list-reveal 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 .session-btn {
   width: calc(100% - (2 * var(--sidebar-row-gutter)));
   margin: 0 var(--sidebar-row-gutter);

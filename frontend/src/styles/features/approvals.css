@@ -112,20 +112,43 @@
   font-size: 0.8rem;
 }
 
-.mcp-modal-feedback:empty {
-  min-height: 0;
-  padding-top: 0.25rem;
+.mcp-error-panel {
+  margin: 0.4rem 0.75rem 0.75rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface-2));
 }
 
-.mcp-modal-feedback .modal-error {
+.mcp-error-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  width: 100%;
-  min-height: 0;
-  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 22%, var(--border));
   color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.mcp-error-details {
+  max-height: min(9rem, 24vh);
+  overflow: auto;
+  padding: 0.6rem 0.7rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mcp-error-entry + .mcp-error-entry {
+  margin-top: 0.65rem;
+}
+
+.mcp-error-entry strong {
+  color: var(--text);
 }
 
 .mcp-retry {
@@ -280,19 +303,11 @@
   color: var(--text-muted);
 }
 
-.mcp-server-error,
 .mcp-server-warning {
+  color: var(--accent-amber);
   font-size: 0.78rem;
   line-height: 1.35;
   word-break: break-word;
-}
-
-.mcp-server-error {
-  color: var(--danger);
-}
-
-.mcp-server-warning {
-  color: var(--accent-amber);
 }
 
 .mcp-switch {

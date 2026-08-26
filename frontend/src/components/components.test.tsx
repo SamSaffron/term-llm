@@ -13,6 +13,7 @@ import { DiffSidebar } from './Panels';
 import { ChipPicker } from './ChipPicker';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
+import { readJSON } from '../platform/storage';
 
 const config: AppConfig = {
   prefix: '/ui',
@@ -772,15 +773,68 @@ describe('Preact-owned chat surfaces', () => {
     store.noProjectCursor.value = 'no-project-cursor';
     store.loadMoreProject = vi.fn(async () => undefined);
     store.loadMoreNoProject = vi.fn(async () => undefined);
+    const view = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    const { container } = view;
+    expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'No project' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Project' })).not.toBeInTheDocument();
+    expect(container.querySelectorAll('.project-pagination-sentinel')).toHaveLength(2);
+    expect(container.querySelector('.sidebar-load-more')).toBeNull();
+    await waitFor(() => expect(store.loadMoreProject).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(store.loadMoreNoProject).toHaveBeenCalled());
+
+    const noProject = screen.getByRole('button', { name: 'No project' });
+    expect(noProject).toHaveAttribute('aria-expanded', 'true');
+    await userEvent.click(noProject);
+    expect(noProject).toHaveAttribute('aria-expanded', 'false');
+    expect(container.querySelectorAll('.session-ungrouped .session-row')).toHaveLength(1);
+    expect(container.querySelector('.session-ungrouped .session-row')).toHaveTextContent('Test');
+    expect(container.querySelectorAll('.project-pagination-sentinel')).toHaveLength(1);
+    expect(
+      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[
+        '__no_project__'
+      ],
+    ).toBe(false);
+
+    view.unmount();
+    render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('button', { name: 'No project' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('keeps the active conversation visible when its project is collapsed', async () => {
+    const store = createStore();
+    const active = { ...store.sessions.value[0], projectId: 'p1' };
+    const other = { ...active, id: 's2', title: 'Other conversation' };
+    store.sessions.value = [active, other];
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', sessions: [active, other], has_more: false },
+    ];
+
     const { container } = render(
       <StoreContext.Provider value={store}>
         <Sidebar />
       </StoreContext.Provider>,
     );
-    expect(container.querySelectorAll('.project-pagination-sentinel')).toHaveLength(2);
-    expect(container.querySelector('.sidebar-load-more')).toBeNull();
-    await waitFor(() => expect(store.loadMoreProject).toHaveBeenCalledWith('p1'));
-    await waitFor(() => expect(store.loadMoreNoProject).toHaveBeenCalled());
+    const project = screen.getByRole('button', { name: 'Alpha' });
+    await userEvent.click(project);
+
+    expect(project).toHaveAttribute('aria-expanded', 'false');
+    const group = container.querySelector('[data-project-id="p1"]')!;
+    expect(group.querySelectorAll('.session-row')).toHaveLength(1);
+    expect(group).toHaveTextContent('Test');
+    expect(group).not.toHaveTextContent('Other conversation');
   });
 
   it('debounces project mentions with session/worktree context and keeps agent matches', async () => {
@@ -888,6 +942,7 @@ describe('Preact-owned chat surfaces', () => {
       error: '',
     };
     store.toggleMCP = vi.fn(async () => undefined);
+    store.loadMCP = vi.fn(async () => undefined);
 
     render(
       <StoreContext.Provider value={store}>
@@ -896,15 +951,24 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     expect(screen.getByRole('dialog', { name: 'MCP servers' })).toHaveClass('mcp-modal');
+    expect(screen.getByText('Turn on servers to add their tools.')).toBeVisible();
+    expect(screen.queryByText(/Changes save immediately/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Tools load when enabled')).not.toBeInTheDocument();
     expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
     expect(screen.getByText('12 tools · 4 active, 8 deferred')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('MCP server error');
+    expect(screen.getByRole('region', { name: 'MCP server error details' })).toHaveClass(
+      'mcp-error-details',
+    );
     expect(screen.getByText('Missing DISCOURSE_API_KEY')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(store.loadMCP).toHaveBeenCalledOnce();
     expect(screen.getByRole('checkbox', { name: 'Disable github' })).toBeChecked();
 
     const filter = screen.getByRole('searchbox', { name: 'Filter MCP servers' });
     await userEvent.type(filter, 'git');
     expect(screen.getByText('github')).toBeVisible();
-    expect(screen.queryByText('discourse')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Enable discourse' })).not.toBeInTheDocument();
     fireEvent.input(filter, { target: { value: 'missing-name' } });
     expect(screen.getByText('No matching servers')).toBeVisible();
     expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
@@ -1098,6 +1162,38 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /Hidden/ }));
     await vi.waitFor(() => expect(lookup).toHaveBeenLastCalledWith('/home/me', true));
     expect(screen.getByRole('option', { name: /.config/ })).toBeInTheDocument();
+  });
+
+  it('restores code-block copy controls with transient feedback', async () => {
+    vi.useFakeTimers();
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      render(<Markdown value={'```sh\necho "hello"\n```'} />);
+      const button = screen.getByRole('button', { name: 'Copy code' });
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+      expect(writeText).toHaveBeenCalledWith('echo "hello"\n');
+      expect(button).toHaveClass('copied');
+      expect(button).toHaveAttribute('aria-label', 'Copied');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      expect(button).not.toHaveClass('copied');
+      expect(button).toHaveAttribute('aria-label', 'Copy code');
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+      else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not add code-copy controls while markdown is streaming', () => {
+    render(<Markdown value={'```sh\necho "hello"\n```'} streaming />);
+    expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
   });
 
   it('throttles streaming markdown updates at the adaptive cadence', async () => {

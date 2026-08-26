@@ -454,6 +454,8 @@ function MCP() {
     : state.servers;
   const enabledCount = state.enabled.length;
   const disabled = state.loading || Boolean(state.pending) || store.streaming.value;
+  const serverErrors = state.servers.filter((server) => server.error);
+  const hasErrors = !state.loading && (Boolean(state.error) || serverErrors.length > 0);
   const subtitle = (server: (typeof state.servers)[number]): string => {
     const status = server.status.toLocaleLowerCase();
     if (!server.configured) return 'Not found in your MCP configuration';
@@ -468,14 +470,12 @@ function MCP() {
     }
     if (status === 'starting') return 'Starting server…';
     if (server.error) return 'Failed to start';
-    return 'Tools load when enabled';
+    return '';
   };
   return (
     <Overlay title="MCP servers" className="mcp-modal">
       <div class="mcp-modal-intro">
-        <p class="mcp-modal-subtitle">
-          Choose which configured servers can add tools to this chat. Changes save immediately.
-        </p>
+        <p class="mcp-modal-subtitle">Turn on servers to add their tools.</p>
         {!state.loading && state.servers.length > 0 && (
           <span
             class="mcp-server-summary"
@@ -552,11 +552,9 @@ function MCP() {
                       {server.configured ? server.status : 'missing'}
                     </span>
                   </span>
-                  <span class="mcp-server-subtitle">{subtitle(server)}</span>
-                  {(server.error || server.refreshWarning) && (
-                    <span class={server.error ? 'mcp-server-error' : 'mcp-server-warning'}>
-                      {server.error || server.refreshWarning}
-                    </span>
+                  {subtitle(server) && <span class="mcp-server-subtitle">{subtitle(server)}</span>}
+                  {server.refreshWarning && (
+                    <span class="mcp-server-warning">{server.refreshWarning}</span>
                   )}
                 </span>
                 <span class="mcp-switch">
@@ -577,20 +575,40 @@ function MCP() {
           })
         )}
       </div>
-      <div class="mcp-modal-feedback" aria-live="polite">
-        {store.streaming.value && !state.error && (
-          <span>Servers can’t be changed while a response is running.</span>
-        )}
-        {state.pending && !state.error && <span>Saving {state.pending}…</span>}
-        {state.error && (
-          <span class="modal-error" role="alert">
-            {state.error}
+      {hasErrors && (
+        <section class="mcp-error-panel" role="alert" aria-labelledby="mcp-error-title">
+          <div class="mcp-error-header">
+            <strong id="mcp-error-title">MCP server error</strong>
             <button class="mcp-retry" type="button" onClick={() => void store.loadMCP()}>
               Retry
             </button>
-          </span>
-        )}
-      </div>
+          </div>
+          <div
+            class="mcp-error-details"
+            role="region"
+            aria-label="MCP server error details"
+            tabIndex={0}
+          >
+            {state.error
+              ? state.error
+              : serverErrors.map((server) => (
+                  <div class="mcp-error-entry" key={server.name}>
+                    <strong>{server.name}: </strong>
+                    {server.error}
+                  </div>
+                ))}
+          </div>
+        </section>
+      )}
+      {(store.streaming.value || state.pending) && !state.error && (
+        <div class="mcp-modal-feedback" aria-live="polite">
+          {store.streaming.value ? (
+            <span>Servers can’t be changed while a response is running.</span>
+          ) : (
+            <span>Saving {state.pending}…</span>
+          )}
+        </div>
+      )}
     </Overlay>
   );
 }

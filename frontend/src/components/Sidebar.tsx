@@ -241,6 +241,70 @@ function SessionRow({ session }: { session: Session }) {
   );
 }
 
+function NoProjectGroup({ sessions }: { sessions: Session[] }) {
+  const store = useStore();
+  const expansionKey = '__no_project__';
+  const [open, setOpen] = useState(
+    () =>
+      readJSON<Record<string, boolean>>(store.storage, store.keys.projectExpansion, {})[
+        expansionKey
+      ] !== false,
+  );
+  const toggle = () => {
+    const value = !open;
+    setOpen(value);
+    const expansion = readJSON<Record<string, boolean>>(
+      store.storage,
+      store.keys.projectExpansion,
+      {},
+    );
+    writeJSON(store.storage, store.keys.projectExpansion, {
+      ...expansion,
+      [expansionKey]: value,
+    });
+  };
+  const activeSession = sessions.find((session) => session.id === store.activeSessionId.value);
+  return (
+    <section class="session-group session-ungrouped">
+      <h3 class="collapsible-session-group-heading">
+        <button
+          class="session-group-toggle"
+          type="button"
+          aria-expanded={open}
+          title={`${open ? 'Collapse' : 'Expand'} No project`}
+          onClick={toggle}
+        >
+          <span>No project</span>
+          <span class="session-group-chevron" aria-hidden="true">
+            <Icon name="chevron-right" />
+          </span>
+        </button>
+      </h3>
+      {open ? (
+        <div class="session-group-list is-opening">
+          {sessions.map((session) => (
+            <SessionRow key={session.id} session={session} />
+          ))}
+          {store.noProjectCursor.value && (
+            <PaginationSentinel load={() => store.loadMoreNoProject()} />
+          )}
+        </div>
+      ) : (
+        activeSession && (
+          <div class="session-group-collapsed-active">
+            <SessionRow
+              session={
+                store.sessions.value.find((session) => session.id === activeSession.id) ||
+                activeSession
+              }
+            />
+          </div>
+        )
+      )}
+    </section>
+  );
+}
+
 function ProjectGroup({ project }: { project: Project }) {
   const store = useStore();
   const expansion = readJSON<Record<string, boolean>>(
@@ -267,6 +331,10 @@ function ProjectGroup({ project }: { project: Project }) {
   const sessions = project.sessions || [];
   const pinned = sessions.filter((session) => session.pinned);
   const regular = sessions.filter((session) => !session.pinned);
+  const activeSession =
+    store.activeSession.value?.projectId === project.id
+      ? store.activeSession.value
+      : sessions.find((session) => session.id === store.activeSessionId.value);
   return (
     <section
       class={`project-group ${project.available === false ? 'unavailable' : ''}`}
@@ -347,7 +415,7 @@ function ProjectGroup({ project }: { project: Project }) {
           </div>
         )}
       </div>
-      {open && (
+      {open ? (
         <div class="project-session-list is-opening">
           {pinned.map((session) => (
             <SessionRow
@@ -365,6 +433,12 @@ function ProjectGroup({ project }: { project: Project }) {
             <PaginationSentinel load={() => store.loadMoreProject(project.id)} />
           )}
         </div>
+      ) : (
+        activeSession && (
+          <div class="project-session-list">
+            <SessionRow session={activeSession} />
+          </div>
+        )
       )}
     </section>
   );
@@ -483,18 +557,6 @@ export function Sidebar() {
                 <Icon class="sidebar-action-icon" name="edit" />
                 <span>New chat</span>
               </button>
-              {store.projectsEnabled.value && (
-                <button
-                  class="new-project-btn"
-                  type="button"
-                  onClick={() => {
-                    store.projectTarget.value = null;
-                    store.modal.value = 'project';
-                  }}
-                >
-                  <Icon name="add" /> <span>Project</span>
-                </button>
-              )}
               {store.showWidgets.value && store.widgets.value.length > 0 && (
                 <button
                   class="widgets-sidebar-btn"
@@ -559,9 +621,14 @@ export function Sidebar() {
                 </section>
               ) : (
                 <>
-                  {store.projects.value.map((project) => (
-                    <ProjectGroup key={project.id} project={project} />
-                  ))}
+                  {store.projects.value.length > 0 && (
+                    <section class="session-group sidebar-project-groups">
+                      <h3>Projects</h3>
+                      {store.projects.value.map((project) => (
+                        <ProjectGroup key={project.id} project={project} />
+                      ))}
+                    </section>
+                  )}
                   {pinned.length > 0 && (
                     <section class="session-group">
                       <h3>Pinned</h3>
@@ -570,17 +637,20 @@ export function Sidebar() {
                       ))}
                     </section>
                   )}
-                  {regular.length > 0 && (
-                    <section class="session-group session-ungrouped">
-                      <h3>{store.projectsEnabled.value ? 'No project' : 'Chats'}</h3>
-                      {regular.map((session) => (
-                        <SessionRow key={session.id} session={session} />
-                      ))}
-                      {store.noProjectCursor.value && (
-                        <PaginationSentinel load={() => store.loadMoreNoProject()} />
-                      )}
-                    </section>
-                  )}
+                  {regular.length > 0 &&
+                    (store.projectsEnabled.value ? (
+                      <NoProjectGroup sessions={regular} />
+                    ) : (
+                      <section class="session-group session-ungrouped">
+                        <h3>Chats</h3>
+                        {regular.map((session) => (
+                          <SessionRow key={session.id} session={session} />
+                        ))}
+                        {store.noProjectCursor.value && (
+                          <PaginationSentinel load={() => store.loadMoreNoProject()} />
+                        )}
+                      </section>
+                    ))}
                 </>
               )}
             </div>
