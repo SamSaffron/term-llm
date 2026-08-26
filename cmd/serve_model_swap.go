@@ -230,11 +230,12 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	restoreHistory = copyLLMMessageSlice(restoreHistory)
 	previousHistory := llm.FilterConversationMessages(copyLLMMessageSlice(restoreHistory))
 
+	agentName := strings.TrimSpace(previous.agentName)
+	if agentName == "" {
+		agentName = s.requestedRuntimeAgent(ctx, sessionID, "")
+	}
 	create := func(ctx context.Context) (*serveRuntime, error) {
-		if s.runtimeFactory == nil {
-			return nil, fmt.Errorf("runtime factory is unavailable for model swap")
-		}
-		return s.runtimeFactory(ctx, plan.requestedProvider, plan.requestedModel)
+		return s.createRequestRuntime(ctx, plan.requestedProvider, plan.requestedModel, agentName)
 	}
 	candidate, retainedPrevious, commit, rollback, err := s.sessionMgr.BeginSwap(ctx, sessionID, create)
 	if err != nil {

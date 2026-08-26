@@ -8867,15 +8867,21 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	})
 	defer manager.Close()
 	srv := &serveServer{
+		cfg:        serveServerConfig{agentNames: []string{"developer"}},
 		cfgRef:     &config.Config{DefaultProvider: "default"},
 		sessionMgr: manager,
 		store:      store,
 		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
 			return newRuntime(providerName, modelName), nil
 		},
+		agentRuntimeFactory: func(ctx context.Context, providerName string, modelName string, agentName string) (*serveRuntime, error) {
+			runtime := newRuntime(providerName, modelName)
+			runtime.agentName = agentName
+			return runtime, nil
+		},
 	}
 
-	code, resp1 := doResponsesFirstParty(t, srv, `{"input":"hello","client_message_id":"swap-initial","provider":"old","model":"old-model"}`, "swap-naive")
+	code, resp1 := doResponsesFirstParty(t, srv, `{"input":"hello","client_message_id":"swap-initial","provider":"old","model":"old-model","agent":"developer"}`, "swap-naive")
 	if code != http.StatusOK {
 		t.Fatalf("first status = %d, want 200", code)
 	}
@@ -8933,6 +8939,13 @@ func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T)
 	}
 	if sess.ProviderKey != "new" || sess.Model != "new-model" {
 		t.Fatalf("session runtime = %s/%s, want new/new-model", sess.ProviderKey, sess.Model)
+	}
+	if sess.Agent != "developer" {
+		t.Fatalf("session agent = %q after model swap, want developer", sess.Agent)
+	}
+	currentRuntime, ok := manager.Get("swap-naive")
+	if !ok || currentRuntime == nil || currentRuntime.agentName != "developer" {
+		t.Fatalf("replacement runtime lost agent tether: current=%#v ok=%v", currentRuntime, ok)
 	}
 	storedMessages, err := store.GetMessages(context.Background(), "swap-naive", 0, 0)
 	if err != nil {
