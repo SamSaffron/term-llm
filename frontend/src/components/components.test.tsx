@@ -66,6 +66,7 @@ const createStore = () => {
   ];
   store.activeSessionId.value = 's1';
   store.draftActive.value = false;
+  store.endpoints.diffComments = vi.fn(async () => ({ comments: [], transcript_rev: 0 }));
   return store;
 };
 
@@ -254,6 +255,60 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
+  it('leaves a per-line trail for sent and queued inline comments', async () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'last_turn',
+      historyComments: [
+        {
+          id: 'sent',
+          path: 'main.go',
+          side: 'new',
+          line: 1,
+          body: 'Sent instruction',
+          sessionId: 's1',
+          scope: 'last_turn',
+        },
+      ],
+      comments: [
+        {
+          id: 'queued',
+          path: 'main.go',
+          side: 'new',
+          line: 1,
+          body: 'Queued instruction',
+          sessionId: 's1',
+          scope: 'last_turn',
+        },
+      ],
+      files: [
+        {
+          path: 'main.go',
+          status: 'modify',
+          additions: 1,
+          deletions: 0,
+          expanded: true,
+          lines: [{ kind: 'add', content: 'changed', newLine: 1 }],
+        },
+      ],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    const marker = screen.getByRole('button', { name: 'Show 2 inline comments for line 1' });
+    expect(marker).toHaveClass('has-comments', 'queued');
+    await userEvent.click(marker);
+    expect(screen.getByText('Sent instruction')).toBeInTheDocument();
+    expect(screen.getByText('Queued instruction')).toBeInTheDocument();
+    expect(screen.getByText('Queued — not sent')).toBeInTheDocument();
+  });
+
   it('ports the tiny legacy diff actions and transient copied state', async () => {
     vi.useFakeTimers();
     const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
@@ -395,6 +450,113 @@ describe('Preact-owned chat surfaces', () => {
     expect(document.querySelector('.tool-arguments-fallback')).toHaveTextContent(
       '{"path":"notes.txt","content":',
     );
+  });
+
+  it('keeps a collapsed tool group closed when another running call arrives', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'tools',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'read',
+            name: 'read_file',
+            arguments: '{"path":"main.go"}',
+            status: 'done',
+            result: 'ok',
+          },
+          {
+            id: 'grep',
+            name: 'grep',
+            arguments: '{"pattern":"TODO"}',
+            status: 'done',
+            result: 'match',
+          },
+        ],
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const group = screen.getByRole('button', { name: /2 tool calls/ });
+    await userEvent.click(group);
+    await userEvent.click(group);
+    expect(group).toHaveAttribute('aria-expanded', 'false');
+
+    act(() => {
+      const session = store.sessions.value[0];
+      const toolGroup = session.messages[0];
+      store.sessions.value = [
+        {
+          ...session,
+          messages: [
+            {
+              ...toolGroup,
+              tools: [
+                ...(toolGroup.tools || []),
+                {
+                  id: 'shell',
+                  name: 'shell',
+                  arguments: '{"command":"npm test"}',
+                  status: 'running',
+                },
+              ],
+            },
+          ],
+        },
+      ];
+    });
+
+    expect(screen.getByRole('button', { name: /3 tool calls/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('stays pinned to the bottom as rendered transcript content grows', () => {
+    const store = createStore();
+    let resize: ResizeObserverCallback | undefined;
+    class TestResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resize = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver);
+    try {
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      const viewport = container.querySelector<HTMLElement>('#chatScroll')!;
+      let scrollHeight = 1_000;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 300 },
+        scrollHeight: { configurable: true, get: () => scrollHeight },
+      });
+      viewport.scrollTop = 700;
+
+      scrollHeight = 1_400;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_400);
+
+      viewport.scrollTop = 500;
+      fireEvent.scroll(viewport);
+      scrollHeight = 1_600;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(500);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('groups completed tool calls compactly and omits redundant role labels', async () => {

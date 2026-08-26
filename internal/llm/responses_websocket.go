@@ -17,7 +17,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const responsesWebSocketBetaHeader = "responses_websockets=2026-02-06"
+const (
+	responsesWebSocketBetaHeader               = "responses_websockets=2026-02-06"
+	defaultResponsesWebSocketIdleTimeout       = 5 * time.Minute
+	defaultResponsesWebSocketFirstEventTimeout = 15 * time.Second
+	defaultResponsesWebSocketParkedTimeout     = 30 * time.Second
+)
+
+type responsesWebSocketFirstEventTimeoutError struct {
+	timeout time.Duration
+}
+
+func (e *responsesWebSocketFirstEventTimeoutError) Error() string {
+	return fmt.Sprintf("Responses WebSocket first response event timeout after %s", e.timeout)
+}
 
 type responsesWebSocketFrameTypeError struct {
 	messageType int
@@ -28,28 +41,44 @@ func (e *responsesWebSocketFrameTypeError) Error() string {
 }
 
 type responsesWebSocketConnection struct {
-	conn *websocket.Conn
+	conn  *websocket.Conn
+	lease *responsesWebSocketLease
 
-	readMu         sync.Mutex
-	readQueue      [][]byte
-	readErr        error
-	readReady      chan struct{}
-	responseActive bool
-	idleTimeout    time.Duration
-	idleTimer      *time.Timer
-	idleGeneration uint64
+	readMu                sync.Mutex
+	readQueue             [][]byte
+	readErr               error
+	readReady             chan struct{}
+	responseActive        bool
+	responseEventReceived bool
+	idleTimeout           time.Duration
+	idleTimer             *time.Timer
+	idleGeneration        uint64
+	firstEventTimeout     time.Duration
+	firstEventTimer       *time.Timer
+	firstEventGeneration  uint64
+	parkedTimeout         time.Duration
+	parkedTimer           *time.Timer
+	parkedGeneration      uint64
 }
 
-func newResponsesWebSocketConnection(conn *websocket.Conn, idleTimeout time.Duration) *responsesWebSocketConnection {
+func newResponsesWebSocketConnection(conn *websocket.Conn, lease *responsesWebSocketLease, idleTimeout, firstEventTimeout, parkedTimeout time.Duration) *responsesWebSocketConnection {
 	if idleTimeout == 0 {
-		idleTimeout = 5 * time.Minute
+		idleTimeout = defaultResponsesWebSocketIdleTimeout
+	}
+	if firstEventTimeout == 0 {
+		firstEventTimeout = defaultResponsesWebSocketFirstEventTimeout
+	}
+	if parkedTimeout == 0 {
+		parkedTimeout = defaultResponsesWebSocketParkedTimeout
 	}
 	ws := &responsesWebSocketConnection{
-		conn:        conn,
-		readReady:   make(chan struct{}, 1),
-		idleTimeout: idleTimeout,
+		conn:              conn,
+		lease:             lease,
+		readReady:         make(chan struct{}, 1),
+		idleTimeout:       idleTimeout,
+		firstEventTimeout: firstEventTimeout,
+		parkedTimeout:     parkedTimeout,
 	}
-
 	pingHandler := conn.PingHandler()
 	conn.SetPingHandler(func(appData string) error {
 		ws.noteReadActivity()
@@ -59,6 +88,17 @@ func newResponsesWebSocketConnection(conn *websocket.Conn, idleTimeout time.Dura
 		ws.noteReadActivity()
 		return nil
 	})
+	if !lease.attach(ws) {
+		ws.readErr = errors.New("Responses WebSocket lease was released before connection attachment")
+		_ = conn.Close()
+		return ws
+	}
+	// Bound the dial-to-start window as well as the post-response parked window.
+	// The response goroutine disarms this timer in startResponse; if it is never
+	// scheduled or is abandoned, the pool reservation cannot leak indefinitely.
+	ws.readMu.Lock()
+	ws.armParkedTimerLocked()
+	ws.readMu.Unlock()
 
 	go ws.readPump()
 	return ws
@@ -88,6 +128,8 @@ func (c *responsesWebSocketConnection) readPump() {
 			_ = c.conn.Close()
 			return
 		}
+		c.responseEventReceived = true
+		c.disarmFirstEventTimerLocked()
 		c.armIdleTimerLocked()
 		c.readQueue = append(c.readQueue, data)
 		c.readMu.Unlock()
@@ -95,8 +137,25 @@ func (c *responsesWebSocketConnection) readPump() {
 	}
 }
 
+func (c *responsesWebSocketConnection) reserveResponse() bool {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if c.readErr != nil || !c.lease.activate() {
+		return false
+	}
+	// Refresh the bounded handoff window. startResponse disarms it; a caller that
+	// obtains a reusable socket but never starts the stream cannot pin a slot.
+	c.armParkedTimerLocked()
+	return true
+}
+
 func (c *responsesWebSocketConnection) startResponse() error {
 	c.readMu.Lock()
+	c.disarmParkedTimerLocked()
+	if !c.lease.activate() {
+		c.readMu.Unlock()
+		return errors.New("Responses WebSocket connection was evicted from the pool")
+	}
 	if c.readErr != nil {
 		err := c.readErr
 		c.readMu.Unlock()
@@ -115,7 +174,9 @@ func (c *responsesWebSocketConnection) startResponse() error {
 		return err
 	}
 	c.responseActive = true
+	c.responseEventReceived = false
 	c.armIdleTimerLocked()
+	c.armFirstEventTimerLocked()
 	c.readMu.Unlock()
 	return nil
 }
@@ -128,6 +189,9 @@ func (c *responsesWebSocketConnection) finishResponse() {
 	}
 	c.responseActive = false
 	c.disarmIdleTimerLocked()
+	c.disarmFirstEventTimerLocked()
+	c.armParkedTimerLocked()
+	c.lease.park()
 	stale := len(c.readQueue) != 0
 	if stale {
 		c.readQueue = nil
@@ -175,12 +239,69 @@ func (c *responsesWebSocketConnection) disarmIdleTimerLocked() {
 	}
 }
 
+func (c *responsesWebSocketConnection) armFirstEventTimerLocked() {
+	c.firstEventGeneration++
+	generation := c.firstEventGeneration
+	if c.firstEventTimer != nil {
+		c.firstEventTimer.Stop()
+	}
+	c.firstEventTimer = time.AfterFunc(c.firstEventTimeout, func() {
+		c.readMu.Lock()
+		if !c.responseActive || c.responseEventReceived || c.readErr != nil || c.firstEventGeneration != generation {
+			c.readMu.Unlock()
+			return
+		}
+		c.failReadingLocked(&responsesWebSocketFirstEventTimeoutError{timeout: c.firstEventTimeout})
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+	})
+}
+
+func (c *responsesWebSocketConnection) disarmFirstEventTimerLocked() {
+	c.firstEventGeneration++
+	if c.firstEventTimer != nil {
+		c.firstEventTimer.Stop()
+		c.firstEventTimer = nil
+	}
+}
+
+func (c *responsesWebSocketConnection) armParkedTimerLocked() {
+	c.parkedGeneration++
+	generation := c.parkedGeneration
+	if c.parkedTimer != nil {
+		c.parkedTimer.Stop()
+	}
+	c.parkedTimer = time.AfterFunc(c.parkedTimeout, func() {
+		c.readMu.Lock()
+		if c.responseActive || c.readErr != nil || c.parkedGeneration != generation {
+			c.readMu.Unlock()
+			return
+		}
+		c.failReadingLocked(fmt.Errorf("Responses WebSocket parked connection timeout after %s", c.parkedTimeout))
+		c.readMu.Unlock()
+		c.signalReadReady()
+		_ = c.conn.Close()
+	})
+}
+
+func (c *responsesWebSocketConnection) disarmParkedTimerLocked() {
+	c.parkedGeneration++
+	if c.parkedTimer != nil {
+		c.parkedTimer.Stop()
+		c.parkedTimer = nil
+	}
+}
+
 func (c *responsesWebSocketConnection) failReadingLocked(err error) {
 	if c.readErr == nil {
 		c.readErr = err
 	}
 	c.responseActive = false
 	c.disarmIdleTimerLocked()
+	c.disarmFirstEventTimerLocked()
+	c.disarmParkedTimerLocked()
+	c.lease.release()
 }
 
 func (c *responsesWebSocketConnection) finishReading(err error) {
@@ -231,8 +352,12 @@ func (c *responsesWebSocketConnection) healthy() bool {
 }
 
 func (c *responsesWebSocketConnection) close() error {
+	return c.closeWithError(errors.New("Responses WebSocket connection closed"))
+}
+
+func (c *responsesWebSocketConnection) closeWithError(err error) error {
 	c.readMu.Lock()
-	c.failReadingLocked(errors.New("Responses WebSocket connection closed"))
+	c.failReadingLocked(err)
 	c.readMu.Unlock()
 	c.signalReadReady()
 	return c.conn.Close()
@@ -362,6 +487,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer c.wsMu.Unlock()
 		if err := ctx.Err(); err != nil {
+			c.discardWebSocketLocked()
 			return err
 		}
 		if err := conn.startResponse(); err != nil {
@@ -874,7 +1000,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	}
 	betaHeader = composeBetaHeader(betaHeader, responsesWebSocketBetaHeader)
 	if c.wsConn != nil {
-		if c.wsConn.healthy() && c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader {
+		if c.wsConn.healthy() && c.wsConnSessionID == req.SessionID && c.wsConnBetaHeader == betaHeader && c.wsConn.reserveResponse() {
 			return c.wsConn, true, nil
 		}
 		// SessionID and feature betas are WebSocket handshake state. A read
@@ -903,6 +1029,21 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 	// WebSocket transport and request-scoped feature betas are additive.
 	header.Set("OpenAI-Beta", betaHeader)
 
+	lease, err := sharedResponsesWebSocketPool.acquire(c.websocketAdmissionKey())
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() {
+		if lease != nil {
+			lease.release()
+		}
+	}()
+	adoptConnection := func(conn *websocket.Conn) *responsesWebSocketConnection {
+		ws := newResponsesWebSocketConnection(conn, lease, c.WebSocketIdleTimeout, c.WebSocketFirstEventTimeout, c.WebSocketParkedTimeout)
+		lease = nil
+		return ws
+	}
+
 	connectTimeout := c.WebSocketConnectTimeout
 	if connectTimeout == 0 {
 		connectTimeout = 30 * time.Second
@@ -930,7 +1071,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 					defer retryCancel()
 					conn, retryResp, retryErr := dialOnce(retryCtx, headerWithFreshAuth(header, c))
 					if retryErr == nil {
-						c.wsConn = newResponsesWebSocketConnection(conn, c.WebSocketIdleTimeout)
+						c.wsConn = adoptConnection(conn)
 						c.wsConnSessionID = req.SessionID
 						c.wsConnBetaHeader = betaHeader
 						return c.wsConn, false, nil
@@ -949,7 +1090,7 @@ func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequ
 		}
 		return nil, false, fmt.Errorf("connect Responses WebSocket: %w", err)
 	}
-	c.wsConn = newResponsesWebSocketConnection(conn, c.WebSocketIdleTimeout)
+	c.wsConn = adoptConnection(conn)
 	c.wsConnSessionID = req.SessionID
 	c.wsConnBetaHeader = betaHeader
 	return c.wsConn, false, nil

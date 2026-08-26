@@ -170,78 +170,126 @@ func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredential
 	if client == nil {
 		return errors.New("missing Grok OAuth client")
 	}
-	requestedAccess := creds.AccessToken
-	requestedRefresh := creds.RefreshToken
-	return withGrokCredentialsLock(func(path string) error {
+
+	requested := *creds
+	base := requested
+	hadStored := false
+	needsRefresh := true
+	if err := withGrokCredentialsLock(func(path string) error {
 		stored, err := readGrokCredentials(path)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("reload Grok credentials: %w", err)
 		}
 		if err == nil {
-			accessChanged := stored.AccessToken != requestedAccess
-			if stored.RefreshToken != requestedRefresh || accessChanged || stored.ExpiresAt != creds.ExpiresAt {
-				*creds = *stored
+			hadStored = true
+			accessChanged := stored.AccessToken != requested.AccessToken
+			// Refresh and commit against the complete generation actually on disk,
+			// including account identity.
+			base = *stored
+			if (force && accessChanged) || (!force && !base.IsExpired()) {
+				needsRefresh = false
+				*creds = base
 			}
-			// During a forced 401 recovery, only a genuinely different access
-			// token proves that another process already replaced the failed token.
-			if force && accessChanged {
+		} else if !force && !base.IsExpired() {
+			needsRefresh = false
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !needsRefresh {
+		return nil
+	}
+	if base.RefreshToken == "" {
+		return errors.New("no Grok refresh token available")
+	}
+
+	// Token exchange is provider I/O, not metadata work; never hold the shared
+	// credential lock while it is in flight.
+	token, refreshErr := client.RefreshToken(ctx, base.RefreshToken)
+	if refreshErr != nil {
+		return reconcileGrokRefreshFailure(creds, &base, requested.AccessToken, force, refreshErr)
+	}
+	refreshToken := base.RefreshToken
+	if token.RefreshToken != "" {
+		refreshToken = token.RefreshToken
+	}
+	expiresAt, err := oauth.GrokExpiryUnix(time.Now().Unix(), token.ExpiresIn)
+	if err != nil {
+		return err
+	}
+
+	// Persist a rotated refresh token immediately, before remote account
+	// verification, so a transient verification failure cannot strand it.
+	recovery := &GrokCredentials{
+		AccessToken:  base.AccessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    time.Now().Unix(),
+		AccountID:    base.AccountID,
+	}
+	checkpointed := false
+	if err := withGrokCredentialsLock(func(path string) error {
+		stored, readErr := readGrokCredentials(path)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return fmt.Errorf("reload Grok credentials: %w", readErr)
+		}
+		if readErr == nil && !sameGrokCredentialGeneration(stored, &base) {
+			// Another independent refresh may already have checkpointed the same
+			// rotation. Join only at the durable checkpoint; account verification
+			// still proceeds independently and no caller waits for its lifecycle.
+			if stored.AccessToken == base.AccessToken && stored.RefreshToken == refreshToken && stored.AccountID == base.AccountID && stored.IsExpired() {
+				recovery = stored
+				checkpointed = true
 				return nil
 			}
-			if !force && !creds.IsExpired() {
+			*creds = *stored
+			if grokGenerationSatisfiesRefresh(stored, requested.AccessToken, force) {
 				return nil
 			}
+			return errors.New("Grok credentials changed during refresh but still require refresh")
 		}
-		if !force && !creds.IsExpired() {
-			return nil
+		if os.IsNotExist(readErr) && hadStored {
+			return errors.New("Grok credentials were cleared during refresh")
 		}
-		if creds.RefreshToken == "" {
-			return errors.New("no Grok refresh token available")
+		if err := saveGrokCredentials(path, recovery); err != nil {
+			return fmt.Errorf("preserve rotated Grok refresh token: %w", err)
 		}
-		token, err := client.RefreshToken(ctx, creds.RefreshToken)
-		if err != nil {
-			return err
-		}
-		refreshToken := creds.RefreshToken
-		if token.RefreshToken != "" {
-			refreshToken = token.RefreshToken
-		}
-		expiresAt, err := oauth.GrokExpiryUnix(time.Now().Unix(), token.ExpiresIn)
-		if err != nil {
-			return err
-		}
-		accountID, err := client.UserInfo(ctx, token.AccessToken)
-		if err != nil {
-			if refreshToken != creds.RefreshToken {
-				// Refresh-token rotation may invalidate the token currently on disk.
-				// Persist the rotated token with an already-expired access generation so
-				// the next attempt must refresh and re-verify account continuity before
-				// using it. This is the first phase of a two-phase verified refresh.
-				recovery := &GrokCredentials{
-					AccessToken:  creds.AccessToken,
-					RefreshToken: refreshToken,
-					ExpiresAt:    time.Now().Unix(),
-					AccountID:    creds.AccountID,
-				}
-				if saveErr := saveGrokCredentials(path, recovery); saveErr != nil {
-					return fmt.Errorf("verify refreshed Grok account: %v; preserve rotated refresh token: %w", err, saveErr)
-				}
-				*creds = *recovery
-				return fmt.Errorf("verify refreshed Grok account: %w (rotated refresh token was preserved for retry)", err)
+		checkpointed = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !checkpointed {
+		return nil
+	}
+
+	accountID, verifyErr := client.UserInfo(ctx, token.AccessToken)
+	return withGrokCredentialsLock(func(path string) error {
+		stored, readErr := readGrokCredentials(path)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				return errors.New("Grok credentials were cleared during account verification")
 			}
-			return err
+			return fmt.Errorf("reload Grok credentials: %w", readErr)
 		}
-		if accountID != creds.AccountID {
+		if !sameGrokCredentialGeneration(stored, recovery) {
+			*creds = *stored
+			if grokGenerationSatisfiesRefresh(stored, requested.AccessToken, force) {
+				return nil
+			}
+			return errors.New("Grok credentials changed during account verification but still require refresh")
+		}
+		if verifyErr != nil {
+			*creds = *recovery
+			return fmt.Errorf("verify refreshed Grok account: %w (rotated refresh token was preserved for retry)", verifyErr)
+		}
+		if accountID != base.AccountID {
 			if clearErr := removeGrokCredentials(path); clearErr != nil {
 				return fmt.Errorf("refreshed Grok session belongs to a different account; clear stale credentials: %w", clearErr)
 			}
 			return errors.New("refreshed Grok session belongs to a different account; local credentials were cleared; run 'term-llm auth login grok'")
 		}
-		replacement := &GrokCredentials{
-			AccessToken:  token.AccessToken,
-			RefreshToken: refreshToken,
-			ExpiresAt:    expiresAt,
-			AccountID:    accountID,
-		}
+		replacement := &GrokCredentials{AccessToken: token.AccessToken, RefreshToken: refreshToken, ExpiresAt: expiresAt, AccountID: accountID}
 		if err := validateGrokCredentials(replacement); err != nil {
 			return err
 		}
@@ -250,6 +298,33 @@ func RefreshGrokCredentialsWithClient(ctx context.Context, creds *GrokCredential
 		}
 		*creds = *replacement
 		return nil
+	})
+}
+
+func sameGrokCredentialGeneration(a, b *GrokCredentials) bool {
+	return a != nil && b != nil &&
+		a.AccessToken == b.AccessToken && a.RefreshToken == b.RefreshToken &&
+		a.ExpiresAt == b.ExpiresAt && a.AccountID == b.AccountID
+}
+
+func grokGenerationSatisfiesRefresh(stored *GrokCredentials, rejectedAccess string, force bool) bool {
+	return stored != nil && ((force && stored.AccessToken != rejectedAccess) || (!force && !stored.IsExpired()))
+}
+
+func reconcileGrokRefreshFailure(creds, base *GrokCredentials, rejectedAccess string, force bool, refreshErr error) error {
+	return withGrokCredentialsLock(func(path string) error {
+		stored, err := readGrokCredentials(path)
+		if err == nil && !sameGrokCredentialGeneration(stored, base) {
+			if grokGenerationSatisfiesRefresh(stored, rejectedAccess, force) {
+				*creds = *stored
+				return nil
+			}
+			// Preserve the generation actually rejected by this call. In
+			// particular, do not expose a sibling's rotated-but-unverified
+			// checkpoint as though its token had received invalid_grant.
+			return fmt.Errorf("Grok credentials changed during failed refresh: %w", refreshErr)
+		}
+		return refreshErr
 	})
 }
 

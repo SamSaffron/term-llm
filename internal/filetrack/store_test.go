@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T, opts Options) *Store {
@@ -884,4 +885,68 @@ func mustList(t *testing.T, store *Store, sessionID string) []CumulativeChange {
 		t.Fatalf("ListSessionChanges: %v", err)
 	}
 	return changes
+}
+
+func TestRecordChangeSessionLockDoesNotGateOtherSessions(t *testing.T) {
+	store := openTestStore(t, Options{})
+	unlockA := store.lockRecordSession("session-a")
+	defer unlockA()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.RecordChange(context.Background(), ChangeRecord{
+			SessionID:     "session-b",
+			Path:          "/tmp/session-b.txt",
+			BeforeMissing: true,
+			After:         []byte("b"),
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session B file tracking waited for session A's session lock")
+	}
+}
+
+func TestRecordChangeConcurrentAcrossSessions(t *testing.T) {
+	store := openTestStore(t, Options{})
+	const sessions = 8
+	const changesPerSession = 8
+	start := make(chan struct{})
+	errCh := make(chan error, sessions*changesPerSession)
+	var wg sync.WaitGroup
+	for sessionIndex := 0; sessionIndex < sessions; sessionIndex++ {
+		for changeIndex := 0; changeIndex < changesPerSession; changeIndex++ {
+			wg.Add(1)
+			go func(sessionIndex, changeIndex int) {
+				defer wg.Done()
+				<-start
+				_, err := store.RecordChange(context.Background(), ChangeRecord{
+					SessionID:     fmt.Sprintf("session-%d", sessionIndex),
+					Path:          fmt.Sprintf("/tmp/session-%d-%d.txt", sessionIndex, changeIndex),
+					BeforeMissing: true,
+					After:         []byte("content"),
+				})
+				errCh <- err
+			}(sessionIndex, changeIndex)
+		}
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for sessionIndex := 0; sessionIndex < sessions; sessionIndex++ {
+		changes := mustList(t, store, fmt.Sprintf("session-%d", sessionIndex))
+		if len(changes) != changesPerSession {
+			t.Fatalf("session %d changes = %d, want %d", sessionIndex, len(changes), changesPerSession)
+		}
+	}
 }

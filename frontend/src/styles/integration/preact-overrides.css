@@ -737,18 +737,6 @@ mark.diff-word {
     padding: 0;
   }
 
-  .diff-toggle-badge {
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    min-width: 13px;
-    height: 13px;
-    border-radius: 999px;
-    background: var(--text);
-    color: var(--bg);
-    font-size: 0.58rem;
-  }
-
   .messages {
     gap: 1rem;
   }

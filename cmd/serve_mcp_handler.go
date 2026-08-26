@@ -567,7 +567,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorType := "server_error"
-		if errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
+		if errors.Is(err, errServeSessionBusy) {
 			status = http.StatusConflict
 			errorType = "conflict_error"
 		}

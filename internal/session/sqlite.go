@@ -369,11 +369,16 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 				}
 				return reader, nil
 			}
-			readDB, err := openReader("transcript read")
+			readDB, err := openReader("session read")
 			if err != nil {
 				db.Close()
 				return nil, err
 			}
+			// WAL readers do not exclude one another. Do not impose an application-
+			// level one-reader queue that lets a long transcript scan in one session
+			// gate hydration or metadata reads in another.
+			readDB.SetMaxOpenConns(0)
+			readDB.SetMaxIdleConns(4)
 			responseRunReadDB, err := openReader("response-run read")
 			if err != nil {
 				readDB.Close()
@@ -1930,13 +1935,13 @@ func (s *SQLiteStore) enrichSessionProject(ctx context.Context, sess *Session) *
 	if sess == nil || sess.ProjectID == "" || !s.hasProjectsTable {
 		return sess
 	}
-	_ = s.db.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, sess.ProjectID).Scan(&sess.ProjectName)
+	_ = s.queryDB().QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, sess.ProjectID).Scan(&sess.ProjectName)
 	return sess
 }
 
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryDB().QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
 	sess, err := scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 	return s.enrichSessionProject(ctx, sess), err
@@ -1944,7 +1949,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryDB().QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
 	sess, err := scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 	return s.enrichSessionProject(ctx, sess), err
@@ -1992,7 +1997,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
-	row := s.db.QueryRowContext(ctx,
+	row := s.queryDB().QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
 	sess, err = scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 	return s.enrichSessionProject(ctx, sess), err
@@ -2204,7 +2209,7 @@ func (s *SQLiteStore) LoadPlanSnapshot(ctx context.Context, sessionID string) (p
 	var raw string
 	var version int64
 	err := retryOnBusy(ctx, 5, func() error {
-		return s.db.QueryRowContext(ctx, `
+		return s.queryDB().QueryRowContext(ctx, `
 			SELECT snapshot, version FROM session_plans WHERE session_id = ?
 		`, sessionID).Scan(&raw, &version)
 	})
@@ -2330,7 +2335,7 @@ func (s *SQLiteStore) LoadProviderState(ctx context.Context, sessionID, provider
 		return nil, nil
 	}
 	var state []byte
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryDB().QueryRowContext(ctx, `
 		SELECT state FROM session_provider_state
 		WHERE session_id = ? AND provider_key = ?
 	`, sessionID, providerKey).Scan(&state)
@@ -2666,7 +2671,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		args = append(args, opts.Offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
 	}
@@ -2812,7 +2817,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 	args = append(args, opts.Limit)
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		WITH raw_matches AS (
 			SELECT rowid AS message_id, rank AS match_rank
 			FROM messages_fts
@@ -3762,14 +3767,14 @@ func (s *SQLiteStore) SessionSummariesIncludeTranscriptRev() bool {
 func (s *SQLiteStore) TranscriptRev(ctx context.Context, sessionID string) (int64, error) {
 	if !s.hasTranscriptRev {
 		var exists int
-		err := s.db.QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&exists)
+		err := s.queryDB().QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&exists)
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrNotFound
 		}
 		return 0, err
 	}
 	var rev int64
-	err := s.db.QueryRowContext(ctx, "SELECT transcript_rev FROM sessions WHERE id = ?", sessionID).Scan(&rev)
+	err := s.queryDB().QueryRowContext(ctx, "SELECT transcript_rev FROM sessions WHERE id = ?", sessionID).Scan(&rev)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -4234,11 +4239,17 @@ func transcriptRowHasDisplayBody(role llm.Role, parts []llm.Part, planToolCalls 
 	return false
 }
 
-func (s *SQLiteStore) transcriptReadDB() *sql.DB {
+func (s *SQLiteStore) queryDB() *sql.DB {
 	if s.readDB != nil {
 		return s.readDB
 	}
 	return s.db
+}
+
+// transcriptReadDB is retained for focused transcript callers and tests; all
+// ordinary read-only queries share the same WAL reader lane.
+func (s *SQLiteStore) transcriptReadDB() *sql.DB {
+	return s.queryDB()
 }
 
 func (s *SQLiteStore) responseRunStateReadDB() *sql.DB {
@@ -4492,7 +4503,7 @@ func (s *SQLiteStore) MaxMessageSequences(ctx context.Context, sessionIDs []stri
 				WHERE messages.session_id = requested.session_id
 			), -1)
 			FROM requested`
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		rows, err := s.queryDB().QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("query maximum message sequences: %w", err)
 		}
@@ -4532,7 +4543,7 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages from seq %d: %w", fromSeq, err)
 	}
@@ -4583,7 +4594,7 @@ func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID s
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages descending: %w", err)
 	}
@@ -4594,7 +4605,7 @@ func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID s
 
 // GetMessageByID retrieves a single message by its global message id.
 func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryDB().QueryRowContext(ctx, `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE id = ?`, msgID)
@@ -4645,7 +4656,7 @@ func (s *SQLiteStore) GetMessageByClientMessageID(ctx context.Context, sessionID
 	if !s.hasMessageClientID {
 		return nil, ErrNotFound
 	}
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryDB().QueryRowContext(ctx, `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE session_id = ? AND client_message_id = ?
@@ -4679,7 +4690,7 @@ func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID s
 	if s.hasMessageCompactionTail {
 		compactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
 	}
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryDB().QueryRowContext(ctx, `
 		SELECT id
 		FROM messages
 		WHERE session_id = ? AND role IN (?, ?)`+compactionTailClause+`
@@ -4786,7 +4797,7 @@ func (s *SQLiteStore) NextUserPromptOutsideSession(ctx context.Context, excludeS
 
 func (s *SQLiteStore) queryPromptHistoryEntry(ctx context.Context, query string, args ...any) (*PromptHistoryEntry, error) {
 	var entry PromptHistoryEntry
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text, &entry.CreatedAt)
+	err := s.queryDB().QueryRowContext(ctx, query, args...).Scan(&entry.ID, &entry.Text, &entry.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -4817,7 +4828,7 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 		args = append(args, offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -4830,7 +4841,7 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 // contain typed inline-diff comment metadata. The final typed-part check remains
 // with the caller; LIKE is used only as a conservative SQLite row prefilter.
 func (s *SQLiteStore) GetDiffCommentMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE session_id = ? AND parts LIKE ?
@@ -4854,7 +4865,7 @@ func (s *SQLiteStore) SetCurrent(ctx context.Context, sessionID string) error {
 // GetCurrent retrieves the current session.
 func (s *SQLiteStore) GetCurrent(ctx context.Context) (*Session, error) {
 	var sessionID string
-	err := s.db.QueryRowContext(ctx,
+	err := s.queryDB().QueryRowContext(ctx,
 		"SELECT value FROM metadata WHERE key = 'current_session'").Scan(&sessionID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -4901,7 +4912,7 @@ func (s *SQLiteStore) DeletePushSubscription(ctx context.Context, endpoint strin
 
 // ListPushSubscriptions returns all stored Web Push subscriptions.
 func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		SELECT id, endpoint, key_p256dh, key_auth
 		FROM push_subscriptions
 		ORDER BY created_at ASC`)

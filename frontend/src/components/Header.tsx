@@ -313,7 +313,7 @@ export function Header() {
               onClick={() => void store.toggleDiff()}
             >
               <span class={`diff-toggle-badge ${!diffAdds && !diffDels ? 'no-stats' : ''}`}>
-                <span class="diff-toggle-file-count" data-file-count={diffFileCount}>
+                <span class="diff-toggle-file-count">
                   <span class="diff-toggle-file-icon" aria-hidden="true" />
                 </span>
                 {diffAdds > 0 && <span class="diff-toggle-stat-add">+{diffAdds}</span>}

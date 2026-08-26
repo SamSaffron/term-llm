@@ -27,7 +27,7 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 	var childID string
 	var forkAfterMessageID sql.NullInt64
 	var anchorSequence int
-	err := s.db.QueryRowContext(ctx, `
+	err := s.queryDB().QueryRowContext(ctx, `
 		SELECT child_session_id, fork_after_message_id, fork_after_sequence FROM session_branches
 		WHERE parent_session_id = ? AND idempotency_key = ?`, sourceSessionID, idempotencyKey).Scan(&childID, &forkAfterMessageID, &anchorSequence)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -42,7 +42,7 @@ func (s *SQLiteStore) GetBranchByIdempotencyKey(ctx context.Context, sourceSessi
 	}
 	result := BranchResult{Session: child, ForkAfterMessageID: forkAfterMessageID.Int64, Reused: true}
 	if anchorSequence >= 0 {
-		err := s.db.QueryRowContext(ctx, `SELECT id FROM messages WHERE session_id = ? AND sequence <= ? AND role IN ('user', 'assistant') ORDER BY sequence DESC, id DESC LIMIT 1`, childID, anchorSequence).Scan(&result.AnchorMessageID)
+		err := s.queryDB().QueryRowContext(ctx, `SELECT id FROM messages WHERE session_id = ? AND sequence <= ? AND role IN ('user', 'assistant') ORDER BY sequence DESC, id DESC LIMIT 1`, childID, anchorSequence).Scan(&result.AnchorMessageID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return BranchResult{}, false, fmt.Errorf("load idempotent branch anchor: %w", err)
 		}
@@ -393,7 +393,7 @@ func (s *SQLiteStore) GetBranchTree(ctx context.Context, sessionID string) (Bran
 	if sessionID == "" {
 		return BranchTree{}, ErrNotFound
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		WITH RECURSIVE component(id) AS (
 			VALUES (?)
 			UNION

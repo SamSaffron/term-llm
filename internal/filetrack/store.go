@@ -123,6 +123,11 @@ type Options struct {
 	MaxTotalBytes   int64 // 0 = DefaultMaxTotalBytes; whole-database size cap enforced live and by GC
 }
 
+type recordSessionLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 // Store persists file-change history in a dedicated SQLite database.
 type Store struct {
 	db              *sql.DB
@@ -130,10 +135,16 @@ type Store struct {
 	maxSessionBytes int
 	maxTotalBytes   int64
 
-	// recordMu serializes change inserts so per-session sequence allocation and
-	// retained-byte budget checks remain deterministic under parallel tool calls.
-	// It also protects the amortized total-budget counters.
-	recordMu                  sync.Mutex
+	// RecordChange is serialized only within a session. The map lock is held for
+	// lock bookkeeping only; file analysis and SQLite work never run under it.
+	recordLocksMu sync.Mutex
+	recordLocks   map[string]*recordSessionLock
+
+	// Total-budget accounting and rare pruning are independent of per-session
+	// recording, so unrelated sessions never wait for another session's normal
+	// file-change processing.
+	totalMu                   sync.Mutex
+	pruneMu                   sync.Mutex
 	uncheckedTotalBytes       int64
 	uncheckedTotalRecordCount int
 
@@ -563,6 +574,31 @@ func normalizePath(path string) string {
 	return filepath.Clean(path)
 }
 
+func (s *Store) lockRecordSession(sessionID string) func() {
+	s.recordLocksMu.Lock()
+	if s.recordLocks == nil {
+		s.recordLocks = make(map[string]*recordSessionLock)
+	}
+	lock := s.recordLocks[sessionID]
+	if lock == nil {
+		lock = &recordSessionLock{}
+		s.recordLocks[sessionID] = lock
+	}
+	lock.refs++
+	s.recordLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.recordLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.recordLocks, sessionID)
+		}
+		s.recordLocksMu.Unlock()
+	}
+}
+
 func (s *Store) totalBudgetCheckDue(retainedBytes int64) bool {
 	byteInterval := s.maxTotalBytes / 16
 	if byteInterval < 1 {
@@ -599,11 +635,10 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		}
 	}
 
-	// Serialize RecordChange calls. This avoids races where concurrent tool calls
-	// for the same session both choose the same next seq, and keeps the
-	// max-session-byte budget from being oversubscribed by parallel inserts.
-	s.recordMu.Lock()
-	defer s.recordMu.Unlock()
+	// Sequence and per-session budget decisions need ordering only within the
+	// owning session; unrelated sessions proceed independently.
+	unlockSession := s.lockRecordSession(rec.SessionID)
+	defer unlockSession()
 
 	hasBefore := !rec.BeforeMissing && !rec.BeforeUnknown
 	hasAfter := !rec.AfterMissing && !rec.AfterUnknown
@@ -676,7 +711,23 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 	if retain {
 		retainedBytes = beforeSize + afterSize
 	}
+	s.totalMu.Lock()
 	checkTotalBudget := s.totalBudgetCheckDue(retainedBytes)
+	if checkTotalBudget {
+		s.uncheckedTotalBytes = 0
+		s.uncheckedTotalRecordCount = 0
+	} else {
+		// Reserve this accounting before I/O. Failed writes may trigger an earlier
+		// check, which is conservative and avoids cross-session synchronization.
+		s.uncheckedTotalBytes += retainedBytes
+		s.uncheckedTotalRecordCount++
+	}
+	s.totalMu.Unlock()
+
+	if checkTotalBudget {
+		s.pruneMu.Lock()
+		defer s.pruneMu.Unlock()
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -721,12 +772,6 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 
 	var totalBudgetPruned bool
 	if checkTotalBudget {
-		// This check has consumed the accumulated work even if the transaction
-		// later fails. Keeping the counters above threshold would make every
-		// subsequent metadata-only record repeat the same expensive sweep.
-		s.uncheckedTotalBytes = 0
-		s.uncheckedTotalRecordCount = 0
-
 		totalBudgetPruned, err = s.enforceTotalBudget(ctx, tx)
 		if err != nil {
 			return nil, fmt.Errorf("enforce total budget: %w", err)
@@ -753,10 +798,6 @@ func (s *Store) RecordChange(ctx context.Context, rec ChangeRecord) (*Change, er
 		s.sessionBytes = make(map[string]int64)
 		s.mu.Unlock()
 	} else {
-		if !checkTotalBudget {
-			s.uncheckedTotalBytes += retainedBytes
-			s.uncheckedTotalRecordCount++
-		}
 		if retain {
 			s.mu.Lock()
 			if _, ok := s.sessionBytes[rec.SessionID]; ok {

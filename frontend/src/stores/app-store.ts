@@ -91,6 +91,7 @@ export interface DiffState {
   files: DiffFile[];
   filter: string;
   comments: DiffComment[];
+  historyComments: DiffComment[];
   error: string;
   maximized: boolean;
   width: number;
@@ -276,6 +277,7 @@ export class AppStore {
     files: [],
     filter: '',
     comments: [],
+    historyComments: [],
     error: '',
     maximized: false,
     width: 420,
@@ -2104,11 +2106,55 @@ export class AppStore {
     this.modal.value = '';
   }
 
+  async refreshDiffComments(sessionId = this.activeSessionId.peek()): Promise<void> {
+    if (!sessionId) return;
+    try {
+      const data = await this.endpoints.diffComments(sessionId);
+      if (this.diff.peek().sessionId !== sessionId) return;
+      const incoming = listFrom(data, 'comments', 'items')
+        .map((entry): DiffComment | null => {
+          const raw = recordValue(entry.diff_comment) || entry;
+          const side = String(raw.side || '').toLowerCase();
+          const path = String(raw.path || '');
+          const body = String(raw.instruction || raw.body || '').trim();
+          const line = Number(raw.line) || 0;
+          if (!path || !body || !line || (side !== 'old' && side !== 'new')) return null;
+          return {
+            id: String(raw.id || '') || undefined,
+            parentId: String(raw.parent_id || '') || undefined,
+            path,
+            side,
+            line,
+            body,
+            sessionId,
+            scope: String(raw.scope || '') || undefined,
+            context: String(raw.line_text ?? raw.context ?? ''),
+            fileChangeSeq: Number(raw.file_change_seq ?? raw.fileChangeSeq) || 0,
+            clientMessageId:
+              String(entry.client_message_id || raw.client_message_id || '') || undefined,
+            createdAt: Number(entry.created_at || raw.created_at) || Date.now(),
+          };
+        })
+        .filter((comment): comment is DiffComment => comment !== null);
+      const ids = new Set(incoming.map((comment) => comment.id).filter(Boolean));
+      const pending = this.diff
+        .peek()
+        .historyComments.filter(
+          (comment) =>
+            comment.sessionId === sessionId && comment.optimistic && !ids.has(comment.id),
+        );
+      this.diff.value = { ...this.diff.peek(), historyComments: [...incoming, ...pending] };
+    } catch {
+      /* Keep the optimistic trail visible; the status loop will reconcile it. */
+    }
+  }
+
   async toggleDiff(): Promise<void> {
     const session = this.activeSession.value;
     if (!session) return;
     this.planOpen.value = false;
     this.diff.value = { ...this.diff.value, sessionId: session.id, open: !this.diff.value.open };
+    this.startStatusPoll();
     if (this.diff.value.open) await this.loadDiff();
   }
   async loadDiff(): Promise<void> {
@@ -2118,6 +2164,7 @@ export class AppStore {
     const scope = normalizeDiffScope(this.diff.value.scope);
     this.diff.value = { ...this.diff.value, sessionId: owner, scope, loading: true, error: '' };
     try {
+      void this.refreshDiffComments(owner);
       const data = await this.endpoints.fileChanges(owner, scope);
       if (this.activeSessionId.peek() !== owner) return;
       const existing = new Map(this.diff.value.files.map((file) => [file.path, file]));
@@ -2293,19 +2340,44 @@ export class AppStore {
       this.toast('Wait for the current response before sending an inline comment.', 'info');
       return;
     }
-    const prepared = this.prepareDiffComments([comment]);
+    const value: DiffComment = {
+      ...comment,
+      id: comment.id || uuid(),
+      sessionId: session.id,
+      createdAt: comment.createdAt || Date.now(),
+      optimistic: true,
+    };
+    const prepared = this.prepareDiffComments([value]);
     if (!prepared) return;
+    this.diff.value = {
+      ...this.diff.peek(),
+      historyComments: [
+        ...this.diff.peek().historyComments.filter((entry) => entry.id !== value.id),
+        value,
+      ],
+    };
     await this.send({
       contentParts: prepared.payloads.map((diff_comment) => ({
         type: 'diff_comment',
         diff_comment,
       })),
       inputText: prepared.inputText,
-      displayContent: comment.body,
+      displayContent: value.body,
       preserveComposer: true,
-      diffComments: [comment],
-      onTransportStarted: () => this.toast('Comment sent to the agent.', 'success'),
-      onTransportFailed: (error) => this.toast(error, 'error'),
+      diffComments: [value],
+      onTransportStarted: () => {
+        this.toast('Comment sent to the agent.', 'success');
+        void this.refreshDiffComments(session.id);
+      },
+      onTransportFailed: (error) => {
+        this.diff.value = {
+          ...this.diff.peek(),
+          historyComments: this.diff
+            .peek()
+            .historyComments.filter((entry) => entry.id !== value.id || !entry.optimistic),
+        };
+        this.toast(error, 'error');
+      },
     });
   }
   queueDiffComment(comment: DiffComment): void {
@@ -2347,12 +2419,28 @@ export class AppStore {
       preserveComposer: true,
       diffComments: comments,
       onTransportStarted: () => {
-        const remaining = this.diff
-          .peek()
-          .comments.filter((comment) => comment.sessionId && comment.sessionId !== session.id);
-        this.diff.value = { ...this.diff.peek(), comments: remaining };
+        const sent = comments.map((comment) => ({
+          ...comment,
+          sessionId: session.id,
+          createdAt: comment.createdAt || Date.now(),
+          optimistic: true,
+        }));
+        const sentIDs = new Set(sent.map((comment) => comment.id));
+        const current = this.diff.peek();
+        const remaining = current.comments.filter(
+          (comment) => comment.sessionId && comment.sessionId !== session.id,
+        );
+        this.diff.value = {
+          ...current,
+          comments: remaining,
+          historyComments: [
+            ...current.historyComments.filter((comment) => !sentIDs.has(comment.id)),
+            ...sent,
+          ],
+        };
         writeJSON(this.storage, this.keys.diffCommentQueue, remaining);
         this.toast('Comments sent to the agent.', 'success');
+        void this.refreshDiffComments(session.id);
       },
       onTransportFailed: (error) => this.toast(error, 'error'),
     });
@@ -2840,12 +2928,18 @@ export class AppStore {
       const anyActive = Object.values(this.runs.peek()).some((projection) =>
         ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
       );
-      this.statusTimer = window.setTimeout(poll, anyActive ? 2_000 : 30_000);
+      this.statusTimer = window.setTimeout(
+        poll,
+        anyActive || this.diff.peek().open ? 2_000 : 30_000,
+      );
     };
-    this.statusTimer = window.setTimeout(poll, 30_000);
+    this.statusTimer = window.setTimeout(poll, this.diff.peek().open ? 2_000 : 30_000);
   }
   private async refreshStatus(): Promise<void> {
-    const data = await this.endpoints.sessionStatus(this.activeSessionId.peek());
+    const activeSessionId = this.activeSessionId.peek();
+    const previousActiveRevision =
+      this.sessions.peek().find((session) => session.id === activeSessionId)?.transcriptRev || 0;
+    const data = await this.endpoints.sessionStatus(activeSessionId);
     const statuses = listFrom(data, 'sessions', 'items');
     const byID = new Map(statuses.map((entry) => [String(entry.id || entry.session_id), entry]));
     this.sessions.value = this.sessions.value.map((session) => {
@@ -2873,6 +2967,14 @@ export class AppStore {
           : session.lastMessageAt,
       };
     });
+    const activeRevision =
+      this.sessions.peek().find((session) => session.id === activeSessionId)?.transcriptRev || 0;
+    if (
+      this.diff.peek().open &&
+      this.diff.peek().sessionId === activeSessionId &&
+      activeRevision > previousActiveRevision
+    )
+      void this.refreshDiffComments(activeSessionId);
   }
 
   toast(value: unknown, kind: Toast['kind'] = 'info'): void {

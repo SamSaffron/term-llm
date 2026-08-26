@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -100,8 +101,8 @@ func TestGrokCredentialRefreshRotationContinuityAndConcurrency(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if tokenCalls.Load() != 1 {
-		t.Fatalf("refresh requests = %d, want 1", tokenCalls.Load())
+	if got := tokenCalls.Load(); got < 1 || got > 2 {
+		t.Fatalf("refresh requests = %d, want one independent request per stale caller at most", got)
 	}
 	for _, creds := range []*GrokCredentials{&a, &b} {
 		if creds.AccessToken != "new-access" || creds.RefreshToken != "new-refresh" || creds.AccountID != "acct_1" {
@@ -157,8 +158,8 @@ func TestGrokConcurrentForced401RefreshRunsOnceAndSiblingsAdopt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if tokenCalls.Load() != 1 {
-		t.Fatalf("forced OAuth refreshes = %d, want 1", tokenCalls.Load())
+	if got := tokenCalls.Load(); got < 1 || got > 2 {
+		t.Fatalf("forced OAuth refreshes = %d, want one independent request per rejected caller at most", got)
 	}
 	for _, creds := range []*GrokCredentials{&a, &b} {
 		if creds.AccessToken != "fresh-access" || creds.RefreshToken != "fresh-refresh" || creds.AccountID != "acct_1" {
@@ -266,5 +267,201 @@ func TestGrokForcedRefreshDoesNotAdoptIdenticalAccessTokenFromMetadataOnlyChange
 	}
 	if refreshCalls != 1 || requested.AccessToken != "new-access" {
 		t.Fatalf("refresh calls=%d credentials=%+v", refreshCalls, requested)
+	}
+}
+
+func TestGrokRefreshDoesNotHoldCredentialLockDuringNetwork(t *testing.T) {
+	isolateGrokCredentialTestEnv(t)
+	initial := &GrokCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "acct_1"}
+	if err := SaveGrokCredentials(initial); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	client := oauth.NewGrokOAuthClient(&http.Client{Transport: grokCredentialRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case oauth.GrokTokenEndpoint:
+			close(started)
+			<-release
+			return grokCredentialResponse(200, `{"access_token":"stale-result","refresh_token":"rotated","expires_in":3600,"token_type":"Bearer"}`), nil
+		case oauth.GrokUserInfoEndpoint:
+			return grokCredentialResponse(200, `{"sub":"acct_1"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", req.URL)
+		}
+	})})
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		copy := *initial
+		refreshDone <- RefreshGrokCredentialsWithClient(context.Background(), &copy, false, client)
+	}()
+	<-started
+
+	saveDone := make(chan error, 1)
+	go func() {
+		saveDone <- SaveGrokCredentials(&GrokCredentials{AccessToken: "new-login", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct_1"})
+	}()
+	select {
+	case err := <-saveDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("credential save waited for another session's Grok OAuth request")
+	}
+
+	close(release)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	stored, err := GetGrokCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AccessToken != "new-login" {
+		t.Fatalf("stale refresh overwrote concurrent login: %+v", stored)
+	}
+}
+
+func TestConcurrentGrokInvalidGrantAdoptsSiblingRefresh(t *testing.T) {
+	isolateGrokCredentialTestEnv(t)
+	initial := &GrokCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "acct_1"}
+	if err := SaveGrokCredentials(initial); err != nil {
+		t.Fatal(err)
+	}
+	var tokenCalls atomic.Int32
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	client := oauth.NewGrokOAuthClient(&http.Client{Transport: grokCredentialRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case oauth.GrokTokenEndpoint:
+			switch tokenCalls.Add(1) {
+			case 1:
+				close(firstStarted)
+				<-releaseFirst
+				return grokCredentialResponse(200, `{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"token_type":"Bearer"}`), nil
+			case 2:
+				close(secondStarted)
+				<-releaseSecond
+				return grokCredentialResponse(400, `{"error":"invalid_grant"}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected token call")
+			}
+		case oauth.GrokUserInfoEndpoint:
+			return grokCredentialResponse(200, `{"sub":"acct_1"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", req.URL)
+		}
+	})})
+
+	a, b := *initial, *initial
+	errA := make(chan error, 1)
+	errB := make(chan error, 1)
+	go func() { errA <- RefreshGrokCredentialsWithClient(context.Background(), &a, false, client) }()
+	<-firstStarted
+	go func() { errB <- RefreshGrokCredentialsWithClient(context.Background(), &b, false, client) }()
+	<-secondStarted
+	close(releaseFirst)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stored, err := GetGrokCredentials()
+		if err == nil && stored.AccessToken == "fresh" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sibling Grok refresh was not committed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseSecond)
+	if err := <-errA; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errB; err != nil {
+		t.Fatalf("invalid-grant sibling did not adopt committed refresh: %v", err)
+	}
+	if b.AccessToken != "fresh" || b.RefreshToken != "rotated" {
+		t.Fatalf("sibling credentials = %+v", b)
+	}
+}
+
+func TestGrokInvalidGrantDoesNotExposeSiblingCheckpointAsRejected(t *testing.T) {
+	isolateGrokCredentialTestEnv(t)
+	initial := &GrokCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix(), AccountID: "acct_1"}
+	if err := SaveGrokCredentials(initial); err != nil {
+		t.Fatal(err)
+	}
+	var tokenCalls atomic.Int32
+	verifyStarted := make(chan struct{})
+	releaseVerify := make(chan struct{})
+	client := oauth.NewGrokOAuthClient(&http.Client{Transport: grokCredentialRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case oauth.GrokTokenEndpoint:
+			if tokenCalls.Add(1) == 1 {
+				return grokCredentialResponse(200, `{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"token_type":"Bearer"}`), nil
+			}
+			return grokCredentialResponse(400, `{"error":"invalid_grant"}`), nil
+		case oauth.GrokUserInfoEndpoint:
+			close(verifyStarted)
+			<-releaseVerify
+			return grokCredentialResponse(200, `{"sub":"acct_1"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", req.URL)
+		}
+	})})
+
+	a, b := *initial, *initial
+	errA := make(chan error, 1)
+	go func() { errA <- RefreshGrokCredentialsWithClient(context.Background(), &a, false, client) }()
+	<-verifyStarted // A's rotated checkpoint is durable, but not yet verified.
+
+	errB := RefreshGrokCredentialsWithClient(context.Background(), &b, false, client)
+	if errB == nil {
+		t.Fatal("expected sibling invalid_grant")
+	}
+	if b.RefreshToken != initial.RefreshToken {
+		t.Fatalf("failed caller exposed sibling checkpoint as rejected: %+v", b)
+	}
+
+	close(releaseVerify)
+	if err := <-errA; err != nil {
+		t.Fatal(err)
+	}
+	stored, err := GetGrokCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AccessToken != "fresh" || stored.RefreshToken != "rotated" {
+		t.Fatalf("verified sibling credentials = %+v", stored)
+	}
+}
+
+func TestGrokRefreshUsesDiskAccountGenerationAsCASBaseline(t *testing.T) {
+	isolateGrokCredentialTestEnv(t)
+	expires := time.Now().Add(-time.Hour).Unix()
+	disk := &GrokCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: expires, AccountID: "acct_disk"}
+	if err := SaveGrokCredentials(disk); err != nil {
+		t.Fatal(err)
+	}
+	caller := &GrokCredentials{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: expires, AccountID: "acct_stale"}
+	client := oauth.NewGrokOAuthClient(&http.Client{Transport: grokCredentialRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case oauth.GrokTokenEndpoint:
+			return grokCredentialResponse(200, `{"access_token":"fresh","refresh_token":"rotated","expires_in":3600,"token_type":"Bearer"}`), nil
+		case oauth.GrokUserInfoEndpoint:
+			return grokCredentialResponse(200, `{"sub":"acct_disk"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", req.URL)
+		}
+	})})
+	if err := RefreshGrokCredentialsWithClient(context.Background(), caller, false, client); err != nil {
+		t.Fatal(err)
+	}
+	if caller.AccountID != "acct_disk" || caller.RefreshToken != "rotated" {
+		t.Fatalf("caller credentials = %+v", caller)
 	}
 }

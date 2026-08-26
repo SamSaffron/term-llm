@@ -1210,17 +1210,14 @@
 }
 
 @media (width <= 900px) {
-  .diff-toggle {
-    min-width: 52px;
+  .icon-btn.diff-toggle {
+    width: var(--header-action-height);
+    min-width: var(--header-action-height);
+    padding-inline: 0;
   }
 
   .diff-toggle-file-count {
     display: inline-flex;
-    gap: 0.36rem;
-  }
-
-  .diff-toggle-file-count::after {
-    content: attr(data-file-count);
   }
 
   .diff-toggle-stat-add,

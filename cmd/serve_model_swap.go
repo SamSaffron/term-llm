@@ -316,7 +316,7 @@ func isModelSwapFallbackEligible(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errServeSessionBusy) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())

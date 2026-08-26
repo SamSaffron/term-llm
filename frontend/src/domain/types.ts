@@ -194,6 +194,7 @@ export interface DiffFile {
 
 export interface DiffComment {
   id?: string;
+  parentId?: string;
   path: string;
   side: 'old' | 'new';
   line: number;
@@ -202,6 +203,9 @@ export interface DiffComment {
   scope?: string;
   context?: string;
   fileChangeSeq?: number;
+  clientMessageId?: string;
+  createdAt?: number;
+  optimistic?: boolean;
 }
 
 export interface PlanStep {

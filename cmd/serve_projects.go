@@ -945,31 +945,19 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Keep the process-wide session map lock only around the final race-sensitive
-	// recheck and assignment. Project discovery and Git inspection above may be
-	// slow and must not block unrelated conversations.
+	// Pin only this session while the final storage CAS runs. Unrelated runtime
+	// admission and lifecycle operations must remain free to progress.
 	var releaseAssignmentGuard func()
 	if s.sessionMgr != nil {
-		s.sessionMgr.mu.Lock()
-		if rt := s.sessionMgr.sessions[sessionID]; rt != nil {
-			if rt.hasActiveRun() || !rt.mu.TryLock() {
-				s.sessionMgr.mu.Unlock()
-				writeProjectError(w, http.StatusConflict, "workspace_conflict", "an active response cannot be reassigned")
-				return
-			}
-			if rt.hasActiveRun() {
-				rt.mu.Unlock()
-				s.sessionMgr.mu.Unlock()
-				writeProjectError(w, http.StatusConflict, "workspace_conflict", "an active response cannot be reassigned")
-				return
-			}
-			guardedRuntime = rt
-			releaseAssignmentGuard = func() {
-				rt.mu.Unlock()
-				s.sessionMgr.mu.Unlock()
-			}
-		} else {
-			releaseAssignmentGuard = s.sessionMgr.mu.Unlock
+		var lockErr error
+		guardedRuntime, releaseAssignmentGuard, lockErr = s.sessionMgr.lockIdleMetadataMutation(sessionID)
+		if errors.Is(lockErr, errServeSessionManagerClosed) {
+			writeProjectError(w, http.StatusServiceUnavailable, "projects_unavailable", lockErr.Error())
+			return
+		}
+		if lockErr != nil {
+			writeProjectError(w, http.StatusConflict, "workspace_conflict", "an active response cannot be reassigned")
+			return
 		}
 	}
 	releaseGuard := func() {

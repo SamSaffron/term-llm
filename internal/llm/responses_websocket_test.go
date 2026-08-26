@@ -541,6 +541,93 @@ func TestResponsesClientStreamWebSocket(t *testing.T) {
 	}
 }
 
+func TestResponsesClientWebSocketFirstEventTimeoutIgnoresServerPingsAndFallsBackToHTTP(t *testing.T) {
+	const (
+		firstEventTimeout = 40 * time.Millisecond
+		pingInterval      = 5 * time.Millisecond
+	)
+
+	var wsAttempts atomic.Int32
+	var httpAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			httpAttempts.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\n"))
+			_, _ = w.Write([]byte("event: response.completed\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_http\"}}\n\n"))
+			return
+		}
+
+		wsAttempts.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := conn.WriteControl(websocket.PingMessage, []byte("heartbeat"), time.Now().Add(time.Second)); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{
+		BaseURL:                    server.URL,
+		HTTPClient:                 server.Client(),
+		UseWebSocket:               true,
+		WebSocketIdleTimeout:       time.Second,
+		WebSocketFirstEventTimeout: firstEventTimeout,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stream, err := client.Stream(ctx, ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var text string
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			text += event.Text
+		case EventDone:
+			if text != "fallback" {
+				t.Fatalf("text = %q, want fallback", text)
+			}
+			if client.websocketDisabled {
+				t.Fatal("transient first-event timeout permanently disabled WebSocket transport")
+			}
+			if got := wsAttempts.Load(); got != 1 {
+				t.Fatalf("websocket attempts = %d, want 1 before direct HTTP fallback", got)
+			}
+			if got := httpAttempts.Load(); got != 1 {
+				t.Fatalf("http attempts = %d, want 1", got)
+			}
+			return
+		case EventError:
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+}
+
 func TestResponsesClientWebSocketServerPingsKeepStreamAlive(t *testing.T) {
 	const (
 		idleTimeout  = 100 * time.Millisecond
@@ -627,6 +714,66 @@ func TestResponsesClientWebSocketServerPingsKeepStreamAlive(t *testing.T) {
 		case EventError:
 			t.Fatalf("stream error: %v", event.Err)
 		}
+	}
+}
+
+func TestResponsesClientWebSocketParkedConnectionExpires(t *testing.T) {
+	const parkedTimeout = 30 * time.Millisecond
+
+	var handshakes atomic.Int32
+	firstClosed := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		attempt := handshakes.Add(1)
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp_%d", attempt)}}); err != nil {
+			return
+		}
+		if attempt == 1 {
+			_, _, _ = conn.ReadMessage()
+			close(firstClosed)
+		}
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{
+		BaseURL:                server.URL,
+		UseWebSocket:           true,
+		WebSocketParkedTimeout: parkedTimeout,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	first, err := client.Stream(ctx, ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("first Stream: %v", err)
+	}
+	drainStreamToDone(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first stream: %v", err)
+	}
+	select {
+	case <-firstClosed:
+	case <-ctx.Done():
+		t.Fatalf("parked WebSocket did not close: %v", ctx.Err())
+	}
+
+	second, err := client.Stream(ctx, ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "second"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	drainStreamToDone(t, second)
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second stream: %v", err)
+	}
+	if got := handshakes.Load(); got != 2 {
+		t.Fatalf("WebSocket handshakes = %d, want reconnect after parked timeout", got)
 	}
 }
 

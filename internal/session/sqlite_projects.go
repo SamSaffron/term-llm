@@ -44,7 +44,7 @@ func (s *SQLiteStore) ListProjects(ctx context.Context, opts ProjectListOptions)
 		query += " WHERE p.archived_at IS NULL"
 	}
 	query += ` GROUP BY p.id ORDER BY p.archived_at IS NOT NULL, p.last_used_at DESC, LOWER(p.name), p.id`
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.queryDB().QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -64,7 +64,7 @@ func (s *SQLiteStore) GetProject(ctx context.Context, id string) (*Project, erro
 	if !s.hasProjectsTable || !s.hasProjectID {
 		return nil, ErrProjectsUnsupported
 	}
-	p, err := scanProject(s.db.QueryRowContext(ctx, projectSelectSQL+` WHERE p.id = ? GROUP BY p.id`, id))
+	p, err := scanProject(s.queryDB().QueryRowContext(ctx, projectSelectSQL+` WHERE p.id = ? GROUP BY p.id`, id))
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
 	}
@@ -75,7 +75,7 @@ func (s *SQLiteStore) GetProjectByCanonicalDir(ctx context.Context, canonicalDir
 	if !s.hasProjectsTable || !s.hasProjectID {
 		return nil, ErrProjectsUnsupported
 	}
-	p, err := scanProject(s.db.QueryRowContext(ctx, projectSelectSQL+` WHERE p.canonical_dir = ? GROUP BY p.id`, canonicalDir))
+	p, err := scanProject(s.queryDB().QueryRowContext(ctx, projectSelectSQL+` WHERE p.canonical_dir = ? GROUP BY p.id`, canonicalDir))
 	if err != nil {
 		return nil, fmt.Errorf("get project by canonical directory: %w", err)
 	}
@@ -117,7 +117,7 @@ func (s *SQLiteStore) HasActiveProjects(ctx context.Context) (bool, error) {
 		return false, ErrProjectsUnsupported
 	}
 	var active bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE archived_at IS NULL)`).Scan(&active); err != nil {
+	if err := s.queryDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE archived_at IS NULL)`).Scan(&active); err != nil {
 		return false, fmt.Errorf("check active projects: %w", err)
 	}
 	return active, nil
@@ -422,7 +422,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 	if opts.IncludeArchivedSessions {
 		archiveClause = ""
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		WITH ranked AS (
 			SELECT s.id, s.number, s.name, s.summary, s.generated_short_title,
 			       s.generated_long_title, s.title_source, s.provider,

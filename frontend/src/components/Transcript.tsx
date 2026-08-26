@@ -240,9 +240,6 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
   );
   const active = visible.some((tool) => tool.status === 'running');
   const [expanded, setExpanded] = useState(active);
-  useEffect(() => {
-    if (active) setExpanded(true);
-  }, [active]);
   if (!visible.length) return null;
   if (visible.length === 1) return <Tool tool={visible[0]} />;
   const names = [...new Set(visible.map((tool) => tool.name))];
@@ -631,6 +628,8 @@ function NewChatControls() {
 export function Transcript() {
   const store = useStore();
   const scroll = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const stickToTail = useRef(true);
   const [nearTail, setNearTail] = useState(true);
   const [turnLimit, setTurnLimit] = useState(80);
   const [clock, setClock] = useState(0);
@@ -661,11 +660,27 @@ export function Transcript() {
     return () => clearInterval(timer);
   }, []);
   void clock;
-  const latestMessageContent = messages.at(-1)?.content;
   useLayoutEffect(() => {
     const element = scroll.current;
-    if (element && nearTail) element.scrollTop = element.scrollHeight;
-  }, [store.activeSession.value?.id, messages.length, latestMessageContent, nearTail]);
+    const contents = content.current;
+    if (!element || !contents) return;
+
+    stickToTail.current = true;
+    setNearTail(true);
+    const scrollToTail = () => {
+      if (stickToTail.current) element.scrollTop = element.scrollHeight;
+    };
+    scrollToTail();
+
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(scrollToTail);
+    observer.observe(contents);
+    return () => observer.disconnect();
+  }, [store.activeSession.value?.id]);
+  useLayoutEffect(() => {
+    const element = scroll.current;
+    if (element && stickToTail.current) element.scrollTop = element.scrollHeight;
+  }, [messages]);
   useLayoutEffect(() => {
     const element = scroll.current;
     if (element && anchorHeight.current) {
@@ -681,10 +696,17 @@ export function Transcript() {
       ref={scroll}
       onScroll={(event) => {
         const element = event.currentTarget;
-        setNearTail(element.scrollHeight - element.scrollTop - element.clientHeight < 96);
+        const atTail = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+        stickToTail.current = atTail;
+        setNearTail(atTail);
       }}
     >
-      <div class="messages" id="messages" data-session-id={store.activeSession.value?.id || ''}>
+      <div
+        class="messages"
+        id="messages"
+        ref={content}
+        data-session-id={store.activeSession.value?.id || ''}
+      >
         {!messages.length && (
           <div class="empty-chat">
             <h2>{store.config.title || 'How can I help?'}</h2>

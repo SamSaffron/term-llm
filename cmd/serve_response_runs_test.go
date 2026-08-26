@@ -1732,3 +1732,57 @@ func TestResponseRunManagerAssignsMonotonicSessionEpochs(t *testing.T) {
 		t.Fatalf("restart-safe epochs before=%d first=%d second=%d", beforeCreate, first.runEpoch, second.runEpoch)
 	}
 }
+
+func TestResponseRunManagerSessionBoundaryDoesNotBlockOtherSessions(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		manager.runIfSessionIdle("session-a", func() {
+			close(started)
+			<-release
+		})
+		close(done)
+	}()
+	<-started
+
+	otherDone := make(chan struct{})
+	go func() {
+		manager.setActiveRun("session-b", "run-b")
+		_ = manager.activeRunID("session-b")
+		manager.clearActiveRun("session-b", "run-b")
+		close(otherDone)
+	}()
+	select {
+	case <-otherDone:
+	case <-time.After(time.Second):
+		t.Fatal("session B response-run bookkeeping waited for session A persistence boundary")
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("session A boundary did not finish")
+	}
+}
+
+func TestResponseRunManagerAuthoritativeStartReplacesFinishingOwner(t *testing.T) {
+	manager := newServeResponseRunManagerWithRetention(time.Minute)
+	if !manager.trySetActiveRun("session", "run-a") {
+		t.Fatal("initial owner was not claimed")
+	}
+	if manager.trySetActiveRun("session", "run-b") {
+		t.Fatal("early claim overwrote an active owner")
+	}
+
+	// onStart runs while the per-session runtime lock is held, so it is the
+	// authoritative handoff even if the previous run is still finishing its tail.
+	manager.setActiveRun("session", "run-b")
+	manager.clearActiveRun("session", "run-a")
+	if got := manager.activeRunID("session"); got != "run-b" {
+		t.Fatalf("active owner after finishing run A = %q, want run-b", got)
+	}
+}

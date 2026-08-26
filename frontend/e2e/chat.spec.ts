@@ -198,6 +198,19 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
   ).toBeVisible();
 });
 
+test('collapses file-change counts to an icon at narrow widths', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'narrow desktop breakpoint');
+  await page.setViewportSize({ width: 850, height: 800 });
+  await open(page);
+
+  const toggle = page.getByRole('button', { name: 'Toggle file changes' });
+  await expect(toggle).toHaveCSS('width', '34px');
+  await expect(toggle.locator('.diff-toggle-file-icon')).toBeVisible();
+  await expect(toggle.locator('.diff-toggle-stat-add')).toBeHidden();
+  await expect(toggle.locator('.diff-toggle-stat-del')).toBeHidden();
+  await expect(toggle.locator('.diff-toggle-file-count')).not.toHaveAttribute('data-file-count');
+});
+
 test('sends through public composer UI and reduces a streamed response', async ({ page }) => {
   const requests = await open(page);
   await page.getByRole('textbox', { name: 'Message' }).fill('Hello');
@@ -251,6 +264,9 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
 }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'mobile-only interaction');
   await open(page);
+  const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
+  await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
+  await expect(diffToggle.locator('.diff-toggle-badge')).toHaveCSS('position', 'static');
   await page.getByRole('button', { name: 'Open sidebar' }).click();
   const sidebar = page.locator('#sidebar');
   await expect(sidebar).toHaveClass(/open/);

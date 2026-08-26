@@ -1476,6 +1476,7 @@ type responseRunManager struct {
 	terminalRetention  time.Duration
 	runWG              sync.WaitGroup
 	closed             bool
+	boundaries         sync.Map // map[session ID]*sync.Mutex
 }
 
 const (
@@ -1796,19 +1797,46 @@ func (m *responseRunManager) get(id string) (*responseRun, bool) {
 	return run, ok
 }
 
+func (m *responseRunManager) sessionBoundary(sessionID string) *sync.Mutex {
+	boundary, _ := m.boundaries.LoadOrStore(sessionID, &sync.Mutex{})
+	return boundary.(*sync.Mutex)
+}
+
+func (m *responseRunManager) trySetActiveRun(sessionID, runID string) bool {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
+		return false
+	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if active := m.activeBySession[sessionID]; active != "" && active != runID {
+		return false
+	}
+	m.activeBySession[sessionID] = runID
+	return true
+}
+
 func (m *responseRunManager) setActiveRun(sessionID, runID string) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
 		return
 	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.activeBySession[sessionID] = runID
+	m.mu.Unlock()
 }
 
 func (m *responseRunManager) clearActiveRun(sessionID, runID string) {
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(runID) == "" {
 		return
 	}
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.activeBySession[sessionID] == runID {
@@ -1829,9 +1857,15 @@ func (m *responseRunManager) runIfSessionIdle(sessionID string, fn func()) bool 
 	if strings.TrimSpace(sessionID) == "" || fn == nil {
 		return false
 	}
+	// Serialize only work for this session. The manager mutex protects the
+	// activity map briefly and is never held across persistence or other I/O.
+	boundary := m.sessionBoundary(sessionID)
+	boundary.Lock()
+	defer boundary.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.activeBySession[sessionID] != "" {
+	active := m.activeBySession[sessionID] != ""
+	m.mu.Unlock()
+	if active {
 		return false
 	}
 	fn()
@@ -2783,6 +2817,13 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			options.onDone()
 		}
 		return createdRun, nil
+	}
+	// Publish activity before the goroutine can hydrate history or begin provider
+	// work. If another run already owns the session, the per-runtime TryLock will
+	// preserve the existing behavior of producing a failed response-run object;
+	// trySetActiveRun never overwrites that owner.
+	if sessionID != "" {
+		mgr.trySetActiveRun(sessionID, respID)
 	}
 
 	if options.uiSession {

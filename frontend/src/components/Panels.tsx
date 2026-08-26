@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
-import type { DiffFile, DiffLine } from '../domain/types';
+import type { DiffComment, DiffFile, DiffLine } from '../domain/types';
 import {
   clampDiffWidth,
   fileKind,
@@ -58,6 +58,7 @@ function Line({
   lang,
   commentKey,
   commenting,
+  comments,
   body,
   onComment,
   onBody,
@@ -69,6 +70,7 @@ function Line({
   lang: string;
   commentKey: string;
   commenting: boolean;
+  comments: Array<DiffComment & { queued?: boolean }>;
   body: string;
   onComment: (key: string) => void;
   onBody: (value: string) => void;
@@ -92,9 +94,13 @@ function Line({
       <DiffCode line={line} emphasis={emphasis} lang={lang} />
       {number && line.kind !== 'hunk' && (
         <button
-          class="diff-comment-affordance"
+          class={`diff-comment-affordance${comments.length ? ' has-comments' : ''}${comments.some((comment) => comment.queued) ? ' queued' : ''}`}
           type="button"
-          aria-label={`Comment on line ${number}`}
+          aria-label={
+            comments.length
+              ? `Show ${comments.length} inline comment${comments.length === 1 ? '' : 's'} for line ${number}`
+              : `Comment on line ${number}`
+          }
           aria-expanded={commenting}
           onMouseDown={(event) => {
             event.preventDefault();
@@ -109,65 +115,94 @@ function Line({
             }
           }}
         >
-          <Icon name="add" />
+          {!comments.length && <Icon name="add" />}
         </button>
       )}
       {commenting && (
-        <form
-          class="diff-comment-panel diff-comment-editor"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmit('send');
-          }}
+        <div
+          class="diff-comment-panel"
+          role="region"
+          aria-label={`Inline comments for line ${number}`}
         >
-          <textarea
-            autoFocus
-            aria-label="Inline comment"
-            value={body}
-            onInput={(event) => onBody(event.currentTarget.value)}
-          />
-          <div class="diff-comment-editor-actions">
-            <button class="diff-comment-cancel" type="button" onClick={onCancel}>
-              Cancel
-            </button>
-            <div class="diff-comment-send-split">
-              <button class="diff-comment-send" type="submit">
-                Send now
-              </button>
-              <button
-                class="diff-comment-send-more"
-                type="button"
-                aria-label="More send options"
-                aria-haspopup="menu"
-                aria-expanded={sendMenuOpen}
-                onClick={() => setSendMenuOpen(!sendMenuOpen)}
-              >
-                ▾
-              </button>
-              {sendMenuOpen && (
-                <div class="diff-comment-send-menu" role="menu">
-                  <button
-                    class="diff-comment-send-option"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => onSubmit('send')}
-                  >
-                    Send now
-                  </button>
-                  <button
-                    class="diff-comment-send-option"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => onSubmit('queue')}
-                  >
-                    Queue comment
-                    <small>Deliver later as one batch</small>
-                  </button>
+          {comments.length > 0 && (
+            <>
+              <div class="diff-comment-heading">
+                Line {number} · {line.kind === 'delete' ? 'original' : 'current'} version
+              </div>
+              {comments.map((comment) => (
+                <div
+                  class={`diff-comment-history-item${comment.queued ? ' queued' : ''}`}
+                  key={comment.id}
+                >
+                  <div class="diff-comment-history-text">{comment.body}</div>
+                  <div class="diff-comment-history-meta">
+                    {comment.queued
+                      ? 'Queued — not sent'
+                      : comment.optimistic
+                        ? 'Sending…'
+                        : 'Sent'}
+                  </div>
                 </div>
-              )}
+              ))}
+            </>
+          )}
+          <form
+            class="diff-comment-editor"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSubmit('send');
+            }}
+          >
+            <textarea
+              autoFocus
+              aria-label="Inline comment"
+              placeholder={comments.length ? 'Add a follow-up instruction…' : undefined}
+              value={body}
+              onInput={(event) => onBody(event.currentTarget.value)}
+            />
+            <div class="diff-comment-editor-actions">
+              <button class="diff-comment-cancel" type="button" onClick={onCancel}>
+                Cancel
+              </button>
+              <div class="diff-comment-send-split">
+                <button class="diff-comment-send" type="submit">
+                  Send now
+                </button>
+                <button
+                  class="diff-comment-send-more"
+                  type="button"
+                  aria-label="More send options"
+                  aria-haspopup="menu"
+                  aria-expanded={sendMenuOpen}
+                  onClick={() => setSendMenuOpen(!sendMenuOpen)}
+                >
+                  ▾
+                </button>
+                {sendMenuOpen && (
+                  <div class="diff-comment-send-menu" role="menu">
+                    <button
+                      class="diff-comment-send-option"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => onSubmit('send')}
+                    >
+                      Send now
+                    </button>
+                    <button
+                      class="diff-comment-send-option"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => onSubmit('queue')}
+                    >
+                      Queue comment
+                      <small>Deliver later as one batch</small>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
       )}
     </div>
   );
@@ -367,6 +402,21 @@ function File({ file }: { file: DiffFile }) {
               <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
                 {lines.slice(0, limit).map((line, index) => {
                   const key = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
+                  const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+                  const side = line.kind === 'delete' ? 'old' : 'new';
+                  const matchesAnchor = (comment: DiffComment) =>
+                    (!comment.sessionId || comment.sessionId === store.diff.value.sessionId) &&
+                    comment.path === file.path &&
+                    comment.side === side &&
+                    comment.line === number &&
+                    (!comment.scope || comment.scope === store.diff.value.scope);
+                  const comments: Array<DiffComment & { queued?: boolean }> = [
+                    ...store.diff.value.historyComments.filter(matchesAnchor),
+                    ...store.diff.value.comments.filter(matchesAnchor).map((comment) => ({
+                      ...comment,
+                      queued: true,
+                    })),
+                  ].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
                   return (
                     <Line
                       key={key}
@@ -375,6 +425,7 @@ function File({ file }: { file: DiffFile }) {
                       lang={lines.length <= 1500 ? file.lang || '' : ''}
                       commentKey={key}
                       commenting={commenting === key}
+                      comments={comments}
                       body={body}
                       onComment={(next) => {
                         setBody('');

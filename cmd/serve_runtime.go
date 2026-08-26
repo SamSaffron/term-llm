@@ -1114,9 +1114,8 @@ func serveRuntimeSetupFromContext(ctx context.Context) func(*llm.Request) error 
 }
 
 var (
-	errServeSessionBusy         = errors.New("session is busy processing another request")
-	errServeSessionLimitReached = errors.New("session limit reached: all sessions are busy")
-	errServeSessionPersistence  = errors.New("failed to persist or hydrate session")
+	errServeSessionBusy        = errors.New("session is busy processing another request")
+	errServeSessionPersistence = errors.New("failed to persist or hydrate session")
 )
 
 func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
@@ -1171,6 +1170,12 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		return serveRunResult{}, errServeSessionBusy
 	}
 	defer rt.mu.Unlock()
+	// Publish ownership immediately after this session's runtime is claimed.
+	// Hydration and persistence may block; they must not create a false idle
+	// window in which same-session boundary work can enter.
+	if onStart != nil {
+		onStart()
+	}
 	if setup := serveRuntimeSetupFromContext(ctx); setup != nil {
 		if err := setup(&req); err != nil {
 			return serveRunResult{}, err
@@ -1261,10 +1266,6 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		initialBoundary = append(initialBoundary, baseHistory...)
 		initialBoundary = append(initialBoundary, inputMessages...)
 		rt.refreshSideQuestionSnapshot(initialBoundary)
-	}
-
-	if onStart != nil {
-		onStart()
 	}
 
 	runCtx, runCancel := context.WithCancel(ctx)

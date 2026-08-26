@@ -16,7 +16,7 @@ func (s *SQLiteStore) ListWorkspaceGrants(ctx context.Context, sessionID string)
 	if s == nil || s.db == nil || strings.TrimSpace(sessionID) == "" {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryDB().QueryContext(ctx, `
 		SELECT id, path, access, provenance, rationale, created_at, updated_at
 		FROM session_workspace_grants
 		WHERE session_id = ?

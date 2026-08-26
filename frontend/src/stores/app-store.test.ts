@@ -675,6 +675,7 @@ describe('AppStore compatibility behavior', () => {
     store.sessions.value = [session()];
     store.activeSessionId.value = 's1';
     store.draftActive.value = false;
+    store.endpoints.diffComments = vi.fn(async () => ({ comments: [], transcript_rev: 0 }));
     store.endpoints.fileChanges = vi.fn(async () => ({
       scope: 'last_turn',
       git: true,
@@ -810,6 +811,81 @@ describe('AppStore compatibility behavior', () => {
     expect(store.diff.value.comments).toEqual([
       expect.objectContaining({ id: 'queued', body: 'Deliver this later.' }),
     ]);
+    expect(store.diff.value.historyComments).toEqual([
+      expect.objectContaining({
+        id: 'now',
+        body: 'Review this now.',
+        sessionId: 's1',
+        optimistic: true,
+      }),
+    ]);
+  });
+
+  it('reconciles inline comment trails from the durable comment endpoint', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.diff.value = {
+      ...store.diff.value,
+      sessionId: 's1',
+      historyComments: [
+        {
+          id: 'pending-comment',
+          path: 'main.go',
+          side: 'new',
+          line: 12,
+          body: 'Still sending.',
+          sessionId: 's1',
+          optimistic: true,
+        },
+      ],
+    };
+    store.endpoints.diffComments = vi.fn(async () => ({
+      transcript_rev: 4,
+      comments: [
+        {
+          message_id: 9,
+          client_message_id: 'client-1',
+          created_at: 1234,
+          diff_comment: {
+            id: 'durable-comment',
+            path: 'main.go',
+            scope: 'last_turn',
+            side: 'new',
+            line: 12,
+            file_change_seq: 8,
+            line_text: 'changed line',
+            instruction: 'Durable instruction.',
+          },
+        },
+      ],
+    }));
+
+    await store.refreshDiffComments('s1');
+
+    expect(store.diff.value.historyComments).toEqual([
+      expect.objectContaining({
+        id: 'durable-comment',
+        body: 'Durable instruction.',
+        createdAt: 1234,
+      }),
+      expect.objectContaining({ id: 'pending-comment', optimistic: true }),
+    ]);
+  });
+
+  it('refreshes an open inline comment trail when the transcript advances', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), transcriptRev: 1 }];
+    store.activeSessionId.value = 's1';
+    store.diff.value = { ...store.diff.value, open: true, sessionId: 's1' };
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [{ id: 's1', transcript_rev: 2 }],
+    }));
+    store.endpoints.diffComments = vi.fn(async () => ({ comments: [], transcript_rev: 2 }));
+
+    await (store as unknown as { refreshStatus: () => Promise<void> }).refreshStatus();
+
+    await vi.waitFor(() => expect(store.endpoints.diffComments).toHaveBeenCalledWith('s1'));
   });
 
   it('keeps the Paths control hidden until the server reports multiple paths', async () => {

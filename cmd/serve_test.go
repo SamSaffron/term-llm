@@ -2365,7 +2365,7 @@ func TestServeSessionManager_GetOrCreateBoundsCapacityCleanup(t *testing.T) {
 	}
 }
 
-func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapacity(t *testing.T) {
+func TestServeSessionManager_GetOrCreateAdmitsWhenAllCachedSessionsAreBusy(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 1, func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}
 		rt.Touch()
@@ -2391,11 +2391,11 @@ func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapa
 	manager.mu.Unlock()
 
 	created, err := manager.GetOrCreate(context.Background(), "new")
-	if !errors.Is(err, errServeSessionLimitReached) {
-		t.Fatalf("error = %v, want %v", err, errServeSessionLimitReached)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
 	}
-	if created != nil {
-		t.Fatal("expected no runtime to be created")
+	if created == nil {
+		t.Fatal("expected new runtime to be admitted")
 	}
 
 	manager.mu.Lock()
@@ -2407,11 +2407,11 @@ func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapa
 	if !busyOK {
 		t.Fatal("expected active session to remain in manager")
 	}
-	if newOK {
-		t.Fatal("expected new session not to be stored when all sessions are busy")
+	if !newOK {
+		t.Fatal("expected new session to be stored while cached sessions are busy")
 	}
-	if sessionCount != 1 {
-		t.Fatalf("session count = %d, want 1", sessionCount)
+	if sessionCount != 2 {
+		t.Fatalf("session count = %d, want temporary overflow to 2", sessionCount)
 	}
 	if got := evictions.Load(); got != 0 {
 		t.Fatalf("evictions = %d, want 0", got)
@@ -2423,7 +2423,7 @@ func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapa
 	}
 }
 
-func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAtCapacity(t *testing.T) {
+func TestServeSessionManager_GetOrCreateWithAdmitsWhenAllCachedSessionsAreBusy(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 1, nil)
 	defer manager.Close()
 
@@ -2449,11 +2449,11 @@ func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAt
 		rt.Touch()
 		return rt, nil
 	})
-	if !errors.Is(err, errServeSessionLimitReached) {
-		t.Fatalf("error = %v, want %v", err, errServeSessionLimitReached)
+	if err != nil {
+		t.Fatalf("GetOrCreateWith: %v", err)
 	}
-	if created != nil {
-		t.Fatal("expected no runtime to be created")
+	if created == nil {
+		t.Fatal("expected new runtime to be admitted")
 	}
 
 	manager.mu.Lock()
@@ -2465,11 +2465,11 @@ func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAt
 	if !busyOK {
 		t.Fatal("expected active session to remain in manager")
 	}
-	if newOK {
-		t.Fatal("expected new session not to be stored when all sessions are busy")
+	if !newOK {
+		t.Fatal("expected new session to be stored while cached sessions are busy")
 	}
-	if sessionCount != 1 {
-		t.Fatalf("session count = %d, want 1", sessionCount)
+	if sessionCount != 2 {
+		t.Fatalf("session count = %d, want temporary overflow to 2", sessionCount)
 	}
 	if got := evictions.Load(); got != 0 {
 		t.Fatalf("evictions = %d, want 0", got)
@@ -13746,5 +13746,44 @@ func TestServeRuntimeEmitGuardianReviewUsesApprovalEventStream(t *testing.T) {
 	}
 	if gotData["message"] != "guardian: denied: nope" || gotData["tool_call_id"] != "shell-1" || gotData["command"] != "rm file" || gotData["workdir"] != "/tmp" || gotData["outcome"] != tools.GuardianDenied {
 		t.Fatalf("guardian payload = %#v", gotData)
+	}
+}
+
+func TestServeSessionMetadataMutationDoesNotBlockOtherSessionAdmission(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, func(context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	runtimeA := &serveRuntime{}
+	runtimeA.Touch()
+	manager.mu.Lock()
+	manager.sessions["session-a"] = runtimeA
+	manager.mu.Unlock()
+
+	_, release, err := manager.lockIdleMetadataMutation("session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if got, err := manager.GetOrCreate(context.Background(), "session-a"); err != nil || got != runtimeA {
+		t.Fatalf("existing reserved runtime lookup = %p, %v; want %p, nil", got, err, runtimeA)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.GetOrCreate(context.Background(), "session-b")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session B admission waited for session A metadata mutation")
 	}
 }

@@ -362,8 +362,13 @@ func (p *ChatGPTProvider) isolateHelperConversation() Provider {
 // parsing. Shared by the LLM provider and the image provider so both pick up
 // the same headers, token-refresh behaviour, and 429 handling.
 func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *ResponsesClient {
+	webSocketPoolKey := ""
+	if accountID := strings.TrimSpace(creds.AccountID); accountID != "" {
+		webSocketPoolKey = "chatgpt:" + accountID + ":" + chatGPTResponsesURL
+	}
 	return &ResponsesClient{
-		BaseURL: chatGPTResponsesURL,
+		BaseURL:          chatGPTResponsesURL,
+		WebSocketPoolKey: webSocketPoolKey,
 		GetAuthHeader: func() string {
 			return "Bearer " + creds.AccessToken
 		},
