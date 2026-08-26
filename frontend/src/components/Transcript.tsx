@@ -3,6 +3,7 @@ import type { Message, ToolCall } from '../domain/types';
 import { indexTranscriptTurns, windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
+import { ChipPicker } from './ChipPicker';
 import { Icon } from './Icon';
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
@@ -514,43 +515,6 @@ function MessageRow({
   );
 }
 
-function NewChatPicker({
-  label,
-  ariaLabel,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  ariaLabel: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-}) {
-  const selected = options.find((option) => option.value === value) || options[0];
-  return (
-    <label class="new-chat-project-picker">
-      <select
-        class="new-chat-picker-select"
-        aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-      >
-        {options.map((option) => (
-          <option key={option.value || 'default'} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <span class="new-chat-project-trigger" aria-hidden="true">
-        {(label !== 'Project' || value) && <span class="new-chat-project-label">{label}</span>}
-        <span class="new-chat-project-value">{selected?.label}</span>
-        <span class="new-chat-project-chevron">⌄</span>
-      </span>
-    </label>
-  );
-}
-
 function NewChatControls() {
   const store = useStore();
   if (!store.draftActive.value) return null;
@@ -558,32 +522,50 @@ function NewChatControls() {
     .filter((project) => !project.archived && project.available !== false)
     .sort((left, right) => left.name.localeCompare(right.name));
   return (
-    <>
+    <div class="new-chat-pickers">
       {store.config.agentNames.length > 0 && (
-        <NewChatPicker
-          label="Agent"
-          ariaLabel="Agent for new chat"
-          value={store.selectedAgent.value}
-          options={[
-            { value: '', label: 'Default' },
-            ...store.config.agentNames.map((agent) => ({ value: agent, label: agent })),
-          ]}
-          onChange={(agent) => store.setPreference('agent', agent)}
-        />
+        <div class="new-chat-project-picker new-chat-agent-picker">
+          <ChipPicker
+            ariaLabel="Choose agent for new chat"
+            value={store.selectedAgent.value}
+            options={[
+              { value: '', label: 'Default' },
+              ...store.config.agentNames.map((agent) => ({ value: agent, label: agent })),
+            ]}
+            triggerClass="new-chat-project-trigger new-chat-agent-trigger"
+            onChange={(agent) => store.setPreference('agent', agent)}
+            renderTrigger={(selected) => (
+              <>
+                <span class="new-chat-project-label">Agent</span>
+                <span class="new-chat-project-value">{selected.label}</span>
+                <span class="new-chat-project-chevron">⌄</span>
+              </>
+            )}
+          />
+        </div>
       )}
       {store.projectsEnabled.value && (
-        <NewChatPicker
-          label="Project"
-          ariaLabel="Context for new chat"
-          value={store.activeProjectId.value}
-          options={[
-            { value: '', label: 'Chat' },
-            ...projects.map((project) => ({ value: project.id, label: project.name })),
-          ]}
-          onChange={(projectId) => store.newChat(true, projectId)}
-        />
+        <div class="new-chat-project-picker">
+          <ChipPicker
+            ariaLabel="Choose chat or project"
+            value={store.activeProjectId.value}
+            options={[
+              { value: '', label: 'Chat' },
+              ...projects.map((project) => ({ value: project.id, label: project.name })),
+            ]}
+            triggerClass="new-chat-project-trigger"
+            onChange={(projectId) => store.newChat(true, projectId)}
+            renderTrigger={(selected) => (
+              <>
+                {selected.value && <span class="new-chat-project-label">Project</span>}
+                <span class="new-chat-project-value">{selected.label}</span>
+                <span class="new-chat-project-chevron">⌄</span>
+              </>
+            )}
+          />
+        </div>
       )}
-    </>
+    </div>
   );
 }
 

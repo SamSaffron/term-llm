@@ -10,6 +10,7 @@ import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { DiffSidebar } from './Panels';
+import { ChipPicker } from './ChipPicker';
 import type { AppConfig } from '../app/config';
 
 const config: AppConfig = {
@@ -422,22 +423,60 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const project = screen.getByRole('combobox', { name: 'Context for new chat' });
-    const agent = screen.getByRole('combobox', { name: 'Agent for new chat' });
-    expect(project).toHaveValue('');
-    expect(project).toHaveTextContent('ChatAlphaZeta');
-    expect(project).not.toHaveTextContent('Archived');
-    expect(project).not.toHaveTextContent('Unavailable');
-    expect(agent).toHaveTextContent('Defaultjarvis');
+    const project = screen.getByRole('button', { name: 'Choose chat or project' });
+    const agent = screen.getByRole('button', { name: 'Choose agent for new chat' });
+    expect(project).toHaveTextContent('Chat');
+    expect(agent).toHaveTextContent('AgentDefault');
+    expect(project.closest('.new-chat-pickers')).toBe(agent.closest('.new-chat-pickers'));
 
-    await userEvent.selectOptions(project, 'p1');
+    await userEvent.click(project);
+    const projectPopover = screen.getByRole('dialog', { name: 'Choose chat or project' });
+    expect(screen.getByRole('listbox', { name: 'Choose chat or project' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('option', { name: 'Chat' })).toHaveFocus();
+    expect(projectPopover).toHaveTextContent('ChatAlphaZeta');
+    expect(projectPopover).not.toHaveTextContent('Archived');
+    expect(projectPopover).not.toHaveTextContent('Unavailable');
+
+    await userEvent.keyboard('{ArrowDown}{Enter}');
     expect(store.activeProjectId.value).toBe('p1');
     expect(localStorage.getItem(store.keys.lastProject)).toBe('p1');
-    expect(screen.getByText('Project').nextElementSibling).toHaveTextContent('Alpha');
+    expect(project).toHaveTextContent('ProjectAlpha');
+    expect(project).toHaveAttribute('aria-expanded', 'false');
+    expect(project).toHaveFocus();
 
-    await userEvent.selectOptions(agent, 'jarvis');
+    await userEvent.click(agent);
+    await userEvent.click(screen.getByRole('option', { name: 'jarvis' }));
     expect(store.selectedAgent.value).toBe('jarvis');
     expect(localStorage.getItem(store.keys.selectedAgent)).toBe('jarvis');
+    expect(agent).toHaveTextContent('Agentjarvis');
+  });
+
+  it('filters long shared chip pickers and restores trigger focus on Escape', async () => {
+    const options = Array.from({ length: 11 }, (_, index) => ({
+      value: `value-${index}`,
+      label: index === 10 ? 'Special project' : `Project ${index}`,
+    }));
+    render(
+      <ChipPicker
+        ariaLabel="Reusable picker"
+        value="value-0"
+        options={options}
+        triggerClass="new-chat-project-trigger"
+        onChange={vi.fn()}
+        renderTrigger={(selected) => <span>{selected.label}</span>}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Reusable picker' });
+    await userEvent.click(trigger);
+    const filter = screen.getByRole('searchbox', { name: 'Filter options' });
+    expect(filter).toHaveFocus();
+    await userEvent.type(filter, 'special');
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: 'Special project' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Reusable picker' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {

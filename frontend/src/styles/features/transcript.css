@@ -33,26 +33,18 @@
   font-size: 1rem;
 }
 
+.new-chat-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
 .new-chat-project-picker {
   display: inline-flex;
-  margin-top: 1rem;
   max-width: min(22rem, 76vw);
-  position: relative;
-}
-
-.new-chat-picker-select {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  cursor: pointer;
-}
-
-.new-chat-project-picker:focus-within .new-chat-project-trigger {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 10%, transparent);
 }
 
 .new-chat-project-trigger {

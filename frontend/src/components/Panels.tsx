@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type { DiffFile, DiffLine } from '../domain/types';
 import {
@@ -11,6 +11,7 @@ import {
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
 import { Icon } from './Icon';
+import { ChipPicker } from './ChipPicker';
 
 function DiffCode({
   line,
@@ -400,80 +401,38 @@ const DIFF_SCOPE_OPTIONS = [
 function DiffScopePicker() {
   const store = useStore();
   const state = store.diff.value;
-  const [open, setOpen] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const popover = useRef<HTMLDialogElement>(null);
-  const options = state.git ? DIFF_SCOPE_OPTIONS : DIFF_SCOPE_OPTIONS.slice(0, 2);
-  const label = DIFF_SCOPE_OPTIONS.find(([value]) => value === state.scope)?.[1] || 'Last turn';
-  useLayoutEffect(() => {
-    if (!open || !trigger.current || !popover.current) return;
-    const panel = popover.current;
-    if (!panel.open) panel.showModal();
-    const rect = trigger.current.getBoundingClientRect();
-    const panelRect = panel.getBoundingClientRect();
-    panel.style.left = `${Math.max(6, Math.min(rect.left, innerWidth - panelRect.width - 6))}px`;
-    const below = rect.bottom + 4;
-    panel.style.top = `${below + panelRect.height < innerHeight - 6 ? below : Math.max(6, rect.top - panelRect.height - 4)}px`;
-  }, [open]);
-  const choose = (scope: string) => {
-    setOpen(false);
-    if (scope === state.scope) return;
-    store.diff.value = { ...store.diff.peek(), scope, files: [], error: '' };
-    void store.loadDiff();
-  };
+  const options = (state.git ? DIFF_SCOPE_OPTIONS : DIFF_SCOPE_OPTIONS.slice(0, 2)).map(
+    ([value, label]) => ({ value, label }),
+  );
   return (
-    <>
-      <button
-        ref={trigger}
-        type="button"
-        class="chip-trigger diff-scope-trigger"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="Change scope"
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span class="chip-label">{label}</span>
-        <svg
-          class="diff-scope-chevron"
-          viewBox="0 0 12 8"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="m2 2 4 4 4-4" />
-        </svg>
-      </button>
-      {open && (
-        <dialog
-          ref={popover}
-          class="chip-popover diff-scope-popover"
-          aria-label="Change scope"
-          onCancel={(event) => {
-            event.preventDefault();
-            setOpen(false);
-            trigger.current?.focus();
-          }}
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setOpen(false);
-          }}
-        >
-          {options.map(([value, text]) => (
-            <button
-              type="button"
-              class="chip-popover-item"
-              role="option"
-              aria-selected={value === state.scope}
-              onClick={() => choose(value)}
-            >
-              <span class="chip-popover-item-label">{text}</span>
-            </button>
-          ))}
-        </dialog>
+    <ChipPicker
+      ariaLabel="Change scope"
+      value={state.scope}
+      options={options}
+      triggerClass="chip-trigger diff-scope-trigger"
+      popoverClass="diff-scope-popover"
+      onChange={(scope) => {
+        store.diff.value = { ...store.diff.peek(), scope, files: [], error: '' };
+        void store.loadDiff();
+      }}
+      renderTrigger={(selected) => (
+        <>
+          <span class="chip-label">{selected.label}</span>
+          <svg
+            class="diff-scope-chevron"
+            viewBox="0 0 12 8"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m2 2 4 4 4-4" />
+          </svg>
+        </>
       )}
-    </>
+    />
   );
 }
 
