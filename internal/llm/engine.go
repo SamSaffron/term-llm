@@ -1811,6 +1811,7 @@ func (e *Engine) prepareRequestContext(ctx context.Context, req *Request) {
 
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
+	ctx = withDebugDiagnosticSink(ctx, e.debugLogger)
 	// Until this request is proven agentic, it has no boundary at which it can
 	// consume steering. This also clears accepting state left by a prior run.
 	e.markInterjectionRunNonConsuming()
@@ -2434,6 +2435,7 @@ func restoreToolDiscoveryReplay(messages []Message, replay []Part) []Message {
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
+	ctx = withResponsesWebSocketContinuationLifetime(ctx)
 	defer e.markInterjectionRunNonConsuming()
 	runID := e.beginToolRun()
 	defer e.endToolRun(runID)

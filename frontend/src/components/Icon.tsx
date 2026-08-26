@@ -5,7 +5,9 @@ type IconName =
   | 'arrow-left'
   | 'branch'
   | 'check'
+  | 'chevron-down'
   | 'chevron-right'
+  | 'chevron-up'
   | 'close'
   | 'compact'
   | 'copy'
@@ -44,7 +46,9 @@ const paths: Record<IconName, JSX.Element> = {
     </>
   ),
   check: <path d="m5 12 4 4L19 6" />,
+  'chevron-down': <path d="m6 9 6 6 6-6" />,
   'chevron-right': <path d="m9 18 6-6-6-6" />,
+  'chevron-up': <path d="m6 15 6-6 6 6" />,
   close: (
     <>
       <path d="M6 6l12 12" />

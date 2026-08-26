@@ -51,6 +51,28 @@ describe('response projection', () => {
     expect(new Set(RESPONSE_EVENT_TYPES).size).toBe(RESPONSE_EVENT_TYPES.length);
   });
 
+  it('does not project the compaction resume handoff below its transcript boundary', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.phase', 1, { text: 'Compacting: summarize history' }),
+    );
+    expect(projection.phase).toBe('Compacting: summarize history');
+
+    projection = reduceResponse(projection, event('response.compaction', 2));
+    expect(projection.messages.at(-1)).toMatchObject({
+      role: 'compaction-boundary',
+      content: 'Context compacted',
+    });
+    expect(projection.phase).toBeUndefined();
+
+    projection = reduceResponse(
+      projection,
+      event('response.phase', 3, { text: 'Compacting: resume task' }),
+    );
+    expect(projection.phase).toBeUndefined();
+  });
+
   it('streams stable assistant segments without replacing earlier content', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(projection, event('response.created', 1));

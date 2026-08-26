@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -49,6 +48,19 @@ func TestResponsesWebSocketPoolConcurrentLifecycle(t *testing.T) {
 		if got := pool.count(key); got != 0 {
 			t.Fatalf("pool count for %s = %d after concurrent lifecycle, want 0", key, got)
 		}
+	}
+}
+
+func TestResponsesWebSocketPoolReleaseClearsLeaseState(t *testing.T) {
+	pool := newResponsesWebSocketPool(1)
+	lease, err := pool.acquire("credential@endpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.release()
+	admitted, active, count := lease.diagnosticSnapshot()
+	if admitted || active || count != 0 {
+		t.Fatalf("released lease snapshot = admitted:%t active:%t count:%d, want false/false/0", admitted, active, count)
 	}
 }
 
@@ -108,9 +120,8 @@ func TestResponsesWebSocketPoolEvictsLeastRecentlyParkedConnection(t *testing.T)
 	}
 }
 
-func TestResponsesClientWebSocketPoolEvictionRedialsWithFullState(t *testing.T) {
-	key := "eviction-redial-" + t.Name()
-	requests := make(chan map[string]any, 4)
+func TestResponsesClientWebSocketToolContinuationCannotBeEvicted(t *testing.T) {
+	key := "pinned-tool-" + t.Name()
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,53 +130,35 @@ func TestResponsesClientWebSocketPoolEvictionRedialsWithFullState(t *testing.T) 
 			return
 		}
 		defer conn.Close()
-		handshake := handshakes.Add(1)
-		for {
-			_, body, readErr := conn.ReadMessage()
-			if readErr != nil {
-				return
-			}
-			var request map[string]any
-			if err := json.Unmarshal(body, &request); err != nil {
-				t.Errorf("decode request: %v", err)
-				return
-			}
-			requests <- request
-			if err := conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp_%d", handshake)}}); err != nil {
-				return
-			}
+		handshakes.Add(1)
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
 		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "function_call", "call_id": "call_1", "name": "read_file"}})
+		_ = conn.WriteJSON(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"}})
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_tool"}})
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_final"}})
 	}))
 	defer server.Close()
 
-	client := &ResponsesClient{
-		BaseURL:              server.URL,
-		UseWebSocket:         true,
-		WebSocketServerState: true,
-		DisableServerState:   true,
-		WebSocketPoolKey:     key,
-	}
-	defer client.closeWebSocket()
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true, WebSocketServerState: true, DisableServerState: true, WebSocketPoolKey: key}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	first, err := client.Stream(ctx, ResponsesRequest{
-		Model:     "gpt-test",
-		SessionID: "session-a",
-		Input:     []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}},
-		Stream:    true,
-	}, false)
+	first, err := client.Stream(ctx, ResponsesRequest{Model: "gpt-test", SessionID: "session-x", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "first"}}, Stream: true}, false)
 	if err != nil {
-		t.Fatalf("first Stream: %v", err)
+		t.Fatal(err)
 	}
 	drainStreamToDone(t, first)
 	_ = first.Close()
-	<-requests
 
 	fillers := make([]*responsesWebSocketLease, 0, defaultResponsesWebSocketMaxConnectionsPerKey-1)
 	for range defaultResponsesWebSocketMaxConnectionsPerKey - 1 {
 		lease, acquireErr := sharedResponsesWebSocketPool.acquire(key)
 		if acquireErr != nil {
-			t.Fatalf("reserve active filler: %v", acquireErr)
+			t.Fatal(acquireErr)
 		}
 		fillers = append(fillers, lease)
 	}
@@ -174,39 +167,22 @@ func TestResponsesClientWebSocketPoolEvictionRedialsWithFullState(t *testing.T) 
 			lease.release()
 		}
 	}()
-	trigger, err := sharedResponsesWebSocketPool.acquire(key)
-	if err != nil {
-		t.Fatalf("acquire eviction trigger: %v", err)
+	if _, err := sharedResponsesWebSocketPool.acquire(key); !errors.Is(err, errResponsesWebSocketPoolSaturated) {
+		t.Fatalf("acquire at capacity = %v, want saturation rather than continuation eviction", err)
 	}
-	trigger.release()
 
-	fullInput := []ResponsesInputItem{
+	second, err := client.Stream(ctx, ResponsesRequest{Model: "gpt-test", SessionID: "session-x", Input: []ResponsesInputItem{
 		{Type: "message", Role: "user", Content: "first"},
-		{Type: "message", Role: "assistant", Content: "ack"},
-		{Type: "message", Role: "user", Content: "second"},
-	}
-	second, err := client.Stream(ctx, ResponsesRequest{
-		Model:     "gpt-test",
-		SessionID: "session-a",
-		Input:     fullInput,
-		Stream:    true,
-	}, false)
+		{Type: "function_call", CallID: "call_1", Name: "read_file", Arguments: "{}"},
+		{Type: "function_call_output", CallID: "call_1", Output: "contents"},
+	}, Stream: true}, false)
 	if err != nil {
-		t.Fatalf("second Stream: %v", err)
+		t.Fatal(err)
 	}
 	drainStreamToDone(t, second)
 	_ = second.Close()
-	secondRequest := <-requests
-
-	if got := handshakes.Load(); got != 2 {
-		t.Fatalf("WebSocket handshakes = %d, want redial after LRU eviction", got)
-	}
-	if previous, ok := secondRequest["previous_response_id"]; ok && previous != "" {
-		t.Fatalf("redial request retained connection-local previous_response_id: %#v", previous)
-	}
-	input, ok := secondRequest["input"].([]any)
-	if !ok || len(input) != len(fullInput) {
-		t.Fatalf("redial input = %#v, want full %d-item history", secondRequest["input"], len(fullInput))
+	if handshakes.Load() != 1 {
+		t.Fatalf("handshakes = %d, want pinned exact socket", handshakes.Load())
 	}
 }
 

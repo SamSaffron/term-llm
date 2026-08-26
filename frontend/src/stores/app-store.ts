@@ -10,6 +10,7 @@ import {
   type ResponseProjection,
 } from '../domain/response';
 import { applyRuntimeToRequest, type ModelOption } from '../domain/runtime';
+import { planSummary } from '../domain/plan';
 import {
   convertServerMessages,
   mergeDurableProjection,
@@ -65,7 +66,8 @@ export type Modal =
   | 'branch-context'
   | 'project'
   | 'worktrees'
-  | 'skills';
+  | 'skills'
+  | 'side';
 export interface Toast {
   id: string;
   message: string;
@@ -75,8 +77,10 @@ export interface RuntimeOption extends ModelOption {
   [key: string]: unknown;
 }
 export interface SideQuestionState {
-  visible: boolean;
+  sessionId: string;
+  loading: boolean;
   running: boolean;
+  draft: string;
   question: string;
   response: string;
   error: string;
@@ -257,11 +261,15 @@ export class AppStore {
   readonly toasts = signal<Toast[]>([]);
   readonly currentPlan = signal<CurrentPlan | null>(null);
   readonly planOpen = signal(false);
+  readonly planSeen = signal<string | null>(null);
+  readonly planVisible = computed(() => this.planOpen.value && Boolean(this.currentPlan.value));
   readonly askUser = signal<AskUserPrompt | null>(null);
   readonly approval = signal<ApprovalPrompt | null>(null);
   readonly sideQuestion = signal<SideQuestionState>({
-    visible: false,
+    sessionId: '',
+    loading: false,
     running: false,
+    draft: '',
     question: '',
     response: '',
     error: '',
@@ -322,6 +330,7 @@ export class AppStore {
   private searchAbort: AbortController | null = null;
   private searchTimer = 0;
   private sideQuestionAbort: AbortController | null = null;
+  private sideQuestionEpoch = 0;
   private modelAbort: AbortController | null = null;
   private statusTimer = 0;
   private lifecycleInstalled = false;
@@ -726,12 +735,15 @@ export class AppStore {
 
   async selectSession(session: Session, replace = false): Promise<void> {
     this.persistCurrentDraft();
+    this.resetSideQuestion();
     const epoch = ++this.selectionEpoch;
     batch(() => {
       this.activeSessionId.value = session.id;
       this.activeProjectId.value = session.projectId || '';
       this.draftActive.value = false;
       this.currentPlan.value = null;
+      this.planOpen.value = false;
+      this.planSeen.value = null;
       this.askUser.value = null;
       this.approval.value = null;
       this.branchTree.value = null;
@@ -764,11 +776,11 @@ export class AppStore {
     void this.refreshBranchTree(current.id);
     if (current.activeResponseId) void this.resumeResponse(current.id, current.activeResponseId);
     this.sidebarOpen.value = false;
-    void this.recoverSideQuestion();
   }
 
   newChat(replace = false, projectId = ''): void {
     this.persistCurrentDraft();
+    this.resetSideQuestion();
     ++this.selectionEpoch;
     const selectedProject =
       projectId &&
@@ -782,6 +794,8 @@ export class AppStore {
       this.activeProjectId.value = selectedProject;
       this.draftActive.value = true;
       this.currentPlan.value = null;
+      this.planOpen.value = false;
+      this.planSeen.value = null;
       this.askUser.value = null;
       this.approval.value = null;
       this.skills.value = [];
@@ -884,13 +898,16 @@ export class AppStore {
       else this.sessions.value = [updated, ...this.sessions.value];
       if (updated.id !== id) this.rekeySession(id, updated.id, selectedSource);
       const planSource = state.current_plan || selectedSource.plan_summary;
+      let loadedPlan: CurrentPlan | null = null;
       if (planSource && typeof planSource === 'object') {
         const raw = planSource as Record<string, unknown>;
         const plan = raw.plan || raw.steps;
-        this.currentPlan.value = Array.isArray(plan)
+        loadedPlan = Array.isArray(plan)
           ? { explanation: String(raw.explanation || ''), plan: plan as CurrentPlan['plan'] }
           : null;
-      } else this.currentPlan.value = null;
+      }
+      this.currentPlan.value = loadedPlan;
+      this.planSeen.value = loadedPlan ? planSummary(loadedPlan).signature : '';
       this.goal.value =
         state.goal && typeof state.goal === 'object' ? (state.goal as Goal) : updated.goal || null;
       this.applyWidgetStatus(selected.widget_status);
@@ -1269,8 +1286,13 @@ export class AppStore {
             }
           : session,
       );
-    if (next.plan !== current.plan && sessionId === this.activeSessionId.peek())
+    if (next.plan !== current.plan && sessionId === this.activeSessionId.peek()) {
       this.currentPlan.value = next.plan;
+      if (!next.plan) {
+        this.planOpen.value = false;
+        this.planSeen.value = '';
+      }
+    }
     if (next.askUser && next.askUser !== current.askUser) this.askUser.value = next.askUser;
     if (next.approval && next.approval !== current.approval) this.approval.value = next.approval;
     if (event.type === 'response.interjection') {
@@ -1870,31 +1892,112 @@ export class AppStore {
     this.approval.value = null;
   }
 
-  async recoverSideQuestion(): Promise<void> {
-    const session = this.activeSession.value;
-    if (!session) return;
-    const value = await this.endpoints.sideQuestionState(session.id);
+  private resetSideQuestion(): void {
+    const state = this.sideQuestion.peek();
+    const owner = state.sessionId;
+    this.sideQuestionEpoch += 1;
+    this.sideQuestionAbort?.abort();
+    this.sideQuestionAbort = null;
+    if (state.running && owner)
+      void this.endpoints.cancelSideQuestion(owner).catch(() => undefined);
+    if (this.modal.peek() === 'side') this.modal.value = '';
     this.sideQuestion.value = {
-      ...this.sideQuestion.value,
-      running: Boolean(value.running),
-      question: String(value.question || ''),
-      response: String(value.response || ''),
-      error: String(value.error || ''),
-      history: Array.isArray(value.history) ? (value.history as SideQuestionState['history']) : [],
+      sessionId: '',
+      loading: false,
+      running: false,
+      draft: '',
+      question: '',
+      response: '',
+      error: '',
+      history: [],
     };
   }
 
-  async askSideQuestion(question: string): Promise<void> {
-    const session = this.activeSession.value;
+  openSideQuestion(question = ''): boolean {
+    const session = this.activeSession.peek();
+    if (!session || this.draftActive.peek()) {
+      this.toast('Start the conversation before asking a side question.', 'error');
+      return false;
+    }
     const value = question.trim();
-    if (!session || !value || this.sideQuestion.value.running) return;
+    if (this.sideQuestion.peek().sessionId !== session.id) this.resetSideQuestion();
+    this.modal.value = 'side';
+    if (value) {
+      void this.askSideQuestion(value);
+      return true;
+    }
+    const epoch = ++this.sideQuestionEpoch;
+    this.sideQuestion.value = {
+      ...this.sideQuestion.peek(),
+      sessionId: session.id,
+      loading: true,
+      error: '',
+    };
+    void this.recoverSideQuestion(session.id, epoch);
+    return true;
+  }
+
+  setSideQuestionDraft(value: string): void {
+    this.sideQuestion.value = { ...this.sideQuestion.peek(), draft: value };
+  }
+
+  async recoverSideQuestion(
+    sessionId = this.activeSession.peek()?.id || '',
+    epoch = ++this.sideQuestionEpoch,
+  ): Promise<void> {
+    if (!sessionId) return;
+    try {
+      const value = await this.endpoints.sideQuestionState(sessionId);
+      if (
+        epoch !== this.sideQuestionEpoch ||
+        this.activeSessionId.peek() !== sessionId ||
+        this.sideQuestion.peek().sessionId !== sessionId
+      )
+        return;
+      const running = Boolean(value.running);
+      this.sideQuestion.value = {
+        ...this.sideQuestion.peek(),
+        sessionId,
+        loading: false,
+        running,
+        question: running ? String(value.question || '') : '',
+        response: running ? String(value.response || '') : '',
+        error: String(value.error || ''),
+        history: Array.isArray(value.history)
+          ? (value.history as SideQuestionState['history'])
+          : [],
+      };
+    } catch (error) {
+      if (epoch !== this.sideQuestionEpoch) return;
+      this.sideQuestion.value = {
+        ...this.sideQuestion.peek(),
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async askSideQuestion(question: string): Promise<void> {
+    const session = this.activeSession.peek();
+    const value = question.trim();
+    if (!session || !value) return;
+    if (this.sideQuestion.peek().running) {
+      this.sideQuestion.value = {
+        ...this.sideQuestion.peek(),
+        error: 'A side question is already running.',
+      };
+      return;
+    }
     this.sideQuestionAbort?.abort();
     const controller = new AbortController();
+    const epoch = ++this.sideQuestionEpoch;
     this.sideQuestionAbort = controller;
     this.sideQuestion.value = {
-      ...this.sideQuestion.value,
-      visible: true,
+      ...this.sideQuestion.peek(),
+      sessionId: session.id,
+      loading: false,
       running: true,
+      draft: '',
       question: value,
       response: '',
       error: '',
@@ -1904,38 +2007,63 @@ export class AppStore {
       if (!response.ok || !response.body)
         throw new Error((await response.text()) || `Side question failed (${response.status})`);
       let answer = '';
+      let generation = Number(response.headers.get('x-side-generation') || 0);
       for await (const frame of decodeSSE(response.body, controller.signal)) {
+        if (epoch !== this.sideQuestionEpoch || this.activeSessionId.peek() !== session.id) return;
         let event: Record<string, unknown>;
         try {
           event = JSON.parse(frame.data) as Record<string, unknown>;
         } catch {
           continue;
         }
+        const eventGeneration = Number(event.generation || 0);
+        if (!generation && eventGeneration) generation = eventGeneration;
+        if (generation && eventGeneration && eventGeneration !== generation) continue;
         if (event.type === 'text_delta') answer += String(event.text || '');
         else if (event.type === 'attempt_discard') answer = '';
         else if (event.type === 'done' && recordValue(event.result))
           answer = String(recordValue(event.result)?.response || answer);
-        this.sideQuestion.value = { ...this.sideQuestion.value, response: answer };
+        this.sideQuestion.value = { ...this.sideQuestion.peek(), response: answer };
       }
-      if (!controller.signal.aborted) {
-        await this.recoverSideQuestion();
-        this.sideQuestion.value = { ...this.sideQuestion.value, visible: true, running: false };
-      }
+      if (!controller.signal.aborted && epoch === this.sideQuestionEpoch)
+        await this.recoverSideQuestion(session.id, epoch);
     } catch (error) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted && epoch === this.sideQuestionEpoch) {
+        void this.endpoints.cancelSideQuestion(session.id).catch(() => undefined);
         this.sideQuestion.value = {
-          ...this.sideQuestion.value,
+          ...this.sideQuestion.peek(),
+          loading: false,
           running: false,
           error: error instanceof Error ? error.message : String(error),
         };
+      }
+    } finally {
+      if (this.sideQuestionAbort === controller) this.sideQuestionAbort = null;
     }
   }
-  async closeSideQuestion(): Promise<void> {
-    const session = this.activeSession.value;
+
+  cancelSideQuestion(): void {
+    const state = this.sideQuestion.peek();
+    const owner = state.sessionId;
+    const wasRunning = state.running;
+    this.sideQuestionEpoch += 1;
     this.sideQuestionAbort?.abort();
-    if (this.sideQuestion.value.running && session)
-      await this.endpoints.cancelSideQuestion(session.id).catch(() => undefined);
-    this.sideQuestion.value = { ...this.sideQuestion.value, visible: false, running: false };
+    this.sideQuestionAbort = null;
+    this.sideQuestion.value = {
+      ...state,
+      loading: false,
+      running: false,
+      question: '',
+      response: '',
+      error: '',
+    };
+    if (wasRunning && owner) void this.endpoints.cancelSideQuestion(owner).catch(() => undefined);
+  }
+
+  closeSideQuestion(): void {
+    if (this.modal.peek() === 'side') this.modal.value = '';
+    if (this.sideQuestion.peek().running || this.sideQuestion.peek().loading)
+      this.cancelSideQuestion();
   }
 
   async loadMCP(): Promise<void> {
@@ -2147,6 +2275,18 @@ export class AppStore {
     } catch {
       /* Keep the optimistic trail visible; the status loop will reconcile it. */
     }
+  }
+
+  openPlan(): void {
+    const plan = this.currentPlan.peek();
+    if (!plan) return;
+    this.diff.value = { ...this.diff.peek(), open: false };
+    this.planSeen.value = planSummary(plan).signature;
+    this.planOpen.value = true;
+  }
+
+  closePlan(): void {
+    this.planOpen.value = false;
   }
 
   async toggleDiff(): Promise<void> {

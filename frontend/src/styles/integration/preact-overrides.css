@@ -642,25 +642,6 @@ mark.diff-word {
   grid-column: 1 / -2;
 }
 
-.side-question-user,
-.side-question-assistant {
-  max-width: 86%;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  line-height: 1.45;
-}
-
-.side-question-user {
-  margin-left: auto;
-  background: var(--surface-2);
-}
-
-.side-question-assistant {
-  margin-right: auto;
-  background: var(--surface);
-}
-
 .side-question-send svg {
   width: 1rem;
   height: 1rem;
@@ -800,8 +781,17 @@ mark.diff-word {
     padding-inline: 0.25rem;
   }
 
-  .header-context-actions {
+  .header-context-actions .worktree-trigger {
     display: none;
+  }
+
+  .plan-toggle-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .main-header {

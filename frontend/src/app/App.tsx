@@ -7,7 +7,7 @@ import { Header } from '../components/Header';
 import { Transcript } from '../components/Transcript';
 import { Composer } from '../components/Composer';
 import { DiffSidebar, PlanSurface } from '../components/Panels';
-import { Modals, SideQuestion } from '../components/Modals';
+import { Modals } from '../components/Modals';
 import { Lightbox } from '../components/Lightbox';
 import { registerServiceWorker } from '../platform/browser';
 
@@ -89,7 +89,7 @@ export function App({ store }: { store: AppStore }) {
           </div>
         )}
         <div
-          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planOpen.value ? 'plan-open' : ''}`}
+          class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${store.diff.value.open ? 'diff-open' : ''} ${store.diff.value.maximized ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''}`}
           id="appShell"
           style={{ '--diff-sidebar-user-width': `${store.diff.value.width}px` }}
           aria-hidden={!store.startupDone.value || undefined}
@@ -103,7 +103,6 @@ export function App({ store }: { store: AppStore }) {
           <DiffSidebar />
           <PlanSurface />
         </div>
-        <SideQuestion />
         <Modals />
         <Lightbox />
       </StoreContext.Provider>

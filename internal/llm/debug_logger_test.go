@@ -81,6 +81,31 @@ func TestDebugLogger_LogRequest(t *testing.T) {
 	}
 }
 
+func TestDebugLogger_LogSessionStartIncludesBuildIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger, err := NewDebugLogger(tmpDir, "build-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogSessionStart("term-llm", []string{"serve", "web"}, "/tmp/project")
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "build-session.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	build, ok := entry["build"].(map[string]any)
+	if !ok || build["executable"] == "" || build["executable_mtime"] == "" || build["executable_size"] == nil {
+		t.Fatalf("build identity = %#v, want executable metadata", entry["build"])
+	}
+}
+
 func TestDebugLogger_LogEvent(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionID := "test-event-session"

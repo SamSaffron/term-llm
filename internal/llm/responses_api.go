@@ -59,6 +59,7 @@ type ResponsesClient struct {
 	wsConnSessionID            string
 	wsConnBetaHeader           string
 	wsLastRequest              *ResponsesRequest
+	wsContinuationBaseline     *responsesWebSocketContinuationBaseline
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
 	HandleError func(statusCode int, body []byte, headers http.Header) error
@@ -1025,7 +1026,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	if lastResponseID != "" {
 		if c.websocketServerStateEnabled() {
 			wsReq.PreviousResponseID = lastResponseID
-			wsReq.Input = buildContinuationInput()
+			// WebSocket continuation derives its suffix from the full ordered input
+			// under wsMu; never trust a pre-trimmed caller suffix for local state.
+			wsReq.Input = nil
 		} else {
 			wsReq.Input = buildFullInput()
 		}
@@ -1037,9 +1040,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		}
 	} else {
 		wsReq.PreviousResponseID = ""
-		wsReq.Input = buildFullInput()
+		wsReq.Input = nil
 		httpPayload.PreviousResponseID = ""
-		httpPayload.Input = fullInput
+		httpPayload.Input = buildFullInput()
 	}
 
 	if c.UseWebSocket && !c.websocketDisabled && !req.ForceHTTP {
@@ -1559,6 +1562,7 @@ func (c *ResponsesClient) ResetConversation() {
 	c.responseStateSessionID = ""
 	c.websocketDisabled = false
 	c.wsLastRequest = nil
+	c.wsContinuationBaseline = nil
 }
 
 func (c *ResponsesClient) websocketServerStateEnabled() bool {

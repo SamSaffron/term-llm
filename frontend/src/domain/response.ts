@@ -477,13 +477,19 @@ export function reduceResponse(
             eventSequence: checked.sequence,
           },
         ],
+        phase: undefined,
       };
-    case 'response.phase':
+    case 'response.phase': {
+      const phase = text(event.text || event.message || event.status);
       return {
         ...next,
-        phase: text(event.text || event.message || event.status),
+        // This phase is an internal ordered handoff. The preceding compaction
+        // boundary already communicates it without adding a transient row at
+        // the end of the chronological transcript.
+        phase: phase === 'Compacting: resume task' ? undefined : phase,
         retry: undefined,
       };
+    }
     case 'response.model_swap.progress':
       return {
         ...next,

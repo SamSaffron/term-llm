@@ -7,6 +7,7 @@ export function Overlay({
   children,
   wide = false,
   close = true,
+  onClose,
   onEscape,
   className = '',
 }: {
@@ -14,24 +15,28 @@ export function Overlay({
   children: preact.ComponentChildren;
   wide?: boolean;
   close?: boolean;
+  onClose?: () => void;
   onEscape?: () => void;
   className?: string;
 }) {
   const store = useStore();
   const dialog = useRef<HTMLDivElement>(null);
   const label = useId();
+  const dismiss = onClose || (() => (store.modal.value = ''));
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const shell = document.getElementById('appShell');
     if (shell) shell.inert = true;
-    requestAnimationFrame(() =>
-      dialog.current
-        ?.querySelector<HTMLElement>(
-          '[autofocus],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
-        )
-        ?.focus(),
-    );
+    const focusFrame = requestAnimationFrame(() => {
+      const target =
+        dialog.current?.querySelector<HTMLElement>('[autofocus]:not([disabled])') ||
+        dialog.current?.querySelector<HTMLElement>(
+          'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])',
+        );
+      target?.focus();
+    });
     return () => {
+      cancelAnimationFrame(focusFrame);
       if (shell) shell.inert = false;
       previous?.focus({ preventScroll: true });
     };
@@ -41,7 +46,7 @@ export function Overlay({
       class="modal-overlay"
       role="presentation"
       onMouseDown={(event) => {
-        if (close && event.target === event.currentTarget) store.modal.value = '';
+        if (close && event.target === event.currentTarget) dismiss();
       }}
     >
       <div
@@ -55,7 +60,7 @@ export function Overlay({
           if (event.key === 'Escape' && (close || onEscape)) {
             event.preventDefault();
             if (onEscape) onEscape();
-            else store.modal.value = '';
+            else dismiss();
             return;
           }
           if (event.key !== 'Tab') return;
@@ -83,14 +88,7 @@ export function Overlay({
         <div class="modal-title-row">
           <h2 id={label}>{title}</h2>
           {close && (
-            <button
-              class="icon-btn"
-              type="button"
-              aria-label={`Close ${title}`}
-              onClick={() => {
-                store.modal.value = '';
-              }}
-            >
+            <button class="icon-btn" type="button" aria-label={`Close ${title}`} onClick={dismiss}>
               <Icon name="close" />
             </button>
           )}

@@ -10,6 +10,7 @@ import {
 } from '../domain/diff';
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
+import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
 import { ChipPicker } from './ChipPicker';
 
@@ -271,6 +272,12 @@ function File({ file }: { file: DiffFile }) {
   const kind = fileKind(file);
   const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
   const name = splitDiffPath(file.path);
+  const canExpandContext =
+    !file.truncated &&
+    lines.length > 0 &&
+    (file.context || 3) < Math.max(file.oldLineCount || 0, file.newLineCount || 0);
+  const expandContext = () =>
+    void store.expandDiff(file, Math.min(100_000, Math.max(12, (file.context || 3) * 4)));
   const emphasis = new Map<number, [number, number]>();
   for (let index = 0; index + 1 < lines.length; index += 1)
     if (lines[index].kind === 'delete' && lines[index + 1].kind === 'add') {
@@ -399,6 +406,18 @@ function File({ file }: { file: DiffFile }) {
             </div>
           ) : (
             <>
+              {canExpandContext && (
+                <button
+                  class="diff-hunk-expand diff-hunk-expand-above"
+                  type="button"
+                  aria-label="Show more context above"
+                  disabled={file.loading}
+                  onClick={expandContext}
+                >
+                  <Icon name="chevron-up" />
+                  <span>Show more above</span>
+                </button>
+              )}
               <div class={`diff-rows diff-rows-kind-${legacyKind}`}>
                 {lines.slice(0, limit).map((line, index) => {
                   const key = `${line.kind}-${line.oldLine || 0}-${line.newLine || 0}-${index}`;
@@ -449,31 +468,18 @@ function File({ file }: { file: DiffFile }) {
                   </button>
                 )}
               </div>
-              {!file.truncated &&
-                lines.length > 0 &&
-                (file.context || 3) < Math.max(file.oldLineCount || 0, file.newLineCount || 0) && (
-                  <div class="diff-bulk-toggle">
-                    <button
-                      class="diff-hunk-expand"
-                      type="button"
-                      onClick={() =>
-                        void store.expandDiff(
-                          file,
-                          Math.min(100_000, Math.max(12, (file.context || 3) * 4)),
-                        )
-                      }
-                    >
-                      Show more context
-                    </button>
-                    <button
-                      class="diff-hunk-expand"
-                      type="button"
-                      onClick={() => void store.expandDiff(file, 100_000)}
-                    >
-                      Show full file
-                    </button>
-                  </div>
-                )}
+              {canExpandContext && (
+                <button
+                  class="diff-hunk-expand diff-hunk-expand-below"
+                  type="button"
+                  aria-label="Show more context below"
+                  disabled={file.loading}
+                  onClick={expandContext}
+                >
+                  <span>Show more below</span>
+                  <Icon name="chevron-down" />
+                </button>
+              )}
             </>
           )}
         </div>
@@ -730,58 +736,182 @@ export function DiffSidebar() {
   );
 }
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => matchMedia(query).matches);
+  useEffect(() => {
+    const media = matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [query]);
+  return matches;
+}
+
 export function PlanSurface() {
   const store = useStore();
   const plan = store.currentPlan.value;
-  if (!plan || !store.planOpen.value) return null;
+  const open = store.planVisible.value;
+  const mobile = useMediaQuery('(max-width: 767px)');
+  const surface = useRef<HTMLElement>(null);
+  const summary = planSummary(plan);
+
+  useEffect(() => {
+    if (open) store.planSeen.value = summary.signature;
+  }, [open, store, summary.signature]);
+
+  useEffect(() => {
+    if (!open) return;
+    const returnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const blocked = mobile
+      ? ['sidebar', 'appMain']
+          .map((id) => document.getElementById(id))
+          .filter((element): element is HTMLElement => Boolean(element))
+          .map((element) => ({ element, inert: element.inert }))
+      : [];
+    blocked.forEach(({ element }) => {
+      element.inert = true;
+    });
+    if (mobile) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest('.composer')) active.blur();
+      requestAnimationFrame(() => surface.current?.focus({ preventScroll: true }));
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (
+        event.key !== 'Escape' ||
+        store.modal.peek() ||
+        store.askUser.peek() ||
+        store.approval.peek() ||
+        store.modal.peek() === 'side'
+      )
+        return;
+      event.preventDefault();
+      store.closePlan();
+    };
+    addEventListener('keydown', escape);
+    return () => {
+      removeEventListener('keydown', escape);
+      blocked.forEach(({ element, inert }) => {
+        element.inert = inert;
+      });
+      if (document.contains(returnFocus)) returnFocus?.focus({ preventScroll: true });
+    };
+  }, [mobile, open, store]);
+
+  if (!plan) return null;
+
+  const trapSheetFocus = (event: KeyboardEvent) => {
+    if (!mobile || event.key !== 'Tab') return;
+    const focusable = [
+      ...(surface.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) || []),
+    ];
+    if (!focusable.length) {
+      event.preventDefault();
+      surface.current?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable.at(-1)!;
+    if (
+      document.activeElement === surface.current ||
+      !surface.current?.contains(document.activeElement)
+    ) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  const progress = summary.completed / Math.max(1, summary.total);
+  const announcement = summary.complete
+    ? `Plan complete. All ${summary.total} steps finished.`
+    : summary.activeStep
+      ? `Step ${summary.position} of ${summary.total}: ${summary.activeStep}`
+      : `Plan has ${summary.total} steps. ${summary.completed} complete.`;
+
   return (
-    <aside
-      class="plan-panel open"
-      id="planPanel"
-      role="complementary"
-      aria-labelledby="planPanelTitle"
-    >
-      <div class="plan-surface-header">
-        <h2 id="planPanelTitle">Current plan</h2>
-        <span class="plan-surface-progress">
-          {plan.plan.filter((step) => step.status === 'completed').length}/{plan.plan.length}
-        </span>
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label="Close current plan"
-          onClick={() => {
-            store.planOpen.value = false;
-          }}
-        >
-          <Icon name="close" />
-        </button>
-      </div>
-      <div class="plan-surface-body">
-        {plan.explanation && <p class="current-plan-explanation">{plan.explanation}</p>}
-        <div class="current-plan-checklist">
-          {plan.plan.map((step, index) => (
-            <div
-              class={`current-plan-step current-plan-step-${step.status}`}
-              key={`${index}-${step.step}`}
-            >
-              <span class="current-plan-step-marker">
-                {step.status === 'completed' ? (
-                  <Icon name="check" />
-                ) : step.status === 'in_progress' ? (
-                  '●'
-                ) : (
-                  '○'
-                )}
-              </span>
-              <div class="current-plan-step-content">
-                <div class="current-plan-step-text">{step.step}</div>
-                <div class="current-plan-step-state">{step.status.replace('_', ' ')}</div>
-              </div>
-            </div>
-          ))}
+    <>
+      {mobile && open && (
+        <div
+          class="plan-sheet-backdrop open"
+          aria-hidden="true"
+          onClick={() => store.closePlan()}
+        />
+      )}
+      <aside
+        ref={surface}
+        class={`plan-surface ${mobile ? 'plan-sheet' : 'plan-panel'} ${open ? 'open' : ''}`}
+        id="planSurface"
+        role={mobile ? 'dialog' : 'complementary'}
+        aria-modal={mobile ? true : undefined}
+        aria-hidden={!open}
+        aria-labelledby="planSurfaceTitle"
+        tabIndex={-1}
+        onKeyDown={trapSheetFocus}
+      >
+        {mobile && <div class="plan-sheet-handle" aria-hidden="true" />}
+        <div class="plan-surface-header">
+          <h2 id="planSurfaceTitle">Current plan</h2>
+          <span class={`plan-surface-progress ${summary.complete ? 'complete' : ''}`}>
+            {summary.complete ? 'Complete' : `Step ${summary.position} of ${summary.total}`}
+          </span>
+          <button
+            class="icon-btn"
+            type="button"
+            aria-label="Close current plan"
+            onClick={() => store.closePlan()}
+          >
+            <Icon name="close" />
+          </button>
         </div>
-      </div>
-    </aside>
+        <div class="plan-progress-track" aria-hidden="true" style={{ '--plan-progress': progress }}>
+          <span />
+        </div>
+        <div class="plan-surface-body">
+          {plan.explanation && <p class="current-plan-explanation">{plan.explanation}</p>}
+          <ol class="current-plan-checklist" role="list">
+            {plan.plan.map((step, index) => (
+              <li
+                class={`current-plan-step current-plan-step-${step.status}`}
+                key={`${index}-${step.step}`}
+                aria-current={step.status === 'in_progress' ? 'step' : undefined}
+              >
+                <span class="current-plan-step-marker" aria-hidden="true">
+                  {step.status === 'completed' ? (
+                    <Icon name="check" />
+                  ) : step.status === 'in_progress' ? (
+                    <span class="current-plan-step-pulse" />
+                  ) : (
+                    <span class="current-plan-step-ring" />
+                  )}
+                </span>
+                <div class="current-plan-step-content">
+                  <div class="current-plan-step-text">{step.step}</div>
+                  <div class="current-plan-step-state">
+                    {step.status === 'in_progress'
+                      ? 'In progress'
+                      : step.status === 'completed'
+                        ? 'Completed'
+                        : 'Pending'}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ol>
+          <div class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+            {announcement}
+          </div>
+        </div>
+      </aside>
+    </>
   );
 }

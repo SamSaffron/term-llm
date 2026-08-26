@@ -1,15 +1,14 @@
-/* Current plan surface and plan sidebar. */
+/* Current plan trigger, companion panel, and mobile sheet. */
 
-/* ===== Current plan surface ===== */
 .header-context-actions {
   display: inline-flex;
   align-items: center;
-  gap: var(--header-cluster-gap);
   flex: 0 0 auto;
-  margin-left: 0;
+  gap: var(--header-cluster-gap);
   min-width: 0;
-  font-size: 0.8rem;
+  margin-left: 0;
   color: var(--text-muted);
+  font-size: 0.8rem;
 }
 
 .header-context-actions:empty {
@@ -38,50 +37,68 @@
   font-weight: 800;
 }
 
+.plan-toggle-check {
+  width: 0.82rem;
+  height: 0.82rem;
+  color: var(--accent-green);
+  stroke-width: 2.7;
+}
+
+.plan-toggle.complete {
+  border-color: color-mix(in srgb, var(--accent-green) 35%, var(--border));
+}
+
 .plan-unseen-dot {
-  color: var(--accent-amber);
-  font-size: 1rem;
-  line-height: 0;
-  margin-left: -0.08rem;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent-amber);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-amber) 18%, transparent);
 }
 
-.plan-unseen-dot[hidden] {
-  display: none;
-}
-
-.plan-panel {
-  position: relative;
+.plan-surface {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border-left: 1px solid var(--border);
   background: var(--surface);
-  padding-right: var(--safe-right);
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--panel-fade-duration) ease;
+  visibility: hidden;
+  transition:
+    opacity var(--panel-fade-duration) ease,
+    transform var(--panel-transition-duration) var(--panel-transition-easing),
+    visibility 0s linear var(--panel-transition-duration);
 }
 
-.app.plan-open .plan-panel,
-.plan-panel.open {
+.plan-surface.open {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
 }
 
-.plan-panel[hidden],
-.plan-sheet[hidden],
-.plan-sheet-backdrop[hidden] {
-  display: none;
+.plan-panel {
+  position: relative;
+  padding-right: var(--safe-right);
+  border-left: 1px solid var(--border);
+}
+
+.plan-surface:focus-visible {
+  outline: none;
 }
 
 .plan-surface-header {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
   flex: none;
-  padding: 0.65rem 0.75rem;
+  gap: 0.55rem;
+  padding: 0.72rem 0.8rem;
   border-bottom: 1px solid var(--border);
 }
 
@@ -90,73 +107,130 @@
   margin: 0;
   color: var(--text);
   font-size: 0.9rem;
-  font-weight: 700;
+  font-weight: 750;
+  letter-spacing: -0.01em;
 }
 
 .plan-surface-progress {
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.plan-surface-progress.complete {
+  color: var(--accent-green);
+}
+
+.plan-progress-track {
+  flex: none;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.plan-progress-track > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--accent-green),
+    color-mix(in srgb, var(--accent-green) 70%, var(--accent))
+  );
+  transform: scaleX(var(--plan-progress, 0));
+  transform-origin: left;
+  transition: transform var(--panel-transition-duration) var(--panel-transition-easing);
 }
 
 .plan-surface-body {
   flex: 1;
   min-height: 0;
+  padding: 0.9rem 0.8rem calc(1rem + var(--safe-bottom));
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.85rem 0.8rem calc(1rem + var(--safe-bottom));
   scrollbar-gutter: stable;
 }
 
 .current-plan-explanation {
-  margin: 0 0 0.8rem;
+  margin: 0 0 0.9rem;
   color: var(--text-muted);
   font-size: 0.82rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
+  line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.current-plan-explanation[hidden] {
-  display: none;
+  white-space: pre-wrap;
 }
 
 .current-plan-checklist {
   display: grid;
   gap: 0.42rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
 }
 
 .current-plan-step {
+  position: relative;
   display: grid;
-  grid-template-columns: 1.15rem minmax(0, 1fr);
-  gap: 0.45rem;
+  grid-template-columns: 1.2rem minmax(0, 1fr);
   align-items: start;
-  padding: 0.45rem 0.4rem;
-  border-radius: 8px;
+  gap: 0.5rem;
+  padding: 0.52rem 0.48rem;
+  border-radius: 9px;
   color: var(--text-muted);
+  transition:
+    background-color var(--panel-fade-duration) ease,
+    opacity var(--panel-fade-duration) ease;
 }
 
 .current-plan-step-marker {
-  text-align: center;
-  font-weight: 800;
-  line-height: 1.35;
+  display: grid;
+  width: 1.2rem;
+  height: 1.2rem;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.current-plan-step-marker svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  stroke-width: 2.6;
+}
+
+.current-plan-step-ring {
+  width: 0.56rem;
+  height: 0.56rem;
+  border: 1.5px solid color-mix(in srgb, var(--text-muted) 70%, transparent);
+  border-radius: 50%;
+}
+
+.current-plan-step-pulse {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--accent-amber);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-amber) 14%, transparent);
 }
 
 .current-plan-step-text {
   color: var(--text);
   font-size: 0.86rem;
-  line-height: 1.4;
-  white-space: normal;
+  line-height: 1.42;
   overflow-wrap: anywhere;
+  white-space: normal;
   word-break: break-word;
 }
 
 .current-plan-step-state {
-  margin-top: 0.08rem;
+  margin-top: 0.1rem;
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.69rem;
   font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.current-plan-step-completed {
+  opacity: 0.68;
 }
 
 .current-plan-step-completed .current-plan-step-marker {
@@ -165,21 +239,39 @@
 
 .current-plan-step-completed .current-plan-step-text {
   color: var(--text-muted);
-  text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--text-muted) 55%, transparent);
 }
 
 .current-plan-step-in_progress {
   background: color-mix(in srgb, var(--accent-amber) 8%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-amber) 78%, transparent);
 }
 
-.current-plan-step-in_progress .current-plan-step-marker {
+.current-plan-step-in_progress .current-plan-step-state {
   color: var(--accent-amber);
 }
 
 .plan-sheet,
 .plan-sheet-backdrop {
   display: none;
+}
+
+.plan-sheet-backdrop {
+  position: fixed;
+  inset: var(--app-offset-top) 0 0;
+  z-index: 1000;
+  background: rgb(0 0 0 / 44%);
+  opacity: 0;
+  backdrop-filter: blur(2px);
+  animation: plan-backdrop-in var(--panel-fade-duration) ease forwards;
+}
+
+.plan-sheet-handle {
+  flex: none;
+  width: 42px;
+  height: 4px;
+  margin: 0.5rem auto 0;
+  border-radius: 999px;
+  background: var(--border-strong);
 }
 
 .visually-hidden {
@@ -189,9 +281,15 @@
   padding: 0 !important;
   margin: -1px !important;
   overflow: hidden !important;
+  border: 0 !important;
   clip: rect(0, 0, 0, 0) !important;
   white-space: nowrap !important;
-  border: 0 !important;
+}
+
+@keyframes plan-backdrop-in {
+  to {
+    opacity: 1;
+  }
 }
 
 @media (width <= 1099px) and (width >= 768px) {
@@ -208,20 +306,17 @@
     position: fixed;
     top: var(--app-offset-top);
     right: 0;
+    z-index: 60;
     width: min(430px, calc(100vw - var(--safe-left)), 90vw);
     height: var(--app-height);
-    z-index: 60;
-    transform: translateX(100%);
     padding: var(--safe-top) var(--safe-right) var(--safe-bottom) 0;
     box-shadow: none;
-    transition:
-      transform var(--panel-transition-duration) var(--panel-transition-easing),
-      opacity var(--panel-fade-duration) ease;
+    transform: translateX(100%);
   }
 
-  .app.plan-open .plan-panel {
-    transform: translateX(0);
+  .plan-panel.open {
     box-shadow: -4px 0 20px rgb(0 0 0 / 28%);
+    transform: translateX(0);
   }
 }
 
@@ -232,52 +327,31 @@
   }
 
   .plan-panel {
-    display: none !important;
+    display: none;
   }
 
-  .plan-sheet-backdrop {
-    position: fixed;
-    top: var(--app-offset-top);
-    left: 0;
-    width: 100%;
-    height: var(--app-height);
-    z-index: 1000;
+  .plan-sheet-backdrop.open {
     display: block;
-    background: rgb(0 0 0 / 42%);
-    opacity: 1;
   }
 
   .plan-sheet {
     position: fixed;
-    left: var(--safe-left);
     right: var(--safe-right);
     bottom: 0;
+    left: var(--safe-left);
     z-index: 1001;
     display: flex;
-    flex-direction: column;
     min-height: min(280px, calc(var(--app-height) - var(--safe-top) - 1rem));
-    max-height: calc(var(--app-height) - var(--safe-top) - 1rem);
-    overflow: hidden;
+    max-height: min(72dvh, calc(var(--app-height) - var(--safe-top) - 1rem));
     border: 1px solid var(--border);
     border-bottom: 0;
     border-radius: 18px 18px 0 0;
-    background: var(--surface);
     box-shadow: 0 -10px 34px rgb(0 0 0 / 35%);
     transform: translateY(100%);
-    transition: transform var(--panel-transition-duration) var(--panel-transition-easing);
   }
 
   .plan-sheet.open {
     transform: translateY(0);
-  }
-
-  .plan-sheet-handle {
-    flex: none;
-    width: 42px;
-    height: 4px;
-    margin: 0.45rem auto 0;
-    border-radius: 999px;
-    background: var(--border-strong);
   }
 
   .plan-sheet .plan-surface-header {
@@ -308,8 +382,13 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plan-panel,
-  .plan-sheet {
+  .plan-surface,
+  .plan-progress-track > span {
     transition: none;
+  }
+
+  .plan-sheet-backdrop {
+    animation: none;
+    opacity: 1;
   }
 }

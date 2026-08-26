@@ -117,10 +117,7 @@ export function Composer() {
     const command = value.toLowerCase();
     if (/^\/side(?:\s|$)/i.test(value)) {
       const question = value.replace(/^\/side\b/i, '').trim();
-      store.sideQuestion.value = { ...store.sideQuestion.value, visible: true };
-      store.prompt.value = '';
-      if (question) void store.askSideQuestion(question);
-      else void store.recoverSideQuestion();
+      if (store.openSideQuestion(question)) store.prompt.value = '';
       return;
     }
     if (/^\/(?:fork|thread)(?:\s|$)/i.test(value)) {

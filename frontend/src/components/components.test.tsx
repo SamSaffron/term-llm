@@ -10,7 +10,7 @@ import { Markdown } from './Markdown';
 import { Modals } from './Modals';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
-import { DiffSidebar } from './Panels';
+import { DiffSidebar, PlanSurface } from './Panels';
 import { ChipPicker } from './ChipPicker';
 import type { AppConfig } from '../app/config';
 import { initialProjection } from '../domain/response';
@@ -118,6 +118,158 @@ describe('Preact-owned chat surfaces', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('shows the active plan position, update affordance, and semantic checklist', async () => {
+    const store = createStore();
+    store.currentPlan.value = {
+      explanation: 'Make the plan easy to follow.',
+      plan: [
+        { step: 'Inspect the old flow', status: 'completed' },
+        { step: 'Polish the responsive surface', status: 'in_progress' },
+        { step: 'Verify the result', status: 'pending' },
+      ],
+    };
+    store.planSeen.value = '';
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+        <PlanSurface />
+      </StoreContext.Provider>,
+    );
+
+    const toggle = screen.getByRole('button', { name: /Open current plan/ });
+    expect(toggle).toHaveTextContent('Plan2/3');
+    expect(toggle).toHaveAccessibleName(/Step 2 of 3, 1 of 3 complete\. Updated/);
+    expect(toggle.querySelector('.plan-unseen-dot')).not.toBeNull();
+
+    await userEvent.click(toggle);
+    expect(store.planVisible.value).toBe(true);
+    expect(toggle).toHaveAttribute('aria-controls', 'planSurface');
+    expect(screen.getByRole('complementary', { name: 'Current plan' })).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Polish the responsive surface').closest('li')).toHaveAttribute(
+      'aria-current',
+      'step',
+    );
+    expect(toggle.querySelector('.plan-unseen-dot')).toBeNull();
+  });
+
+  it('presents the plan as a dismissible modal sheet on mobile', async () => {
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+    const store = createStore();
+    store.currentPlan.value = {
+      plan: [
+        { step: 'Build the sheet', status: 'in_progress' },
+        { step: 'Test dismissal', status: 'pending' },
+      ],
+    };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <aside id="sidebar" />
+        <main id="appMain">
+          <Header />
+        </main>
+        <PlanSurface />
+      </StoreContext.Provider>,
+    );
+
+    const toggle = screen.getByRole('button', { name: /Open current plan/ });
+    toggle.focus();
+    await userEvent.click(toggle);
+    const sheet = screen.getByRole('dialog', { name: 'Current plan' });
+    expect(sheet).toHaveClass('plan-sheet', 'open');
+    await waitFor(() => {
+      expect(container.querySelector('#appMain')).toHaveProperty('inert', true);
+      expect(container.querySelector('#sidebar')).toHaveProperty('inert', true);
+    });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => {
+      expect(store.planOpen.value).toBe(false);
+      expect(toggle).toHaveFocus();
+      expect(container.querySelector('#appMain')).not.toHaveProperty('inert', true);
+    });
+
+    await userEvent.click(toggle);
+    await userEvent.click(container.querySelector('.plan-sheet-backdrop')!);
+    expect(store.planOpen.value).toBe(false);
+  });
+
+  it('renders /side as one private Markdown conversation with an accessible composer', async () => {
+    const store = createStore();
+    store.modal.value = 'side';
+    store.sideQuestion.value = {
+      sessionId: 's1',
+      loading: false,
+      running: false,
+      draft: '',
+      question: '',
+      response: '',
+      error: 'A useful error',
+      history: [
+        { question: 'What changed?', response: '**A polished side flow.**' },
+        { question: 'Is it private?', response: 'Yes — it stays out of the transcript.' },
+      ],
+    };
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('dialog', { name: 'Side question' })).toBeInTheDocument();
+    expect(container.querySelectorAll('.side-question-transcript')).toHaveLength(1);
+    expect(container.querySelectorAll('.side-question-exchange')).toHaveLength(2);
+    expect(container.querySelector('.message.assistant .markdown-body strong')).toHaveTextContent(
+      'A polished side flow.',
+    );
+    expect(screen.getByLabelText('Ask a side question')).toHaveAttribute(
+      'placeholder',
+      'Ask about this conversation…',
+    );
+    expect(screen.getByRole('button', { name: 'Send side question' })).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('A useful error');
+    expect(container.querySelector('.side-question-transcript')).not.toHaveAttribute('aria-live');
+  });
+
+  it('uses Escape to stop, clear the draft, and then close /side', () => {
+    const store = createStore();
+    store.modal.value = 'side';
+    store.endpoints.cancelSideQuestion = vi.fn(async () => new Response());
+    store.sideQuestion.value = {
+      sessionId: 's1',
+      loading: false,
+      running: true,
+      draft: '',
+      question: 'Explain this',
+      response: 'Working',
+      error: '',
+      history: [],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Side question' }), { key: 'Escape' });
+    expect(store.modal.value).toBe('side');
+    expect(store.sideQuestion.value.running).toBe(false);
+    expect(screen.getByLabelText('Ask a side question')).toBeInTheDocument();
+
+    act(() => store.setSideQuestionDraft('unfinished follow-up'));
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Side question' }), { key: 'Escape' });
+    expect(store.modal.value).toBe('side');
+    expect(store.sideQuestion.value.draft).toBe('');
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Side question' }), { key: 'Escape' });
+    expect(store.modal.value).toBe('');
+    expect(screen.queryByRole('dialog', { name: 'Side question' })).not.toBeInTheDocument();
+  });
+
   it('renders legacy additions and deletions instead of one combined diff count', () => {
     const store = createStore();
     store.sessions.value = [
@@ -161,6 +313,47 @@ describe('Preact-owned chat surfaces', () => {
     expect(sidebar.style.width).toBe('');
     fireEvent.pointerUp(window, { clientX: 500, pointerId: 1 });
     expect(shell).not.toHaveClass('diff-resizing');
+  });
+
+  it('offers directional context controls above and below a partial diff', async () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      files: [
+        {
+          path: 'main.go',
+          status: 'modify',
+          expanded: true,
+          context: 3,
+          oldLineCount: 80,
+          newLineCount: 82,
+          lines: [
+            { kind: 'hunk', content: '@@ -20 +20 @@' },
+            { kind: 'context', content: 'func main() {', oldLine: 20, newLine: 20 },
+            { kind: 'add', content: '  run()', newLine: 21 },
+          ],
+        },
+      ],
+    };
+    store.expandDiff = vi.fn(async () => undefined);
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    const above = screen.getByRole('button', { name: 'Show more context above' });
+    const below = screen.getByRole('button', { name: 'Show more context below' });
+    const rows = container.querySelector('.diff-rows')!;
+    expect(above.nextElementSibling).toBe(rows);
+    expect(rows.nextElementSibling).toBe(below);
+    expect(screen.queryByRole('button', { name: /Show full file/i })).not.toBeInTheDocument();
+
+    await userEvent.click(above);
+    await userEvent.click(below);
+    expect(store.expandDiff).toHaveBeenNthCalledWith(1, store.diff.value.files[0], 12);
+    expect(store.expandDiff).toHaveBeenNthCalledWith(2, store.diff.value.files[0], 12);
   });
 
   it('matches the legacy diff scope popover and syntax-highlights code rows', async () => {
@@ -1536,7 +1729,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('checkbox', { name: 'Disable github' })).toBeChecked();
 
     const filter = screen.getByRole('searchbox', { name: 'Filter MCP servers' });
-    await userEvent.type(filter, 'git');
+    fireEvent.input(filter, { target: { value: 'git' } });
     expect(screen.getByText('github')).toBeVisible();
     expect(screen.queryByRole('checkbox', { name: 'Enable discourse' })).not.toBeInTheDocument();
     fireEvent.input(filter, { target: { value: 'missing-name' } });

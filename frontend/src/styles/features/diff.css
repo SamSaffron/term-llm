@@ -472,16 +472,31 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 0.3rem;
   width: 100%;
   min-height: 1.8rem;
   padding: 0.15rem 0.6rem;
   border: 0;
-  background: transparent;
+  background: var(--bg-accent);
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   font-size: 0.78rem;
   text-align: center;
+}
+
+.diff-hunk-expand svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: none;
+}
+
+.diff-hunk-expand-above {
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-hunk-expand-below {
+  border-top: 1px solid var(--border);
 }
 
 .diff-hunk-expand:hover:not(:disabled) {

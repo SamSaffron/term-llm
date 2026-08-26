@@ -49,6 +49,16 @@ func (h *responsesStreamEventHandler) OutputItems() []ResponsesInputItem {
 	return append([]ResponsesInputItem(nil), h.outputItems...)
 }
 
+func (h *responsesStreamEventHandler) FunctionCallIDs() []string {
+	ids := make([]string, 0)
+	for _, item := range h.outputItems {
+		if item.Type == "function_call" && strings.TrimSpace(item.CallID) != "" {
+			ids = append(ids, item.CallID)
+		}
+	}
+	return ids
+}
+
 // responsesJSONEventType reads the top-level Responses event type without
 // unmarshalling the full event envelope on the common WebSocket path where a
 // known "type" is the first object field. Frames still get decoded by

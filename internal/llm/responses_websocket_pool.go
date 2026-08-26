@@ -152,7 +152,18 @@ func (l *responsesWebSocketLease) release() {
 		delete(l.pool.byKey, l.key)
 	}
 	l.admitted = false
+	l.active = false
+	l.parkedAt = time.Time{}
 	l.conn = nil
+}
+
+func (l *responsesWebSocketLease) diagnosticSnapshot() (admitted, active bool, connectionsForKey int) {
+	if l == nil || l.pool == nil {
+		return false, false, 0
+	}
+	l.pool.mu.Lock()
+	defer l.pool.mu.Unlock()
+	return l.admitted, l.active, len(l.pool.byKey[l.key])
 }
 
 func (p *responsesWebSocketPool) count(key string) int {

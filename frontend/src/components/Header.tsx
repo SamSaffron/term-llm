@@ -7,6 +7,7 @@ import {
   splitModelEffort,
   supportedEfforts,
 } from '../domain/runtime';
+import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
 
 function EffortMeter() {
@@ -189,6 +190,16 @@ export function Header() {
   const showWorktree =
     store.worktreesEnabled.value &&
     (!store.projectsEnabled.value || Boolean(project?.git && project.available !== false));
+  const currentPlan = store.currentPlan.value;
+  const currentPlanSummary = planSummary(currentPlan);
+  const planUnseen =
+    Boolean(currentPlan) &&
+    !store.planVisible.value &&
+    store.planSeen.value !== null &&
+    store.planSeen.value !== currentPlanSummary.signature;
+  const planStatus = currentPlanSummary.complete
+    ? `All ${currentPlanSummary.total} steps complete`
+    : `Step ${currentPlanSummary.position} of ${currentPlanSummary.total}, ${currentPlanSummary.completed} of ${currentPlanSummary.total} complete`;
   return (
     <header class="main-header" tabIndex={-1}>
       <div class="header-title-row">
@@ -281,25 +292,26 @@ export function Header() {
                 {store.branchPathCount.value} paths
               </button>
             )}
-            {store.currentPlan.value && (
+            {currentPlan && (
               <button
-                class="header-action plan-toggle"
+                class={`header-action plan-toggle ${currentPlanSummary.complete ? 'complete' : ''} ${planUnseen ? 'updated' : ''}`}
                 id="planToggleBtn"
                 type="button"
-                aria-expanded={store.planOpen.value}
+                aria-expanded={store.planVisible.value}
+                aria-controls="planSurface"
+                aria-label={`${store.planVisible.value ? 'Close' : 'Open'} current plan. ${planStatus}${planUnseen ? '. Updated' : ''}`}
+                title={planStatus}
                 onClick={() => {
-                  store.diff.value = { ...store.diff.value, open: false };
-                  store.planOpen.value = !store.planOpen.value;
+                  if (store.planVisible.value) store.closePlan();
+                  else store.openPlan();
                 }}
               >
-                <span>Plan</span>
+                <span class="plan-toggle-word">Plan</span>
+                {currentPlanSummary.complete && <Icon class="plan-toggle-check" name="check" />}
                 <span class="plan-toggle-progress">
-                  {
-                    store.currentPlan.value.plan.filter((step) => step.status === 'completed')
-                      .length
-                  }
-                  /{store.currentPlan.value.plan.length}
+                  {currentPlanSummary.position}/{currentPlanSummary.total}
                 </span>
+                {planUnseen && <span class="plan-unseen-dot" aria-hidden="true" />}
               </button>
             )}
           </div>

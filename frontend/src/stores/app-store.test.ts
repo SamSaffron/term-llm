@@ -42,6 +42,98 @@ const deferred = <T>() => {
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('guards /side in drafts and closes active side work without waiting for cancellation', () => {
+    const store = new AppStore(config);
+    expect(store.openSideQuestion('Explain this')).toBe(false);
+    expect(store.modal.value).toBe('');
+    expect(store.toasts.value.at(-1)?.message).toBe(
+      'Start the conversation before asking a side question.',
+    );
+
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.modal.value = 'side';
+    store.sideQuestion.value = {
+      sessionId: 's1',
+      loading: false,
+      running: true,
+      draft: '',
+      question: 'Explain this',
+      response: '',
+      error: '',
+      history: [],
+    };
+    store.endpoints.cancelSideQuestion = vi.fn(() => new Promise<Response>(() => undefined));
+
+    store.closeSideQuestion();
+    expect(store.modal.value).toBe('');
+    expect(store.sideQuestion.value.running).toBe(false);
+    expect(store.endpoints.cancelSideQuestion).toHaveBeenCalledWith('s1');
+  });
+
+  it('cancels and isolates side-question state when leaving a session', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.modal.value = 'side';
+    store.sideQuestion.value = {
+      sessionId: 's1',
+      loading: true,
+      running: true,
+      draft: 'private draft',
+      question: 'Old question',
+      response: 'Old answer',
+      error: '',
+      history: [{ question: 'Earlier', response: 'Private' }],
+    };
+    store.endpoints.cancelSideQuestion = vi.fn(async () => new Response());
+    const pending = deferred<Record<string, unknown>>();
+    store.endpoints.sideQuestionState = vi.fn(() => pending.promise);
+    const recovery = store.recoverSideQuestion();
+
+    store.newChat();
+    pending.resolve({ history: [{ question: 'Stale', response: 'Must not appear' }] });
+    await recovery;
+
+    expect(store.endpoints.cancelSideQuestion).toHaveBeenCalledWith('s1');
+    expect(store.modal.value).toBe('');
+    expect(store.sideQuestion.value).toEqual({
+      sessionId: '',
+      loading: false,
+      running: false,
+      draft: '',
+      question: '',
+      response: '',
+      error: '',
+      history: [],
+    });
+  });
+
+  it('keeps plan visibility session-safe and mutually exclusive with changes', () => {
+    const store = new AppStore(config);
+    store.currentPlan.value = {
+      plan: [{ step: 'Polish the plan', status: 'in_progress' }],
+    };
+    store.diff.value = { ...store.diff.value, open: true };
+
+    store.openPlan();
+    expect(store.planVisible.value).toBe(true);
+    expect(store.diff.value.open).toBe(false);
+    expect(store.planSeen.value).not.toBeNull();
+
+    store.currentPlan.value = null;
+    expect(store.planVisible.value).toBe(false);
+
+    store.currentPlan.value = {
+      plan: [{ step: 'Polish the plan', status: 'in_progress' }],
+    };
+    store.newChat();
+    expect(store.planOpen.value).toBe(false);
+    expect(store.planSeen.value).toBeNull();
+  });
+
   it('saves manual and generated session titles with the server metadata contract', async () => {
     const store = new AppStore(config);
     const target = session();
