@@ -829,8 +829,12 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now()
 	legacy := &session.Session{ID: "upgrade-candidate", Provider: "mock", Model: "mock", CWD: root, CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
-	if err := store.Create(ctx, legacy); err != nil {
-		t.Fatal(err)
+	matching := &session.Session{ID: "upgrade-candidate-history", Provider: "mock", Model: "mock", CWD: root, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute), Status: session.StatusComplete}
+	other := &session.Session{ID: "upgrade-candidate-other", Provider: "mock", Model: "mock", CWD: t.TempDir(), CreatedAt: now, UpdatedAt: now, Status: session.StatusComplete}
+	for _, sess := range []*session.Session{legacy, matching, other} {
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	infoRR := httptest.NewRecorder()
@@ -842,7 +846,7 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	if err := json.Unmarshal(infoRR.Body.Bytes(), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.Candidate == nil || !sameServePath(info.Candidate.CanonicalDir, root) || info.Candidate.DefaultName != filepath.Base(root) {
+	if info.Candidate == nil || !sameServePath(info.Candidate.CanonicalDir, root) || info.Candidate.DefaultName != filepath.Base(root) || info.Candidate.MatchingConversationCount != 2 {
 		t.Fatalf("candidate info = %#v", info)
 	}
 
@@ -853,6 +857,13 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	if upgradeRR.Code != http.StatusOK {
 		t.Fatalf("upgrade status=%d body=%s", upgradeRR.Code, upgradeRR.Body.String())
 	}
+	var response sessionProjectAssignmentResponse
+	if err := json.Unmarshal(upgradeRR.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Session == nil || response.ID != legacy.ID || response.ProjectID == "" || response.AssignedConversationCount != 2 {
+		t.Fatalf("assignment response = %#v, body=%s", response, upgradeRR.Body.String())
+	}
 	assigned, err := store.Get(ctx, legacy.ID)
 	if err != nil || assigned == nil || assigned.ProjectID == "" || assigned.ProjectName != "Upgraded workspace" || !sameServePath(assigned.CWD, root) {
 		t.Fatalf("upgraded session = %#v, %v", assigned, err)
@@ -860,6 +871,11 @@ func TestSessionProjectCandidateUpgradeCreatesAndAssigns(t *testing.T) {
 	project, err := store.GetProject(ctx, assigned.ProjectID)
 	if err != nil || project == nil || project.Name != "Upgraded workspace" || !sameServePath(project.CanonicalDir, root) {
 		t.Fatalf("created project = %#v, %v", project, err)
+	}
+	assignedMatching, _ := store.Get(ctx, matching.ID)
+	unassignedOther, _ := store.Get(ctx, other.ID)
+	if assignedMatching.ProjectID != project.ID || unassignedOther.ProjectID != "" {
+		t.Fatalf("history assignment = matching %#v, other %#v", assignedMatching, unassignedOther)
 	}
 }
 

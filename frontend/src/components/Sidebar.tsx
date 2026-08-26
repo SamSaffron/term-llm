@@ -118,6 +118,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
           }}
         >
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               store.openRename(session);
@@ -126,18 +127,20 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
           >
             Rename
           </button>
-          {store.projectsEnabled.value && (
+          {store.projectsEnabled.value && !session.projectId && (
             <button
+              type="button"
               role="menuitem"
               onClick={() => {
                 store.openProjectPicker(session);
                 setOpen(false);
               }}
             >
-              Move to project…
+              Assign project…
             </button>
           )}
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               void store.pinSession(session);
@@ -147,6 +150,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
             {session.pinned ? 'Unpin' : 'Pin'}
           </button>
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               if (session.archived) void store.archiveSession(session);
@@ -157,6 +161,7 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
             {session.archived ? 'Unhide' : 'Hide'}
           </button>
           <button
+            type="button"
             role="menuitem"
             class="danger"
             onClick={() => {
@@ -303,6 +308,7 @@ function ProjectGroup({ project }: { project: Project }) {
             role="menu"
           >
             <button
+              type="button"
               role="menuitem"
               onClick={() => {
                 void store.startProjectChat(project.id);
@@ -312,6 +318,7 @@ function ProjectGroup({ project }: { project: Project }) {
               New chat
             </button>
             <button
+              type="button"
               role="menuitem"
               onClick={() => {
                 const name = prompt('Project name', project.name);
@@ -322,6 +329,7 @@ function ProjectGroup({ project }: { project: Project }) {
               Rename
             </button>
             <button
+              type="button"
               role="menuitem"
               onClick={() => {
                 if (

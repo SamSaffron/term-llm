@@ -1610,12 +1610,24 @@ export class AppStore {
     this.projectTarget.value = session;
     this.modal.value = 'project';
   }
-  async assignProject(projectId: string): Promise<void> {
+  async assignProject(projectId: string): Promise<Record<string, unknown> | null> {
     const session = this.projectTarget.value;
-    if (!session) return;
-    await this.endpoints.setProject(session.id, projectId);
+    if (!session) return null;
+    const response = await this.endpoints.setProject(session.id, { project_id: projectId });
     await this.refreshSidebar();
     this.modal.value = '';
+    return response;
+  }
+  async createProjectFromWorkspace(name: string): Promise<Record<string, unknown> | null> {
+    const session = this.projectTarget.value;
+    if (!session) return null;
+    const response = await this.endpoints.setProject(session.id, {
+      create_from_workspace: true,
+      name: name.trim(),
+    });
+    await this.refreshSidebar();
+    this.modal.value = '';
+    return response;
   }
   async renameSession(title: string): Promise<void> {
     const session = this.renameTarget.value;

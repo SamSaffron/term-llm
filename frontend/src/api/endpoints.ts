@@ -111,12 +111,14 @@ export const endpoints = (api: APIClient) => ({
   deleteSession: (id: string) => api.delete(`/v1/sessions/${encoded(id)}`),
   refineTitle: (id: string) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {}),
-  setProject: (id: string, projectId: string) =>
-    api.post(
+  projectAssignment: (id: string, signal?: AbortSignal) =>
+    api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/project`, signal),
+  setProject: (id: string, body: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/project`,
-      { project_id: projectId },
+      body,
       'idempotent-mutation',
-      { 'Idempotency-Key': `project_${id}_${projectId || 'none'}` },
+      { 'Idempotency-Key': `project_${id}_${JSON.stringify(body)}` },
     ),
   projects: (query = '') =>
     api.get<Record<string, unknown>>(`/v1/projects${query ? `?${query}` : ''}`),

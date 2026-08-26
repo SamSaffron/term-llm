@@ -525,6 +525,28 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('opens Assign project without submitting an ancestor form', async () => {
+    const store = createStore();
+    store.projectsEnabled.value = true;
+    store.endpoints.projectAssignment = vi.fn(async () => ({ candidate: null }));
+    const submit = vi.fn((event: SubmitEvent) => event.preventDefault());
+    render(
+      <StoreContext.Provider value={store}>
+        <form onSubmit={submit}>
+          <Sidebar />
+          <Modals />
+        </form>
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Assign project…' }));
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(store.projectTarget.value?.id).toBe('s1');
+    expect(screen.getByRole('dialog', { name: 'Assign project' })).toBeInTheDocument();
+  });
+
   it('auto-loads older sidebar conversations through the pagination sentinels', async () => {
     const store = createStore();
     store.projectsEnabled.value = true;
@@ -660,6 +682,115 @@ describe('Preact-owned chat surfaces', () => {
       store.askUser.value = null;
     });
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('restores workspace-aware project assignment with recommendations and counts', async () => {
+    const store = createStore();
+    const target = store.sessions.value[0];
+    store.projectTarget.value = target;
+    store.modal.value = 'project';
+    store.projects.value = [
+      {
+        id: 'project-current',
+        name: 'Current project',
+        path: '/home/me/repo',
+        archived: false,
+        available: true,
+        git: true,
+        sessionCount: 3,
+      },
+      {
+        id: 'project-other',
+        name: 'Other project',
+        path: '/home/me/other',
+        archived: false,
+        available: true,
+        sessionCount: 1,
+      },
+    ];
+    store.endpoints.projectAssignment = vi.fn(async () => ({
+      candidate: {
+        canonical_dir: '/home/me/repo',
+        default_name: 'repo',
+        git: true,
+        existing_project_id: 'project-current',
+        existing_name: 'Current project',
+        matching_conversation_count: 2,
+      },
+    }));
+    store.endpoints.setProject = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Could not assign this conversation. Retry.'))
+      .mockResolvedValue({ assigned_conversation_count: 2 });
+    store.refreshSidebar = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(await screen.findByRole('dialog', { name: 'Assign project' })).toHaveClass(
+      'project-assign-modal',
+    );
+    expect(screen.queryByRole('textbox', { name: 'Project path' })).not.toBeInTheDocument();
+    expect(screen.queryByText('No project')).not.toBeInTheDocument();
+    expect(screen.queryByText('Grouping only')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Choose a sidebar group. Files and workspace stay unchanged.'),
+    ).toBeVisible();
+    const recommended = await screen.findByRole('radio', { name: /Current project/ });
+    await waitFor(() => expect(recommended).toHaveAttribute('aria-checked', 'true'));
+    expect(recommended).not.toHaveTextContent('3 conversations');
+    expect(recommended).toHaveTextContent(
+      '2 conversations from this workspace will be grouped here.',
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Assign project' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Retry');
+    expect(screen.getByRole('dialog', { name: 'Assign project' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Assign project' }));
+    expect(store.endpoints.setProject).toHaveBeenLastCalledWith(target.id, {
+      project_id: 'project-current',
+    });
+    expect(store.endpoints.setProject).toHaveBeenCalledTimes(2);
+    expect(store.refreshSidebar).toHaveBeenCalledOnce();
+  });
+
+  it('prefills the current folder name and creates and assigns it in one step', async () => {
+    const store = createStore();
+    const target = store.sessions.value[0];
+    store.projectTarget.value = target;
+    store.modal.value = 'project';
+    store.projects.value = [];
+    store.endpoints.projectAssignment = vi.fn(async () => ({
+      candidate: {
+        canonical_dir: '/home/me/new-repo',
+        default_name: 'new-repo',
+        git: true,
+        matching_conversation_count: 1,
+      },
+    }));
+    store.endpoints.setProject = vi.fn(async () => ({ assigned_conversation_count: 1 }));
+    store.refreshSidebar = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    const name = await screen.findByRole('textbox', { name: 'New project display name' });
+    expect(name).toHaveValue('new-repo');
+    expect(
+      screen.getByText('1 conversation from this workspace will be grouped here.'),
+    ).toBeVisible();
+    fireEvent.input(name, { target: { value: 'Frontend' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Create & assign' }));
+    expect(store.endpoints.setProject).toHaveBeenCalledWith(target.id, {
+      create_from_workspace: true,
+      name: 'Frontend',
+    });
   });
 
   it('browses server folders with the real path and hidden-directory contract', async () => {

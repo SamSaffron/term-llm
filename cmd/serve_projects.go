@@ -79,12 +79,13 @@ type projectDirectoryResponse struct {
 }
 
 type sessionProjectCandidate struct {
-	CanonicalDir      string `json:"canonical_dir"`
-	DefaultName       string `json:"default_name"`
-	Git               bool   `json:"git"`
-	ExistingProjectID string `json:"existing_project_id,omitempty"`
-	ExistingName      string `json:"existing_name,omitempty"`
-	ExistingArchived  bool   `json:"existing_archived,omitempty"`
+	CanonicalDir              string `json:"canonical_dir"`
+	DefaultName               string `json:"default_name"`
+	Git                       bool   `json:"git"`
+	ExistingProjectID         string `json:"existing_project_id,omitempty"`
+	ExistingName              string `json:"existing_name,omitempty"`
+	ExistingArchived          bool   `json:"existing_archived,omitempty"`
+	MatchingConversationCount int    `json:"matching_conversation_count"`
 }
 
 type sessionProjectAssignmentInfo struct {
@@ -92,6 +93,11 @@ type sessionProjectAssignmentInfo struct {
 	WorktreeDir string                   `json:"worktree_dir,omitempty"`
 	ProjectID   string                   `json:"project_id,omitempty"`
 	Candidate   *sessionProjectCandidate `json:"candidate,omitempty"`
+}
+
+type sessionProjectAssignmentResponse struct {
+	*session.Session
+	AssignedConversationCount int `json:"assigned_conversation_count"`
 }
 
 type sessionProjectAssignmentRequest struct {
@@ -857,6 +863,18 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 				writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not inspect the conversation workspace")
 				return
 			}
+			if info.Candidate != nil {
+				matches, matchErr := projectpkg.MatchingSessionsForResolved(r.Context(), s.store, resolvedProjectPath{
+					CanonicalDir: info.Candidate.CanonicalDir,
+					DefaultName:  info.Candidate.DefaultName,
+					Git:          info.Candidate.Git,
+				})
+				if matchErr != nil {
+					writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not inspect matching conversations")
+					return
+				}
+				info.Candidate.MatchingConversationCount = len(matches)
+			}
 		}
 		writeJSON(w, http.StatusOK, info)
 		return
@@ -981,13 +999,20 @@ func (s *serveServer) handleSessionProjectAssignment(w http.ResponseWriter, r *h
 		guardedRuntime.sessionMeta = persisted
 	}
 	releaseGuard()
+	assignedCount := 1
 	claimed, claimErr := projectpkg.ClaimMatchingSessions(r.Context(), s.store, *project)
 	if claimErr != nil {
 		log.Printf("[serve] reconcile project history after assignment: id=%s: %v", project.ID, claimErr)
-	} else if claimed > 0 {
-		log.Printf("[serve] project history reconciled after assignment: id=%s claimed=%d", project.ID, claimed)
+	} else {
+		assignedCount += claimed
+		if claimed > 0 {
+			log.Printf("[serve] project history reconciled after assignment: id=%s claimed=%d", project.ID, claimed)
+		}
 	}
-	writeJSON(w, http.StatusOK, persisted)
+	writeJSON(w, http.StatusOK, sessionProjectAssignmentResponse{
+		Session:                   persisted,
+		AssignedConversationCount: assignedCount,
+	})
 }
 
 func (s *serveServer) handleProjectWorktrees(w http.ResponseWriter, r *http.Request, projectID, suffix string) {

@@ -454,48 +454,15 @@
 
 .project-assign-modal {
   width: min(32rem, 100%);
+  max-height: min(46rem, calc(100dvh - 2rem));
+  overflow: hidden auto;
 }
 
-.project-assign-notice {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 0.65rem;
-  padding: 0.75rem 0.82rem;
-  border: 1px solid color-mix(in srgb, var(--link) 24%, var(--border));
-  border-radius: 0.7rem;
-  background: color-mix(in srgb, var(--link) 5%, var(--surface-2));
-}
-
-.project-assign-notice-icon {
-  display: grid;
-  place-items: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  margin-top: 0.05rem;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--link) 14%, transparent);
-  color: var(--link);
-  font:
-    700 0.72rem/1 ui-monospace,
-    monospace;
-}
-
-.project-assign-notice > div {
-  display: grid;
-  gap: 0.15rem;
-  min-width: 0;
-}
-
-.project-assign-notice strong {
-  color: var(--text);
-  font-size: 0.78rem;
-}
-
-.project-assign-notice > div > span {
-  color: var(--text-muted);
-  font-size: 0.74rem;
-  line-height: 1.4;
+.project-assign-subtitle {
+  margin-top: -0.45rem !important;
+  margin-bottom: 0.95rem !important;
+  font-size: 0.8rem !important;
+  line-height: 1.4 !important;
 }
 
 .project-assign-upgrade {
@@ -653,9 +620,22 @@
   white-space: nowrap;
 }
 
-.project-choice-meta {
-  color: var(--text-muted);
+.project-choice-badges {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.project-choice-impact {
+  color: var(--accent-green);
   font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.project-assign-actions {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
 }
 
 .project-choice-empty {
@@ -1064,6 +1044,21 @@
 
 .modal .project-choice {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.modal.project-assign-modal .project-choice {
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 3.15rem;
+  gap: 0.6rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.modal.project-assign-modal .project-modal-fields {
+  gap: 0.85rem;
+}
+
+.modal.project-assign-modal .project-choice-content {
+  gap: 0.1rem;
 }
 
 .modal .project-path-control input {
