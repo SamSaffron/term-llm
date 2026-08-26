@@ -812,6 +812,38 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
+  it('lifts pinned project conversations into the global pinned section', () => {
+    const store = createStore();
+    const pinned = { ...store.sessions.value[0], projectId: 'p1', pinned: true };
+    const regular = {
+      ...pinned,
+      id: 's2',
+      title: 'Project conversation',
+      pinned: false,
+    };
+    store.sessions.value = [pinned, regular];
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p1', name: 'Alpha', sessions: [pinned, regular], has_more: false },
+    ];
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    const pinnedGroup = container.querySelector('.sidebar-pinned-group')!;
+    const projectsGroup = container.querySelector('.sidebar-project-groups')!;
+    const project = container.querySelector('[data-project-id="p1"]')!;
+    expect(pinnedGroup).toHaveTextContent('Test');
+    expect(project).not.toHaveTextContent('Test');
+    expect(project).toHaveTextContent('Project conversation');
+    expect(pinnedGroup.compareDocumentPosition(projectsGroup)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it('keeps the active conversation visible when its project is collapsed', async () => {
     const store = createStore();
     const active = { ...store.sessions.value[0], projectId: 'p1' };

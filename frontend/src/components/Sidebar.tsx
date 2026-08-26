@@ -217,14 +217,7 @@ function SessionRow({ session }: { session: Session }) {
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => void store.selectSession(session)}
       >
-        <span class="session-title">
-          {session.pinned && (
-            <span class="session-pin" aria-label="Pinned">
-              ◆
-            </span>
-          )}
-          {session.title || session.name || 'New chat'}
-        </span>
+        <span class="session-title">{session.title || session.name || 'New chat'}</span>
         <span class="session-meta">
           {session.projectUnavailable
             ? 'Project unavailable'
@@ -329,12 +322,11 @@ function ProjectGroup({ project }: { project: Project }) {
     writeJSON(store.storage, store.keys.projectExpansion, { ...expansion, [project.id]: value });
   };
   const sessions = project.sessions || [];
-  const pinned = sessions.filter((session) => session.pinned);
   const regular = sessions.filter((session) => !session.pinned);
   const activeSession =
-    store.activeSession.value?.projectId === project.id
+    store.activeSession.value?.projectId === project.id && !store.activeSession.value.pinned
       ? store.activeSession.value
-      : sessions.find((session) => session.id === store.activeSessionId.value);
+      : regular.find((session) => session.id === store.activeSessionId.value);
   return (
     <section
       class={`project-group ${project.available === false ? 'unavailable' : ''}`}
@@ -417,12 +409,6 @@ function ProjectGroup({ project }: { project: Project }) {
       </div>
       {open ? (
         <div class="project-session-list is-opening">
-          {pinned.map((session) => (
-            <SessionRow
-              key={session.id}
-              session={store.sessions.value.find((entry) => entry.id === session.id) || session}
-            />
-          ))}
           {regular.map((session) => (
             <SessionRow
               key={session.id}
@@ -448,9 +434,17 @@ export function Sidebar() {
   const store = useStore();
   const collapsed = store.sidebarCollapsed.value;
   const standalone = store.sessions.value.filter((session) => !session.projectId);
+  const sidebarSessions = [
+    ...store.sessions.value,
+    ...store.projects.value.flatMap((project) => project.sessions || []),
+  ];
   const results = store.searchResults.value;
   const brand = store.config.title.trim() || displayName(store.config.agentName);
-  const pinned = standalone.filter((session) => session.pinned);
+  const pinned = sidebarSessions.filter(
+    (session, index) =>
+      session.pinned &&
+      sidebarSessions.findIndex((candidate) => candidate.id === session.id) === index,
+  );
   const regular = standalone.filter((session) => !session.pinned);
   const newChat = () => {
     store.newChat();
@@ -621,19 +615,19 @@ export function Sidebar() {
                 </section>
               ) : (
                 <>
+                  {pinned.length > 0 && (
+                    <section class="session-group sidebar-pinned-group">
+                      <h3>Pinned</h3>
+                      {pinned.map((session) => (
+                        <SessionRow key={session.id} session={session} />
+                      ))}
+                    </section>
+                  )}
                   {store.projects.value.length > 0 && (
                     <section class="session-group sidebar-project-groups">
                       <h3>Projects</h3>
                       {store.projects.value.map((project) => (
                         <ProjectGroup key={project.id} project={project} />
-                      ))}
-                    </section>
-                  )}
-                  {pinned.length > 0 && (
-                    <section class="session-group">
-                      <h3>Pinned</h3>
-                      {pinned.map((session) => (
-                        <SessionRow key={session.id} session={session} />
                       ))}
                     </section>
                   )}

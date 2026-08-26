@@ -58,12 +58,6 @@
   opacity: 0.68;
 }
 
-.session-pin {
-  margin-right: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.55rem;
-}
-
 .session-progress {
   position: absolute;
   top: 0.8rem;
