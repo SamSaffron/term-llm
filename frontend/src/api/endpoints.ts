@@ -1,5 +1,5 @@
 import type { APIClient } from './client';
-import type { Goal } from '../domain/types';
+import type { Goal, MCPResponse } from '../domain/types';
 import type { MentionSearchResponse } from '../domain/completions';
 
 const encoded = (value: string): string => encodeURIComponent(value);
@@ -145,9 +145,9 @@ export const endpoints = (api: APIClient) => ({
     api.post(`/v1/sessions/${encoded(id)}/runtime/goal`, body, 'idempotent-mutation', {
       'Idempotency-Key': `goal_${id}_${JSON.stringify(body)}`,
     }),
-  getMCP: (id: string) => api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/mcp`),
+  getMCP: (id: string) => api.get<MCPResponse>(`/v1/sessions/${encoded(id)}/mcp`),
   setMCP: (id: string, enabled: string[]) =>
-    api.patch(`/v1/sessions/${encoded(id)}/mcp`, { enabled }),
+    api.patch<MCPResponse>(`/v1/sessions/${encoded(id)}/mcp`, { enabled }),
   askUser: (id: string, body: unknown) => api.post(`/v1/sessions/${encoded(id)}/ask_user`, body),
   approval: (id: string, body: unknown) => api.post(`/v1/sessions/${encoded(id)}/approval`, body),
   sideQuestionState: (id: string) =>

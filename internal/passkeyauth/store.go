@@ -75,7 +75,7 @@ func OpenStore(opts StoreOptions) (*Store, error) {
 		opts.Warnf = func(string, ...any) {}
 	}
 	if opts.WriteFile == nil {
-		opts.WriteFile = config.WriteFileAtomically
+		opts.WriteFile = config.WriteFileAtomicallyNoFollow
 	}
 	opts.UserName = userName
 	s := &Store{path: opts.Path, rpID: opts.RPID, userName: opts.UserName, now: opts.Now, random: opts.Random, warnf: opts.Warnf, writeFile: opts.WriteFile}
@@ -243,6 +243,16 @@ func (s *Store) CredentialCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.data.User.Credentials)
+}
+func (s *Store) HasCredential(recordID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, credential := range s.data.User.Credentials {
+		if credential.RecordID == recordID {
+			return true
+		}
+	}
+	return false
 }
 func (s *Store) Credentials() []Credential { return s.User().Credentials }
 

@@ -24,12 +24,72 @@
   letter-spacing: -0.01em;
 }
 
+.mcp-modal-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0 1.1rem 0.8rem;
+}
+
 .mcp-modal-subtitle {
   margin: 0 !important;
-  padding: 0 1.1rem 0.85rem;
+  max-width: 34rem;
   color: var(--text-muted);
   font-size: 0.88rem !important;
   line-height: 1.45 !important;
+}
+
+.mcp-server-summary {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.mcp-server-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 0.75rem 0.65rem;
+}
+
+.mcp-modal .mcp-server-search input {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.55rem 2rem 0.55rem 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  appearance: none;
+}
+
+.mcp-modal .mcp-server-search input:focus {
+  border-color: var(--border-strong);
+  outline: 2px solid color-mix(in srgb, var(--text) 12%, transparent);
+  outline-offset: 1px;
+}
+
+.mcp-server-search-icon {
+  position: absolute;
+  left: 0.72rem;
+  z-index: 1;
+  display: inline-flex;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.mcp-server-search-icon svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 .mcp-server-list {
@@ -39,19 +99,44 @@
   gap: 0.42rem;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 0.75rem 0.15rem;
+  padding: 0 0.75rem 0.35rem;
   scrollbar-gutter: stable;
 }
 
-.mcp-modal .modal-error {
+.mcp-modal-feedback {
+  display: flex;
+  align-items: center;
+  min-height: 2.65rem;
+  padding: 0.45rem 1.1rem 0.85rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.mcp-modal-feedback:empty {
+  min-height: 0;
+  padding-top: 0.25rem;
+}
+
+.mcp-modal-feedback .modal-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 0;
   margin: 0;
-  min-height: 2.15rem;
-  padding: 0.55rem 1.1rem 1rem;
   color: var(--danger);
 }
 
-.mcp-modal .modal-error.is-muted {
-  color: var(--text-muted);
+.mcp-retry {
+  border: 0;
+  border-radius: 7px;
+  padding: 0.3rem 0.5rem;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .mcp-server-empty,
@@ -63,6 +148,23 @@
   background: color-mix(in srgb, var(--surface-2) 70%, transparent);
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+.mcp-server-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.mcp-server-empty strong {
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.mcp-server-empty code {
+  color: var(--text);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
 }
 
 .mcp-server-row {
@@ -79,6 +181,11 @@
     background 0.14s ease,
     border-color 0.14s ease,
     box-shadow 0.14s ease;
+}
+
+.mcp-server-row[data-enabled='true'] {
+  border-color: color-mix(in srgb, var(--accent-green) 26%, var(--border));
+  background: color-mix(in srgb, var(--accent-green) 5%, var(--surface-2));
 }
 
 .mcp-server-row:hover,
@@ -169,11 +276,23 @@
   background: rgb(248 113 113 / 7%);
 }
 
-.mcp-server-error {
-  color: var(--danger);
+.mcp-server-status.stopped {
+  color: var(--text-muted);
+}
+
+.mcp-server-error,
+.mcp-server-warning {
   font-size: 0.78rem;
   line-height: 1.35;
   word-break: break-word;
+}
+
+.mcp-server-error {
+  color: var(--danger);
+}
+
+.mcp-server-warning {
+  color: var(--accent-amber);
 }
 
 .mcp-switch {
@@ -234,6 +353,30 @@
 
 .mcp-switch-input:disabled + .mcp-switch-track {
   opacity: 0.55;
+}
+
+@media (width <= 560px) {
+  .mcp-modal {
+    max-height: calc(100dvh - 1rem - var(--safe-top));
+  }
+
+  .mcp-modal-intro {
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .mcp-server-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.6rem;
+  }
+
+  .mcp-server-icon {
+    display: none;
+  }
+
+  .mcp-server-status {
+    font-size: 0.66rem;
+  }
 }
 
 .approval-intro,

@@ -52,9 +52,9 @@ func hubPrincipal(r *http.Request) (passkeyauth.Principal, bool) {
 	return p, ok
 }
 
-func newHubPasskeyRuntime(endpoint passkeyauth.Endpoint, store *passkeyauth.Store, bootstrap, recovery *passkeyauth.Grants, peerResolver *hubClientPeerResolver) (*hubPasskeyRuntime, error) {
-	if store == nil || bootstrap == nil || recovery == nil {
-		return nil, fmt.Errorf("passkey store and grant stores are required")
+func newHubPasskeyRuntime(endpoint passkeyauth.Endpoint, store *passkeyauth.Store, sessions *passkeyauth.Sessions, bootstrap, recovery *passkeyauth.Grants, peerResolver *hubClientPeerResolver) (*hubPasskeyRuntime, error) {
+	if store == nil || sessions == nil || bootstrap == nil || recovery == nil {
+		return nil, fmt.Errorf("passkey credential, session, and grant stores are required")
 	}
 	if peerResolver == nil {
 		peerResolver, _ = newHubClientPeerResolver(nil)
@@ -63,7 +63,7 @@ func newHubPasskeyRuntime(endpoint passkeyauth.Endpoint, store *passkeyauth.Stor
 	if err != nil {
 		return nil, err
 	}
-	return &hubPasskeyRuntime{endpoint: endpoint, store: store, rp: rp, sessions: passkeyauth.NewSessions(nil, nil), ceremonies: passkeyauth.NewCeremonies(nil, nil), bootstrap: bootstrap, recovery: recovery, limiter: newHubAuthLimiter(nil), peerResolver: peerResolver}, nil
+	return &hubPasskeyRuntime{endpoint: endpoint, store: store, rp: rp, sessions: sessions, ceremonies: passkeyauth.NewCeremonies(nil, nil), bootstrap: bootstrap, recovery: recovery, limiter: newHubAuthLimiter(nil), peerResolver: peerResolver}, nil
 }
 
 func (s *hubServer) registerPasskeyRoutes(mux *http.ServeMux) {
@@ -346,7 +346,7 @@ func (s *hubServer) handleGrantRegisterFinish(w http.ResponseWriter, r *http.Req
 	if bootstrap {
 		issued, err := s.passkey.sessions.Create(saved.RecordID)
 		if err != nil {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "session_capacity", err.Error())
+			s.writePasskeySessionCreateError(w, err)
 			return
 		}
 		s.setSessionCookie(w, issued)
@@ -468,11 +468,20 @@ func (s *hubServer) handleLoginFinish(w http.ResponseWriter, r *http.Request, ki
 	}
 	issued, err := s.passkey.sessions.Create(saved.RecordID)
 	if err != nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "session_capacity", err.Error())
+		s.writePasskeySessionCreateError(w, err)
 		return
 	}
 	s.setSessionCookie(w, issued)
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true, "redirect": ceremony.Meta})
+}
+
+func (s *hubServer) writePasskeySessionCreateError(w http.ResponseWriter, err error) {
+	if errors.Is(err, passkeyauth.ErrSessionCapacity) {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "session_capacity", "session capacity reached; remove the Hub sessions file to sign out all browsers")
+		return
+	}
+	log.Printf("hub passkey session creation failed: %v", err)
+	writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "session could not be durably created")
 }
 
 func (s *hubServer) handlePasskeySession(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +509,16 @@ func (s *hubServer) handlePasskeyLogout(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	_ = s.passkey.sessions.Logout(p)
+	if err := s.passkey.sessions.Logout(p); err != nil {
+		s.clearCookie(w, hubSessionCookieName)
+		if errors.Is(err, passkeyauth.ErrInvalidSession) {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid session")
+		} else {
+			log.Printf("hub passkey session logout persistence failed: %v", err)
+			writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "session could not be durably revoked")
+		}
+		return
+	}
 	s.clearCookie(w, hubSessionCookieName)
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true, "redirect": s.publicPath("/auth/login")})
 }
@@ -514,7 +532,12 @@ func (s *hubServer) handlePasskeyRevokeOthers(w http.ResponseWriter, r *http.Req
 	}
 	n, err := s.passkey.sessions.RevokeOthers(p)
 	if err != nil {
-		writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid session")
+		if errors.Is(err, passkeyauth.ErrInvalidSession) {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "invalid session")
+		} else {
+			log.Printf("hub passkey session revocation persistence failed: %v", err)
+			writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "sessions could not be durably revoked")
+		}
 		return
 	}
 	writeHubAuthJSON(w, http.StatusOK, map[string]any{"revoked": n})
@@ -579,7 +602,11 @@ func (s *hubServer) handleCredentialItem(w http.ResponseWriter, r *http.Request)
 			writeOpenAIError(w, http.StatusConflict, "credential_error", err.Error())
 			return
 		}
-		s.passkey.sessions.RevokeCredential(c.RecordID)
+		if _, err := s.passkey.sessions.RevokeCredential(c.RecordID); err != nil {
+			log.Printf("hub passkey credential session revocation persistence failed: %v", err)
+			writeOpenAIError(w, http.StatusInternalServerError, "session_store_error", "credential removed, but its sessions could not be durably revoked")
+			return
+		}
 		writeHubAuthJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		w.Header().Set("Allow", "PATCH, DELETE")

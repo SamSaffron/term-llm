@@ -30,6 +30,7 @@ import type {
   DiffComment,
   DiffFile,
   Goal,
+  MCPServer,
   Message,
   Project,
   Session,
@@ -143,6 +144,45 @@ const listFrom = (value: Record<string, unknown>, ...keys: string[]): Record<str
   for (const key of keys) if (Array.isArray(value[key])) return array(value[key]);
   return [];
 };
+const normalizeMCPState = (value: unknown): { servers: MCPServer[]; enabled: string[] } => {
+  const source = recordValue(value) || {};
+  const enabled = Array.isArray(source.enabled)
+    ? source.enabled
+        .map(String)
+        .map((name) => name.trim())
+        .filter(Boolean)
+    : [];
+  const enabledSet = new Set(enabled);
+  const servers = array(source.servers)
+    .map((server): MCPServer | null => {
+      const name = String(server.name || '').trim();
+      if (!name) return null;
+      const serverEnabled = enabledSet.has(name) || Boolean(server.enabled);
+      const count = (field: string): number => {
+        const parsed = Number(server[field]);
+        return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+      };
+      return {
+        name,
+        configured: server.configured !== false,
+        enabled: serverEnabled,
+        status: String(server.status || (serverEnabled ? 'ready' : 'stopped')).trim() || 'stopped',
+        error: String(server.error || '').trim(),
+        refreshWarning: String(server.refresh_warning || '').trim(),
+        tools: count('tools'),
+        active: count('active'),
+        deferred: count('deferred'),
+        loadingMode: String(server.loading_mode || '').trim(),
+      };
+    })
+    .filter((server): server is MCPServer => server !== null);
+  return {
+    servers,
+    enabled: enabled.length
+      ? [...new Set(enabled)]
+      : servers.filter((server) => server.enabled).map((server) => server.name),
+  };
+};
 const askUserPrompt = (value: unknown, sessionId: string): AskUserPrompt | null => {
   const source = recordValue(value);
   if (!source || !Array.isArray(source.questions) || !source.questions.length) return null;
@@ -242,11 +282,12 @@ export class AppStore {
   });
   readonly goal = signal<Goal | null>(null);
   readonly mcp = signal<{
-    available: string[];
+    servers: MCPServer[];
     enabled: string[];
     loading: boolean;
+    pending: string;
     error: string;
-  }>({ available: [], enabled: [], loading: false, error: '' });
+  }>({ servers: [], enabled: [], loading: false, pending: '', error: '' });
   readonly worktrees = signal<Record<string, unknown>[]>([]);
   readonly worktreeError = signal('');
   readonly selectedDraftWorktree = signal('');
@@ -1812,30 +1853,45 @@ export class AppStore {
   async loadMCP(): Promise<void> {
     const session = this.activeSession.value;
     if (!session) return;
-    this.mcp.value = { ...this.mcp.value, loading: true };
+    this.mcp.value = { ...this.mcp.value, loading: true, error: '' };
     try {
       const data = await this.endpoints.getMCP(session.id);
-      const servers = array(data.servers)
-        .map((server) => String(server.name || ''))
-        .filter(Boolean);
-      this.mcp.value = {
-        available: servers,
-        enabled: (data.enabled || []) as string[],
-        loading: false,
-        error: '',
-      };
+      const state = normalizeMCPState(data);
+      this.mcp.value = { ...state, loading: false, pending: '', error: '' };
+      this.sessions.value = this.sessions.value.map((current) =>
+        current.id === session.id ? { ...current, mcpEnabled: state.enabled } : current,
+      );
     } catch (error) {
-      this.mcp.value = { ...this.mcp.value, loading: false, error: String(error) };
+      this.mcp.value = {
+        ...this.mcp.value,
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
   async toggleMCP(name: string): Promise<void> {
     const session = this.activeSession.value;
-    if (!session) return;
-    const enabled = this.mcp.value.enabled.includes(name)
-      ? this.mcp.value.enabled.filter((entry) => entry !== name)
-      : [...this.mcp.value.enabled, name];
-    await this.endpoints.setMCP(session.id, enabled);
-    this.mcp.value = { ...this.mcp.value, enabled };
+    if (!session || this.mcp.value.pending) return;
+    const previous = this.mcp.value.enabled;
+    const enabled = previous.includes(name)
+      ? previous.filter((entry) => entry !== name)
+      : [...previous, name];
+    this.mcp.value = { ...this.mcp.value, enabled, pending: name, error: '' };
+    try {
+      const data = await this.endpoints.setMCP(session.id, enabled);
+      const state = normalizeMCPState(data);
+      this.mcp.value = { ...state, loading: false, pending: '', error: '' };
+      this.sessions.value = this.sessions.value.map((current) =>
+        current.id === session.id ? { ...current, mcpEnabled: state.enabled } : current,
+      );
+    } catch (error) {
+      this.mcp.value = {
+        ...this.mcp.value,
+        enabled: previous,
+        pending: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
   async saveGoal(goal: Goal | { action: string }): Promise<void> {
     const session = this.activeSession.value;

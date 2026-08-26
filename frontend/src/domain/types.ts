@@ -82,6 +82,24 @@ export interface Message {
   [key: string]: unknown;
 }
 
+export interface MCPServer {
+  name: string;
+  configured: boolean;
+  enabled: boolean;
+  status: string;
+  error: string;
+  refreshWarning: string;
+  tools: number;
+  active: number;
+  deferred: number;
+  loadingMode: string;
+}
+
+export interface MCPResponse {
+  servers: Record<string, unknown>[];
+  enabled: string[];
+}
+
 export interface Goal {
   objective: string;
   token_budget?: number;

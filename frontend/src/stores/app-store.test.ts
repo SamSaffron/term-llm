@@ -42,6 +42,95 @@ const deferred = <T>() => {
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('preserves MCP server metadata and normalizes partial endpoint data', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.getMCP = vi.fn(async () => ({
+      enabled: ['github'],
+      servers: [
+        {
+          name: 'github',
+          configured: true,
+          status: 'ready',
+          tools: 7,
+          active: 3,
+          deferred: 4,
+          loading_mode: 'dynamic',
+          refresh_warning: 'Using cached tools',
+        },
+        { name: 'minimal' },
+        { status: 'failed' },
+      ],
+    }));
+
+    await store.loadMCP();
+
+    expect(store.mcp.value).toMatchObject({
+      enabled: ['github'],
+      loading: false,
+      error: '',
+      servers: [
+        {
+          name: 'github',
+          enabled: true,
+          status: 'ready',
+          tools: 7,
+          active: 3,
+          deferred: 4,
+          loadingMode: 'dynamic',
+          refreshWarning: 'Using cached tools',
+        },
+        {
+          name: 'minimal',
+          configured: true,
+          enabled: false,
+          status: 'stopped',
+          tools: 0,
+        },
+      ],
+    });
+    expect(store.activeSession.value?.mcpEnabled).toEqual(['github']);
+  });
+
+  it('rolls back an MCP toggle and exposes a recoverable save error', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.mcp.value = {
+      servers: [
+        {
+          name: 'github',
+          configured: true,
+          enabled: false,
+          status: 'stopped',
+          error: '',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+        },
+      ],
+      enabled: [],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.endpoints.setMCP = vi.fn(async () => {
+      throw new Error('Could not save MCP servers');
+    });
+
+    await store.toggleMCP('github');
+
+    expect(store.endpoints.setMCP).toHaveBeenCalledWith('s1', ['github']);
+    expect(store.mcp.value.enabled).toEqual([]);
+    expect(store.mcp.value.pending).toBe('');
+    expect(store.mcp.value.error).toBe('Could not save MCP servers');
+  });
+
   it('bootstraps no-project mode without calling the project-only sidebar endpoint', async () => {
     const store = new AppStore(config);
     store.endpoints.capabilities = vi.fn(async () => ({

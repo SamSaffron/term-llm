@@ -1615,6 +1615,13 @@ func WriteFileAtomically(path string, data []byte, defaultPerm os.FileMode) erro
 	return writeFileAtomically(writePath, data, perm)
 }
 
+// WriteFileAtomicallyNoFollow replaces path atomically without following a
+// final-path symlink and always applies perm to the replacement file. It is
+// intended for application-owned credential and authentication state.
+func WriteFileAtomicallyNoFollow(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomically(path, data, perm)
+}
+
 func resolveFinalSymlink(path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

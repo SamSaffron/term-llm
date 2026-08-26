@@ -852,6 +852,68 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
   });
 
+  it('restores the rich, searchable MCP server picker', async () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = {
+      servers: [
+        {
+          name: 'github',
+          configured: true,
+          enabled: true,
+          status: 'ready',
+          error: '',
+          refreshWarning: '',
+          tools: 12,
+          active: 4,
+          deferred: 8,
+          loadingMode: 'dynamic',
+        },
+        {
+          name: 'discourse',
+          configured: true,
+          enabled: false,
+          status: 'failed',
+          error: 'Missing DISCOURSE_API_KEY',
+          refreshWarning: '',
+          tools: 0,
+          active: 0,
+          deferred: 0,
+          loadingMode: '',
+        },
+      ],
+      enabled: ['github'],
+      loading: false,
+      pending: '',
+      error: '',
+    };
+    store.toggleMCP = vi.fn(async () => undefined);
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('dialog', { name: 'MCP servers' })).toHaveClass('mcp-modal');
+    expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
+    expect(screen.getByText('12 tools · 4 active, 8 deferred')).toBeVisible();
+    expect(screen.getByText('Missing DISCOURSE_API_KEY')).toBeVisible();
+    expect(screen.getByRole('checkbox', { name: 'Disable github' })).toBeChecked();
+
+    const filter = screen.getByRole('searchbox', { name: 'Filter MCP servers' });
+    await userEvent.type(filter, 'git');
+    expect(screen.getByText('github')).toBeVisible();
+    expect(screen.queryByText('discourse')).not.toBeInTheDocument();
+    fireEvent.input(filter, { target: { value: 'missing-name' } });
+    expect(screen.getByText('No matching servers')).toBeVisible();
+    expect(screen.getByLabelText('1 server enabled')).toHaveTextContent('1 of 2 on');
+
+    fireEvent.input(filter, { target: { value: '' } });
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Enable discourse' }));
+    expect(store.toggleMCP).toHaveBeenCalledWith('discourse');
+  });
+
   it('offers legacy branch-context choices before creating a path', async () => {
     const store = createStore();
     store.branchTarget.value = '42';

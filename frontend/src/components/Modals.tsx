@@ -447,23 +447,149 @@ function Approval() {
 function MCP() {
   const store = useStore();
   const state = store.mcp.value;
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleServers = normalizedQuery
+    ? state.servers.filter((server) => server.name.toLocaleLowerCase().includes(normalizedQuery))
+    : state.servers;
+  const enabledCount = state.enabled.length;
+  const disabled = state.loading || Boolean(state.pending) || store.streaming.value;
+  const subtitle = (server: (typeof state.servers)[number]): string => {
+    const status = server.status.toLocaleLowerCase();
+    if (!server.configured) return 'Not found in your MCP configuration';
+    if (status === 'ready') {
+      if (server.active || server.deferred) {
+        const parts = [];
+        if (server.active) parts.push(`${server.active} active`);
+        if (server.deferred) parts.push(`${server.deferred} deferred`);
+        return `${server.tools} tool${server.tools === 1 ? '' : 's'} · ${parts.join(', ')}`;
+      }
+      return `${server.tools} tool${server.tools === 1 ? '' : 's'} available`;
+    }
+    if (status === 'starting') return 'Starting server…';
+    if (server.error) return 'Failed to start';
+    return 'Tools load when enabled';
+  };
   return (
-    <Overlay title="MCP servers">
-      <p>Turn on configured servers for this chat. Changes save immediately.</p>
-      {state.loading && <p>Loading…</p>}
-      {state.error && <div class="modal-error">{state.error}</div>}
-      <div class="mcp-server-list">
-        {state.available.map((name) => (
-          <label class="mcp-server-row" key={name}>
-            <span>{name}</span>
-            <input
-              type="checkbox"
-              checked={state.enabled.includes(name)}
-              disabled={store.streaming.value}
-              onChange={() => void store.toggleMCP(name)}
-            />
-          </label>
-        ))}
+    <Overlay title="MCP servers" className="mcp-modal">
+      <div class="mcp-modal-intro">
+        <p class="mcp-modal-subtitle">
+          Choose which configured servers can add tools to this chat. Changes save immediately.
+        </p>
+        {!state.loading && state.servers.length > 0 && (
+          <span
+            class="mcp-server-summary"
+            aria-label={`${enabledCount} ${enabledCount === 1 ? 'server' : 'servers'} enabled`}
+          >
+            {enabledCount} of {state.servers.length} on
+          </span>
+        )}
+      </div>
+      {!state.loading && state.servers.length > 0 && (
+        <label class="mcp-server-search">
+          <span class="mcp-server-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m16.5 16.5 4 4" />
+            </svg>
+          </span>
+          <input
+            type="search"
+            aria-label="Filter MCP servers"
+            value={query}
+            placeholder="Filter servers…"
+            onInput={(event) => setQuery(event.currentTarget.value)}
+          />
+        </label>
+      )}
+      <div class="mcp-server-list" aria-busy={state.loading ? 'true' : undefined}>
+        {state.loading ? (
+          <div class="mcp-server-loading" role="status">
+            Loading configured MCP servers…
+          </div>
+        ) : state.servers.length === 0 ? (
+          <div class="mcp-server-empty" role="status">
+            <strong>No MCP servers configured</strong>
+            <span>
+              Add servers to <code>~/.config/term-llm/mcp.json</code>, then try again.
+            </span>
+          </div>
+        ) : visibleServers.length === 0 ? (
+          <div class="mcp-server-empty" role="status">
+            <strong>No matching servers</strong>
+            <span>Try a different name or clear the filter.</span>
+          </div>
+        ) : (
+          visibleServers.map((server) => {
+            const checked = state.enabled.includes(server.name);
+            const status = server.configured ? server.status.toLocaleLowerCase() : 'failed';
+            const statusClass = status.replace(/[^a-z0-9_-]/g, '') || 'stopped';
+            return (
+              <label
+                class="mcp-server-row"
+                data-enabled={checked ? 'true' : 'false'}
+                key={server.name}
+              >
+                <span class="mcp-server-icon" aria-hidden="true">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <rect x="5" y="5" width="5" height="5" rx="1.2" />
+                    <rect x="14" y="14" width="5" height="5" rx="1.2" />
+                    <path d="M10 7.5h2.5a4 4 0 0 1 4 4V14" />
+                    <path d="M14 16.5h-2.5a4 4 0 0 1-4-4V10" />
+                  </svg>
+                </span>
+                <span class="mcp-server-copy">
+                  <span class="mcp-server-title-row">
+                    <span class="mcp-server-name">{server.name}</span>
+                    <span class={`mcp-server-status ${statusClass}`}>
+                      {server.configured ? server.status : 'missing'}
+                    </span>
+                  </span>
+                  <span class="mcp-server-subtitle">{subtitle(server)}</span>
+                  {(server.error || server.refreshWarning) && (
+                    <span class={server.error ? 'mcp-server-error' : 'mcp-server-warning'}>
+                      {server.error || server.refreshWarning}
+                    </span>
+                  )}
+                </span>
+                <span class="mcp-switch">
+                  <input
+                    class="mcp-switch-input"
+                    type="checkbox"
+                    aria-label={`${checked ? 'Disable' : 'Enable'} ${server.name}`}
+                    checked={checked}
+                    disabled={disabled}
+                    onChange={() => void store.toggleMCP(server.name)}
+                  />
+                  <span class="mcp-switch-track" aria-hidden="true">
+                    <span class="mcp-switch-thumb" />
+                  </span>
+                </span>
+              </label>
+            );
+          })
+        )}
+      </div>
+      <div class="mcp-modal-feedback" aria-live="polite">
+        {store.streaming.value && !state.error && (
+          <span>Servers can’t be changed while a response is running.</span>
+        )}
+        {state.pending && !state.error && <span>Saving {state.pending}…</span>}
+        {state.error && (
+          <span class="modal-error" role="alert">
+            {state.error}
+            <button class="mcp-retry" type="button" onClick={() => void store.loadMCP()}>
+              Retry
+            </button>
+          </span>
+        )}
       </div>
     </Overlay>
   );

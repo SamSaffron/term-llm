@@ -7,6 +7,27 @@ import (
 	"testing"
 )
 
+func TestTryLockDoesNotWaitForHeldLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resource.lock")
+	unlock, err := TryLock(path)
+	if err != nil {
+		t.Fatalf("first TryLock: %v", err)
+	}
+	if _, err := TryLock(path); err == nil {
+		t.Fatal("second TryLock unexpectedly acquired held lock")
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	unlockAgain, err := TryLock(path)
+	if err != nil {
+		t.Fatalf("TryLock after release: %v", err)
+	}
+	if err := unlockAgain(); err != nil {
+		t.Fatalf("second unlock: %v", err)
+	}
+}
+
 func TestLockReleaseAndReacquire(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resource.lock")
 	unlock, err := Lock(path)
