@@ -225,6 +225,11 @@ test('cancels an active response from the public stop control', async ({ page })
 test('opens diff UI, expands a file and queues an inline comment', async ({ page }) => {
   await open(page);
   await page.getByRole('button', { name: 'Toggle file changes' }).click();
+  expect(
+    await page
+      .locator('#diffSidebar')
+      .evaluate((element) => getComputedStyle(element, '::before').content),
+  ).toBe('none');
   const fileToggle = page.locator('.diff-file-row[data-path="frontend/src/main.tsx"]');
   await expect(fileToggle).toBeVisible();
   await fileToggle.click();
@@ -235,7 +240,9 @@ test('opens diff UI, expands a file and queues an inline comment', async ({ page
     .click();
   await page.getByRole('textbox', { name: 'Inline comment' }).fill('Please explain this');
   await page.getByRole('button', { name: 'Queue' }).click();
-  await expect(page.getByText('1 inline comment queued.')).toBeVisible();
+  await expect(page.locator('.diff-queue-bar')).toContainText('1 queued');
+  await expect(page.getByRole('button', { name: 'Send comments' })).toBeVisible();
+  await expect(page.getByText('1 inline comment queued.')).toHaveCount(0);
 });
 
 test('mobile viewport opens a styled sidebar and returns to a usable composer', async ({

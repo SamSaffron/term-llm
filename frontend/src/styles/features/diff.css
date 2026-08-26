@@ -160,15 +160,6 @@
   overflow-y: auto;
 }
 
-.diff-queue-status {
-  flex: none;
-  min-height: 1.15rem;
-  padding: 0.25rem 0.75rem;
-  border-top: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 0.72rem;
-}
-
 .diff-queue-bar {
   flex: none;
   display: flex;
@@ -1268,29 +1259,6 @@
     touch-action: pan-y;
   }
 
-  .diff-sidebar.open::before {
-    content: '›';
-    position: absolute;
-    left: -11px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 22px;
-    height: 54px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--surface-elevated, var(--surface)) 90%, transparent);
-    color: var(--text-muted);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.25rem;
-    font-weight: 700;
-    line-height: 1;
-    box-shadow: var(--shadow-strong);
-    pointer-events: none;
-    opacity: 0.9;
-  }
-
   .diff-resize-handle {
     display: none;
   }
@@ -1303,9 +1271,5 @@
   .diff-sidebar.open.maximized {
     transform: none;
     box-shadow: none;
-  }
-
-  .diff-sidebar.open.maximized::before {
-    display: none;
   }
 }

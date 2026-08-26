@@ -602,11 +602,6 @@ export function DiffSidebar() {
           <div class="diff-empty">No file changes in this scope.</div>
         )}
       </div>
-      <div class="diff-queue-status" role="status">
-        {comments.length
-          ? `${comments.length} inline comment${comments.length === 1 ? '' : 's'} queued.`
-          : 'No inline comments queued.'}
-      </div>
       {comments.length > 0 && (
         <div class="diff-queue-bar">
           <span class="diff-queue-count">{comments.length} queued</span>
