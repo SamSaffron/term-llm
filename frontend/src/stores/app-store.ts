@@ -1686,17 +1686,32 @@ export class AppStore {
     this.modal.value = '';
     return response;
   }
-  async renameSession(title: string): Promise<void> {
+  async renameSession(
+    change: { name: string } | { generatedShortTitle: string; generatedLongTitle: string },
+  ): Promise<void> {
     const session = this.renameTarget.value;
     if (!session) return;
-    await this.mutateSession(session, { title: title.trim() || 'New chat', name: title.trim() });
+    const patch =
+      'name' in change
+        ? { name: change.name.trim() }
+        : {
+            name: '',
+            generated_short_title: change.generatedShortTitle.trim(),
+            generated_long_title: change.generatedLongTitle.trim(),
+          };
+    await this.endpoints.patchSession(session.id, patch);
+    await this.refreshSidebar();
+    this.renameTarget.value = null;
     this.modal.value = '';
   }
   async improveTitle(): Promise<{ title: string; detail: string }> {
     const session = this.renameTarget.value;
     if (!session) return { title: '', detail: '' };
     const data = await this.endpoints.refineTitle(session.id);
-    return { title: String(data.title || ''), detail: String(data.detail || '') };
+    return {
+      title: String(data.generated_short_title || data.short_title || session.title || ''),
+      detail: String(data.generated_long_title || data.long_title || session.longTitle || ''),
+    };
   }
 
   setPreference(

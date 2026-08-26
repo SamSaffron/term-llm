@@ -764,6 +764,53 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('dialog', { name: 'Assign project' })).toBeInTheDocument();
   });
 
+  it('always shows sidebar message counts and relative activity instead of title previews', () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date('2026-08-26T12:00:00Z').getTime();
+      vi.setSystemTime(now);
+      const store = createStore();
+      const base = store.sessions.value[0];
+      store.sessions.value = [
+        {
+          ...base,
+          title: 'DSA Compliance HTML Mock',
+          longTitle: 'DSA Compliance HTML Mock with details that repeat the title',
+          messageCount: 10,
+          lastMessageAt: now - 5 * 60 * 60 * 1000,
+        },
+        {
+          ...base,
+          id: 's2',
+          title: 'Earlier this year',
+          messageCount: 2,
+          lastMessageAt: new Date(2026, 4, 22, 12).getTime(),
+        },
+        {
+          ...base,
+          id: 's3',
+          title: 'Last year',
+          messageCount: 1,
+          lastMessageAt: new Date(2025, 4, 22, 12).getTime(),
+        },
+      ];
+      render(
+        <StoreContext.Provider value={store}>
+          <Sidebar />
+        </StoreContext.Provider>,
+      );
+
+      expect(screen.getByText('10 messages · 5h ago')).toBeVisible();
+      expect(screen.getByText('2 messages · 22 May')).toBeVisible();
+      expect(screen.getByText('1 message · May 2025')).toBeVisible();
+      expect(
+        screen.queryByText('DSA Compliance HTML Mock with details that repeat the title'),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('auto-loads older sidebar conversations through the pagination sentinels', async () => {
     const store = createStore();
     store.projectsEnabled.value = true;
@@ -936,6 +983,65 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.keyboard('{Escape}');
     expect(input).toHaveValue('@ja');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  it('restores manual rename saving without submitting an ancestor form', async () => {
+    const store = createStore();
+    store.renameTarget.value = { ...store.sessions.value[0], name: 'Custom label' };
+    store.modal.value = 'rename';
+    store.renameSession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Could not rename this session'))
+      .mockResolvedValue(undefined);
+    const submit = vi.fn((event: SubmitEvent) => event.preventDefault());
+    render(
+      <StoreContext.Provider value={store}>
+        <form onSubmit={submit}>
+          <Modals />
+        </form>
+      </StoreContext.Provider>,
+    );
+
+    const input = screen.getByRole('textbox', { name: 'Session name' });
+    expect(input).toHaveValue('Custom label');
+    await userEvent.clear(input);
+    await userEvent.type(input, 'New label');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(submit).not.toHaveBeenCalled();
+    expect(store.renameSession).toHaveBeenCalledWith({ name: 'New label' });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not rename this session');
+    expect(screen.getByRole('dialog', { name: 'Rename session' })).toBeInTheDocument();
+  });
+
+  it('restores editable AI title previews in the rename dialog', async () => {
+    const store = createStore();
+    store.renameTarget.value = store.sessions.value[0];
+    store.modal.value = 'rename';
+    store.improveTitle = vi.fn(async () => ({
+      title: 'Suggested title',
+      detail: 'Suggested detail',
+    }));
+    store.renameSession = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Session name' })).toHaveValue('Test');
+    await userEvent.click(screen.getByRole('button', { name: 'Improve title with AI' }));
+    const title = await screen.findByRole('textbox', { name: 'Title' });
+    const detail = screen.getByRole('textbox', { name: 'Detail' });
+    expect(title).toHaveValue('Suggested title');
+    expect(detail).toHaveValue('Suggested detail');
+    expect(screen.getByRole('button', { name: 'Try again with AI' })).toBeInTheDocument();
+    await userEvent.clear(title);
+    await userEvent.type(title, 'Edited suggestion');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(store.renameSession).toHaveBeenCalledWith({
+      generatedShortTitle: 'Edited suggestion',
+      generatedLongTitle: 'Suggested detail',
+    });
   });
 
   it('restores the rich, searchable MCP server picker', async () => {

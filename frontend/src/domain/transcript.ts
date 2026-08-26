@@ -556,13 +556,15 @@ export function sanitizeSession(
     name: text(source.name),
     title:
       text(
-        source.generated_short_title ||
-          source.short_title ||
-          source.title ||
+        source.short_title ||
           source.name ||
+          source.title ||
+          source.generated_short_title ||
           source.summary,
       ) || 'New chat',
-    longTitle: text(source.generated_long_title || source.long_title || source.longTitle),
+    longTitle: text(source.long_title || source.longTitle || source.generated_long_title),
+    generatedShortTitle: text(source.generated_short_title || source.generatedShortTitle),
+    generatedLongTitle: text(source.generated_long_title || source.generatedLongTitle),
     mode: text(source.mode) || 'chat',
     origin: text(source.origin) || 'web',
     agent: text(source.agent),

@@ -113,6 +113,8 @@ export interface Session {
   name: string;
   title: string;
   longTitle?: string;
+  generatedShortTitle?: string;
+  generatedLongTitle?: string;
   mode: string;
   origin: string;
   agent?: string;

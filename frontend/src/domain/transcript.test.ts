@@ -77,6 +77,25 @@ describe('transcript domain', () => {
     });
   });
 
+  it('prefers server-resolved titles while retaining editable generated metadata', () => {
+    const session = sanitizeSession({
+      id: 's1',
+      name: 'Manual name',
+      short_title: 'Manual name',
+      long_title: 'Preferred detail',
+      generated_short_title: 'Older generated title',
+      generated_long_title: 'Older generated detail',
+      messages: [],
+    });
+    expect(session).toMatchObject({
+      name: 'Manual name',
+      title: 'Manual name',
+      longTitle: 'Preferred detail',
+      generatedShortTitle: 'Older generated title',
+      generatedLongTitle: 'Older generated detail',
+    });
+  });
+
   it('windows old turns behind a stable gap and always keeps the tail', () => {
     const messages = Array.from({ length: 240 }, (_, index): Message => ({
       id: String(index),

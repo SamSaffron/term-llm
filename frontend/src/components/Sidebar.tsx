@@ -5,6 +5,26 @@ import { displayName } from '../app/config';
 import { readJSON, writeJSON } from '../platform/storage';
 import { Icon } from './Icon';
 
+function sessionMessageCount(session: Session): number {
+  if (Number.isFinite(session.messageCount)) return Math.max(0, session.messageCount || 0);
+  return session.messages.filter(
+    (message) => message.role === 'user' || message.role === 'assistant',
+  ).length;
+}
+
+function sessionRelativeTime(value: number): string {
+  const difference = Math.max(0, Date.now() - value);
+  if (difference < 45_000) return 'just now';
+  if (difference < 3_600_000) return `${Math.max(1, Math.floor(difference / 60_000))}m ago`;
+  if (difference < 86_400_000) return `${Math.max(1, Math.floor(difference / 3_600_000))}h ago`;
+  if (difference < 604_800_000) return `${Math.max(1, Math.floor(difference / 86_400_000))}d ago`;
+  const date = new Date(value);
+  const month = date.toLocaleString(undefined, { month: 'short' });
+  return date.getFullYear() === new Date().getFullYear()
+    ? `${date.getDate()} ${month}`
+    : `${month} ${date.getFullYear()}`;
+}
+
 /** Flip a dropdown menu above its trigger when it would overflow the viewport. */
 function useMenuFlip(open: boolean) {
   const menu = useRef<HTMLDivElement>(null);
@@ -185,6 +205,8 @@ function SessionRow({ session }: { session: Session }) {
   const projection = store.runs.value[session.id];
   const running =
     projection && ['connecting', 'streaming', 'cancelling'].includes(projection.run.status);
+  const messageCount = sessionMessageCount(session);
+  const activityAt = session.lastMessageAt || session.created;
   const hide = () => {
     setHiding(true);
     const node = row.current;
@@ -218,14 +240,9 @@ function SessionRow({ session }: { session: Session }) {
         onClick={() => void store.selectSession(session)}
       >
         <span class="session-title">{session.title || session.name || 'New chat'}</span>
-        <span class="session-meta">
-          {session.projectUnavailable
-            ? 'Project unavailable'
-            : session.longTitle ||
-              session.workingDir ||
-              (session.messageCount != null
-                ? `${session.messageCount} ${session.messageCount === 1 ? 'message' : 'messages'}`
-                : '')}
+        <span class="session-meta" title={new Date(activityAt).toLocaleString()}>
+          {messageCount} {messageCount === 1 ? 'message' : 'messages'} ·{' '}
+          {sessionRelativeTime(activityAt)}
         </span>
         {running && <span class="session-progress" aria-label="Response in progress" />}
       </button>

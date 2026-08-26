@@ -45,6 +45,22 @@ describe('API transport', () => {
     expect(init.credentials).toBe('omit');
   });
 
+  it('requests rename title improvements as non-mutating previews', async () => {
+    const request = vi.fn(
+      async () =>
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', request);
+    const api = new APIClient(config, { getToken: () => 'secret', onAuthRequired: vi.fn() });
+
+    await endpoints(api).refineTitle('session/1');
+
+    const [url, init] = request.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/ui/v1/sessions/session%2F1/title/refine');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ preview: true });
+  });
+
   it('coordinates auth-required and typed errors', async () => {
     vi.stubGlobal(
       'fetch',

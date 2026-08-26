@@ -110,7 +110,9 @@ export const endpoints = (api: APIClient) => ({
   patchSession: (id: string, body: unknown) => api.patch(`/v1/sessions/${encoded(id)}`, body),
   deleteSession: (id: string) => api.delete(`/v1/sessions/${encoded(id)}`),
   refineTitle: (id: string) =>
-    api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {}),
+    api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {
+      preview: true,
+    }),
   projectAssignment: (id: string, signal?: AbortSignal) =>
     api.get<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/project`, signal),
   setProject: (id: string, body: Record<string, unknown>) =>

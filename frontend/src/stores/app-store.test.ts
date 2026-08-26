@@ -42,6 +42,51 @@ const deferred = <T>() => {
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('saves manual and generated session titles with the server metadata contract', async () => {
+    const store = new AppStore(config);
+    const target = session();
+    store.sessions.value = [target];
+    store.renameTarget.value = target;
+    store.modal.value = 'rename';
+    store.endpoints.patchSession = vi.fn(async () => ({}));
+    store.refreshSidebar = vi.fn(async () => undefined);
+
+    await store.renameSession({ name: '  Renamed session  ' });
+    expect(store.endpoints.patchSession).toHaveBeenLastCalledWith('s1', {
+      name: 'Renamed session',
+    });
+    expect(store.modal.value).toBe('');
+    expect(store.renameTarget.value).toBeNull();
+
+    store.renameTarget.value = target;
+    store.modal.value = 'rename';
+    await store.renameSession({
+      generatedShortTitle: '  Generated title  ',
+      generatedLongTitle: '  Generated detail  ',
+    });
+    expect(store.endpoints.patchSession).toHaveBeenLastCalledWith('s1', {
+      name: '',
+      generated_short_title: 'Generated title',
+      generated_long_title: 'Generated detail',
+    });
+  });
+
+  it('requests AI title suggestions in preview mode and reads server title fields', async () => {
+    const store = new AppStore(config);
+    const target = session();
+    store.renameTarget.value = target;
+    store.endpoints.refineTitle = vi.fn(async () => ({
+      generated_short_title: 'Suggested title',
+      generated_long_title: 'Suggested detail',
+    }));
+
+    await expect(store.improveTitle()).resolves.toEqual({
+      title: 'Suggested title',
+      detail: 'Suggested detail',
+    });
+    expect(store.endpoints.refineTitle).toHaveBeenCalledWith('s1');
+  });
+
   it('preserves MCP server metadata and normalizes partial endpoint data', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
