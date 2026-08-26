@@ -239,7 +239,8 @@ test('opens diff UI, expands a file and queues an inline comment', async ({ page
     .first()
     .click();
   await page.getByRole('textbox', { name: 'Inline comment' }).fill('Please explain this');
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await page.getByRole('button', { name: 'More send options' }).click();
+  await page.getByRole('menuitem', { name: /Queue comment/ }).click();
   await expect(page.locator('.diff-queue-bar')).toContainText('1 queued');
   await expect(page.getByRole('button', { name: 'Send comments' })).toBeVisible();
   await expect(page.getByText('1 inline comment queued.')).toHaveCount(0);

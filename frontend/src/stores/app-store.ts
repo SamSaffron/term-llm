@@ -560,6 +560,7 @@ export class AppStore {
       ...existing,
       ...incoming,
       messages: replaceMessages || incoming.messages.length ? incoming.messages : existing.messages,
+      lastResponseId: incoming.lastResponseId || existing.lastResponseId,
       usage: incoming.usage || existing.usage,
       goal: incoming.goal ?? existing.goal,
       fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary,
@@ -818,13 +819,18 @@ export class AppStore {
       const sideload = recordValue(selected.selected_transcript) || {};
       const bodies = recordValue(sideload.bodies) || {};
       const serverMessages = listFrom(bodies, 'messages', 'items');
+      const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
       const incoming = this.sessionFrom({ id, ...selectedSource, messages: serverMessages });
       const currentIndex = this.sessions.value.findIndex(
         (session) => session.id === id || (incoming.id && session.id === incoming.id),
       );
       const current = currentIndex >= 0 ? this.sessions.value[currentIndex] : undefined;
       // selected_transcript is authoritative here, including an empty transcript.
-      const updated = this.mergeSession(current, incoming, true);
+      // Session state is authoritative for its durable continuation anchor.
+      const updated = {
+        ...this.mergeSession(current, incoming, true),
+        lastResponseId: lastResponseId || null,
+      };
       if (currentIndex >= 0)
         this.sessions.value = this.sessions.value.map((session, index) =>
           index === currentIndex ? updated : session,
@@ -1247,6 +1253,7 @@ export class AppStore {
 
   private async refreshSessionMessages(sessionId: string, targetRev = 0): Promise<void> {
     try {
+      const stateRequest = this.endpoints.sessionState(sessionId).catch(() => null);
       const selected = await this.endpoints.selectedSession(sessionId);
       const source = recordValue(selected.selected_session);
       const sideload = recordValue(selected.selected_transcript);
@@ -1261,6 +1268,15 @@ export class AppStore {
         session.id === sessionId ? this.mergeSession(session, incoming, true) : session,
       );
       this.retireIntent(sessionId);
+      const state = await stateRequest;
+      if (state) {
+        const lastResponseId = String(state.lastResponseId || state.last_response_id || '').trim();
+        this.sessions.value = this.sessions.value.map((session) =>
+          session.id === sessionId
+            ? { ...session, lastResponseId: lastResponseId || null }
+            : session,
+        );
+      }
     } catch {
       /* Status polling will retry durable reconciliation. */
     }
@@ -2089,6 +2105,67 @@ export class AppStore {
       };
     }
   }
+  private prepareDiffComments(comments: DiffComment[]): {
+    payloads: Array<Record<string, unknown>>;
+    inputText: string;
+  } | null {
+    const payloads = comments.map((comment) => {
+      const scope = normalizeDiffScope(comment.scope || this.diff.value.scope);
+      const turnScope = ['last_turn', 'last_3_turns'].includes(scope);
+      return {
+        id: comment.id || uuid(),
+        path: comment.path,
+        scope,
+        side: comment.side,
+        line: comment.line,
+        file_change_seq: turnScope ? Number(comment.fileChangeSeq) || 0 : 0,
+        line_text: comment.context || '',
+        instruction: comment.body,
+      };
+    });
+    if (
+      payloads.some(
+        (comment) =>
+          ['last_turn', 'last_3_turns'].includes(String(comment.scope)) &&
+          Number(comment.file_change_seq) <= 0,
+      )
+    ) {
+      this.toast(
+        'Refresh the diff before sending these comments so their file snapshot can be anchored.',
+        'error',
+      );
+      return null;
+    }
+    return {
+      payloads,
+      inputText:
+        payloads.length === 1
+          ? `[Inline diff instruction]\n${payloads[0].path}:${payloads[0].line} — ${payloads[0].instruction}`
+          : `[Inline diff instructions] (${payloads.length} anchored comments)\n\n${payloads.map((comment) => `${comment.path}:${comment.line} — ${comment.instruction}`).join('\n')}`,
+    };
+  }
+  async sendDiffComment(comment: DiffComment): Promise<void> {
+    const session = this.activeSession.value;
+    if (!session || (comment.sessionId && comment.sessionId !== session.id)) return;
+    if (this.streaming.value) {
+      this.toast('Wait for the current response before sending an inline comment.', 'info');
+      return;
+    }
+    const prepared = this.prepareDiffComments([comment]);
+    if (!prepared) return;
+    await this.send({
+      contentParts: prepared.payloads.map((diff_comment) => ({
+        type: 'diff_comment',
+        diff_comment,
+      })),
+      inputText: prepared.inputText,
+      displayContent: comment.body,
+      preserveComposer: true,
+      diffComments: [comment],
+      onTransportStarted: () => this.toast('Comment sent to the agent.', 'success'),
+      onTransportFailed: (error) => this.toast(error, 'error'),
+    });
+  }
   queueDiffComment(comment: DiffComment): void {
     const sessionId = this.activeSessionId.peek();
     const value = { ...comment, id: comment.id || uuid(), sessionId };
@@ -2117,41 +2194,14 @@ export class AppStore {
       this.toast('Wait for the current response before sending inline comments.', 'info');
       return;
     }
-    const payloads = comments.map((comment) => {
-      const scope = normalizeDiffScope(comment.scope || this.diff.value.scope);
-      const turnScope = ['last_turn', 'last_3_turns'].includes(scope);
-      return {
-        id: comment.id || uuid(),
-        path: comment.path,
-        scope,
-        side: comment.side,
-        line: comment.line,
-        file_change_seq: turnScope ? Number(comment.fileChangeSeq) || 0 : 0,
-        line_text: comment.context || '',
-        instruction: comment.body,
-      };
-    });
-    if (
-      payloads.some(
-        (comment) =>
-          ['last_turn', 'last_3_turns'].includes(comment.scope) && comment.file_change_seq <= 0,
-      )
-    ) {
-      this.toast(
-        'Refresh the diff before sending these comments so their file snapshot can be anchored.',
-        'error',
-      );
-      return;
-    }
-    const inputText =
-      payloads.length === 1
-        ? `[Inline diff instruction]\n${payloads[0].path}:${payloads[0].line} — ${payloads[0].instruction}`
-        : `[Inline diff instructions] (${payloads.length} anchored comments)\n\n${payloads.map((comment) => `${comment.path}:${comment.line} — ${comment.instruction}`).join('\n')}`;
+    const prepared = this.prepareDiffComments(comments);
+    if (!prepared) return;
+    const { payloads, inputText } = prepared;
     await this.send({
       contentParts: payloads.map((diff_comment) => ({ type: 'diff_comment', diff_comment })),
       inputText,
       displayContent:
-        payloads.length === 1 ? payloads[0].instruction : `${payloads.length} inline comments`,
+        comments.length === 1 ? comments[0].body : `${comments.length} inline comments`,
       preserveComposer: true,
       diffComments: comments,
       onTransportStarted: () => {

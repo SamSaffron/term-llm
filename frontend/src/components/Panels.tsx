@@ -73,8 +73,9 @@ function Line({
   onComment: (key: string) => void;
   onBody: (value: string) => void;
   onCancel: () => void;
-  onSubmit: (event: SubmitEvent) => void;
+  onSubmit: (mode: 'send' | 'queue') => void;
 }) {
+  const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
   const kind =
     line.kind === 'add'
@@ -112,7 +113,13 @@ function Line({
         </button>
       )}
       {commenting && (
-        <form class="diff-comment-panel diff-comment-editor" onSubmit={onSubmit}>
+        <form
+          class="diff-comment-panel diff-comment-editor"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit('send');
+          }}
+        >
           <textarea
             autoFocus
             aria-label="Inline comment"
@@ -123,9 +130,42 @@ function Line({
             <button class="diff-comment-cancel" type="button" onClick={onCancel}>
               Cancel
             </button>
-            <button class="diff-comment-send" type="submit">
-              Queue
-            </button>
+            <div class="diff-comment-send-split">
+              <button class="diff-comment-send" type="submit">
+                Send now
+              </button>
+              <button
+                class="diff-comment-send-more"
+                type="button"
+                aria-label="More send options"
+                aria-haspopup="menu"
+                aria-expanded={sendMenuOpen}
+                onClick={() => setSendMenuOpen(!sendMenuOpen)}
+              >
+                ▾
+              </button>
+              {sendMenuOpen && (
+                <div class="diff-comment-send-menu" role="menu">
+                  <button
+                    class="diff-comment-send-option"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => onSubmit('send')}
+                  >
+                    Send now
+                  </button>
+                  <button
+                    class="diff-comment-send-option"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => onSubmit('queue')}
+                  >
+                    Queue comment
+                    <small>Deliver later as one batch</small>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </form>
       )}
@@ -203,19 +243,20 @@ function File({ file }: { file: DiffFile }) {
       emphasis.set(index, ranges.old);
       emphasis.set(index + 1, ranges.new);
     }
-  const submitComment = (event: SubmitEvent, line: DiffLine) => {
-    event.preventDefault();
+  const submitComment = (mode: 'send' | 'queue', line: DiffLine) => {
     const number = line.kind === 'delete' ? line.oldLine : line.newLine;
     if (!body.trim() || !number) return;
-    store.queueDiffComment({
+    const comment = {
       path: file.path,
-      side: line.kind === 'delete' ? 'old' : 'new',
+      side: line.kind === 'delete' ? ('old' as const) : ('new' as const),
       line: number,
       body: body.trim(),
       scope: store.diff.value.scope,
       context: line.content,
       fileChangeSeq: file.snapshotSeq || file.sequence || 0,
-    });
+    };
+    if (mode === 'queue') store.queueDiffComment(comment);
+    else void store.sendDiffComment(comment);
     setBody('');
     setCommenting('');
   };
@@ -344,7 +385,7 @@ function File({ file }: { file: DiffFile }) {
                         setBody('');
                         setCommenting('');
                       }}
-                      onSubmit={(event) => submitComment(event, line)}
+                      onSubmit={(mode) => submitComment(mode, line)}
                     />
                   );
                 })}

@@ -182,6 +182,53 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.endpoints.fileChanges).toHaveBeenCalledWith('s1', 'uncommitted');
   });
 
+  it('offers immediate or queued delivery for inline review comments', async () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      sessionId: 's1',
+      scope: 'uncommitted',
+      files: [
+        {
+          path: 'main.go',
+          status: 'modify',
+          additions: 2,
+          deletions: 0,
+          expanded: true,
+          lines: [
+            { kind: 'add', content: 'first change', newLine: 1 },
+            { kind: 'add', content: 'second change', newLine: 2 },
+          ],
+        },
+      ],
+    };
+    store.queueDiffComment = vi.fn();
+    store.sendDiffComment = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Inline comment' }), 'Queue this');
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Queue comment/ }));
+    expect(store.queueDiffComment).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'main.go', line: 1, body: 'Queue this' }),
+    );
+    expect(store.sendDiffComment).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 2' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Inline comment' }), 'Send this');
+    await userEvent.click(screen.getByRole('button', { name: 'Send now' }));
+    expect(store.sendDiffComment).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'main.go', line: 2, body: 'Send this' }),
+    );
+  });
+
   it('ports the tiny legacy diff actions and transient copied state', async () => {
     vi.useFakeTimers();
     const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');

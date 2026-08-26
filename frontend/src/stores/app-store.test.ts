@@ -169,6 +169,61 @@ describe('AppStore compatibility behavior', () => {
     expect(store.selectedDraftWorktree.value).toBe('/tmp/feature');
   });
 
+  it('continues a loaded session from its durable response anchor', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.sessionState = vi.fn(async () => ({ lastResponseId: 'resp_msg_42' }));
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', title: 'Test' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+
+    await store.loadSession('s1');
+
+    expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
+
+    store.projectsEnabled.value = false;
+    store.endpoints.sessions = vi.fn(async () => ({
+      sessions: [{ id: 's1', title: 'Test' }],
+    }));
+    await store.refreshSidebar();
+    expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
+
+    store.prompt.value = 'continue this conversation';
+    store.endpoints.createResponse = vi.fn(
+      async () => new Response('stop after request capture', { status: 400 }),
+    );
+    await store.send();
+
+    expect(store.endpoints.createResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ previous_response_id: 'resp_msg_42' }),
+      's1',
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('reconciles a completed runtime response to the latest durable anchor', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), lastResponseId: 'resp_runtime_stale' }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.endpoints.selectedSession = vi.fn(async () => ({
+      selected_session: { id: 's1', title: 'Test' },
+      selected_transcript: { bodies: { messages: [] } },
+    }));
+    store.endpoints.sessionState = vi.fn(async () => ({ lastResponseId: 'resp_msg_42' }));
+    const internals = store as unknown as {
+      refreshSessionMessages(sessionId: string): Promise<void>;
+    };
+
+    await internals.refreshSessionMessages('s1');
+
+    expect(store.activeSession.value?.lastResponseId).toBe('resp_msg_42');
+  });
+
   it('rolls back an optimistic message when the response was never accepted', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -411,6 +466,56 @@ describe('AppStore compatibility behavior', () => {
       }),
     ]);
     expect(store.diff.value.comments).toEqual([]);
+  });
+
+  it('sends one diff comment immediately without consuming the queued review', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.queueDiffComment({
+      id: 'queued',
+      path: 'queued.go',
+      side: 'new',
+      line: 3,
+      body: 'Deliver this later.',
+      scope: 'uncommitted',
+      context: 'queued line',
+    });
+    let options: Record<string, unknown> | undefined;
+    store.send = vi.fn(async (value) => {
+      options = value as unknown as Record<string, unknown>;
+    });
+
+    await store.sendDiffComment({
+      id: 'now',
+      path: 'main.go',
+      side: 'new',
+      line: 12,
+      body: 'Review this now.',
+      scope: 'uncommitted',
+      context: 'changed line',
+    });
+
+    expect(options).toMatchObject({
+      inputText: expect.stringContaining('main.go:12'),
+      displayContent: 'Review this now.',
+      preserveComposer: true,
+      diffComments: [expect.objectContaining({ id: 'now', body: 'Review this now.' })],
+    });
+    expect(options?.contentParts).toEqual([
+      expect.objectContaining({
+        type: 'diff_comment',
+        diff_comment: expect.objectContaining({
+          id: 'now',
+          path: 'main.go',
+          instruction: 'Review this now.',
+        }),
+      }),
+    ]);
+    expect(store.diff.value.comments).toEqual([
+      expect.objectContaining({ id: 'queued', body: 'Deliver this later.' }),
+    ]);
   });
 
   it('keeps the Paths control hidden until the server reports multiple paths', async () => {
