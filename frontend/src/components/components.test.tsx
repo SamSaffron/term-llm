@@ -403,6 +403,43 @@ describe('Preact-owned chat surfaces', () => {
     expect(animatedScroll).not.toHaveBeenCalled();
   });
 
+  it('restores project and agent choices for a new project-mode chat', async () => {
+    localStorage.clear();
+    const store = createStore();
+    store.sessions.value = [];
+    store.activeSessionId.value = '';
+    store.draftActive.value = true;
+    store.projectsEnabled.value = true;
+    store.projects.value = [
+      { id: 'p2', name: 'Zeta', archived: false, available: true, sessions: [] },
+      { id: 'p1', name: 'Alpha', archived: false, available: true, sessions: [] },
+      { id: 'old', name: 'Archived', archived: true, available: true, sessions: [] },
+      { id: 'gone', name: 'Unavailable', archived: false, available: false, sessions: [] },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const project = screen.getByRole('combobox', { name: 'Context for new chat' });
+    const agent = screen.getByRole('combobox', { name: 'Agent for new chat' });
+    expect(project).toHaveValue('');
+    expect(project).toHaveTextContent('ChatAlphaZeta');
+    expect(project).not.toHaveTextContent('Archived');
+    expect(project).not.toHaveTextContent('Unavailable');
+    expect(agent).toHaveTextContent('Defaultjarvis');
+
+    await userEvent.selectOptions(project, 'p1');
+    expect(store.activeProjectId.value).toBe('p1');
+    expect(localStorage.getItem(store.keys.lastProject)).toBe('p1');
+    expect(screen.getByText('Project').nextElementSibling).toHaveTextContent('Alpha');
+
+    await userEvent.selectOptions(agent, 'jarvis');
+    expect(store.selectedAgent.value).toBe('jarvis');
+    expect(localStorage.getItem(store.keys.selectedAgent)).toBe('jarvis');
+  });
+
   it('drives send from public composer UI and opens attachment picker behavior', async () => {
     const store = createStore();
     store.send = vi.fn(async () => undefined);
