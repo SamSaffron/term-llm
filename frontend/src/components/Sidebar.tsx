@@ -182,17 +182,6 @@ function SessionMenu({ session, onHide }: { session: Session; onHide: () => void
           >
             {session.archived ? 'Unhide' : 'Hide'}
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            class="danger"
-            onClick={() => {
-              if (confirm(`Delete “${session.title}”?`)) void store.removeSession(session);
-              setOpen(false);
-            }}
-          >
-            Delete
-          </button>
         </div>
       )}
     </div>
