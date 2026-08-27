@@ -9,7 +9,6 @@ import { Composer } from '../components/Composer';
 import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
 import { Lightbox } from '../components/Lightbox';
-import { RunCenter } from '../components/RunCenter';
 import { installVisualViewportSizing, registerServiceWorker } from '../platform/browser';
 
 class ErrorBoundary extends Component<{ children: ComponentChildren }, { error: string }> {
@@ -110,7 +109,6 @@ export function App({ store }: { store: AppStore }) {
           <PlanSurface />
         </div>
         <Modals />
-        <RunCenter />
         <Lightbox />
       </StoreContext.Provider>
     </ErrorBoundary>

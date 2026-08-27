@@ -296,48 +296,6 @@ test('recovers, neutrally dismisses, and resolves a real approval', async ({ pag
   await expect(page.getByRole('dialog', { name: title })).toBeHidden();
 });
 
-test('shows real completed and failed child sessions and navigates to their transcript', async ({
-  page,
-}, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'real child-run protocol is covered once');
-  await page.goto('./?new=1');
-  await page.getByRole('textbox', { name: 'Message' }).fill('Create parent for child fixture');
-  await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
-    timeout: 15_000,
-  });
-  const sessionID = await page.evaluate(async () => {
-    const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
-    const query = new URLSearchParams({ selected_only: '1', selected_session: selected });
-    const body = (await (await fetch(`v1/sessions?${query}`)).json()) as {
-      selected_session?: { id?: string };
-    };
-    return body.selected_session?.id || '';
-  });
-  const fixtureStatus = await page.evaluate(async (id) => {
-    const response = await fetch(`${window.TERM_LLM_UI_PREFIX}/__browser_fixture/children`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: id }),
-    });
-    return response.status;
-  }, sessionID);
-  expect(fixtureStatus).toBe(201);
-  await page.reload();
-
-  await page.getByRole('button', { name: /Runs/ }).click();
-  const inbox = page.getByRole('region', { name: 'Agent inbox' });
-  await expect(inbox.getByText('Completed browser child')).toBeVisible();
-  await expect(inbox.getByText('Failed browser child')).toBeVisible();
-  await expect(inbox.getByText('Verify the browser child failure')).toBeVisible();
-  await inbox
-    .locator('.agent-inbox-item > button:not(.btn-link)')
-    .filter({ hasText: 'Completed browser child' })
-    .click();
-  await expect(page.getByText('Review the browser child lifecycle')).toBeVisible();
-  await expect(page).toHaveURL(/\/chat\/\d+$/);
-});
-
 test('a suspended same-context tab resumes through authoritative reconciliation', async ({
   context,
   page,

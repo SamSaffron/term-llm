@@ -18,7 +18,7 @@ import {
   type AttachmentPolicy,
 } from '../domain/attachments';
 import { planSummary } from '../domain/plan';
-import type { ChildRun } from '../domain/run-center';
+import type { ChildRun } from '../domain/child-run';
 import {
   reviewAnchorFingerprint,
   reviewCommentPayload,
@@ -318,7 +318,6 @@ export class AppStore {
   readonly interactionOrder = signal<string[]>([]);
   readonly childRuns = signal<ChildRun[]>([]);
   readonly agentReadMarkers: Signal<Record<string, number>>;
-  readonly runCenterOpen = signal(false);
   readonly sideQuestion = signal<SideQuestionState>({
     sessionId: '',
     loading: false,
@@ -568,7 +567,7 @@ export class AppStore {
             this.sessions.value[0] ||
             null;
       if (session) await this.selectSession(session, true);
-      else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '');
+      else this.newChat(true, this.storage.getItem(this.keys.lastProject) || '', false);
       this.connected.value = true;
       this.networkState.value = 'online';
       this.startupDone.value = true;
@@ -1162,8 +1161,10 @@ export class AppStore {
     this.sidebarOpen.value = false;
   }
 
-  newChat(replace = false, projectId?: string): void {
-    this.persistCurrentDraft();
+  newChat(replace = false, projectId?: string, persistCurrent = true): void {
+    // Bootstrap has not hydrated the active persisted draft yet. Saving the
+    // empty initial composer here would look like a stale edit after reload.
+    if (persistCurrent) this.persistCurrentDraft();
     this.releaseAttachmentResources(this.attachments.peek(), false);
     this.resetSideQuestion();
     ++this.selectionEpoch;
@@ -2734,8 +2735,15 @@ export class AppStore {
     try {
       const record = await this.draftBlobs.get(blobRef);
       if (!owns()) return;
-      if (!record || record.draftId !== draftId)
-        throw new Error('Prepared attachment data is missing.');
+      if (!record || record.draftId !== draftId) {
+        // The draft metadata can outlive IndexedDB data after browser storage
+        // eviction or a partial clear. Drop that stale attachment instead of
+        // leaving an unusable error chip in the composer on every reload.
+        this.attachmentGenerations.set(id, generation + 1);
+        this.attachments.value = this.attachments.peek().filter((entry) => entry.id !== id);
+        this.persistCurrentDraft();
+        return;
+      }
       const dataURL = await blobToDataURL(record.blob);
       const previewURL = record.mime.startsWith('image/')
         ? URL.createObjectURL(record.blob)

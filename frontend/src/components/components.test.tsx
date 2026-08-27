@@ -375,6 +375,47 @@ describe('Preact-owned chat surfaces', () => {
     expect(shell).not.toHaveClass('diff-resizing');
   });
 
+  it('keeps internal file-tracking diagnostics out of the changes panel', () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.value,
+      open: true,
+      observations: [
+        {
+          id: 1,
+          classification: 'observed',
+          root: '/tmp/worktree',
+          createdCount: 0,
+          modifiedCount: 0,
+          deletedCount: 0,
+          sampledPaths: ['/tmp/worktree/app.ts'],
+          samplesTruncated: false,
+          coverageStatus: 'complete',
+          eventSeq: 1,
+        },
+      ],
+      claimDiagnostics: [
+        {
+          normalizedPattern: '/tmp/worktree/app.ts',
+          claimKind: 'transform',
+          reason: 'claim_noop',
+          coverageStatus: 'complete',
+          matchingPathCount: 0,
+        },
+      ],
+    };
+
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.queryByText(/Observed side effects/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Output claim diagnostics/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/claim_noop/i)).not.toBeInTheDocument();
+  });
+
   it('offers directional context controls above and below a partial diff', async () => {
     const store = createStore();
     store.diff.value = {
@@ -697,6 +738,26 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Copy details' })).not.toBeInTheDocument();
   });
 
+  it('renders model-switch glyphs exactly once', () => {
+    const store = createStore();
+    store.sessions.value[0].messages.push({
+      id: 'swap-1',
+      role: 'model-swap',
+      content: '↔ Model switch: chatgpt:gpt-5.6-sol / high → chatgpt:gpt-5.6-sol',
+      created: 4,
+    });
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    expect(container.querySelector('[data-message-id="swap-1"] .message-body')?.textContent).toBe(
+      '↔ Model switch: chatgpt:gpt-5.6-sol / high → chatgpt:gpt-5.6-sol',
+    );
+  });
+
   it('shows the active plan step as the live response activity', () => {
     const store = createStore();
     store.runs.value = {
@@ -762,6 +823,55 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByRole('status', { name: 'Stopping response' })).toHaveTextContent('Stopping');
   });
 
+  it('hides the generic working activity once assistant text starts streaming', () => {
+    const store = createStore();
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'response-1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    expect(
+      screen.getByRole('status', { name: 'Assistant is responding: Working' }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      const current = store.runs.value.s1;
+      store.runs.value = {
+        ...store.runs.value,
+        s1: {
+          ...current,
+          messages: [
+            {
+              id: 'response-1:assistant:0',
+              role: 'assistant',
+              content: 'The answer is arriving',
+              created: Date.now(),
+              responseId: 'response-1',
+              assistantSegmentOrdinal: 0,
+            },
+          ],
+        },
+      };
+    });
+
+    expect(screen.getByText('The answer is arriving')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('status', { name: 'Assistant is responding: Working' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('formats tool parameters as readable typed rows and preserves partial argument fallbacks', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [
@@ -800,6 +910,8 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     await userEvent.click(screen.getByRole('button', { name: /2 tool calls/ }));
+    for (const toggle of document.querySelectorAll<HTMLButtonElement>('.tool-toggle'))
+      await userEvent.click(toggle);
     const rows = Array.from(document.querySelectorAll('.tool-argument'));
     expect(rows.map((row) => row.querySelector('dt')?.textContent)).toEqual([
       'command',
@@ -817,7 +929,7 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('keeps a collapsed tool group closed when another running call arrives', async () => {
+  it('keeps a collapsed tool group closed when another running call arrives', () => {
     const store = createStore();
     store.sessions.value[0].messages = [
       {
@@ -837,8 +949,7 @@ describe('Preact-owned chat surfaces', () => {
             id: 'grep',
             name: 'grep',
             arguments: '{"pattern":"TODO"}',
-            status: 'done',
-            result: 'match',
+            status: 'running',
           },
         ],
       },
@@ -850,8 +961,6 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     const group = screen.getByRole('button', { name: /2 tool calls/ });
-    await userEvent.click(group);
-    await userEvent.click(group);
     expect(group).toHaveAttribute('aria-expanded', 'false');
 
     act(() => {
@@ -884,7 +993,92 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('stays pinned to the bottom as rendered transcript content grows', () => {
+  it('keeps expansion local to the block the user opened while tool calls stream in', async () => {
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'tools-a',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'read',
+            name: 'read_file',
+            arguments: '{"path":"main.go"}',
+            status: 'running',
+          },
+        ],
+      },
+      {
+        id: 'tools-b',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'search',
+            name: 'grep',
+            arguments: '{"pattern":"TODO"}',
+            status: 'running',
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const first = container.querySelector<HTMLButtonElement>(
+      '[data-message-id="tools-a"] .tool-toggle',
+    )!;
+    const second = container.querySelector<HTMLButtonElement>(
+      '[data-message-id="tools-b"] .tool-toggle',
+    )!;
+    expect(first).toHaveAttribute('aria-expanded', 'false');
+    expect(second).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(first);
+    expect(first).toHaveAttribute('aria-expanded', 'true');
+    expect(second).toHaveAttribute('aria-expanded', 'false');
+
+    act(() => {
+      const session = store.sessions.value[0];
+      const [firstGroup, secondGroup] = session.messages;
+      store.sessions.value = [
+        {
+          ...session,
+          messages: [
+            {
+              ...firstGroup,
+              tools: [
+                ...(firstGroup.tools || []),
+                {
+                  id: 'shell',
+                  name: 'shell',
+                  arguments: '{"command":"npm test"}',
+                  status: 'running',
+                },
+              ],
+            },
+            secondGroup,
+          ],
+        },
+      ];
+    });
+
+    expect(
+      container.querySelector('[data-message-id="tools-a"] .tool-group-toggle'),
+    ).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('[data-message-id="tools-b"] .tool-toggle')).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('stays pinned as content grows until the user scrolls up', () => {
     const store = createStore();
     let resize: ResizeObserverCallback | undefined;
     class TestResizeObserver {
@@ -904,21 +1098,36 @@ describe('Preact-owned chat surfaces', () => {
       );
       const viewport = container.querySelector<HTMLElement>('#chatScroll')!;
       let scrollHeight = 1_000;
+      let scrollTop = 0;
       Object.defineProperties(viewport, {
         clientHeight: { configurable: true, value: 300 },
         scrollHeight: { configurable: true, get: () => scrollHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Math.min(value, scrollHeight - 300);
+          },
+        },
       });
       viewport.scrollTop = 700;
 
       scrollHeight = 1_400;
       act(() => resize?.([], {} as ResizeObserver));
-      expect(viewport.scrollTop).toBe(1_400);
+      expect(viewport.scrollTop).toBe(1_100);
 
-      viewport.scrollTop = 500;
+      viewport.scrollTop = 1_095;
       fireEvent.scroll(viewport);
+      scrollHeight = 1_500;
+      act(() => resize?.([], {} as ResizeObserver));
+      expect(viewport.scrollTop).toBe(1_095);
+
+      viewport.scrollTop = 1_200;
+      fireEvent.scroll(viewport);
+      fireEvent.wheel(viewport, { deltaY: -1 });
       scrollHeight = 1_600;
       act(() => resize?.([], {} as ResizeObserver));
-      expect(viewport.scrollTop).toBe(500);
+      expect(viewport.scrollTop).toBe(1_200);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1052,10 +1261,15 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     await userEvent.click(screen.getByRole('button', { name: /2 tool calls/ }));
-    const shellToggle = [...container.querySelectorAll<HTMLButtonElement>('.tool-toggle')].find(
+    const toolToggles = [...container.querySelectorAll<HTMLButtonElement>('.tool-toggle')];
+    const shellToggle = toolToggles.find(
       (button) => button.querySelector('.tool-name')?.textContent === 'shell',
     )!;
+    const deniedToggle = toolToggles.find(
+      (button) => button.querySelector('.tool-name')?.textContent === 'edit_file',
+    )!;
     await userEvent.click(shellToggle);
+    await userEvent.click(deniedToggle);
 
     const approved = container.querySelector('.guardian-approved')!;
     const denied = container.querySelector('.guardian-denied')!;
@@ -1094,6 +1308,10 @@ describe('Preact-owned chat surfaces', () => {
     expect(group).toHaveAttribute('aria-expanded', 'false');
     expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
+    const toolToggles = [...document.querySelectorAll('.tool-toggle')];
+    expect(toolToggles).toHaveLength(2);
+    toolToggles.forEach((toggle) => expect(toggle).toHaveAttribute('aria-expanded', 'false'));
+    expect(document.querySelector('.tool-failure-reason')).not.toBeInTheDocument();
     const failed = document.querySelector('.tool-status.error');
     expect(failed).toHaveTextContent('✕');
     expect(failed).not.toHaveTextContent('error');

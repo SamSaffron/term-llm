@@ -8,7 +8,6 @@ import {
   supportedEfforts,
 } from '../domain/runtime';
 import { planSummary } from '../domain/plan';
-import { deriveRunCenter } from '../domain/run-center';
 import { positionPopover } from '../platform/browser';
 import { Icon } from './Icon';
 
@@ -183,13 +182,6 @@ export function Header() {
   );
   const showWorktree = store.worktreesAvailable();
   const currentPlan = store.currentPlan.value;
-  const runItems = deriveRunCenter(
-    store.sessions.value,
-    store.runs.value,
-    store.interactions.value,
-    store.childRuns.value,
-  );
-  const runAttention = runItems.filter((item) => item.attention).length;
   const currentPlanSummary = planSummary(currentPlan);
   const planUnseen =
     Boolean(currentPlan) &&
@@ -238,18 +230,6 @@ export function Header() {
         <div class="header-controls-row">
           <div class="header-stats" id="headerStats">
             <RuntimePicker />
-            {runItems.length > 0 && (
-              <button
-                type="button"
-                class="run-center-trigger header-action"
-                aria-haspopup="dialog"
-                aria-expanded={store.runCenterOpen.value}
-                aria-controls="run-center"
-                onClick={() => (store.runCenterOpen.value = true)}
-              >
-                Runs {runAttention > 0 ? `· ${runAttention}` : runItems.length}
-              </button>
-            )}
             {(session?.mcpEnabled?.length || 0) > 0 && (
               <button
                 type="button"

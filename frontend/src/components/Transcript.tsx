@@ -136,11 +136,20 @@ function formatUsage(message: Message): string {
   return `↙ ${Number(usage.input_tokens || 0).toLocaleString()} in · ${Number(usage.output_tokens || 0).toLocaleString()} out · ${Number(details.cached_tokens || usage.cached_input_tokens || 0).toLocaleString()} cached`;
 }
 
-function Tool({ tool }: { tool: ToolCall }) {
+function Tool({
+  tool,
+  expanded: controlledExpanded,
+  onToggle,
+}: {
+  tool: ToolCall;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
   const store = useStore();
   const failed = tool.status === 'error' || tool.resultStatus === 'error';
   const stopped = tool.status === 'cancelled';
-  const [expanded, setExpanded] = useState(failed);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? localExpanded;
   const summary = toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
   if (tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error')
@@ -152,7 +161,7 @@ function Tool({ tool }: { tool: ToolCall }) {
           class="tool-toggle"
           type="button"
           aria-expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
+          onClick={onToggle || (() => setLocalExpanded((value) => !value))}
         >
           <span class="tool-name">{tool.name}</span>
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
@@ -249,9 +258,12 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
   );
   const running = visible.some((tool) => tool.status === 'running');
-  const [expanded, setExpanded] = useState(running);
+  const [expanded, setExpanded] = useState(false);
   if (!visible.length) return null;
-  if (visible.length === 1) return <Tool tool={visible[0]} />;
+  if (visible.length === 1)
+    return (
+      <Tool tool={visible[0]} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
+    );
   const names = [...new Set(visible.map((tool) => tool.name))];
   const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
   return (
@@ -471,12 +483,16 @@ function MessageRow({
         </div>
       </article>
     );
-  if (message.role === 'model-swap' || message.role === 'phase')
+  if (message.role === 'model-swap' || message.role === 'phase') {
+    const content = message.content.trimStart().startsWith('↔')
+      ? message.content
+      : `↔ ${message.content}`;
     return (
       <article class={`message ${message.role}`} data-message-id={message.id}>
-        <div class="message-body">↔ {message.content}</div>
+        <div class="message-body">{content}</div>
       </article>
     );
+  }
   if (message.role === 'path-note')
     return (
       <article class="message path-note" data-message-id={message.id}>
@@ -640,6 +656,7 @@ export function Transcript() {
   const scroll = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stickToTail = useRef(true);
+  const touchY = useRef<number | null>(null);
   const [nearTail, setNearTail] = useState(true);
   const [turnLimit, setTurnLimit] = useState(80);
   const [clock, setClock] = useState(0);
@@ -702,16 +719,44 @@ export function Transcript() {
   const activity = activeRun
     ? responseActivity(activeRun, store.currentPlan.value, activeRun.run.status)
     : null;
+  const activeOutput = activeRun?.messages.at(-1);
+  const streamingText = Boolean(
+    activeRun?.run.status === 'streaming' &&
+    activeOutput?.role === 'assistant' &&
+    activeOutput.responseId === activeRun.run.responseId,
+  );
+  const showActivity = Boolean(
+    store.streaming.value && activity && !(streamingText && activity.kind === 'working'),
+  );
   return (
     <section
       class="chat-scroll"
       id="chatScroll"
       ref={scroll}
+      onWheel={(event) => {
+        if (event.deltaY < 0) stickToTail.current = false;
+      }}
+      onTouchStart={(event) => {
+        touchY.current = event.touches[0]?.clientY ?? null;
+      }}
+      onTouchMove={(event) => {
+        const nextY = event.touches[0]?.clientY;
+        if (nextY !== undefined && touchY.current !== null && nextY > touchY.current) {
+          stickToTail.current = false;
+        }
+        touchY.current = nextY ?? null;
+      }}
+      onTouchEnd={() => {
+        touchY.current = null;
+      }}
       onScroll={(event) => {
         const element = event.currentTarget;
-        const atTail = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
-        stickToTail.current = atTail;
-        setNearTail(atTail);
+        const distanceFromTail = element.scrollHeight - element.scrollTop - element.clientHeight;
+
+        if (distanceFromTail > 1) stickToTail.current = false;
+        else if (distanceFromTail <= 0) stickToTail.current = true;
+
+        setNearTail(distanceFromTail < 96);
       }}
     >
       <div
@@ -771,7 +816,7 @@ export function Transcript() {
             {activeRun.modelSwap.content}
           </div>
         )}
-        {store.streaming.value && activity && (
+        {showActivity && activity && (
           <div
             class={`streaming-indicator streaming-indicator-${activity.kind}`}
             role="status"

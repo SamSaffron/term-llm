@@ -927,29 +927,6 @@ export function DiffSidebar() {
           ))}
         </details>
       )}
-      {state.observations.length > 0 && (
-        <details class="diff-observations">
-          <summary>Observed side effects ({state.observations.length})</summary>
-          <div>Observed during commands; not attributed as agent task output.</div>
-          {state.observations.map((item) => (
-            <div key={item.id}>
-              {item.root || item.sampledPaths[0] || item.classification} — {item.createdCount}{' '}
-              created, {item.modifiedCount} modified, {item.deletedCount} deleted; coverage{' '}
-              {item.coverageStatus}
-            </div>
-          ))}
-        </details>
-      )}
-      {state.claimDiagnostics.length > 0 && (
-        <details class="diff-observations" open>
-          <summary>Output claim diagnostics ({state.claimDiagnostics.length})</summary>
-          {state.claimDiagnostics.map((item, index) => (
-            <div key={`${item.reason}-${index}`}>
-              {item.reason}: {item.normalizedPattern || item.message || 'tracking diagnostic'}
-            </div>
-          ))}
-        </details>
-      )}
       {comments.length > 0 && (
         <div class="diff-queue-bar">
           <span class="diff-queue-count" role="status" aria-live="polite">

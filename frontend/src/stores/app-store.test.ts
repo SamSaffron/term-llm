@@ -380,6 +380,39 @@ describe('AppStore compatibility behavior', () => {
     expect(store.projectsEnabled.value).toBe(false);
   });
 
+  it('restores an active new-chat draft on reload without reporting a stale-write conflict', async () => {
+    const seed = new AppStore(config);
+    const draftID = 'draft:reload';
+    localStorage.setItem(seed.keys.draftSessionActive, draftID);
+    saveDraft(localStorage, seed.keys.draftMessages, {
+      sessionId: draftID,
+      content: 'keep this draft through reload',
+      updated: Date.now(),
+      rev: 0,
+      model: 'test-model',
+    });
+
+    const store = new AppStore(config);
+    store.endpoints.capabilities = vi.fn(async () => ({ projects: { enabled: false } }));
+    store.endpoints.providers = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.models = vi.fn(async () => ({ object: 'list', data: [] }));
+    store.endpoints.sessions = vi.fn(async () => ({ object: 'list', data: [] }));
+    (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
+
+    await store.bootstrap();
+
+    expect(store.draftActive.value).toBe(true);
+    expect(store.prompt.value).toBe('keep this draft through reload');
+    expect(store.toasts.value).toEqual([]);
+    expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
+      expect.objectContaining({
+        sessionId: draftID,
+        content: 'keep this draft through reload',
+        rev: 1,
+      }),
+    ]);
+  });
+
   it('paginates the no-project sidebar group with the cursor from the sidebar payload', async () => {
     const store = new AppStore(config);
     store.projectsEnabled.value = true;
@@ -484,6 +517,38 @@ describe('AppStore compatibility behavior', () => {
     store.newChat(true, 'project-1');
     expect(store.prompt.value).toBe('draft text');
     expect(store.selectedDraftWorktree.value).toBe('/tmp/feature');
+  });
+
+  it('drops a restored draft attachment when its prepared blob is missing', async () => {
+    const seed = new AppStore(config);
+    const draftID = 'draft:missing-attachment';
+    localStorage.setItem(seed.keys.draftSessionActive, draftID);
+    saveDraft(localStorage, seed.keys.draftMessages, {
+      sessionId: draftID,
+      content: 'keep the rest of this draft',
+      updated: 1,
+      attachments: [
+        {
+          id: 'missing-image',
+          blobRef: 'missing-image',
+          draftId: draftID,
+          name: 'image.png',
+          type: 'image/png',
+          size: 10,
+          status: 'ready',
+        },
+      ],
+    });
+
+    const store = new AppStore(config);
+    store.newChat(true, '', false);
+
+    await vi.waitFor(() => expect(store.attachments.value).toEqual([]));
+    expect(store.prompt.value).toBe('keep the rest of this draft');
+    expect(store.toasts.value).toEqual([]);
+    expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
+      expect.objectContaining({ sessionId: draftID, attachments: [] }),
+    ]);
   });
 
   it('continues a loaded session from its durable response anchor', async () => {

@@ -262,6 +262,15 @@
   color: var(--text);
 }
 
+.interaction-attention-banner {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+}
+
 .composer-icon-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
