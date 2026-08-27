@@ -35,10 +35,15 @@ export const endpoints = (api: APIClient) => ({
     api.get<Record<string, unknown>>(
       `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${hidden ? '1' : '0'}`,
     ),
-  sessionStatus: (selected = '') =>
-    api.get<Record<string, unknown>>(
-      `/v1/sessions/status${selected ? `?selected_session=${encoded(selected)}` : ''}`,
-    ),
+  sessionStatus: (selected = '', hidden = false, categories: string[] = ['all']) => {
+    const params = new URLSearchParams();
+    if (selected) params.set('selected_session', selected);
+    if (hidden) params.set('include_archived', '1');
+    if (!categories.includes('all')) params.set('categories', categories.join(','));
+    return api.get<Record<string, unknown>>(
+      `/v1/sessions/status${params.size ? `?${params}` : ''}`,
+    );
+  },
   searchSessions: (
     query: string,
     hidden = false,

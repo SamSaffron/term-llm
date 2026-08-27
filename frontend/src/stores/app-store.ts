@@ -340,6 +340,12 @@ export class AppStore {
   private sideQuestionEpoch = 0;
   private modelAbort: AbortController | null = null;
   private statusTimer = 0;
+  private lastSidebarRefreshAt = 0;
+  private unknownActiveSessionIDs = new Set<string>();
+  private sidebarRefreshPromise: Promise<void> | null = null;
+  private sessionSyncChannel: BroadcastChannel | null = null;
+  private peerSyncTimer = 0;
+  private pendingPeerSync = false;
   private titleRefreshTimers = new Map<string, number[]>();
   private lifecycleInstalled = false;
   private selectionEpoch = 0;
@@ -463,6 +469,10 @@ export class AppStore {
       this.networkState.value = 'online';
       this.startupDone.value = true;
       this.startStatusPoll();
+      if (this.pendingPeerSync) {
+        this.pendingPeerSync = false;
+        this.queuePeerSessionChange();
+      }
       void this.refreshHubAgents();
       if (!this.widgets.value.length) void this.loadWidgetStatus();
     } catch (error) {
@@ -494,16 +504,32 @@ export class AppStore {
     });
     addEventListener('term-llm:transport-fallback', () => void this.recover());
     addEventListener('pageshow', (event) => {
-      if (this.startupDone.value || (event as PageTransitionEvent).persisted) void this.recover();
+      this.ensureSessionSyncChannel();
+      if (this.startupDone.value || (event as PageTransitionEvent).persisted) {
+        void this.recover();
+        void this.refreshSidebar(false).catch(() => undefined);
+      }
     });
-    addEventListener('focus', () => void this.refreshHubAgents());
+    addEventListener('focus', () => {
+      void this.recover();
+      void this.refreshSidebar(false).catch(() => undefined);
+      void this.refreshHubAgents();
+    });
     addEventListener('beforeunload', () => this.persistCurrentDraft());
+    addEventListener('pagehide', (event) => {
+      if ((event as PageTransitionEvent).persisted) return;
+      window.clearTimeout(this.peerSyncTimer);
+      this.sessionSyncChannel?.close();
+      this.sessionSyncChannel = null;
+    });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         void this.recover();
+        void this.refreshSidebar(false).catch(() => undefined);
         void this.refreshHubAgents();
       }
     });
+    this.ensureSessionSyncChannel();
     addEventListener('storage', (rawEvent) => {
       const event = rawEvent as StorageEvent;
       if (
@@ -512,6 +538,19 @@ export class AppStore {
       ) {
         this.pendingIntents.value = readPendingIntents(this.storage, this.keys.pendingIntents);
       }
+    });
+  }
+
+  private ensureSessionSyncChannel(): void {
+    if (this.sessionSyncChannel || typeof BroadcastChannel !== 'function') return;
+    const scope = this.config.hub?.nodeId || this.config.prefix;
+    this.sessionSyncChannel = new BroadcastChannel(`term-llm:sessions:${scope}`);
+    this.sessionSyncChannel.addEventListener('message', () => {
+      if (!this.startupDone.peek()) {
+        this.pendingPeerSync = true;
+        return;
+      }
+      this.queuePeerSessionChange();
     });
   }
 
@@ -618,6 +657,7 @@ export class AppStore {
     existing: Session | undefined,
     incoming: Session,
     replaceMessages = false,
+    preserveLiveState = false,
   ): Session {
     if (!existing) return incoming;
     return {
@@ -625,6 +665,12 @@ export class AppStore {
       ...incoming,
       messages: replaceMessages || incoming.messages.length ? incoming.messages : existing.messages,
       lastResponseId: incoming.lastResponseId || existing.lastResponseId,
+      activeResponseId: preserveLiveState
+        ? incoming.activeResponseId || existing.activeResponseId
+        : incoming.activeResponseId,
+      activeRun: preserveLiveState
+        ? (incoming.activeRun ?? existing.activeRun)
+        : incoming.activeRun,
       usage: incoming.usage || existing.usage,
       goal: incoming.goal ?? existing.goal,
       fileChangeSummary: incoming.fileChangeSummary || existing.fileChangeSummary,
@@ -678,7 +724,10 @@ export class AppStore {
     const incoming = [...ungrouped, ...projects.flatMap((project) => project.sessions || [])];
     const existing = new Map(this.sessions.peek().map((session) => [session.id, session]));
     const merged = new Map(
-      incoming.map((session) => [session.id, this.mergeSession(existing.get(session.id), session)]),
+      incoming.map((session) => [
+        session.id,
+        this.mergeSession(existing.get(session.id), session, false, true),
+      ]),
     );
     for (const [id, session] of existing)
       if (!merged.has(id) && (this.runs.peek()[id] || id.startsWith('draft_')))
@@ -688,6 +737,7 @@ export class AppStore {
       ...project,
       sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
     }));
+    this.lastSidebarRefreshAt = Date.now();
   }
 
   async loadModels(provider = this.selectedProvider.value): Promise<void> {
@@ -731,13 +781,38 @@ export class AppStore {
     }
   }
 
-  async refreshSidebar(): Promise<void> {
-    const data = this.projectsEnabled.value
-      ? await this.endpoints.sidebar(this.showHidden.value)
-      : await this.endpoints.sessions(
-          `limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`,
-        );
-    this.applySidebar(data);
+  async refreshSidebar(fresh = true): Promise<void> {
+    if (this.sidebarRefreshPromise) {
+      if (!fresh) return this.sidebarRefreshPromise;
+      await this.sidebarRefreshPromise.catch(() => undefined);
+    }
+    const request = (async () => {
+      const data = this.projectsEnabled.value
+        ? await this.endpoints.sidebar(this.showHidden.value)
+        : await this.endpoints.sessions(
+            `limit=30&include_archived=${this.showHidden.value ? '1' : '0'}`,
+          );
+      this.applySidebar(data);
+    })();
+    const tracked = request.finally(() => {
+      if (this.sidebarRefreshPromise === tracked) this.sidebarRefreshPromise = null;
+    });
+    this.sidebarRefreshPromise = tracked;
+    return tracked;
+  }
+
+  private publishSessionChange(): void {
+    this.sessionSyncChannel?.postMessage({ type: 'sessions-changed' });
+  }
+
+  private queuePeerSessionChange(): void {
+    window.clearTimeout(this.peerSyncTimer);
+    this.peerSyncTimer = window.setTimeout(() => void this.reconcilePeerSessionChange(), 150);
+  }
+
+  private async reconcilePeerSessionChange(): Promise<void> {
+    await this.refreshSidebar(false).catch(() => undefined);
+    await this.refreshStatus().catch(() => undefined);
   }
 
   async selectSession(session: Session, replace = false): Promise<void> {
@@ -1110,6 +1185,10 @@ export class AppStore {
         this.rekeySession(sessionId, durableSessionId);
         ownerID = durableSessionId;
       }
+      this.sessions.value = this.sessions.value.map((entry) =>
+        entry.id === ownerID ? { ...entry, activeResponseId: responseId, activeRun: true } : entry,
+      );
+      this.publishSessionChange();
       const projection = this.runs.value[ownerID] || this.runs.value[sessionId];
       this.runs.value = {
         ...this.runs.value,
@@ -1328,9 +1407,15 @@ export class AppStore {
       this.retireIntent(sessionId);
       this.sessions.value = this.sessions.value.map((session) =>
         session.id === sessionId
-          ? { ...session, activeResponseId: null, lastResponseId: next.run.responseId }
+          ? {
+              ...session,
+              activeResponseId: null,
+              activeRun: false,
+              lastResponseId: next.run.responseId,
+            }
           : session,
       );
+      this.publishSessionChange();
       window.setTimeout(
         () => void this.refreshSessionMessages(sessionId, next.run.finalRev || 0),
         0,
@@ -1776,6 +1861,7 @@ export class AppStore {
       entry.id === session.id ? ({ ...entry, ...patch } as Session) : entry,
     );
     await this.refreshSidebar();
+    this.publishSessionChange();
   }
   async archiveSession(session: Session): Promise<void> {
     const archived = !session.archived;
@@ -1801,11 +1887,13 @@ export class AppStore {
     });
     if (this.searchResults.peek()) this.searchResults.value = reconcile(this.searchResults.peek()!);
     if (session.id === this.activeSessionId.value && archived) this.newChat();
+    this.publishSessionChange();
   }
   async removeSession(session: Session): Promise<void> {
     await this.endpoints.deleteSession(session.id);
     this.sessions.value = this.sessions.value.filter((entry) => entry.id !== session.id);
     if (session.id === this.activeSessionId.value) this.newChat();
+    this.publishSessionChange();
   }
   async pinSession(session: Session): Promise<void> {
     await this.mutateSession(session, { pinned: !session.pinned });
@@ -1823,6 +1911,7 @@ export class AppStore {
     if (!session) return null;
     const response = await this.endpoints.setProject(session.id, { project_id: projectId });
     await this.refreshSidebar();
+    this.publishSessionChange();
     this.modal.value = '';
     return response;
   }
@@ -1834,6 +1923,7 @@ export class AppStore {
       name: name.trim(),
     });
     await this.refreshSidebar();
+    this.publishSessionChange();
     this.modal.value = '';
     return response;
   }
@@ -1852,6 +1942,7 @@ export class AppStore {
           };
     await this.endpoints.patchSession(session.id, patch);
     await this.refreshSidebar();
+    this.publishSessionChange();
     this.renameTarget.value = null;
     this.modal.value = '';
   }
@@ -2275,6 +2366,7 @@ export class AppStore {
         ...(context === 'focused' ? { focus } : {}),
       });
     await this.refreshSidebar();
+    this.publishSessionChange();
     let target = this.sessions.value.find((entry) => entry.id === id);
     if (!target && id) {
       target = this.sessionFrom({ ...child, id });
@@ -2998,7 +3090,7 @@ export class AppStore {
     );
     const existing = new Map(this.sessions.value.map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>
-      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry)),
+      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry, false, true)),
     );
     this.sessions.value = [...existing.values()];
     this.projects.value = this.projects.value.map((entry) =>
@@ -3026,7 +3118,7 @@ export class AppStore {
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>
-      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry)),
+      existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry, false, true)),
     );
     this.sessions.value = [...existing.values()].sort(compareSessionsByActivity);
     this.noProjectCursor.value = String(data.next_cursor || '');
@@ -3034,6 +3126,7 @@ export class AppStore {
   async mutateProject(project: Project, patch: Record<string, unknown>): Promise<void> {
     await this.endpoints.patchProject(project.id, patch);
     await this.refreshSidebar();
+    this.publishSessionChange();
   }
   async startProjectChat(projectId: string): Promise<void> {
     this.newChat(false, projectId);
@@ -3125,9 +3218,14 @@ export class AppStore {
   private startStatusPoll(): void {
     clearTimeout(this.statusTimer);
     const poll = async () => {
-      if (document.visibilityState === 'visible') await this.refreshStatus().catch(() => undefined);
+      if (document.visibilityState === 'visible') {
+        if (Date.now() - this.lastSidebarRefreshAt >= 30_000)
+          await this.refreshSidebar(false).catch(() => undefined);
+        await this.refreshStatus().catch(() => undefined);
+      }
       const anyActive =
         this.locallyStoppedResponses.size > 0 ||
+        this.sessions.peek().some((session) => session.activeRun) ||
         Object.values(this.runs.peek()).some((projection) =>
           ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
         );
@@ -3136,19 +3234,35 @@ export class AppStore {
         anyActive || this.diff.peek().open ? 2_000 : 30_000,
       );
     };
-    this.statusTimer = window.setTimeout(poll, this.diff.peek().open ? 2_000 : 30_000);
+    this.statusTimer = window.setTimeout(poll, 0);
   }
   private async refreshStatus(): Promise<void> {
     const activeSessionId = this.activeSessionId.peek();
     const previousActiveRevision =
       this.sessions.peek().find((session) => session.id === activeSessionId)?.transcriptRev || 0;
-    const data = await this.endpoints.sessionStatus(activeSessionId);
+    const data = await this.endpoints.sessionStatus(
+      activeSessionId,
+      this.showHidden.peek(),
+      this.config.sidebarCategories,
+    );
     const statuses = listFrom(data, 'sessions', 'items');
+    const known = new Set(this.sessions.peek().map((session) => session.id));
+    const unknownActive = new Set(
+      statuses.flatMap((status) => {
+        const id = String(status.id || status.session_id || '');
+        return id && (status.active_run || status.active_response_id) && !known.has(id) ? [id] : [];
+      }),
+    );
+    const discoveredUnknown = [...unknownActive].some(
+      (id) => !this.unknownActiveSessionIDs.has(id),
+    );
+    this.unknownActiveSessionIDs = unknownActive;
+    if (discoveredUnknown) await this.refreshSidebar(false).catch(() => undefined);
     const byID = new Map(statuses.map((entry) => [String(entry.id || entry.session_id), entry]));
     this.sessions.value = this.sessions.value
       .map((session) => {
         const status = byID.get(session.id);
-        if (!status) return session;
+        if (!status) return session.activeRun ? { ...session, activeRun: false } : session;
         const activeResponseId = String(status.active_response_id || '') || null;
         const transcriptRev = Number(status.transcript_rev) || session.transcriptRev || 0;
         const stoppedResponseId = this.runs.peek()[session.id]?.run.responseId || '';
@@ -3177,6 +3291,7 @@ export class AppStore {
               }
             : {}),
           activeResponseId,
+          activeRun: Boolean(status.active_run || activeResponseId),
           lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
           transcriptRev,
           messageCount: Number(status.message_count) || session.messageCount,

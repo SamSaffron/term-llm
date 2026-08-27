@@ -213,7 +213,10 @@ function SessionRow({ session }: { session: Session }) {
   const active = store.activeSessionId.value === session.id;
   const projection = store.runs.value[session.id];
   const running =
-    projection && ['connecting', 'streaming', 'cancelling'].includes(projection.run.status);
+    Boolean(session.activeRun) ||
+    Boolean(
+      projection && ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
+    );
   const messageCount = sessionMessageCount(session);
   const activityAt = session.lastMessageAt || session.created;
   const hide = () => {

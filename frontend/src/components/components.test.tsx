@@ -1308,6 +1308,24 @@ describe('Preact-owned chat surfaces', () => {
     ).toHaveTextContent('Dev');
   });
 
+  it('shows server-observed running state before this tab attaches to the stream', () => {
+    const store = createStore();
+    store.activeSessionId.value = '';
+    store.sessions.value = store.sessions.value.map((entry) => ({
+      ...entry,
+      activeRun: true,
+    }));
+
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Sidebar />
+      </StoreContext.Provider>,
+    );
+
+    expect(container.querySelector('.session-row')).toHaveClass('is-active');
+    expect(store.runs.value).toEqual({});
+  });
+
   it('collapses a hidden session before removing it from the sidebar', async () => {
     vi.useFakeTimers();
     try {

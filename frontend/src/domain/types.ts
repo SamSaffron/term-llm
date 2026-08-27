@@ -126,6 +126,8 @@ export interface Session {
   lastMessageAt: number;
   lastResponseId?: string | null;
   activeResponseId?: string | null;
+  /** Server-observed activity, available before this tab attaches to the response stream. */
+  activeRun?: boolean;
   activeModel?: string;
   activeEffort?: string;
   activeReasoningMode?: string;

@@ -759,6 +759,118 @@ describe('AppStore compatibility behavior', () => {
     expect(store.visibleMessages.value).toEqual([]);
   });
 
+  it('reconciles an active session created in another tab before applying status', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [
+        { id: 's2', active_run: true, last_message_at: 1_800_000_004_000, message_count: 1 },
+      ],
+    }));
+    store.endpoints.sessions = vi.fn(async () => ({
+      data: [
+        {
+          id: 's2',
+          short_title: 'Created elsewhere',
+          origin: 'web',
+          created_at: 1_800_000_004_000,
+          last_message_at: 1_800_000_004_000,
+          message_count: 1,
+        },
+        { id: 's1', short_title: 'Test', origin: 'web', created_at: 1 },
+      ],
+    }));
+
+    await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+    expect(store.endpoints.sessions).toHaveBeenCalledOnce();
+    expect(store.sessions.value[0]).toMatchObject({
+      id: 's2',
+      title: 'Created elsewhere',
+      activeRun: true,
+      messageCount: 1,
+    });
+  });
+
+  it('clears stale remote activity without dropping an out-of-scope response anchor', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'finished-elsewhere' },
+    ];
+    store.endpoints.sessionStatus = vi.fn(async () => ({ sessions: [] }));
+
+    await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+    expect(store.sessions.value[0]).toMatchObject({
+      activeRun: false,
+      activeResponseId: 'finished-elsewhere',
+    });
+  });
+
+  it('clears a response anchor when the authoritative status entry reports completion', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      { ...session(), activeRun: true, activeResponseId: 'finished-elsewhere' },
+    ];
+    store.endpoints.sessionStatus = vi.fn(async () => ({ sessions: [{ id: 's1' }] }));
+
+    await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+    expect(store.sessions.value[0]).toMatchObject({ activeRun: false, activeResponseId: null });
+  });
+
+  it('forces a post-mutation sidebar fetch after an opportunistic fetch already started', async () => {
+    const store = new AppStore(config);
+    const first = deferred<Record<string, unknown>>();
+    store.endpoints.sessions = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValueOnce({ data: [{ id: 's1', short_title: 'Fresh title' }] });
+
+    const opportunistic = store.refreshSidebar(false);
+    const authoritative = store.refreshSidebar();
+    first.resolve({ data: [{ id: 's1', short_title: 'Stale title' }] });
+    await Promise.all([opportunistic, authoritative]);
+
+    expect(store.endpoints.sessions).toHaveBeenCalledTimes(2);
+    expect(store.sessions.value[0].title).toBe('Fresh title');
+  });
+
+  it('reconciles sidebar membership before status after a peer invalidation', async () => {
+    const store = new AppStore(config);
+    const order: string[] = [];
+    store.endpoints.sessions = vi.fn(async () => {
+      order.push('sidebar');
+      return { data: [{ id: 's2', short_title: 'Peer session', origin: 'web' }] };
+    });
+    store.endpoints.sessionStatus = vi.fn(async () => {
+      order.push('status');
+      return { sessions: [{ id: 's2', active_run: false }] };
+    });
+
+    await (
+      store as unknown as { reconcilePeerSessionChange(): Promise<void> }
+    ).reconcilePeerSessionChange();
+
+    expect(order).toEqual(['sidebar', 'status']);
+    expect(store.sessions.value.map((entry) => entry.id)).toContain('s2');
+  });
+
+  it('refreshes authoritative sidebar membership when a tab regains focus', async () => {
+    const store = new AppStore(config);
+    store.refreshSidebar = vi.fn(async () => undefined);
+    const internals = store as unknown as {
+      installLifecycle(): void;
+      refreshStatus(): Promise<void>;
+    };
+    internals.refreshStatus = vi.fn(async () => undefined);
+    internals.installLifecycle();
+
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(store.refreshSidebar).toHaveBeenCalledOnce());
+    expect(internals.refreshStatus).toHaveBeenCalledOnce();
+  });
+
   it('reorders sessions when status polling observes activity from another tab', async () => {
     const store = new AppStore(config);
     store.sessions.value = [
