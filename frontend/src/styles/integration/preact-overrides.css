@@ -369,8 +369,8 @@
     background-clip: text;
     color: transparent;
     animation:
-      streaming-status-sheen 5s cubic-bezier(0.45, 0, 0.2, 1) 180ms infinite,
-      streaming-status-reset 5s linear 180ms infinite;
+      streaming-status-sheen 8s cubic-bezier(0.45, 0, 0.2, 1) 180ms infinite,
+      streaming-status-reset 8s linear 180ms infinite;
   }
 }
 
@@ -385,7 +385,7 @@
     background-position: 100% 50%;
   }
 
-  34%,
+  21%,
   100% {
     background-position: 0% 50%;
   }
@@ -397,8 +397,8 @@
     opacity: 0.55;
   }
 
-  6%,
-  94% {
+  4%,
+  96% {
     opacity: 1;
   }
 }
