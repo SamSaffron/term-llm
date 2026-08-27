@@ -189,13 +189,13 @@ func TestRealBubbleTeaPostFramePipelineLifecycleOrdering(t *testing.T) {
 	probe.script = tea.Sequence(
 		tea.Raw(probeRawMarker),
 		tea.Println(probeScrollbackMarker),
-		delayedProbeMsg(30*time.Millisecond, probeActivateImageMsg{}),
-		delayedProbeMsg(50*time.Millisecond, probeStableFrameMsg{}),
-		delayedProbeMsg(50*time.Millisecond, probeScrollTopMsg{}),
-		delayedProbeMsg(50*time.Millisecond, probeScrollBottomMsg{}),
-		delayedProbeMsg(50*time.Millisecond, tea.WindowSizeMsg{Width: 48, Height: 16}),
-		delayedProbeMsg(140*time.Millisecond, probeResizeSettledMsg{}),
-		delayedProbeMsg(60*time.Millisecond, probeQuitMsg{}),
+		delayedProbeMsg(15*time.Millisecond, probeActivateImageMsg{}),
+		delayedProbeMsg(15*time.Millisecond, probeStableFrameMsg{}),
+		delayedProbeMsg(15*time.Millisecond, probeScrollTopMsg{}),
+		delayedProbeMsg(15*time.Millisecond, probeScrollBottomMsg{}),
+		delayedProbeMsg(15*time.Millisecond, tea.WindowSizeMsg{Width: 48, Height: 16}),
+		delayedProbeMsg(90*time.Millisecond, probeResizeSettledMsg{}),
+		delayedProbeMsg(20*time.Millisecond, probeQuitMsg{}),
 	)
 	capture := testutil.NewByteCapture()
 	if err := runPostFramePipelineProbe(t, probe, capture); err != nil {

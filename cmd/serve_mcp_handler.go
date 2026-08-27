@@ -147,25 +147,25 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 	return nil
 }
 
-func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
+func buildServeMCPState(manager *mcp.Manager, engine *llm.Engine, mcpSetting, sessionID string) serveMCPSessionResponse {
 	resp := serveMCPSessionResponse{
 		Servers: []serveMCPServerView{},
 		Enabled: []string{},
 	}
-	if rt == nil || rt.mcpManager == nil {
+	if manager == nil {
 		return resp
 	}
 
-	available := rt.mcpManager.AvailableServers()
+	available := manager.AvailableServers()
 	availableSet := stringSet(available)
-	enabled := normalizeMCPSelection(append(rt.mcpManager.EnabledServers(), parseServerList(rt.mcpSetting)...))
+	enabled := normalizeMCPSelection(append(manager.EnabledServers(), parseServerList(mcpSetting)...))
 	enabledSet := stringSet(enabled)
 	states := make(map[string]mcp.ServerState)
-	for _, state := range rt.mcpManager.GetAllStates() {
+	for _, state := range manager.GetAllStates() {
 		states[state.Name] = state
 	}
 	toolCounts := make(map[string]int)
-	for _, tool := range rt.mcpManager.AllTools() {
+	for _, tool := range manager.AllTools() {
 		server := mcpServerNameFromToolName(tool.Name)
 		if server != "" {
 			toolCounts[server]++
@@ -173,12 +173,8 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 	}
 	var discovery *llm.ToolDiscoveryDiagnostics
 	discoveryServers := make(map[string]llm.ToolDiscoveryServerDiagnostic)
-	if rt.engine != nil {
-		sessionID := ""
-		if rt.sessionMeta != nil {
-			sessionID = rt.sessionMeta.ID
-		}
-		if diagnostics, ok := rt.engine.ToolDiscoveryDiagnostics(sessionID); ok {
+	if engine != nil {
+		if diagnostics, ok := engine.ToolDiscoveryDiagnostics(sessionID); ok {
 			discovery = &diagnostics
 			for _, server := range diagnostics.Servers {
 				discoveryServers[server.Name] = server
@@ -188,7 +184,7 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 
 	resp.Enabled = append(resp.Enabled, enabled...)
 	for _, name := range available {
-		status, err := rt.mcpManager.ServerStatus(name)
+		status, err := manager.ServerStatus(name)
 		view := serveMCPServerView{
 			Name:       name,
 			Configured: true,
@@ -212,7 +208,7 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 		}
 		resp.Servers = append(resp.Servers, view)
 	}
-	for _, name := range parseServerList(rt.mcpSetting) {
+	for _, name := range parseServerList(mcpSetting) {
 		if availableSet[name] {
 			continue
 		}
@@ -241,6 +237,17 @@ func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
 		}
 	}
 	return resp
+}
+
+func (rt *serveRuntime) mcpStateLocked() serveMCPSessionResponse {
+	if rt == nil {
+		return buildServeMCPState(nil, nil, "", "")
+	}
+	sessionID := ""
+	if rt.sessionMeta != nil {
+		sessionID = rt.sessionMeta.ID
+	}
+	return buildServeMCPState(rt.mcpManager, rt.engine, rt.mcpSetting, sessionID)
 }
 
 func (rt *serveRuntime) unregisterMCPServerToolsLocked(serverName string) {
@@ -558,13 +565,50 @@ func (s *serveServer) persistSessionMCPSelectionLocked(ctx context.Context, sess
 	return nil
 }
 
+func (s *serveServer) configuredMCPState(ctx context.Context, sessionID string) (serveMCPSessionResponse, error) {
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return serveMCPSessionResponse{}, fmt.Errorf("failed to load MCP config: %w", err)
+	}
+	mcpSetting := ""
+	if s != nil && s.store != nil && strings.TrimSpace(sessionID) != "" {
+		if sess, err := s.store.Get(ctx, sessionID); err == nil && sess != nil {
+			mcpSetting = sess.MCP
+		}
+	}
+	return buildServeMCPState(mcp.NewManagerWithConfig(cfg), nil, mcpSetting, sessionID), nil
+}
+
+func (s *serveServer) writeConfiguredMCPState(w http.ResponseWriter, r *http.Request, sessionID string) {
+	state, err := s.configuredMCPState(r.Context(), sessionID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
 func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if s.sessionMgr == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session runtime is unavailable")
 		return
 	}
+	if r.Method != http.MethodGet && r.Method != http.MethodPatch {
+		w.Header().Set("Allow", "GET, PATCH")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
 	rt, err := s.sessionMgr.GetOrCreate(r.Context(), sessionID)
 	if err != nil {
+		// Listing configured servers does not require a mutable runtime. A session
+		// operation can briefly reserve a brand-new runtime before any response has
+		// started, so serve the config-backed view rather than reporting that a
+		// response is running.
+		if r.Method == http.MethodGet && errors.Is(err, errServeSessionBusy) {
+			s.writeConfiguredMCPState(w, r, sessionID)
+			return
+		}
 		status := http.StatusInternalServerError
 		errorType := "server_error"
 		if errors.Is(err, errServeSessionBusy) {
@@ -578,6 +622,28 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
+
+	if r.Method == http.MethodGet {
+		// A run owns rt.mu for its full lifetime, but reading the global MCP config
+		// should remain available while that run (or any short metadata operation)
+		// is in progress. The config-backed view deliberately avoids touching live
+		// runtime state in that case.
+		if !rt.mu.TryLock() {
+			s.writeConfiguredMCPState(w, r, sessionID)
+			return
+		}
+		defer rt.mu.Unlock()
+		if err := rt.ensureMCPManagerLocked(); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
+		if err := s.applyPersistedMCPSelectionLocked(r.Context(), sessionID, rt); err != nil {
+			log.Printf("[serve] restore MCP selection failed for %s while rendering MCP modal: %v", sessionID, err)
+		}
+		writeJSON(w, http.StatusOK, rt.mcpStateLocked())
+		return
+	}
+
 	if rt.hasActiveRun() || !rt.mu.TryLock() {
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot change MCP servers while a response is running")
 		return
@@ -587,39 +653,27 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", "cannot change MCP servers while a response is running")
 		return
 	}
-
 	if err := rt.ensureMCPManagerLocked(); err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
-		if err := s.applyPersistedMCPSelectionLocked(r.Context(), sessionID, rt); err != nil {
-			log.Printf("[serve] restore MCP selection failed for %s while rendering MCP modal: %v", sessionID, err)
-		}
-		writeJSON(w, http.StatusOK, rt.mcpStateLocked())
-	case http.MethodPatch:
-		var req serveMCPSelectionRequest
-		if err := decodeJSONBody(r, &req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-			return
-		}
-		if err := rt.applyMCPSelectionLocked(r.Context(), req.Enabled); err != nil {
-			if apiErr, ok := err.(*serveMCPError); ok {
-				writeOpenAIError(w, apiErr.status, apiErr.errorType, apiErr.message)
-				return
-			}
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-			return
-		}
-		if err := s.persistSessionMCPSelectionLocked(r.Context(), sessionID, rt, parseServerList(rt.mcpSetting)); err != nil {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, rt.mcpStateLocked())
-	default:
-		w.Header().Set("Allow", "GET, PATCH")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+	var req serveMCPSelectionRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
 	}
+	if err := rt.applyMCPSelectionLocked(r.Context(), req.Enabled); err != nil {
+		if apiErr, ok := err.(*serveMCPError); ok {
+			writeOpenAIError(w, apiErr.status, apiErr.errorType, apiErr.message)
+			return
+		}
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	if err := s.persistSessionMCPSelectionLocked(r.Context(), sessionID, rt, parseServerList(rt.mcpSetting)); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rt.mcpStateLocked())
 }

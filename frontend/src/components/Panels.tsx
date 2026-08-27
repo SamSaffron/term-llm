@@ -464,18 +464,6 @@ function File({ file }: { file: DiffFile }) {
         <span class="diff-file-name">
           <span class="diff-file-base">{name.base}</span>
           {name.dir && <span class="diff-file-dir">{name.dir}</span>}
-          {file.provenance && (
-            <span
-              class="diff-count-muted"
-              title={
-                file.provenance === 'direct'
-                  ? 'Witnessed by a direct mutation tool'
-                  : 'Declared before shell execution and verified by bounded detection'
-              }
-            >
-              {file.provenance === 'direct' ? ' direct tool' : ' declared and verified'}
-            </span>
-          )}
         </span>
         <span class="diff-file-counts">
           {file.truncated ? (

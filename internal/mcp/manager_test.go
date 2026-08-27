@@ -22,6 +22,7 @@ import (
 
 const runMCPManagerTestServerEnv = "TERM_LLM_MCP_MANAGER_TEST_SERVER"
 const runMCPLargeTestServerEnv = "TERM_LLM_MCP_LARGE_TEST_SERVER"
+const testMaxToolsPerServer = 100
 
 type managerTestGreetingParams struct {
 	Name string `json:"name"`
@@ -45,7 +46,7 @@ func TestMain(m *testing.M) {
 
 func runMCPLargeTestServer() {
 	server := mcpSDK.NewServer(&mcpSDK.Implementation{Name: "large-test", Version: "v0.0.1"}, &mcpSDK.ServerOptions{PageSize: 250})
-	for i := 0; i <= MaxToolsPerServer; i++ {
+	for i := 0; i <= testMaxToolsPerServer; i++ {
 		name := fmt.Sprintf("tool_%05d", i)
 		mcpSDK.AddTool(server, &mcpSDK.Tool{Name: name}, func(context.Context, *mcpSDK.CallToolRequest, struct{}) (*mcpSDK.CallToolResult, any, error) {
 			return &mcpSDK.CallToolResult{}, nil, nil
@@ -142,7 +143,7 @@ func TestManagerEnable_TimesOutStartupWithBackgroundContext(t *testing.T) {
 
 func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.T) {
 	oldTimeout := mcpStartupTimeout
-	mcpStartupTimeout = 250 * time.Millisecond
+	mcpStartupTimeout = 100 * time.Millisecond
 	defer func() { mcpStartupTimeout = oldTimeout }()
 
 	manager := NewManager()
@@ -170,7 +171,7 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 
 	// Wait long enough that the short startup context has been canceled. The MCP
 	// subprocess should continue to live on the manager-owned lifecycle context.
-	time.Sleep(mcpStartupTimeout + 100*time.Millisecond)
+	time.Sleep(mcpStartupTimeout + 25*time.Millisecond)
 
 	args, err := json.Marshal(map[string]string{"name": "Ada"})
 	if err != nil {
@@ -306,6 +307,7 @@ func TestManagerRejectsCatalogueOverDefensiveMaximum(t *testing.T) {
 	manager := NewManagerWithConfig(&Config{Servers: map[string]ServerConfig{
 		"large": {Command: os.Args[0], Env: map[string]string{runMCPLargeTestServerEnv: "1"}},
 	}})
+	manager.maxToolsPerServer = testMaxToolsPerServer
 	defer manager.StopAll()
 	if err := manager.Enable(context.Background(), "large"); err != nil {
 		t.Fatal(err)

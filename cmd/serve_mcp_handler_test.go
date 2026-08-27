@@ -207,6 +207,57 @@ func TestHandleSessionMCPGetListsConfiguredServers(t *testing.T) {
 	}
 }
 
+func TestHandleSessionMCPGetListsConfiguredServersWhenRuntimeBusy(t *testing.T) {
+	writeServeMCPConfig(t, map[string]internalmcp.ServerConfig{
+		"filesystem": {Command: "term-llm-test-filesystem"},
+	})
+	srv, _ := newServeMCPHandlerTestServer(t, nil)
+	rt, err := srv.sessionMgr.GetOrCreate(context.Background(), "sess_busy_get")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+
+	// Runtime setup and metadata operations can hold this lock even before a new
+	// conversation has started. A read-only config listing must not claim that a
+	// response is running or hide the configured servers.
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess_busy_get/mcp", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	resp := decodeServeMCPResponse(t, rr)
+	if len(resp.Servers) != 1 || resp.Servers[0].Name != "filesystem" || !resp.Servers[0].Configured {
+		t.Fatalf("servers = %#v, want configured filesystem", resp.Servers)
+	}
+}
+
+func TestHandleSessionMCPPatchStillRejectsBusyRuntime(t *testing.T) {
+	writeServeMCPConfig(t, map[string]internalmcp.ServerConfig{
+		"filesystem": {Command: "term-llm-test-filesystem"},
+	})
+	srv, _ := newServeMCPHandlerTestServer(t, nil)
+	rt, err := srv.sessionMgr.GetOrCreate(context.Background(), "sess_busy_patch")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/sessions/sess_busy_patch/mcp", strings.NewReader(`{"enabled":["filesystem"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s, want conflict", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleSessionMCPPatchUnknownServerReturnsBadRequest(t *testing.T) {
 	writeServeMCPConfig(t, map[string]internalmcp.ServerConfig{
 		"known": {Command: "term-llm-test-known"},

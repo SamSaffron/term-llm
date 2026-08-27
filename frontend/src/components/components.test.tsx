@@ -620,6 +620,7 @@ describe('Preact-owned chat surfaces', () => {
             status: 'create',
             additions: 1,
             deletions: 0,
+            provenance: 'direct',
             lines: [
               { kind: 'hunk', content: '@@ -1 +1 @@' },
               { kind: 'add', content: 'package main', newLine: 1 },
@@ -636,6 +637,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(row.querySelector('.diff-kind-badge')).toHaveTextContent('A');
       expect(row.querySelector('.diff-file-base')).toHaveTextContent('main.go');
       expect(row.querySelector('.diff-file-dir')).toHaveTextContent('home/sam/project');
+      expect(row).not.toHaveTextContent('direct tool');
       expect(row).not.toHaveTextContent('/home/sam/project/main.go');
       const path = screen.getByRole('button', { name: 'Copy path /home/sam/project/main.go' });
       const patch = screen.getByRole('button', { name: 'Copy diff for /home/sam/project/main.go' });
@@ -1926,6 +1928,28 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.input(filter, { target: { value: '' } });
     await userEvent.click(screen.getByRole('checkbox', { name: 'Enable discourse' }));
     expect(store.toggleMCP).toHaveBeenCalledWith('discourse');
+  });
+
+  it('does not claim the MCP config is empty when loading fails', () => {
+    const store = createStore();
+    store.modal.value = 'mcp';
+    store.mcp.value = {
+      servers: [],
+      enabled: [],
+      loading: false,
+      pending: '',
+      error: 'session is temporarily busy',
+    };
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.getByText('Unable to load MCP servers')).toBeVisible();
+    expect(screen.queryByText('No MCP servers configured')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('session is temporarily busy');
   });
 
   it('offers legacy branch-context choices before creating a path', async () => {

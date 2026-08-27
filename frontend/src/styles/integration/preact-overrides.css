@@ -338,43 +338,39 @@
   min-width: 0;
   max-width: min(calc(100vw - 3rem), 42rem);
   padding: 0.35rem 0.2rem;
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 0.78rem;
+  animation: streaming-status-enter 180ms ease-out both;
 }
 
 .streaming-indicator-text {
   display: block;
   min-width: 0;
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--text);
   font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
-  animation: streaming-status-enter 180ms ease-out both;
 }
 
 @supports (background-clip: text) {
   .streaming-indicator-text {
     background-image: linear-gradient(
       105deg,
-      var(--text-muted) 36%,
-      var(--text) 50%,
-      var(--text-muted) 64%
+      var(--text-muted) 0%,
+      var(--text-muted) 38%,
+      var(--accent-strong) 49%,
+      var(--text) 60%,
+      var(--text) 100%
     );
-    background-image: linear-gradient(
-      105deg,
-      var(--text-muted) 36%,
-      color-mix(in srgb, var(--text) 88%, var(--text-muted)) 50%,
-      var(--text-muted) 64%
-    );
-    background-position: 100% 50%;
+    background-position: 0% 50%;
     background-size: 250% 100%;
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
     animation:
-      streaming-status-enter 180ms ease-out both,
-      streaming-status-sheen 2.8s linear 180ms infinite;
+      streaming-status-sheen 5s cubic-bezier(0.45, 0, 0.2, 1) 180ms infinite,
+      streaming-status-reset 5s linear 180ms infinite;
   }
 }
 
@@ -385,20 +381,37 @@
 }
 
 @keyframes streaming-status-sheen {
-  from {
-    background-position: 100% 50%;
+  0% {
+    background-position: 0% 50%;
   }
 
-  to {
-    background-position: -100% 50%;
+  34%,
+  100% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes streaming-status-reset {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  6%,
+  94% {
+    opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .streaming-indicator,
+  .streaming-indicator-text {
+    animation: none;
+  }
+
   .streaming-indicator-text {
     background: none;
-    color: var(--text-muted);
-    animation: none;
+    color: var(--text);
   }
 }
 

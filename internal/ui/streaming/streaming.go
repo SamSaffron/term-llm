@@ -183,15 +183,14 @@ func (sr *StreamRenderer) Write(p []byte) (n int, err error) {
 	// Add incoming bytes to line buffer
 	sr.lineBuf.Write(p)
 
-	// Process complete lines
+	// Process complete lines without draining and rewriting an incomplete tail on
+	// every small streamed chunk.
 	for {
-		line, err := sr.lineBuf.ReadString('\n')
-		if err != nil {
-			// No complete line yet, put back what we read
-			sr.lineBuf.WriteString(line)
+		newline := bytes.IndexByte(sr.lineBuf.Bytes(), '\n')
+		if newline < 0 {
 			break
 		}
-		// Process the complete line (including newline)
+		line := string(sr.lineBuf.Next(newline + 1))
 		if err := sr.processLine(line); err != nil {
 			return len(p), err
 		}

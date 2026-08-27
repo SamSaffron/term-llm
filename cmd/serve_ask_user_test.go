@@ -10,7 +10,8 @@ import (
 )
 
 func TestAwaitAskUserPausesResponseTimeoutWhileWaiting(t *testing.T) {
-	runCtx, runTimer := newResponseRunTimer(500 * time.Millisecond)
+	clock := newFakeResponseRunClock()
+	runCtx, runTimer := newResponseRunTimerWithClock(500*time.Millisecond, clock)
 	defer runTimer.stop()
 	rt := &serveRuntime{pauseResponseTimeout: runTimer.pause}
 	callCtx := llm.ContextWithCallID(runCtx, "call-ask")
@@ -31,7 +32,7 @@ func TestAwaitAskUserPausesResponseTimeoutWhileWaiting(t *testing.T) {
 		return len(rt.pendingAskUserPrompts()) == 1
 	}, "pending ask_user prompt")
 
-	time.Sleep(600 * time.Millisecond)
+	clock.Advance(600 * time.Millisecond)
 	if err := runCtx.Err(); err != nil {
 		t.Fatalf("response timeout elapsed during ask_user wait: %v", err)
 	}

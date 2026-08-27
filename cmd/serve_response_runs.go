@@ -1493,12 +1493,30 @@ const (
 
 var errResponseRunTimeout = errors.New("response run timeout")
 
+type responseRunTimerHandle interface {
+	Stop() bool
+}
+
+type responseRunClock interface {
+	Now() time.Time
+	AfterFunc(time.Duration, func()) responseRunTimerHandle
+}
+
+type realResponseRunClock struct{}
+
+func (realResponseRunClock) Now() time.Time { return time.Now() }
+
+func (realResponseRunClock) AfterFunc(delay time.Duration, fn func()) responseRunTimerHandle {
+	return time.AfterFunc(delay, fn)
+}
+
 // responseRunTimer bounds inactivity between the user request and each completed
 // LLM response. Interactive waits pause the current inactivity window.
 type responseRunTimer struct {
 	mu         sync.Mutex
 	cancel     context.CancelCauseFunc
-	timer      *time.Timer
+	timer      responseRunTimerHandle
+	clock      responseRunClock
 	timeout    time.Duration
 	remaining  time.Duration
 	activeAt   time.Time
@@ -1508,9 +1526,14 @@ type responseRunTimer struct {
 }
 
 func newResponseRunTimer(timeout time.Duration) (context.Context, *responseRunTimer) {
+	return newResponseRunTimerWithClock(timeout, realResponseRunClock{})
+}
+
+func newResponseRunTimerWithClock(timeout time.Duration, clock responseRunClock) (context.Context, *responseRunTimer) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t := &responseRunTimer{
 		cancel:    cancel,
+		clock:     clock,
 		timeout:   timeout,
 		remaining: timeout,
 	}
@@ -1523,8 +1546,8 @@ func newResponseRunTimer(timeout time.Duration) (context.Context, *responseRunTi
 func (t *responseRunTimer) armLocked(remaining time.Duration) {
 	t.generation++
 	generation := t.generation
-	t.activeAt = time.Now()
-	t.timer = time.AfterFunc(remaining, func() {
+	t.activeAt = t.clock.Now()
+	t.timer = t.clock.AfterFunc(remaining, func() {
 		t.mu.Lock()
 		if t.stopped || t.pauses > 0 || t.generation != generation {
 			t.mu.Unlock()
@@ -1573,7 +1596,7 @@ func (t *responseRunTimer) pause() func() {
 			t.timer.Stop()
 		}
 		t.generation++ // Invalidate a callback already leaving the stopped timer.
-		t.remaining -= time.Since(t.activeAt)
+		t.remaining -= t.clock.Now().Sub(t.activeAt)
 		if t.remaining <= 0 {
 			t.remaining = 0
 			t.pauses = 0

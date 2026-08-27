@@ -590,6 +590,11 @@ function MCP() {
           <div class="mcp-server-loading" role="status">
             Loading configured MCP servers…
           </div>
+        ) : state.error && state.servers.length === 0 ? (
+          <div class="mcp-server-empty" role="status">
+            <strong>Unable to load MCP servers</strong>
+            <span>The configured server list could not be read. See the error below.</span>
+          </div>
         ) : state.servers.length === 0 ? (
           <div class="mcp-server-empty" role="status">
             <strong>No MCP servers configured</strong>

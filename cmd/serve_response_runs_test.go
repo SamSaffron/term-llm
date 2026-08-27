@@ -38,11 +38,68 @@ func (t responseTimeoutDelayTool) Execute(ctx context.Context, _ json.RawMessage
 
 func (responseTimeoutDelayTool) Preview(json.RawMessage) string { return "" }
 
+type fakeResponseRunClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers []*fakeResponseRunTimer
+}
+
+type fakeResponseRunTimer struct {
+	clock   *fakeResponseRunClock
+	at      time.Time
+	fn      func()
+	stopped bool
+}
+
+func newFakeResponseRunClock() *fakeResponseRunClock {
+	return &fakeResponseRunClock{now: time.Unix(0, 0)}
+}
+
+func (c *fakeResponseRunClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeResponseRunClock) AfterFunc(delay time.Duration, fn func()) responseRunTimerHandle {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &fakeResponseRunTimer{clock: c, at: c.now.Add(delay), fn: fn}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
+func (c *fakeResponseRunClock) Advance(elapsed time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(elapsed)
+	var ready []func()
+	for _, timer := range c.timers {
+		if !timer.stopped && !timer.at.After(c.now) {
+			timer.stopped = true
+			ready = append(ready, timer.fn)
+		}
+	}
+	c.mu.Unlock()
+	for _, fn := range ready {
+		fn()
+	}
+}
+
+func (t *fakeResponseRunTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.stopped {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
 func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
-	const timeout = 500 * time.Millisecond
+	const timeout = 100 * time.Millisecond
 	provider := llm.NewMockProvider("mock").
 		AddTurn(llm.MockTurn{
-			Delay: 300 * time.Millisecond,
+			Delay: 60 * time.Millisecond,
 			ToolCalls: []llm.ToolCall{{
 				ID:        "call-delay",
 				Name:      "response_timeout_delay",
@@ -51,7 +108,7 @@ func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
 		}).
 		AddTurn(llm.MockTurn{Text: "finished"})
 	registry := llm.NewToolRegistry()
-	registry.Register(responseTimeoutDelayTool{delay: 300 * time.Millisecond})
+	registry.Register(responseTimeoutDelayTool{delay: 60 * time.Millisecond})
 	rt := &serveRuntime{
 		provider:     provider,
 		providerKey:  "mock",
@@ -78,71 +135,59 @@ func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
 }
 
 func TestResponseRunTimerRefreshStartsFreshInactivityWindow(t *testing.T) {
-	ctx, timer := newResponseRunTimer(200 * time.Millisecond)
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(200*time.Millisecond, clock)
 	defer timer.stop()
 
-	time.Sleep(130 * time.Millisecond)
+	clock.Advance(130 * time.Millisecond)
 	timer.refresh()
-
-	select {
-	case <-ctx.Done():
+	clock.Advance(100 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
 		t.Fatalf("timer elapsed at original deadline after refresh: %v", context.Cause(ctx))
-	case <-time.After(100 * time.Millisecond):
 	}
-	select {
-	case <-ctx.Done():
-		if !responseRunTimedOut(ctx) {
-			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("refreshed inactivity window did not eventually expire")
+	clock.Advance(100 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
 	}
 }
 
 func TestResponseRunTimerRefreshWhilePausedAppliesOnResume(t *testing.T) {
-	ctx, timer := newResponseRunTimer(150 * time.Millisecond)
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(150*time.Millisecond, clock)
 	defer timer.stop()
 
-	time.Sleep(80 * time.Millisecond)
+	clock.Advance(80 * time.Millisecond)
 	resume := timer.pause()
 	timer.refresh()
-	time.Sleep(180 * time.Millisecond)
+	clock.Advance(180 * time.Millisecond)
 	if err := ctx.Err(); err != nil {
 		t.Fatalf("timer elapsed while paused after refresh: %v", err)
 	}
 
 	resume()
-	select {
-	case <-ctx.Done():
+	clock.Advance(80 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
 		t.Fatalf("refreshed timer elapsed too soon after resume: %v", context.Cause(ctx))
-	case <-time.After(80 * time.Millisecond):
 	}
-	select {
-	case <-ctx.Done():
-		if !responseRunTimedOut(ctx) {
-			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
-		}
-	case <-time.After(150 * time.Millisecond):
-		t.Fatal("refreshed timer did not expire after resume")
+	clock.Advance(70 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
 	}
 }
 
 func TestResponseRunTimerExcludesInteractiveWait(t *testing.T) {
-	ctx, timer := newResponseRunTimer(500 * time.Millisecond)
+	clock := newFakeResponseRunClock()
+	ctx, timer := newResponseRunTimerWithClock(500*time.Millisecond, clock)
 	defer timer.stop()
 	resume := timer.pause()
-	time.Sleep(600 * time.Millisecond)
+	clock.Advance(600 * time.Millisecond)
 	if err := ctx.Err(); err != nil {
 		t.Fatalf("timer elapsed while paused: %v", err)
 	}
 	resume()
-	select {
-	case <-ctx.Done():
-		if !responseRunTimedOut(ctx) {
-			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timer did not resume after interactive wait")
+	clock.Advance(500 * time.Millisecond)
+	if !responseRunTimedOut(ctx) {
+		t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
 	}
 }
 
