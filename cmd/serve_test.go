@@ -10247,9 +10247,47 @@ func TestHandleResponseCancelDiscardsPendingInterjections(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
 	}
-	if got := engine.ListPendingInterjections(); len(got) != 0 {
-		t.Fatalf("pending interjections after explicit cancel = %#v, want none", got)
+	waitForServeCondition(t, time.Second, func() bool {
+		return len(engine.ListPendingInterjections()) == 0
+	}, "pending interjections to be discarded after explicit cancel")
+}
+
+func TestHandleResponseCancelAcknowledgesBeforeCleanupFinishes(t *testing.T) {
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	run := newResponseRun("resp_cancel_prompt", "cancel-session", "", "mock-model", time.Now().Unix(), func() {
+		close(cleanupStarted)
+		<-releaseCleanup
+	})
+	mgr := newServeResponseRunManagerWithRetention(time.Minute)
+	if err := mgr.create(run); err != nil {
+		t.Fatalf("create run: %v", err)
 	}
+	srv := &serveServer{responseRuns: mgr}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_prompt/cancel", nil)
+	rr := httptest.NewRecorder()
+	handlerDone := make(chan struct{})
+	go func() {
+		srv.handleResponseByID(rr, req)
+		close(handlerDone)
+	}()
+
+	select {
+	case <-handlerDone:
+		if rr.Code != http.StatusOK {
+			t.Fatalf("cancel status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(releaseCleanup)
+		t.Fatal("cancel acknowledgement waited for cleanup")
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		close(releaseCleanup)
+		t.Fatal("cancel cleanup did not start")
+	}
+	close(releaseCleanup)
 }
 
 func TestHandleResponseCancelIsIdempotentWhileRunIsFinishing(t *testing.T) {

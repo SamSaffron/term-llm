@@ -1411,21 +1411,26 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 	return recovery
 }
 
-func (r *responseRun) cancelRun() bool {
+func (r *responseRun) requestCancel() (context.CancelFunc, bool) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.status != "in_progress" {
-		r.mu.Unlock()
-		return false
+		return nil, false
 	}
 	cancel := r.cancel
 	if cancel == nil && !r.cancelRequested {
-		r.mu.Unlock()
-		return false
+		return nil, false
 	}
 	r.cancelRequested = true
 	r.cancel = nil
-	r.mu.Unlock()
+	return cancel, true
+}
 
+func (r *responseRun) cancelRun() bool {
+	cancel, ok := r.requestCancel()
+	if !ok {
+		return false
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -2589,16 +2594,25 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 			return
 		}
-		if !run.cancelRun() {
+		cancel, accepted := run.requestCancel()
+		if !accepted {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", "response is not running")
 			return
 		}
-		s.discardPendingInterjectionsForResponseRun(run)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":     runID,
 			"object": "response.cancel",
 			"status": "cancelling",
 		})
+		// The cancellation request is accepted once it is recorded above. Provider,
+		// tool, and interjection cleanup can wind down without holding the HTTP
+		// acknowledgement open.
+		go func() {
+			if cancel != nil {
+				cancel()
+			}
+			s.discardPendingInterjectionsForResponseRun(run)
+		}()
 		return
 	}
 

@@ -265,6 +265,7 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 
 		passReq := req
 		passReq.Tools = appendGoalToolSpecs(req.Tools, goalSpecs)
+		maxTurnsWarning := llm.MaxTurnsExceededWarning(passReq.MaxTurns)
 		passUsage := llm.Usage{}
 		goalCompleted := false
 		wrappedOnEvent := func(ev llm.Event) error {
@@ -292,6 +293,14 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 				}
 			}
 			if onEvent != nil {
+				// A goal uses max turns as a per-pass yield boundary. Keep the
+				// transient boundary warning/error internal to the goal runner.
+				if ev.Type == llm.EventError && llm.IsMaxTurnsExceeded(ev.Err) {
+					return nil
+				}
+				if ev.Type == llm.EventPhase && ev.Text == maxTurnsWarning {
+					return nil
+				}
 				return onEvent(ev)
 			}
 			return nil
@@ -311,7 +320,9 @@ func (rt *serveRuntime) runActiveGoalLoop(ctx context.Context, stateful bool, re
 		goal = rt.accountGoalUsage(context.Background(), req.SessionID, passUsage, time.Since(passStart))
 		goalState.Set(goal)
 
-		if err != nil {
+		// Active goals continue in a fresh pass when the engine reaches its
+		// per-pass turn boundary; all other errors still end the goal run.
+		if err != nil && !llm.IsMaxTurnsExceeded(err) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 				paused := rt.updateCurrentGoal(context.Background(), req.SessionID, goalState.Clone(), false, func(g *session.Goal) {
 					g.Status = session.GoalStatusPaused

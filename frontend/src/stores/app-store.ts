@@ -323,6 +323,9 @@ export class AppStore {
 
   private readonly streamAborts = new Map<string, AbortController>();
   private readonly postAborts = new Map<string, AbortController>();
+  // A stop is user-visible immediately. Keep its response ID here while the
+  // server finishes cancellation so status polling cannot resurrect the run.
+  private readonly locallyStoppedResponses = new Set<string>();
   // A response with a confirmed durable handoff must never be projected again.
   // Late snapshot/replay requests may still finish after transcript reconciliation.
   private readonly retiredResponses = new Set<string>();
@@ -1235,6 +1238,9 @@ export class AppStore {
   applyResponseEvent(sessionId: string, event: ResponseEvent): void {
     const current = this.runs.value[sessionId];
     if (!current) return;
+    // The stop action owns the visible state immediately. Frames already queued
+    // when the stream was aborted must not restart the spinner or running tools.
+    if (this.locallyStoppedResponses.has(current.run.responseId)) return;
     if (event.type === 'response.stream_error') {
       const error = recordValue(event.error);
       if (String(error?.type || '') === 'stream_buffer_overflow')
@@ -1476,20 +1482,45 @@ export class AppStore {
 
   async cancel(): Promise<void> {
     const projection = this.activeProjection.value;
-    if (!projection || projection.run.status === 'cancelling') return;
+    if (!projection || !['connecting', 'streaming', 'cancelling'].includes(projection.run.status))
+      return;
+    const { sessionId, responseId } = projection.run;
+    this.locallyStoppedResponses.add(responseId);
     this.runs.value = {
       ...this.runs.value,
-      [projection.run.sessionId]: {
+      [sessionId]: {
         ...projection,
-        run: { ...projection.run, status: 'cancelling' },
+        messages: projection.messages.map((message) =>
+          message.role !== 'tool-group' || message.toolGroupClosed === true
+            ? message
+            : {
+                ...message,
+                status: 'done',
+                toolGroupClosed: true,
+                tools: message.tools?.map((tool) =>
+                  tool.status === 'running' ? { ...tool, status: 'cancelled' as const } : tool,
+                ),
+              },
+        ),
+        phase: undefined,
+        retry: undefined,
+        run: { ...projection.run, status: 'cancelled' },
       },
     };
-    this.postAborts.get(projection.run.sessionId)?.abort();
-    this.streamAborts.get(projection.run.sessionId)?.abort();
+    this.postAborts.get(sessionId)?.abort();
+    this.streamAborts.get(sessionId)?.abort();
     try {
-      await this.endpoints.cancelResponse(projection.run.responseId);
+      await this.endpoints.cancelResponse(responseId);
+      // Cancellation acknowledgement is intentionally distinct from durable
+      // finalization. Poll in the background while the UI remains stopped.
+      void this.refreshStatus().catch(() => undefined);
     } catch (error) {
-      this.toast(error, 'error');
+      this.locallyStoppedResponses.delete(responseId);
+      this.toast(
+        `Couldn’t confirm stop: ${error instanceof Error ? error.message : String(error)}`,
+        'error',
+      );
+      void this.resumeResponse(sessionId, responseId);
     }
   }
 
@@ -3095,9 +3126,11 @@ export class AppStore {
     clearTimeout(this.statusTimer);
     const poll = async () => {
       if (document.visibilityState === 'visible') await this.refreshStatus().catch(() => undefined);
-      const anyActive = Object.values(this.runs.peek()).some((projection) =>
-        ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
-      );
+      const anyActive =
+        this.locallyStoppedResponses.size > 0 ||
+        Object.values(this.runs.peek()).some((projection) =>
+          ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
+        );
       this.statusTimer = window.setTimeout(
         poll,
         anyActive || this.diff.peek().open ? 2_000 : 30_000,
@@ -3118,8 +3151,16 @@ export class AppStore {
         if (!status) return session;
         const activeResponseId = String(status.active_response_id || '') || null;
         const transcriptRev = Number(status.transcript_rev) || session.transcriptRev || 0;
-        if (activeResponseId && activeResponseId !== session.activeResponseId)
+        const stoppedResponseId = this.runs.peek()[session.id]?.run.responseId || '';
+        const awaitingStoppedResponse = this.locallyStoppedResponses.has(stoppedResponseId);
+        if (
+          activeResponseId &&
+          activeResponseId !== session.activeResponseId &&
+          !this.locallyStoppedResponses.has(activeResponseId)
+        )
           window.setTimeout(() => void this.resumeResponse(session.id, activeResponseId), 0);
+        if (!activeResponseId && awaitingStoppedResponse)
+          this.locallyStoppedResponses.delete(stoppedResponseId);
         if (
           !activeResponseId &&
           (session.activeResponseId || this.pendingIntents.peek()[session.id]?.length) &&

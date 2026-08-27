@@ -41,7 +41,7 @@ export interface ToolCall {
   name: string;
   arguments?: string;
   argumentsFinalized?: boolean;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'cancelled' | 'error';
   resultStatus?: 'success' | 'error';
   result?: string;
   images?: string[];

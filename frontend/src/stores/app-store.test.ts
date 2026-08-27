@@ -111,6 +111,62 @@ describe('AppStore compatibility behavior', () => {
     });
   });
 
+  it('stops the visible run immediately while server cancellation winds down', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeResponseId: 'r1' }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+        messages: [
+          {
+            id: 'tools',
+            role: 'tool-group',
+            content: '',
+            created: 1,
+            status: 'running',
+            toolGroupClosed: false,
+            tools: [{ id: 'tool-1', name: 'slow tool', status: 'running' }],
+          },
+        ],
+      },
+    };
+    const acknowledgement = deferred<Record<string, unknown>>();
+    store.endpoints.cancelResponse = vi.fn(() => acknowledgement.promise);
+
+    const stopping = store.cancel();
+
+    expect(store.streaming.value).toBe(false);
+    expect(store.runs.value.s1.run.status).toBe('cancelled');
+    expect(store.runs.value.s1.messages[0]).toMatchObject({
+      status: 'done',
+      toolGroupClosed: true,
+      tools: [{ status: 'cancelled' }],
+    });
+    // A frame that was already queued when Stop was clicked cannot restart UI.
+    store.applyResponseEvent('s1', {
+      type: 'response.output_text.delta',
+      response_id: 'r1',
+      run_epoch: 1,
+      sequence_number: 2,
+      delta: 'late',
+    });
+    expect(store.runs.value.s1.run.status).toBe('cancelled');
+    expect(store.runs.value.s1.messages.some((message) => message.content === 'late')).toBe(false);
+
+    acknowledgement.resolve({ id: 'r1', status: 'cancelling' });
+    await stopping;
+  });
+
   it('keeps the current project when opening another chat unless No project is explicit', () => {
     const store = new AppStore(config);
     const projectSession = { ...session(), projectId: 'project-1', projectName: 'Project' };

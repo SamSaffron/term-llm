@@ -138,6 +138,7 @@ function formatUsage(message: Message): string {
 function Tool({ tool }: { tool: ToolCall }) {
   const store = useStore();
   const failed = tool.status === 'error' || tool.resultStatus === 'error';
+  const stopped = tool.status === 'cancelled';
   const [expanded, setExpanded] = useState(failed);
   const summary = toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
@@ -156,9 +157,17 @@ function Tool({ tool }: { tool: ToolCall }) {
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
           <span
             class={`tool-status ${failed ? 'error' : tool.status === 'done' ? 'done' : ''}`}
-            aria-label={failed ? 'Failed' : tool.status === 'done' ? 'Complete' : undefined}
+            aria-label={
+              failed
+                ? 'Failed'
+                : stopped
+                  ? 'Stopped'
+                  : tool.status === 'done'
+                    ? 'Complete'
+                    : undefined
+            }
           >
-            {tool.status === 'running' ? 'running…' : failed ? '✕' : '✓'}
+            {tool.status === 'running' ? 'running…' : failed ? '✕' : stopped ? 'stopped' : '✓'}
           </span>
         </button>
         {expanded && (
@@ -244,6 +253,7 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
   if (visible.length === 1) return <Tool tool={visible[0]} />;
   const names = [...new Set(visible.map((tool) => tool.name))];
   const running = visible.some((tool) => tool.status === 'running');
+  const stopped = !running && visible.some((tool) => tool.status === 'cancelled');
   return (
     <article class="tool-group-card">
       <button
@@ -260,10 +270,10 @@ function ToolGroup({ tools }: { tools: ToolCall[] }) {
           {names.length > 3 ? '…' : ''}
         </span>
         <span
-          class={`tool-status ${running ? '' : 'done'}`}
-          aria-label={running ? undefined : 'Complete'}
+          class={`tool-status ${running || stopped ? '' : 'done'}`}
+          aria-label={running ? undefined : stopped ? 'Stopped' : 'Complete'}
         >
-          {running ? 'running…' : '✓'}
+          {running ? 'running…' : stopped ? 'stopped' : '✓'}
         </span>
       </button>
       <div class={`tool-group-details ${expanded ? 'open' : ''}`}>

@@ -30,6 +30,12 @@ func TestMain(m *testing.M) {
 		runServeMCPHandlerTestServer()
 		os.Exit(0)
 	}
+	// Root-command tests execute multiple commands in one process. Do not let a
+	// developer's profiling environment make them contend for a fixed port.
+	if err := os.Unsetenv("TERM_LLM_PPROF"); err != nil {
+		fmt.Fprintf(os.Stderr, "unset TERM_LLM_PPROF: %v\n", err)
+		os.Exit(1)
+	}
 	// macOS exposes /var as a symlink to /private/var. Production workspace
 	// paths are symlink-resolved, so create test temp directories beneath the
 	// canonical root as well.
