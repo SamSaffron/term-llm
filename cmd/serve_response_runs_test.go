@@ -1047,6 +1047,37 @@ func TestSuppressedServerToolStillAdvancesAssistantSegmentIdentity(t *testing.T)
 	}
 }
 
+func TestProviderTurnIdentitySkipsToolOnlyAssistantSegments(t *testing.T) {
+	server := &serveServer{}
+	run := newResponseRun("resp_tool_only_turns", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	events := []llm.Event{
+		{Type: llm.EventTextDelta, Text: "first", ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-0", Name: "shell"}, ProviderTurnIndex: 0, ProviderTurnIndexSet: true},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "grep"}, ProviderTurnIndex: 1, ProviderTurnIndexSet: true},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-2", Name: "read_file"}, ProviderTurnIndex: 2, ProviderTurnIndexSet: true},
+		{Type: llm.EventTextDelta, Text: "after tool-only turns", ProviderTurnIndex: 3, ProviderTurnIndexSet: true},
+	}
+	for _, event := range events {
+		if err := server.appendResponseRunEvent(nil, run, state, event); err != nil {
+			t.Fatalf("append %v: %v", event.Type, err)
+		}
+	}
+
+	var lastText map[string]any
+	for _, event := range run.events {
+		if event.Event != "response.output_text.delta" {
+			continue
+		}
+		if err := json.Unmarshal(event.Data, &lastText); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := lastText["assistant_segment_ordinal"]; got != float64(3) {
+		t.Fatalf("assistant segment ordinal = %v, want provider turn 3", got)
+	}
+}
+
 func TestAppendResponseRunEventRejectsUnverifiedClientToolFileChanges(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}

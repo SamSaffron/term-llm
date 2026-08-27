@@ -800,8 +800,13 @@ type ToolExecutionResponse struct {
 
 // Event represents a streamed output update.
 type Event struct {
-	Type                       EventType
-	Text                       string
+	Type EventType
+	Text string
+	// ProviderTurnIndex identifies the zero-based engine turn that emitted model
+	// output. ProviderTurnIndexSet distinguishes the first turn from events that
+	// originate outside the engine loop and carry no turn identity.
+	ProviderTurnIndex          int
+	ProviderTurnIndexSet       bool
 	Model                      string // For EventModelSwitch: request model applied at provider-turn boundary
 	ReasoningEffort            string // For EventModelSwitch: request reasoning effort applied at provider-turn boundary
 	InterjectionID             string // For EventInterjection: stable ID for matching queued interjections in the UI

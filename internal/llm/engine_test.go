@@ -402,6 +402,8 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 
 	var text strings.Builder
 	var toolEvents int
+	var toolTurnIndexes []int
+	var textTurnIndexes []int
 	var gotErr error
 
 	for {
@@ -417,8 +419,16 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 			gotErr = event.Err
 		case EventToolCall:
 			toolEvents++
+			if !event.ProviderTurnIndexSet {
+				t.Fatal("tool event is missing provider turn identity")
+			}
+			toolTurnIndexes = append(toolTurnIndexes, event.ProviderTurnIndex)
 		case EventTextDelta:
 			text.WriteString(event.Text)
+			if !event.ProviderTurnIndexSet {
+				t.Fatal("text event is missing provider turn identity")
+			}
+			textTurnIndexes = append(textTurnIndexes, event.ProviderTurnIndex)
 		}
 	}
 
@@ -428,6 +438,12 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	// EventToolCall events are now emitted for all tool calls to preserve interleaving order
 	if toolEvents != 2 {
 		t.Fatalf("expected 2 tool call events, got %d", toolEvents)
+	}
+	if !reflect.DeepEqual(toolTurnIndexes, []int{0, 1}) {
+		t.Fatalf("tool provider turn indexes = %v, want [0 1]", toolTurnIndexes)
+	}
+	if !reflect.DeepEqual(textTurnIndexes, []int{2}) {
+		t.Fatalf("text provider turn indexes = %v, want [2]", textTurnIndexes)
 	}
 	if text.String() != "final answer" {
 		t.Fatalf("unexpected text: %q", text.String())

@@ -3016,6 +3016,8 @@ turnLoop:
 		var scratchpadHasDiscardableOutput bool // Whether attempt-local model output needs discarding on an uncommitted retry.
 		scratchpadCommitted := false            // True after provider completion or after a tool-call boundary makes assistant work durable.
 		stageOrSendModelEvent := func(event Event) error {
+			event.ProviderTurnIndex = attempt
+			event.ProviderTurnIndexSet = true
 			if !scratchpadCommitted {
 				scratchpadHasDiscardableOutput = true
 			}
@@ -3644,10 +3646,12 @@ turnLoop:
 					// to see suggest_commands calls to parse suggestions from the arguments).
 					// Create a copy without ToolResponse to avoid confusion.
 					forwardEvent := Event{
-						Type:       EventToolCall,
-						ToolCallID: event.ToolCallID,
-						ToolName:   event.ToolName,
-						Tool:       event.Tool,
+						Type:                 EventToolCall,
+						ToolCallID:           event.ToolCallID,
+						ToolName:             event.ToolName,
+						Tool:                 event.Tool,
+						ProviderTurnIndex:    attempt,
+						ProviderTurnIndexSet: true,
 					}
 					pendingSyncCalls := append(append([]ToolCall(nil), syncToolCalls...), *event.Tool)
 					fireSnapshot(pendingSyncCalls)
@@ -3693,11 +3697,13 @@ turnLoop:
 
 				fireSnapshot(toolCalls)
 				if err := send.Send(Event{
-					Type:       EventToolCall,
-					ToolCallID: toolCallID,
-					ToolName:   event.Tool.Name,
-					Tool:       event.Tool,
-					ToolInfo:   info,
+					Type:                 EventToolCall,
+					ToolCallID:           toolCallID,
+					ToolName:             event.Tool.Name,
+					Tool:                 event.Tool,
+					ToolInfo:             info,
+					ProviderTurnIndex:    attempt,
+					ProviderTurnIndexSet: true,
 				}); err != nil {
 					return err
 				}

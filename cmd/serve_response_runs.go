@@ -2475,8 +2475,19 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
 	switch ev.Type {
 	case llm.EventTextDelta:
-		if state.toolsSeen || state.assistantBoundaryPending {
-			state.assistantSegmentOrdinal++
+		segmentOrdinal := state.assistantSegmentOrdinal
+		if ev.ProviderTurnIndexSet && ev.ProviderTurnIndex > segmentOrdinal {
+			// Durable assistant rows are keyed by the engine's provider turn index.
+			// Tool-only turns emit no text, so counting only text-after-tool
+			// boundaries makes the live projection lag those durable identities.
+			segmentOrdinal = ev.ProviderTurnIndex
+		} else if state.toolsSeen || state.assistantBoundaryPending {
+			// Preserve an ordered boundary for inline tools and interjections that
+			// continue within one provider turn.
+			segmentOrdinal++
+		}
+		if segmentOrdinal != state.assistantSegmentOrdinal {
+			state.assistantSegmentOrdinal = segmentOrdinal
 			if err := run.appendEvent("response.output_text.new_segment", map[string]any{
 				"output_index":              state.outputIndex,
 				"assistant_segment_ordinal": state.assistantSegmentOrdinal,
