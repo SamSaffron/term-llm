@@ -43,11 +43,13 @@ func resolvedFileTrackConfig(cfg *config.Config) (path, key string, opts filetra
 		path = filepath.Join(dataDir, "file_history.db")
 	}
 	opts = filetrack.Options{
-		MaxFileBytes:    cfg.FileTracking.MaxFileBytes,
-		MaxSessionBytes: cfg.FileTracking.MaxSessionBytes,
-		MaxTotalBytes:   cfg.FileTracking.MaxTotalBytes,
+		MaxFileBytes: cfg.FileTracking.MaxFileBytes, MaxSessionBytes: cfg.FileTracking.MaxSessionBytes,
+		MaxTotalBytes: cfg.FileTracking.MaxTotalBytes, MaxObservationRows: cfg.FileTracking.MaxObservationRows,
+		MaxObservationSessionRows: cfg.FileTracking.MaxObservationSessionRows,
+		MaxObservationBytes:       cfg.FileTracking.MaxObservationBytes, MaxObservationSessionBytes: cfg.FileTracking.MaxObservationSessionBytes,
+		MaxObservationAgeDays: cfg.FileTracking.MaxObservationAgeDays,
 	}
-	key = fmt.Sprintf("%s\x00%d\x00%d\x00%d", path, opts.MaxFileBytes, opts.MaxSessionBytes, opts.MaxTotalBytes)
+	key = fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d", path, opts.MaxFileBytes, opts.MaxSessionBytes, opts.MaxTotalBytes, opts.MaxObservationRows, opts.MaxObservationSessionRows, opts.MaxObservationBytes, opts.MaxObservationSessionBytes, opts.MaxObservationAgeDays)
 	return path, key, opts
 }
 

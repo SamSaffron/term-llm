@@ -184,6 +184,12 @@ export interface DiffFile {
   sequence?: number;
   snapshotSeq?: number;
   truncated?: boolean;
+  provenance?: 'direct' | 'declared_transform' | 'declared_generate' | 'mixed';
+  provenances?: string[];
+  baselineState?: 'normal' | 'preexisting_dirty' | 'unknown';
+  contentStatus?: string;
+  contentAvailable?: boolean;
+  claimCoverage?: 'complete' | 'truncated' | 'unavailable';
   context?: number;
   oldLineCount?: number;
   newLineCount?: number;
@@ -192,6 +198,28 @@ export interface DiffFile {
   loading?: boolean;
   error?: string;
   lines?: DiffLine[];
+}
+
+export interface FilesystemObservation {
+  id: number;
+  classification: string;
+  root?: string;
+  createdCount: number;
+  modifiedCount: number;
+  deletedCount: number;
+  sampledPaths: string[];
+  samplesTruncated: boolean;
+  coverageStatus: string;
+  eventSeq: number;
+}
+
+export interface OutputClaimDiagnostic {
+  normalizedPattern: string;
+  claimKind: string;
+  reason: string;
+  coverageStatus: string;
+  matchingPathCount: number;
+  message?: string;
 }
 
 export interface DiffComment {

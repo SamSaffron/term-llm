@@ -1127,6 +1127,126 @@ describe('AppStore compatibility behavior', () => {
     expect(store.diff.value.comments).toEqual([]);
   });
 
+  it('sends queued diff comments as typed interjections during an active response', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.queueDiffComment({
+      id: 'queued-comment',
+      path: 'main.go',
+      side: 'new',
+      line: 12,
+      body: 'Keep this guard.',
+      scope: 'last_turn',
+      context: 'if ready {',
+      fileChangeSeq: 9,
+    });
+    store.send = vi.fn(async () => undefined);
+    store.refreshDiffComments = vi.fn(async () => undefined);
+    store.endpoints.interrupt = vi.fn(async () => ({}));
+
+    await store.sendDiffComments();
+
+    expect(store.send).not.toHaveBeenCalled();
+    expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        message: 'Keep this guard.',
+        content: [
+          expect.objectContaining({
+            type: 'diff_comment',
+            diff_comment: expect.objectContaining({
+              id: 'queued-comment',
+              path: 'main.go',
+              line: 12,
+              instruction: 'Keep this guard.',
+            }),
+          }),
+          expect.objectContaining({
+            type: 'input_text',
+            text: expect.stringContaining('main.go:12'),
+          }),
+        ],
+        delivery: 'steer',
+      }),
+      expect.any(String),
+    );
+    expect(store.diff.value.comments).toEqual([]);
+    expect(store.diff.value.historyComments).toEqual([
+      expect.objectContaining({ id: 'queued-comment', optimistic: true }),
+    ]);
+    expect(store.interjections.value).toEqual([
+      expect.objectContaining({ content: 'Keep this guard.', state: 'pending' }),
+    ]);
+  });
+
+  it('sends an immediate diff comment as an interjection during an active response', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.refreshDiffComments = vi.fn(async () => undefined);
+    store.endpoints.interrupt = vi.fn(async () => ({}));
+
+    await store.sendDiffComment({
+      id: 'immediate-comment',
+      path: 'main.go',
+      side: 'new',
+      line: 14,
+      body: 'Handle this now.',
+      scope: 'last_turn',
+      context: 'return result',
+      fileChangeSeq: 9,
+    });
+
+    expect(store.endpoints.interrupt).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({
+        message: 'Handle this now.',
+        content: [
+          expect.objectContaining({
+            type: 'diff_comment',
+            diff_comment: expect.objectContaining({
+              id: 'immediate-comment',
+              path: 'main.go',
+              line: 14,
+              instruction: 'Handle this now.',
+            }),
+          }),
+          expect.objectContaining({ type: 'input_text' }),
+        ],
+        delivery: 'steer',
+      }),
+      expect.any(String),
+    );
+    expect(store.diff.value.historyComments).toEqual([
+      expect.objectContaining({ id: 'immediate-comment', optimistic: true }),
+    ]);
+  });
+
   it('sends one diff comment immediately without consuming the queued review', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];

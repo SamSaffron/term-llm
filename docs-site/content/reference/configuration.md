@@ -436,11 +436,16 @@ file_tracking:
   enabled: false
   max_file_bytes: 2097152 # 2 MiB per-file content cap
   max_session_bytes: 104857600 # 100 MiB retained content per session
-  max_total_bytes: 1073741824 # 1 GiB whole-database cap across sessions
-  path: "" # optional DB path override
+  max_total_bytes: 1073741824 # 1 GiB attributed-history data cap across sessions
+  max_observation_rows: 10000
+  max_observation_session_rows: 1000
+  max_observation_bytes: 16777216 # 16 MiB independent metadata cap
+  max_observation_session_bytes: 2097152 # 2 MiB per session
+  max_observation_age_days: 30
+  path: "" # optional attributed DB path override; observation sidecar shares its directory
 ```
 
-Opt-in. When enabled, term-llm records the before/after contents of files that agent tools create, modify, or delete, so the web UI can show a live per-session diff sidebar.
+Opt-in. When enabled, term-llm records retained before/after content only for attributed transitions: trusted direct mutation tools, or shell `transform`/`generate` claims declared before execution and subsequently verified. Materializations and unclaimed effects are metadata-only observations and never contribute Agent Changes totals.
 
 Enable it with:
 
@@ -454,9 +459,11 @@ or by adding the YAML above to your config file. To enable tracking only for one
 term-llm serve web --enable-file-tracking
 ```
 
-**Privacy note:** this persists actual file contents (not just paths) to a local SQLite database at `~/.local/share/term-llm/file_history.db`, separate from `sessions.db`. Contents are gzip-compressed and content-addressed. Files larger than `max_file_bytes`, binary files, and changes beyond the per-session budget are recorded as metadata only ("content not retained"). History for deleted sessions is swept on startup, following `sessions.max_age_days`; if the database still exceeds `max_total_bytes`, the least recently changed sessions' history is pruned until it fits.
+**Privacy note:** attributed content is persisted to `~/.local/share/term-llm/file_history.db`, separate from `sessions.db`. Retained blobs are gzip-compressed and content-addressed. Oversized, unsupported binary, unknown-side, and over-budget transitions keep provenance metadata but not a fabricated diff. `max_total_bytes` applies to growing attributed data with a small fixed structural reserve for mandatory indexes. History for deleted sessions is swept on startup, following `sessions.max_age_days`.
 
-Shell-made changes are tracked best-effort: commands that declare an `affected_paths` hint are snapshotted precisely; otherwise term-llm relies on `git status` (when inside a repository) and re-checking files the session already touched. Broad scripts writing to non-git directories without a hint may not appear in the diff sidebar.
+Observations and materializations contain bounded counts, roots, sampled paths, coverage, and closed diagnostic details only—never blobs, command text, environment values, headers, credentials, URL userinfo, or unsanitized URLs. They live in the physically separate `file_observations.db` sidecar and have independent row, byte, per-session, and age limits. Observation pressure therefore cannot evict attributed blobs.
+
+`affected_paths` bounds shell inspection only and does not attribute transitions. Use pre-execution `output_claims` for task transforms/generators and `materialize` claims for imported content. Without claims, bounded Git/session-path discovery may produce observations, but never agent changes. Incomplete coverage and tracker failures are surfaced as diagnostics.
 
 ## MCP tool discovery config
 

@@ -11,16 +11,31 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/filetrack"
 )
 
 func executeTrackedShell(t *testing.T, recorder *fakeFileRecorder, dir, command string, affectedPaths ...string) {
+	executeTrackedShellKind(t, recorder, dir, command, filetrack.ClaimGenerate, affectedPaths...)
+}
+
+func executeTrackedShellKind(t *testing.T, recorder *fakeFileRecorder, dir, command, kind string, affectedPaths ...string) {
 	t.Helper()
 	tool := NewShellTool(nil, nil, DefaultOutputLimits())
 	tool.recorder = recorder
+	claims := make([]OutputClaim, 0, len(affectedPaths))
+	if kind != "" {
+		for _, path := range affectedPaths {
+			if strings.TrimSpace(path) != "" {
+				claims = append(claims, OutputClaim{Path: path, Kind: kind})
+			}
+		}
+		if len(claims) == 0 {
+			claims = []OutputClaim{{Path: "**/*", Kind: kind}}
+		}
+	}
 	args, err := json.Marshal(ShellArgs{
-		Command:       command,
-		WorkingDir:    dir,
-		AffectedPaths: affectedPaths,
+		Command: command, WorkingDir: dir, AffectedPaths: affectedPaths, OutputClaims: claims,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +117,11 @@ func TestShellSnapshotChangesAroundContentReadCap(t *testing.T) {
 	}
 	recorder := &fakeFileRecorder{sessionPaths: paths}
 	ctx := trackingContext()
-	snap := preShellSnapshot(ctx, recorder, dir, nil)
+	claims := make([]normalizedOutputClaim, 0, len(paths))
+	for _, path := range paths {
+		claims = append(claims, normalizedOutputClaim{pattern: filepath.ToSlash(path), kind: filetrack.ClaimGenerate, literal: true, coverage: filetrack.CoverageComplete})
+	}
+	snap := preShellSnapshotWithClaims(ctx, recorder, dir, nil, claims)
 
 	captured := paths[maxShellContentReads-1]
 	beyondCap := paths[maxShellContentReads]
@@ -130,7 +149,11 @@ func TestShellSnapshotByteComparesCapturedContentWithUnchangedStat(t *testing.T)
 
 	recorder := &fakeFileRecorder{}
 	ctx := trackingContext()
-	snap := preShellSnapshot(ctx, recorder, dir, []string{"tracked.txt"})
+	claims, err := normalizeOutputClaims(dir, []OutputClaim{{Path: "tracked.txt", Kind: filetrack.ClaimTransform}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := preShellSnapshotWithClaims(ctx, recorder, dir, []string{"tracked.txt"}, claims)
 	entry := snap.files[path]
 	if entry == nil || entry.content == nil {
 		t.Fatalf("pre snapshot did not capture content: %+v", entry)
@@ -196,11 +219,14 @@ func TestShellBroadScopeNewCleanRepoIsMaterializationBaseline(t *testing.T) {
 	dir := t.TempDir()
 	requireTestGit(t)
 	recorder := &fakeFileRecorder{}
-	executeTrackedShell(t, recorder, dir,
-		"mkdir cloned && git -C cloned init -q && printf 'clean\\n' > cloned/source.txt && git -C cloned add . && git -C cloned -c user.name=t -c user.email=t@t commit -qm initial",
-		"cloned/**/*")
+	executeTrackedShellKind(t, recorder, dir,
+		"mkdir cloned && git -C cloned init -q && printf 'clean\n' > cloned/source.txt && git -C cloned add . && git -C cloned -c user.name=t -c user.email=t@t commit -qm initial",
+		filetrack.ClaimMaterialize, "cloned/**/*")
 	if records := recorder.recorded(); len(records) != 0 {
-		t.Fatalf("new clean repository recorded materialized files: %+v", records)
+		t.Fatalf("new clean repository entered attributed history: %+v", records)
+	}
+	if observations := recorder.observed(); len(observations) != 1 || observations[0].Classification != filetrack.ObservationMaterialized {
+		t.Fatalf("materialization observations = %+v", observations)
 	}
 }
 
@@ -220,9 +246,12 @@ func setupBranchMaterializationRepo(t *testing.T) (dir, originalBranch string) {
 func TestShellBroadScopeCleanBranchCheckoutRecordsNothing(t *testing.T) {
 	dir, _ := setupBranchMaterializationRepo(t)
 	recorder := &fakeFileRecorder{}
-	executeTrackedShell(t, recorder, dir, "git checkout -q other", "**/*.txt")
+	executeTrackedShellKind(t, recorder, dir, "git checkout -q other", filetrack.ClaimMaterialize, "**/*.txt")
 	if records := recorder.recorded(); len(records) != 0 {
-		t.Fatalf("clean checkout recorded materialized files: %+v", records)
+		t.Fatalf("clean checkout entered attributed history: %+v", records)
+	}
+	if observations := recorder.observed(); len(observations) != 1 || observations[0].Classification != filetrack.ObservationMaterialized {
+		t.Fatalf("checkout observations = %+v", observations)
 	}
 }
 
@@ -282,9 +311,9 @@ func TestShellBroadScopeExcludesIgnoredBuildOutput(t *testing.T) {
 	dir := t.TempDir()
 	initCommittedTestRepo(t, dir, map[string]string{".gitignore": "build/\n"})
 	recorder := &fakeFileRecorder{}
-	executeTrackedShell(t, recorder, dir, "mkdir -p build && printf 'artifact\\n' > build/output.txt", "**/*")
+	executeTrackedShellKind(t, recorder, dir, "mkdir -p build && printf 'artifact\n' > build/output.txt", "", "**/*")
 	if records := recorder.recorded(); len(records) != 0 {
-		t.Fatalf("ignored build output was recorded: %+v", records)
+		t.Fatalf("unclaimed ignored build output entered attributed history: %+v", records)
 	}
 }
 
@@ -348,13 +377,13 @@ func TestShellGitFallbackRecordsDirtyToCleanRevertsWithoutSessionHistory(t *test
 	}
 }
 
-func TestShellGitCleanAtReturnDependsOnAffectedPathSpecificity(t *testing.T) {
+func TestShellClaimSurvivesGitCleanAtReturnRegardlessOfSpecificity(t *testing.T) {
 	tests := []struct {
 		name       string
 		affected   string
 		wantRecord bool
 	}{
-		{name: "glob discovery omitted", affected: "*.txt"},
+		{name: "glob claim preserved", affected: "*.txt", wantRecord: true},
 		{name: "exact literal preserved", affected: "tracked.txt", wantRecord: true},
 	}
 	for _, tt := range tests {
@@ -418,7 +447,7 @@ func TestGitShowIndexBatchSkipsGitlinkAndContinues(t *testing.T) {
 	}
 }
 
-func TestShellGitStatusFailureSuppressesBroadCandidatesButPreservesLiterals(t *testing.T) {
+func TestShellClaimSurvivesGitStatusFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX git wrapper")
 	}
@@ -432,7 +461,7 @@ func TestShellGitStatusFailureSuppressesBroadCandidatesButPreservesLiterals(t *t
 		affected   string
 		wantRecord bool
 	}{
-		{name: "broad candidate suppressed", affected: "*.txt"},
+		{name: "broad claim preserved", affected: "*.txt", wantRecord: true},
 		{name: "literal baseline preserved", affected: "tracked.txt", wantRecord: true},
 	}
 	for _, tt := range tests {
@@ -586,7 +615,7 @@ func TestShellRepoResolverBoundsCandidateAncestorsToCommandScope(t *testing.T) {
 	}
 }
 
-func TestShellAbsoluteGlobDiscoversExternalNestedRepo(t *testing.T) {
+func TestShellAbsoluteGlobClaimsExternalNestedRepoWithinWorkspace(t *testing.T) {
 	scope := t.TempDir()
 	initCommittedTestRepo(t, scope, map[string]string{"root.txt": "root\n"})
 	workDir := filepath.Join(scope, "work")
@@ -601,9 +630,9 @@ func TestShellAbsoluteGlobDiscoversExternalNestedRepo(t *testing.T) {
 
 	recorder := &fakeFileRecorder{}
 	command := fmt.Sprintf("printf 'after\\n' > %q && git -C %q add tracked.txt && git -C %q commit -qm edit", filepath.Join(nested, "tracked.txt"), nested, nested)
-	executeTrackedShell(t, recorder, workDir, command, filepath.Join(nested, "*.txt"))
-	if records := recorder.recorded(); len(records) != 0 {
-		t.Fatalf("absolute glob failed to treat external nested Git-clean edit as materialization: %+v", records)
+	executeTrackedShell(t, recorder, scope, command, filepath.Join(nested, "*.txt"))
+	if records := recorder.recorded(); len(records) != 1 {
+		t.Fatalf("absolute glob claim did not preserve external nested Git-clean edit: %+v", records)
 	}
 }
 

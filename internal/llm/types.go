@@ -652,12 +652,44 @@ type DiffData struct {
 // Contents are never carried here — only metadata; the recorded blobs
 // are served on demand by the session file-changes endpoints.
 type FileChange struct {
-	Path      string `json:"path"`                // Absolute file path
-	Kind      string `json:"kind"`                // "create" | "modify" | "delete"
-	Adds      int    `json:"adds"`                // Lines added by this change (0 when truncated)
-	Dels      int    `json:"dels"`                // Lines removed by this change (0 when truncated)
-	Seq       int64  `json:"seq"`                 // Per-session monotonic change sequence
-	Truncated bool   `json:"truncated,omitempty"` // Content not retained (size cap, budget, binary, unknown before)
+	Path             string   `json:"path"` // Absolute file path
+	Kind             string   `json:"kind"` // "create" | "modify" | "delete"
+	Adds             int      `json:"adds"` // Lines added by this change (0 when unavailable)
+	Dels             int      `json:"dels"` // Lines removed by this change (0 when unavailable)
+	Seq              int64    `json:"seq"`  // Per-session monotonic attributed-change sequence
+	EventSeq         int64    `json:"event_seq,omitempty"`
+	Truncated        bool     `json:"truncated,omitempty"` // Legacy compatibility; ContentStatus is authoritative
+	Provenance       string   `json:"provenance,omitempty"`
+	Provenances      []string `json:"provenances,omitempty"`
+	BaselineState    string   `json:"baseline_state,omitempty"`
+	ContentStatus    string   `json:"content_status,omitempty"`
+	ContentAvailable bool     `json:"content_available"`
+	ClaimCoverage    string   `json:"claim_coverage,omitempty"`
+	TrustedPersisted bool     `json:"-"` // set only by the trusted recorder after persistence
+}
+
+// FilesystemObservationSummary describes detected but non-attributed effects.
+type FilesystemObservationSummary struct {
+	ID               int64    `json:"id"`
+	Classification   string   `json:"classification"`
+	Root             string   `json:"root,omitempty"`
+	CreatedCount     int      `json:"created_count"`
+	ModifiedCount    int      `json:"modified_count"`
+	DeletedCount     int      `json:"deleted_count"`
+	SampledPaths     []string `json:"sampled_paths,omitempty"`
+	SamplesTruncated bool     `json:"samples_truncated,omitempty"`
+	CoverageStatus   string   `json:"coverage_status"`
+	EventSeq         int64    `json:"event_seq"`
+}
+
+// OutputClaimDiagnostic reports confirmation, mismatch, coverage, and tracker failures.
+type OutputClaimDiagnostic struct {
+	NormalizedPattern string `json:"normalized_pattern"`
+	ClaimKind         string `json:"claim_kind"`
+	Reason            string `json:"reason"`
+	CoverageStatus    string `json:"coverage_status"`
+	MatchingPathCount int    `json:"matching_path_count"`
+	Message           string `json:"message,omitempty"`
 }
 
 // ToolContentPartType identifies a structured tool result content item.
@@ -696,14 +728,16 @@ type ToolContentPart struct {
 // ToolOutput is the structured return type from Tool.Execute().
 // Most tools only populate Content. Edit/image tools also populate Diffs/Images.
 type ToolOutput struct {
-	Content         string            // Text result (sent to LLM)
-	ContentParts    []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
-	Diffs           []DiffData        // Structured diff data (for UI rendering)
-	Images          []string          // Image paths (for UI rendering)
-	FileChanges     []FileChange      `json:"file_changes,omitempty"`     // Recorded file changes (when file tracking is enabled)
-	GuardianReviews []GuardianReview  `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata; never provider content
-	TimedOut        bool              // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
-	IsError         bool              // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
+	Content                string                         // Text result (sent to LLM)
+	ContentParts           []ToolContentPart              `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
+	Diffs                  []DiffData                     // Structured diff data (for UI rendering)
+	Images                 []string                       // Image paths (for UI rendering)
+	FileChanges            []FileChange                   `json:"file_changes,omitempty"` // Persisted attributed changes only
+	FilesystemObservations []FilesystemObservationSummary `json:"filesystem_observations,omitempty"`
+	OutputClaimDiagnostics []OutputClaimDiagnostic        `json:"output_claim_diagnostics,omitempty"`
+	GuardianReviews        []GuardianReview               `json:"guardian_reviews,omitempty"` // Display-only Guardian audit metadata; never provider content
+	TimedOut               bool                           // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
+	IsError                bool                           // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
 }
 
 // TextOutput creates a ToolOutput with only text content.
@@ -766,31 +800,33 @@ type ToolExecutionResponse struct {
 
 // Event represents a streamed output update.
 type Event struct {
-	Type                      EventType
-	Text                      string
-	Model                     string // For EventModelSwitch: request model applied at provider-turn boundary
-	ReasoningEffort           string // For EventModelSwitch: request reasoning effort applied at provider-turn boundary
-	InterjectionID            string // For EventInterjection: stable ID for matching queued interjections in the UI
-	InterjectionStatus        InterjectionStatus
-	Message                   Message       // For EventInterjection: structured user message including attachments
-	ReasoningItemID           string        // For EventReasoningDelta: reasoning item ID
-	ReasoningEncryptedContent string        // For EventReasoningDelta: encrypted reasoning content
-	ReasoningKind             ReasoningKind // For EventReasoningDelta: summary/raw/encrypted/unknown classification
-	ReasoningSummaryParts     []string      // For EventReasoningDelta: structured display-safe summary parts, when available
-	ReasoningIndex            int           // For EventReasoningDelta: provider reasoning block/index when available
-	ReasoningFinal            bool          // For EventReasoningDelta: true when provider marks the reasoning block complete
-	Tool                      *ToolCall
-	ToolCallID                string          // For EventToolExecStart/End: unique ID of this tool invocation
-	ToolName                  string          // For EventToolExecStart/End: name of tool being executed
-	ToolInfo                  string          // For EventToolExecStart/End: additional info (e.g., URL being fetched)
-	ToolArgs                  json.RawMessage // For EventToolExecStart: raw args JSON
-	ToolSuccess               bool            // For EventToolExecEnd: whether tool execution succeeded
-	ToolOutput                string          // For EventToolExecEnd: the tool's text content
-	ToolDiffs                 []DiffData      // For EventToolExecEnd: structured diffs from edit tools
-	ToolFileChanges           []FileChange    // For EventToolExecEnd: recorded file changes (file tracking)
-	ToolImages                []string        // For EventToolExecEnd: image paths from image tools
-	Use                       *Usage
-	Err                       error
+	Type                       EventType
+	Text                       string
+	Model                      string // For EventModelSwitch: request model applied at provider-turn boundary
+	ReasoningEffort            string // For EventModelSwitch: request reasoning effort applied at provider-turn boundary
+	InterjectionID             string // For EventInterjection: stable ID for matching queued interjections in the UI
+	InterjectionStatus         InterjectionStatus
+	Message                    Message       // For EventInterjection: structured user message including attachments
+	ReasoningItemID            string        // For EventReasoningDelta: reasoning item ID
+	ReasoningEncryptedContent  string        // For EventReasoningDelta: encrypted reasoning content
+	ReasoningKind              ReasoningKind // For EventReasoningDelta: summary/raw/encrypted/unknown classification
+	ReasoningSummaryParts      []string      // For EventReasoningDelta: structured display-safe summary parts, when available
+	ReasoningIndex             int           // For EventReasoningDelta: provider reasoning block/index when available
+	ReasoningFinal             bool          // For EventReasoningDelta: true when provider marks the reasoning block complete
+	Tool                       *ToolCall
+	ToolCallID                 string          // For EventToolExecStart/End: unique ID of this tool invocation
+	ToolName                   string          // For EventToolExecStart/End: name of tool being executed
+	ToolInfo                   string          // For EventToolExecStart/End: additional info (e.g., URL being fetched)
+	ToolArgs                   json.RawMessage // For EventToolExecStart: raw args JSON
+	ToolSuccess                bool            // For EventToolExecEnd: whether tool execution succeeded
+	ToolOutput                 string          // For EventToolExecEnd: the tool's text content
+	ToolDiffs                  []DiffData      // For EventToolExecEnd: structured diffs from edit tools
+	ToolFileChanges            []FileChange    // Persisted attributed changes
+	ToolFilesystemObservations []FilesystemObservationSummary
+	ToolOutputClaimDiagnostics []OutputClaimDiagnostic
+	ToolImages                 []string // For EventToolExecEnd: image paths from image tools
+	Use                        *Usage
+	Err                        error
 	// Retry fields (for EventRetry). RetryMaxAttempts == 0 means the retry
 	// policy is governed by a time budget rather than a fixed attempt count.
 	RetryAttempt     int

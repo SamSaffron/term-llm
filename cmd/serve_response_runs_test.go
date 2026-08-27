@@ -960,7 +960,7 @@ func TestSuppressedServerToolStillAdvancesAssistantSegmentIdentity(t *testing.T)
 	}
 }
 
-func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
+func TestAppendResponseRunEventRejectsUnverifiedClientToolFileChanges(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
 	server := &serveServer{cfg: serveServerConfig{suppressServerTools: true}}
@@ -983,14 +983,17 @@ func TestAppendResponseRunEventKeepsClientToolFileChanges(t *testing.T) {
 
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	var sawFileChange bool
+	var sawFileChange, sawDiagnostic bool
 	for _, ev := range run.events {
 		if ev.Event == "response.file_change" {
 			sawFileChange = true
 		}
+		if ev.Event == "response.output_claim_diagnostic" {
+			sawDiagnostic = true
+		}
 	}
-	if !sawFileChange {
-		t.Fatalf("events = %+v, want response.file_change for non-server tool", run.events)
+	if sawFileChange || !sawDiagnostic {
+		t.Fatalf("events = %+v, want diagnostic and no attributed file change for unverified client metadata", run.events)
 	}
 }
 

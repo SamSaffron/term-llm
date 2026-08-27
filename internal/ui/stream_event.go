@@ -25,10 +25,12 @@ const (
 	StreamEventInterjection // User interjected a message mid-stream
 	StreamEventModelSwitch  // Request model changed at a provider-turn boundary
 	StreamEventAttemptDiscard
-	StreamEventReasoning          // Classified, non-encrypted reasoning text/metadata
-	StreamEventGenerationActivity // Hidden generation activity (for timing only)
-	StreamEventFileChange         // Recorded file change metadata (file tracking)
-	StreamEventGuardian           // Guardian review correlated with a tool call
+	StreamEventReasoning             // Classified, non-encrypted reasoning text/metadata
+	StreamEventGenerationActivity    // Hidden generation activity (for timing only)
+	StreamEventFileChange            // Persisted attributed file change metadata
+	StreamEventFilesystemObservation // Detected non-attributed filesystem effect
+	StreamEventOutputClaimDiagnostic // Shell claim/tracking diagnostic
+	StreamEventGuardian              // Guardian review correlated with a tool call
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -87,7 +89,9 @@ type StreamEvent struct {
 
 	// File change metadata (for StreamEventFileChange). Contents are never
 	// carried on events; viewers fetch diffs from the session endpoints.
-	FileChange llm.FileChange
+	FileChange            llm.FileChange
+	FilesystemObservation llm.FilesystemObservationSummary
+	OutputClaimDiagnostic llm.OutputClaimDiagnostic
 
 	// Reasoning (for StreamEventReasoning). Encrypted replay payloads are never
 	// included here; surfaces decide display policy from the classified text.
@@ -256,10 +260,15 @@ func DiffEventWithOperation(path, old, new string, line int, operation string) S
 
 // FileChangeEvent creates a file-change metadata event (file tracking).
 func FileChangeEvent(fc llm.FileChange) StreamEvent {
-	return StreamEvent{
-		Type:       StreamEventFileChange,
-		FileChange: fc,
-	}
+	return StreamEvent{Type: StreamEventFileChange, FileChange: fc}
+}
+
+func FilesystemObservationEvent(obs llm.FilesystemObservationSummary) StreamEvent {
+	return StreamEvent{Type: StreamEventFilesystemObservation, FilesystemObservation: obs}
+}
+
+func OutputClaimDiagnosticEvent(diagnostic llm.OutputClaimDiagnostic) StreamEvent {
+	return StreamEvent{Type: StreamEventOutputClaimDiagnostic, OutputClaimDiagnostic: diagnostic}
 }
 
 // ModelSwitchEvent creates an event for an in-run request model change.

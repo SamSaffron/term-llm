@@ -34,6 +34,29 @@ func TestShellTool_Spec(t *testing.T) {
 			t.Errorf("schema should have %s property", p)
 		}
 	}
+	for _, p := range []string{"affected_paths", "output_claims"} {
+		if _, ok := props[p]; ok {
+			t.Errorf("disabled tracking schema should not have %s property", p)
+		}
+		if strings.Contains(spec.Description, p) {
+			t.Errorf("disabled tracking description should not mention %s", p)
+		}
+	}
+
+	tool.setFileChangeRecorder(&fakeFileRecorder{})
+	trackedSpec := tool.Spec()
+	trackedProps, ok := trackedSpec.Schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("tracked schema should have properties")
+	}
+	for _, p := range []string{"affected_paths", "output_claims"} {
+		if _, ok := trackedProps[p]; !ok {
+			t.Errorf("enabled tracking schema should have %s property", p)
+		}
+		if !strings.Contains(trackedSpec.Description, p) {
+			t.Errorf("enabled tracking description should mention %s", p)
+		}
+	}
 
 	required, ok := spec.Schema["required"].([]string)
 	if !ok {
@@ -47,6 +70,52 @@ func TestShellTool_Spec(t *testing.T) {
 	}
 	if !found {
 		t.Error("command should be required")
+	}
+}
+
+func TestShellTool_ExecuteIgnoresTrackingParamsWhenDisabled(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	args := mustMarshalShellArgs(ShellArgs{
+		Command:       "printf tracked-params-ignored",
+		AffectedPaths: []string{"**"},
+		OutputClaims:  []OutputClaim{{Path: ".git/config", Kind: "invalid"}},
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if output.IsError {
+		t.Fatalf("disabled tracking parameters affected command execution: %s", output.Content)
+	}
+	if !strings.Contains(output.Content, "tracked-params-ignored") {
+		t.Fatalf("command output = %q", output.Content)
+	}
+	if len(output.FileChanges) != 0 || len(output.FilesystemObservations) != 0 || len(output.OutputClaimDiagnostics) != 0 {
+		t.Fatalf("disabled tracking produced tracking side effects: %+v", output)
+	}
+	if strings.Contains(output.Content, "filesystem_tracking:") {
+		t.Fatalf("disabled tracking emitted a tracking section: %q", output.Content)
+	}
+	if strings.Contains(output.Content, "Unknown parameter") {
+		t.Fatalf("hidden compatibility parameters should be silently ignored: %q", output.Content)
+	}
+}
+
+func TestShellTool_ExecuteValidatesTrackingParamsWhenEnabled(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.setFileChangeRecorder(&fakeFileRecorder{})
+	args := mustMarshalShellArgs(ShellArgs{
+		Command:      "printf should-not-run",
+		OutputClaims: []OutputClaim{{Path: "output.txt", Kind: "invalid"}},
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !output.IsError || !strings.Contains(output.Content, "must be transform, generate, or materialize") {
+		t.Fatalf("enabled tracking accepted invalid claim: %+v", output)
 	}
 }
 

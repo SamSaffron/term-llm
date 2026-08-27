@@ -253,8 +253,13 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	sb.WriteString(".")
 
 	output := llm.ToolOutput{Content: sb.String()}
-	if fc := recordFileChange(ctx, t.recorder, EditFileToolName, absPath, data, []byte(newContent), false, false); fc != nil {
+	if fc, diagnostic := recordFileChange(ctx, t.recorder, EditFileToolName, absPath, data, []byte(newContent), false, false); fc != nil {
 		output.FileChanges = []llm.FileChange{*fc}
+		if diagnostic != nil {
+			output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
+		}
+	} else if diagnostic != nil {
+		output.OutputClaimDiagnostics = []llm.OutputClaimDiagnostic{*diagnostic}
 	}
 
 	// Populate structured diff data (skip if content is too large)
@@ -353,6 +358,7 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	var allWarnings []string
 	var diffs []llm.DiffData
 	var fileChanges []llm.FileChange
+	var diagnostics []llm.OutputClaimDiagnostic
 
 	for _, fd := range fileDiffs {
 		absPath, err := resolveToolPathWithConfig(fd.Path, true, t.config)
@@ -366,7 +372,7 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		}
 
 		// Serialise concurrent unified_diff (and edit_file) calls on the same file.
-		status, warnings, d, fc := t.applyFileDiff(ctx, absPath, fd)
+		status, warnings, d, fc, diagnostic := t.applyFileDiff(ctx, absPath, fd)
 		sb.WriteString(status)
 		allWarnings = append(allWarnings, warnings...)
 		if d != nil {
@@ -374,6 +380,9 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		}
 		if fc != nil {
 			fileChanges = append(fileChanges, *fc)
+		}
+		if diagnostic != nil {
+			diagnostics = append(diagnostics, *diagnostic)
 		}
 	}
 
@@ -384,21 +393,21 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		}
 	}
 
-	return llm.ToolOutput{Content: sb.String(), Diffs: diffs, FileChanges: fileChanges}, nil
+	return llm.ToolOutput{Content: sb.String(), Diffs: diffs, FileChanges: fileChanges, OutputClaimDiagnostics: diagnostics}, nil
 }
 
 // applyFileDiff applies a single file's hunks while holding a per-path lock.
-func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd udiff.FileDiff) (status string, warnings []string, diffData *llm.DiffData, fileChange *llm.FileChange) {
+func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd udiff.FileDiff) (status string, warnings []string, diffData *llm.DiffData, fileChange *llm.FileChange, diagnostic *llm.OutputClaimDiagnostic) {
 	defer lockFilePath(absPath)()
 
 	fileInfo, err := os.Stat(absPath)
 	if err != nil {
-		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil, nil
+		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil, nil, nil
 	}
 	fileMode := fileInfo.Mode()
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil, nil
+		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil, nil, nil
 	}
 	content := string(data)
 
@@ -408,7 +417,7 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 	}
 
 	if result.Content == content {
-		return fmt.Sprintf("No changes for %s.\n", fd.Path), warnings, nil, nil
+		return fmt.Sprintf("No changes for %s.\n", fd.Path), warnings, nil, nil, nil
 	}
 
 	// Follow symlinks so the atomic rename writes through the link instead
@@ -418,33 +427,33 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 	base := filepath.Base(writePath)
 	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
-		return "", append(warnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err)), nil, nil
+		return "", append(warnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err)), nil, nil, nil
 	}
 	tempPath := tempFile.Name()
 
 	if _, err := tempFile.WriteString(result.Content); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
-		return "", append(warnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err)), nil, nil
+		return "", append(warnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err)), nil, nil, nil
 	}
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
-		return "", append(warnings, fmt.Sprintf("%s: failed to sync temp file: %v", fd.Path, err)), nil, nil
+		return "", append(warnings, fmt.Sprintf("%s: failed to sync temp file: %v", fd.Path, err)), nil, nil, nil
 	}
 	tempFile.Close()
 
 	if err := os.Chmod(tempPath, fileMode); err != nil {
 		os.Remove(tempPath)
-		return "", append(warnings, fmt.Sprintf("%s: failed to set permissions: %v", fd.Path, err)), nil, nil
+		return "", append(warnings, fmt.Sprintf("%s: failed to set permissions: %v", fd.Path, err)), nil, nil, nil
 	}
 
 	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
-		return "", append(warnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err)), nil, nil
+		return "", append(warnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err)), nil, nil, nil
 	}
 
-	fileChange = recordFileChange(ctx, t.recorder, UnifiedDiffToolName, absPath, data, []byte(result.Content), false, false)
+	fileChange, diagnostic = recordFileChange(ctx, t.recorder, UnifiedDiffToolName, absPath, data, []byte(result.Content), false, false)
 
 	oldLines := countLines(content)
 	newLines := countLines(result.Content)
@@ -456,7 +465,7 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 		}
 	}
 
-	return status, warnings, diffData, fileChange
+	return status, warnings, diffData, fileChange, diagnostic
 }
 
 // GenerateDiff creates a unified diff between old and new content.

@@ -24,6 +24,22 @@ type fakeFileRecorder struct {
 	sessionPathsCalls int
 	seq               int64
 	maxFileBytes      int // 0 = filetrack.DefaultMaxFileBytes
+	observations      []filetrack.FilesystemObservation
+}
+
+func (f *fakeFileRecorder) RecordAttributedChange(ctx context.Context, rec filetrack.ChangeRecord) (*llm.FileChange, error) {
+	return f.RecordChange(ctx, rec), nil
+}
+
+func (f *fakeFileRecorder) RecordFilesystemObservation(_ context.Context, obs filetrack.FilesystemObservation) (*llm.FilesystemObservationSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.observations = append(f.observations, obs)
+	f.seq++
+	return &llm.FilesystemObservationSummary{ID: f.seq, Classification: obs.Classification, Root: obs.Root,
+		CreatedCount: obs.CreatedCount, ModifiedCount: obs.ModifiedCount, DeletedCount: obs.DeletedCount,
+		SampledPaths: append([]string(nil), obs.SampledPaths...), SamplesTruncated: obs.SamplesTruncated,
+		CoverageStatus: obs.CoverageStatus, EventSeq: f.seq}, nil
 }
 
 func (f *fakeFileRecorder) RecordChange(ctx context.Context, rec filetrack.ChangeRecord) *llm.FileChange {
@@ -61,6 +77,12 @@ func (f *fakeFileRecorder) MaxFileBytes() int {
 		return f.maxFileBytes
 	}
 	return filetrack.DefaultMaxFileBytes
+}
+
+func (f *fakeFileRecorder) observed() []filetrack.FilesystemObservation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]filetrack.FilesystemObservation(nil), f.observations...)
 }
 
 func (f *fakeFileRecorder) recorded() []filetrack.ChangeRecord {
@@ -241,6 +263,7 @@ func TestShellToolRecordsAffectedPaths(t *testing.T) {
 		Command:       "echo after > existing.txt && echo new > created.txt && rm doomed.txt",
 		WorkingDir:    dir,
 		AffectedPaths: []string{"*.txt"},
+		OutputClaims:  []OutputClaim{{Path: "*.txt", Kind: filetrack.ClaimGenerate}},
 	})
 	output, err := tool.Execute(trackingContext(), args)
 	if err != nil {
@@ -285,7 +308,11 @@ func TestShellToolAffectedPathsSkipSessionTrackedPaths(t *testing.T) {
 
 	recorder := &fakeFileRecorder{sessionPaths: historical}
 	ctx := trackingContext()
-	snap := preShellSnapshot(ctx, recorder, dir, []string{"hinted.txt"})
+	claims, err := normalizeOutputClaims(dir, []OutputClaim{{Path: "hinted.txt", Kind: filetrack.ClaimTransform}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := preShellSnapshotWithClaims(ctx, recorder, dir, []string{"hinted.txt"}, claims)
 
 	if calls := recorder.sessionPathCallCount(); calls != 0 {
 		t.Fatalf("SessionPaths calls = %d, want 0 for bounded affected_paths", calls)
@@ -344,8 +371,8 @@ func TestShellToolRecordsSessionTrackedPaths(t *testing.T) {
 
 	// No affected_paths hint: layer 3 (already-tracked paths) must catch this.
 	args, _ := json.Marshal(ShellArgs{
-		Command:    "echo v2 > tracked.txt",
-		WorkingDir: dir,
+		Command: "echo v2 > tracked.txt", WorkingDir: dir,
+		OutputClaims: []OutputClaim{{Path: "tracked.txt", Kind: filetrack.ClaimTransform}},
 	})
 	if _, err := tool.Execute(trackingContext(), args); err != nil {
 		t.Fatal(err)
@@ -396,8 +423,8 @@ func TestShellToolGitFallback(t *testing.T) {
 	// files, already-dirty tracked files whose porcelain status stays " M", new
 	// untracked files, and pre-existing untracked files whose status stays "??".
 	args, _ := json.Marshal(ShellArgs{
-		Command:    "echo dirty > committed.txt && echo dirtier > dirty.txt && echo fresh > untracked.txt && echo changed > preexisting-untracked.txt",
-		WorkingDir: dir,
+		Command: "echo dirty > committed.txt && echo dirtier > dirty.txt && echo fresh > untracked.txt && echo changed > preexisting-untracked.txt", WorkingDir: dir,
+		OutputClaims: []OutputClaim{{Path: "*.txt", Kind: filetrack.ClaimGenerate}},
 	})
 	if _, err := tool.Execute(trackingContext(), args); err != nil {
 		t.Fatal(err)
@@ -480,6 +507,7 @@ exec %q "$@"
 		Command:       "echo after > tracked.txt",
 		WorkingDir:    dir,
 		AffectedPaths: []string{"tracked.txt"},
+		OutputClaims:  []OutputClaim{{Path: "tracked.txt", Kind: filetrack.ClaimTransform}},
 	})
 	if _, err := tool.Execute(trackingContext(), args); err != nil {
 		t.Fatal(err)
@@ -522,8 +550,8 @@ func TestShellToolGitFallbackOversizedCleanTrackedFile(t *testing.T) {
 	tool.recorder = recorder
 
 	args, _ := json.Marshal(ShellArgs{
-		Command:    "echo more >> big.txt",
-		WorkingDir: dir,
+		Command: "echo more >> big.txt", WorkingDir: dir,
+		OutputClaims: []OutputClaim{{Path: "big.txt", Kind: filetrack.ClaimTransform}},
 	})
 	if _, err := tool.Execute(trackingContext(), args); err != nil {
 		t.Fatal(err)
@@ -593,7 +621,7 @@ func TestGitIgnoredCandidatesCanonicalizesSymlinkedRoot(t *testing.T) {
 	}
 }
 
-func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
+func TestShellToolClaimsOverrideGitIgnore(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
@@ -623,27 +651,27 @@ func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
 		Command:       "mkdir -p frontend/dist/assets/js && echo artifact > frontend/dist/assets/js/bundle.digest.js && echo after > plugin.rb",
 		WorkingDir:    dir,
 		AffectedPaths: []string{"frontend/dist/assets/js/*", "plugin.rb"},
+		OutputClaims:  []OutputClaim{{Path: "frontend/dist/assets/js/*", Kind: filetrack.ClaimGenerate}, {Path: "plugin.rb", Kind: filetrack.ClaimTransform}},
 	})
 	output, err := tool.Execute(trackingContext(), args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(output.FileChanges) != 1 {
-		t.Fatalf("file changes = %+v, want only plugin.rb", output.FileChanges)
+	if len(output.FileChanges) != 2 {
+		t.Fatalf("file changes = %+v, want both declared outputs regardless of ignore state", output.FileChanges)
 	}
 
 	plugin := recorder.findRecord(t, filepath.Join(dir, "plugin.rb"))
 	if string(plugin.Before) != "before\n" || string(plugin.After) != "after\n" {
 		t.Fatalf("plugin record = %q → %q", plugin.Before, plugin.After)
 	}
-	for _, rec := range recorder.recorded() {
-		if strings.Contains(rec.Path, "bundle.digest.js") || strings.Contains(rec.Path, "frontend/dist/assets/js") {
-			t.Fatalf("recorded ignored artifact: %+v", rec)
-		}
+	artifact := recorder.findRecord(t, filepath.Join(dir, "frontend/dist/assets/js/bundle.digest.js"))
+	if !artifact.BeforeMissing || string(artifact.After) != "artifact\n" {
+		t.Fatalf("ignored declared artifact = %+v", artifact)
 	}
 }
 
-func TestShellToolSkipsGitIgnoredLiteralAffectedPath(t *testing.T) {
+func TestShellToolClaimedIgnoredLiteralIsAttributed(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
@@ -670,13 +698,14 @@ func TestShellToolSkipsGitIgnoredLiteralAffectedPath(t *testing.T) {
 		Command:       "echo secret > local.env",
 		WorkingDir:    dir,
 		AffectedPaths: []string{"local.env"},
+		OutputClaims:  []OutputClaim{{Path: "local.env", Kind: filetrack.ClaimGenerate}},
 	})
 	output, err := tool.Execute(trackingContext(), args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(output.FileChanges) != 0 || len(recorder.recorded()) != 0 {
-		t.Fatalf("ignored literal affected path should not be recorded, output=%+v records=%+v", output.FileChanges, recorder.recorded())
+	if len(output.FileChanges) != 1 || len(recorder.recorded()) != 1 {
+		t.Fatalf("claimed ignored literal was not attributed, output=%+v records=%+v", output.FileChanges, recorder.recorded())
 	}
 }
 
@@ -708,8 +737,8 @@ func TestShellToolRecordsSessionTrackedGitIgnoredPath(t *testing.T) {
 	tool.recorder = recorder
 
 	args, _ := json.Marshal(ShellArgs{
-		Command:    "echo after > local.env",
-		WorkingDir: dir,
+		Command: "echo after > local.env", WorkingDir: dir,
+		OutputClaims: []OutputClaim{{Path: "local.env", Kind: filetrack.ClaimTransform}},
 	})
 	output, err := tool.Execute(trackingContext(), args)
 	if err != nil {
@@ -768,6 +797,7 @@ func TestShellToolOversizedFilesDegradeToMetadata(t *testing.T) {
 		Command:       "echo more >> big.txt",
 		WorkingDir:    dir,
 		AffectedPaths: []string{"big.txt"},
+		OutputClaims:  []OutputClaim{{Path: "big.txt", Kind: filetrack.ClaimTransform}},
 	})
 	if _, err := tool.Execute(trackingContext(), args); err != nil {
 		t.Fatal(err)

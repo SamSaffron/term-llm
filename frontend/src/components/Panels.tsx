@@ -464,6 +464,18 @@ function File({ file }: { file: DiffFile }) {
         <span class="diff-file-name">
           <span class="diff-file-base">{name.base}</span>
           {name.dir && <span class="diff-file-dir">{name.dir}</span>}
+          {file.provenance && (
+            <span
+              class="diff-count-muted"
+              title={
+                file.provenance === 'direct'
+                  ? 'Witnessed by a direct mutation tool'
+                  : 'Declared before shell execution and verified by bounded detection'
+              }
+            >
+              {file.provenance === 'direct' ? ' direct tool' : ' declared and verified'}
+            </span>
+          )}
         </span>
         <span class="diff-file-counts">
           {file.truncated ? (
@@ -496,8 +508,16 @@ function File({ file }: { file: DiffFile }) {
               </button>
             </div>
           )}
+          {file.baselineState === 'preexisting_dirty' && (
+            <div class="diff-error">
+              The attributed transition started from content that was already dirty.
+            </div>
+          )}
           {file.truncated && (
-            <div class="diff-error">This file was too large to retain a text diff.</div>
+            <div class="diff-error">
+              Diff content unavailable ({file.contentStatus || 'retention unavailable'}); line
+              counts may be partial.
+            </div>
           )}
           {file.image ? (
             <div class={`diff-image-comparison diff-image-${legacyKind}`}>
@@ -727,6 +747,12 @@ export function DiffSidebar() {
         <span class="diff-sidebar-totals">
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
+          {state.unavailableLineCountFiles > 0 && (
+            <span class="diff-count-muted" title="Attributed files with unavailable line counts">
+              {' '}
+              partial ({state.unavailableLineCountFiles})
+            </span>
+          )}
         </span>
         <button
           class="icon-btn diff-bulk-toggle"
@@ -827,6 +853,40 @@ export function DiffSidebar() {
           <div class="diff-empty">No file changes in this scope.</div>
         )}
       </div>
+      {state.materializations.length > 0 && (
+        <details class="diff-observations">
+          <summary>Materialized outputs ({state.materializations.length})</summary>
+          {state.materializations.map((item) => (
+            <div key={item.id}>
+              {item.root || item.sampledPaths[0] || 'Output'} — {item.createdCount} created,{' '}
+              {item.modifiedCount} modified, {item.deletedCount} deleted (no authored line totals)
+            </div>
+          ))}
+        </details>
+      )}
+      {state.observations.length > 0 && (
+        <details class="diff-observations">
+          <summary>Observed side effects ({state.observations.length})</summary>
+          <div>Observed during commands; not attributed as agent task output.</div>
+          {state.observations.map((item) => (
+            <div key={item.id}>
+              {item.root || item.sampledPaths[0] || item.classification} — {item.createdCount}{' '}
+              created, {item.modifiedCount} modified, {item.deletedCount} deleted; coverage{' '}
+              {item.coverageStatus}
+            </div>
+          ))}
+        </details>
+      )}
+      {state.claimDiagnostics.length > 0 && (
+        <details class="diff-observations" open>
+          <summary>Output claim diagnostics ({state.claimDiagnostics.length})</summary>
+          {state.claimDiagnostics.map((item, index) => (
+            <div key={`${item.reason}-${index}`}>
+              {item.reason}: {item.normalizedPattern || item.message || 'tracking diagnostic'}
+            </div>
+          ))}
+        </details>
+      )}
       {comments.length > 0 && (
         <div class="diff-queue-bar">
           <span class="diff-queue-count">{comments.length} queued</span>

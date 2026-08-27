@@ -2293,14 +2293,41 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		// Metadata only — diff content is served by the session
 		// file-changes endpoints on demand.
 		for _, fc := range ev.ToolFileChanges {
+			if !fc.TrustedPersisted {
+				if err := run.appendEvent("response.output_claim_diagnostic", map[string]any{
+					"reason": "metadata_unverified", "coverage_status": "unavailable",
+					"message": "unverified tool file metadata was not attributed", "tool_call_id": ev.ToolCallID,
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := run.appendEvent("response.file_change", map[string]any{
-				"path":         fc.Path,
-				"kind":         fc.Kind,
-				"adds":         fc.Adds,
-				"dels":         fc.Dels,
-				"seq":          fc.Seq,
-				"truncated":    fc.Truncated,
+				"path": fc.Path, "kind": fc.Kind, "adds": fc.Adds, "dels": fc.Dels,
+				"seq": fc.Seq, "event_seq": fc.EventSeq, "truncated": fc.Truncated,
+				"provenance": fc.Provenance, "provenances": fc.Provenances,
+				"baseline_state": fc.BaselineState, "content_status": fc.ContentStatus,
+				"content_available": fc.ContentAvailable, "claim_coverage": fc.ClaimCoverage,
 				"tool_call_id": ev.ToolCallID,
+			}); err != nil {
+				return err
+			}
+		}
+		for _, observation := range ev.ToolFilesystemObservations {
+			if err := run.appendEvent("response.filesystem_observation", map[string]any{
+				"id": observation.ID, "classification": observation.Classification, "root": observation.Root,
+				"created_count": observation.CreatedCount, "modified_count": observation.ModifiedCount, "deleted_count": observation.DeletedCount,
+				"sampled_paths": observation.SampledPaths, "samples_truncated": observation.SamplesTruncated,
+				"coverage_status": observation.CoverageStatus, "event_seq": observation.EventSeq,
+			}); err != nil {
+				return err
+			}
+		}
+		for _, diagnostic := range ev.ToolOutputClaimDiagnostics {
+			if err := run.appendEvent("response.output_claim_diagnostic", map[string]any{
+				"normalized_pattern": diagnostic.NormalizedPattern, "claim_kind": diagnostic.ClaimKind,
+				"reason": diagnostic.Reason, "coverage_status": diagnostic.CoverageStatus,
+				"matching_path_count": diagnostic.MatchingPathCount, "message": diagnostic.Message,
 			}); err != nil {
 				return err
 			}

@@ -677,11 +677,16 @@ type SessionsConfig struct {
 
 // FileTrackingConfig configures recording of file changes made by agent tools
 type FileTrackingConfig struct {
-	Enabled         bool   `mapstructure:"enabled"`           // Opt-in: record before/after content of files agents modify
-	MaxFileBytes    int    `mapstructure:"max_file_bytes"`    // Per-file content cap; larger files recorded metadata-only (default 2 MiB)
-	MaxSessionBytes int    `mapstructure:"max_session_bytes"` // Retained-content budget per session (default 100 MiB)
-	MaxTotalBytes   int64  `mapstructure:"max_total_bytes"`   // Whole-database size cap; oldest sessions' history pruned live and on startup (default 1 GiB)
-	Path            string `mapstructure:"path"`              // Optional SQLite DB path override
+	Enabled                    bool   `mapstructure:"enabled"` // Opt-in: record before/after content of attributed files
+	MaxFileBytes               int    `mapstructure:"max_file_bytes"`
+	MaxSessionBytes            int    `mapstructure:"max_session_bytes"`
+	MaxTotalBytes              int64  `mapstructure:"max_total_bytes"`
+	MaxObservationRows         int    `mapstructure:"max_observation_rows"`
+	MaxObservationSessionRows  int    `mapstructure:"max_observation_session_rows"`
+	MaxObservationBytes        int64  `mapstructure:"max_observation_bytes"`
+	MaxObservationSessionBytes int64  `mapstructure:"max_observation_session_bytes"`
+	MaxObservationAgeDays      int    `mapstructure:"max_observation_age_days"`
+	Path                       string `mapstructure:"path"`
 }
 
 // ThemeConfig allows customization of UI colors

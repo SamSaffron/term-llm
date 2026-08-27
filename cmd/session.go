@@ -183,6 +183,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		return SessionSettings{}, err
 	}
 	s := SessionSettings{}
+	fileTrackingEnabled := cfg != nil && cfg.FileTracking.Enabled
 	if agent != nil {
 		s.AgentName = agent.Name
 		s.PlanGuidance = agent.Name == "developer" && agent.Source == agents.SourceBuiltin
@@ -267,7 +268,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		templateCtx := agents.NewTemplateContextForTemplateInDir(cli.SystemMessage, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+		templateCtx := agents.NewTemplateContextForTemplateInDir(cli.SystemMessage, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
 		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, runtimeDir, runtimeDir)
 		if err != nil {
 			return s, fmt.Errorf("expand --system prompt: %w", err)
@@ -292,7 +293,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 					if err != nil {
 						return s, fmt.Errorf("prepare agent system prompt context: %w", err)
 					}
-					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+					templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
 					expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir, runtimeDir)
 					if err != nil {
 						return s, fmt.Errorf("expand agent system prompt: %w", err)
@@ -311,7 +312,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		}
 
 		if !usedAgentPrompt {
-			templateCtx := agents.NewTemplateContextForTemplateInDir(configInstructions, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
+			templateCtx := agents.NewTemplateContextForTemplateInDir(configInstructions, runtimeDir).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model).WithFileTracking(fileTrackingEnabled)
 			expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, runtimeDir, runtimeDir)
 			if err != nil {
 				return s, fmt.Errorf("expand config system prompt: %w", err)
@@ -431,6 +432,7 @@ func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext
 	ctx.Provider = base.Provider
 	ctx.Model = base.Model
 	ctx.ProviderModel = base.ProviderModel
+	ctx.FileTracking = base.FileTracking
 	return ctx
 }
 

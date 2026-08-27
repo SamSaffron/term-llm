@@ -102,10 +102,17 @@ type pendingRequestRuntimeSwitch struct {
 	reasoningEffort string
 }
 
+// FileTrackingRunLifecycle persists run boundaries independently of file changes.
+type FileTrackingRunLifecycle interface {
+	RecordFileTrackingRunStart(context.Context, string, string) error
+	RecordFileTrackingRunComplete(context.Context, string, string) error
+}
+
 type Engine struct {
-	provider    Provider
-	tools       *ToolRegistry
-	debugLogger *DebugLogger
+	provider         Provider
+	tools            *ToolRegistry
+	debugLogger      *DebugLogger
+	fileTrackingRuns FileTrackingRunLifecycle
 
 	// indirectVision routes user image parts through textual path references so
 	// text-only models can call view_image instead of receiving image bytes.
@@ -447,6 +454,36 @@ func (e *Engine) AddDynamicToolForRun(runID string, tool Tool) bool {
 	return true
 }
 
+func (e *Engine) fileTrackingRunRecorder() FileTrackingRunLifecycle {
+	e.callbackMu.RLock()
+	defer e.callbackMu.RUnlock()
+	return e.fileTrackingRuns
+}
+
+func (e *Engine) recordFileTrackingRunStart(ctx context.Context, sessionID, runID string) {
+	recorder := e.fileTrackingRunRecorder()
+	if recorder == nil || sessionID == "" || runID == "" {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := recorder.RecordFileTrackingRunStart(recordCtx, sessionID, runID); err != nil {
+		slog.Warn("record file tracking run start", "session_id", sessionID, "run_id", runID, "error", err)
+	}
+}
+
+func (e *Engine) recordFileTrackingRunComplete(ctx context.Context, sessionID, runID string) {
+	recorder := e.fileTrackingRunRecorder()
+	if recorder == nil || sessionID == "" || runID == "" {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := recorder.RecordFileTrackingRunComplete(recordCtx, sessionID, runID); err != nil {
+		slog.Warn("record file tracking run completion", "session_id", sessionID, "run_id", runID, "error", err)
+	}
+}
+
 func (e *Engine) beginToolRun() string {
 	if e.toolRunPrefix == "" {
 		e.toolRunPrefix = newEngineToolRunPrefix()
@@ -588,6 +625,13 @@ func (e *Engine) ResetSessionState(sessionID string) {
 // SetDebugLogger sets the debug logger for this engine.
 func (e *Engine) SetDebugLogger(logger *DebugLogger) {
 	e.debugLogger = logger
+}
+
+// SetFileTrackingRunLifecycle installs best-effort persisted run indexing.
+func (e *Engine) SetFileTrackingRunLifecycle(recorder FileTrackingRunLifecycle) {
+	e.callbackMu.Lock()
+	e.fileTrackingRuns = recorder
+	e.callbackMu.Unlock()
 }
 
 // SetAllowedTools sets the list of tools that can be executed.
@@ -1931,6 +1975,11 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// 3. Simple stream (no tools or no provider support for tools). Model output is
 	// staged in an attempt-local scratchpad until the stream completes; if the
 	// transport fails first, we can discard the scratchpad and replay safely.
+	runID := e.beginToolRun()
+	if req.SessionID != "" {
+		ctx = ContextWithSessionID(ctx, req.SessionID)
+	}
+	ctx = ContextWithToolRunID(ctx, runID)
 	if e.debugLogger != nil {
 		debugReq := e.prepareProviderRequest(req)
 		e.debugLogger.LogRequest(e.provider.Name(), req.Model, debugReq)
@@ -1940,7 +1989,46 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	})
 	stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
 	stream = e.wrapDebugLoggingStream(stream)
+	stream = &fileTrackingRunStream{inner: stream, start: func() {
+		e.recordFileTrackingRunStart(ctx, req.SessionID, runID)
+	}, complete: func() {
+		e.recordFileTrackingRunComplete(ctx, req.SessionID, runID)
+		e.endToolRun(runID)
+	}}
 	return stream, nil
+}
+
+type fileTrackingRunStream struct {
+	inner     Stream
+	start     func()
+	complete  func()
+	startOnce sync.Once
+	once      sync.Once
+}
+
+func (s *fileTrackingRunStream) begin() {
+	s.startOnce.Do(func() {
+		if s.start != nil {
+			s.start()
+		}
+	})
+}
+func (s *fileTrackingRunStream) finish() {
+	s.once.Do(s.complete)
+}
+func (s *fileTrackingRunStream) Recv() (Event, error) {
+	s.begin()
+	event, err := s.inner.Recv()
+	if err != nil || event.Type == EventDone || event.Type == EventError {
+		s.finish()
+	}
+	return event, err
+}
+func (s *fileTrackingRunStream) Close() error {
+	s.begin()
+	err := s.inner.Close()
+	s.finish()
+	return err
 }
 
 // wrapCallbackStream wraps a stream to call the turn callback on completion.
@@ -2438,7 +2526,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	ctx = withResponsesWebSocketContinuationLifetime(ctx)
 	defer e.markInterjectionRunNonConsuming()
 	runID := e.beginToolRun()
-	defer e.endToolRun(runID)
+	e.recordFileTrackingRunStart(ctx, req.SessionID, runID)
+	defer func() {
+		e.recordFileTrackingRunComplete(ctx, req.SessionID, runID)
+		e.endToolRun(runID)
+	}()
 	ctx = ContextWithToolRunID(ctx, runID)
 	var planner ToolSurfacePlanner
 	if req.EnableToolDiscovery {
@@ -4461,15 +4553,17 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send 
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
 	// Best-effort: don't let a slow event consumer stall completed tool workers.
 	send.TrySend(Event{
-		Type:            EventToolExecEnd,
-		ToolCallID:      call.ID,
-		ToolName:        call.Name,
-		ToolInfo:        info,
-		ToolSuccess:     !output.TimedOut && !output.IsError,
-		ToolOutput:      output.Content,
-		ToolDiffs:       output.Diffs,
-		ToolFileChanges: output.FileChanges,
-		ToolImages:      output.Images,
+		Type:                       EventToolExecEnd,
+		ToolCallID:                 call.ID,
+		ToolName:                   call.Name,
+		ToolInfo:                   info,
+		ToolSuccess:                !output.TimedOut && !output.IsError,
+		ToolOutput:                 output.Content,
+		ToolDiffs:                  output.Diffs,
+		ToolFileChanges:            output.FileChanges,
+		ToolFilesystemObservations: output.FilesystemObservations,
+		ToolOutputClaimDiagnostics: output.OutputClaimDiagnostics,
+		ToolImages:                 output.Images,
 	})
 	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
@@ -4537,15 +4631,17 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 	}
 	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
 	send.TrySend(Event{
-		Type:            EventToolExecEnd,
-		ToolCallID:      callID,
-		ToolName:        call.Name,
-		ToolInfo:        info,
-		ToolSuccess:     err == nil && !result.TimedOut && !result.IsError,
-		ToolOutput:      result.Content,
-		ToolDiffs:       result.Diffs,
-		ToolFileChanges: result.FileChanges,
-		ToolImages:      result.Images,
+		Type:                       EventToolExecEnd,
+		ToolCallID:                 callID,
+		ToolName:                   call.Name,
+		ToolInfo:                   info,
+		ToolSuccess:                err == nil && !result.TimedOut && !result.IsError,
+		ToolOutput:                 result.Content,
+		ToolDiffs:                  result.Diffs,
+		ToolFileChanges:            result.FileChanges,
+		ToolFilesystemObservations: result.FilesystemObservations,
+		ToolOutputClaimDiagnostics: result.OutputClaimDiagnostics,
+		ToolImages:                 result.Images,
 	})
 
 	// Send the result back to the provider bridge.

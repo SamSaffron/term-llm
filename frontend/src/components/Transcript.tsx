@@ -7,6 +7,7 @@ import { ChipPicker } from './ChipPicker';
 import { Icon } from './Icon';
 import { copyText } from '../platform/browser';
 import { rebaseHubAssetURL } from '../app/config';
+import { responseActivity } from '../domain/activity';
 
 function relativeTime(value: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
@@ -698,6 +699,9 @@ export function Transcript() {
     }
   }, [turnLimit]);
   const activeRun = store.activeProjection.value;
+  const activity = activeRun
+    ? responseActivity(activeRun, store.currentPlan.value, activeRun.run.status)
+    : null;
   return (
     <section
       class="chat-scroll"
@@ -767,17 +771,21 @@ export function Transcript() {
             {activeRun.modelSwap.content}
           </div>
         )}
-        {activeRun?.retry && (
-          <div class="provider-retry" role="status">
-            Retrying provider
-            {activeRun.retry.attempt ? ` · attempt ${activeRun.retry.attempt}` : ''}…
-          </div>
-        )}
-        {store.streaming.value && (
-          <div class="streaming-indicator" aria-label="Assistant is responding">
-            <span />
-            <span />
-            <span />
+        {store.streaming.value && activity && (
+          <div
+            class={`streaming-indicator streaming-indicator-${activity.kind}`}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={
+              activity.kind === 'stopping'
+                ? 'Stopping response'
+                : `Assistant is responding: ${activity.text}`
+            }
+          >
+            <span class="streaming-indicator-text" key={`${activity.kind}:${activity.text}`}>
+              {activity.text}
+            </span>
           </div>
         )}
       </div>

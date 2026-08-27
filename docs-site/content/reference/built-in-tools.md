@@ -22,7 +22,7 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `read_file` | Read file contents (with line ranges) |
 | `write_file` | Create/overwrite files |
 | `edit_file` | Edit existing files |
-| `shell` | Execute shell commands; accepts optional `affected_paths` hints so file-change tracking can snapshot generated/modified files reliably |
+| `shell` | Execute shell commands; when file tracking is enabled, `affected_paths` bounds inspection and `output_claims` declares transform, generated deliverable, or materialization intent |
 | `grep` | Search file contents (uses ripgrep) |
 | `glob` | Find files by glob pattern |
 | `view_image` | Inspect an image file. Normally returns structured image content to a vision-capable primary model; with `vision_via`, calls the configured vision model and returns text only. |
@@ -51,19 +51,25 @@ Set `vision_via` either at provider level, as above, or on a specific `models:` 
 
 Limitations: the primary model must call tools; the `vision_via` provider must be configured and able to process image parts; and `view_image` can only read uploaded images or paths allowed through normal read permissions/approvals.
 
-### File-change tracking hints
+### Filesystem change attribution
 
-When [file change tracking](/reference/sessions/#file-change-history/) is enabled, direct write tools (`write_file`, `edit_file`, `unified_diff`) are recorded automatically. The `shell` tool can also record files it creates, modifies, or deletes. For shell commands that generate files, pass `affected_paths` so term-llm can snapshot exactly what matters before and after the command:
+When [file change tracking](/reference/sessions/#file-change-history/) is enabled, trusted direct write tools (`write_file`, `edit_file`, `unified_diff`) record witnessed transitions automatically. Shell detection is different: `affected_paths` only bounds pre/post inspection and never creates attribution. Declare intended task output before execution with `output_claims`:
 
 ```json
 {
-  "command": "npm run build",
+  "command": "gofmt -w ./internal/... && go generate ./cmd/...",
   "working_dir": "/path/to/project",
-  "affected_paths": ["dist/**", "package-lock.json"]
+  "affected_paths": ["internal/**", "cmd/**"],
+  "output_claims": [
+    {"path": "internal/**/*.go", "kind": "transform"},
+    {"path": "cmd/generated/**", "kind": "generate"}
+  ]
 }
 ```
 
-Hints may be files or glob patterns, relative to `working_dir` or absolute. Without hints, shell tracking falls back to `git status` in repositories and files already touched by the session, which is useful but intentionally best-effort.
+`transform` is compatible with modification/deletion, `generate` with creation/modification/deletion of deliberate deliverables, and `materialize` with clone, checkout, installation, download, extraction, or initial copy output. Materializations and unclaimed effects are shown separately and never contribute agent line totals. Split materialization and later adaptation into two calls when a meaningful adaptation diff is required.
+
+Paths may be literals or doublestar globs, relative to `working_dir` or absolute. Claims implicitly join inspection scope. Git cleanliness, ignore state, prior session paths, and path specificity can help detection but cannot create attribution. Tracking is bounded and best-effort; incomplete coverage and unconfirmed claims are surfaced as diagnostics without changing the shell command result.
 
 ### Custom Tools
 

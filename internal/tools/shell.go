@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -22,7 +23,21 @@ type ShellTool struct {
 	config    *ToolConfig
 	limits    OutputLimits
 	shellPath string
-	recorder  FileChangeRecorder
+
+	recorderMu sync.RWMutex
+	recorder   FileChangeRecorder
+}
+
+func (t *ShellTool) fileChangeRecorder() FileChangeRecorder {
+	t.recorderMu.RLock()
+	defer t.recorderMu.RUnlock()
+	return t.recorder
+}
+
+func (t *ShellTool) setFileChangeRecorder(recorder FileChangeRecorder) {
+	t.recorderMu.Lock()
+	t.recorder = recorder
+	t.recorderMu.Unlock()
 }
 
 func approvalTranscriptFromContext(ctx context.Context) []TranscriptEntry {
@@ -164,14 +179,21 @@ func (e *EnvMap) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// OutputClaim declares intended shell output before execution.
+type OutputClaim struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
 // ShellArgs are the arguments for the shell tool.
 type ShellArgs struct {
-	Command        string   `json:"command"`
-	WorkingDir     string   `json:"working_dir,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-	Env            EnvMap   `json:"env,omitempty"`
-	Description    string   `json:"description,omitempty"`
-	AffectedPaths  []string `json:"affected_paths,omitempty"`
+	Command        string        `json:"command"`
+	WorkingDir     string        `json:"working_dir,omitempty"`
+	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`
+	Env            EnvMap        `json:"env,omitempty"`
+	Description    string        `json:"description,omitempty"`
+	AffectedPaths  []string      `json:"affected_paths,omitempty"`
+	OutputClaims   []OutputClaim `json:"output_claims,omitempty"`
 }
 
 // ShellResult contains the result of a shell command.
@@ -186,40 +208,57 @@ type ShellResult struct {
 }
 
 func (t *ShellTool) Spec() llm.ToolSpec {
+	description := "Execute a shell command."
+	properties := map[string]interface{}{
+		"command": map[string]interface{}{
+			"type":        "string",
+			"description": "Shell command to execute",
+		},
+		"working_dir": map[string]interface{}{
+			"type":        "string",
+			"description": "Working directory (defaults to current directory)",
+		},
+		"timeout_seconds": map[string]interface{}{
+			"type":        "integer",
+			"description": "Command timeout in seconds (default: 30, max: 300)",
+			"default":     30,
+		},
+		"env": map[string]interface{}{
+			"type":                 "object",
+			"description":          "Environment variables to set for the command",
+			"additionalProperties": map[string]interface{}{"type": "string"},
+		},
+		"description": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional short human-readable label (≤10 words) describing what this command does",
+		},
+	}
+	if t.fileChangeRecorder() != nil {
+		description += " affected_paths bounds best-effort inspection only; use output_claims to declare task deliverables."
+		properties["affected_paths"] = map[string]interface{}{
+			"type":        "array",
+			"items":       map[string]interface{}{"type": "string", "minLength": 1},
+			"description": "Optional files or glob patterns (relative to working_dir, or absolute) used only to bound pre/post inspection. This is not an enforced permission boundary and never attributes detected effects.",
+		}
+		properties["output_claims"] = map[string]interface{}{
+			"type":        "array",
+			"description": "Pre-execution declarations of intended output. transform is for edits/deletes of existing content; generate is for deliberate deliverables; materialize is for clone/install/download/extract/copy and never contributes authored line totals.",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string", "minLength": 1},
+					"kind": map[string]interface{}{"type": "string", "enum": []string{"transform", "generate", "materialize"}},
+				},
+				"required": []string{"path", "kind"}, "additionalProperties": false,
+			},
+		}
+	}
 	return llm.ToolSpec{
 		Name:        ShellToolName,
-		Description: "Execute a shell command. Returns stdout, stderr, and exit code.",
+		Description: description,
 		Schema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"command": map[string]interface{}{
-					"type":        "string",
-					"description": "Shell command to execute",
-				},
-				"working_dir": map[string]interface{}{
-					"type":        "string",
-					"description": "Working directory (defaults to current directory)",
-				},
-				"timeout_seconds": map[string]interface{}{
-					"type":        "integer",
-					"description": "Command timeout in seconds (default: 30, max: 300)",
-					"default":     30,
-				},
-				"env": map[string]interface{}{
-					"type":                 "object",
-					"description":          "Environment variables to set for the command",
-					"additionalProperties": map[string]interface{}{"type": "string"},
-				},
-				"description": map[string]interface{}{
-					"type":        "string",
-					"description": "Optional short human-readable label (≤10 words) describing what this command does",
-				},
-				"affected_paths": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string", "minLength": 1},
-					"description": "Optional authoritative files or glob patterns (relative to working_dir, or absolute) this command may create, modify, or delete. When provided, only matching non-ignored paths are tracked for this call; paths outside this scope are not inspected. Always declare them when running scripts or commands that change files: without this hint, change tracking is best-effort (git status and previously tracked files only) and changes may be missed.",
-				},
-			},
+			"type":                 "object",
+			"properties":           properties,
 			"required":             []string{"command"},
 			"additionalProperties": false,
 		},
@@ -248,7 +287,9 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 }
 
 func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths"})
+	recorder := t.fileChangeRecorder()
+	trackingEnabled := recorder != nil
+	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env", "affected_paths", "output_claims"})
 	textOutput := func(message string) llm.ToolOutput {
 		return llm.TextOutput(warning + message)
 	}
@@ -298,6 +339,18 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Strip leading "cd <dir> && " and fold into WorkingDir so that
 	// the approval prompt shows only the real command, not the cd prefix.
 	a.Command, workDir = extractLeadingCd(a.Command, workDir)
+
+	var claims []normalizedOutputClaim
+	if trackingEnabled {
+		var claimErr error
+		claims, claimErr = normalizeOutputClaims(workDir, a.OutputClaims)
+		if claimErr == nil {
+			claimErr = validateOutputClaimAuthority(t.approval, workDir, claims)
+		}
+		if claimErr != nil {
+			return errorOutput(formatToolError(NewToolError(ErrInvalidParams, claimErr.Error()))), nil
+		}
+	}
 
 	// Check permissions — pass both command and working directory so the
 	// approval UI can show the user where the command will run.
@@ -375,14 +428,18 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	cmd.Stderr = stderr
 
 	// Snapshot relevant files so changes made by the command can be recorded.
-	snap := preShellSnapshot(ctx, t.recorder, workDir, a.AffectedPaths)
+	var snap *shellSnapshot
+	if trackingEnabled {
+		snap = preShellSnapshotWithClaims(ctx, recorder, workDir, a.AffectedPaths, claims)
+	}
 
 	// Run command
 	err := cmd.Run()
 
 	// Diff against the snapshot even on timeout or failure — partial writes
 	// are real changes.
-	fileChanges := postShellChanges(ctx, t.recorder, snap)
+	tracking := postShellTracking(ctx, recorder, snap)
+	trackingText := formatShellTrackingResult(tracking)
 
 	result := ShellResult{
 		Stdout:          stdout.String(),
@@ -397,7 +454,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 		result.TimedOut = timedOut
 		result.Canceled = !timedOut
-		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: timedOut, IsError: true, FileChanges: fileChanges}, nil
+		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits) + trackingText, TimedOut: timedOut, IsError: true, FileChanges: tracking.FileChanges, FilesystemObservations: tracking.Observations, OutputClaimDiagnostics: tracking.Diagnostics}, nil
 	}
 
 	// Get exit code
@@ -405,17 +462,48 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			output := textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err)))
+			output := textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err)) + trackingText)
 			output.IsError = true
-			output.FileChanges = fileChanges
+			output.FileChanges = tracking.FileChanges
+			output.FilesystemObservations = tracking.Observations
+			output.OutputClaimDiagnostics = tracking.Diagnostics
 			return output, nil
 		}
 	}
 
-	output := textOutput(formatShellResult(result, t.limits))
+	output := textOutput(formatShellResult(result, t.limits) + trackingText)
 	output.IsError = result.ExitCode != 0
-	output.FileChanges = fileChanges
+	output.FileChanges = tracking.FileChanges
+	output.FilesystemObservations = tracking.Observations
+	output.OutputClaimDiagnostics = tracking.Diagnostics
 	return output, nil
+}
+
+func formatShellTrackingResult(tracking shellTrackingResult) string {
+	if len(tracking.Observations) == 0 && len(tracking.Diagnostics) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n\nfilesystem_tracking:")
+	if len(tracking.Observations) > 0 {
+		created, modified, deleted := 0, 0, 0
+		for _, observation := range tracking.Observations {
+			created += observation.CreatedCount
+			modified += observation.ModifiedCount
+			deleted += observation.DeletedCount
+		}
+		fmt.Fprintf(&sb, "\n- %d observation batch(es), not included in agent change totals (%d created, %d modified, %d deleted)", len(tracking.Observations), created, modified, deleted)
+	}
+	for _, diagnostic := range tracking.Diagnostics {
+		fmt.Fprintf(&sb, "\n- %s", diagnostic.Reason)
+		if diagnostic.NormalizedPattern != "" {
+			fmt.Fprintf(&sb, ": %s", diagnostic.NormalizedPattern)
+		}
+		if diagnostic.Message != "" {
+			fmt.Fprintf(&sb, " (%s)", diagnostic.Message)
+		}
+	}
+	return sb.String()
 }
 
 // formatShellResult formats the shell result for the LLM.

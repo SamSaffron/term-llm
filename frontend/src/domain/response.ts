@@ -558,6 +558,8 @@ export function reduceResponse(
         },
       };
     case 'response.file_change':
+    case 'response.filesystem_observation':
+    case 'response.output_claim_diagnostic':
       return { ...next, fileChangeRevision: projection.fileChangeRevision + 1 };
     case 'response.completed':
       return {
@@ -641,6 +643,8 @@ export const RESPONSE_EVENT_TYPES = [
   'response.ask_user.prompt',
   'response.approval.prompt',
   'response.file_change',
+  'response.filesystem_observation',
+  'response.output_claim_diagnostic',
   'response.heartbeat',
   'response.completed',
   'response.cancelled',

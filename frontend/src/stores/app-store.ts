@@ -31,6 +31,8 @@ import type {
   CurrentPlan,
   DiffComment,
   DiffFile,
+  FilesystemObservation,
+  OutputClaimDiagnostic,
   Goal,
   MCPServer,
   Message,
@@ -94,6 +96,10 @@ export interface DiffState {
   git: boolean;
   loading: boolean;
   files: DiffFile[];
+  materializations: FilesystemObservation[];
+  observations: FilesystemObservation[];
+  claimDiagnostics: OutputClaimDiagnostic[];
+  unavailableLineCountFiles: number;
   filter: string;
   comments: DiffComment[];
   historyComments: DiffComment[];
@@ -288,6 +294,10 @@ export class AppStore {
     git: false,
     loading: false,
     files: [],
+    materializations: [],
+    observations: [],
+    claimDiagnostics: [],
+    unavailableLineCountFiles: 0,
     filter: '',
     comments: [],
     historyComments: [],
@@ -1607,16 +1617,17 @@ export class AppStore {
     }
   }
 
-  async interject(content: string): Promise<void> {
+  async interject(content: string, options: SendOptions = {}): Promise<void> {
     const session = this.activeSession.value;
-    const value = content.trim();
-    const attachments = [...this.attachments.value];
-    if (!session || (!value && !attachments.length)) return;
+    const value = (options.inputText ?? content).trim();
+    const displayContent = (options.displayContent ?? value).trim();
+    const attachments = options.contentParts ? [] : [...this.attachments.value];
+    if (!session || (!value && !attachments.length && !options.contentParts?.length)) return;
     const id = uuid();
     const entry: PendingInterjection = {
       id,
       sessionId: session.id,
-      content: value || attachments.map((attachment) => attachment.name).join(', '),
+      content: displayContent || attachments.map((attachment) => attachment.name).join(', '),
       state: 'sending',
     };
     this.interjections.value = [...this.interjections.value, entry];
@@ -1624,24 +1635,27 @@ export class AppStore {
       const attachmentParts = await Promise.all(
         attachments.map((attachment) => this.attachmentInput(attachment)),
       );
-      const contentParts = [
-        ...attachmentParts,
-        ...(value ? [{ type: 'input_text', text: value }] : []),
-      ];
+      const contentParts = options.contentParts?.length
+        ? [...options.contentParts, ...(value ? [{ type: 'input_text', text: value }] : [])]
+        : [...attachmentParts, ...(value ? [{ type: 'input_text', text: value }] : [])];
       await this.endpoints.interrupt(
         session.id,
         {
-          message: value,
-          ...(attachmentParts.length ? { content: contentParts } : {}),
+          message: displayContent,
+          ...(options.contentParts?.length || attachmentParts.length
+            ? { content: contentParts }
+            : {}),
           interjection_id: id,
           client_message_id: id,
           delivery: 'steer',
         },
         id,
       );
+      options.onTransportStarted?.();
       this.interjections.value = this.interjections.value.map((candidate) =>
         candidate.id === id ? { ...candidate, state: 'pending' } : candidate,
       );
+      if (options.preserveComposer) return;
       const draft = readDrafts(this.storage, this.keys.draftMessages).find(
         (candidate) => candidate.sessionId === session.id,
       );
@@ -1672,7 +1686,8 @@ export class AppStore {
       this.interjections.value = this.interjections.value.map((candidate) =>
         candidate.id === id ? { ...candidate, state: 'failed' } : candidate,
       );
-      this.toast(error, 'error');
+      if (options.onTransportFailed) options.onTransportFailed(error);
+      else this.toast(error, 'error');
     }
   }
   async cancelInterjection(id: string): Promise<void> {
@@ -2472,6 +2487,13 @@ export class AppStore {
               lastChangedAt: Number(entry.last_changed_at || entry.updated_at) || 0,
               sequence: Number(entry.seq ?? entry.sequence) || 0,
               snapshotSeq: Number(entry.snapshot_seq) || 0,
+              truncated: Boolean(entry.truncated),
+              provenance: String(entry.provenance || '') as DiffFile['provenance'],
+              provenances: Array.isArray(entry.provenances) ? entry.provenances.map(String) : [],
+              baselineState: String(entry.baseline_state || '') as DiffFile['baselineState'],
+              contentStatus: String(entry.content_status || ''),
+              contentAvailable: Boolean(entry.content_available),
+              claimCoverage: String(entry.claim_coverage || '') as DiffFile['claimCoverage'],
               expanded: previous?.expanded,
               lines: previous?.lines,
               patch: previous?.patch,
@@ -2479,7 +2501,40 @@ export class AppStore {
           })
           .filter((entry) => entry.path),
       );
-      this.diff.value = { ...this.diff.value, files, git: Boolean(data.git), loading: false };
+      const parseObservation = (entry: Record<string, unknown>): FilesystemObservation => ({
+        id: Number(entry.id) || 0,
+        classification: String(entry.classification || ''),
+        root: String(entry.root || ''),
+        createdCount: Number(entry.created_count) || 0,
+        modifiedCount: Number(entry.modified_count) || 0,
+        deletedCount: Number(entry.deleted_count) || 0,
+        sampledPaths: Array.isArray(entry.sampled_paths) ? entry.sampled_paths.map(String) : [],
+        samplesTruncated: Boolean(entry.samples_truncated),
+        coverageStatus: String(entry.coverage_status || 'complete'),
+        eventSeq: Number(entry.event_seq) || 0,
+      });
+      const materializations = listFrom(data, 'materializations').map(parseObservation);
+      const observationContainer = (data.observations || {}) as Record<string, unknown>;
+      const observations = listFrom(observationContainer, 'batches').map(parseObservation);
+      const claimDiagnostics = listFrom(data, 'claim_diagnostics').map((entry) => ({
+        normalizedPattern: String(entry.normalized_pattern || ''),
+        claimKind: String(entry.claim_kind || ''),
+        reason: String(entry.reason || ''),
+        coverageStatus: String(entry.coverage_status || 'complete'),
+        matchingPathCount: Number(entry.matching_path_count) || 0,
+        message: String(entry.message || ''),
+      }));
+      const summary = (data.file_change_summary || {}) as Record<string, unknown>;
+      this.diff.value = {
+        ...this.diff.value,
+        files,
+        materializations,
+        observations,
+        claimDiagnostics,
+        unavailableLineCountFiles: Number(summary.line_counts_unavailable_files) || 0,
+        git: Boolean(data.git),
+        loading: false,
+      };
     } catch (error) {
       if (this.activeSessionId.peek() === owner)
         this.diff.value = {
@@ -2554,6 +2609,17 @@ export class AppStore {
                 lines,
                 image,
                 truncated: Boolean(data.truncated),
+                contentStatus: String(data.content_status || entry.contentStatus || ''),
+                contentAvailable: Boolean(data.content_available),
+                provenance: String(
+                  data.provenance || entry.provenance || '',
+                ) as DiffFile['provenance'],
+                baselineState: String(
+                  data.baseline_state || entry.baselineState || '',
+                ) as DiffFile['baselineState'],
+                claimCoverage: String(
+                  data.claim_coverage || entry.claimCoverage || '',
+                ) as DiffFile['claimCoverage'],
                 context: Number(data.context) || context || 3,
                 lang: String(data.lang || ''),
                 oldLineCount: Number(data.old_line_count) || 0,
@@ -2622,10 +2688,6 @@ export class AppStore {
   async sendDiffComment(comment: DiffComment): Promise<void> {
     const session = this.activeSession.value;
     if (!session || (comment.sessionId && comment.sessionId !== session.id)) return;
-    if (this.streaming.value) {
-      this.toast('Wait for the current response before sending an inline comment.', 'info');
-      return;
-    }
     const value: DiffComment = {
       ...comment,
       id: comment.id || uuid(),
@@ -2642,7 +2704,7 @@ export class AppStore {
         value,
       ],
     };
-    await this.send({
+    const options: SendOptions = {
       contentParts: prepared.payloads.map((diff_comment) => ({
         type: 'diff_comment',
         diff_comment,
@@ -2664,7 +2726,9 @@ export class AppStore {
         };
         this.toast(error, 'error');
       },
-    });
+    };
+    if (this.streaming.value) await this.interject(prepared.inputText, options);
+    else await this.send(options);
   }
   queueDiffComment(comment: DiffComment): void {
     const sessionId = this.activeSessionId.peek();
@@ -2690,14 +2754,10 @@ export class AppStore {
       (comment) => !comment.sessionId || comment.sessionId === session?.id,
     );
     if (!session || !comments.length) return;
-    if (this.streaming.value) {
-      this.toast('Wait for the current response before sending inline comments.', 'info');
-      return;
-    }
     const prepared = this.prepareDiffComments(comments);
     if (!prepared) return;
     const { payloads, inputText } = prepared;
-    await this.send({
+    const options: SendOptions = {
       contentParts: payloads.map((diff_comment) => ({ type: 'diff_comment', diff_comment })),
       inputText,
       displayContent:
@@ -2729,7 +2789,9 @@ export class AppStore {
         void this.refreshDiffComments(session.id);
       },
       onTransportFailed: (error) => this.toast(error, 'error'),
-    });
+    };
+    if (this.streaming.value) await this.interject(inputText, options);
+    else await this.send(options);
   }
   resizeDiff(width: number): void {
     this.diff.value = { ...this.diff.value, width };

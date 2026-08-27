@@ -691,6 +691,71 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Copy details' })).not.toBeInTheDocument();
   });
 
+  it('shows the active plan step as the live response activity', () => {
+    const store = createStore();
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'response-1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 0,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+        messages: [
+          {
+            id: 'running-tools',
+            role: 'tool-group',
+            content: '',
+            created: 4,
+            tools: [{ id: 'shell', name: 'shell', status: 'running' }],
+          },
+        ],
+      },
+    };
+    store.currentPlan.value = {
+      plan: [{ step: 'Implement the semantic activity label', status: 'in_progress' }],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+
+    const initial = screen.getByRole('status', {
+      name: 'Assistant is responding: Implement the semantic activity label',
+    });
+    const initialText = initial.querySelector('.streaming-indicator-text');
+    expect(initial).toHaveTextContent('Implement the semantic activity label');
+    expect(initial.querySelectorAll('span')).toHaveLength(1);
+
+    act(() => {
+      store.currentPlan.value = {
+        plan: [
+          { step: 'Implement the semantic activity label', status: 'completed' },
+          { step: 'Verify the result', status: 'in_progress' },
+        ],
+      };
+    });
+
+    const updated = screen.getByRole('status', {
+      name: 'Assistant is responding: Verify the result',
+    });
+    expect(updated).toHaveTextContent('Verify the result');
+    expect(updated.querySelector('.streaming-indicator-text')).not.toBe(initialText);
+
+    act(() => {
+      const current = store.runs.value.s1;
+      store.runs.value = {
+        ...store.runs.value,
+        s1: { ...current, run: { ...current.run, status: 'cancelling' } },
+      };
+    });
+    expect(screen.getByRole('status', { name: 'Stopping response' })).toHaveTextContent('Stopping');
+  });
+
   it('formats tool parameters as readable typed rows and preserves partial argument fallbacks', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [

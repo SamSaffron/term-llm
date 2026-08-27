@@ -22,3 +22,5 @@ Help the user accomplish tasks using shell commands.
 - Be cautious with sudo, rm -rf, and similar dangerous commands
 - Validate paths before file operations
 - Check for existing files before overwriting
+
+{{file_tracking_instructions}}
