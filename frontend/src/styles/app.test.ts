@@ -49,6 +49,12 @@ describe('header styles', () => {
   it('does not add a redundant chevron beside the runtime effort meter', () => {
     expect(appCSS).not.toContain('.model-chip::after');
   });
+
+  it('keeps title descenders inside the ellipsis clipping box', () => {
+    expect(appCSS).toMatch(
+      /\.header-title\s*\{[^}]*padding-bottom: 0\.2em;[^}]*overflow: hidden;/s,
+    );
+  });
 });
 
 describe('touch affordances', () => {

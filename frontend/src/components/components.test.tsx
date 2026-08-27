@@ -380,6 +380,31 @@ describe('Preact-owned chat surfaces', () => {
     store.diff.value = {
       ...store.diff.value,
       open: true,
+      unavailableLineCountFiles: 2,
+      files: [
+        {
+          path: 'missing.ts',
+          status: 'modify',
+          expanded: true,
+          truncated: true,
+          contentStatus: 'retention_unavailable',
+          lines: [],
+        },
+      ],
+      materializations: [
+        {
+          id: 2,
+          classification: 'materialized',
+          root: '/tmp/output',
+          createdCount: 14,
+          modifiedCount: 3,
+          deletedCount: 0,
+          sampledPaths: ['/tmp/output/result.bin'],
+          samplesTruncated: false,
+          coverageStatus: 'complete',
+          eventSeq: 2,
+        },
+      ],
       observations: [
         {
           id: 1,
@@ -411,6 +436,12 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
+    expect(screen.getByText('Diff unavailable.')).toBeInTheDocument();
+    expect(screen.queryByText(/retention/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/line counts may be partial/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/partial \(2\)/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Materialized outputs/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no authored line totals/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Observed side effects/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Output claim diagnostics/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/claim_noop/i)).not.toBeInTheDocument();
@@ -655,13 +686,16 @@ describe('Preact-owned chat surfaces', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     try {
       const store = createStore();
+      store.sessions.value = [
+        { ...store.sessions.value[0], workingDir: '/home/sam/Source/term-llm' },
+      ];
       store.diff.value = {
         ...store.diff.value,
         open: true,
         sessionId: 's1',
         files: [
           {
-            path: '/home/sam/project/main.go',
+            path: '/home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
             status: 'create',
             additions: 1,
             deletions: 0,
@@ -680,12 +714,16 @@ describe('Preact-owned chat surfaces', () => {
       );
       const row = container.querySelector('.diff-file-row')!;
       expect(row.querySelector('.diff-kind-badge')).toHaveTextContent('A');
-      expect(row.querySelector('.diff-file-base')).toHaveTextContent('main.go');
-      expect(row.querySelector('.diff-file-dir')).toHaveTextContent('home/sam/project');
+      expect(row.querySelector('.diff-file-base')).toHaveTextContent('app-store.ts');
+      expect(row.querySelector('.diff-file-dir')).toHaveTextContent('term-llm/frontend/src/stores');
       expect(row).not.toHaveTextContent('direct tool');
-      expect(row).not.toHaveTextContent('/home/sam/project/main.go');
-      const path = screen.getByRole('button', { name: 'Copy path /home/sam/project/main.go' });
-      const patch = screen.getByRole('button', { name: 'Copy diff for /home/sam/project/main.go' });
+      expect(row).not.toHaveTextContent('/home/sam/Source/term-llm');
+      const path = screen.getByRole('button', {
+        name: 'Copy path /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
+      });
+      const patch = screen.getByRole('button', {
+        name: 'Copy diff for /home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
+      });
       expect(path).toHaveTextContent('⧉');
       expect(path.querySelector('svg')).toBeNull();
       expect(patch).toHaveTextContent('±');
@@ -696,7 +734,9 @@ describe('Preact-owned chat surfaces', () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      expect(writeText).toHaveBeenCalledWith('/home/sam/project/main.go');
+      expect(writeText).toHaveBeenCalledWith(
+        '/home/sam/Source/term-llm/frontend/src/stores/app-store.ts',
+      );
       expect(path).toHaveClass('copied');
       await act(async () => {
         fireEvent.click(patch);
@@ -705,7 +745,7 @@ describe('Preact-owned chat surfaces', () => {
         await Promise.resolve();
       });
       expect(writeText).toHaveBeenLastCalledWith(
-        '--- a//home/sam/project/main.go\n+++ b//home/sam/project/main.go\n@@ -1 +1 @@\n+package main\n',
+        '--- a//home/sam/Source/term-llm/frontend/src/stores/app-store.ts\n+++ b//home/sam/Source/term-llm/frontend/src/stores/app-store.ts\n@@ -1 +1 @@\n+package main\n',
       );
       expect(patch).toHaveClass('copied');
       await act(async () => {
@@ -1633,6 +1673,7 @@ describe('Preact-owned chat surfaces', () => {
       scroller.scrollTop = 180;
 
       fireEvent.click(screen.getByRole('button', { name: 'Actions for Test' }));
+      expect(screen.queryByRole('menuitem', { name: 'Delete' })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('menuitem', { name: 'Hide' }));
 
       const row = container.querySelector('.session-row');

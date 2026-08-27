@@ -73,10 +73,6 @@
   color: var(--text);
 }
 
-.session-menu .danger {
-  color: var(--danger);
-}
-
 .session-menu.project-menu {
   top: calc(100% + 0.25rem);
   right: 0.2rem;

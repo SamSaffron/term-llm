@@ -635,6 +635,28 @@ func (m *serveSessionManager) ActiveSessionIDs() map[string]bool {
 	return result
 }
 
+// UnresolvedInteractionSessionIDs returns runtimes waiting for an ask-user or
+// approval decision without touching their TTL. These sessions belong to the
+// active control plane even if a bounded recent-session query omits them.
+func (m *serveSessionManager) UnresolvedInteractionSessionIDs() map[string]bool {
+	m.mu.Lock()
+	runtimes := make(map[string]*serveRuntime, len(m.sessions))
+	for id, rt := range m.sessions {
+		runtimes[id] = rt
+	}
+	m.mu.Unlock()
+	result := make(map[string]bool)
+	for id, rt := range runtimes {
+		if rt == nil {
+			continue
+		}
+		if len(rt.pendingAskUserPrompts()) > 0 || len(rt.pendingApprovalPrompts()) > 0 {
+			result[id] = true
+		}
+	}
+	return result
+}
+
 func (m *serveSessionManager) Close() {
 	timeout := m.retirementTimeout
 	if timeout <= 0 {

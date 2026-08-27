@@ -44,6 +44,8 @@ export interface GuardianReview {
 
 export interface ToolCall {
   id: string;
+  /** Response-local output item identity; call id remains the canonical execution identity. */
+  itemId?: string;
   name: string;
   arguments?: string;
   argumentsFinalized?: boolean;
@@ -323,7 +325,14 @@ export interface ApprovalPrompt {
 }
 
 export type RunStatus =
-  'idle' | 'connecting' | 'streaming' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
+  | 'idle'
+  | 'connecting'
+  | 'checking'
+  | 'streaming'
+  | 'cancelling'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
 
 export interface ActiveRun {
   responseId: string;

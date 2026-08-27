@@ -128,6 +128,79 @@ describe('response projection', () => {
     });
   });
 
+  it('keeps interleaved parallel tool arguments attached to stable call and item identities', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 1, {
+        item: { id: 'item-1', type: 'function_call', call_id: 'call-1', name: 'shell' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 2, {
+        item: { id: 'item-2', type: 'function_call', call_id: 'call-2', name: 'read_file' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.function_call_arguments.delta', 3, {
+        item_id: 'item-1',
+        delta: '{"command":',
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.function_call_arguments.delta', 4, {
+        call_id: 'call-2',
+        delta: '{"path":"README"}',
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.function_call_arguments.delta', 5, {
+        call_id: 'call-1',
+        delta: '"pwd"}',
+      }),
+    );
+
+    expect(projection.messages[0].tools).toEqual([
+      expect.objectContaining({
+        id: 'call-1',
+        itemId: 'item-1',
+        arguments: '{"command":"pwd"}',
+      }),
+      expect.objectContaining({
+        id: 'call-2',
+        itemId: 'item-2',
+        arguments: '{"path":"README"}',
+      }),
+    ]);
+  });
+
+  it('rejects an unidentified argument delta when parallel tools are running', () => {
+    let projection = initialProjection(run);
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 1, {
+        item: { id: 'item-1', type: 'function_call', call_id: 'call-1', name: 'shell' },
+      }),
+    );
+    projection = reduceResponse(
+      projection,
+      event('response.output_item.added', 2, {
+        item: { id: 'item-2', type: 'function_call', call_id: 'call-2', name: 'read_file' },
+      }),
+    );
+
+    expect(() =>
+      reduceResponse(
+        projection,
+        event('response.function_call_arguments.delta', 3, { delta: '{}' }),
+      ),
+    ).toThrow(ResponseProtocolError);
+  });
+
   it('keeps sequential tool activity in one group until a transcript boundary', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(

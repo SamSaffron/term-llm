@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
@@ -2515,30 +2516,36 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			return nil
 		}
 		state.toolsSeen = true
+		itemID := "fc_" + ev.Tool.ID
 		item := map[string]any{
-			"id":        "fc_" + ev.Tool.ID,
+			"id":        itemID,
 			"type":      "function_call",
 			"call_id":   ev.Tool.ID,
 			"name":      ev.Tool.Name,
 			"arguments": string(ev.Tool.Arguments),
 		}
-		if err := run.appendEvent("response.output_item.added", map[string]any{
+		identity := map[string]any{
 			"output_index":              state.outputIndex,
 			"assistant_segment_ordinal": state.assistantSegmentOrdinal,
-			"item":                      item,
-		}); err != nil {
+			"call_id":                   ev.Tool.ID,
+			"item_id":                   itemID,
+		}
+		if ev.ProviderTurnIndexSet {
+			identity["provider_turn_index"] = ev.ProviderTurnIndex
+		}
+		added := maps.Clone(identity)
+		added["item"] = item
+		if err := run.appendEvent("response.output_item.added", added); err != nil {
 			return err
 		}
-		if err := run.appendEvent("response.function_call_arguments.delta", map[string]any{
-			"output_index": state.outputIndex,
-			"delta":        string(ev.Tool.Arguments),
-		}); err != nil {
+		delta := maps.Clone(identity)
+		delta["delta"] = string(ev.Tool.Arguments)
+		if err := run.appendEvent("response.function_call_arguments.delta", delta); err != nil {
 			return err
 		}
-		if err := run.appendEvent("response.output_item.done", map[string]any{
-			"output_index": state.outputIndex,
-			"item":         item,
-		}); err != nil {
+		done := maps.Clone(identity)
+		done["item"] = item
+		if err := run.appendEvent("response.output_item.done", done); err != nil {
 			return err
 		}
 		state.outputIndex++

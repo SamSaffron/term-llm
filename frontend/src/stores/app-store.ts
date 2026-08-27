@@ -96,6 +96,7 @@ export interface Toast {
   id: string;
   message: string;
   kind: 'info' | 'success' | 'error';
+  leaving?: boolean;
 }
 export interface RuntimeOption extends ModelOption {
   [key: string]: unknown;
@@ -286,6 +287,9 @@ export class AppStore {
   readonly token: Signal<string>;
   readonly prompt = signal('');
   readonly attachments = signal<Attachment[]>([]);
+  // Acquired synchronously before send() performs attachment materialization.
+  // Once a stream supervisor owns the operation, its run status takes over.
+  readonly sendPending = signal(false);
   readonly attachmentPolicy = signal<AttachmentPolicy>(DEFAULT_ATTACHMENT_POLICY);
   readonly attachmentAccept = computed(() => attachmentAccept(this.attachmentPolicy.value));
   readonly runs = signal<Record<string, ResponseProjection>>({});
@@ -387,6 +391,7 @@ export class AppStore {
   readonly activeProjection: ReadonlySignal<ResponseProjection | null>;
   readonly visibleMessages: ReadonlySignal<Message[]>;
   readonly streaming: ReadonlySignal<boolean>;
+  readonly sendBlocked: ReadonlySignal<boolean>;
 
   private readonly streamSupervisors = new StreamSupervisors();
   private readonly draftBlobs = new DraftBlobStore();
@@ -524,13 +529,23 @@ export class AppStore {
           clientMessageId: intent.clientMessageId,
           attachments: intent.attachments,
           pending: true,
+          ...(intent.state === 'checking' ? { interruptState: 'checking_send' } : {}),
         }));
       return [...messages, ...pending];
     });
     this.streaming = computed(() =>
-      ['connecting', 'streaming', 'cancelling'].includes(
+      ['connecting', 'checking', 'streaming', 'cancelling'].includes(
         this.activeProjection.value?.run.status || '',
       ),
+    );
+    this.sendBlocked = computed(
+      () =>
+        this.sendPending.value ||
+        Boolean(
+          this.pendingIntents.value[this.activeSessionId.value]?.some(
+            (intent) => intent.state === 'checking',
+          ),
+        ),
     );
   }
 
@@ -1513,8 +1528,7 @@ export class AppStore {
             this.shouldOpenInteraction('approval', updated.id, prompt.id!),
           ) || null;
       this.reconcilePendingInterjections(updated.id, state, sampledInterjectionRevision);
-      if (activeResponse) this.retireCommittedIntents(updated.id, incoming.messages);
-      else this.retireIntent(updated.id);
+      this.reconcileLoadedIntents(updated.id, incoming.messages, Boolean(activeResponse));
       if (activeResponse)
         this.sessions.value = this.sessions.value.map((session) =>
           session.id === updated.id ? { ...session, activeResponseId: activeResponse } : session,
@@ -1531,7 +1545,8 @@ export class AppStore {
     const attachments = options.contentParts ? [] : [...this.attachments.value];
     if (
       (!inputText && !attachments.length && !options.contentParts?.length) ||
-      this.streaming.value
+      this.streaming.value ||
+      this.sendBlocked.peek()
     )
       return;
     const blockedAttachment = attachments.find(
@@ -1544,6 +1559,9 @@ export class AppStore {
       );
       return;
     }
+    // This reservation must happen before the first await. The run projection
+    // cannot serve as the entry lock because attachment materialization yields.
+    this.sendPending.value = true;
     const clientMessageId = uuid();
     const requestId = uuid();
     let session = this.activeSession.value;
@@ -1582,6 +1600,7 @@ export class AppStore {
     try {
       attachmentParts = await Promise.all(attachments.map((entry) => this.attachmentInput(entry)));
     } catch (error) {
+      this.sendPending.value = false;
       this.toast(error, 'error');
       return;
     }
@@ -1617,125 +1636,238 @@ export class AppStore {
     // Ownership changes before any previous controller is touched. The POST
     // stream and every later subscription share this same generation.
     const streamOwner = this.streamSupervisors.begin(sessionId, run.responseId);
+    this.sendPending.value = false;
     let ownerID = sessionId;
-    try {
-      const inputContent: unknown = options.contentParts?.length
-        ? [...options.contentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
-        : attachmentParts.length > 0
-          ? [...attachmentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
-          : inputText;
-      const requestBody: Record<string, unknown> = {
-        stream: true,
-        include_server_tools: true,
-        client_message_id: clientMessageId,
-        input: [
-          {
-            type: 'message',
-            role: 'user',
-            client_message_id: clientMessageId,
-            content: inputContent,
-          },
-        ],
-      };
-      if (session.lastResponseId) requestBody.previous_response_id = session.lastResponseId;
-      else if (this.projectsEnabled.value) {
-        if (session.projectId) requestBody.project_id = session.projectId;
-        else requestBody.no_project = true;
-      } else requestBody.use_default_workspace = true;
-      if (!session.lastResponseId && session.worktreeDir)
-        requestBody.worktree_dir = session.worktreeDir;
-      if (!session.lastResponseId) requestBody.agent = session.agent || this.selectedAgent.value;
-      const selectedModel = this.models.value.find(
-        (entry) => entry.id === this.selectedModel.value,
-      );
-      applyRuntimeToRequest(
-        requestBody,
+    const inputContent: unknown = options.contentParts?.length
+      ? [...options.contentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
+      : attachmentParts.length > 0
+        ? [...attachmentParts, ...(inputText ? [{ type: 'input_text', text: inputText }] : [])]
+        : inputText;
+    const requestBody: Record<string, unknown> = {
+      stream: true,
+      include_server_tools: true,
+      client_message_id: clientMessageId,
+      input: [
         {
-          provider: session.activeProvider,
-          model: session.activeModel,
-          effort: session.activeEffort,
-          reasoningMode: session.activeReasoningMode,
+          type: 'message',
+          role: 'user',
+          client_message_id: clientMessageId,
+          content: inputContent,
         },
-        {
-          provider: this.selectedProvider.value,
-          model: this.selectedModel.value,
-          effort: this.selectedEffort.value,
-          reasoningMode: this.selectedReasoningMode.value,
-        },
-        selectedModel,
-      );
-      const response = await this.endpoints.createResponse(
-        requestBody,
-        sessionId.startsWith('draft_') ? '' : sessionId,
-        requestId,
-        streamOwner.abort.signal,
-      );
-      if (!response.ok || !response.body) {
-        if (response.status === 409) {
-          const body = await response.text();
-          try {
-            const parsed = JSON.parse(body) as { error?: { type?: string } };
-            if (parsed.error?.type === 'client_message_already_committed') {
-              this.retireIntent(sessionId, clientMessageId);
-              await this.loadSession(sessionId);
-              return;
-            }
-          } catch {
-            /* Normalized below. */
-          }
-          throw new APIError(body || 'Response conflict', response.status, body);
+      ],
+    };
+    if (session.lastResponseId) requestBody.previous_response_id = session.lastResponseId;
+    else if (this.projectsEnabled.value) {
+      if (session.projectId) requestBody.project_id = session.projectId;
+      else requestBody.no_project = true;
+    } else requestBody.use_default_workspace = true;
+    if (!session.lastResponseId && session.worktreeDir)
+      requestBody.worktree_dir = session.worktreeDir;
+    if (!session.lastResponseId) requestBody.agent = session.agent || this.selectedAgent.value;
+    const selectedModel = this.models.value.find((entry) => entry.id === this.selectedModel.value);
+    applyRuntimeToRequest(
+      requestBody,
+      {
+        provider: session.activeProvider,
+        model: session.activeModel,
+        effort: session.activeEffort,
+        reasoningMode: session.activeReasoningMode,
+      },
+      {
+        provider: this.selectedProvider.value,
+        model: this.selectedModel.value,
+        effort: this.selectedEffort.value,
+        reasoningMode: this.selectedReasoningMode.value,
+      },
+      selectedModel,
+    );
+
+    let unknownAttempts = 0;
+    const restoreRejectedComposer = (): void => {
+      if (
+        !options.preserveComposer &&
+        this.activeSessionId.peek() === ownerID &&
+        !this.prompt.peek()
+      ) {
+        this.prompt.value = promptContent;
+        this.attachments.value = attachments;
+      }
+    };
+    const submit = async (signal: AbortSignal): Promise<void> => {
+      try {
+        const response = await this.endpoints.createResponse(
+          requestBody,
+          sessionId.startsWith('draft_') ? '' : sessionId,
+          requestId,
+          signal,
+        );
+        ownerID = await this.acceptCreatedResponse({
+          response,
+          streamOwner,
+          sessionId,
+          clientMessageId,
+          requestId,
+          attachments,
+          options,
+        });
+      } catch (error) {
+        if (!this.streamSupervisors.owns(streamOwner)) return;
+        // Once x-response-id has been adopted, delivery is known and only the
+        // resumable response stream needs recovery.
+        if (!streamOwner.responseId.startsWith('pending_')) {
+          this.scheduleSupervisorRetry(streamOwner, error);
+          return;
         }
-        throw new APIError(
-          (await response.text()) || `Response request returned ${response.status}`,
-          response.status,
+        if (this.definitiveSendRejection(error)) {
+          options.onTransportFailed?.(error);
+          this.rollbackOptimisticIntent(ownerID, clientMessageId);
+          this.failRun(ownerID, error);
+          restoreRejectedComposer();
+          this.streamSupervisors.retire(streamOwner);
+          return;
+        }
+
+        // A browser transport exception is not evidence that the mutation was
+        // rejected. Keep the idempotency key and intent, expose a durable
+        // checking state, and replay exactly the same logical operation.
+        unknownAttempts += 1;
+        this.markIntentChecking(ownerID, clientMessageId);
+        const projection = this.runs.peek()[ownerID];
+        if (projection)
+          this.runs.value = {
+            ...this.runs.peek(),
+            [ownerID]: {
+              ...projection,
+              phase: 'Checking whether this was sent…',
+              run: { ...projection.run, status: 'checking', error: undefined },
+            },
+          };
+        this.streamSupervisors.scheduleRetry(
+          streamOwner,
+          () => {
+            const retryAbort = this.streamSupervisors.replaceAbort(streamOwner);
+            if (retryAbort) void submit(retryAbort.signal);
+          },
+          Math.min(30_000, 1_000 * 1.5 ** Math.min(unknownAttempts - 1, 8)),
         );
       }
-      const durableSessionId = response.headers.get('x-session-id') || sessionId;
-      const responseId = response.headers.get('x-response-id') || '';
-      if (!responseId) throw new Error('Server did not return a response id.');
-      options.onTransportStarted?.();
-      this.releaseAttachmentResources(attachments, true);
-      if (!this.streamSupervisors.owns(streamOwner)) return;
-      if (!this.streamSupervisors.adoptResponse(streamOwner, responseId)) return;
-      if (durableSessionId !== sessionId) {
-        if (!this.streamSupervisors.rekey(streamOwner, durableSessionId)) return;
-        this.rekeySession(sessionId, durableSessionId);
-        ownerID = durableSessionId;
-      }
-      this.sessions.value = this.sessions.value.map((entry) =>
-        entry.id === ownerID ? { ...entry, activeResponseId: responseId, activeRun: true } : entry,
-      );
-      this.publishSessionChange('run-changed', ownerID, responseId, undefined, clientMessageId);
-      const projection = this.runs.value[ownerID] || this.runs.value[sessionId];
-      this.runs.value = {
-        ...this.runs.value,
-        [ownerID]: {
-          ...projection,
-          run: { ...projection.run, responseId, sessionId: ownerID, status: 'streaming' },
-        },
-      };
-      clearDraft(this.storage, this.keys.draftMessages, sessionId);
-      await this.consumeResponseBody(response.body, streamOwner);
-      if (!this.streamSupervisors.owns(streamOwner)) return;
-      const current = this.runs.value[ownerID];
-      if (current && ['connecting', 'streaming'].includes(current.run.status))
-        await this.recoverSupervisor(streamOwner);
-    } catch (error) {
-      if (error instanceof APIError || streamOwner.abort.signal.aborted)
-        this.rollbackOptimisticIntent(ownerID, clientMessageId);
-      if (this.streamSupervisors.owns(streamOwner)) {
-        options.onTransportFailed?.(error);
-        this.failRun(ownerID, error);
-        if (
-          !options.preserveComposer &&
-          this.activeSessionId.peek() === ownerID &&
-          !this.prompt.peek()
-        ) {
-          this.prompt.value = promptContent;
-          this.attachments.value = attachments;
+    };
+    await submit(streamOwner.abort.signal);
+  }
+
+  private definitiveSendRejection(error: unknown): boolean {
+    return (
+      error instanceof APIError &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      ![408, 425, 429].includes(error.status)
+    );
+  }
+
+  private async acceptCreatedResponse(input: {
+    response: Response;
+    streamOwner: StreamSupervisor;
+    sessionId: string;
+    clientMessageId: string;
+    requestId: string;
+    attachments: Attachment[];
+    options: SendOptions;
+  }): Promise<string> {
+    const { response, streamOwner, sessionId, clientMessageId, requestId, attachments, options } =
+      input;
+    if (!response.ok || !response.body) {
+      const body = await response.text();
+      if (response.status === 409) {
+        try {
+          const parsed = JSON.parse(body) as { error?: { type?: string } };
+          if (parsed.error?.type === 'client_message_already_committed') {
+            this.retireIntent(sessionId, clientMessageId);
+            this.streamSupervisors.retire(streamOwner);
+            await this.loadSession(sessionId);
+            return sessionId;
+          }
+        } catch {
+          /* Normalized below. */
         }
       }
+      throw new APIError(
+        body || `Response request returned ${response.status}`,
+        response.status,
+        body,
+      );
     }
+    const durableSessionId = response.headers.get('x-session-id') || sessionId;
+    const responseId = response.headers.get('x-response-id') || '';
+    if (!responseId) throw new Error('Server did not return a response id.');
+    options.onTransportStarted?.();
+    this.releaseAttachmentResources(attachments, true);
+    if (!this.streamSupervisors.owns(streamOwner)) return streamOwner.sessionId;
+    if (!this.streamSupervisors.adoptResponse(streamOwner, responseId))
+      return streamOwner.sessionId;
+    let ownerID = sessionId;
+    if (durableSessionId !== sessionId) {
+      if (!this.streamSupervisors.rekey(streamOwner, durableSessionId))
+        return streamOwner.sessionId;
+      this.rekeySession(sessionId, durableSessionId);
+      ownerID = durableSessionId;
+    }
+    this.sessions.value = this.sessions.value.map((entry) =>
+      entry.id === ownerID
+        ? {
+            ...entry,
+            activeResponseId: responseId,
+            activeRun: true,
+            messages: entry.messages.map((message) =>
+              message.clientMessageId === clientMessageId
+                ? { ...message, pending: false, interruptState: undefined }
+                : message,
+            ),
+          }
+        : entry,
+    );
+    this.retireIntent(ownerID, clientMessageId);
+    this.publishSessionChange('run-changed', ownerID, responseId, undefined, clientMessageId);
+    const projection = this.runs.value[ownerID] || this.runs.value[sessionId];
+    this.runs.value = {
+      ...this.runs.value,
+      [ownerID]: {
+        ...projection,
+        phase: undefined,
+        run: {
+          ...projection.run,
+          responseId,
+          sessionId: ownerID,
+          status: 'streaming',
+          requestId,
+        },
+      },
+    };
+    clearDraft(this.storage, this.keys.draftMessages, sessionId);
+    await this.consumeResponseBody(response.body, streamOwner);
+    if (!this.streamSupervisors.owns(streamOwner)) return ownerID;
+    const current = this.runs.value[ownerID];
+    if (current && ['connecting', 'streaming'].includes(current.run.status))
+      await this.recoverSupervisor(streamOwner);
+    return ownerID;
+  }
+
+  private markIntentChecking(sessionId: string, clientMessageId: string): void {
+    this.sessions.value = this.sessions.value.map((session) =>
+      session.id === sessionId
+        ? {
+            ...session,
+            messages: session.messages.map((message) =>
+              message.clientMessageId === clientMessageId
+                ? { ...message, interruptState: 'checking_send', pending: true }
+                : message,
+            ),
+          }
+        : session,
+    );
+    const intent = this.pendingIntents
+      .peek()
+      [sessionId]?.find((entry) => entry.clientMessageId === clientMessageId);
+    if (intent) this.trackIntent(sessionId, { ...intent, state: 'checking' });
   }
 
   private rekeySession(oldID: string, id: string, source?: Record<string, unknown>): void {
@@ -2153,7 +2285,11 @@ export class AppStore {
           };
         }
       });
-      this.retireIntent(sessionId);
+      this.reconcileLoadedIntents(
+        sessionId,
+        incoming.messages,
+        Boolean(projection && ['connecting', 'streaming'].includes(projection.run.status)),
+      );
       const state = await stateRequest;
       if (state) {
         this.reconcilePendingInterjections(sessionId, state, interjectionRevision);
@@ -2399,7 +2535,8 @@ export class AppStore {
     } catch (error) {
       this.locallyStoppedResponses.delete(responseId);
       this.toast(`Couldn’t confirm stop: ${errorMessage(error)}`, 'error');
-      void this.resumeResponse(sessionId, responseId);
+      const current = this.runs.peek()[sessionId];
+      if (current?.run.responseId === responseId) void this.resumeResponse(sessionId, responseId);
     }
   }
 
@@ -2556,6 +2693,17 @@ export class AppStore {
     for (const intent of this.pendingIntents.peek()[sessionId] || [])
       if (committed.has(intent.clientMessageId))
         this.retireIntent(sessionId, intent.clientMessageId);
+  }
+
+  private reconcileLoadedIntents(sessionId: string, messages: Message[], active: boolean): void {
+    this.retireCommittedIntents(sessionId, messages);
+    if (active) return;
+    // Legacy optimistic intents can be retired by an authoritative idle
+    // transcript. Unknown-outcome sends are different: absence is not proof of
+    // rejection, so preserve their durable checking state until the same-key
+    // replay is rejected or their client_message_id appears in the transcript.
+    for (const intent of this.pendingIntents.peek()[sessionId] || [])
+      if (intent.state !== 'checking') this.retireIntent(sessionId, intent.clientMessageId);
   }
 
   private trackIntent(sessionId: string, intent: PendingIntentRegistry[string][number]): void {
@@ -2879,12 +3027,6 @@ export class AppStore {
     });
     if (this.searchResults.peek()) this.searchResults.value = reconcile(this.searchResults.peek()!);
     if (session.id === this.activeSessionId.value && archived) this.newChat();
-    this.publishSessionChange();
-  }
-  async removeSession(session: Session): Promise<void> {
-    await this.endpoints.deleteSession(session.id);
-    this.sessions.value = this.sessions.value.filter((entry) => entry.id !== session.id);
-    if (session.id === this.activeSessionId.value) this.newChat();
     this.publishSessionChange();
   }
   async pinSession(session: Session): Promise<void> {
@@ -4032,7 +4174,6 @@ export class AppStore {
       preserveComposer: true,
       diffComments: [value],
       onTransportStarted: () => {
-        this.toast('Comment sent to the agent.', 'success');
         void this.refreshDiffComments(session.id);
       },
       onTransportFailed: (error) => {
@@ -4244,7 +4385,6 @@ export class AppStore {
             );
         });
         this.publishSessionChange('review-comment-changed', session.id);
-        this.toast('Comments sent to the agent.', 'success');
         void this.refreshDiffComments(session.id);
       },
       onTransportFailed: (error) => {
@@ -4750,9 +4890,12 @@ export class AppStore {
       }
       const anyActive =
         this.locallyStoppedResponses.size > 0 ||
+        Object.values(this.pendingIntents.peek()).some((intents) =>
+          intents.some((intent) => intent.state === 'checking'),
+        ) ||
         this.sessions.peek().some((session) => session.activeRun) ||
         Object.values(this.runs.peek()).some((projection) =>
-          ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
+          ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
         );
       this.statusTimer = window.setTimeout(
         poll,
@@ -4851,13 +4994,21 @@ export class AppStore {
         const status = byID.get(session.id);
         if (!status) return session.activeRun ? { ...session, activeRun: false } : session;
         const serverActiveResponseId = String(status.active_response_id || '') || null;
-        const stoppedResponseId = this.runs.peek()[session.id]?.run.responseId || '';
-        const awaitingStoppedResponse = this.locallyStoppedResponses.has(stoppedResponseId);
-        const activeResponseId =
+        const committedClientMessageId = String(status.client_message_id || '');
+        if (
           serverActiveResponseId &&
-          (this.locallyStoppedResponses.has(serverActiveResponseId) || awaitingStoppedResponse)
-            ? null
-            : serverActiveResponseId;
+          committedClientMessageId &&
+          this.pendingIntents
+            .peek()
+            [session.id]?.some((intent) => intent.clientMessageId === committedClientMessageId)
+        ) {
+          followUps.push(() => this.retireIntent(session.id, committedClientMessageId));
+        }
+        const stoppedResponseId = this.runs.peek()[session.id]?.run.responseId || '';
+        const stoppedServerResponse = Boolean(
+          serverActiveResponseId && this.locallyStoppedResponses.has(serverActiveResponseId),
+        );
+        const activeResponseId = stoppedServerResponse ? null : serverActiveResponseId;
         const transcriptRev = Math.max(
           session.transcriptRev || 0,
           Number(status.transcript_rev) || 0,
@@ -4868,8 +5019,10 @@ export class AppStore {
           !this.locallyStoppedResponses.has(activeResponseId)
         )
           followUps.push(() => void this.resumeResponse(session.id, activeResponseId));
-        if (!serverActiveResponseId && awaitingStoppedResponse)
-          this.locallyStoppedResponses.delete(stoppedResponseId);
+        if (stoppedResponseId && this.locallyStoppedResponses.has(stoppedResponseId)) {
+          if (!serverActiveResponseId || serverActiveResponseId !== stoppedResponseId)
+            this.locallyStoppedResponses.delete(stoppedResponseId);
+        }
         if (
           !serverActiveResponseId &&
           (session.activeResponseId || this.pendingIntents.peek()[session.id]?.length) &&
@@ -4886,7 +5039,16 @@ export class AppStore {
               }
             : {}),
           activeResponseId,
-          activeRun: Boolean(activeResponseId || (status.active_run && !awaitingStoppedResponse)),
+          activeRun: Boolean(activeResponseId || (status.active_run && !stoppedServerResponse)),
+          ...(committedClientMessageId
+            ? {
+                messages: session.messages.map((message) =>
+                  message.clientMessageId === committedClientMessageId
+                    ? { ...message, pending: false, interruptState: undefined }
+                    : message,
+                ),
+              }
+            : {}),
           lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
           transcriptRev,
           messageCount: Math.max(session.messageCount || 0, Number(status.message_count) || 0),
@@ -4966,9 +5128,17 @@ export class AppStore {
     const message = errorMessage(value);
     const toast = { id: uuid(), message, kind };
     this.toasts.value = [...this.toasts.value, toast];
+    this.schedule(() => this.dismissToast(toast.id), 4000);
+  }
+  dismissToast(id: string): void {
+    const toast = this.toasts.peek().find((entry) => entry.id === id);
+    if (!toast || toast.leaving) return;
+    this.toasts.value = this.toasts.value.map((entry) =>
+      entry.id === id ? { ...entry, leaving: true } : entry,
+    );
     this.schedule(() => {
-      this.toasts.value = this.toasts.value.filter((entry) => entry.id !== toast.id);
-    }, 4000);
+      this.toasts.value = this.toasts.value.filter((entry) => entry.id !== id);
+    }, 160);
   }
   async hardRefresh(): Promise<void> {
     await hardRefreshAssets(this.config);

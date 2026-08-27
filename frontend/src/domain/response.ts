@@ -112,6 +112,7 @@ function tool(
   id: string,
   name = 'tool',
   pending: Record<string, GuardianReview[]> = {},
+  itemId = '',
 ): [Message[], ToolCall] {
   if (!id) throw new ResponseProtocolError('Tool event is missing call_id', 'gap');
   const tail = messages.at(-1);
@@ -121,9 +122,18 @@ function tool(
       : undefined;
   const existing = messages
     .flatMap((message) => message.tools || [])
-    .find((entry) => entry.id === id);
-  if (existing) return [messages, existing];
-  const entry: ToolCall = { id, name, status: 'running', guardianReviews: pending[id]?.map(clone) };
+    .find((entry) => entry.id === id || Boolean(itemId && entry.itemId === itemId));
+  if (existing) {
+    if (itemId && !existing.itemId) messages = patchTool(messages, existing.id, { itemId });
+    return [messages, { ...existing, ...(itemId ? { itemId } : {}) }];
+  }
+  const entry: ToolCall = {
+    id,
+    ...(itemId ? { itemId } : {}),
+    name,
+    status: 'running',
+    guardianReviews: pending[id]?.map(clone),
+  };
   if (group)
     return [
       replaceMessage(messages, group, {
@@ -305,23 +315,42 @@ export function reduceResponse(
     case 'response.output_item.added': {
       const item = (event.item || {}) as Record<string, unknown>;
       if (item.type === 'function_call' || event.item_type === 'function_call') {
-        const id = text(item.call_id || item.id || event.call_id || event.item_id);
+        const callId = text(item.call_id || event.call_id);
+        const itemId = text(item.id || event.item_id);
+        const id = callId || itemId;
         [messages] = tool(
           messages,
           responseId,
           id,
           text(item.name || event.name) || 'tool',
           projection.pendingGuardian,
+          itemId,
         );
       }
       return { ...next, messages, retry: undefined };
     }
     case 'response.function_call_arguments.delta': {
-      const id = text(event.call_id || event.item_id);
+      const callId = text(event.call_id);
+      const itemId = text(event.item_id);
       const candidates = messages.flatMap((message) => message.tools || []);
-      const entry = id
-        ? candidates.find((candidate) => candidate.id === id)
-        : [...candidates].reverse().find((candidate) => candidate.status === 'running');
+      const running = candidates.filter((candidate) => candidate.status === 'running');
+      const entry = callId
+        ? candidates.find((candidate) => candidate.id === callId)
+        : itemId
+          ? candidates.find((candidate) => candidate.itemId === itemId || candidate.id === itemId)
+          : running.length === 1
+            ? running[0]
+            : undefined;
+      if (!callId && !itemId && running.length > 1)
+        throw new ResponseProtocolError(
+          'Function-call argument delta is ambiguous without call_id or item_id',
+          'gap',
+        );
+      if ((callId || itemId) && !entry)
+        throw new ResponseProtocolError(
+          'Function-call argument delta references an unknown tool item',
+          'gap',
+        );
       if (!entry || entry.argumentsFinalized) return next;
       messages = patchTool(messages, entry.id, {
         arguments: text(entry.arguments) + text(event.delta),
@@ -331,15 +360,25 @@ export function reduceResponse(
     case 'response.output_item.done': {
       const item = (event.item || {}) as Record<string, unknown>;
       if (item.type !== 'function_call') return next;
-      const id = text(item.call_id || item.id || event.call_id || event.item_id);
+      const callId = text(item.call_id || event.call_id);
+      const itemId = text(item.id || event.item_id);
+      const id = callId || itemId;
       const entry = messages
         .flatMap((message) => message.tools || [])
-        .find((candidate) => candidate.id === id);
+        .find((candidate) => candidate.id === id || Boolean(itemId && candidate.itemId === itemId));
       if (!entry)
-        [messages] = tool(messages, responseId, id, text(item.name), projection.pendingGuardian);
+        [messages] = tool(
+          messages,
+          responseId,
+          id,
+          text(item.name),
+          projection.pendingGuardian,
+          itemId,
+        );
       return {
         ...next,
-        messages: patchTool(messages, id, {
+        messages: patchTool(messages, entry?.id || id, {
+          ...(itemId ? { itemId } : {}),
           arguments: Object.hasOwn(item, 'arguments') ? text(item.arguments) : entry?.arguments,
           argumentsFinalized: true,
         }),

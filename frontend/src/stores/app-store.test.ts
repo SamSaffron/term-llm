@@ -42,6 +42,26 @@ const deferred = <T>() => {
 beforeEach(() => localStorage.clear());
 
 describe('AppStore compatibility behavior', () => {
+  it('dismisses a toast without waiting for its automatic timeout', () => {
+    vi.useFakeTimers();
+    const store = new AppStore(config);
+    try {
+      store.toast('Something needs attention.', 'error');
+      const [toast] = store.toasts.value;
+
+      store.dismissToast(toast.id);
+      expect(store.toasts.value).toEqual([
+        expect.objectContaining({ id: toast.id, leaving: true }),
+      ]);
+
+      vi.advanceTimersByTime(160);
+      expect(store.toasts.value).toEqual([]);
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('guards /side in drafts and closes active side work without waiting for cancellation', () => {
     const store = new AppStore(config);
     expect(store.openSideQuestion('Explain this')).toBe(false);
@@ -858,6 +878,124 @@ describe('AppStore compatibility behavior', () => {
     expect(store.sessions.value[0].transcriptRev).toBe(2);
   });
 
+  it('acquires the send lock before attachment materialization yields', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [session()];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.prompt.value = 'send exactly once';
+    store.attachments.value = [
+      {
+        id: 'attachment-1',
+        name: 'note.txt',
+        type: 'text/plain',
+        dataURL: 'data:text/plain;base64,bm90ZQ==',
+        status: 'ready',
+      },
+    ];
+    const prepared = deferred<Record<string, unknown>>();
+    store.attachmentInput = vi.fn(() => prepared.promise);
+    store.endpoints.createResponse = vi.fn(
+      async () => new Response('invalid request', { status: 400 }),
+    );
+
+    const first = store.send();
+    expect(store.sendPending.value).toBe(true);
+    const second = store.send();
+    prepared.resolve({ type: 'input_file', filename: 'note.txt', file_data: 'data:' });
+    await Promise.all([first, second]);
+
+    expect(store.endpoints.createResponse).toHaveBeenCalledOnce();
+    expect(store.sendPending.value).toBe(false);
+  });
+
+  it('keeps an ambiguous send durable and retries the same idempotency key', async () => {
+    vi.useFakeTimers();
+    const store = new AppStore(config);
+    try {
+      store.sessions.value = [session()];
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.prompt.value = 'do not duplicate this';
+      store.endpoints.createResponse = vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError('browser transport disconnected'))
+        .mockResolvedValueOnce(new Response('authoritatively rejected', { status: 400 }));
+
+      await store.send();
+
+      expect(store.prompt.value).toBe('');
+      expect(store.visibleMessages.value).toEqual([
+        expect.objectContaining({
+          role: 'user',
+          content: 'do not duplicate this',
+          interruptState: 'checking_send',
+        }),
+      ]);
+      expect(store.visibleMessages.value.some((message) => message.role === 'error')).toBe(false);
+      expect(store.runs.value.s1.run.status).toBe('checking');
+
+      const restored = new AppStore(config);
+      restored.sessions.value = [session()];
+      restored.activeSessionId.value = 's1';
+      expect(restored.sendBlocked.value).toBe(true);
+      expect(restored.visibleMessages.value).toEqual([
+        expect.objectContaining({ interruptState: 'checking_send' }),
+      ]);
+      restored.dispose();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+
+      expect(store.endpoints.createResponse).toHaveBeenCalledTimes(2);
+      const first = vi.mocked(store.endpoints.createResponse).mock.calls[0];
+      const second = vi.mocked(store.endpoints.createResponse).mock.calls[1];
+      expect(second[0]).toEqual(first[0]);
+      expect(second[2]).toBe(first[2]);
+      expect(store.pendingIntents.value).toEqual({});
+      expect(store.prompt.value).toBe('do not duplicate this');
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('adopts a different active response instead of suppressing it with an old stop marker', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeRun: true, activeResponseId: 'old-response' }];
+    store.activeSessionId.value = 's1';
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'old-response',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'cancelled',
+        lastSequence: 0,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    const internals = store as unknown as {
+      locallyStoppedResponses: Set<string>;
+      refreshStatus(): Promise<void>;
+      resumeResponse(sessionId: string, responseId: string): Promise<void>;
+    };
+    internals.locallyStoppedResponses.add('old-response');
+    internals.resumeResponse = vi.fn(async () => undefined);
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [{ id: 's1', active_run: true, active_response_id: 'new-response' }],
+    }));
+
+    await internals.refreshStatus();
+
+    expect(store.sessions.value[0]).toMatchObject({
+      activeRun: true,
+      activeResponseId: 'new-response',
+    });
+    expect(internals.resumeResponse).toHaveBeenCalledWith('s1', 'new-response');
+    expect(internals.locallyStoppedResponses.has('old-response')).toBe(false);
+  });
+
   it('rolls back an optimistic message when the response was never accepted', async () => {
     const store = new AppStore(config);
     store.sessions.value = [session()];
@@ -1516,6 +1654,7 @@ describe('AppStore compatibility behavior', () => {
       }),
     ]);
     expect(store.diff.value.comments).toEqual([]);
+    expect(store.toasts.value).toEqual([]);
   });
 
   it('explicitly re-anchors a stale queued comment to the current source snapshot', () => {
@@ -1678,6 +1817,7 @@ describe('AppStore compatibility behavior', () => {
     expect(store.diff.value.historyComments).toEqual([
       expect.objectContaining({ id: 'immediate-comment', optimistic: true }),
     ]);
+    expect(store.toasts.value).toEqual([]);
   });
 
   it('sends one diff comment immediately without consuming the queued review', async () => {

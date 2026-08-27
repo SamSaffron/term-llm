@@ -138,7 +138,6 @@ export const endpoints = (api: APIClient) => ({
   deleteInterrupt: (sessionId: string, interjectionId: string) =>
     api.delete(`/v1/sessions/${encoded(sessionId)}/interjections/${encoded(interjectionId)}`),
   patchSession: (id: string, body: unknown) => api.patch(`/v1/sessions/${encoded(id)}`, body),
-  deleteSession: (id: string) => api.delete(`/v1/sessions/${encoded(id)}`),
   refineTitle: (id: string) =>
     api.post<Record<string, unknown>>(`/v1/sessions/${encoded(id)}/title/refine`, {
       preview: true,

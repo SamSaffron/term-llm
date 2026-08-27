@@ -1,7 +1,7 @@
 import { Component, type ComponentChildren } from 'preact';
 import { useEffect } from 'preact/hooks';
 import { StoreContext } from './context';
-import type { AppStore } from '../stores/app-store';
+import type { AppStore, Toast } from '../stores/app-store';
 import { Sidebar } from '../components/Sidebar';
 import { Header } from '../components/Header';
 import { Transcript } from '../components/Transcript';
@@ -9,7 +9,11 @@ import { Composer } from '../components/Composer';
 import { DiffSidebar, PlanSurface } from '../components/Panels';
 import { Modals } from '../components/Modals';
 import { Lightbox } from '../components/Lightbox';
+import { Icon } from '../components/Icon';
 import { installVisualViewportSizing, registerServiceWorker } from '../platform/browser';
+
+const toastIcon = (kind: Toast['kind']) =>
+  kind === 'success' ? 'check' : kind === 'error' ? 'alert-circle' : 'info';
 
 class ErrorBoundary extends Component<{ children: ComponentChildren }, { error: string }> {
   state = { error: '' };
@@ -72,10 +76,19 @@ export function App({ store }: { store: AppStore }) {
           {store.toasts.value.map((toast) => (
             <div
               key={toast.id}
-              class={`toast toast-${toast.kind}`}
+              class={`toast toast-${toast.kind} ${toast.leaving ? 'toast-leaving' : ''}`}
               role={toast.kind === 'error' ? 'alert' : 'status'}
             >
-              {toast.message}
+              <Icon class="toast-icon" name={toastIcon(toast.kind)} />
+              <span class="toast-message">{toast.message}</span>
+              <button
+                class="toast-close"
+                type="button"
+                aria-label="Dismiss notification"
+                onClick={() => store.dismissToast(toast.id)}
+              >
+                <Icon name="close" />
+              </button>
             </div>
           ))}
         </div>

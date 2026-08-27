@@ -214,6 +214,8 @@ export function Composer() {
         ['waiting', 'dismissed', 'failed'].includes(entry.state),
     );
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
+  const sendPending = store.sendPending.value;
+  const sendBlocked = store.sendBlocked.value;
   const attachmentBlocked = store.attachments.value.some(
     (attachment) => attachment.status === 'preparing' || attachment.status === 'error',
   );
@@ -221,9 +223,13 @@ export function Composer() {
   const loading = store.streaming.value && !hasDraft;
   const sendLabel = bindingBlocked
     ? 'Project unavailable'
-    : interjecting
-      ? 'Interject'
-      : 'Send message';
+    : sendPending
+      ? 'Sending message'
+      : sendBlocked
+        ? 'Checking whether sent'
+        : interjecting
+          ? 'Interject'
+          : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
     for (const candidate of Array.from(files || [])) {
@@ -638,7 +644,9 @@ export function Composer() {
               type="button"
               title={sendLabel}
               aria-label={sendLabel}
-              disabled={bindingBlocked || attachmentBlocked || (!hasDraft && !loading)}
+              disabled={
+                sendBlocked || bindingBlocked || attachmentBlocked || (!hasDraft && !loading)
+              }
               onClick={sendOrCommand}
             >
               <Icon class="arrow" name={interjecting ? 'interject' : 'send'} />

@@ -373,6 +373,7 @@ function MessageMeta({ message }: { message: Message }) {
   const interrupt = (
     {
       evaluating: ['pending', '', 'evaluating…'],
+      checking_send: ['pending', '⏳', 'checking whether this was sent'],
       pending_interject: ['pending', '⏳', 'will incorporate'],
       interject: ['interject', '✓', 'injected'],
       cancel: ['cancel', '⏹', 'cancelled + queued'],

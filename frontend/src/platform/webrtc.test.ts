@@ -186,14 +186,59 @@ describe('WebRTC platform bridge', () => {
     expect(harness.recoveries()).toBe(1);
   });
 
-  it('safely falls back for a mutation when dataChannel.send proves non-delivery', async () => {
+  it('rejects an unsafe mutation when dataChannel.send has no application acknowledgement', async () => {
     const harness = await enabledHarness();
     cleanupRTC = harness.cleanup;
     harness.channels[0].throwOnSend = true;
     await expect(
       window.fetch('/ui/v1/non-idempotent-action', { method: 'POST', body: '{}' }),
+    ).rejects.toMatchObject({ name: 'UnknownMutationOutcomeError' });
+    expect(harness.apiCalls()).toBe(0);
+  });
+
+  it('replays a keyed idempotent mutation after send failure without changing its key', async () => {
+    const harness = await enabledHarness();
+    cleanupRTC = harness.cleanup;
+    harness.channels[0].throwOnSend = true;
+    const headers = { 'Idempotency-Key': 'same-operation-key' };
+    await expect(
+      window.fetch('/ui/v1/responses', {
+        method: 'POST',
+        body: '{}',
+        headers,
+        __termLLMRetrySafe: true,
+      } as RequestInit),
     ).resolves.toMatchObject({ ok: true });
     expect(harness.apiCalls()).toBe(1);
+    expect(harness.fetch).toHaveBeenLastCalledWith(
+      '/ui/v1/responses',
+      expect.objectContaining({ headers }),
+    );
+  });
+
+  it('settles throwing header and done callbacks through HTTPS replay', async () => {
+    const harness = await enabledHarness();
+    cleanupRTC = harness.cleanup;
+    const channel = harness.channels[0];
+
+    const headerFailure = window.fetch('/ui/v1/header-callback');
+    const headerRequest = channel.sent.find((frame) => frame.path === '/ui/v1/header-callback')!;
+    channel.receive({ id: headerRequest.id, type: 'headers', status: 101, headers: {} });
+    await expect(headerFailure).resolves.toMatchObject({ ok: true });
+
+    // The failed callback degrades the channel, so reinstall a fresh harness to
+    // exercise an independently throwing terminal callback.
+    harness.cleanup();
+    cleanupRTC = null;
+    const second = await enabledHarness();
+    cleanupRTC = second.cleanup;
+    const doneFailure = window.fetch('/ui/v1/done-callback');
+    const doneRequest = second.channels[0].sent.find(
+      (frame) => frame.path === '/ui/v1/done-callback',
+    )!;
+    second.channels[0].receive({ id: doneRequest.id, type: 'done', status: 101 });
+    await expect(doneFailure).resolves.toMatchObject({ ok: true });
+    expect(second.apiCalls()).toBe(1);
   });
 
   it('routes a 100 KiB body over WebRTC and larger bodies over HTTPS without degradation', async () => {

@@ -46,6 +46,46 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 
 	// Collect active session IDs from in-memory state without touching runtimes.
 	activeIDs := s.activeSessionIDs()
+	criticalIDs := make(map[string]bool, len(activeIDs)+1)
+	if selected := strings.TrimSpace(r.URL.Query().Get("selected_session")); selected != "" {
+		criticalIDs[selected] = true
+	}
+	for id := range activeIDs {
+		criticalIDs[id] = true
+	}
+	if s.sessionMgr != nil {
+		for id := range s.sessionMgr.UnresolvedInteractionSessionIDs() {
+			criticalIDs[id] = true
+		}
+	}
+	listed := make(map[string]bool, len(sessions))
+	for _, sess := range sessions {
+		listed[sess.ID] = true
+	}
+	missing := make([]string, 0, len(criticalIDs))
+	for id := range criticalIDs {
+		if !listed[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		critical, listErr := s.store.List(r.Context(), session.ListOptions{
+			IDs:            missing,
+			Limit:          -1,
+			Archived:       true,
+			SortByActivity: true,
+		})
+		if listErr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load active sessions")
+			return
+		}
+		for _, sess := range critical {
+			if criticalIDs[sess.ID] && !listed[sess.ID] {
+				sessions = append(sessions, sess)
+				listed[sess.ID] = true
+			}
+		}
+	}
 
 	// transcript_updated_at remains for older cached clients and hub dashboards.
 	// Revision-aware clients use transcript_rev as the correctness signal.
@@ -84,7 +124,7 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 			transcriptUpdatedAt = sess.CreatedAt
 		}
 		transcriptRev := sess.TranscriptRev
-		if revisioned && !summaryRevisions {
+		if revisioned && (!summaryRevisions || transcriptRev == 0) {
 			if rev, revErr := indexer.TranscriptRev(r.Context(), sess.ID); revErr == nil {
 				transcriptRev = rev
 			}

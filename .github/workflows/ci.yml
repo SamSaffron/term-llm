@@ -129,6 +129,10 @@ jobs:
         timeout-minutes: 5
         run: scripts/browser_lifecycle_smoke.sh
 
+      - name: Production-shaped Hub browser smoke
+        timeout-minutes: 5
+        run: scripts/hub_browser_lifecycle_smoke.sh
+
   cross-build:
     runs-on: ubuntu-latest
     steps:

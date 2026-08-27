@@ -2678,6 +2678,27 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		WHERE 1=1`
 	args := []any{}
 
+	if len(opts.IDs) > 0 {
+		seen := make(map[string]struct{}, len(opts.IDs))
+		placeholders := make([]string, 0, len(opts.IDs))
+		for _, rawID := range opts.IDs {
+			id := strings.TrimSpace(rawID)
+			if id == "" {
+				continue
+			}
+			if _, duplicate := seen[id]; duplicate {
+				continue
+			}
+			seen[id] = struct{}{}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if len(placeholders) == 0 {
+			return []SessionSummary{}, nil
+		}
+		query += " AND s.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
 	if opts.ParentID != "" {
 		query += " AND s.parent_id = ?"
 		args = append(args, opts.ParentID)

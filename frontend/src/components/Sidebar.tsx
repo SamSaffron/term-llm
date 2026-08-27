@@ -197,7 +197,8 @@ function SessionRow({ session }: { session: Session }) {
   const running =
     Boolean(session.activeRun) ||
     Boolean(
-      projection && ['connecting', 'streaming', 'cancelling'].includes(projection.run.status),
+      projection &&
+      ['connecting', 'checking', 'streaming', 'cancelling'].includes(projection.run.status),
     );
   const messageCount = sessionMessageCount(session);
   const activityAt = session.lastMessageAt || session.created;

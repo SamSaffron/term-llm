@@ -50,8 +50,8 @@ interface WebRTCRequestInit extends RequestInit {
 interface PendingRequest {
   onHeaders(headers: HeadersInit, status: number): void;
   onChunk(fragment: string): void;
-  onChunkFailure(error: unknown): void;
   onDone(status: number): void;
+  onFrameFailure(error: unknown): void;
   fallback(): void;
 }
 const errorMessage = (error: unknown): string =>
@@ -508,17 +508,25 @@ export function installWebRTC(): () => void {
     const pending = pendingRequests.get(frame.id);
     if (!pending) return;
 
-    if (frame.type === 'headers') {
-      pending.onHeaders(frame.headers || {}, frame.status || 200);
-    } else if (frame.type === 'chunk') {
-      try {
+    try {
+      if (frame.type === 'headers') {
+        pending.onHeaders(frame.headers || {}, frame.status || 200);
+      } else if (frame.type === 'chunk') {
         pending.onChunk(frame.data || '');
-      } catch (error) {
-        pending.onChunkFailure(error);
+      } else if (frame.type === 'done') {
+        pending.onDone(frame.status || 200);
+        pendingRequests.delete(frame.id);
       }
-    } else if (frame.type === 'done') {
-      pending.onDone(frame.status || 200);
+    } catch (error) {
+      // Every application callback shares one terminal settlement path. A
+      // throwing header/done callback must not strand the request after its
+      // first-frame timeout has been cleared.
       pendingRequests.delete(frame.id);
+      try {
+        pending.onFrameFailure(error);
+      } catch {
+        /* The request has already been removed and cannot be stranded. */
+      }
     }
   }
 
@@ -720,6 +728,7 @@ export function installWebRTC(): () => void {
           requestSent &&
           !serverDone &&
           (gotResponse || transportRetrySafe) &&
+          (transportRetrySafe || resolved) &&
           requestChannel?.readyState === 'open'
         ) {
           try {
@@ -901,10 +910,22 @@ export function installWebRTC(): () => void {
           responseBytes += chunk.length;
           if (streamController) streamController.enqueue(encoder.encode(chunk));
         },
-        onChunkFailure(error) {
-          diag('chunk delivery failed: ' + errorMessage(error));
-          cleanup('chunk-delivery-failure');
-          errorStream(error);
+        onFrameFailure(error) {
+          diag('frame callback failed: ' + errorMessage(error));
+          cleanup('frame-callback-failure');
+          if (!resolved) {
+            closeStream();
+            if (transportRetrySafe) resolveOnce(originalFetch(urlStr, options));
+            else {
+              const unknown = new Error(
+                'WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.',
+              );
+              unknown.name = 'UnknownMutationOutcomeError';
+              rejectOnce(unknown);
+            }
+          } else {
+            errorStream(error);
+          }
           triggerRenegotiation();
         },
         onDone(status) {
@@ -960,9 +981,17 @@ export function installWebRTC(): () => void {
         diag('send error: ' + errorMessage(error));
         cleanup('send-error');
         closeStream();
-        // A synchronous send failure proves that no frame left this browser,
-        // so even a non-idempotent mutation is safe to send once over HTTPS.
-        resolveOnce(originalFetch(urlStr, options));
+        // A browser send() exception is not an application-level delivery
+        // acknowledgement. Replay only operations whose server contract is
+        // idempotent (with the same key); otherwise report an unknown outcome.
+        if (transportRetrySafe) resolveOnce(originalFetch(urlStr, options));
+        else {
+          const unknown = new Error(
+            'WebRTC mutation outcome is unknown; the request was not replayed over HTTPS.',
+          );
+          unknown.name = 'UnknownMutationOutcomeError';
+          rejectOnce(unknown);
+        }
         triggerRenegotiation();
       }
     });

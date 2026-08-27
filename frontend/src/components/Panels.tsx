@@ -419,8 +419,17 @@ function DiffAction({
   );
 }
 
-function splitDiffPath(path: string): { base: string; dir: string } {
-  const display = String(path || '').replace(/^\/+/, '');
+function splitDiffPath(path: string, workingDir = ''): { base: string; dir: string } {
+  const normalizedPath = String(path || '').replaceAll('\\', '/');
+  const normalizedWorkingDir = String(workingDir || '')
+    .replaceAll('\\', '/')
+    .replace(/\/+$/, '');
+  const rootName = normalizedWorkingDir.split('/').filter(Boolean).at(-1) || '';
+  const display = (
+    rootName && normalizedPath.startsWith(`${normalizedWorkingDir}/`)
+      ? `${rootName}/${normalizedPath.slice(normalizedWorkingDir.length + 1)}`
+      : normalizedPath
+  ).replace(/^\/+/, '');
   const index = display.lastIndexOf('/');
   return index < 0
     ? { base: display, dir: '' }
@@ -435,7 +444,14 @@ function File({ file }: { file: DiffFile }) {
   const lines = file.lines || [];
   const kind = fileKind(file);
   const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
-  const name = splitDiffPath(file.path);
+  const session = store.activeSession.value;
+  const project = store.projects.value.find(
+    (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
+  );
+  const name = splitDiffPath(
+    file.path,
+    session?.worktreeDir || session?.workingDir || project?.path || '',
+  );
   const canExpandContext =
     !file.truncated &&
     lines.length > 0 &&
@@ -550,17 +566,7 @@ function File({ file }: { file: DiffFile }) {
               </button>
             </div>
           )}
-          {file.baselineState === 'preexisting_dirty' && (
-            <div class="diff-error">
-              The attributed transition started from content that was already dirty.
-            </div>
-          )}
-          {file.truncated && (
-            <div class="diff-error">
-              Diff content unavailable ({file.contentStatus || 'retention unavailable'}); line
-              counts may be partial.
-            </div>
-          )}
+          {file.truncated && <div class="diff-error">Diff unavailable.</div>}
           {file.image ? (
             <div class={`diff-image-comparison diff-image-${legacyKind}`}>
               {kind !== 'add' && file.beforeURL && (
@@ -810,12 +816,6 @@ export function DiffSidebar() {
         <span class="diff-sidebar-totals">
           {adds > 0 && <span class="diff-sidebar-totals-add">+{adds}</span>}
           {dels > 0 && <span class="diff-sidebar-totals-del">−{dels}</span>}
-          {state.unavailableLineCountFiles > 0 && (
-            <span class="diff-count-muted" title="Attributed files with unavailable line counts">
-              {' '}
-              partial ({state.unavailableLineCountFiles})
-            </span>
-          )}
         </span>
         <button
           class="icon-btn diff-bulk-toggle"
@@ -916,17 +916,6 @@ export function DiffSidebar() {
           <div class="diff-empty">No file changes in this scope.</div>
         )}
       </div>
-      {state.materializations.length > 0 && (
-        <details class="diff-observations">
-          <summary>Materialized outputs ({state.materializations.length})</summary>
-          {state.materializations.map((item) => (
-            <div key={item.id}>
-              {item.root || item.sampledPaths[0] || 'Output'} — {item.createdCount} created,{' '}
-              {item.modifiedCount} modified, {item.deletedCount} deleted (no authored line totals)
-            </div>
-          ))}
-        </details>
-      )}
       {comments.length > 0 && (
         <div class="diff-queue-bar">
           <span class="diff-queue-count" role="status" aria-live="polite">

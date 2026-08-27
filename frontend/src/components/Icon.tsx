@@ -2,6 +2,7 @@ import type { JSX } from 'preact';
 
 type IconName =
   | 'add'
+  | 'alert-circle'
   | 'arrow-left'
   | 'branch'
   | 'check'
@@ -14,6 +15,7 @@ type IconName =
   | 'diff'
   | 'edit'
   | 'expand'
+  | 'info'
   | 'interject'
   | 'menu'
   | 'microphone'
@@ -28,6 +30,13 @@ const paths: Record<IconName, JSX.Element> = {
     <>
       <path d="M12 5v14" />
       <path d="M5 12h14" />
+    </>
+  ),
+  'alert-circle': (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v5" />
+      <path d="M12 16h.01" />
     </>
   ),
   'arrow-left': (
@@ -95,6 +104,13 @@ const paths: Record<IconName, JSX.Element> = {
       <path d="m3 21 6-6" />
       <path d="M16 21h5v-5" />
       <path d="m21 21-6-6" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
     </>
   ),
   interject: (

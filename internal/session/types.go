@@ -173,6 +173,7 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
+	IDs              []string              // Restrict to these stable session IDs (deduplicated by the store)
 	Name             string                // Filter by name
 	Provider         string                // Filter by provider
 	Model            string                // Filter by model

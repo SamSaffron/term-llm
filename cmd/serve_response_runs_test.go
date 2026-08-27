@@ -1078,6 +1078,47 @@ func TestProviderTurnIdentitySkipsToolOnlyAssistantSegments(t *testing.T) {
 	}
 }
 
+func TestToolArgumentDeltaCarriesStableIdentityAndProviderTurn(t *testing.T) {
+	server := &serveServer{}
+	run := newResponseRun("resp_tool_identity", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	state := newResponseRunStreamState("mock", "")
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
+		Type:                 llm.EventToolCall,
+		Tool:                 &llm.ToolCall{ID: "call-parallel", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)},
+		ProviderTurnIndex:    4,
+		ProviderTurnIndexSet: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantEvents := map[string]bool{
+		"response.output_item.added":             false,
+		"response.function_call_arguments.delta": false,
+		"response.output_item.done":              false,
+	}
+	for _, event := range run.events {
+		if _, ok := wantEvents[event.Event]; !ok {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["call_id"] != "call-parallel" || payload["item_id"] != "fc_call-parallel" {
+			t.Fatalf("%s identity = %#v", event.Event, payload)
+		}
+		if payload["provider_turn_index"] != float64(4) {
+			t.Fatalf("%s provider turn = %#v", event.Event, payload)
+		}
+		wantEvents[event.Event] = true
+	}
+	for event, found := range wantEvents {
+		if !found {
+			t.Fatalf("missing %s", event)
+		}
+	}
+}
+
 func TestAppendResponseRunEventRejectsUnverifiedClientToolFileChanges(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	runtime := &serveRuntime{engine: llm.NewEngine(llm.NewMockProvider("mock"), registry)}
