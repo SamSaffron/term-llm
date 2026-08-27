@@ -47,7 +47,6 @@
 .plan-toggle.complete {
   width: var(--header-action-height);
   padding-inline: 0;
-  border-color: color-mix(in srgb, var(--accent-green) 35%, var(--border));
 }
 
 .plan-unseen-dot {

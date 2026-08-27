@@ -264,7 +264,7 @@ export function Header() {
             {showWorktree && (
               <button
                 type="button"
-                class={`chip-trigger worktree-trigger ${session && !store.draftActive.value ? 'locked' : ''}`}
+                class={`chip-trigger worktree-trigger header-action ${session && !store.draftActive.value ? 'locked' : ''}`}
                 id="chipWorktreeTrigger"
                 aria-label="Worktree"
                 onClick={() => {
