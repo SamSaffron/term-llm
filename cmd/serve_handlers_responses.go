@@ -888,6 +888,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
+	s.scheduleAutoTitle(sessionID, runtime.providerKey)
 
 	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID, created))
 }

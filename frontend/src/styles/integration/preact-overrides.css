@@ -477,9 +477,8 @@
 }
 
 .diff-comment-panel {
-  grid-column: 1 / -1;
+  grid-column: 3 / -1;
   width: auto;
-  margin: 0.45rem 0.6rem 0.65rem;
   white-space: normal;
 }
 

@@ -517,6 +517,7 @@ type ServeConfig struct {
 	Platforms              []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
 	ApprovalMode           string              `mapstructure:"approval_mode" yaml:"approval_mode,omitempty"`
 	BasePath               string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	AutoTitle              bool                `mapstructure:"auto_title" yaml:"auto_title"`
 	Title                  string              `mapstructure:"title" yaml:"title,omitempty"`
 	DisableLocationSharing bool                `mapstructure:"disable_location_sharing" yaml:"disable_location_sharing,omitempty"`
 	FilesDir               string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`

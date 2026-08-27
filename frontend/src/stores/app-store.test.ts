@@ -703,6 +703,75 @@ describe('AppStore compatibility behavior', () => {
     expect(store.visibleMessages.value).toEqual([]);
   });
 
+  it('reorders sessions when status polling observes activity from another tab', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [
+      { ...session(), id: 'recent', number: 2, lastMessageAt: 1_800_000_002_000 },
+      { ...session(), id: 'updated-elsewhere', number: 1, lastMessageAt: 1_800_000_001_000 },
+    ];
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [
+        { id: 'updated-elsewhere', last_message_at: 1_800_000_003_000 },
+        { id: 'recent', last_message_at: 1_800_000_002_000 },
+      ],
+    }));
+
+    await (store as unknown as { refreshStatus(): Promise<void> }).refreshStatus();
+
+    expect(store.sessions.value.map((entry) => entry.id)).toEqual(['updated-elsewhere', 'recent']);
+  });
+
+  it('merges generated session titles from status polling without overriding an open rename', async () => {
+    const store = new AppStore(config);
+    const target = session();
+    store.sessions.value = [target];
+    store.activeSessionId.value = target.id;
+    store.endpoints.sessionStatus = vi.fn(async () => ({
+      sessions: [
+        {
+          id: target.id,
+          short_title: 'Fix Actions Cache Key',
+          long_title: 'Fix stale GitHub Actions dependency caching',
+          transcript_rev: 1,
+        },
+      ],
+    }));
+    const internals = store as unknown as { refreshStatus(): Promise<void> };
+
+    await internals.refreshStatus();
+    expect(store.sessions.value[0]).toMatchObject({
+      title: 'Fix Actions Cache Key',
+      longTitle: 'Fix stale GitHub Actions dependency caching',
+    });
+
+    store.sessions.value = [{ ...store.sessions.value[0], title: 'Editing this title' }];
+    store.renameTarget.value = store.sessions.value[0];
+    await internals.refreshStatus();
+    expect(store.sessions.value[0].title).toBe('Editing this title');
+  });
+
+  it('bounds post-completion title reconciliation to two status refreshes', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new AppStore(config);
+      const internals = store as unknown as {
+        refreshStatus(): Promise<void>;
+        scheduleTitleReconciliation(sessionId: string): void;
+      };
+      internals.refreshStatus = vi.fn(async () => undefined);
+
+      internals.scheduleTitleReconciliation('s1');
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(internals.refreshStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(internals.refreshStatus).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(internals.refreshStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reconciles stale pending intents during idle status polling', async () => {
     const seed = new AppStore(config);
     persistPendingIntent(localStorage, seed.keys.pendingIntents, 's1', {

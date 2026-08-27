@@ -656,7 +656,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		if err := run.complete(map[string]any{"response": completeResponse}, result.Usage, result.SessionUsage); err != nil {
 			// Keep parity with the normal path: best-effort terminal event.
 			_ = err
+			return
 		}
+		s.scheduleAutoTitle(sessionID, runtime.providerKey)
 		return
 	}
 
@@ -749,7 +751,9 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	if effort := strings.TrimSpace(exec.plan.requestedEffort); effort != "" {
 		completeResponse["reasoning_effort"] = effort
 	}
-	_ = run.complete(map[string]any{"response": completeResponse}, result.Usage, result.SessionUsage)
+	if err := run.complete(map[string]any{"response": completeResponse}, result.Usage, result.SessionUsage); err == nil {
+		s.scheduleAutoTitle(sessionID, runtime.providerKey)
+	}
 }
 
 func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, exec *responseModelSwapExecution) (serveRunResult, string, error) {

@@ -73,6 +73,13 @@ describe('touch affordances', () => {
   });
 });
 
+describe('diff review styles', () => {
+  it('anchors comment cards to code without pinning hunk text to the action column', () => {
+    expect(appCSS).toMatch(/\.diff-comment-panel\s*\{[^}]*grid-column: 3 \/ -1;/s);
+    expect(appCSS).not.toMatch(/\.diff-code\s*\{[^}]*grid-column:/s);
+  });
+});
+
 describe('syntax theme', () => {
   it('defines contrasting dark and light palettes', () => {
     expect(appCSS).toContain('--syntax-text: #c9d1d9');

@@ -487,21 +487,62 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Inline comment' }), 'Queue this');
-    expect(screen.getByRole('button', { name: 'Send now' })).toBeInTheDocument();
+    let firstEditor = screen.getByRole('textbox', { name: 'Inline comment' });
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
+    await userEvent.type(firstEditor, 'Temporary draft');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    expect(
+      screen.queryByRole('region', { name: 'Inline comments for line 1' }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    firstEditor = screen.getByRole('textbox', { name: 'Inline comment' });
+    expect(firstEditor).toHaveValue('Temporary draft');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 2' }));
+    expect(screen.getByRole('textbox', { name: 'Inline comment' })).toHaveValue('');
+    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    firstEditor = screen.getByRole('textbox', { name: 'Inline comment' });
+    expect(firstEditor).toHaveValue('Temporary draft');
+
     await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /Queue comment/ }));
+    await userEvent.clear(firstEditor);
+    await waitFor(() =>
+      expect(screen.queryByText('Deliver later as one batch')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: 'More send options' })).toBeDisabled();
+    await userEvent.type(firstEditor, 'Queue this');
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
+    await userEvent.click(screen.getByRole('button', { name: /Queue comment/ }));
     expect(store.queueDiffComment).toHaveBeenCalledWith(
       expect.objectContaining({ path: 'main.go', line: 1, body: 'Queue this' }),
     );
     expect(store.sendDiffComment).not.toHaveBeenCalled();
+    expect(screen.getByRole('region', { name: 'Inline comments for line 1' })).toBeInTheDocument();
+    firstEditor.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(
+      screen.queryByRole('region', { name: 'Inline comments for line 1' }),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Comment on line 1' })).toHaveFocus(),
+    );
+    expect(store.diff.value.open).toBe(true);
 
     await userEvent.click(screen.getByRole('button', { name: 'Comment on line 2' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Inline comment' }), 'Send this');
-    await userEvent.click(screen.getByRole('button', { name: 'Send now' }));
+    const secondEditor = screen.getByRole('textbox', { name: 'Inline comment' });
+    await userEvent.type(secondEditor, 'Send this');
+    await userEvent.keyboard('{Escape}');
+    expect(secondEditor).toHaveValue('Send this');
+    expect(store.diff.value.open).toBe(true);
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
     expect(store.sendDiffComment).toHaveBeenCalledWith(
       expect.objectContaining({ path: 'main.go', line: 2, body: 'Send this' }),
     );
+    expect(screen.getByRole('region', { name: 'Inline comments for line 2' })).toBeInTheDocument();
+    expect(secondEditor).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
   });
 
   it('leaves a per-line trail for sent and queued inline comments', async () => {
@@ -518,6 +559,7 @@ describe('Preact-owned chat surfaces', () => {
           side: 'new',
           line: 1,
           body: 'Sent instruction',
+          createdAt: Math.floor((Date.now() - 120_000) / 1000),
           sessionId: 's1',
           scope: 'last_turn',
         },
@@ -555,7 +597,10 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.click(marker);
     expect(screen.getByText('Sent instruction')).toBeInTheDocument();
     expect(screen.getByText('Queued instruction')).toBeInTheDocument();
-    expect(screen.getByText('Queued — not sent')).toBeInTheDocument();
+    expect(screen.getByText('Queued')).toBeInTheDocument();
+    const timestamp = screen.getByText(/m ago/).closest('time');
+    expect(timestamp).toHaveAttribute('datetime');
+    expect(timestamp).toHaveAttribute('title');
   });
 
   it('ports the tiny legacy diff actions and transient copied state', async () => {
@@ -1147,13 +1192,16 @@ describe('Preact-owned chat surfaces', () => {
 
     const send = screen.getByRole('button', { name: 'Send message' });
     const sendIcon = send.querySelector('.arrow')?.innerHTML;
-    expect(send).toBeDisabled();
+    expect(send).toBeEnabled();
+    expect(send).toHaveClass('loading');
+    expect(send.querySelector('.spinner')).toBeInTheDocument();
     expect(send).not.toHaveClass('interject');
 
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
 
     const interject = screen.getByRole('button', { name: 'Interject' });
     expect(interject).toBeEnabled();
+    expect(interject).not.toHaveClass('loading');
     expect(interject).toHaveClass('interject');
     expect(interject).toHaveAttribute('title', 'Interject');
     expect(interject.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);

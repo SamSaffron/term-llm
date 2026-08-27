@@ -198,6 +198,7 @@ export function Composer() {
   );
   const hasDraft = Boolean(store.prompt.value.trim()) || store.attachments.value.length > 0;
   const interjecting = store.streaming.value && hasDraft;
+  const loading = store.streaming.value && !hasDraft;
   const sendLabel = bindingBlocked
     ? 'Project unavailable'
     : interjecting
@@ -518,15 +519,16 @@ export function Composer() {
               </button>
             )}
             <button
-              class={`send-btn ${interjecting ? 'interject' : ''}`}
+              class={`send-btn ${loading ? 'loading' : ''} ${interjecting ? 'interject' : ''}`}
               id="sendBtn"
               type="button"
               title={sendLabel}
               aria-label={sendLabel}
-              disabled={bindingBlocked || !hasDraft}
+              disabled={bindingBlocked || (!hasDraft && !loading)}
               onClick={sendOrCommand}
             >
               <Icon class="arrow" name={interjecting ? 'interject' : 'send'} />
+              <span class="spinner" aria-hidden="true" />
             </button>
           </div>
         </div>

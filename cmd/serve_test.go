@@ -10464,8 +10464,8 @@ func TestResponseRunDeadlineMessageUsesConfiguredLimitOnlyWhenRunContextExpired(
 
 	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	if got := responseRunDeadlineMessage(expiredCtx, timeout); !strings.Contains(got, "timed out after 45 minutes") {
-		t.Fatalf("expired run context message = %q, want configured timeout", got)
+	if got := responseRunDeadlineMessage(expiredCtx, timeout); !strings.Contains(got, "no LLM response completed within 45 minutes") {
+		t.Fatalf("expired run context message = %q, want configured inactivity timeout", got)
 	}
 }
 

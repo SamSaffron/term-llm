@@ -22,64 +22,65 @@ import (
 )
 
 type serveRuntime struct {
-	mu                   sync.Mutex
-	goalMu               sync.Mutex
-	interruptMu          sync.Mutex
-	responseMu           sync.Mutex // guards lastResponseID and responseIDs
-	askUserMu            sync.Mutex
-	approvalMu           sync.Mutex
-	uiStateMu            sync.Mutex
-	provider             llm.Provider
-	providerKey          string
-	engine               *llm.Engine
-	toolMgr              *tools.ToolManager
-	mcpManager           *mcp.Manager
-	toolDiscovery        config.ToolDiscoveryConfig
-	store                session.Store
-	goalStore            session.Store
-	syntheticUserCB      func(context.Context, llm.Message) error
-	baseSystemPrompt     string // agent-resolved prompt before workspace skill metadata
-	systemPrompt         string
-	history              []llm.Message
-	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
-	search               bool
-	toolsSetting         string
-	mcpSetting           string
-	agentName            string
-	sessionMeta          *session.Session
-	forceExternalSearch  bool
-	maxTurns             int
-	toolMap              map[string]string
-	debug                bool
-	debugRaw             bool
-	autoCompact          bool
-	borrowedEngine       bool
-	skipProviderCleanup  bool
-	defaultModel         string
-	yoloMode             bool
-	compacting           atomic.Bool
-	lastUsedUnixNano     atomic.Int64
-	activeInterrupt      *runtimeInterruptState
-	interjectionCalls    map[string]*runtimeInterjectionCall
-	lastResponseID       string
-	responseIDs          []string
-	cumulativeUsage      llm.Usage
-	pendingAskUsers      map[string]*servePendingAskUser
-	askUserFunc          func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
-	assistantSnapshotCB  llm.AssistantSnapshotCallback
-	responseCompletedCB  llm.ResponseCompletedCallback
-	turnCompletedCB      llm.TurnCompletedCallback
-	compactionCB         llm.CompactionCallback
-	pendingApprovals     map[string]*servePendingApproval
-	approvalEventFunc    func(event string, data map[string]any) error
-	approvalCtx          context.Context
-	pauseResponseTimeout func() func()
-	lastUIRunError       string
-	platform             string
-	platformMessages     agents.PlatformMessagesConfig
-	lastInjectedPlatform string
-	sideQuestion         sideQuestionRuntime
-	sideProviderFactory  func(providerKey, model string) (llm.Provider, error)
+	mu                     sync.Mutex
+	goalMu                 sync.Mutex
+	interruptMu            sync.Mutex
+	responseMu             sync.Mutex // guards lastResponseID and responseIDs
+	askUserMu              sync.Mutex
+	approvalMu             sync.Mutex
+	uiStateMu              sync.Mutex
+	provider               llm.Provider
+	providerKey            string
+	engine                 *llm.Engine
+	toolMgr                *tools.ToolManager
+	mcpManager             *mcp.Manager
+	toolDiscovery          config.ToolDiscoveryConfig
+	store                  session.Store
+	goalStore              session.Store
+	syntheticUserCB        func(context.Context, llm.Message) error
+	baseSystemPrompt       string // agent-resolved prompt before workspace skill metadata
+	systemPrompt           string
+	history                []llm.Message
+	historyPersisted       bool // history matches the persisted active transcript and can safely append next turn
+	search                 bool
+	toolsSetting           string
+	mcpSetting             string
+	agentName              string
+	sessionMeta            *session.Session
+	forceExternalSearch    bool
+	maxTurns               int
+	toolMap                map[string]string
+	debug                  bool
+	debugRaw               bool
+	autoCompact            bool
+	borrowedEngine         bool
+	skipProviderCleanup    bool
+	defaultModel           string
+	yoloMode               bool
+	compacting             atomic.Bool
+	lastUsedUnixNano       atomic.Int64
+	activeInterrupt        *runtimeInterruptState
+	interjectionCalls      map[string]*runtimeInterjectionCall
+	lastResponseID         string
+	responseIDs            []string
+	cumulativeUsage        llm.Usage
+	pendingAskUsers        map[string]*servePendingAskUser
+	askUserFunc            func(context.Context, []tools.AskUserQuestion) ([]tools.AskUserAnswer, error)
+	assistantSnapshotCB    llm.AssistantSnapshotCallback
+	responseCompletedCB    llm.ResponseCompletedCallback
+	turnCompletedCB        llm.TurnCompletedCallback
+	compactionCB           llm.CompactionCallback
+	pendingApprovals       map[string]*servePendingApproval
+	approvalEventFunc      func(event string, data map[string]any) error
+	approvalCtx            context.Context
+	pauseResponseTimeout   func() func()
+	refreshResponseTimeout func()
+	lastUIRunError         string
+	platform               string
+	platformMessages       agents.PlatformMessagesConfig
+	lastInjectedPlatform   string
+	sideQuestion           sideQuestionRuntime
+	sideProviderFactory    func(providerKey, model string) (llm.Provider, error)
 }
 
 type runtimeInterruptState struct {
@@ -112,6 +113,15 @@ func (rt *serveRuntime) pauseForInteractiveWait() func() {
 		return func() {}
 	}
 	return pause()
+}
+
+func (rt *serveRuntime) refreshResponseDeadline() {
+	rt.approvalMu.Lock()
+	refresh := rt.refreshResponseTimeout
+	rt.approvalMu.Unlock()
+	if refresh != nil {
+		refresh()
+	}
 }
 
 func (rt *serveRuntime) emitGuardianReview(event tools.GuardianEvent) {
@@ -1685,6 +1695,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
 
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		rt.refreshResponseDeadline()
 		assistantMsg = tagResponseRunMessage(cbCtx, assistantMsg, callbackTurnIndex)
 		if run := responseRunFromContext(cbCtx); run != nil && run.boundary != nil {
 			run.boundary.UpdateAssistant(run.id, assistantMsg)
@@ -1703,6 +1714,11 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, callbackTurnIndex int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+		// Text-only and inline-tool provider responses bypass ResponseCompletedCallback
+		// and deliver their assistant message here instead.
+		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
+			rt.refreshResponseDeadline()
+		}
 		for i := range msgs {
 			msgs[i] = tagResponseRunMessage(cbCtx, msgs[i], callbackTurnIndex)
 		}

@@ -14,6 +14,42 @@ import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
 import { ChipPicker } from './ChipPicker';
 
+function commentTimestamp(
+  createdAt: number | undefined,
+  now: number,
+): { dateTime: string; label: string; title: string } | null {
+  if (!createdAt || !Number.isFinite(createdAt)) return null;
+  const timestamp = createdAt < 10_000_000_000 ? createdAt * 1000 : createdAt;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return null;
+  const elapsed = Math.max(0, now - timestamp);
+  let label: string;
+  if (elapsed < 60_000) label = 'just now';
+  else {
+    const minutes = Math.floor(elapsed / 60_000);
+    if (minutes < 60) label = `${minutes}m ago`;
+    else {
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) label = `${hours}h ago`;
+      else {
+        const days = Math.floor(hours / 24);
+        label = days < 7 ? `${days}d ago` : date.toLocaleDateString();
+      }
+    }
+  }
+  return { dateTime: date.toISOString(), label, title: date.toLocaleString() };
+}
+
+function resizeCommentEditor(editor: HTMLTextAreaElement): void {
+  editor.style.height = 'auto';
+  const computedMaxHeight = getComputedStyle(editor).maxHeight;
+  const parsedMaxHeight = Number.parseFloat(computedMaxHeight);
+  const maxHeight = computedMaxHeight.endsWith('rem')
+    ? parsedMaxHeight * Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
+    : parsedMaxHeight;
+  editor.style.height = `${Math.min(editor.scrollHeight, Number.isFinite(maxHeight) ? maxHeight : 160)}px`;
+}
+
 function DiffCode({
   line,
   emphasis,
@@ -79,6 +115,10 @@ function Line({
   onSubmit: (mode: 'send' | 'queue') => void;
 }) {
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
+  const affordance = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const editor = useRef<HTMLTextAreaElement>(null);
   const number = line.kind === 'delete' ? line.oldLine : line.newLine;
   const kind =
     line.kind === 'add'
@@ -88,13 +128,60 @@ function Line({
         : line.kind === 'hunk'
           ? 'hunk'
           : 'ctx';
+  const canSubmit = Boolean(body.trim());
+  const cancel = () => {
+    setSendMenuOpen(false);
+    onCancel();
+    requestAnimationFrame(() => affordance.current?.focus({ preventScroll: true }));
+  };
+  const submit = (mode: 'send' | 'queue') => {
+    if (!canSubmit) return;
+    setSendMenuOpen(false);
+    onSubmit(mode);
+  };
+  useEffect(() => {
+    if (!commenting) return;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [commenting]);
+  useEffect(() => {
+    if (!commenting || !canSubmit) setSendMenuOpen(false);
+  }, [canSubmit, commenting]);
+  useEffect(() => {
+    if (!commenting) return;
+    const frame = requestAnimationFrame(() => {
+      const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      panel.current?.scrollIntoView?.({
+        block: 'nearest',
+        behavior: reduceMotion ? 'auto' : 'smooth',
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [commenting]);
+  useEffect(() => {
+    if (!commenting || !editor.current) return;
+    resizeCommentEditor(editor.current);
+  }, [body, commenting]);
+  useEffect(() => {
+    if (!commenting || !editor.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (editor.current) resizeCommentEditor(editor.current);
+    });
+    observer.observe(editor.current);
+    return () => observer.disconnect();
+  }, [commenting]);
   return (
-    <div class={`diff-row ${kind}`} data-commentable={Boolean(number && line.kind !== 'hunk')}>
+    <div
+      class={`diff-row ${kind}${commenting ? ' commenting' : ''}`}
+      data-commentable={Boolean(number && line.kind !== 'hunk')}
+    >
       <span class="diff-ln">{line.oldLine || ''}</span>
       <span class="diff-ln">{line.newLine || ''}</span>
       <DiffCode line={line} emphasis={emphasis} lang={lang} />
       {number && line.kind !== 'hunk' && (
         <button
+          ref={affordance}
           class={`diff-comment-affordance${comments.length ? ' has-comments' : ''}${comments.some((comment) => comment.queued) ? ' queued' : ''}`}
           type="button"
           aria-label={
@@ -121,79 +208,102 @@ function Line({
       )}
       {commenting && (
         <div
+          ref={panel}
           class="diff-comment-panel"
           role="region"
           aria-label={`Inline comments for line ${number}`}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (sendMenuOpen) {
+              setSendMenuOpen(false);
+              editor.current?.focus();
+            } else if (!body.trim()) cancel();
+          }}
         >
-          {comments.length > 0 && (
-            <>
-              <div class="diff-comment-heading">
-                Line {number} · {line.kind === 'delete' ? 'original' : 'current'} version
-              </div>
-              {comments.map((comment) => (
-                <div
-                  class={`diff-comment-history-item${comment.queued ? ' queued' : ''}`}
-                  key={comment.id}
-                >
-                  <div class="diff-comment-history-text">{comment.body}</div>
-                  <div class="diff-comment-history-meta">
-                    {comment.queued
-                      ? 'Queued — not sent'
-                      : comment.optimistic
-                        ? 'Sending…'
-                        : 'Sent'}
-                  </div>
+          <div class="diff-comment-heading">
+            <span class="diff-comment-line-chip">Line {number}</span>
+            <span>{line.kind === 'delete' ? 'Original' : 'Current'} version</span>
+          </div>
+          {comments.map((comment) => {
+            const status = comment.queued ? 'queued' : comment.optimistic ? 'sending' : 'sent';
+            const timestamp = commentTimestamp(comment.createdAt, clock);
+            return (
+              <div class={`diff-comment-history-item ${status}`} key={comment.id}>
+                <div class="diff-comment-history-text">{comment.body}</div>
+                <div class="diff-comment-history-meta">
+                  <span class={`diff-comment-status ${status}`}>
+                    <span class="diff-comment-status-icon" aria-hidden="true">
+                      {status === 'sent' && <Icon name="check" />}
+                    </span>
+                    {status === 'queued' ? 'Queued' : status === 'sending' ? 'Sending' : 'Sent'}
+                  </span>
+                  {timestamp && (
+                    <time dateTime={timestamp.dateTime} title={timestamp.title}>
+                      {timestamp.label}
+                    </time>
+                  )}
                 </div>
-              ))}
-            </>
-          )}
+              </div>
+            );
+          })}
           <form
             class="diff-comment-editor"
             onSubmit={(event) => {
               event.preventDefault();
-              onSubmit('send');
+              submit('send');
             }}
           >
             <textarea
+              ref={editor}
               autoFocus
               aria-label="Inline comment"
-              placeholder={comments.length ? 'Add a follow-up instruction…' : undefined}
+              placeholder={comments.length ? 'Add a follow-up…' : 'Add a comment…'}
               value={body}
               onInput={(event) => onBody(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  submit('send');
+                }
+              }}
             />
             <div class="diff-comment-editor-actions">
-              <button class="diff-comment-cancel" type="button" onClick={onCancel}>
+              <span class="diff-comment-shortcut">⌘/Ctrl + Enter to send</span>
+              <button class="diff-comment-cancel" type="button" onClick={cancel}>
                 Cancel
               </button>
               <div class="diff-comment-send-split">
-                <button class="diff-comment-send" type="submit">
+                <button class="diff-comment-send" type="submit" disabled={!canSubmit}>
                   Send now
                 </button>
                 <button
                   class="diff-comment-send-more"
                   type="button"
                   aria-label="More send options"
-                  aria-haspopup="menu"
                   aria-expanded={sendMenuOpen}
+                  disabled={!canSubmit}
                   onClick={() => setSendMenuOpen(!sendMenuOpen)}
                 >
                   ▾
                 </button>
                 {sendMenuOpen && (
-                  <div class="diff-comment-send-menu" role="menu">
+                  <div class="diff-comment-send-menu">
                     <button
                       class="diff-comment-send-option"
                       type="button"
-                      role="menuitem"
-                      onClick={() => onSubmit('send')}
+                      disabled={!canSubmit}
+                      onClick={() => submit('send')}
                     >
                       Send now
                     </button>
                     <button
                       class="diff-comment-send-option"
                       type="button"
-                      role="menuitem"
-                      onClick={() => onSubmit('queue')}
+                      disabled={!canSubmit}
+                      onClick={() => submit('queue')}
                     >
                       Queue comment
                       <small>Deliver later as one batch</small>
@@ -267,7 +377,7 @@ function File({ file }: { file: DiffFile }) {
   const store = useStore();
   const [limit, setLimit] = useState(500);
   const [commenting, setCommenting] = useState('');
-  const [body, setBody] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const lines = file.lines || [];
   const kind = fileKind(file);
   const legacyKind = kind === 'add' ? 'create' : kind === 'delete' ? 'delete' : 'modify';
@@ -285,8 +395,17 @@ function File({ file }: { file: DiffFile }) {
       emphasis.set(index, ranges.old);
       emphasis.set(index + 1, ranges.new);
     }
-  const submitComment = (mode: 'send' | 'queue', line: DiffLine) => {
+  const clearDraft = (key: string) => {
+    setDrafts((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  };
+  const submitComment = (mode: 'send' | 'queue', line: DiffLine, key: string) => {
     const number = line.kind === 'delete' ? line.oldLine : line.newLine;
+    const body = drafts[key] || '';
     if (!body.trim() || !number) return;
     const comment = {
       path: file.path,
@@ -299,8 +418,7 @@ function File({ file }: { file: DiffFile }) {
     };
     if (mode === 'queue') store.queueDiffComment(comment);
     else void store.sendDiffComment(comment);
-    setBody('');
-    setCommenting('');
+    clearDraft(key);
   };
   const patch = async () => {
     if (file.lines || file.patch) return unifiedPatchForFile(file);
@@ -445,17 +563,18 @@ function File({ file }: { file: DiffFile }) {
                       commentKey={key}
                       commenting={commenting === key}
                       comments={comments}
-                      body={body}
+                      body={drafts[key] || ''}
                       onComment={(next) => {
-                        setBody('');
-                        setCommenting(next);
+                        setCommenting((current) => (current === next ? '' : next));
                       }}
-                      onBody={setBody}
+                      onBody={(value) => {
+                        setDrafts((current) => ({ ...current, [key]: value }));
+                      }}
                       onCancel={() => {
-                        setBody('');
+                        clearDraft(key);
                         setCommenting('');
                       }}
-                      onSubmit={(mode) => submitComment(mode, line)}
+                      onSubmit={(mode) => submitComment(mode, line, key)}
                     />
                   );
                 })}

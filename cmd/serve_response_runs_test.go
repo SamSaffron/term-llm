@@ -19,6 +19,114 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+type responseTimeoutDelayTool struct {
+	delay time.Duration
+}
+
+func (t responseTimeoutDelayTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "response_timeout_delay", Description: "wait before continuing", Schema: map[string]any{"type": "object"}}
+}
+
+func (t responseTimeoutDelayTool) Execute(ctx context.Context, _ json.RawMessage) (llm.ToolOutput, error) {
+	select {
+	case <-time.After(t.delay):
+		return llm.ToolOutput{Content: "done"}, nil
+	case <-ctx.Done():
+		return llm.ToolOutput{}, ctx.Err()
+	}
+}
+
+func (responseTimeoutDelayTool) Preview(json.RawMessage) string { return "" }
+
+func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
+	const timeout = 500 * time.Millisecond
+	provider := llm.NewMockProvider("mock").
+		AddTurn(llm.MockTurn{
+			Delay: 300 * time.Millisecond,
+			ToolCalls: []llm.ToolCall{{
+				ID:        "call-delay",
+				Name:      "response_timeout_delay",
+				Arguments: json.RawMessage(`{}`),
+			}},
+		}).
+		AddTurn(llm.MockTurn{Text: "finished"})
+	registry := llm.NewToolRegistry()
+	registry.Register(responseTimeoutDelayTool{delay: 300 * time.Millisecond})
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       llm.NewEngine(provider, registry),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+	srv := &serveServer{
+		cfg:          serveServerConfig{responseTimeout: timeout},
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{llm.UserText("work")}, llm.Request{
+		SessionID: "sess_refresh_timeout",
+		Tools:     []llm.ToolSpec{responseTimeoutDelayTool{}.Spec()},
+	}, "sess_refresh_timeout", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		return stringValue(run.snapshot()["status"]) == "completed"
+	}, "response run to complete after refreshed timeout")
+}
+
+func TestResponseRunTimerRefreshStartsFreshInactivityWindow(t *testing.T) {
+	ctx, timer := newResponseRunTimer(200 * time.Millisecond)
+	defer timer.stop()
+
+	time.Sleep(130 * time.Millisecond)
+	timer.refresh()
+
+	select {
+	case <-ctx.Done():
+		t.Fatalf("timer elapsed at original deadline after refresh: %v", context.Cause(ctx))
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case <-ctx.Done():
+		if !responseRunTimedOut(ctx) {
+			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("refreshed inactivity window did not eventually expire")
+	}
+}
+
+func TestResponseRunTimerRefreshWhilePausedAppliesOnResume(t *testing.T) {
+	ctx, timer := newResponseRunTimer(150 * time.Millisecond)
+	defer timer.stop()
+
+	time.Sleep(80 * time.Millisecond)
+	resume := timer.pause()
+	timer.refresh()
+	time.Sleep(180 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("timer elapsed while paused after refresh: %v", err)
+	}
+
+	resume()
+	select {
+	case <-ctx.Done():
+		t.Fatalf("refreshed timer elapsed too soon after resume: %v", context.Cause(ctx))
+	case <-time.After(80 * time.Millisecond):
+	}
+	select {
+	case <-ctx.Done():
+		if !responseRunTimedOut(ctx) {
+			t.Fatalf("timer cause = %v, want response timeout", context.Cause(ctx))
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("refreshed timer did not expire after resume")
+	}
+}
+
 func TestResponseRunTimerExcludesInteractiveWait(t *testing.T) {
 	ctx, timer := newResponseRunTimer(500 * time.Millisecond)
 	defer timer.stop()

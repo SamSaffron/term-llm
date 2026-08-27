@@ -1488,27 +1488,68 @@ const (
 
 var errResponseRunTimeout = errors.New("response run timeout")
 
-// responseRunTimer bounds active execution time without charging time spent
-// waiting for a person to answer an interactive prompt.
+// responseRunTimer bounds inactivity between the user request and each completed
+// LLM response. Interactive waits pause the current inactivity window.
 type responseRunTimer struct {
-	mu        sync.Mutex
-	cancel    context.CancelCauseFunc
-	timer     *time.Timer
-	remaining time.Duration
-	activeAt  time.Time
-	pauses    int
-	stopped   bool
+	mu         sync.Mutex
+	cancel     context.CancelCauseFunc
+	timer      *time.Timer
+	timeout    time.Duration
+	remaining  time.Duration
+	activeAt   time.Time
+	generation uint64
+	pauses     int
+	stopped    bool
 }
 
 func newResponseRunTimer(timeout time.Duration) (context.Context, *responseRunTimer) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t := &responseRunTimer{
 		cancel:    cancel,
+		timeout:   timeout,
 		remaining: timeout,
-		activeAt:  time.Now(),
 	}
-	t.timer = time.AfterFunc(timeout, func() { cancel(errResponseRunTimeout) })
+	t.mu.Lock()
+	t.armLocked(timeout)
+	t.mu.Unlock()
 	return ctx, t
+}
+
+func (t *responseRunTimer) armLocked(remaining time.Duration) {
+	t.generation++
+	generation := t.generation
+	t.activeAt = time.Now()
+	t.timer = time.AfterFunc(remaining, func() {
+		t.mu.Lock()
+		if t.stopped || t.pauses > 0 || t.generation != generation {
+			t.mu.Unlock()
+			return
+		}
+		t.remaining = 0
+		t.stopped = true
+		t.mu.Unlock()
+		t.cancel(errResponseRunTimeout)
+	})
+}
+
+// refresh starts a fresh inactivity window after an LLM response completes.
+func (t *responseRunTimer) refresh() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stopped {
+		return
+	}
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+	t.generation++ // Invalidate a callback already leaving the stopped timer.
+	t.remaining = t.timeout
+	if t.pauses == 0 {
+		t.armLocked(t.remaining)
+	}
 }
 
 func (t *responseRunTimer) pause() func() {
@@ -1526,10 +1567,12 @@ func (t *responseRunTimer) pause() func() {
 		if t.timer != nil {
 			t.timer.Stop()
 		}
+		t.generation++ // Invalidate a callback already leaving the stopped timer.
 		t.remaining -= time.Since(t.activeAt)
 		if t.remaining <= 0 {
 			t.remaining = 0
 			t.pauses = 0
+			t.stopped = true
 			expired = true
 		}
 	}
@@ -1557,9 +1600,8 @@ func (t *responseRunTimer) resume() {
 		return
 	}
 	remaining := t.remaining
-	t.activeAt = time.Now()
 	if remaining > 0 {
-		t.timer = time.AfterFunc(remaining, func() { t.cancel(errResponseRunTimeout) })
+		t.armLocked(remaining)
 	}
 	t.mu.Unlock()
 	if remaining <= 0 {
@@ -1577,6 +1619,7 @@ func (t *responseRunTimer) stop() {
 		return
 	}
 	t.stopped = true
+	t.generation++
 	if t.timer != nil {
 		t.timer.Stop()
 	}
@@ -1589,7 +1632,7 @@ func responseRunTimedOut(ctx context.Context) bool {
 }
 
 func responseRunTimeoutMessage(timeout time.Duration) string {
-	return fmt.Sprintf("Response run timed out after %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
+	return fmt.Sprintf("Timed out because no LLM response completed within %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
 }
 
 func responseRunDeadlineMessage(runCtx context.Context, timeout time.Duration) string {
@@ -2790,8 +2833,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - Clients reconnect via GET /v1/responses/{id}/events?after=N and replay
 	//    events they missed, which only works if the run kept going.
 	//  - Explicit cancellation is available via POST /v1/responses/{id}/cancel.
-	//  - serve.response_timeout bounds active execution, excluding time spent
-	//    waiting for a person to answer an interactive prompt.
+	//  - serve.response_timeout bounds inactivity until the next completed LLM
+	//    response, excluding time spent waiting for an interactive answer.
 	runCtx, runTimer := newResponseRunTimer(s.responseTimeout())
 	cancel := runTimer.stop
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
@@ -2878,12 +2921,14 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}
 		runtime.approvalCtx = runCtx
 		runtime.pauseResponseTimeout = runTimer.pause
+		runtime.refreshResponseTimeout = runTimer.refresh
 		runtime.approvalMu.Unlock()
 		defer func() {
 			runtime.approvalMu.Lock()
 			runtime.approvalEventFunc = nil
 			runtime.approvalCtx = nil
 			runtime.pauseResponseTimeout = nil
+			runtime.refreshResponseTimeout = nil
 			runtime.approvalMu.Unlock()
 		}()
 
@@ -2996,7 +3041,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			"response": completeResponse,
 		}, result.Usage, result.SessionUsage); err != nil {
 			log.Printf("response run %s failed to append completion event: %v", respID, err)
+			return
 		}
+		s.scheduleAutoTitle(sessionID, runtime.providerKey)
 	}); err != nil {
 		cancel()
 		mgr.clearActiveRun(sessionID, respID)

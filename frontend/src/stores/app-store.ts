@@ -149,6 +149,10 @@ const listFrom = (value: Record<string, unknown>, ...keys: string[]): Record<str
   for (const key of keys) if (Array.isArray(value[key])) return array(value[key]);
   return [];
 };
+const compareSessionsByActivity = (left: Session, right: Session): number =>
+  Number(right.pinned) - Number(left.pinned) ||
+  (right.lastMessageAt || right.created) - (left.lastMessageAt || left.created) ||
+  (right.number || 0) - (left.number || 0);
 const normalizeMCPState = (value: unknown): { servers: MCPServer[]; enabled: string[] } => {
   const source = recordValue(value) || {};
   const enabled = Array.isArray(source.enabled)
@@ -333,6 +337,7 @@ export class AppStore {
   private sideQuestionEpoch = 0;
   private modelAbort: AbortController | null = null;
   private statusTimer = 0;
+  private titleRefreshTimers = new Map<string, number[]>();
   private lifecycleInstalled = false;
   private selectionEpoch = 0;
   private modelEpoch = 0;
@@ -675,9 +680,7 @@ export class AppStore {
     for (const [id, session] of existing)
       if (!merged.has(id) && (this.runs.peek()[id] || id.startsWith('draft_')))
         merged.set(id, session);
-    this.sessions.value = [...merged.values()].sort(
-      (a, b) => Number(b.pinned) - Number(a.pinned) || b.lastMessageAt - a.lastMessageAt,
-    );
+    this.sessions.value = [...merged.values()].sort(compareSessionsByActivity);
     this.projects.value = projects.map((project) => ({
       ...project,
       sessions: project.sessions?.map((summary) => merged.get(summary.id) || summary),
@@ -1326,7 +1329,20 @@ export class AppStore {
         () => void this.refreshSessionMessages(sessionId, next.run.finalRev || 0),
         0,
       );
+      if (next.run.status === 'completed') this.scheduleTitleReconciliation(sessionId);
     }
+  }
+
+  private scheduleTitleReconciliation(sessionId: string): void {
+    for (const timer of this.titleRefreshTimers.get(sessionId) || []) window.clearTimeout(timer);
+    const timers = [2_000, 8_000].map((delay, index) =>
+      window.setTimeout(() => {
+        if (document.visibilityState === 'visible')
+          void this.refreshStatus().catch(() => undefined);
+        if (index === 1) this.titleRefreshTimers.delete(sessionId);
+      }, delay),
+    );
+    this.titleRefreshTimers.set(sessionId, timers);
   }
 
   private async refreshSessionMessages(sessionId: string, targetRev = 0): Promise<void> {
@@ -2981,9 +2997,7 @@ export class AppStore {
     incoming.forEach((entry) =>
       existing.set(entry.id, this.mergeSession(existing.get(entry.id), entry)),
     );
-    this.sessions.value = [...existing.values()].sort(
-      (a, b) => Number(b.pinned) - Number(a.pinned) || b.lastMessageAt - a.lastMessageAt,
-    );
+    this.sessions.value = [...existing.values()].sort(compareSessionsByActivity);
     this.noProjectCursor.value = String(data.next_cursor || '');
   }
   async mutateProject(project: Project, patch: Record<string, unknown>): Promise<void> {
@@ -3098,31 +3112,40 @@ export class AppStore {
     const data = await this.endpoints.sessionStatus(activeSessionId);
     const statuses = listFrom(data, 'sessions', 'items');
     const byID = new Map(statuses.map((entry) => [String(entry.id || entry.session_id), entry]));
-    this.sessions.value = this.sessions.value.map((session) => {
-      const status = byID.get(session.id);
-      if (!status) return session;
-      const activeResponseId = String(status.active_response_id || '') || null;
-      const transcriptRev = Number(status.transcript_rev) || session.transcriptRev || 0;
-      if (activeResponseId && activeResponseId !== session.activeResponseId)
-        window.setTimeout(() => void this.resumeResponse(session.id, activeResponseId), 0);
-      if (
-        !activeResponseId &&
-        (session.activeResponseId || this.pendingIntents.peek()[session.id]?.length) &&
-        transcriptRev >= (this.runs.peek()[session.id]?.run.finalRev || 0)
-      )
-        window.setTimeout(() => void this.refreshSessionMessages(session.id, transcriptRev), 0);
-      return {
-        ...session,
-        activeResponseId,
-        lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
-        transcriptRev,
-        messageCount: Number(status.message_count) || session.messageCount,
-        lastMessageAt: Number(status.last_message_at)
-          ? Number(status.last_message_at) *
-            (Number(status.last_message_at) < 10_000_000_000 ? 1000 : 1)
-          : session.lastMessageAt,
-      };
-    });
+    this.sessions.value = this.sessions.value
+      .map((session) => {
+        const status = byID.get(session.id);
+        if (!status) return session;
+        const activeResponseId = String(status.active_response_id || '') || null;
+        const transcriptRev = Number(status.transcript_rev) || session.transcriptRev || 0;
+        if (activeResponseId && activeResponseId !== session.activeResponseId)
+          window.setTimeout(() => void this.resumeResponse(session.id, activeResponseId), 0);
+        if (
+          !activeResponseId &&
+          (session.activeResponseId || this.pendingIntents.peek()[session.id]?.length) &&
+          transcriptRev >= (this.runs.peek()[session.id]?.run.finalRev || 0)
+        )
+          window.setTimeout(() => void this.refreshSessionMessages(session.id, transcriptRev), 0);
+        const titleRefreshAllowed = this.renameTarget.peek()?.id !== session.id;
+        return {
+          ...session,
+          ...(titleRefreshAllowed && String(status.short_title || '')
+            ? {
+                title: String(status.short_title),
+                longTitle: String(status.long_title || '') || session.longTitle,
+              }
+            : {}),
+          activeResponseId,
+          lastResponseId: String(status.last_response_id || '') || session.lastResponseId,
+          transcriptRev,
+          messageCount: Number(status.message_count) || session.messageCount,
+          lastMessageAt: Number(status.last_message_at)
+            ? Number(status.last_message_at) *
+              (Number(status.last_message_at) < 10_000_000_000 ? 1000 : 1)
+            : session.lastMessageAt,
+        };
+      })
+      .sort(compareSessionsByActivity);
     const activeRevision =
       this.sessions.peek().find((session) => session.id === activeSessionId)?.transcriptRev || 0;
     if (

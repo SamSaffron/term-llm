@@ -138,6 +138,7 @@ const (
 
 	DefaultServeBasePath        = "/ui"
 	DefaultServeResponseTimeout = "30m"
+	DefaultServeAutoTitle       = true
 
 	DefaultAutoCompact = true
 )
@@ -350,6 +351,7 @@ var keySpecs = []KeySpec{
 	optional("loop.approval_mode", withoutResetTemplate()),
 
 	def("serve.base_path", DefaultServeBasePath),
+	def("serve.auto_title", DefaultServeAutoTitle),
 	optional("serve.platforms", withPlaceholder([]string{})),
 	optional("serve.approval_mode", withoutResetTemplate()),
 	optional("serve.title"),

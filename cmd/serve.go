@@ -170,7 +170,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
 	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
-	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum active execution time per response; pauses while waiting for interactive input")
+	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum inactivity before the first or next completed LLM response (default 30m; pauses for interactive waits)")
 	serveCmd.Flags().BoolVar(&serveEnableFileTracking, "enable-file-tracking", false, "Enable session file-change tracking for this serve process")
 	serveCmd.Flags().BoolVar(&serveProjects, "projects", false, "Strictly enable Web UI project selection")
 	serveCmd.Flags().BoolVar(&serveNoProjects, "no-projects", false, "Use the single-workspace Web UI for dedicated agent deployments")
@@ -1285,6 +1285,15 @@ type serveServer struct {
 	runtimeFactory           func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 	agentRuntimeFactory      func(ctx context.Context, providerName string, model string, agentName string) (*serveRuntime, error)
 	titleProviderFactory     func(*config.Config) (llm.Provider, error)
+	autoTitleProviderFactory func(string) (llm.Provider, error)
+	autoTitleMu              sync.Mutex
+	autoTitleFlights         map[string]struct{}
+	autoTitleAttempts        map[string]serveAutoTitleAttempt
+	autoTitleSlots           chan struct{}
+	autoTitleCtx             context.Context
+	autoTitleCancel          context.CancelFunc
+	autoTitleWG              sync.WaitGroup
+	autoTitleStopping        bool
 	pathNotesProviderFactory func(providerName, model string) (llm.Provider, error)
 	widgetsMgr               *widgets.Manager
 	indexHTMLOnce            sync.Once
@@ -1311,6 +1320,13 @@ func (s *serveServer) fileTrackStore() *filetrack.Store {
 func (s *serveServer) Start() error {
 	s.shutdownCh = make(chan struct{})
 	s.shutdownOnce = sync.Once{}
+	s.autoTitleMu.Lock()
+	if s.autoTitleCancel != nil {
+		s.autoTitleCancel()
+	}
+	s.autoTitleCtx, s.autoTitleCancel = context.WithCancel(context.Background())
+	s.autoTitleStopping = false
+	s.autoTitleMu.Unlock()
 	s.skillRunsMu.Lock()
 	s.skillRunsStopping = false
 	s.skillRunsMu.Unlock()
@@ -1456,6 +1472,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		}
 	})
 	if s.server == nil {
+		s.stopAutoTitles()
 		return s.stopServeSkillRuns(ctx)
 	}
 
@@ -1489,6 +1506,10 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		})
 	}
 	run(func() error { return s.stopServeSkillRuns(ctx) })
+	run(func() error {
+		s.stopAutoTitles()
+		return nil
+	})
 	run(func() error { return s.server.Shutdown(ctx) })
 
 	s.modelsMu.Lock()
