@@ -1,108 +1,5 @@
 /* Conversation branching. */
 
-/* Conversation branching */
-.branch-hidden {
-  display: none !important;
-}
-
-.pending-branch-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
-  padding: 0.45rem 0.65rem;
-  border: 1px dashed var(--border);
-  border-radius: 0.55rem;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.pending-branch-banner[hidden] {
-  display: none;
-}
-
-.pending-branch-banner button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.branch-origin-divider {
-  width: min(100%, 820px);
-  display: grid;
-  grid-template-columns: minmax(1rem, 1fr) auto minmax(1rem, 1fr);
-  align-items: center;
-  gap: 0.8rem;
-  margin: 0.55rem 0;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.branch-origin-line {
-  height: 1px;
-  background: var(--border);
-}
-
-.branch-origin-divider button {
-  border: 0;
-  padding: 0.25rem 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 0.16rem;
-}
-
-.branch-origin-divider button:hover {
-  color: var(--text);
-}
-
-.branch-context-status {
-  width: min(100%, 820px);
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px dashed var(--border);
-  border-radius: 0.65rem;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-}
-
-.branch-context-status small {
-  flex-basis: 100%;
-}
-
-.branch-context-status.failed {
-  flex-wrap: wrap;
-  color: var(--error-text);
-}
-
-.branch-context-status button {
-  border: 1px solid var(--border);
-  border-radius: 0.45rem;
-  padding: 0.32rem 0.5rem;
-  background: var(--surface-2);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.branch-context-spinner {
-  width: 0.8rem;
-  height: 0.8rem;
-  flex: none;
-  border: 2px solid var(--border);
-  border-top-color: var(--text-muted);
-  border-radius: 999px;
-  animation: spin 0.8s linear infinite;
-}
-
 .message.path-note {
   max-width: 46rem;
   margin: 0.65rem auto;
@@ -132,46 +29,6 @@
   white-space: nowrap;
 }
 
-.branch-tree-modal,
-.branch-context-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 95;
-  display: grid;
-  place-items: center;
-  padding: 1rem;
-  background: rgb(0 0 0 / 48%);
-}
-
-.branch-tree-modal[hidden],
-.branch-context-modal[hidden] {
-  display: none;
-}
-
-.branch-tree-card,
-.branch-context-card {
-  width: min(36rem, 100%);
-  max-height: min(42rem, calc(100dvh - 2rem));
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 0.9rem;
-  background: var(--surface);
-  box-shadow: var(--shadow-strong);
-  padding: 1rem;
-}
-
-.branch-tree-card:focus {
-  outline: none;
-}
-
-.branch-tree-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.branch-tree-header p,
 .branch-tree-note {
   color: var(--text-muted);
   font-size: 0.8rem;
@@ -182,20 +39,6 @@
   display: grid;
   gap: 1rem;
   margin: 1rem 0;
-}
-
-.branch-tree-section {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.branch-tree-section-title {
-  padding: 0 0.2rem;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .branch-tree-role {
@@ -330,41 +173,4 @@
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
-}
-
-.branch-context-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-.branch-context-actions button {
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--surface-2);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.branch-context-actions button[type='submit'] {
-  background: var(--accent);
-  color: var(--accent-contrast, white);
-  border-color: var(--accent);
-}
-
-@media (width <= 640px) {
-  .branch-tree-modal,
-  .branch-context-modal {
-    align-items: end;
-    padding: 0;
-  }
-
-  .branch-tree-card,
-  .branch-context-card {
-    width: 100%;
-    max-height: 80dvh;
-    border-radius: 1rem 1rem 0 0;
-    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
-  }
 }

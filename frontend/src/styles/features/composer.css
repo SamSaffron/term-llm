@@ -179,10 +179,9 @@
   border-color: var(--border-strong);
 }
 
-.slash-command-menu {
+.slash-command-menu,
+.composer-add-menu {
   position: absolute;
-  left: 46px;
-  right: 46px;
   bottom: calc(100% + 8px);
   padding: 0.35rem;
   border: 1px solid var(--border);
@@ -190,6 +189,11 @@
   background: var(--surface);
   box-shadow: var(--shadow-strong);
   z-index: 20;
+}
+
+.slash-command-menu {
+  left: 46px;
+  right: 46px;
 }
 
 .slash-command-menu[hidden] {
@@ -324,16 +328,8 @@
 }
 
 .composer-add-menu {
-  position: absolute;
   left: 6px;
-  bottom: calc(100% + 8px);
   min-width: 190px;
-  padding: 0.35rem;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-strong);
-  z-index: 20;
 }
 
 .composer-add-menu[hidden] {

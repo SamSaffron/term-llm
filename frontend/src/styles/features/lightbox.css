@@ -343,20 +343,6 @@
     flex-direction: column;
   }
 
-  .ask-user-modal {
-    width: 100%;
-    max-height: min(88vh, 1000px);
-    padding: 1rem;
-  }
-
-  .ask-user-body {
-    max-height: min(64vh, 620px);
-  }
-
-  .ask-user-options {
-    grid-template-columns: 1fr;
-  }
-
   .ask-user-question {
     padding: 0.9rem;
   }
